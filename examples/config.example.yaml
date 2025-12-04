@@ -1,0 +1,30 @@
+# Example issue-orchestrator configuration
+# Copy to your repo as .issue-orchestrator.yaml
+
+# Agent configurations - map issue labels to prompts
+agents:
+  "agent:backend":
+    prompt: ".issue-orchestrator/prompts/backend.md"
+    worktree_base: "../"
+    model: "sonnet"
+    timeout_minutes: 45
+
+  "agent:frontend":
+    prompt: ".issue-orchestrator/prompts/frontend.md"
+    worktree_base: "../"
+    model: "sonnet"
+    timeout_minutes: 45
+
+# Concurrency settings
+concurrency:
+  max_sessions: 3
+  session_timeout_minutes: 45
+
+# Label names (customize if your repo uses different labels)
+labels:
+  in_progress: "in-progress"
+  blocked: "blocked"
+  needs_human: "needs-human"
+
+# Optional: specify repo explicitly (otherwise auto-detected from git remote)
+# repo: "owner/repo-name"
