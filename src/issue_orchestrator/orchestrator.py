@@ -2,6 +2,7 @@
 
 import asyncio
 import signal
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,7 @@ from .github import (
 from .models import Issue, Session, SessionStatus, OrchestratorState
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
-from .tmux import create_session, session_exists, kill_session
+from .tmux import create_session, session_exists, kill_session, send_keys
 from .worktree import create_worktree, remove_worktree, has_uncommitted_changes
 
 
@@ -87,6 +88,15 @@ class Orchestrator:
         # Create tmux session
         session_name = f"issue-{issue.number}"
         create_session(session_name, command, worktree_path)
+
+        # Wait for Claude to initialize, then send the initial prompt
+        time.sleep(3)
+        initial_prompt = agent_config.get_initial_prompt(
+            issue_number=issue.number,
+            issue_title=issue.title,
+            worktree=worktree_path,
+        )
+        send_keys(session_name, initial_prompt)
 
         # Create session object
         session = Session(

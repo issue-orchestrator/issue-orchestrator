@@ -82,3 +82,17 @@ def attach_session(session_name: str) -> None:
         This function replaces the current process and does not return
     """
     os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+
+
+def send_keys(session_name: str, keys: str, enter: bool = True) -> None:
+    """Send keys to a tmux session.
+
+    Args:
+        session_name: Name of the session to send keys to
+        keys: The keys/text to send
+        enter: Whether to send Enter after the keys (default True)
+    """
+    args = ["send-keys", "-t", session_name, keys]
+    if enter:
+        args.append("Enter")
+    _run_tmux(args)

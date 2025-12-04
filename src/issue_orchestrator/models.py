@@ -76,19 +76,22 @@ class AgentConfig:
     worktree_base: Path
     model: str = "sonnet"
     timeout_minutes: int = 45
-    command: str = "claude --dangerously-skip-permissions --model {model} --append-system-prompt 'Read {prompt} for your instructions.' -p 'Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit.'"
+    command: str = "claude --dangerously-skip-permissions --model {model} --append-system-prompt 'Read {prompt} for your instructions.'"
+    initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit."
 
     def get_command(self, issue_number: int, issue_title: str, worktree: Path) -> str:
-        """Render the command template with actual values.
-
-        Supports template variables:
-        - {issue_number}: the issue number
-        - {issue_title}: the issue title
-        - {prompt}: path to the prompt file
-        - {worktree}: path to the worktree
-        - {model}: the model name
-        """
+        """Render the command template with actual values."""
         return self.command.format(
+            issue_number=issue_number,
+            issue_title=issue_title,
+            prompt=self.prompt_path,
+            worktree=worktree,
+            model=self.model,
+        )
+
+    def get_initial_prompt(self, issue_number: int, issue_title: str, worktree: Path) -> str:
+        """Render the initial prompt template with actual values."""
+        return self.initial_prompt.format(
             issue_number=issue_number,
             issue_title=issue_title,
             prompt=self.prompt_path,
