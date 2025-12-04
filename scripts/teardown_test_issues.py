@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 # Default to issue-orchestrator repo, override with env var if needed
-REPO = os.environ.get("TEST_REPO", "brucegordon/issue-orchestrator")
+REPO = os.environ.get("TEST_REPO", "BruceBGordon/issue-orchestrator")
 
 # Label that marks test data
 TEST_LABEL = "test-data"
