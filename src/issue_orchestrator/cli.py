@@ -7,6 +7,66 @@ from rich.console import Console
 console = Console()
 
 
+def _run_test_setup(repo: str) -> bool:
+    """Run test teardown and setup. Returns True on success."""
+    import subprocess
+
+    console.print("[cyan]Test mode: Cleaning up old test issues...[/cyan]")
+
+    # Teardown
+    result = subprocess.run(
+        ["gh", "issue", "list", "--repo", repo, "--label", "test-data",
+         "--state", "open", "--json", "number"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        import json
+        issues = json.loads(result.stdout)
+        for issue in issues:
+            subprocess.run(
+                ["gh", "issue", "close", str(issue["number"]), "--repo", repo,
+                 "--comment", "Closed by test mode startup."],
+                capture_output=True
+            )
+            console.print(f"  Closed #{issue['number']}")
+
+    console.print("[cyan]Test mode: Creating fresh test issues...[/cyan]")
+
+    # Create test-data label if missing
+    subprocess.run(
+        ["gh", "label", "create", "test-data", "--repo", repo, "--force",
+         "--description", "Test data for integration tests"],
+        capture_output=True
+    )
+
+    # Create test issues
+    test_issues = [
+        ("[TEST] Simple backend task", "agent:backend", "priority:high"),
+        ("[TEST] Frontend feature", "agent:frontend", "priority:medium"),
+        ("[TEST] Mobile bug fix", "agent:mobile", "priority:low"),
+    ]
+
+    for title, agent_label, priority_label in test_issues:
+        # Create labels if needed
+        for label in [agent_label, priority_label]:
+            subprocess.run(
+                ["gh", "label", "create", label, "--repo", repo, "--force"],
+                capture_output=True
+            )
+
+        result = subprocess.run(
+            ["gh", "issue", "create", "--repo", repo, "--title", title,
+             "--body", f"Test issue for orchestrator.\n\nExpected: Agent completes.",
+             "--label", "test-data", "--label", agent_label, "--label", priority_label],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            issue_url = result.stdout.strip()
+            console.print(f"  Created: {issue_url}")
+
+    return True
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     """Start the orchestrator."""
     console.print("[green]Starting issue-orchestrator...[/green]")
@@ -21,6 +81,15 @@ def cmd_start(args: argparse.Namespace) -> int:
         console.print(f"[red]Error: {e}[/red]")
         console.print("Create a .issue-orchestrator.yaml config file first.")
         return 1
+
+    # Handle test mode
+    if args.test_mode:
+        if not config.repo:
+            console.print("[red]Error: repo must be set in config for test mode[/red]")
+            return 1
+        _run_test_setup(config.repo)
+        config.filter_label = "test-data"
+        console.print("[cyan]Test mode: filter_label set to 'test-data'[/cyan]")
 
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
     console.print(f"[dim]Max concurrent sessions: {config.max_sessions}[/dim]")
@@ -115,6 +184,11 @@ def main() -> int:
         "--no-dashboard",
         action="store_true",
         help="Run without dashboard UI (useful for CI/debugging)"
+    )
+    start_parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="Clear test issues, create fresh ones, and run with filter_label=test-data"
     )
     start_parser.set_defaults(func=cmd_start)
 
