@@ -118,7 +118,7 @@ def list_issues(
     if labels is None:
         labels = []
 
-    args = ["issue", "list", "--state", state, "--json", "number,title,labels"]
+    args = ["issue", "list", "--state", state, "--json", "number,title,labels,state,body,milestone"]
 
     for label in labels:
         args.extend(["--label", label])
@@ -129,10 +129,14 @@ def list_issues(
 
         if isinstance(output, list):
             for item in output:
+                milestone = item.get("milestone")
                 issue = Issue(
                     number=item["number"],
                     title=item["title"],
                     labels=[label["name"] for label in item.get("labels", [])],
+                    state=item.get("state", "open"),
+                    body=item.get("body"),
+                    milestone=milestone.get("title") if milestone else None,
                 )
                 issues.append(issue)
 

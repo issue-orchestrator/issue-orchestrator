@@ -46,16 +46,15 @@ class Config:
 
         # Parse agents
         for label, agent_data in data.get("agents", {}).items():
-            config.agents[label] = AgentConfig(
-                prompt_path=Path(agent_data["prompt"]),
-                worktree_base=Path(agent_data.get("worktree_base", "../")),
-                model=agent_data.get("model", "sonnet"),
-                timeout_minutes=agent_data.get("timeout_minutes", 45),
-                command=agent_data.get(
-                    "command",
-                    "claude --dangerously-skip-permissions --model {model} --append-system-prompt 'Read {prompt} for your instructions. You are working on issue #{issue_number}: {issue_title}'",
-                ),
-            )
+            agent_kwargs = {
+                "prompt_path": Path(agent_data["prompt"]),
+                "worktree_base": Path(agent_data.get("worktree_base", "../")),
+                "model": agent_data.get("model", "sonnet"),
+                "timeout_minutes": agent_data.get("timeout_minutes", 45),
+            }
+            if "command" in agent_data:
+                agent_kwargs["command"] = agent_data["command"]
+            config.agents[label] = AgentConfig(**agent_kwargs)
 
         # Parse concurrency
         concurrency = data.get("concurrency", {})

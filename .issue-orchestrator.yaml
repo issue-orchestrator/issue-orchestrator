@@ -1,0 +1,15 @@
+repo: BruceBGordon/issue-orchestrator
+
+filter_label: test-data  # Only process test issues
+
+agents:
+  "agent:backend":
+    prompt: "examples/prompts/simple-fix.md"
+  "agent:frontend":
+    prompt: "examples/prompts/simple-fix.md"
+  "agent:mobile":
+    prompt: "examples/prompts/simple-fix.md"
+
+concurrency:
+  max_sessions: 2
+  session_timeout_minutes: 10

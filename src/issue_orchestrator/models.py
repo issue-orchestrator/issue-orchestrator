@@ -33,6 +33,7 @@ class Issue:
     number: int
     title: str
     labels: list[str]
+    state: str = "open"  # "open" or "closed"
     milestone: Optional[str] = None
     body: Optional[str] = None
 
@@ -75,7 +76,7 @@ class AgentConfig:
     worktree_base: Path
     model: str = "sonnet"
     timeout_minutes: int = 45
-    command: str = "claude --dangerously-skip-permissions --model {model} --append-system-prompt 'Read {prompt} for your instructions. You are working on issue #{issue_number}: {issue_title}'"
+    command: str = "claude --dangerously-skip-permissions --model {model} --append-system-prompt 'Read {prompt} for your instructions.' -p 'Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit.'"
 
     def get_command(self, issue_number: int, issue_title: str, worktree: Path) -> str:
         """Render the command template with actual values.

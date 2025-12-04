@@ -41,7 +41,7 @@ class Scheduler:
             # Skip issues that are in-progress
             if issue.state == "closed":
                 continue
-            if any(label.name == "in-progress" for label in issue.labels):
+            if "in-progress" in issue.labels:
                 continue
             available.append(issue)
         return available
@@ -61,7 +61,7 @@ class Scheduler:
             # Extract milestone number if present
             milestone_num = float("inf")
             if issue.milestone:
-                match = re.search(r"M(\d+)", issue.milestone.title)
+                match = re.search(r"M(\d+)", issue.milestone)
                 if match:
                     milestone_num = int(match.group(1))
 
@@ -165,13 +165,12 @@ class Scheduler:
         Returns:
             Priority value (0=high, 1=medium, 2=low, 3=none).
         """
-        for label in issue.labels:
-            if label.name == "priority:high":
-                return 0
-            if label.name == "priority:medium":
-                return 1
-            if label.name == "priority:low":
-                return 2
+        if "priority:high" in issue.labels:
+            return 0
+        if "priority:medium" in issue.labels:
+            return 1
+        if "priority:low" in issue.labels:
+            return 2
         return 3
 
     def _get_milestone_order(self) -> dict[str, int]:
