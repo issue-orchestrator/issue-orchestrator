@@ -156,6 +156,23 @@
             font-size: 12px;
             color: #666;
         }
+        .queue-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 30px;
+        }
+        .queue-item {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 8px 12px;
+            border: 1px solid #333;
+            transition: all 0.2s;
+        }
+        .queue-item:hover {
+            border-color: #6366f1;
+            transform: translateY(-2px);
+        }
     </style>
 </head>
 <body>
@@ -202,6 +219,23 @@
         <div class="empty-state">
             <h3>No active sessions</h3>
             <p>Waiting for issues to process...</p>
+        </div>
+        {% endif %}
+
+        <h2 class="section-title">Queue ({{ queue_items|length }})</h2>
+
+        {% if queue_items %}
+        <div class="queue-list">
+            {% for item in queue_items %}
+            <div class="queue-item">
+                <span class="session-number">#{{ item.number }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <h3>Queue is empty</h3>
+            <p>No issues waiting to be processed</p>
         </div>
         {% endif %}
     </div>

@@ -52,12 +52,21 @@ async def dashboard(request: Request) -> HTMLResponse:
                 "status": "running" if session.runtime_minutes < session.agent_config.timeout_minutes else "slow",
             })
 
+    queue_items = []
+    if state:
+        # Priority queue contains issue numbers, not full Issue objects
+        for issue_number in state.priority_queue[:10]:  # Limit to first 10
+            queue_items.append({
+                "number": issue_number,
+            })
+
     html = template.render(
         sessions=sessions,
         paused=state.paused if state else False,
         max_sessions=config.max_sessions if config else 0,
         completed_count=len(state.completed_today) if state else 0,
         queue_count=len(state.priority_queue) if state else 0,
+        queue_items=queue_items,
     )
     return HTMLResponse(content=html)
 
