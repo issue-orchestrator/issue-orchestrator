@@ -68,6 +68,10 @@ class Issue:
     def needs_human(self) -> bool:
         return "needs-human" in self.labels
 
+    def format_display_name(self) -> str:
+        """Format issue for display (e.g., in logs or UI)."""
+        return f"#{self.number}: {self.title}"
+
 
 @dataclass
 class AgentConfig:

@@ -116,6 +116,14 @@ class TestIssue:
         assert issue.needs_human
         assert issue.milestone == "M6"
 
+    def test_format_display_name(self):
+        """Test format_display_name method."""
+        issue = Issue(number=123, title="Fix login bug", labels=[])
+        assert issue.format_display_name() == "#123: Fix login bug"
+
+        issue_long = Issue(number=456, title="Add new feature for user management", labels=[])
+        assert issue_long.format_display_name() == "#456: Add new feature for user management"
+
 
 class TestAgentConfig:
     """Test the AgentConfig data model."""
