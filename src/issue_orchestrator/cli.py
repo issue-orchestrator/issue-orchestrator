@@ -19,11 +19,20 @@ def setup_logging(debug: bool = False) -> None:
     Logs always go to file only (not console) to avoid conflicts with TUI.
     Use `tail -f ~/.issue-orchestrator.log` in another terminal to watch logs.
     """
-    logging.basicConfig(
-        level=logging.DEBUG if debug else logging.INFO,
-        format='%(asctime)s %(name)s %(levelname)s: %(message)s',
-        handlers=[logging.FileHandler(LOG_FILE, mode='a')],
-    )
+    # Get root logger and configure it
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG if debug else logging.INFO)
+
+    # Remove any existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Add file handler
+    file_handler = logging.FileHandler(LOG_FILE, mode='a')
+    file_handler.setLevel(logging.DEBUG if debug else logging.INFO)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s: %(message)s'))
+    root_logger.addHandler(file_handler)
+
     logging.info("=" * 50)
     logging.info("issue-orchestrator started (debug=%s)", debug)
 
