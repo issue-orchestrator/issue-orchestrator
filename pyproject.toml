@@ -54,3 +54,5 @@ pythonVersion = "3.11"
 typeCheckingMode = "basic"
 reportMissingImports = true
 reportMissingTypeStubs = false
+venvPath = "../issue-orchestrator"
+venv = ".venv"
