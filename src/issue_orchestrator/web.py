@@ -50,6 +50,7 @@ async def dashboard(request: Request) -> HTMLResponse:
                 "runtime_minutes": session.runtime_minutes,
                 "agent_type": session.issue.agent_type or "unknown",
                 "status": "running" if session.runtime_minutes < session.agent_config.timeout_minutes else "slow",
+                "branch": session.branch_name,
             })
 
     html = template.render(
