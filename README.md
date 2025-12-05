@@ -96,6 +96,10 @@ issue-orchestrator
 | `blocked` | Agent couldn't complete, needs unblocking |
 | `needs-human` | Agent has a question for a human |
 
+## Testing
+
+The orchestrator has been validated with test issues to ensure the workflow completes successfully.
+
 ## License
 
 MIT
