@@ -5,7 +5,8 @@ import time
 from pathlib import Path
 from issue_orchestrator.locks import (
     try_claim, release_claim, is_claimed, list_claimed, LOCK_DIR,
-    get_claim_age, is_claim_stale, cleanup_stale_claims, TIMESTAMP_FILE
+    get_claim_age, is_claim_stale, cleanup_stale_claims, TIMESTAMP_FILE,
+    set_paused, set_resumed, is_paused
 )
 
 
@@ -18,6 +19,9 @@ def _cleanup_lock_dir():
                 for subitem in item.iterdir():
                     subitem.unlink()
                 item.rmdir()
+            else:
+                # Remove regular files (e.g., paused lock file)
+                item.unlink()
         LOCK_DIR.rmdir()
 
 
@@ -511,3 +515,107 @@ class TestCleanupStaleClaims:
         # Only issue 3 should be cleaned (issue 2 has no timestamp, so not considered stale)
         assert cleaned == [3]
         assert set(list_claimed()) == {1, 2}
+
+
+class TestPauseResume:
+    """Test the pause/resume functionality."""
+
+    def test_set_paused(self):
+        """Test setting the paused state."""
+        assert not is_paused()
+
+        set_paused()
+
+        assert is_paused()
+
+    def test_set_resumed(self):
+        """Test clearing the paused state."""
+        set_paused()
+        assert is_paused()
+
+        set_resumed()
+
+        assert not is_paused()
+
+    def test_is_paused_default_false(self):
+        """Test that paused state is false by default."""
+        assert is_paused() is False
+
+    def test_set_paused_creates_lock_dir(self):
+        """Test that set_paused creates the lock directory if it doesn't exist."""
+        # Ensure lock dir doesn't exist
+        if LOCK_DIR.exists():
+            for item in LOCK_DIR.iterdir():
+                if item.is_dir():
+                    for subitem in item.iterdir():
+                        subitem.unlink()
+                    item.rmdir()
+                else:
+                    item.unlink()
+            LOCK_DIR.rmdir()
+
+        assert not LOCK_DIR.exists()
+
+        set_paused()
+
+        assert LOCK_DIR.exists()
+        assert LOCK_DIR.is_dir()
+
+    def test_set_paused_idempotent(self):
+        """Test that calling set_paused multiple times is safe."""
+        set_paused()
+        set_paused()
+        set_paused()
+
+        assert is_paused()
+
+    def test_set_resumed_when_not_paused(self):
+        """Test that calling set_resumed when not paused is safe."""
+        assert not is_paused()
+
+        # Should not raise an exception
+        set_resumed()
+
+        assert not is_paused()
+
+    def test_pause_resume_cycle(self):
+        """Test a complete pause/resume cycle."""
+        # Initial state: not paused
+        assert not is_paused()
+
+        # Pause
+        set_paused()
+        assert is_paused()
+
+        # Resume
+        set_resumed()
+        assert not is_paused()
+
+        # Pause again
+        set_paused()
+        assert is_paused()
+
+        # Resume again
+        set_resumed()
+        assert not is_paused()
+
+    def test_pause_does_not_affect_claims(self):
+        """Test that pause/resume doesn't interfere with issue claims."""
+        # Claim some issues
+        try_claim(1)
+        try_claim(2)
+
+        # Pause
+        set_paused()
+        assert is_paused()
+
+        # Claims should still be intact
+        assert is_claimed(1)
+        assert is_claimed(2)
+
+        # Resume
+        set_resumed()
+
+        # Claims should still be intact
+        assert is_claimed(1)
+        assert is_claimed(2)

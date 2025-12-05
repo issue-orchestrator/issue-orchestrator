@@ -95,3 +95,22 @@ def cleanup_stale_claims(max_age_minutes: int = 60) -> list[int]:
             cleaned.append(issue_number)
 
     return cleaned
+
+
+def set_paused() -> None:
+    """Set the orchestrator to paused state."""
+    LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    pause_lock = LOCK_DIR / "paused"
+    pause_lock.touch()
+
+
+def set_resumed() -> None:
+    """Clear the paused state."""
+    pause_lock = LOCK_DIR / "paused"
+    if pause_lock.exists():
+        pause_lock.unlink()
+
+
+def is_paused() -> bool:
+    """Check if the orchestrator is paused."""
+    return (LOCK_DIR / "paused").exists()

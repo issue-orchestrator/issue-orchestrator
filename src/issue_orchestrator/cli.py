@@ -494,15 +494,21 @@ def cmd_output(args: argparse.Namespace) -> int:
 
 def cmd_pause(args: argparse.Namespace) -> int:
     """Pause the orchestrator."""
+    from .locks import set_paused
+
     console.print("[yellow]Pausing issue-orchestrator...[/yellow]")
-    # TODO: implement pause logic
+    set_paused()
+    console.print("[green]Orchestrator paused. Current sessions will continue, but no new issues will be picked up.[/green]")
     return 0
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
     """Resume the orchestrator."""
+    from .locks import set_resumed
+
     console.print("[green]Resuming issue-orchestrator...[/green]")
-    # TODO: implement resume logic
+    set_resumed()
+    console.print("[green]Orchestrator resumed. Will now pick up new issues.[/green]")
     return 0
 
 

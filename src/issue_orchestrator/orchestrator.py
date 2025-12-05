@@ -12,7 +12,7 @@ from .github import (
     list_issues, add_label, remove_label,
     get_open_prs_for_branch, get_latest_blocked_info, get_latest_needs_human_info
 )
-from .locks import try_claim, release_claim, cleanup_stale_claims
+from .locks import try_claim, release_claim, cleanup_stale_claims, is_paused
 from .models import Issue, Session, SessionStatus, OrchestratorState
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
@@ -210,6 +210,15 @@ class Orchestrator:
         print("Starting orchestration loop...")
 
         while not self._shutdown_requested:
+            # Sync pause state from lock file
+            file_paused = is_paused()
+            if file_paused != self.state.paused:
+                self.state.paused = file_paused
+                if file_paused:
+                    print("Pause detected from lock file - will finish current sessions but not start new ones")
+                else:
+                    print("Resume detected from lock file")
+
             # Check status of all active sessions
             for session in list(self.state.active_sessions):
                 status = self.monitor.check_session(session)
