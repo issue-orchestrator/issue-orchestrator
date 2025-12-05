@@ -291,8 +291,9 @@ class DashboardApp(App):
 class Dashboard:
     """Wrapper class for backward compatibility."""
 
-    def __init__(self, orchestrator: "Orchestrator") -> None:
+    def __init__(self, orchestrator: "Orchestrator", ui_mode: str = "tmux") -> None:
         self.orchestrator = orchestrator
+        self.ui_mode = ui_mode
         self._app: DashboardApp | None = None
         self.attach_after_exit: bool = False  # Set when user presses 1-9
 
@@ -307,14 +308,21 @@ class Dashboard:
         await self._app.run_async()
 
     async def _handle_attach(self, issue_number: int) -> None:
-        """Handle attach - just mark that we should attach after exit."""
+        """Handle attach - select window and mark for attachment after exit."""
         from .tmux import get_manager
         manager = get_manager()
         if manager and manager.session:
             manager.select_window(issue_number)
             self.attach_after_exit = True
-            if self._app:
-                self._app.exit()
+
+            if self.ui_mode == "iterm2":
+                # For iterm2 mode, notify user about tab switching
+                if self._app:
+                    self._app.notify(f"Attaching to #{issue_number} - iTerm2 tabs will appear")
+                    self._app.exit()
+            else:
+                if self._app:
+                    self._app.exit()
 
     async def _handle_pause(self) -> None:
         """Handle pause from dashboard."""
@@ -330,15 +338,19 @@ class Dashboard:
             self._app.exit()
 
 
-async def run_with_dashboard(orchestrator: "Orchestrator") -> bool:
+async def run_with_dashboard(orchestrator: "Orchestrator", ui_mode: str = "tmux") -> bool:
     """Run orchestrator with dashboard UI.
 
     The orchestrator runs in a background task while the dashboard
     handles the UI and keyboard input in the foreground.
 
+    Args:
+        orchestrator: The orchestrator instance
+        ui_mode: "tmux" for pure terminal, "iterm2" for Mac GUI integration
+
     Returns True if the caller should attach to the tmux session.
     """
-    dashboard = Dashboard(orchestrator)
+    dashboard = Dashboard(orchestrator, ui_mode=ui_mode)
 
     async def run_orchestrator():
         """Run the orchestrator loop, stopping when dashboard exits."""

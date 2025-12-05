@@ -38,6 +38,9 @@ class Config:
     # Comment headings for structured worker comments
     comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
 
+    # UI mode: "tmux" (default, pure tmux), "iterm2" (Mac iTerm2 integration)
+    ui_mode: str = "tmux"
+
     def prefixed_label(self, label: str) -> str:
         """Return label with prefix if configured.
 
@@ -104,6 +107,9 @@ class Config:
         config.repo = data.get("repo")
         config.filter_label = data.get("filter_label")
         config.filter_milestone = data.get("filter_milestone")
+
+        # UI mode
+        config.ui_mode = data.get("ui_mode", "tmux")
 
         # Parse comment headings
         headings_data = data.get("comment_headings", {})

@@ -144,6 +144,11 @@ def cmd_start(args: argparse.Namespace) -> int:
         config.filter_milestone = args.milestone
         console.print(f"[cyan]Filtering by milestone: {args.milestone}[/cyan]")
 
+    # Handle ui_mode override
+    if hasattr(args, 'ui_mode') and args.ui_mode:
+        config.ui_mode = args.ui_mode
+    console.print(f"[dim]UI mode: {config.ui_mode}[/dim]")
+
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
     console.print(f"[dim]Max concurrent sessions: {config.max_sessions}[/dim]")
 
@@ -318,11 +323,16 @@ def cmd_start(args: argparse.Namespace) -> int:
             asyncio.run(orchestrator.run_loop())
         else:
             # Run with interactive dashboard
-            should_attach = asyncio.run(run_with_dashboard(orchestrator))
+            should_attach = asyncio.run(run_with_dashboard(orchestrator, config.ui_mode))
             if should_attach:
                 # User pressed 1-9 to attach to a session
                 import os
-                os.execvp("tmux", ["tmux", "attach-session", "-t", "orchestrator"])
+                if config.ui_mode == "iterm2":
+                    # Use iTerm2's control mode for native tab integration
+                    console.print("[dim]Attaching with iTerm2 control mode...[/dim]")
+                    os.execvp("tmux", ["tmux", "-CC", "attach-session", "-t", "orchestrator"])
+                else:
+                    os.execvp("tmux", ["tmux", "attach-session", "-t", "orchestrator"])
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutting down...[/yellow]")
 
@@ -612,6 +622,12 @@ def main() -> int:
         "--debug",
         action="store_true",
         help="Enable verbose DEBUG-level logging to ~/.issue-orchestrator.log"
+    )
+    start_parser.add_argument(
+        "--ui-mode",
+        choices=["tmux", "iterm2"],
+        default=None,
+        help="UI mode: tmux (default, pure terminal) or iterm2 (Mac GUI integration)"
     )
     start_parser.set_defaults(func=cmd_start)
 
