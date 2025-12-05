@@ -139,6 +139,33 @@ async def focus_session(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": f"Could not focus session #{issue_number}"}, status_code=500)
 
 
+@app.get("/api/stats")
+async def get_stats() -> JSONResponse:
+    """Get summary statistics for the orchestrator."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    state = _orchestrator.state
+
+    # Calculate running and slow sessions
+    running_count = 0
+    slow_count = 0
+    for session in state.active_sessions:
+        if session.runtime_minutes < session.agent_config.timeout_minutes:
+            running_count += 1
+        else:
+            slow_count += 1
+
+    return JSONResponse({
+        "total_active": len(state.active_sessions),
+        "running": running_count,
+        "slow": slow_count,
+        "queued": len(state.priority_queue),
+        "completed_today": len(state.completed_today),
+        "paused": state.paused,
+    })
+
+
 @app.post("/api/shutdown")
 async def shutdown() -> JSONResponse:
     """Request orchestrator shutdown."""
