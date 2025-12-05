@@ -1,0 +1,8 @@
+{
+  "venvPath": "/Users/brucegordon/dev/issue-orchestrator",
+  "venv": ".venv",
+  "include": ["src"],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false
+}
