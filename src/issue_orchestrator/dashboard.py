@@ -47,6 +47,12 @@ class StatusBar(Static):
         text.append(f" │ Active: {len(state.active_sessions)}/{config.max_sessions}")
         text.append(f" │ Completed: {len(state.completed_today)}")
 
+        # Display failed sessions count if any exist
+        failed_count = len(state.failed_today) if hasattr(state, 'failed_today') else 0
+        if failed_count > 0:
+            text.append(f" │ Failed: ")
+            text.append(str(failed_count), style="red")
+
         return text
 
     def refresh_content(self) -> None:
