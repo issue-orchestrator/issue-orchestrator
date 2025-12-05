@@ -1,11 +1,33 @@
 import argparse
 import asyncio
+import logging
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
 from rich.table import Table
 
 console = Console()
+
+# Set up logging - writes to file by default, --debug enables console output
+LOG_FILE = Path.home() / ".issue-orchestrator.log"
+
+
+def setup_logging(debug: bool = False) -> None:
+    """Configure logging for the application."""
+    handlers: list[logging.Handler] = [
+        logging.FileHandler(LOG_FILE, mode='a'),
+    ]
+    if debug:
+        handlers.append(logging.StreamHandler())
+
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format='%(asctime)s %(name)s %(levelname)s: %(message)s',
+        handlers=handlers,
+    )
+    logging.info("=" * 50)
+    logging.info("issue-orchestrator started")
 
 
 def _run_test_setup(repo: str) -> bool:
@@ -70,7 +92,13 @@ def _run_test_setup(repo: str) -> bool:
 
 def cmd_start(args: argparse.Namespace) -> int:
     """Start the orchestrator."""
+    # Set up logging first
+    debug = getattr(args, 'debug', False)
+    setup_logging(debug=debug)
+
     console.print("[green]Starting issue-orchestrator...[/green]")
+    if debug:
+        console.print(f"[dim]Debug logging enabled. Log file: {LOG_FILE}[/dim]")
 
     try:
         from .config import Config
@@ -79,8 +107,13 @@ def cmd_start(args: argparse.Namespace) -> int:
 
         config = Config.find_and_load()
     except FileNotFoundError as e:
+        logging.error(f"Config not found: {e}")
         console.print(f"[red]Error: {e}[/red]")
         console.print("Create a .issue-orchestrator.yaml config file first.")
+        return 1
+    except Exception as e:
+        logging.exception(f"Unexpected error loading config: {e}")
+        console.print(f"[red]Unexpected error: {e}[/red]")
         return 1
 
     # Handle test mode
@@ -556,6 +589,11 @@ def main() -> int:
         "--dry-run",
         action="store_true",
         help="Show what issues would be processed without launching sessions"
+    )
+    start_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging to console (logs always written to ~/.issue-orchestrator.log)"
     )
     start_parser.set_defaults(func=cmd_start)
 

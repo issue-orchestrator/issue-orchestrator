@@ -1,9 +1,12 @@
 """Dashboard UI using Textual library with full keyboard support."""
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Callable, Awaitable
 
 from textual.app import App, ComposeResult
+
+logger = logging.getLogger(__name__)
 from textual.widgets import Static, DataTable, Footer, Header
 from textual.containers import Container, Horizontal, Vertical
 from textual.binding import Binding
@@ -20,7 +23,9 @@ class StatusBar(Static):
     def __init__(self, orchestrator: "Orchestrator", **kwargs) -> None:
         super().__init__(**kwargs)
         self.orchestrator = orchestrator
-        # Set initial content
+
+    def on_mount(self) -> None:
+        """Set initial content when widget is mounted."""
         self.update(self._render_content())
 
     def _render_content(self) -> Text:
@@ -250,23 +255,29 @@ class DashboardApp(App):
 
     async def action_attach(self, index: int) -> None:
         """Handle attach to session action."""
-        sessions = self.orchestrator.state.active_sessions
-        if index <= len(sessions):
-            session = sessions[index - 1]
-            if self._on_attach:
-                await self._on_attach(session.issue.number)
-            else:
-                # Default: use tmux to switch to the session window
-                from .tmux import get_manager
-                manager = get_manager()
-                if manager:
-                    # select_window expects issue number (int), not window name
-                    if manager.select_window(session.issue.number):
-                        self.exit()  # Exit dashboard to show the session
+        try:
+            sessions = self.orchestrator.state.active_sessions
+            if index <= len(sessions):
+                session = sessions[index - 1]
+                if self._on_attach:
+                    await self._on_attach(session.issue.number)
+                else:
+                    # Default: use tmux to switch to the session window
+                    from .tmux import get_manager
+                    manager = get_manager()
+                    if manager and manager.session:
+                        # select_window expects issue number (int), not window name
+                        if manager.select_window(session.issue.number):
+                            self.exit()  # Exit dashboard to show the session
+                        else:
+                            self.notify(f"Window for #{session.issue.number} not found", severity="warning")
                     else:
-                        self.notify(f"Window for #{session.issue.number} not found", severity="warning")
-        else:
-            self.notify(f"No session at index {index}", severity="warning")
+                        self.notify("Tmux session not available", severity="error")
+            else:
+                self.notify(f"No session at index {index}", severity="warning")
+        except Exception as e:
+            logger.exception(f"Attach failed: {e}")
+            self.notify(f"Attach failed: {e}", severity="error")
 
 
 class Dashboard:
