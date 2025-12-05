@@ -60,36 +60,34 @@ def _run_test_setup(repo: str) -> bool:
         capture_output=True
     )
 
-    # Create test issues - 2 per agent type from config
-    from .config import Config
-    try:
-        config = Config.find_and_load()
-        agent_labels = list(config.agents.keys())
-    except Exception:
-        agent_labels = ["agent:backend", "agent:frontend", "agent:mobile"]
-
-    priorities = ["priority:high", "priority:medium", "priority:low"]
-    test_issues = []
-    for i, agent_label in enumerate(agent_labels):
-        agent_name = agent_label.replace("agent:", "")
-        priority = priorities[i % len(priorities)]
-        test_issues.append((f"[TEST] {agent_name.title()} task #1", agent_label, priority))
-        test_issues.append((f"[TEST] {agent_name.title()} task #2", agent_label, priorities[(i + 1) % len(priorities)]))
+    # Create 5 test issues (matches scripts/setup_test_issues.py)
+    test_issues = [
+        ("[TEST] Simple backend task", "agent:backend", "priority:high"),
+        ("[TEST] Frontend feature", "agent:frontend", "priority:medium"),
+        ("[TEST] Mobile bug fix", "agent:mobile", "priority:low"),
+        ("[TEST] Task that will block", "agent:backend", None),
+        ("[TEST] Task with dependency", "agent:backend", None),
+    ]
 
     for title, agent_label, priority_label in test_issues:
         # Create labels if needed
-        for label in [agent_label, priority_label]:
+        labels_to_create = [agent_label]
+        if priority_label:
+            labels_to_create.append(priority_label)
+        for label in labels_to_create:
             subprocess.run(
                 ["gh", "label", "create", label, "--repo", repo, "--force"],
                 capture_output=True
             )
 
-        result = subprocess.run(
-            ["gh", "issue", "create", "--repo", repo, "--title", title,
-             "--body", f"Test issue for orchestrator.\n\nExpected: Agent completes.",
-             "--label", "test-data", "--label", agent_label, "--label", priority_label],
-            capture_output=True, text=True
-        )
+        # Build issue create command
+        cmd = ["gh", "issue", "create", "--repo", repo, "--title", title,
+               "--body", f"Test issue for orchestrator.\n\nExpected: Agent completes.",
+               "--label", "test-data", "--label", agent_label]
+        if priority_label:
+            cmd.extend(["--label", priority_label])
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
             issue_url = result.stdout.strip()
             console.print(f"  Created: {issue_url}")
