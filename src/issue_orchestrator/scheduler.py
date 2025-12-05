@@ -76,7 +76,7 @@ class Scheduler:
         self,
         available: list[Issue],
         current_count: int,
-        priority_overrides: list[int] = None,
+        priority_overrides: Optional[list[int]] = None,
     ) -> list[Issue]:
         """Pick up to (max_sessions - current_count) issues to launch.
 

@@ -283,7 +283,9 @@ def get_issue_comments(repo: str | None, issue_number: int) -> list[dict]:
     """Get all comments on an issue, ordered oldest first."""
     args = ["issue", "view", str(issue_number), "--json", "comments"]
     output = _run_gh_json(args, repo)
-    return output.get("comments", [])
+    if isinstance(output, dict):
+        return output.get("comments", [])
+    return []
 
 
 @dataclass

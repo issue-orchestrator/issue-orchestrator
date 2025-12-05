@@ -91,6 +91,8 @@ class Orchestrator:
 
     def launch_session(self, issue: Issue) -> Optional[Session]:
         """Launch a new session for an issue."""
+        if issue.agent_type is None:
+            raise ValueError(f"Issue #{issue.number} has no agent type label")
         agent_config = self.config.agents.get(issue.agent_type)
         if not agent_config:
             raise ValueError(f"No agent config for {issue.agent_type}")

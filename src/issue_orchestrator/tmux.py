@@ -49,6 +49,8 @@ class TmuxManager:
                 session_name=SESSION_NAME,
                 window_name=DASHBOARD_WINDOW,
             )
+        # At this point, self._session is guaranteed to be a Session (not None)
+        assert self._session is not None
         return self._session
 
     def has_session(self) -> bool:
@@ -87,7 +89,8 @@ class TmuxManager:
 
         # Send the command
         pane = window.active_pane
-        pane.send_keys(command)
+        if pane is not None:
+            pane.send_keys(command)
 
         return window
 
@@ -144,7 +147,7 @@ class TmuxManager:
             return []
         issue_numbers = []
         for window in self.session.windows:
-            if window.name.startswith("issue-"):
+            if window.name and window.name.startswith("issue-"):
                 try:
                     num = int(window.name.replace("issue-", ""))
                     issue_numbers.append(num)
@@ -166,6 +169,8 @@ class TmuxManager:
         if window is None:
             return None
         pane = window.active_pane
+        if pane is None:
+            return None
         output = pane.capture_pane(start=-lines)
         return "\n".join(output) if output else ""
 
@@ -242,7 +247,8 @@ def send_keys(session_name: str, keys: str, enter: bool = True) -> None:
     window = manager.get_window(issue_number)
     if window:
         pane = window.active_pane
-        if enter:
-            pane.send_keys(keys)
-        else:
-            pane.send_keys(keys, enter=False)
+        if pane is not None:
+            if enter:
+                pane.send_keys(keys)
+            else:
+                pane.send_keys(keys, enter=False)
