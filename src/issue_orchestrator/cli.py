@@ -312,31 +312,49 @@ def cmd_start(args: argparse.Namespace) -> int:
 
         return 0
 
-    # For iterm2 mode, start inside tmux -CC from the beginning
-    if config.ui_mode == "iterm2" and not os.environ.get("TMUX"):
+    # For iterm2 mode, run directly (no tmux wrapper) - agent sessions become iTerm2 tabs
+    if config.ui_mode == "iterm2":
         import subprocess
-        # Check if orchestrator tmux session exists
-        result = subprocess.run(
-            ["tmux", "has-session", "-t", "orchestrator"],
-            capture_output=True
-        )
-        if result.returncode == 0:
-            # Session exists, attach with control mode
-            console.print("[dim]Attaching to orchestrator with iTerm2 integration...[/dim]")
-            os.execvp("tmux", ["tmux", "-CC", "attach-session", "-t", "orchestrator"])
-        else:
-            # No session yet - create one with control mode and run ourselves inside
-            console.print("[dim]Starting orchestrator with iTerm2 integration...[/dim]")
-            # Build the command to run inside tmux
-            cmd_args = ["issue-orchestrator", "start"]
+        from .iterm2 import is_running_in_iterm2
+
+        # If not in iTerm2, launch iTerm2 with our command
+        if not is_running_in_iterm2():
+            import sys
+            # Get the full path to the Python interpreter (in venv)
+            python_path = sys.executable
+            # Get the repo root directory where config lives
+            working_dir = str(config.repo_root)
+            # Build the command using python -m to ensure venv is used
+            cmd_args = [python_path, "-m", "issue_orchestrator.cli", "start"]
             if args.test_mode:
                 cmd_args.append("--test-mode")
             if args.debug:
                 cmd_args.append("--debug")
             if args.no_dashboard:
                 cmd_args.append("--no-dashboard")
-            cmd_str = " ".join(cmd_args)
-            os.execvp("tmux", ["tmux", "-CC", "new-session", "-s", "orchestrator", cmd_str])
+            cmd_args.extend(["--ui-mode", "iterm2"])
+            cmd_str = f"cd {working_dir} && " + " ".join(cmd_args)
+
+            console.print("[dim]Launching iTerm2...[/dim]")
+            # Use AppleScript to open iTerm2 and run our command directly (no tmux)
+            applescript = f'''tell application "iTerm"
+activate
+if (count of windows) = 0 then
+create window with default profile
+end if
+tell current window
+set newTab to (create tab with default profile)
+tell current session of newTab
+write text "{cmd_str}"
+end tell
+end tell
+end tell'''
+            subprocess.run(["osascript", "-e", applescript])
+            console.print("[green]iTerm2 launched. Switch to iTerm2 to see the dashboard.[/green]")
+            return 0
+
+        # We're in iTerm2 - just continue and run dashboard directly
+        console.print("[dim]Running in iTerm2 native mode (no tmux)[/dim]")
 
     orchestrator = Orchestrator(config=config)
 

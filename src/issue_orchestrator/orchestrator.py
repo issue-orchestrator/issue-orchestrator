@@ -16,7 +16,7 @@ from .locks import try_claim, release_claim, cleanup_stale_claims
 from .models import Issue, Session, SessionStatus, OrchestratorState
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
-from .tmux import create_session, session_exists, kill_session
+from .tmux import create_session as tmux_create_session, session_exists as tmux_session_exists, kill_session as tmux_kill_session
 from .worktree import create_worktree, remove_worktree, has_uncommitted_changes
 
 
@@ -33,6 +33,43 @@ class Orchestrator:
     def __post_init__(self):
         self.scheduler = Scheduler(self.config)
         self.monitor = SessionMonitor(self.config)
+        self._iterm_manager = None  # Lazy init
+
+    @property
+    def _using_iterm2(self) -> bool:
+        """Check if we're using iTerm2 mode."""
+        return self.config.ui_mode == "iterm2"
+
+    def _get_iterm_manager(self):
+        """Get the iTerm2 session manager (lazy init)."""
+        if self._iterm_manager is None:
+            from .iterm2 import get_iterm_manager
+            self._iterm_manager = get_iterm_manager()
+        return self._iterm_manager
+
+    def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> None:
+        """Create a session using the appropriate backend."""
+        if self._using_iterm2:
+            issue_number = int(session_name.replace("issue-", ""))
+            self._get_iterm_manager().create_session(issue_number, command, str(working_dir), title)
+        else:
+            tmux_create_session(session_name, command, working_dir, title)
+
+    def _session_exists(self, session_name: str) -> bool:
+        """Check if a session exists using the appropriate backend."""
+        if self._using_iterm2:
+            issue_number = int(session_name.replace("issue-", ""))
+            return self._get_iterm_manager().session_exists(issue_number)
+        else:
+            return tmux_session_exists(session_name)
+
+    def _kill_session(self, session_name: str) -> None:
+        """Kill a session using the appropriate backend."""
+        if self._using_iterm2:
+            issue_number = int(session_name.replace("issue-", ""))
+            self._get_iterm_manager().kill_session(issue_number)
+        else:
+            tmux_kill_session(session_name)
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filter_label if configured."""
@@ -73,7 +110,7 @@ class Orchestrator:
                     issue=issue,
                     repo=self.config.repo,
                     issue_branches=issue_branches,
-                    check_session_fn=lambda n: session_exists(f"issue-{n}"),
+                    check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
                 )
 
                 if state.has_session:
@@ -122,9 +159,9 @@ class Orchestrator:
             worktree=worktree_path,
         )
 
-        # Create tmux session - command includes the initial prompt as a CLI argument
+        # Create session (tmux or iTerm2 tab) - command includes the initial prompt as a CLI argument
         session_name = f"issue-{issue.number}"
-        create_session(session_name, command, worktree_path, title=issue.title)
+        self._create_session(session_name, command, worktree_path, title=issue.title)
 
         # Create session object
         session = Session(

@@ -6,7 +6,7 @@ from typing import Optional
 from .config import Config
 from .github import add_label, get_open_prs_for_branch, remove_label
 from .models import Session, SessionStatus
-from .tmux import kill_session, session_exists
+from .tmux import kill_session as tmux_kill_session, session_exists as tmux_session_exists
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,35 @@ class SessionMonitor:
             config: Orchestrator configuration
         """
         self.config = config
+        self._iterm_manager = None  # Lazy init
+
+    @property
+    def _using_iterm2(self) -> bool:
+        """Check if we're using iTerm2 mode."""
+        return self.config.ui_mode == "iterm2"
+
+    def _get_iterm_manager(self):
+        """Get the iTerm2 session manager (lazy init)."""
+        if self._iterm_manager is None:
+            from .iterm2 import get_iterm_manager
+            self._iterm_manager = get_iterm_manager()
+        return self._iterm_manager
+
+    def _session_exists(self, session_name: str) -> bool:
+        """Check if a session exists using the appropriate backend."""
+        if self._using_iterm2:
+            issue_number = int(session_name.replace("issue-", ""))
+            return self._get_iterm_manager().session_exists(issue_number)
+        else:
+            return tmux_session_exists(session_name)
+
+    def _kill_session(self, session_name: str) -> None:
+        """Kill a session using the appropriate backend."""
+        if self._using_iterm2:
+            issue_number = int(session_name.replace("issue-", ""))
+            self._get_iterm_manager().kill_session(issue_number)
+        else:
+            tmux_kill_session(session_name)
 
     def check_session(self, session: Session) -> SessionStatus:
         """Check the status of a session.
@@ -49,17 +78,17 @@ class SessionMonitor:
             )
             return SessionStatus.TIMED_OUT
 
-        # Check if tmux session is still running
-        if session_exists(session.tmux_session_name):
+        # Check if session is still running
+        if self._session_exists(session.tmux_session_name):
             logger.debug(
                 f"Session for issue #{session.issue.number} still running "
-                f"(tmux: {session.tmux_session_name})"
+                f"(session: {session.tmux_session_name})"
             )
             return SessionStatus.RUNNING
 
-        # Tmux session has exited, determine the outcome
+        # Session has exited, determine the outcome
         logger.debug(
-            f"Tmux session for issue #{session.issue.number} has exited, "
+            f"Session for issue #{session.issue.number} has exited, "
             f"checking completion status"
         )
 
@@ -145,16 +174,16 @@ class SessionMonitor:
 
         try:
             if status == SessionStatus.TIMED_OUT:
-                # Kill the tmux session
+                # Kill the session
                 try:
-                    kill_session(session.tmux_session_name)
+                    self._kill_session(session.tmux_session_name)
                     logger.info(
-                        f"Killed tmux session {session.tmux_session_name} "
+                        f"Killed session {session.tmux_session_name} "
                         f"for issue #{issue_number}"
                     )
                 except Exception as e:
                     logger.warning(
-                        f"Failed to kill tmux session {session.tmux_session_name}: {e}"
+                        f"Failed to kill session {session.tmux_session_name}: {e}"
                     )
 
                 # Add timed-out label

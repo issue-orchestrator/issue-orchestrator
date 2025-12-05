@@ -263,23 +263,34 @@ class DashboardApp(App):
                     logger.debug("Using custom on_attach callback")
                     await self._on_attach(session.issue.number)
                 else:
-                    # Default: use tmux to switch to the session window
-                    logger.debug("Using default tmux attach")
-                    from .tmux import get_manager
-                    manager = get_manager()
-                    logger.debug("Got tmux manager: %s, session: %s", manager, getattr(manager, 'session', None))
-                    if manager and manager.session:
-                        # select_window expects issue number (int), not window name
-                        logger.debug("Calling select_window(%d)", session.issue.number)
-                        if manager.select_window(session.issue.number):
-                            logger.debug("select_window succeeded, exiting dashboard")
-                            self.exit()  # Exit dashboard to show the session
+                    # Check if we're in iterm2 mode
+                    if self.orchestrator.config.ui_mode == "iterm2":
+                        logger.debug("Using iTerm2 tab switching")
+                        from .iterm2 import select_tab_by_name
+                        if select_tab_by_name(f"#{session.issue.number}"):
+                            logger.debug("iTerm2 tab switch succeeded")
+                            self.notify(f"Switched to #{session.issue.number}")
                         else:
-                            logger.warning("Window for #%d not found", session.issue.number)
-                            self.notify(f"Window for #{session.issue.number} not found", severity="warning")
+                            logger.warning("iTerm2 tab for #%d not found", session.issue.number)
+                            self.notify(f"Tab for #{session.issue.number} not found", severity="warning")
                     else:
-                        logger.error("Tmux session not available")
-                        self.notify("Tmux session not available", severity="error")
+                        # Default: use tmux to switch to the session window
+                        logger.debug("Using default tmux attach")
+                        from .tmux import get_manager
+                        manager = get_manager()
+                        logger.debug("Got tmux manager: %s, session: %s", manager, getattr(manager, 'session', None))
+                        if manager and manager.session:
+                            # select_window expects issue number (int), not window name
+                            logger.debug("Calling select_window(%d)", session.issue.number)
+                            if manager.select_window(session.issue.number):
+                                logger.debug("select_window succeeded, exiting dashboard")
+                                self.exit()  # Exit dashboard to show the session
+                            else:
+                                logger.warning("Window for #%d not found", session.issue.number)
+                                self.notify(f"Window for #{session.issue.number} not found", severity="warning")
+                        else:
+                            logger.error("Tmux session not available")
+                            self.notify("Tmux session not available", severity="error")
             else:
                 logger.warning("No session at index %d (only %d sessions)", index, len(sessions))
                 self.notify(f"No session at index {index}", severity="warning")
@@ -308,19 +319,23 @@ class Dashboard:
         await self._app.run_async()
 
     async def _handle_attach(self, issue_number: int) -> None:
-        """Handle attach - select window and mark for attachment after exit."""
-        from .tmux import get_manager
-        manager = get_manager()
-        if manager and manager.session:
-            manager.select_window(issue_number)
-            self.attach_after_exit = True
-
-            if self.ui_mode == "iterm2":
-                # For iterm2 mode, notify user about tab switching
+        """Handle attach - select window/tab and mark for attachment after exit."""
+        if self.ui_mode == "iterm2":
+            # For iterm2 mode, switch to the iTerm2 tab
+            from .iterm2 import select_tab_by_name
+            if select_tab_by_name(f"#{issue_number}"):
                 if self._app:
-                    self._app.notify(f"Attaching to #{issue_number} - iTerm2 tabs will appear")
-                    self._app.exit()
+                    self._app.notify(f"Switched to #{issue_number}")
             else:
+                if self._app:
+                    self._app.notify(f"Tab for #{issue_number} not found", severity="warning")
+        else:
+            # For tmux mode, select the window
+            from .tmux import get_manager
+            manager = get_manager()
+            if manager and manager.session:
+                manager.select_window(issue_number)
+                self.attach_after_exit = True
                 if self._app:
                     self._app.exit()
 

@@ -12,7 +12,7 @@ def is_iterm2_available() -> bool:
     if os.uname().sysname != "Darwin":
         return False
     result = subprocess.run(
-        ["osascript", "-e", 'tell application "System Events" to (name of processes) contains "iTerm2"'],
+        ["osascript", "-e", 'tell application "System Events" to (name of processes) contains "iTerm"'],
         capture_output=True, text=True
     )
     return "true" in result.stdout.lower()
@@ -38,7 +38,7 @@ def run_applescript(script: str) -> tuple[bool, str]:
 def select_tab_by_name(tab_name: str) -> bool:
     """Switch to an iTerm2 tab by its name (partial match)."""
     script = f'''
-    tell application "iTerm2"
+    tell application "iTerm"
         activate
         tell current window
             repeat with t in tabs
@@ -60,7 +60,7 @@ def select_tab_by_name(tab_name: str) -> bool:
 def select_tab_by_index(index: int) -> bool:
     """Switch to an iTerm2 tab by index (1-based)."""
     script = f'''
-    tell application "iTerm2"
+    tell application "iTerm"
         activate
         tell current window
             if (count of tabs) >= {index} then
@@ -78,7 +78,7 @@ def select_tab_by_index(index: int) -> bool:
 def get_tab_count() -> int:
     """Get the number of tabs in the current iTerm2 window."""
     script = '''
-    tell application "iTerm2"
+    tell application "iTerm"
         tell current window
             return count of tabs
         end tell
@@ -96,7 +96,7 @@ def get_tab_count() -> int:
 def split_pane_vertical() -> bool:
     """Create a vertical split in the current iTerm2 session."""
     script = '''
-    tell application "iTerm2"
+    tell application "iTerm"
         tell current session of current window
             split vertically with default profile
         end tell
@@ -109,7 +109,7 @@ def split_pane_vertical() -> bool:
 def split_pane_horizontal() -> bool:
     """Create a horizontal split in the current iTerm2 session."""
     script = '''
-    tell application "iTerm2"
+    tell application "iTerm"
         tell current session of current window
             split horizontally with default profile
         end tell
@@ -125,7 +125,7 @@ def send_text_to_session(text: str, new_line: bool = True) -> bool:
     escaped = text.replace('"', '\\"')
     newline_flag = "true" if new_line else "false"
     script = f'''
-    tell application "iTerm2"
+    tell application "iTerm"
         tell current session of current window
             write text "{escaped}" newline {newline_flag}
         end tell
@@ -141,7 +141,7 @@ def create_new_tab_with_command(command: str, name: str | None = None) -> bool:
     name_script = f'set name to "{name}"' if name else ""
 
     script = f'''
-    tell application "iTerm2"
+    tell application "iTerm"
         tell current window
             set newTab to (create tab with default profile)
             tell current session of newTab
@@ -163,23 +163,138 @@ def attach_to_tmux_cc(session_name: str = "orchestrator") -> bool:
     return send_text_to_session(f"tmux -CC attach -t {session_name}")
 
 
-def start_orchestrator_iterm2_mode() -> None:
-    """Start the orchestrator with iTerm2's tmux control mode.
+class ITermSessionManager:
+    """Manages agent sessions as native iTerm2 tabs."""
 
-    This should be called instead of the normal start when ui_mode=iterm2.
-    """
-    # First check if tmux session exists
-    result = subprocess.run(
-        ["tmux", "has-session", "-t", "orchestrator"],
-        capture_output=True
-    )
+    def __init__(self):
+        self._sessions: dict[int, dict] = {}  # issue_number -> session info
 
-    if result.returncode == 0:
-        # Session exists, attach with control mode
-        logger.info("Attaching to existing orchestrator session with iTerm2 control mode")
-        os.execvp("tmux", ["tmux", "-CC", "attach", "-t", "orchestrator"])
-    else:
-        # No session - start normally, the orchestrator will create it
-        logger.info("No existing session, starting orchestrator normally")
-        # The dashboard will create the tmux session, then we can attach
-        pass
+    def create_session(
+        self,
+        issue_number: int,
+        command: str,
+        working_dir: str,
+        title: str | None = None,
+    ) -> bool:
+        """Create a new iTerm2 tab for an issue.
+
+        Args:
+            issue_number: GitHub issue number
+            command: Command to run
+            working_dir: Working directory
+            title: Optional title for the tab
+
+        Returns:
+            True if tab was created successfully
+        """
+        tab_name = f"#{issue_number}"
+        if title:
+            short_title = title[:20].replace('"', "'")
+            tab_name = f"#{issue_number} {short_title}"
+
+        # Escape the command for AppleScript
+        escaped_cmd = command.replace('\\', '\\\\').replace('"', '\\"')
+        escaped_dir = working_dir.replace('\\', '\\\\').replace('"', '\\"')
+
+        script = f'''tell application "iTerm"
+tell current window
+set newTab to (create tab with default profile)
+tell current session of newTab
+set name to "{tab_name}"
+write text "cd \\"{escaped_dir}\\" && {escaped_cmd}"
+end tell
+end tell
+end tell'''
+
+        success, output = run_applescript(script)
+        if success:
+            logger.info("Created iTerm2 tab for issue #%d", issue_number)
+            self._sessions[issue_number] = {
+                "tab_name": tab_name,
+                "created_at": subprocess.run(["date", "+%s"], capture_output=True, text=True).stdout.strip(),
+            }
+            return True
+        else:
+            logger.error("Failed to create iTerm2 tab for issue #%d: %s", issue_number, output)
+            return False
+
+    def session_exists(self, issue_number: int) -> bool:
+        """Check if a session exists for the issue."""
+        if issue_number not in self._sessions:
+            return False
+
+        # Verify the tab still exists by checking for it
+        tab_name = self._sessions[issue_number]["tab_name"]
+        script = f'''
+        tell application "iTerm"
+            tell current window
+                repeat with t in tabs
+                    tell current session of t
+                        if name contains "#{issue_number}" then
+                            return true
+                        end if
+                    end tell
+                end repeat
+            end tell
+        end tell
+        return false
+        '''
+        success, output = run_applescript(script)
+        exists = success and "true" in output.lower()
+
+        if not exists:
+            # Clean up our tracking
+            del self._sessions[issue_number]
+
+        return exists
+
+    def kill_session(self, issue_number: int) -> bool:
+        """Close the tab for an issue."""
+        script = f'''
+        tell application "iTerm"
+            tell current window
+                repeat with t in tabs
+                    tell current session of t
+                        if name contains "#{issue_number}" then
+                            close t
+                            return true
+                        end if
+                    end tell
+                end repeat
+            end tell
+        end tell
+        return false
+        '''
+        success, output = run_applescript(script)
+        if issue_number in self._sessions:
+            del self._sessions[issue_number]
+        return success and "true" in output.lower()
+
+    def select_session(self, issue_number: int) -> bool:
+        """Switch to the tab for an issue."""
+        return select_tab_by_name(f"#{issue_number}")
+
+    def list_sessions(self) -> list[int]:
+        """List all tracked issue numbers."""
+        # Verify each session still exists
+        valid = []
+        for issue_number in list(self._sessions.keys()):
+            if self.session_exists(issue_number):
+                valid.append(issue_number)
+        return valid
+
+    def get_session_count(self) -> int:
+        """Get count of active sessions."""
+        return len(self.list_sessions())
+
+
+# Global iTerm2 session manager
+_iterm_manager: ITermSessionManager | None = None
+
+
+def get_iterm_manager() -> ITermSessionManager:
+    """Get the global ITermSessionManager instance."""
+    global _iterm_manager
+    if _iterm_manager is None:
+        _iterm_manager = ITermSessionManager()
+    return _iterm_manager
