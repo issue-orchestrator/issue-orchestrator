@@ -62,6 +62,7 @@ class TmuxManager:
         issue_number: int,
         command: str,
         working_dir: Path,
+        title: str | None = None,
     ) -> libtmux.Window:
         """Create a new window for an issue and run the command.
 
@@ -69,12 +70,18 @@ class TmuxManager:
             issue_number: GitHub issue number
             command: Command to run (e.g., claude with prompt)
             working_dir: Working directory for the window
+            title: Optional issue title to include in window name
 
         Returns:
             The created window
         """
         session = self.ensure_session()
-        window_name = f"issue-{issue_number}"
+        # Include truncated title in window name for readability
+        if title:
+            short_title = title[:20].replace(" ", "-").replace(":", "")
+            window_name = f"#{issue_number}-{short_title}"
+        else:
+            window_name = f"issue-{issue_number}"
 
         # Check if window already exists
         existing = session.windows.filter(window_name=window_name)
@@ -94,20 +101,25 @@ class TmuxManager:
 
         return window
 
+    def _find_issue_window(self, issue_number: int) -> Optional[libtmux.Window]:
+        """Find window for an issue by number (handles both naming conventions)."""
+        if self.session is None:
+            return None
+        # Check new format: #{number}-{title}
+        for window in self.session.windows:
+            if window.name and window.name.startswith(f"#{issue_number}-"):
+                return window
+        # Check old format: issue-{number}
+        windows = self.session.windows.filter(window_name=f"issue-{issue_number}")
+        return windows[0] if windows else None
+
     def window_exists(self, issue_number: int) -> bool:
         """Check if a window exists for the given issue."""
-        if self.session is None:
-            return False
-        window_name = f"issue-{issue_number}"
-        return bool(self.session.windows.filter(window_name=window_name))
+        return self._find_issue_window(issue_number) is not None
 
     def get_window(self, issue_number: int) -> Optional[libtmux.Window]:
         """Get the window for an issue, or None if it doesn't exist."""
-        if self.session is None:
-            return None
-        window_name = f"issue-{issue_number}"
-        windows = self.session.windows.filter(window_name=window_name)
-        return windows[0] if windows else None
+        return self._find_issue_window(issue_number)
 
     def kill_window(self, issue_number: int) -> None:
         """Kill the window for an issue."""
@@ -147,7 +159,17 @@ class TmuxManager:
             return []
         issue_numbers = []
         for window in self.session.windows:
-            if window.name and window.name.startswith("issue-"):
+            if not window.name:
+                continue
+            # New format: #{number}-{title}
+            if window.name.startswith("#"):
+                try:
+                    num = int(window.name.split("-")[0][1:])  # Extract number after #
+                    issue_numbers.append(num)
+                except (ValueError, IndexError):
+                    pass
+            # Old format: issue-{number}
+            elif window.name.startswith("issue-"):
                 try:
                     num = int(window.name.replace("issue-", ""))
                     issue_numbers.append(num)
@@ -195,7 +217,7 @@ def get_manager() -> TmuxManager:
 
 # Backward-compatible functions (for existing code)
 
-def create_session(session_name: str, command: str, working_dir: Path) -> None:
+def create_session(session_name: str, command: str, working_dir: Path, title: str | None = None) -> None:
     """Create a window for an issue (backward-compatible wrapper).
 
     Note: session_name is expected to be "issue-{number}"
@@ -205,7 +227,7 @@ def create_session(session_name: str, command: str, working_dir: Path) -> None:
 
     issue_number = int(session_name.replace("issue-", ""))
     manager = get_manager()
-    manager.create_issue_window(issue_number, command, working_dir)
+    manager.create_issue_window(issue_number, command, working_dir, title=title)
 
 
 def session_exists(session_name: str) -> bool:

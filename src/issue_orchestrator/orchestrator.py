@@ -124,7 +124,7 @@ class Orchestrator:
 
         # Create tmux session - command includes the initial prompt as a CLI argument
         session_name = f"issue-{issue.number}"
-        create_session(session_name, command, worktree_path)
+        create_session(session_name, command, worktree_path, title=issue.title)
 
         # Create session object
         session = Session(
