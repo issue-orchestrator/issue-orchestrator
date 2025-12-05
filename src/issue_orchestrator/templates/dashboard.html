@@ -155,6 +155,35 @@
             right: 20px;
             font-size: 12px;
             color: #666;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .toggle-switch {
+            position: relative;
+            width: 40px;
+            height: 20px;
+            background: #444;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .toggle-switch.active {
+            background: #22c55e;
+        }
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: left 0.2s;
+        }
+        .toggle-switch.active::after {
+            left: 22px;
         }
     </style>
 </head>
@@ -206,11 +235,43 @@
         {% endif %}
     </div>
 
-    <div class="refresh-notice">Auto-refreshes every 5s</div>
+    <div class="refresh-notice">
+        <span id="refresh-status">Auto-refresh</span>
+        <div class="toggle-switch active" id="refresh-toggle" onclick="toggleAutoRefresh()"></div>
+    </div>
 
     <script>
-        // Auto-refresh every 5 seconds
-        setTimeout(() => location.reload(), 5000);
+        // Auto-refresh state
+        let autoRefreshEnabled = true;
+        let refreshTimerId = null;
+
+        // Initialize auto-refresh
+        function startAutoRefresh() {
+            if (autoRefreshEnabled) {
+                refreshTimerId = setTimeout(() => location.reload(), 5000);
+            }
+        }
+
+        // Start initial auto-refresh
+        startAutoRefresh();
+
+        function toggleAutoRefresh() {
+            autoRefreshEnabled = !autoRefreshEnabled;
+            const toggle = document.getElementById('refresh-toggle');
+            const status = document.getElementById('refresh-status');
+
+            if (autoRefreshEnabled) {
+                toggle.classList.add('active');
+                status.textContent = 'Auto-refresh';
+                startAutoRefresh();
+            } else {
+                toggle.classList.remove('active');
+                status.textContent = 'Auto-refresh disabled';
+                if (refreshTimerId) {
+                    clearTimeout(refreshTimerId);
+                }
+            }
+        }
 
         async function pause() {
             await fetch('/api/pause', { method: 'POST' });
