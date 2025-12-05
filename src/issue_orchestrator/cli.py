@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -311,6 +312,32 @@ def cmd_start(args: argparse.Namespace) -> int:
 
         return 0
 
+    # For iterm2 mode, start inside tmux -CC from the beginning
+    if config.ui_mode == "iterm2" and not os.environ.get("TMUX"):
+        import subprocess
+        # Check if orchestrator tmux session exists
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", "orchestrator"],
+            capture_output=True
+        )
+        if result.returncode == 0:
+            # Session exists, attach with control mode
+            console.print("[dim]Attaching to orchestrator with iTerm2 integration...[/dim]")
+            os.execvp("tmux", ["tmux", "-CC", "attach-session", "-t", "orchestrator"])
+        else:
+            # No session yet - create one with control mode and run ourselves inside
+            console.print("[dim]Starting orchestrator with iTerm2 integration...[/dim]")
+            # Build the command to run inside tmux
+            cmd_args = ["issue-orchestrator", "start"]
+            if args.test_mode:
+                cmd_args.append("--test-mode")
+            if args.debug:
+                cmd_args.append("--debug")
+            if args.no_dashboard:
+                cmd_args.append("--no-dashboard")
+            cmd_str = " ".join(cmd_args)
+            os.execvp("tmux", ["tmux", "-CC", "new-session", "-s", "orchestrator", cmd_str])
+
     orchestrator = Orchestrator(config=config)
 
     # Run startup to clean up stale issues
@@ -325,13 +352,8 @@ def cmd_start(args: argparse.Namespace) -> int:
             # Run with interactive dashboard
             should_attach = asyncio.run(run_with_dashboard(orchestrator, config.ui_mode))
             if should_attach:
-                # User pressed 1-9 to attach to a session
-                import os
-                if config.ui_mode == "iterm2":
-                    # Use iTerm2's control mode for native tab integration
-                    console.print("[dim]Attaching with iTerm2 control mode...[/dim]")
-                    os.execvp("tmux", ["tmux", "-CC", "attach-session", "-t", "orchestrator"])
-                else:
+                # User pressed 1-9 to attach to a session - already in tmux for iterm2 mode
+                if config.ui_mode != "iterm2":
                     os.execvp("tmux", ["tmux", "attach-session", "-t", "orchestrator"])
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutting down...[/yellow]")
