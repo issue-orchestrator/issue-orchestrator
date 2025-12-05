@@ -92,6 +92,9 @@ issue-orchestrator
 | Label | Meaning |
 |-------|---------|
 | `agent:*` | Which agent type should work on this |
+| `priority:high` | High priority issue (processed first) |
+| `priority:medium` | Medium priority issue |
+| `priority:low` | Low priority issue (processed last) |
 | `in-progress` | Currently being worked on |
 | `blocked` | Agent couldn't complete, needs unblocking |
 | `needs-human` | Agent has a question for a human |
