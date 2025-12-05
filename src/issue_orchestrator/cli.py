@@ -366,8 +366,14 @@ end tell'''
             # Run orchestrator without dashboard (useful for CI/debugging)
             console.print("[dim]Running without dashboard UI[/dim]")
             asyncio.run(orchestrator.run_loop())
+        elif config.ui_mode == "web":
+            # Run with web dashboard in browser
+            from .web import run_with_web_dashboard
+            console.print("[dim]Starting web dashboard...[/dim]")
+            console.print("[green]Dashboard will open in your browser[/green]")
+            asyncio.run(run_with_web_dashboard(orchestrator, port=8080))
         else:
-            # Run with interactive dashboard
+            # Run with interactive TUI dashboard (tmux or iterm2 mode)
             should_attach = asyncio.run(run_with_dashboard(orchestrator, config.ui_mode))
             if should_attach:
                 # User pressed 1-9 to attach to a session - already in tmux for iterm2 mode
@@ -665,9 +671,9 @@ def main() -> int:
     )
     start_parser.add_argument(
         "--ui-mode",
-        choices=["tmux", "iterm2"],
+        choices=["tmux", "iterm2", "web"],
         default=None,
-        help="UI mode: tmux (default, pure terminal) or iterm2 (Mac GUI integration)"
+        help="UI mode: tmux (default), iterm2 (Mac tabs), or web (browser dashboard)"
     )
     start_parser.set_defaults(func=cmd_start)
 

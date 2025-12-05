@@ -38,7 +38,7 @@ class Config:
     # Comment headings for structured worker comments
     comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
 
-    # UI mode: "tmux" (default, pure tmux), "iterm2" (Mac iTerm2 integration)
+    # UI mode: "tmux" (default), "iterm2" (Mac iTerm2 tabs), "web" (browser dashboard)
     ui_mode: str = "tmux"
 
     def prefixed_label(self, label: str) -> str:

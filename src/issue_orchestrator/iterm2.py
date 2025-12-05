@@ -196,11 +196,13 @@ class ITermSessionManager:
         escaped_cmd = command.replace('\\', '\\\\').replace('"', '\\"')
         escaped_dir = working_dir.replace('\\', '\\\\').replace('"', '\\"')
 
+        # Use escape sequence to set tab name (set name to doesn't work reliably)
+        escaped_tab_name = tab_name.replace('"', '\\"')
         script = f'''tell application "iTerm"
 tell current window
 set newTab to (create tab with default profile)
 tell current session of newTab
-set name to "{tab_name}"
+write text "printf \\"\\\\033]0;{escaped_tab_name}\\\\007\\""
 write text "cd \\"{escaped_dir}\\" && {escaped_cmd}"
 end tell
 end tell

@@ -25,8 +25,8 @@ class SessionMonitor:
 
     @property
     def _using_iterm2(self) -> bool:
-        """Check if we're using iTerm2 mode."""
-        return self.config.ui_mode == "iterm2"
+        """Check if we're using iTerm2 mode (or web mode, which also uses iTerm2 tabs)."""
+        return self.config.ui_mode in ("iterm2", "web")
 
     def _get_iterm_manager(self):
         """Get the iTerm2 session manager (lazy init)."""

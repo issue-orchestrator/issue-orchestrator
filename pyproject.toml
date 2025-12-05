@@ -23,6 +23,9 @@ dependencies = [
     "rich>=13.0",      # Nice terminal UI
     "libtmux>=0.37",   # Pythonic tmux control
     "textual>=0.40",   # TUI framework with keyboard input
+    "fastapi>=0.104",  # Web dashboard
+    "uvicorn>=0.24",   # ASGI server
+    "jinja2>=3.1",     # HTML templates
 ]
 
 [project.optional-dependencies]

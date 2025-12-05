@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Issue Orchestrator</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #333;
+        }
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #fff;
+        }
+        .status-bar {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        .status-badge {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .status-running { background: #22c55e; color: #000; }
+        .status-paused { background: #eab308; color: #000; }
+        .stat {
+            font-size: 14px;
+            color: #888;
+        }
+        .stat strong {
+            color: #fff;
+            font-size: 18px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        button:hover {
+            transform: translateY(-1px);
+        }
+        .btn-primary { background: #3b82f6; color: #fff; }
+        .btn-primary:hover { background: #2563eb; }
+        .btn-warning { background: #eab308; color: #000; }
+        .btn-warning:hover { background: #ca8a04; }
+        .btn-danger { background: #ef4444; color: #fff; }
+        .btn-danger:hover { background: #dc2626; }
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #fff;
+        }
+        .sessions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .session-card {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #333;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .session-card:hover {
+            border-color: #3b82f6;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+        }
+        .session-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+        .session-number {
+            font-size: 14px;
+            color: #3b82f6;
+            font-weight: 600;
+        }
+        .session-status {
+            font-size: 12px;
+            padding: 3px 8px;
+            border-radius: 10px;
+        }
+        .session-status.running { background: #22c55e22; color: #22c55e; }
+        .session-status.slow { background: #eab30822; color: #eab308; }
+        .session-title {
+            font-size: 15px;
+            font-weight: 500;
+            color: #fff;
+            margin-bottom: 10px;
+            line-height: 1.4;
+        }
+        .session-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 13px;
+            color: #888;
+        }
+        .session-meta span {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        .empty-state h3 {
+            font-size: 18px;
+            margin-bottom: 10px;
+            color: #888;
+        }
+        .refresh-notice {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            font-size: 12px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Issue Orchestrator</h1>
+            <div class="status-bar">
+                <span class="status-badge {{ 'status-paused' if paused else 'status-running' }}">
+                    {{ 'PAUSED' if paused else 'RUNNING' }}
+                </span>
+                <span class="stat">Active: <strong>{{ sessions|length }}/{{ max_sessions }}</strong></span>
+                <span class="stat">Completed: <strong>{{ completed_count }}</strong></span>
+            </div>
+        </header>
+
+        <div class="controls">
+            {% if paused %}
+            <button class="btn-primary" onclick="resume()">Resume</button>
+            {% else %}
+            <button class="btn-warning" onclick="pause()">Pause</button>
+            {% endif %}
+            <button class="btn-danger" onclick="shutdown()">Shutdown</button>
+        </div>
+
+        <h2 class="section-title">Active Sessions</h2>
+
+        {% if sessions %}
+        <div class="sessions-grid">
+            {% for session in sessions %}
+            <div class="session-card" onclick="focusSession({{ session.issue_number }})">
+                <div class="session-header">
+                    <span class="session-number">#{{ session.issue_number }}</span>
+                    <span class="session-status {{ session.status }}">{{ session.status }}</span>
+                </div>
+                <div class="session-title">{{ session.title }}</div>
+                <div class="session-meta">
+                    <span>{{ session.agent_type }}</span>
+                    <span>{{ session.runtime_minutes }}m</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <h3>No active sessions</h3>
+            <p>Waiting for issues to process...</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="refresh-notice">Auto-refreshes every 5s</div>
+
+    <script>
+        // Auto-refresh every 5 seconds
+        setTimeout(() => location.reload(), 5000);
+
+        async function pause() {
+            await fetch('/api/pause', { method: 'POST' });
+            location.reload();
+        }
+
+        async function resume() {
+            await fetch('/api/resume', { method: 'POST' });
+            location.reload();
+        }
+
+        async function shutdown() {
+            if (confirm('Are you sure you want to shutdown the orchestrator?')) {
+                await fetch('/api/shutdown', { method: 'POST' });
+                document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#888;">Orchestrator shutdown. Close this tab.</div>';
+            }
+        }
+
+        async function focusSession(issueNumber) {
+            console.log('Focusing session #' + issueNumber);
+            try {
+                const response = await fetch(`/api/focus/${issueNumber}`, { method: 'POST' });
+                const data = await response.json();
+                console.log('Focus response:', data);
+                if (!response.ok) {
+                    alert('Could not focus session: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                console.error('Focus error:', err);
+                alert('Error focusing session: ' + err.message);
+            }
+        }
+    </script>
+</body>
+</html>
