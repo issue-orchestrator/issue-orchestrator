@@ -4,7 +4,7 @@ import argparse
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 import pytest
 
-from issue_orchestrator.cli import cmd_start, cmd_status, cmd_init, main
+from issue_orchestrator.cli import cmd_start, cmd_status, cmd_init, cmd_pause, cmd_resume, main
 
 
 class TestCmdStart:
@@ -195,6 +195,58 @@ class TestCmdInit:
             result = cmd_init(args)
 
             assert result == 1
+
+
+class TestCmdPause:
+    """Tests for the pause command."""
+
+    def test_cmd_pause_writes_control_file(self):
+        """Verify pause command writes control file."""
+        from pathlib import Path
+
+        control_file = Path.home() / ".issue-orchestrator-control"
+
+        # Clean up any existing control file
+        if control_file.exists():
+            control_file.unlink()
+
+        try:
+            args = argparse.Namespace()
+            result = cmd_pause(args)
+
+            assert result == 0
+            assert control_file.exists()
+            assert control_file.read_text() == "pause"
+        finally:
+            # Clean up
+            if control_file.exists():
+                control_file.unlink()
+
+
+class TestCmdResume:
+    """Tests for the resume command."""
+
+    def test_cmd_resume_writes_control_file(self):
+        """Verify resume command writes control file."""
+        from pathlib import Path
+
+        control_file = Path.home() / ".issue-orchestrator-control"
+
+        # Clean up any existing control file
+        if control_file.exists():
+            control_file.unlink()
+
+        try:
+            args = argparse.Namespace()
+            result = cmd_resume(args)
+
+            assert result == 0
+            assert control_file.exists()
+            assert control_file.read_text() == "resume"
+        finally:
+            # Clean up
+            if control_file.exists():
+                control_file.unlink()
 
 
 class TestMain:

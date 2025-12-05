@@ -205,11 +205,28 @@ class Orchestrator:
             except Exception as e:
                 print(f"Warning: failed to remove worktree: {e}")
 
+    def _check_control_file(self) -> None:
+        """Check for control commands from CLI (pause/resume)."""
+        control_file = Path.home() / ".issue-orchestrator-control"
+        if control_file.exists():
+            try:
+                command = control_file.read_text().strip()
+                if command == "pause":
+                    self.pause()
+                elif command == "resume":
+                    self.resume()
+                # Remove the control file after processing
+                control_file.unlink()
+            except Exception as e:
+                print(f"Error reading control file: {e}")
+
     async def run_loop(self) -> None:
         """Main orchestration loop."""
         print("Starting orchestration loop...")
 
         while not self._shutdown_requested:
+            # Check for control commands from CLI
+            self._check_control_file()
             # Check status of all active sessions
             for session in list(self.state.active_sessions):
                 status = self.monitor.check_session(session)

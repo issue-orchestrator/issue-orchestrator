@@ -1057,6 +1057,102 @@ class TestControlMethods:
         assert orchestrator._shutdown_requested is True
 
 
+class TestControlFile:
+    """Test the control file mechanism for pause/resume."""
+
+    def test_check_control_file_pause(self, sample_config, tmp_path):
+        """Test that _check_control_file processes pause command."""
+        control_file = Path.home() / ".issue-orchestrator-control"
+
+        # Clean up any existing control file
+        if control_file.exists():
+            control_file.unlink()
+
+        try:
+            # Write pause command
+            control_file.write_text("pause")
+
+            orchestrator = Orchestrator(config=sample_config)
+            assert orchestrator.state.paused is False
+
+            orchestrator._check_control_file()
+
+            assert orchestrator.state.paused is True
+            # Control file should be removed after processing
+            assert not control_file.exists()
+        finally:
+            # Clean up
+            if control_file.exists():
+                control_file.unlink()
+
+    def test_check_control_file_resume(self, sample_config, tmp_path):
+        """Test that _check_control_file processes resume command."""
+        control_file = Path.home() / ".issue-orchestrator-control"
+
+        # Clean up any existing control file
+        if control_file.exists():
+            control_file.unlink()
+
+        try:
+            # Write resume command
+            control_file.write_text("resume")
+
+            orchestrator = Orchestrator(config=sample_config)
+            orchestrator.state.paused = True
+
+            orchestrator._check_control_file()
+
+            assert orchestrator.state.paused is False
+            # Control file should be removed after processing
+            assert not control_file.exists()
+        finally:
+            # Clean up
+            if control_file.exists():
+                control_file.unlink()
+
+    def test_check_control_file_no_file(self, sample_config):
+        """Test that _check_control_file does nothing when no file exists."""
+        control_file = Path.home() / ".issue-orchestrator-control"
+
+        # Ensure control file doesn't exist
+        if control_file.exists():
+            control_file.unlink()
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.paused = False
+
+        # Should not raise exception
+        orchestrator._check_control_file()
+
+        assert orchestrator.state.paused is False
+
+    def test_check_control_file_invalid_command(self, sample_config):
+        """Test that _check_control_file ignores invalid commands."""
+        control_file = Path.home() / ".issue-orchestrator-control"
+
+        # Clean up any existing control file
+        if control_file.exists():
+            control_file.unlink()
+
+        try:
+            # Write invalid command
+            control_file.write_text("invalid")
+
+            orchestrator = Orchestrator(config=sample_config)
+            orchestrator.state.paused = False
+
+            orchestrator._check_control_file()
+
+            # State should not change
+            assert orchestrator.state.paused is False
+            # Control file should still be removed
+            assert not control_file.exists()
+        finally:
+            # Clean up
+            if control_file.exists():
+                control_file.unlink()
+
+
 class TestRunOrchestrator:
     """Test the run_orchestrator entry point."""
 

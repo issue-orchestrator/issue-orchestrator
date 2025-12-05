@@ -495,14 +495,18 @@ def cmd_output(args: argparse.Namespace) -> int:
 def cmd_pause(args: argparse.Namespace) -> int:
     """Pause the orchestrator."""
     console.print("[yellow]Pausing issue-orchestrator...[/yellow]")
-    # TODO: implement pause logic
+    control_file = Path.home() / ".issue-orchestrator-control"
+    control_file.write_text("pause")
+    console.print("[green]Pause command sent. The orchestrator will stop starting new sessions.[/green]")
     return 0
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
     """Resume the orchestrator."""
     console.print("[green]Resuming issue-orchestrator...[/green]")
-    # TODO: implement resume logic
+    control_file = Path.home() / ".issue-orchestrator-control"
+    control_file.write_text("resume")
+    console.print("[green]Resume command sent. The orchestrator will start picking up new sessions.[/green]")
     return 0
 
 
