@@ -58,7 +58,27 @@
         .controls {
             display: flex;
             gap: 10px;
+            margin-bottom: 20px;
+        }
+        .search-container {
             margin-bottom: 30px;
+        }
+        #search-input {
+            width: 100%;
+            padding: 12px 16px;
+            font-size: 14px;
+            background: #16213e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #eee;
+            transition: border-color 0.2s;
+        }
+        #search-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        #search-input::placeholder {
+            color: #666;
         }
         button {
             padding: 10px 20px;
@@ -180,6 +200,10 @@
             <button class="btn-danger" onclick="shutdown()">Shutdown</button>
         </div>
 
+        <div class="search-container">
+            <input type="text" id="search-input" placeholder="Filter sessions by number or title..." />
+        </div>
+
         <h2 class="section-title">Active Sessions</h2>
 
         {% if sessions %}
@@ -242,6 +266,26 @@
                 console.error('Focus error:', err);
                 alert('Error focusing session: ' + err.message);
             }
+        }
+
+        // Search/filter functionality
+        const searchInput = document.getElementById('search-input');
+        if (searchInput) {
+            searchInput.addEventListener('input', function(e) {
+                const searchTerm = e.target.value.toLowerCase();
+                const sessionCards = document.querySelectorAll('.session-card');
+
+                sessionCards.forEach(card => {
+                    const issueNumber = card.querySelector('.session-number').textContent.toLowerCase();
+                    const title = card.querySelector('.session-title').textContent.toLowerCase();
+
+                    if (issueNumber.includes(searchTerm) || title.includes(searchTerm)) {
+                        card.style.display = 'block';
+                    } else {
+                        card.style.display = 'none';
+                    }
+                });
+            });
         }
     </script>
 </body>
