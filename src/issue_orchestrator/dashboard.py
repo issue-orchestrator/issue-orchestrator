@@ -20,8 +20,11 @@ class StatusBar(Static):
     def __init__(self, orchestrator: "Orchestrator", **kwargs) -> None:
         super().__init__(**kwargs)
         self.orchestrator = orchestrator
+        # Set initial content
+        self.update(self._render_content())
 
-    def render(self) -> Text:
+    def _render_content(self) -> Text:
+        """Render the status bar content."""
         state = self.orchestrator.state
         config = self.orchestrator.config
 
@@ -36,6 +39,10 @@ class StatusBar(Static):
         text.append(f" │ Completed: {len(state.completed_today)}")
 
         return text
+
+    def refresh_content(self) -> None:
+        """Update the status bar with current state."""
+        self.update(self._render_content())
 
 
 class SessionsTable(Static):
@@ -197,7 +204,7 @@ class DashboardApp(App):
         while True:
             try:
                 # Update all dynamic widgets
-                self.query_one("#status-bar", StatusBar).refresh()
+                self.query_one("#status-bar", StatusBar).refresh_content()
                 self.query_one("#sessions", SessionsTable).update_table()
                 self.query_one("#queue", QueueTable).update_table()
 
