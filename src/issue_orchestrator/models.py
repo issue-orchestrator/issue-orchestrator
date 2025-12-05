@@ -176,3 +176,18 @@ class CommentHeadings:
     def format_needs_human_comment(self, question: str) -> str:
         """Format a needs-human comment."""
         return f"{self.needs_human}\n{question}"
+
+
+def format_issue_identifier(issue_number: int, repo: str = "") -> str:
+    """Format an issue identifier for display.
+
+    Args:
+        issue_number: The issue number
+        repo: Optional repository name (owner/repo format)
+
+    Returns:
+        Formatted identifier like "#123" or "owner/repo#123"
+    """
+    if repo:
+        return f"{repo}#{issue_number}"
+    return f"#{issue_number}"

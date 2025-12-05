@@ -10,6 +10,7 @@ from issue_orchestrator.models import (
     IssueStatus,
     AgentConfig,
     OrchestratorState,
+    format_issue_identifier,
 )
 
 
@@ -322,3 +323,22 @@ class TestOrchestratorState:
 
         state.paused = False
         assert state.paused is False
+
+
+class TestFormatIssueIdentifier:
+    """Test the format_issue_identifier utility function."""
+
+    def test_format_issue_identifier_without_repo(self):
+        """Test formatting issue identifier without repo."""
+        result = format_issue_identifier(123)
+        assert result == "#123"
+
+    def test_format_issue_identifier_with_repo(self):
+        """Test formatting issue identifier with repo."""
+        result = format_issue_identifier(456, "owner/repo")
+        assert result == "owner/repo#456"
+
+    def test_format_issue_identifier_with_empty_repo(self):
+        """Test formatting with empty repo string."""
+        result = format_issue_identifier(789, "")
+        assert result == "#789"
