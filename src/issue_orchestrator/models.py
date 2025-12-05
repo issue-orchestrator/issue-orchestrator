@@ -176,3 +176,24 @@ class CommentHeadings:
     def format_needs_human_comment(self, question: str) -> str:
         """Format a needs-human comment."""
         return f"{self.needs_human}\n{question}"
+
+
+def format_issue_reference(issue_number: int, include_hash: bool = True) -> str:
+    """Format an issue number as a reference.
+
+    Args:
+        issue_number: The GitHub issue number
+        include_hash: Whether to include the '#' prefix (default: True)
+
+    Returns:
+        Formatted issue reference (e.g., "#180" or "180")
+
+    Examples:
+        >>> format_issue_reference(180)
+        '#180'
+        >>> format_issue_reference(180, include_hash=False)
+        '180'
+    """
+    if include_hash:
+        return f"#{issue_number}"
+    return str(issue_number)

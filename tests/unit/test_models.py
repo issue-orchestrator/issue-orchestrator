@@ -10,6 +10,7 @@ from issue_orchestrator.models import (
     IssueStatus,
     AgentConfig,
     OrchestratorState,
+    format_issue_reference,
 )
 
 
@@ -322,3 +323,25 @@ class TestOrchestratorState:
 
         state.paused = False
         assert state.paused is False
+
+
+class TestFormatIssueReference:
+    """Test the format_issue_reference utility function."""
+
+    def test_format_with_hash(self):
+        """Test formatting issue reference with hash."""
+        assert format_issue_reference(180) == "#180"
+        assert format_issue_reference(1) == "#1"
+        assert format_issue_reference(9999) == "#9999"
+
+    def test_format_without_hash(self):
+        """Test formatting issue reference without hash."""
+        assert format_issue_reference(180, include_hash=False) == "180"
+        assert format_issue_reference(1, include_hash=False) == "1"
+        assert format_issue_reference(9999, include_hash=False) == "9999"
+
+    def test_format_default_includes_hash(self):
+        """Test that default behavior includes hash."""
+        result = format_issue_reference(42)
+        assert result == "#42"
+        assert result.startswith("#")
