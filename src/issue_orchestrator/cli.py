@@ -14,20 +14,18 @@ LOG_FILE = Path.home() / ".issue-orchestrator.log"
 
 
 def setup_logging(debug: bool = False) -> None:
-    """Configure logging for the application."""
-    handlers: list[logging.Handler] = [
-        logging.FileHandler(LOG_FILE, mode='a'),
-    ]
-    if debug:
-        handlers.append(logging.StreamHandler())
+    """Configure logging for the application.
 
+    Logs always go to file only (not console) to avoid conflicts with TUI.
+    Use `tail -f ~/.issue-orchestrator.log` in another terminal to watch logs.
+    """
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.INFO,
         format='%(asctime)s %(name)s %(levelname)s: %(message)s',
-        handlers=handlers,
+        handlers=[logging.FileHandler(LOG_FILE, mode='a')],
     )
     logging.info("=" * 50)
-    logging.info("issue-orchestrator started")
+    logging.info("issue-orchestrator started (debug=%s)", debug)
 
 
 def _run_test_setup(repo: str) -> bool:
@@ -98,7 +96,7 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     console.print("[green]Starting issue-orchestrator...[/green]")
     if debug:
-        console.print(f"[dim]Debug logging enabled. Log file: {LOG_FILE}[/dim]")
+        console.print(f"[dim]Debug logging enabled (tail -f {LOG_FILE})[/dim]")
 
     try:
         from .config import Config
@@ -593,7 +591,7 @@ def main() -> int:
     start_parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug logging to console (logs always written to ~/.issue-orchestrator.log)"
+        help="Enable verbose DEBUG-level logging to ~/.issue-orchestrator.log"
     )
     start_parser.set_defaults(func=cmd_start)
 
