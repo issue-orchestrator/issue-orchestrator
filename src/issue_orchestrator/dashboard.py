@@ -171,6 +171,7 @@ class DashboardApp(App):
         Binding("p", "pause", "Pause"),
         Binding("r", "resume", "Resume"),
         Binding("n", "next", "Next Issue"),
+        Binding("v", "show_version", "Version"),
         Binding("1", "attach(1)", "1=Attach", show=True),
         Binding("2", "attach(2)", "2", show=False),
         Binding("3", "attach(3)", "3", show=False),
@@ -256,6 +257,15 @@ class DashboardApp(App):
         if self._on_next:
             await self._on_next()
         self.notify("Next issue prioritized")
+
+    async def action_show_version(self) -> None:
+        """Handle show version action."""
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            pkg_version = version("issue-orchestrator")
+        except PackageNotFoundError:
+            pkg_version = "0.1.0 (dev)"
+        self.notify(f"issue-orchestrator v{pkg_version}")
 
     async def action_attach(self, index: int) -> None:
         """Handle attach to session action."""
