@@ -23,10 +23,14 @@ class StatusBar(Static):
     def __init__(self, orchestrator: "Orchestrator", **kwargs) -> None:
         super().__init__(**kwargs)
         self.orchestrator = orchestrator
+        logger.debug("StatusBar.__init__ called")
 
     def on_mount(self) -> None:
         """Set initial content when widget is mounted."""
-        self.update(self._render_content())
+        logger.debug("StatusBar.on_mount called")
+        content = self._render_content()
+        logger.debug("StatusBar content: %s", content.plain)
+        self.update(content)
 
     def _render_content(self) -> Text:
         """Render the status bar content."""
@@ -255,28 +259,39 @@ class DashboardApp(App):
 
     async def action_attach(self, index: int) -> None:
         """Handle attach to session action."""
+        logger.debug("action_attach called with index=%d", index)
         try:
             sessions = self.orchestrator.state.active_sessions
+            logger.debug("Found %d active sessions", len(sessions))
             if index <= len(sessions):
                 session = sessions[index - 1]
+                logger.debug("Attaching to session for issue #%d", session.issue.number)
                 if self._on_attach:
+                    logger.debug("Using custom on_attach callback")
                     await self._on_attach(session.issue.number)
                 else:
                     # Default: use tmux to switch to the session window
+                    logger.debug("Using default tmux attach")
                     from .tmux import get_manager
                     manager = get_manager()
+                    logger.debug("Got tmux manager: %s, session: %s", manager, getattr(manager, 'session', None))
                     if manager and manager.session:
                         # select_window expects issue number (int), not window name
+                        logger.debug("Calling select_window(%d)", session.issue.number)
                         if manager.select_window(session.issue.number):
+                            logger.debug("select_window succeeded, exiting dashboard")
                             self.exit()  # Exit dashboard to show the session
                         else:
+                            logger.warning("Window for #%d not found", session.issue.number)
                             self.notify(f"Window for #{session.issue.number} not found", severity="warning")
                     else:
+                        logger.error("Tmux session not available")
                         self.notify("Tmux session not available", severity="error")
             else:
+                logger.warning("No session at index %d (only %d sessions)", index, len(sessions))
                 self.notify(f"No session at index {index}", severity="warning")
         except Exception as e:
-            logger.exception(f"Attach failed: {e}")
+            logger.exception("Attach failed: %s", e)
             self.notify(f"Attach failed: {e}", severity="error")
 
 
