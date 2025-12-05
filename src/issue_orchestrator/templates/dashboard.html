@@ -156,6 +156,11 @@
             font-size: 12px;
             color: #666;
         }
+        .last-updated {
+            font-size: 12px;
+            color: #888;
+            margin-left: 10px;
+        }
     </style>
 </head>
 <body>
@@ -168,6 +173,7 @@
                 </span>
                 <span class="stat">Active: <strong>{{ sessions|length }}/{{ max_sessions }}</strong></span>
                 <span class="stat">Completed: <strong>{{ completed_count }}</strong></span>
+                <span class="last-updated" id="last-updated"></span>
             </div>
         </header>
 
@@ -209,6 +215,16 @@
     <div class="refresh-notice">Auto-refreshes every 5s</div>
 
     <script>
+        // Update the last updated timestamp
+        function updateTimestamp() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString();
+            document.getElementById('last-updated').textContent = `Updated: ${timeStr}`;
+        }
+
+        // Set initial timestamp
+        updateTimestamp();
+
         // Auto-refresh every 5 seconds
         setTimeout(() => location.reload(), 5000);
 

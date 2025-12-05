@@ -35,6 +35,7 @@ dev = [
     "pytest-mock>=3.12",
     "pytest-cov>=4.0",
     "pyright>=1.1",
+    "httpx>=0.24",  # Required for FastAPI TestClient
 ]
 
 [project.scripts]
