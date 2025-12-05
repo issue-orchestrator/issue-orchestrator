@@ -156,6 +156,30 @@
             font-size: 12px;
             color: #666;
         }
+        .search-box {
+            margin-bottom: 20px;
+        }
+        .search-box input {
+            width: 100%;
+            max-width: 400px;
+            padding: 12px 16px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #16213e;
+            color: #eee;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        .search-box input::placeholder {
+            color: #666;
+        }
+        .search-box input:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        .session-card.hidden {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -183,9 +207,15 @@
         <h2 class="section-title">Active Sessions</h2>
 
         {% if sessions %}
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="Filter sessions by issue # or title..." oninput="filterSessions()">
+        </div>
         <div class="sessions-grid">
             {% for session in sessions %}
-            <div class="session-card" onclick="focusSession({{ session.issue_number }})">
+            <div class="session-card"
+                 onclick="focusSession({{ session.issue_number }})"
+                 data-issue-number="{{ session.issue_number }}"
+                 data-title="{{ session.title|lower }}">
                 <div class="session-header">
                     <span class="session-number">#{{ session.issue_number }}</span>
                     <span class="session-status {{ session.status }}">{{ session.status }}</span>
@@ -242,6 +272,26 @@
                 console.error('Focus error:', err);
                 alert('Error focusing session: ' + err.message);
             }
+        }
+
+        function filterSessions() {
+            const searchInput = document.getElementById('searchInput');
+            const searchTerm = searchInput.value.toLowerCase().trim();
+            const sessionCards = document.querySelectorAll('.session-card');
+
+            sessionCards.forEach(card => {
+                const issueNumber = card.getAttribute('data-issue-number');
+                const title = card.getAttribute('data-title');
+
+                // Show card if search term matches issue number or title
+                if (searchTerm === '' ||
+                    issueNumber.includes(searchTerm) ||
+                    title.includes(searchTerm)) {
+                    card.classList.remove('hidden');
+                } else {
+                    card.classList.add('hidden');
+                }
+            });
         }
     </script>
 </body>
