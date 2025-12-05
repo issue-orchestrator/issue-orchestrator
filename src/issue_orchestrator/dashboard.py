@@ -117,6 +117,44 @@ class QueueTable(Static):
             table.add_row(str(issue_num), "(prioritized)", "HIGH")
 
 
+class StatsPanel(Static):
+    """Panel showing orchestrator statistics."""
+
+    def __init__(self, orchestrator: "Orchestrator", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.orchestrator = orchestrator
+
+    def on_mount(self) -> None:
+        """Set initial content when widget is mounted."""
+        self.update_stats()
+
+    def update_stats(self) -> None:
+        """Update the stats panel with current statistics."""
+        state = self.orchestrator.state
+        config = self.orchestrator.config
+
+        # Calculate statistics
+        total_completed = len(state.completed_today)
+        active_count = len(state.active_sessions)
+        queue_size = len(state.priority_queue)
+        max_sessions = config.max_sessions
+
+        # Build stats text
+        stats_text = Text()
+        stats_text.append("Statistics\n", style="bold cyan")
+        stats_text.append("─" * 20 + "\n")
+        stats_text.append(f"✓ Completed: ", style="green")
+        stats_text.append(f"{total_completed}\n")
+        stats_text.append(f"▶ Active: ", style="yellow")
+        stats_text.append(f"{active_count}\n")
+        stats_text.append(f"⊕ Queue: ", style="blue")
+        stats_text.append(f"{queue_size}\n")
+        stats_text.append(f"⚙ Max Sessions: ", style="cyan")
+        stats_text.append(f"{max_sessions}")
+
+        self.update(stats_text)
+
+
 class DashboardApp(App):
     """Textual app for the orchestrator dashboard."""
 
@@ -124,13 +162,13 @@ class DashboardApp(App):
     CSS = """
     Screen {
         layout: grid;
-        grid-size: 2;
-        grid-columns: 2fr 1fr;
+        grid-size: 3;
+        grid-columns: 2fr 1fr 1fr;
         grid-rows: auto 1fr auto;
     }
 
     #status-bar {
-        column-span: 2;
+        column-span: 3;
         height: auto;
         min-height: 3;
         padding: 0 1;
@@ -150,12 +188,18 @@ class DashboardApp(App):
         border: solid $secondary;
     }
 
+    #stats {
+        height: 100%;
+        padding: 1;
+        border: solid $accent;
+    }
+
     DataTable {
         height: 100%;
     }
 
     Footer {
-        column-span: 2;
+        column-span: 3;
     }
     """
 
@@ -195,6 +239,7 @@ class DashboardApp(App):
         yield StatusBar(self.orchestrator, id="status-bar")
         yield SessionsTable(self.orchestrator, id="sessions")
         yield QueueTable(self.orchestrator, id="queue")
+        yield StatsPanel(self.orchestrator, id="stats")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -209,6 +254,7 @@ class DashboardApp(App):
                 self.query_one("#status-bar", StatusBar).refresh_content()
                 self.query_one("#sessions", SessionsTable).update_table()
                 self.query_one("#queue", QueueTable).update_table()
+                self.query_one("#stats", StatsPanel).update_stats()
 
                 # Check if orchestrator requested shutdown
                 if self.orchestrator._shutdown_requested:
