@@ -318,7 +318,11 @@ def cmd_start(args: argparse.Namespace) -> int:
             asyncio.run(orchestrator.run_loop())
         else:
             # Run with interactive dashboard
-            asyncio.run(run_with_dashboard(orchestrator))
+            should_attach = asyncio.run(run_with_dashboard(orchestrator))
+            if should_attach:
+                # User pressed 1-9 to attach to a session
+                import os
+                os.execvp("tmux", ["tmux", "attach-session", "-t", "orchestrator"])
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutting down...[/yellow]")
 

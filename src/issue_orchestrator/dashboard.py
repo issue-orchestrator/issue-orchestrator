@@ -301,6 +301,7 @@ class Dashboard:
     def __init__(self, orchestrator: "Orchestrator") -> None:
         self.orchestrator = orchestrator
         self._app: DashboardApp | None = None
+        self.attach_after_exit: bool = False  # Set when user presses 1-9
 
     async def run(self) -> None:
         """Run the dashboard."""
@@ -308,8 +309,19 @@ class Dashboard:
             self.orchestrator,
             on_pause=self._handle_pause,
             on_resume=self._handle_resume,
+            on_attach=self._handle_attach,
         )
         await self._app.run_async()
+
+    async def _handle_attach(self, issue_number: int) -> None:
+        """Handle attach - just mark that we should attach after exit."""
+        from .tmux import get_manager
+        manager = get_manager()
+        if manager and manager.session:
+            manager.select_window(issue_number)
+            self.attach_after_exit = True
+            if self._app:
+                self._app.exit()
 
     async def _handle_pause(self) -> None:
         """Handle pause from dashboard."""
@@ -325,11 +337,13 @@ class Dashboard:
             self._app.exit()
 
 
-async def run_with_dashboard(orchestrator: "Orchestrator") -> None:
+async def run_with_dashboard(orchestrator: "Orchestrator") -> bool:
     """Run orchestrator with dashboard UI.
 
     The orchestrator runs in a background task while the dashboard
     handles the UI and keyboard input in the foreground.
+
+    Returns True if the caller should attach to the tmux session.
     """
     dashboard = Dashboard(orchestrator)
 
@@ -354,3 +368,5 @@ async def run_with_dashboard(orchestrator: "Orchestrator") -> None:
             await orchestrator_task
         except asyncio.CancelledError:
             pass
+
+    return dashboard.attach_after_exit
