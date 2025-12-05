@@ -267,6 +267,33 @@ class TestDashboardWiring:
 
         assert mock_orch.state.paused is False
 
+    @pytest.mark.asyncio
+    async def test_help_panel_toggle(self):
+        """Verify help panel can be toggled on and off."""
+        from issue_orchestrator.dashboard import DashboardApp, HelpPanel
+
+        mock_orch = MagicMock()
+        mock_orch.state = OrchestratorState()
+        mock_orch.config = MagicMock()
+        mock_orch.config.max_sessions = 2
+        mock_orch._shutdown_requested = False
+
+        app = DashboardApp(mock_orch)
+
+        # Simulate mounting the app
+        async with app.run_test() as pilot:
+            # Initially, help panel should be hidden
+            help_panel = app.query_one("#help-panel", HelpPanel)
+            assert help_panel.display is False
+
+            # Toggle help panel on
+            await app.action_toggle_help()
+            assert help_panel.display is True
+
+            # Toggle help panel off
+            await app.action_toggle_help()
+            assert help_panel.display is False
+
 
 class TestMonitorWiring:
     """Test that monitor correctly detects session states."""

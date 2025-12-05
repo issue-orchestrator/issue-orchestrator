@@ -117,6 +117,27 @@ class QueueTable(Static):
             table.add_row(str(issue_num), "(prioritized)", "HIGH")
 
 
+class HelpPanel(Static):
+    """Help panel showing keyboard shortcuts."""
+
+    def compose(self) -> ComposeResult:
+        help_text = """[bold]Keyboard Shortcuts[/bold]
+
+[yellow]q[/yellow] - Quit dashboard
+[yellow]p[/yellow] - Pause orchestrator
+[yellow]r[/yellow] - Resume orchestrator
+[yellow]n[/yellow] - Prioritize next issue
+[yellow]h[/yellow] - Toggle this help panel
+[yellow]1-9[/yellow] - Attach to session
+
+Press [yellow]h[/yellow] to close this help panel."""
+        yield Static(help_text, id="help-content")
+
+    def on_mount(self) -> None:
+        """Initially hide the help panel."""
+        self.display = False
+
+
 class DashboardApp(App):
     """Textual app for the orchestrator dashboard."""
 
@@ -154,6 +175,23 @@ class DashboardApp(App):
         height: 100%;
     }
 
+    #help-panel {
+        column-span: 2;
+        row-span: 2;
+        layer: overlay;
+        background: $surface;
+        border: thick $primary;
+        padding: 2;
+        width: 60;
+        height: auto;
+        margin: 4 8;
+    }
+
+    #help-content {
+        width: 100%;
+        height: auto;
+    }
+
     Footer {
         column-span: 2;
     }
@@ -164,6 +202,7 @@ class DashboardApp(App):
         Binding("p", "pause", "Pause"),
         Binding("r", "resume", "Resume"),
         Binding("n", "next", "Next Issue"),
+        Binding("h", "toggle_help", "Help"),
         Binding("1", "attach(1)", "1=Attach", show=True),
         Binding("2", "attach(2)", "2", show=False),
         Binding("3", "attach(3)", "3", show=False),
@@ -195,6 +234,7 @@ class DashboardApp(App):
         yield StatusBar(self.orchestrator, id="status-bar")
         yield SessionsTable(self.orchestrator, id="sessions")
         yield QueueTable(self.orchestrator, id="queue")
+        yield HelpPanel(id="help-panel")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -249,6 +289,11 @@ class DashboardApp(App):
         if self._on_next:
             await self._on_next()
         self.notify("Next issue prioritized")
+
+    async def action_toggle_help(self) -> None:
+        """Toggle the help panel visibility."""
+        help_panel = self.query_one("#help-panel", HelpPanel)
+        help_panel.display = not help_panel.display
 
     async def action_attach(self, index: int) -> None:
         """Handle attach to session action."""
