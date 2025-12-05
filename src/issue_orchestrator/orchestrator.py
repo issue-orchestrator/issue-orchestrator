@@ -12,7 +12,7 @@ from .github import (
     list_issues, add_label, remove_label,
     get_open_prs_for_branch, get_latest_blocked_info, get_latest_needs_human_info
 )
-from .locks import try_claim, release_claim, cleanup_stale_claims
+from .locks import try_claim, release_claim, cleanup_stale_claims, is_paused
 from .models import Issue, Session, SessionStatus, OrchestratorState
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
@@ -216,6 +216,15 @@ class Orchestrator:
 
                 if status != SessionStatus.RUNNING:
                     self.handle_session_completion(session, status)
+
+            # Check file-based pause state and sync with in-memory state
+            file_paused = is_paused()
+            if file_paused != self.state.paused:
+                self.state.paused = file_paused
+                if file_paused:
+                    print("Orchestrator paused via pause command")
+                else:
+                    print("Orchestrator resumed via resume command")
 
             # If not paused and have capacity, launch more sessions
             if not self.state.paused:

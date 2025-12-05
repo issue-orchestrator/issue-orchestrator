@@ -5,12 +5,13 @@ import time
 from pathlib import Path
 from issue_orchestrator.locks import (
     try_claim, release_claim, is_claimed, list_claimed, LOCK_DIR,
-    get_claim_age, is_claim_stale, cleanup_stale_claims, TIMESTAMP_FILE
+    get_claim_age, is_claim_stale, cleanup_stale_claims, TIMESTAMP_FILE,
+    set_paused, set_resumed, is_paused, PAUSE_LOCK
 )
 
 
 def _cleanup_lock_dir():
-    """Helper to clean up lock directory including timestamp files."""
+    """Helper to clean up lock directory including timestamp files and pause lock."""
     if LOCK_DIR.exists():
         for item in LOCK_DIR.iterdir():
             if item.is_dir():
@@ -18,6 +19,9 @@ def _cleanup_lock_dir():
                 for subitem in item.iterdir():
                     subitem.unlink()
                 item.rmdir()
+            elif item.is_file():
+                # Remove files like PAUSE_LOCK
+                item.unlink()
         LOCK_DIR.rmdir()
 
 
@@ -511,3 +515,99 @@ class TestCleanupStaleClaims:
         # Only issue 3 should be cleaned (issue 2 has no timestamp, so not considered stale)
         assert cleaned == [3]
         assert set(list_claimed()) == {1, 2}
+
+
+class TestPauseResume:
+    """Test the pause/resume functionality."""
+
+    def test_set_paused(self):
+        """Test setting the orchestrator to paused state."""
+        assert not is_paused()
+
+        set_paused()
+
+        assert is_paused()
+        assert PAUSE_LOCK.exists()
+
+    def test_set_resumed(self):
+        """Test resuming the orchestrator from paused state."""
+        set_paused()
+        assert is_paused()
+
+        set_resumed()
+
+        assert not is_paused()
+        assert not PAUSE_LOCK.exists()
+
+    def test_is_paused_false_initially(self):
+        """Test that orchestrator is not paused initially."""
+        assert not is_paused()
+
+    def test_set_resumed_when_not_paused(self):
+        """Test that resuming when not paused is safe."""
+        assert not is_paused()
+
+        # Should not raise an error
+        set_resumed()
+
+        assert not is_paused()
+
+    def test_set_paused_multiple_times(self):
+        """Test that pausing multiple times is safe."""
+        set_paused()
+        assert is_paused()
+
+        # Should not raise an error
+        set_paused()
+
+        assert is_paused()
+
+    def test_pause_resume_cycle(self):
+        """Test complete pause-resume cycle."""
+        # Initially not paused
+        assert not is_paused()
+
+        # Pause
+        set_paused()
+        assert is_paused()
+
+        # Resume
+        set_resumed()
+        assert not is_paused()
+
+        # Pause again
+        set_paused()
+        assert is_paused()
+
+        # Resume again
+        set_resumed()
+        assert not is_paused()
+
+    def test_pause_lock_creates_lock_dir(self):
+        """Test that set_paused creates the lock directory if it doesn't exist."""
+        # Ensure lock dir doesn't exist
+        if LOCK_DIR.exists():
+            LOCK_DIR.rmdir()
+
+        assert not LOCK_DIR.exists()
+
+        set_paused()
+
+        assert LOCK_DIR.exists()
+        assert PAUSE_LOCK.exists()
+
+    def test_pause_state_persists(self):
+        """Test that pause state persists across checks."""
+        set_paused()
+
+        # Multiple checks should return True
+        assert is_paused()
+        assert is_paused()
+        assert is_paused()
+
+        set_resumed()
+
+        # Multiple checks should return False
+        assert not is_paused()
+        assert not is_paused()
+        assert not is_paused()

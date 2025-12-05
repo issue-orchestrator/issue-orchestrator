@@ -7,6 +7,7 @@ from typing import Optional
 
 LOCK_DIR = Path("/tmp/issue-orchestrator/locks")
 TIMESTAMP_FILE = "claimed_at"
+PAUSE_LOCK = LOCK_DIR / "paused"
 
 
 def try_claim(issue_number: int) -> bool:
@@ -95,3 +96,20 @@ def cleanup_stale_claims(max_age_minutes: int = 60) -> list[int]:
             cleaned.append(issue_number)
 
     return cleaned
+
+
+def set_paused() -> None:
+    """Set the orchestrator to paused state."""
+    LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    PAUSE_LOCK.write_text(str(time.time()))
+
+
+def set_resumed() -> None:
+    """Resume the orchestrator from paused state."""
+    if PAUSE_LOCK.exists():
+        PAUSE_LOCK.unlink()
+
+
+def is_paused() -> bool:
+    """Check if the orchestrator is paused."""
+    return PAUSE_LOCK.exists()
