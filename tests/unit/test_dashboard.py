@@ -54,27 +54,6 @@ class TestStatusBar:
         text = content.plain
         assert "Failed" not in text
 
-    def test_status_bar_handles_missing_failed_today_attribute(self):
-        """Test graceful handling when state lacks failed_today attribute."""
-        mock_orchestrator = Mock()
-        mock_orchestrator.config = Mock(spec=Config)
-        mock_orchestrator.config.max_sessions = 3
-
-        # State without failed_today attribute - Mock with spec won't have the attribute
-        state = Mock(spec=OrchestratorState)
-        state.paused = False
-        state.active_sessions = []
-        state.completed_today = []
-        # Don't set failed_today to simulate missing attribute
-
-        mock_orchestrator.state = state
-
-        status_bar = StatusBar(mock_orchestrator)
-        content = status_bar._render_content()
-
-        # Should not crash and should not show failed count
-        text = content.plain
-        assert "Failed" not in text
 
     def test_status_bar_shows_running_status(self):
         """Test that status bar shows RUNNING when not paused."""

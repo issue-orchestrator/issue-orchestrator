@@ -133,6 +133,7 @@ class OrchestratorState:
     """Persisted state of the orchestrator."""
     active_sessions: list[Session] = field(default_factory=list)
     completed_today: list[int] = field(default_factory=list)  # issue numbers
+    failed_today: list[int] = field(default_factory=list)  # issue numbers that failed
     paused: bool = False
     priority_queue: list[int] = field(default_factory=list)  # manual priority overrides
 
