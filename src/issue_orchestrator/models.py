@@ -57,6 +57,18 @@ class Issue:
         return 4
 
     @property
+    def priority_label(self) -> str:
+        """Get human-readable priority label."""
+        priority = self.priority
+        if priority == 1:
+            return "high"
+        elif priority == 2:
+            return "medium"
+        elif priority == 3:
+            return "low"
+        return "none"
+
+    @property
     def is_blocked(self) -> bool:
         return "blocked" in self.labels
 

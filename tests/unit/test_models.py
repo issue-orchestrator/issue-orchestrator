@@ -78,6 +78,20 @@ class TestIssue:
         assert sorted_issues[1].number == 3  # Medium second
         assert sorted_issues[2].number == 1  # Low last
 
+    def test_priority_label(self):
+        """Test human-readable priority labels."""
+        high = Issue(number=1, title="High", labels=["priority:high"])
+        assert high.priority_label == "high"
+
+        medium = Issue(number=2, title="Medium", labels=["priority:medium"])
+        assert medium.priority_label == "medium"
+
+        low = Issue(number=3, title="Low", labels=["priority:low"])
+        assert low.priority_label == "low"
+
+        no_priority = Issue(number=4, title="No priority", labels=[])
+        assert no_priority.priority_label == "none"
+
     def test_is_blocked(self):
         """Test is_blocked property."""
         blocked = Issue(number=1, title="Blocked", labels=["blocked"])
