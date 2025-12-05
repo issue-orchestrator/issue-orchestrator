@@ -102,6 +102,14 @@ class TestIssue:
         no_needs = Issue(number=2, title="No needs", labels=[])
         assert not no_needs.needs_human
 
+    def test_display_name(self):
+        """Test display_name property formats issue correctly."""
+        issue = Issue(number=42, title="Fix authentication bug", labels=[])
+        assert issue.display_name == "#42: Fix authentication bug"
+
+        issue_with_special = Issue(number=123, title="Add user: profile feature", labels=[])
+        assert issue_with_special.display_name == "#123: Add user: profile feature"
+
     def test_issue_with_all_properties(self):
         """Test issue with multiple labels."""
         issue = Issue(
