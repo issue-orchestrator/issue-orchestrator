@@ -6,7 +6,7 @@ from typing import Optional
 
 import yaml
 
-from .models import AgentConfig
+from .models import AgentConfig, CommentHeadings
 
 
 @dataclass
@@ -34,6 +34,9 @@ class Config:
     repo: Optional[str] = None  # owner/repo, or None to auto-detect
     filter_label: Optional[str] = None  # Only consider issues with this label (e.g., "test-data")
     filter_milestone: Optional[str] = None  # Only consider issues in this milestone
+
+    # Comment headings for structured worker comments
+    comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
 
     def prefixed_label(self, label: str) -> str:
         """Return label with prefix if configured.
@@ -101,6 +104,17 @@ class Config:
         config.repo = data.get("repo")
         config.filter_label = data.get("filter_label")
         config.filter_milestone = data.get("filter_milestone")
+
+        # Parse comment headings
+        headings_data = data.get("comment_headings", {})
+        if headings_data:
+            config.comment_headings = CommentHeadings(
+                implementation=headings_data.get("implementation", "## Implementation"),
+                problems=headings_data.get("problems", "## Problems Encountered"),
+                pr_link=headings_data.get("pr_link", "## Pull Request"),
+                blocked=headings_data.get("blocked", "## Blocked"),
+                needs_human=headings_data.get("needs_human", "## Needs Human Input"),
+            )
 
         return config
 

@@ -22,6 +22,7 @@ dependencies = [
     "pyyaml>=6.0",
     "rich>=13.0",      # Nice terminal UI
     "libtmux>=0.37",   # Pythonic tmux control
+    "textual>=0.40",   # TUI framework with keyboard input
 ]
 
 [project.optional-dependencies]

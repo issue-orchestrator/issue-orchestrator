@@ -1,167 +1,321 @@
-"""Dashboard UI using Rich library."""
+"""Dashboard UI using Textual library with full keyboard support."""
 
 import asyncio
-from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Awaitable
 
-from rich.console import Console
-from rich.live import Live
-from rich.table import Table
-from rich.panel import Panel
-from rich.layout import Layout
+from textual.app import App, ComposeResult
+from textual.widgets import Static, DataTable, Footer, Header
+from textual.containers import Container, Horizontal, Vertical
+from textual.binding import Binding
+from textual.reactive import reactive
 from rich.text import Text
 
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
 
 
-def create_status_bar(orchestrator: "Orchestrator") -> Text:
-    """Create the status bar text."""
-    state = orchestrator.state
-    config = orchestrator.config
+class StatusBar(Static):
+    """Status bar showing orchestrator state."""
 
-    status = "PAUSED" if state.paused else "RUNNING"
-    status_color = "yellow" if state.paused else "green"
+    def __init__(self, orchestrator: "Orchestrator") -> None:
+        super().__init__()
+        self.orchestrator = orchestrator
 
-    text = Text()
-    text.append("issue-orchestrator", style="bold")
-    text.append(" │ Status: ")
-    text.append(status, style=status_color)
-    text.append(f" │ Active: {len(state.active_sessions)}/{config.max_sessions}")
-    text.append(f" │ Completed: {len(state.completed_today)}")
+    def render(self) -> Text:
+        state = self.orchestrator.state
+        config = self.orchestrator.config
 
-    return text
+        status = "PAUSED" if state.paused else "RUNNING"
+        status_color = "yellow" if state.paused else "green"
 
+        text = Text()
+        text.append("issue-orchestrator", style="bold")
+        text.append(" │ Status: ")
+        text.append(status, style=status_color)
+        text.append(f" │ Active: {len(state.active_sessions)}/{config.max_sessions}")
+        text.append(f" │ Completed: {len(state.completed_today)}")
 
-def create_sessions_table(orchestrator: "Orchestrator") -> Table:
-    """Create table of active sessions."""
-    table = Table(title="Active Sessions", expand=True)
-
-    table.add_column("#", style="cyan", width=6)
-    table.add_column("Issue", style="white")
-    table.add_column("Status", style="green", width=10)
-    table.add_column("Runtime", style="yellow", width=8)
-    table.add_column("Attach", style="dim", width=8)
-
-    for i, session in enumerate(orchestrator.state.active_sessions, 1):
-        runtime = f"{session.runtime_minutes}m"
-        status = "running" if session.runtime_minutes < session.agent_config.timeout_minutes else "slow"
-        status_style = "green" if status == "running" else "yellow"
-
-        table.add_row(
-            str(session.issue.number),
-            session.issue.title[:40] + ("..." if len(session.issue.title) > 40 else ""),
-            Text(status, style=status_style),
-            runtime,
-            f"[{i}]",
-        )
-
-    if not orchestrator.state.active_sessions:
-        table.add_row("-", "No active sessions", "-", "-", "-")
-
-    return table
+        return text
 
 
-def create_queue_table(orchestrator: "Orchestrator") -> Table:
-    """Create table of queued issues."""
-    table = Table(title="Queue", expand=True)
+class SessionsTable(Static):
+    """Table showing active sessions."""
 
-    table.add_column("#", style="cyan", width=6)
-    table.add_column("Issue", style="white")
-    table.add_column("Priority", style="magenta", width=10)
-    table.add_column("Agent", style="blue", width=12)
+    def __init__(self, orchestrator: "Orchestrator") -> None:
+        super().__init__()
+        self.orchestrator = orchestrator
 
-    # Get queued issues (not in active sessions)
-    active_numbers = {s.issue.number for s in orchestrator.state.active_sessions}
+    def compose(self) -> ComposeResult:
+        table = DataTable()
+        table.add_column("#", width=6)
+        table.add_column("Issue", width=40)
+        table.add_column("Status", width=10)
+        table.add_column("Runtime", width=8)
+        table.add_column("Key", width=5)
+        yield table
 
-    # Show priority queue first, then would need to fetch available issues
-    for issue_num in orchestrator.state.priority_queue[:5]:
-        if issue_num not in active_numbers:
+    def update_table(self) -> None:
+        """Update the table with current session data."""
+        table = self.query_one(DataTable)
+        table.clear()
+
+        sessions = self.orchestrator.state.active_sessions
+        if not sessions:
+            table.add_row("-", "No active sessions", "-", "-", "-")
+            return
+
+        for i, session in enumerate(sessions, 1):
+            runtime = f"{session.runtime_minutes}m"
+            status = "running" if session.runtime_minutes < session.agent_config.timeout_minutes else "slow"
+            status_style = "green" if status == "running" else "yellow"
+            title = session.issue.title[:37] + "..." if len(session.issue.title) > 40 else session.issue.title
+
             table.add_row(
-                str(issue_num),
-                "(prioritized)",
-                "HIGH",
-                "-",
+                str(session.issue.number),
+                title,
+                Text(status, style=status_style),
+                runtime,
+                f"[{i}]",
             )
 
-    if not orchestrator.state.priority_queue:
-        table.add_row("-", "Run to see queue", "-", "-")
 
-    return table
+class QueueTable(Static):
+    """Table showing queued issues."""
+
+    def __init__(self, orchestrator: "Orchestrator") -> None:
+        super().__init__()
+        self.orchestrator = orchestrator
+
+    def compose(self) -> ComposeResult:
+        table = DataTable()
+        table.add_column("#", width=6)
+        table.add_column("Issue", width=30)
+        table.add_column("Priority", width=10)
+        yield table
+
+    def update_table(self) -> None:
+        """Update the queue table."""
+        table = self.query_one(DataTable)
+        table.clear()
+
+        active_numbers = {s.issue.number for s in self.orchestrator.state.active_sessions}
+        queue = [n for n in self.orchestrator.state.priority_queue if n not in active_numbers]
+
+        if not queue:
+            table.add_row("-", "Queue empty", "-")
+            return
+
+        for issue_num in queue[:10]:
+            table.add_row(str(issue_num), "(prioritized)", "HIGH")
 
 
-def create_help_bar() -> Text:
-    """Create the help bar text."""
-    text = Text()
-    text.append("[1-9]", style="bold cyan")
-    text.append(" attach  ")
-    text.append("[p]", style="bold cyan")
-    text.append("ause  ")
-    text.append("[r]", style="bold cyan")
-    text.append("esume  ")
-    text.append("[n]", style="bold cyan")
-    text.append("ext  ")
-    text.append("[q]", style="bold cyan")
-    text.append("uit")
+class DashboardApp(App):
+    """Textual app for the orchestrator dashboard."""
 
-    return text
+    TITLE = "issue-orchestrator"
+    CSS = """
+    Screen {
+        layout: grid;
+        grid-size: 2;
+        grid-columns: 2fr 1fr;
+        grid-rows: auto 1fr auto;
+    }
 
+    #status-bar {
+        column-span: 2;
+        height: 3;
+        padding: 1;
+        background: $surface;
+        border: solid $primary;
+    }
 
-def create_dashboard(orchestrator: "Orchestrator") -> Layout:
-    """Create the full dashboard layout."""
-    layout = Layout()
+    #sessions {
+        height: 100%;
+        padding: 1;
+        border: solid $primary;
+    }
 
-    layout.split(
-        Layout(name="header", size=3),
-        Layout(name="body"),
-        Layout(name="footer", size=3),
-    )
+    #queue {
+        height: 100%;
+        padding: 1;
+        border: solid $secondary;
+    }
 
-    layout["header"].update(Panel(create_status_bar(orchestrator)))
+    DataTable {
+        height: 100%;
+    }
 
-    layout["body"].split_row(
-        Layout(create_sessions_table(orchestrator), name="sessions"),
-        Layout(create_queue_table(orchestrator), name="queue"),
-    )
+    Footer {
+        column-span: 2;
+    }
+    """
 
-    layout["footer"].update(Panel(create_help_bar()))
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("p", "pause", "Pause"),
+        Binding("r", "resume", "Resume"),
+        Binding("n", "next", "Next Issue"),
+        Binding("1", "attach(1)", "Attach 1", show=False),
+        Binding("2", "attach(2)", "Attach 2", show=False),
+        Binding("3", "attach(3)", "Attach 3", show=False),
+        Binding("4", "attach(4)", "Attach 4", show=False),
+        Binding("5", "attach(5)", "Attach 5", show=False),
+        Binding("6", "attach(6)", "Attach 6", show=False),
+        Binding("7", "attach(7)", "Attach 7", show=False),
+        Binding("8", "attach(8)", "Attach 8", show=False),
+        Binding("9", "attach(9)", "Attach 9", show=False),
+    ]
 
-    return layout
+    def __init__(
+        self,
+        orchestrator: "Orchestrator",
+        on_pause: Callable[[], Awaitable[None]] | None = None,
+        on_resume: Callable[[], Awaitable[None]] | None = None,
+        on_next: Callable[[], Awaitable[None]] | None = None,
+        on_attach: Callable[[int], Awaitable[None]] | None = None,
+    ) -> None:
+        super().__init__()
+        self.orchestrator = orchestrator
+        self._on_pause = on_pause
+        self._on_resume = on_resume
+        self._on_next = on_next
+        self._on_attach = on_attach
+        self._refresh_task: asyncio.Task | None = None
+
+    def compose(self) -> ComposeResult:
+        yield StatusBar(self.orchestrator, id="status-bar")
+        yield SessionsTable(self.orchestrator, id="sessions")
+        yield QueueTable(self.orchestrator, id="queue")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        """Start the refresh loop when mounted."""
+        self._refresh_task = asyncio.create_task(self._refresh_loop())
+
+    async def _refresh_loop(self) -> None:
+        """Refresh the display every second."""
+        while True:
+            try:
+                # Update all dynamic widgets
+                self.query_one("#status-bar", StatusBar).refresh()
+                self.query_one("#sessions", SessionsTable).update_table()
+                self.query_one("#queue", QueueTable).update_table()
+
+                # Check if orchestrator requested shutdown
+                if self.orchestrator._shutdown_requested:
+                    self.exit()
+                    return
+
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                # Don't crash the refresh loop on errors
+                await asyncio.sleep(1)
+
+    async def action_quit(self) -> None:
+        """Handle quit action."""
+        if self._refresh_task:
+            self._refresh_task.cancel()
+        self.exit()
+
+    async def action_pause(self) -> None:
+        """Handle pause action."""
+        if self._on_pause:
+            await self._on_pause()
+        else:
+            self.orchestrator.state.paused = True
+        self.notify("Orchestrator paused")
+
+    async def action_resume(self) -> None:
+        """Handle resume action."""
+        if self._on_resume:
+            await self._on_resume()
+        else:
+            self.orchestrator.state.paused = False
+        self.notify("Orchestrator resumed")
+
+    async def action_next(self) -> None:
+        """Handle next issue action."""
+        if self._on_next:
+            await self._on_next()
+        self.notify("Next issue prioritized")
+
+    async def action_attach(self, index: int) -> None:
+        """Handle attach to session action."""
+        sessions = self.orchestrator.state.active_sessions
+        if index <= len(sessions):
+            session = sessions[index - 1]
+            if self._on_attach:
+                await self._on_attach(session.issue.number)
+            else:
+                # Default: use tmux to attach
+                from .tmux import get_manager
+                manager = get_manager()
+                if manager:
+                    window_name = f"issue-{session.issue.number}"
+                    manager.select_window(window_name)
+                    self.exit()  # Exit dashboard to show the session
+        else:
+            self.notify(f"No session at index {index}", severity="warning")
 
 
 class Dashboard:
-    """Interactive dashboard for the orchestrator."""
+    """Wrapper class for backward compatibility."""
 
-    def __init__(self, orchestrator: "Orchestrator"):
+    def __init__(self, orchestrator: "Orchestrator") -> None:
         self.orchestrator = orchestrator
-        self.console = Console()
-        self._running = False
+        self._app: DashboardApp | None = None
 
     async def run(self) -> None:
-        """Run the dashboard with live updates."""
-        self._running = True
+        """Run the dashboard."""
+        self._app = DashboardApp(
+            self.orchestrator,
+            on_pause=self._handle_pause,
+            on_resume=self._handle_resume,
+        )
+        await self._app.run_async()
 
-        with Live(
-            create_dashboard(self.orchestrator),
-            console=self.console,
-            refresh_per_second=1,
-            screen=True,
-        ) as live:
-            while self._running and not self.orchestrator._shutdown_requested:
-                live.update(create_dashboard(self.orchestrator))
-                await asyncio.sleep(1)
+    async def _handle_pause(self) -> None:
+        """Handle pause from dashboard."""
+        self.orchestrator.state.paused = True
+
+    async def _handle_resume(self) -> None:
+        """Handle resume from dashboard."""
+        self.orchestrator.state.paused = False
 
     def stop(self) -> None:
         """Stop the dashboard."""
-        self._running = False
+        if self._app:
+            self._app.exit()
 
 
 async def run_with_dashboard(orchestrator: "Orchestrator") -> None:
-    """Run orchestrator with dashboard UI."""
+    """Run orchestrator with dashboard UI.
+
+    The orchestrator runs in a background task while the dashboard
+    handles the UI and keyboard input in the foreground.
+    """
     dashboard = Dashboard(orchestrator)
 
-    # Run both concurrently
-    await asyncio.gather(
-        orchestrator.run_loop(),
-        dashboard.run(),
-    )
+    async def run_orchestrator():
+        """Run the orchestrator loop, stopping when dashboard exits."""
+        try:
+            await orchestrator.run_loop()
+        except asyncio.CancelledError:
+            pass
+
+    # Start orchestrator in background
+    orchestrator_task = asyncio.create_task(run_orchestrator())
+
+    try:
+        # Run dashboard in foreground (handles keyboard input)
+        await dashboard.run()
+    finally:
+        # When dashboard exits, stop orchestrator
+        orchestrator._shutdown_requested = True
+        orchestrator_task.cancel()
+        try:
+            await orchestrator_task
+        except asyncio.CancelledError:
+            pass

@@ -135,3 +135,44 @@ class OrchestratorState:
     completed_today: list[int] = field(default_factory=list)  # issue numbers
     paused: bool = False
     priority_queue: list[int] = field(default_factory=list)  # manual priority overrides
+
+
+@dataclass
+class CommentHeadings:
+    """Configurable headings for worker comments on issues.
+
+    These headings structure the comments workers post, allowing
+    correlation with CTO investigation comments and other tooling.
+    """
+    implementation: str = "## Implementation"
+    problems: str = "## Problems Encountered"
+    pr_link: str = "## Pull Request"
+    blocked: str = "## Blocked"
+    needs_human: str = "## Needs Human Input"
+
+    def format_completion_comment(
+        self,
+        implementation: str,
+        problems: str | None,
+        pr_url: str,
+    ) -> str:
+        """Format a completion comment with all sections."""
+        lines = [
+            self.implementation,
+            implementation,
+            "",
+            self.problems,
+            problems or "None",
+            "",
+            self.pr_link,
+            pr_url,
+        ]
+        return "\n".join(lines)
+
+    def format_blocked_comment(self, reason: str) -> str:
+        """Format a blocked comment."""
+        return f"{self.blocked}\n{reason}"
+
+    def format_needs_human_comment(self, question: str) -> str:
+        """Format a needs-human comment."""
+        return f"{self.needs_human}\n{question}"

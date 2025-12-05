@@ -18,16 +18,49 @@ Read the issue carefully and implement the fix or feature requested.
 
 ## When Done
 
-Post a comment on the issue with:
-- What you implemented
-- Any problems encountered
-- PR link
+Post a comment on the issue using this exact format:
+
+```
+## Implementation
+- Brief description of what you implemented
+- Key files changed
+
+## Problems Encountered
+- Any issues you ran into (or "None")
+
+## Pull Request
+- Link to the PR you created
+```
 
 Then exit.
 
 ## If Blocked
 
 If you cannot complete the task:
+
 1. Add the 'blocked' label to the issue
-2. Post a comment explaining why
+2. Post a comment using this exact format:
+
+```
+## Blocked
+- What you attempted
+- Why it didn't work
+- What's needed to proceed
+```
+
+3. Exit
+
+## If You Need Human Input
+
+If you need clarification or a decision from a human:
+
+1. Add the 'needs-human' label to the issue
+2. Post a comment using this exact format:
+
+```
+## Needs Human Input
+- Your specific question or what decision is needed
+- Context for why you need this
+```
+
 3. Exit
