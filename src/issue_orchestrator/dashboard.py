@@ -29,25 +29,17 @@ class StatusBar(Static):
         """Set initial content when widget is mounted."""
         logger.debug("StatusBar.on_mount called")
         content = self._render_content()
-        logger.debug("StatusBar content: %s", content.plain)
+        logger.debug("StatusBar content: %s", content)
         self.update(content)
 
-    def _render_content(self) -> Text:
+    def _render_content(self) -> str:
         """Render the status bar content."""
         state = self.orchestrator.state
         config = self.orchestrator.config
 
-        status = "PAUSED" if state.paused else "RUNNING"
-        status_color = "yellow" if state.paused else "green"
+        status = "[yellow]PAUSED[/yellow]" if state.paused else "[green]RUNNING[/green]"
 
-        text = Text()
-        text.append("issue-orchestrator", style="bold")
-        text.append(" │ Status: ")
-        text.append(status, style=status_color)
-        text.append(f" │ Active: {len(state.active_sessions)}/{config.max_sessions}")
-        text.append(f" │ Completed: {len(state.completed_today)}")
-
-        return text
+        return f"[bold]issue-orchestrator[/bold] │ Status: {status} │ Active: {len(state.active_sessions)}/{config.max_sessions} │ Completed: {len(state.completed_today)}"
 
     def refresh_content(self) -> None:
         """Update the status bar with current state."""
@@ -139,8 +131,9 @@ class DashboardApp(App):
 
     #status-bar {
         column-span: 2;
-        height: 3;
-        padding: 1;
+        height: auto;
+        min-height: 3;
+        padding: 0 1;
         background: $surface;
         border: solid $primary;
     }
