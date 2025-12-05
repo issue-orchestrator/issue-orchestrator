@@ -476,6 +476,53 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_test_reset(args: argparse.Namespace) -> int:
+    """Reset test environment: teardown + setup."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    console.print("[bold]Test Reset: Clean slate for integration testing[/bold]\n")
+
+    # Find the scripts directory
+    scripts_dir = Path(__file__).parent.parent.parent / "scripts"
+    if not scripts_dir.exists():
+        # Try installed package location
+        scripts_dir = Path(__file__).parent / "scripts"
+
+    if not scripts_dir.exists():
+        console.print("[red]Error: scripts directory not found[/red]")
+        return 1
+
+    # Step 1: Teardown
+    console.print("[cyan]Step 1: Tearing down existing test data...[/cyan]")
+    teardown_script = scripts_dir / "teardown_test_issues.py"
+    if teardown_script.exists():
+        result = subprocess.run([sys.executable, str(teardown_script)])
+        if result.returncode != 0:
+            console.print("[yellow]Warning: Teardown had issues, continuing...[/yellow]")
+    else:
+        console.print("[yellow]Teardown script not found, skipping...[/yellow]")
+
+    console.print()
+
+    # Step 2: Setup
+    console.print("[cyan]Step 2: Creating fresh test issues...[/cyan]")
+    setup_script = scripts_dir / "setup_test_issues.py"
+    if setup_script.exists():
+        result = subprocess.run([sys.executable, str(setup_script)])
+        if result.returncode != 0:
+            console.print("[red]Error: Setup failed![/red]")
+            return 1
+    else:
+        console.print("[yellow]Setup script not found, skipping...[/yellow]")
+
+    console.print()
+    console.print("[green]✓ Test reset complete![/green]")
+    console.print("\nNow run: [bold]issue-orchestrator start[/bold]")
+    return 0
+
+
 def main() -> int:
     """Main entry point for the CLI."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
@@ -593,6 +640,12 @@ def main() -> int:
         "init", help="Initialize required GitHub labels"
     )
     init_parser.set_defaults(func=cmd_init)
+
+    # test-reset command
+    reset_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "test-reset", help="Reset test environment (teardown + setup)"
+    )
+    reset_parser.set_defaults(func=cmd_test_reset)
 
     args: argparse.Namespace = parser.parse_args()
     return args.func(args)
