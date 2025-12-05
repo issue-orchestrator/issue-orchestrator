@@ -203,6 +203,7 @@
             {% else %}
             <button class="btn-warning" onclick="pause()">Pause</button>
             {% endif %}
+            <button class="btn-primary" onclick="refreshNow()">Refresh Now</button>
             <button class="btn-danger" onclick="shutdown()">Shutdown</button>
         </div>
 
@@ -266,6 +267,10 @@
                     }
                 }
             });
+        }
+
+        function refreshNow() {
+            location.reload();
         }
 
         async function pause() {

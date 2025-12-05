@@ -65,3 +65,34 @@ def test_dashboard_template_without_sessions():
     # Filter should not be shown when there are no sessions
     assert 'id="statusFilter"' not in html
     assert 'Filter by status:' not in html
+
+
+def test_dashboard_template_has_refresh_button():
+    """Test that the dashboard template includes a Refresh Now button."""
+    templates = get_templates()
+    template = templates.get_template("dashboard.html")
+
+    # Render with test data
+    html = template.render(
+        sessions=[
+            {
+                "issue_number": 123,
+                "title": "Test issue",
+                "runtime_minutes": 5,
+                "agent_type": "agent:frontend",
+                "status": "running",
+            }
+        ],
+        paused=False,
+        max_sessions=2,
+        completed_count=0,
+        queue_count=0,
+    )
+
+    # Verify Refresh Now button exists
+    assert 'onclick="refreshNow()"' in html
+    assert 'Refresh Now' in html
+
+    # Verify refreshNow function exists
+    assert 'function refreshNow()' in html
+    assert 'location.reload()' in html
