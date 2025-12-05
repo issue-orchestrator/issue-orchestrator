@@ -96,6 +96,73 @@ def close_test_prs() -> int:
     return count
 
 
+def cleanup_local_worktrees() -> int:
+    """Remove local worktrees created for test issues."""
+    result = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        print(f"Error listing worktrees: {result.stderr}")
+        return 0
+
+    count = 0
+    lines = result.stdout.strip().split("\n")
+    worktree_path = None
+
+    for line in lines:
+        if line.startswith("worktree "):
+            worktree_path = line[9:]  # Remove "worktree " prefix
+        elif line.startswith("branch ") and worktree_path:
+            branch = line[7:]  # Remove "branch " prefix
+            # Check if this looks like a test worktree (issue number 1-10 typically)
+            if any(f"-{i}-test" in worktree_path.lower() or
+                   f"/{i}-test" in worktree_path.lower()
+                   for i in range(1, 20)):
+                remove_result = subprocess.run(
+                    ["git", "worktree", "remove", "--force", worktree_path],
+                    capture_output=True, text=True
+                )
+                if remove_result.returncode == 0:
+                    print(f"Removed worktree: {worktree_path}")
+                    count += 1
+                else:
+                    print(f"Failed to remove worktree {worktree_path}: {remove_result.stderr}")
+            worktree_path = None
+
+    return count
+
+
+def cleanup_local_branches() -> int:
+    """Remove local branches created for test issues."""
+    result = subprocess.run(
+        ["git", "branch", "--list"],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        print(f"Error listing branches: {result.stderr}")
+        return 0
+
+    count = 0
+    for line in result.stdout.strip().split("\n"):
+        branch = line.strip().lstrip("* ")
+        # Check if this looks like a test branch (starts with small number)
+        if branch and any(branch.startswith(f"{i}-test") for i in range(1, 20)):
+            delete_result = subprocess.run(
+                ["git", "branch", "-D", branch],
+                capture_output=True, text=True
+            )
+            if delete_result.returncode == 0:
+                print(f"Deleted branch: {branch}")
+                count += 1
+            else:
+                print(f"Failed to delete branch {branch}: {delete_result.stderr}")
+
+    return count
+
+
 def main() -> int:
     print(f"Tearing down test data in {REPO}...")
     print(f"Test label: {TEST_LABEL}")
@@ -107,11 +174,20 @@ def main() -> int:
         print("Error: gh CLI not authenticated. Run 'gh auth login' first.")
         return 1
 
+    # GitHub cleanup
     issues_closed = close_test_issues()
     prs_closed = close_test_prs()
 
+    # Local cleanup
     print()
-    print(f"Teardown complete: {issues_closed} issues closed, {prs_closed} PRs closed")
+    print("Cleaning up local git artifacts...")
+    worktrees_removed = cleanup_local_worktrees()
+    branches_deleted = cleanup_local_branches()
+
+    print()
+    print(f"Teardown complete:")
+    print(f"  GitHub: {issues_closed} issues closed, {prs_closed} PRs closed")
+    print(f"  Local:  {worktrees_removed} worktrees removed, {branches_deleted} branches deleted")
     return 0
 
 
