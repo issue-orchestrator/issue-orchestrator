@@ -102,6 +102,19 @@ class TestIssue:
         no_needs = Issue(number=2, title="No needs", labels=[])
         assert not no_needs.needs_human
 
+    def test_has_label(self):
+        """Test has_label method."""
+        issue = Issue(
+            number=1,
+            title="Test issue",
+            labels=["priority:high", "agent:backend", "test-data"]
+        )
+        assert issue.has_label("priority:high")
+        assert issue.has_label("agent:backend")
+        assert issue.has_label("test-data")
+        assert not issue.has_label("priority:low")
+        assert not issue.has_label("agent:web")
+
     def test_issue_with_all_properties(self):
         """Test issue with multiple labels."""
         issue = Issue(

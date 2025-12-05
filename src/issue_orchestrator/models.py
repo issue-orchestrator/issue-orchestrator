@@ -68,6 +68,10 @@ class Issue:
     def needs_human(self) -> bool:
         return "needs-human" in self.labels
 
+    def has_label(self, label: str) -> bool:
+        """Check if issue has a specific label."""
+        return label in self.labels
+
 
 @dataclass
 class AgentConfig:
