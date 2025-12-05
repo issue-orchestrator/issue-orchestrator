@@ -256,13 +256,15 @@ class DashboardApp(App):
             if self._on_attach:
                 await self._on_attach(session.issue.number)
             else:
-                # Default: use tmux to attach
+                # Default: use tmux to switch to the session window
                 from .tmux import get_manager
                 manager = get_manager()
                 if manager:
-                    window_name = f"issue-{session.issue.number}"
-                    manager.select_window(window_name)
-                    self.exit()  # Exit dashboard to show the session
+                    # select_window expects issue number (int), not window name
+                    if manager.select_window(session.issue.number):
+                        self.exit()  # Exit dashboard to show the session
+                    else:
+                        self.notify(f"Window for #{session.issue.number} not found", severity="warning")
         else:
             self.notify(f"No session at index {index}", severity="warning")
 
