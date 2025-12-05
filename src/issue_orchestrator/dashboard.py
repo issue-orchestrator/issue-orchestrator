@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 class StatusBar(Static):
     """Status bar showing orchestrator state."""
 
-    def __init__(self, orchestrator: "Orchestrator") -> None:
-        super().__init__()
+    def __init__(self, orchestrator: "Orchestrator", **kwargs) -> None:
+        super().__init__(**kwargs)
         self.orchestrator = orchestrator
 
     def render(self) -> Text:
@@ -41,8 +41,8 @@ class StatusBar(Static):
 class SessionsTable(Static):
     """Table showing active sessions."""
 
-    def __init__(self, orchestrator: "Orchestrator") -> None:
-        super().__init__()
+    def __init__(self, orchestrator: "Orchestrator", **kwargs) -> None:
+        super().__init__(**kwargs)
         self.orchestrator = orchestrator
 
     def compose(self) -> ComposeResult:
@@ -82,8 +82,8 @@ class SessionsTable(Static):
 class QueueTable(Static):
     """Table showing queued issues."""
 
-    def __init__(self, orchestrator: "Orchestrator") -> None:
-        super().__init__()
+    def __init__(self, orchestrator: "Orchestrator", **kwargs) -> None:
+        super().__init__(**kwargs)
         self.orchestrator = orchestrator
 
     def compose(self) -> ComposeResult:

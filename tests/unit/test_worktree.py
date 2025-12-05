@@ -132,8 +132,12 @@ class TestCreateWorktree:
 
         worktree_base = tmp_path / "worktrees"
 
-        # Mock successful git command
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        # Mock: first call checks if branch exists (returncode=1 means no),
+        # second call creates the worktree
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stderr=""),  # branch doesn't exist
+            MagicMock(returncode=0, stderr=""),  # worktree create succeeds
+        ]
 
         # Execute
         worktree_path, branch_name = create_worktree(
@@ -144,17 +148,21 @@ class TestCreateWorktree:
         assert branch_name == "123-add-user-auth"
         assert worktree_path == worktree_base / "repo-123"
 
-        # Check git command was called correctly
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "git"
-        assert cmd[1] == "-C"
-        assert cmd[2] == str(repo_root)
-        assert cmd[3] == "worktree"
-        assert cmd[4] == "add"
-        assert cmd[5] == str(worktree_path)
-        assert cmd[6] == "-b"
-        assert cmd[7] == "123-add-user-auth"
+        # Check git commands were called correctly
+        assert mock_run.call_count == 2
+
+        # First call: check if branch exists
+        branch_check_cmd = mock_run.call_args_list[0][0][0]
+        assert branch_check_cmd[:3] == ["git", "-C", str(repo_root)]
+        assert "rev-parse" in branch_check_cmd
+
+        # Second call: create worktree with new branch (-b flag)
+        worktree_cmd = mock_run.call_args_list[1][0][0]
+        assert worktree_cmd[0] == "git"
+        assert worktree_cmd[3] == "worktree"
+        assert worktree_cmd[4] == "add"
+        assert "-b" in worktree_cmd  # New branch flag
+        assert "123-add-user-auth" in worktree_cmd
 
     @patch("issue_orchestrator.worktree.subprocess.run")
     def test_create_worktree_default_base(self, mock_run, tmp_path):

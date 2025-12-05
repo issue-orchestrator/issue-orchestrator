@@ -94,8 +94,20 @@ def create_worktree(
         raise WorktreeError(f"Worktree already exists at {worktree_path}")
 
     try:
-        # Create the worktree with the specified branch (run from repo root)
-        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), "-b", branch_name]
+        # Check if branch already exists
+        branch_check = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--verify", branch_name],
+            capture_output=True, text=True, check=False
+        )
+        branch_exists = branch_check.returncode == 0
+
+        if branch_exists:
+            # Use existing branch
+            cmd = ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), branch_name]
+        else:
+            # Create new branch
+            cmd = ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), "-b", branch_name]
+
         result = subprocess.run(
             cmd, capture_output=True, text=True, check=False
         )
