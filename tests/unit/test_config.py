@@ -313,3 +313,145 @@ agents:
             agent in config.agents
             for agent in ["agent:web", "agent:mobile", "agent:backend"]
         )
+
+    def test_config_with_filter_milestone(self, tmp_path):
+        """Test config with filter_milestone specified."""
+        config_content = """
+filter_milestone: "v1.0"
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.filter_milestone == "v1.0"
+
+    def test_config_filter_milestone_default(self):
+        """Test default filter_milestone is None."""
+        config = Config()
+        assert config.filter_milestone is None
+
+    def test_label_prefix_not_configured(self):
+        """Test that labels are not prefixed when label_prefix is not set."""
+        config = Config()
+
+        assert config.label_prefix is None
+        assert config.get_label_in_progress() == "in-progress"
+        assert config.get_label_blocked() == "blocked"
+        assert config.get_label_needs_human() == "needs-human"
+
+    def test_label_prefix_configured(self, tmp_path):
+        """Test that labels are prefixed when label_prefix is set."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+
+labels:
+  prefix: bot
+  in_progress: working
+  blocked: blocked-on
+  needs_human: needs-review
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.label_prefix == "bot"
+        assert config.label_in_progress == "working"
+        assert config.label_blocked == "blocked-on"
+        assert config.label_needs_human == "needs-review"
+
+        # Test prefixed versions
+        assert config.get_label_in_progress() == "bot:working"
+        assert config.get_label_blocked() == "bot:blocked-on"
+        assert config.get_label_needs_human() == "bot:needs-review"
+
+    def test_prefixed_label_helper(self):
+        """Test the prefixed_label helper method."""
+        config = Config()
+
+        # Without prefix
+        assert config.prefixed_label("test-label") == "test-label"
+
+        # With prefix
+        config.label_prefix = "bot"
+        assert config.prefixed_label("test-label") == "bot:test-label"
+        assert config.prefixed_label("another") == "bot:another"
+
+    def test_label_prefix_with_defaults(self, tmp_path):
+        """Test label prefix with default label names."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+
+labels:
+  prefix: orchestrator
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.label_prefix == "orchestrator"
+        assert config.label_in_progress == "in-progress"
+        assert config.label_blocked == "blocked"
+        assert config.label_needs_human == "needs-human"
+
+        # Test prefixed versions with defaults
+        assert config.get_label_in_progress() == "orchestrator:in-progress"
+        assert config.get_label_blocked() == "orchestrator:blocked"
+        assert config.get_label_needs_human() == "orchestrator:needs-human"
+
+    def test_agent_repo_root_override(self, tmp_path):
+        """Test per-agent repo_root configuration."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt")
+        backend_repo = tmp_path / "backend-repo"
+        backend_repo.mkdir()
+
+        config_content = f"""
+agents:
+  agent:backend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+    repo_root: {backend_repo}
+  agent:frontend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # Backend agent should have custom repo_root
+        backend_agent = config.agents["agent:backend"]
+        assert backend_agent.repo_root == backend_repo
+
+        # Frontend agent should have None (uses global repo_root)
+        frontend_agent = config.agents["agent:frontend"]
+        assert frontend_agent.repo_root is None
+
+    def test_agent_repo_root_not_specified(self, tmp_path):
+        """Test that repo_root defaults to None when not specified."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        agent = config.agents["agent:test"]
+        assert agent.repo_root is None

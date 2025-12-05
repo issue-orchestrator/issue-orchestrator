@@ -101,6 +101,7 @@ def list_issues(
     repo: str | None = None,
     labels: list[str] | None = None,
     state: str = "open",
+    milestone: str | None = None,
 ) -> list[Issue]:
     """List issues with given labels.
 
@@ -108,6 +109,7 @@ def list_issues(
         repo: Optional repository in owner/repo format. If None, uses current repo.
         labels: List of labels to filter by. All labels must be present.
         state: Issue state to filter by (default: "open")
+        milestone: Optional milestone name to filter by
 
     Returns:
         List of Issue objects
@@ -123,20 +125,23 @@ def list_issues(
     for label in labels:
         args.extend(["--label", label])
 
+    if milestone:
+        args.extend(["--milestone", milestone])
+
     try:
         output = _run_gh_json(args, repo)
         issues = []
 
         if isinstance(output, list):
             for item in output:
-                milestone = item.get("milestone")
+                milestone_obj = item.get("milestone")
                 issue = Issue(
                     number=item["number"],
                     title=item["title"],
                     labels=[label["name"] for label in item.get("labels", [])],
                     state=item.get("state", "open"),
                     body=item.get("body"),
-                    milestone=milestone.get("title") if milestone else None,
+                    milestone=milestone_obj.get("title") if milestone_obj else None,
                 )
                 issues.append(issue)
 

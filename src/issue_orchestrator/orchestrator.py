@@ -2,7 +2,6 @@
 
 import asyncio
 import signal
-import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -13,10 +12,11 @@ from .github import (
     list_issues, add_label, remove_label,
     get_open_prs_for_branch, get_latest_blocked_info, get_latest_needs_human_info
 )
+from .locks import try_claim, release_claim, cleanup_stale_claims
 from .models import Issue, Session, SessionStatus, OrchestratorState
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
-from .tmux import create_session, session_exists, kill_session, send_keys
+from .tmux import create_session, session_exists, kill_session
 from .worktree import create_worktree, remove_worktree, has_uncommitted_changes
 
 
@@ -41,42 +41,77 @@ class Orchestrator:
             result.append(self.config.filter_label)
         return result
 
+    def _get_milestone_filter(self) -> str | None:
+        """Get the milestone filter if configured."""
+        return self.config.filter_milestone
+
     async def startup(self) -> None:
         """Handle startup - check for stale in-progress issues."""
+        from .analysis import analyze_issue, get_issue_branches
+
         print("Checking for stale in-progress issues...")
+
+        # Clean up stale claims (default: 60 minutes)
+        cleaned = cleanup_stale_claims()
+        if cleaned:
+            print(f"  Cleaned up {len(cleaned)} stale lock claims: {cleaned}")
+
+        # Get existing branches for issue detection
+        issue_branches = get_issue_branches(self.config.repo_root)
 
         # Get all in-progress issues for our agent types
         for agent_label in self.config.agents.keys():
             issues = list_issues(
                 self.config.repo,
-                labels=self._build_labels(agent_label, self.config.label_in_progress),
+                labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
+                milestone=self._get_milestone_filter(),
             )
 
             for issue in issues:
-                # Check if we have an active session for this issue
-                session_name = f"issue-{issue.number}"
-                if session_exists(session_name):
-                    print(f"  Issue #{issue.number} has active session - resuming monitoring")
-                    # TODO: recreate Session object and add to state
-                else:
-                    print(f"  Issue #{issue.number} marked in-progress but no session - clearing label")
-                    remove_label(self.config.repo, issue.number, self.config.label_in_progress)
+                # Use shared analysis logic
+                state = analyze_issue(
+                    issue=issue,
+                    repo=self.config.repo,
+                    issue_branches=issue_branches,
+                    check_session_fn=lambda n: session_exists(f"issue-{n}"),
+                )
 
-    def launch_session(self, issue: Issue) -> Session:
+                if state.has_session:
+                    print(f"  #{issue.number}: Active session found - resuming monitoring")
+                    # TODO: recreate Session object and add to state
+                elif state.has_open_pr:
+                    print(f"  #{issue.number}: Has open PR ({state.pr_url or 'unknown'}) - skipping")
+                    # Don't clear label - PR is pending review
+                elif state.has_partial_work:
+                    print(f"  #{issue.number}: Has branch '{state.branch}' but no session/PR - clearing label (will resume from branch)")
+                    remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
+                elif state.is_orphaned_label:
+                    print(f"  #{issue.number}: No session or branch - clearing stale label")
+                    remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
+
+    def launch_session(self, issue: Issue) -> Optional[Session]:
         """Launch a new session for an issue."""
         agent_config = self.config.agents.get(issue.agent_type)
         if not agent_config:
             raise ValueError(f"No agent config for {issue.agent_type}")
 
+        # Try to claim the issue first - if another instance is working on it, skip
+        if not try_claim(issue.number):
+            print(f"Issue #{issue.number} already claimed by another instance - skipping")
+            return None
+
+        # Use agent's repo_root if set, otherwise fall back to config.repo_root
+        repo_root = agent_config.repo_root or self.config.repo_root
+
         # Create worktree (sibling to repo, named {repo}-{issue_number})
         worktree_path, branch_name = create_worktree(
-            repo_root=self.config.repo_root,
+            repo_root=repo_root,
             issue_number=issue.number,
             issue_title=issue.title,
         )
 
         # Mark issue as in-progress
-        add_label(self.config.repo, issue.number, self.config.label_in_progress)
+        add_label(self.config.repo, issue.number, self.config.get_label_in_progress())
 
         # Build command
         command = agent_config.get_command(
@@ -85,18 +120,9 @@ class Orchestrator:
             worktree=worktree_path,
         )
 
-        # Create tmux session
+        # Create tmux session - command includes the initial prompt as a CLI argument
         session_name = f"issue-{issue.number}"
         create_session(session_name, command, worktree_path)
-
-        # Wait for Claude to initialize, then send the initial prompt
-        time.sleep(3)
-        initial_prompt = agent_config.get_initial_prompt(
-            issue_number=issue.number,
-            issue_title=issue.title,
-            worktree=worktree_path,
-        )
-        send_keys(session_name, initial_prompt)
 
         # Create session object
         session = Session(
@@ -115,6 +141,9 @@ class Orchestrator:
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None:
         """Handle a completed session."""
         print(f"Session #{session.issue.number} completed with status: {status.value}")
+
+        # Release the claim on this issue
+        release_claim(session.issue.number)
 
         # Remove from active sessions
         self.state.active_sessions = [
@@ -157,7 +186,11 @@ class Orchestrator:
                     # Get available issues
                     all_issues = []
                     for agent_label in self.config.agents.keys():
-                        issues = list_issues(self.config.repo, labels=self._build_labels(agent_label))
+                        issues = list_issues(
+                            self.config.repo,
+                            labels=self._build_labels(agent_label),
+                            milestone=self._get_milestone_filter(),
+                        )
                         all_issues.extend(issues)
 
                     available = self.scheduler.get_available_issues(all_issues)
@@ -172,7 +205,10 @@ class Orchestrator:
 
                     for issue in to_launch:
                         try:
-                            self.launch_session(issue)
+                            session = self.launch_session(issue)
+                            if session is None:
+                                # Issue was already claimed by another instance
+                                continue
                         except Exception as e:
                             print(f"Failed to launch session for #{issue.number}: {e}")
 

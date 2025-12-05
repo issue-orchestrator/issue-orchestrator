@@ -6,16 +6,17 @@ from issue_orchestrator.scheduler import Scheduler, SchedulerResult
 from issue_orchestrator.models import Issue
 
 
-def create_mock_issue(number, priority=None, milestone=None):
+def create_mock_issue(number, priority=None, milestone=None, state="open"):
     """Helper to create mock GitHub issue objects."""
     mock_issue = MagicMock()
     mock_issue.number = number
+    # Milestone must be a string or None, not MagicMock
     mock_issue.milestone = milestone
+    mock_issue.state = state
 
+    # Labels are plain strings, not objects with .name
     if priority:
-        label = MagicMock()
-        label.name = f"priority:{priority}"
-        mock_issue.labels = [label]
+        mock_issue.labels = [f"priority:{priority}"]
     else:
         mock_issue.labels = []
 
@@ -68,20 +69,10 @@ class TestScheduler:
         scheduler = Scheduler(config=sample_config)
 
         # Create mock issues with milestone
-        issue_m6 = MagicMock()
-        issue_m6.number = 1
-        issue_m6.labels = [MagicMock(name="priority:high")]
-        issue_m6.milestone = MagicMock(title="M6")
-
-        issue_m7 = MagicMock()
-        issue_m7.number = 2
-        issue_m7.labels = [MagicMock(name="priority:high")]
-        issue_m7.milestone = MagicMock(title="M7")
-
-        issue_no_m = MagicMock()
-        issue_no_m.number = 3
-        issue_no_m.labels = [MagicMock(name="priority:high")]
-        issue_no_m.milestone = None
+        # Milestones and labels are plain strings, not MagicMock objects
+        issue_m6 = create_mock_issue(1, priority="high", milestone="M6")
+        issue_m7 = create_mock_issue(2, priority="high", milestone="M7")
+        issue_no_m = create_mock_issue(3, priority="high", milestone=None)
 
         sorted_issues = scheduler.sort_by_priority([issue_no_m, issue_m7, issue_m6])
 

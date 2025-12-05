@@ -3,6 +3,7 @@ import asyncio
 from typing import Any
 
 from rich.console import Console
+from rich.table import Table
 
 console = Console()
 
@@ -91,16 +92,183 @@ def cmd_start(args: argparse.Namespace) -> int:
         config.filter_label = "test-data"
         console.print("[cyan]Test mode: filter_label set to 'test-data'[/cyan]")
 
+    # Handle milestone override
+    if hasattr(args, 'milestone') and args.milestone:
+        config.filter_milestone = args.milestone
+        console.print(f"[cyan]Filtering by milestone: {args.milestone}[/cyan]")
+
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
     console.print(f"[dim]Max concurrent sessions: {config.max_sessions}[/dim]")
 
+    # Handle dry-run mode
+    if hasattr(args, 'dry_run') and args.dry_run:
+        from .github import list_issues
+        from .scheduler import Scheduler
+        from .tmux import get_manager
+        from .analysis import analyze_all_issues, get_issue_branches
+
+        console.print("\n[cyan]DRY RUN - showing what would be processed:[/cyan]\n")
+
+        scheduler = Scheduler(config)
+        tmux_mgr = get_manager()
+        all_issues = []
+
+        for agent_label in config.agents.keys():
+            labels = [agent_label]
+            if config.filter_label:
+                labels.append(config.filter_label)
+            issues = list_issues(
+                config.repo,
+                labels=labels,
+                milestone=config.filter_milestone,
+            )
+            all_issues.extend(issues)
+
+        if not all_issues:
+            console.print("[yellow]No matching issues found.[/yellow]")
+            return 0
+
+        # Analyze all issues using shared logic
+        states = analyze_all_issues(
+            issues=all_issues,
+            repo=config.repo,
+            repo_root=config.repo_root,
+            check_session_fn=tmux_mgr.window_exists,
+        )
+
+        # Sort by priority
+        states.sort(key=lambda s: s.issue.priority)
+
+        table = Table(title="All Matching Issues")
+        table.add_column("#", style="cyan")
+        table.add_column("Title", style="white")
+        table.add_column("Agent", style="blue")
+        table.add_column("Pri", style="magenta", width=4)
+        table.add_column("Status", style="yellow")
+        table.add_column("Session", style="green")
+        table.add_column("Branch", style="cyan")
+
+        for state in states:
+            issue = state.issue
+
+            # Status styling
+            status = state.status_summary
+            status_styles = {
+                "available": "green",
+                "active": "green",
+                "pr-pending": "blue",
+                "blocked": "red",
+                "needs-human": "red",
+                "stale-with-branch": "yellow",
+                "stale-orphaned": "yellow",
+            }
+            style = status_styles.get(status, "white")
+
+            session_status = "[green]active[/green]" if state.has_session else "[dim]none[/dim]"
+            branch_status = f"[cyan]{state.branch[:20]}...[/cyan]" if state.branch and len(state.branch) > 20 else f"[cyan]{state.branch}[/cyan]" if state.branch else "[dim]none[/dim]"
+
+            table.add_row(
+                str(issue.number),
+                issue.title[:35] + ("..." if len(issue.title) > 35 else ""),
+                (issue.agent_type or "-").replace("agent:", ""),
+                f"P{issue.priority}",
+                f"[{style}]{status}[/{style}]",
+                session_status,
+                branch_status,
+            )
+
+        console.print(table)
+
+        # Summary
+        available = scheduler.get_available_issues(all_issues)
+        console.print(f"\n[dim]Total issues: {len(all_issues)}[/dim]")
+        console.print(f"[dim]Available to process: {len(available)}[/dim]")
+        console.print(f"[dim]Would launch up to {config.max_sessions} concurrent sessions[/dim]")
+
+        # Warnings for stale issues
+        stale_states = [s for s in states if s.is_stale]
+        if stale_states:
+            console.print(f"\n[yellow]⚠ {len(stale_states)} issue(s) marked in-progress but have no active session:[/yellow]")
+            for state in stale_states:
+                if state.branch:
+                    console.print(f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:35]} [cyan](has branch: {state.branch})[/cyan]")
+                else:
+                    console.print(f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:40]}")
+
+            console.print("\n[dim]Options:[/dim]")
+            console.print("[dim]  • Reset to restart fresh: gh issue edit # --remove-label in-progress[/dim]")
+            console.print("[dim]  • Resume from branch: orchestrator will checkout existing branch if present[/dim]")
+
+        # Show issues with branches but not in-progress (might be abandoned PRs)
+        from .analysis import analyze_orphan_branches
+        issue_branches = get_issue_branches(config.repo_root)
+        in_progress_nums = {s.issue.number for s in states if s.issue.is_in_progress}
+        orphan_states = analyze_orphan_branches(
+            issue_branches, in_progress_nums, config.repo, config.repo_root
+        )
+        if orphan_states:
+            console.print(f"\n[yellow]⚠ {len(orphan_states)} orphan branch(es) found:[/yellow]")
+
+            orphan_table = Table(title=None, box=None)
+            orphan_table.add_column("#", style="cyan", width=6)
+            orphan_table.add_column("Branch", style="dim")
+            orphan_table.add_column("Issue", style="white")
+            orphan_table.add_column("Commits", style="magenta", width=7)
+            orphan_table.add_column("Age", style="dim", width=12)
+            orphan_table.add_column("Action", style="yellow")
+
+            for orphan in orphan_states:
+                issue_info = ""
+                if orphan.issue_title:
+                    title_short = orphan.issue_title[:25] + ("..." if len(orphan.issue_title) > 25 else "")
+                    state_color = "green" if orphan.issue_state == "open" else "red"
+                    issue_info = f"[{state_color}]{orphan.issue_state}[/{state_color}]: {title_short}"
+                elif orphan.issue_state:
+                    state_color = "green" if orphan.issue_state == "open" else "red"
+                    issue_info = f"[{state_color}]{orphan.issue_state}[/{state_color}]"
+                else:
+                    issue_info = "[dim]not found[/dim]"
+
+                action_styles = {
+                    "resume-work": "[green]resume[/green]",
+                    "investigate": "[yellow]investigate[/yellow]",
+                    "delete-branch": "[red]delete[/red]",
+                }
+                action = action_styles.get(orphan.suggested_action, orphan.suggested_action)
+
+                orphan_table.add_row(
+                    str(orphan.issue_number),
+                    orphan.branch_name[:30] + ("..." if len(orphan.branch_name) > 30 else ""),
+                    issue_info,
+                    str(orphan.commits_ahead),
+                    orphan.last_commit_date or "-",
+                    action,
+                )
+
+            console.print(orphan_table)
+
+            # Actionable hints
+            resume_count = sum(1 for o in orphan_states if o.suggested_action == "resume-work")
+            delete_count = sum(1 for o in orphan_states if o.suggested_action == "delete-branch")
+            if resume_count > 0:
+                console.print(f"\n[dim]To resume work on open issues, add in-progress label:[/dim]")
+                console.print(f"[dim]  gh issue edit # --add-label {config.get_label_in_progress()}[/dim]")
+            if delete_count > 0:
+                console.print(f"\n[dim]To clean up stale branches:[/dim]")
+                console.print(f"[dim]  git push origin --delete <branch-name>[/dim]")
+
+        return 0
+
     orchestrator = Orchestrator(config=config)
+
+    # Run startup to clean up stale issues
+    asyncio.run(orchestrator.startup())
 
     try:
         if args.no_dashboard:
             # Run orchestrator without dashboard (useful for CI/debugging)
             console.print("[dim]Running without dashboard UI[/dim]")
-            asyncio.run(orchestrator.run())
+            asyncio.run(orchestrator.run_loop())
         else:
             # Run with interactive dashboard
             asyncio.run(run_with_dashboard(orchestrator))
@@ -113,19 +281,32 @@ def cmd_start(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     """Show current status."""
     try:
-        from .orchestrator import Orchestrator
         from .config import Config
+        from .tmux import list_sessions
 
         config = Config.find_and_load()
-        orchestrator = Orchestrator(config=config)
 
-        # Get current state
-        state = orchestrator.get_state()
+        # Get active tmux sessions that look like ours
+        all_sessions = list_sessions()
+        our_sessions = [s for s in all_sessions if s.startswith("issue-")]
 
         console.print("\n[cyan]Orchestrator Status[/cyan]")
-        console.print(f"  Active sessions: {len(state.get('active_sessions', []))}")
-        console.print(f"  Queued issues: {len(state.get('queued_issues', []))}")
-        console.print(f"  Completed: {state.get('completed_count', 0)}")
+        console.print(f"\n[bold]Config:[/bold]")
+        console.print(f"  Repo: {config.repo or '(auto-detect)'}")
+        console.print(f"  Max sessions: {config.max_sessions}")
+        console.print(f"  Agents: {', '.join(config.agents.keys())}")
+        if config.filter_label:
+            console.print(f"  Filter label: {config.filter_label}")
+        if config.filter_milestone:
+            console.print(f"  Filter milestone: {config.filter_milestone}")
+
+        console.print(f"\n[bold]Active Sessions ({len(our_sessions)}):[/bold]")
+        if our_sessions:
+            for session in our_sessions:
+                issue_num = session.replace("issue-", "")
+                console.print(f"  • #{issue_num} ({session})")
+        else:
+            console.print("  (none)")
 
         return 0
     except FileNotFoundError:
@@ -134,13 +315,74 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
-    """Attach to a running session."""
-    from .tmux import attach_session
+    """Attach to the orchestrator tmux session."""
+    from .tmux import attach_session, get_manager
+
+    manager = get_manager()
+    if not manager.has_session():
+        console.print("[red]No orchestrator session running[/red]")
+        return 1
+
+    # If issue number provided, switch to that window first
+    if hasattr(args, 'issue_number') and args.issue_number:
+        if not manager.select_window(args.issue_number):
+            console.print(f"[yellow]Window for issue #{args.issue_number} not found[/yellow]")
+
+    attach_session("")  # Attaches to orchestrator session
+    return 0  # Never reached if attach succeeds
+
+
+def cmd_switch(args: argparse.Namespace) -> int:
+    """Switch to a specific issue window (when inside tmux)."""
+    from .tmux import get_manager
+
+    manager = get_manager()
+    if not manager.has_session():
+        console.print("[red]No orchestrator session running[/red]")
+        return 1
 
     issue_number: int = args.issue_number
-    session_name: str = f"issue-{issue_number}"
-    attach_session(session_name)
-    return 0  # Never reached if attach succeeds
+    if manager.select_window(issue_number):
+        console.print(f"[green]Switched to issue #{issue_number}[/green]")
+        return 0
+    else:
+        console.print(f"[red]No window for issue #{issue_number}[/red]")
+        return 1
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Switch to the dashboard window (when inside tmux)."""
+    from .tmux import get_manager
+
+    manager = get_manager()
+    if not manager.has_session():
+        console.print("[red]No orchestrator session running[/red]")
+        return 1
+
+    if manager.select_dashboard():
+        console.print("[green]Switched to dashboard[/green]")
+        return 0
+    else:
+        console.print("[red]Dashboard window not found[/red]")
+        return 1
+
+
+def cmd_output(args: argparse.Namespace) -> int:
+    """Show recent output from an issue's session."""
+    from .tmux import get_manager
+
+    manager = get_manager()
+    issue_number: int = args.issue_number
+    lines: int = getattr(args, 'lines', 20)
+
+    output = manager.capture_pane_output(issue_number, lines=lines)
+    if output is None:
+        console.print(f"[red]No window for issue #{issue_number}[/red]")
+        return 1
+
+    console.print(f"[cyan]Output from issue #{issue_number}:[/cyan]\n")
+    console.print(output)
+    return 0
 
 
 def cmd_pause(args: argparse.Namespace) -> int:
@@ -167,6 +409,73 @@ def cmd_next(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_init(args: argparse.Namespace) -> int:
+    """Initialize required GitHub labels."""
+    import subprocess
+
+    try:
+        from .config import Config
+
+        config = Config.find_and_load()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        console.print("Create a .issue-orchestrator.yaml config file first.")
+        return 1
+
+    repo = config.repo
+    if not repo:
+        console.print("[red]Error: repo must be set in config[/red]")
+        return 1
+
+    console.print(f"[cyan]Initializing labels for {repo}...[/cyan]\n")
+
+    # Collect all labels to create
+    labels = [
+        config.get_label_in_progress(),
+        config.get_label_blocked(),
+        config.get_label_needs_human(),
+        "priority:high",
+        "priority:medium",
+        "priority:low",
+    ]
+    # Add all agent labels from config
+    labels.extend(config.agents.keys())
+
+    created = 0
+    updated = 0
+    failed = 0
+
+    for label in labels:
+        result = subprocess.run(
+            ["gh", "label", "create", label, "--repo", repo, "--force"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            # Check if it was created or updated
+            if "already exists" in result.stderr.lower() or result.stderr:
+                console.print(f"  [yellow]↻[/yellow] {label}")
+                updated += 1
+            else:
+                console.print(f"  [green]✓[/green] {label}")
+                created += 1
+        else:
+            console.print(f"  [red]✗[/red] {label}: {result.stderr.strip()}")
+            failed += 1
+
+    # Print summary
+    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"  Created: {created}")
+    console.print(f"  Updated: {updated}")
+    console.print(f"  Failed: {failed}")
+
+    if failed > 0:
+        console.print("\n[yellow]Some labels failed to create. Check your gh CLI auth.[/yellow]")
+        return 1
+
+    console.print("\n[green]✓ Label initialization complete![/green]")
+    return 0
+
+
 def main() -> int:
     """Main entry point for the CLI."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
@@ -190,6 +499,17 @@ def main() -> int:
         action="store_true",
         help="Clear test issues, create fresh ones, and run with filter_label=test-data"
     )
+    start_parser.add_argument(
+        "--milestone",
+        type=str,
+        default=None,
+        help="Filter issues by milestone name"
+    )
+    start_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what issues would be processed without launching sessions"
+    )
     start_parser.set_defaults(func=cmd_start)
 
     # status command
@@ -200,14 +520,50 @@ def main() -> int:
 
     # attach command
     attach_parser: argparse.ArgumentParser = subparsers.add_parser(
-        "attach", help="Attach to a running session"
+        "attach", help="Attach to the orchestrator tmux session"
     )
     attach_parser.add_argument(
         "issue_number",
         type=int,
-        help="GitHub issue number to attach to"
+        nargs="?",
+        default=None,
+        help="Optional: switch to this issue's window after attaching"
     )
     attach_parser.set_defaults(func=cmd_attach)
+
+    # switch command
+    switch_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "switch", help="Switch to an issue's window (when inside tmux)"
+    )
+    switch_parser.add_argument(
+        "issue_number",
+        type=int,
+        help="GitHub issue number to switch to"
+    )
+    switch_parser.set_defaults(func=cmd_switch)
+
+    # dashboard command
+    dashboard_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "dashboard", help="Switch to the dashboard window (when inside tmux)"
+    )
+    dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    # output command
+    output_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "output", help="Show recent output from an issue's session"
+    )
+    output_parser.add_argument(
+        "issue_number",
+        type=int,
+        help="GitHub issue number"
+    )
+    output_parser.add_argument(
+        "-n", "--lines",
+        type=int,
+        default=20,
+        help="Number of lines to show (default: 20)"
+    )
+    output_parser.set_defaults(func=cmd_output)
 
     # pause command
     pause_parser: argparse.ArgumentParser = subparsers.add_parser(
@@ -231,6 +587,12 @@ def main() -> int:
         help="GitHub issue number to prioritize"
     )
     next_parser.set_defaults(func=cmd_next)
+
+    # init command
+    init_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "init", help="Initialize required GitHub labels"
+    )
+    init_parser.set_defaults(func=cmd_init)
 
     args: argparse.Namespace = parser.parse_args()
     return args.func(args)

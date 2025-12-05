@@ -24,6 +24,7 @@ class Config:
     label_in_progress: str = "in-progress"
     label_blocked: str = "blocked"
     label_needs_human: str = "needs-human"
+    label_prefix: Optional[str] = None  # Optional prefix for all labels (e.g., "bot")
 
     # Paths
     state_file: Path = Path(".issue-orchestrator/state.json")
@@ -32,6 +33,32 @@ class Config:
     # GitHub settings
     repo: Optional[str] = None  # owner/repo, or None to auto-detect
     filter_label: Optional[str] = None  # Only consider issues with this label (e.g., "test-data")
+    filter_milestone: Optional[str] = None  # Only consider issues in this milestone
+
+    def prefixed_label(self, label: str) -> str:
+        """Return label with prefix if configured.
+
+        Args:
+            label: The base label name
+
+        Returns:
+            The label with prefix if configured, otherwise the original label
+        """
+        if self.label_prefix:
+            return f"{self.label_prefix}:{label}"
+        return label
+
+    def get_label_in_progress(self) -> str:
+        """Get the in-progress label with prefix if configured."""
+        return self.prefixed_label(self.label_in_progress)
+
+    def get_label_blocked(self) -> str:
+        """Get the blocked label with prefix if configured."""
+        return self.prefixed_label(self.label_blocked)
+
+    def get_label_needs_human(self) -> str:
+        """Get the needs-human label with prefix if configured."""
+        return self.prefixed_label(self.label_needs_human)
 
     @classmethod
     def load(cls, config_path: Path) -> "Config":
@@ -54,6 +81,8 @@ class Config:
             }
             if "command" in agent_data:
                 agent_kwargs["command"] = agent_data["command"]
+            if "repo_root" in agent_data:
+                agent_kwargs["repo_root"] = Path(agent_data["repo_root"])
             config.agents[label] = AgentConfig(**agent_kwargs)
 
         # Parse concurrency
@@ -66,10 +95,12 @@ class Config:
         config.label_in_progress = labels.get("in_progress", "in-progress")
         config.label_blocked = labels.get("blocked", "blocked")
         config.label_needs_human = labels.get("needs_human", "needs-human")
+        config.label_prefix = labels.get("prefix")
 
         # GitHub settings
         config.repo = data.get("repo")
         config.filter_label = data.get("filter_label")
+        config.filter_milestone = data.get("filter_milestone")
 
         return config
 

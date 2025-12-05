@@ -81,17 +81,17 @@ class SessionMonitor:
             )
 
         # Check if issue has 'blocked' label
-        if self.config.label_blocked in session.issue.labels:
+        if self.config.get_label_blocked() in session.issue.labels:
             logger.info(
-                f"Issue #{session.issue.number} has '{self.config.label_blocked}' label, "
+                f"Issue #{session.issue.number} has '{self.config.get_label_blocked()}' label, "
                 f"marking session as BLOCKED"
             )
             return SessionStatus.BLOCKED
 
         # Check if issue has 'needs-human' label
-        if self.config.label_needs_human in session.issue.labels:
+        if self.config.get_label_needs_human() in session.issue.labels:
             logger.info(
-                f"Issue #{session.issue.number} has '{self.config.label_needs_human}' label, "
+                f"Issue #{session.issue.number} has '{self.config.get_label_needs_human()}' label, "
                 f"marking session as NEEDS_HUMAN"
             )
             return SessionStatus.NEEDS_HUMAN
@@ -196,14 +196,14 @@ class SessionMonitor:
                     remove_label(
                         repo=repo,
                         issue_number=issue_number,
-                        label=self.config.label_in_progress,
+                        label=self.config.get_label_in_progress(),
                     )
                     logger.info(
-                        f"Removed '{self.config.label_in_progress}' label from issue #{issue_number}"
+                        f"Removed '{self.config.get_label_in_progress()}' label from issue #{issue_number}"
                     )
                 except Exception as e:
                     logger.error(
-                        f"Failed to remove '{self.config.label_in_progress}' label "
+                        f"Failed to remove '{self.config.get_label_in_progress()}' label "
                         f"from issue #{issue_number}: {e}"
                     )
 

@@ -21,6 +21,7 @@ classifiers = [
 dependencies = [
     "pyyaml>=6.0",
     "rich>=13.0",      # Nice terminal UI
+    "libtmux>=0.37",   # Pythonic tmux control
 ]
 
 [project.optional-dependencies]

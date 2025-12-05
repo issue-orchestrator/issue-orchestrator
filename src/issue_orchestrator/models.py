@@ -76,27 +76,32 @@ class AgentConfig:
     worktree_base: Path
     model: str = "sonnet"
     timeout_minutes: int = 45
-    command: str = "claude --dangerously-skip-permissions --model {model} --append-system-prompt 'Read {prompt} for your instructions.'"
+    repo_root: Optional[Path] = None  # Per-agent repo root override
+    # Command template - {initial_prompt} is passed as positional arg to claude
+    command: str = "claude --dangerously-skip-permissions --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit."
 
     def get_command(self, issue_number: int, issue_title: str, worktree: Path) -> str:
-        """Render the command template with actual values."""
-        return self.command.format(
+        """Render the command template with actual values, including initial prompt."""
+        # First render the initial prompt
+        rendered_prompt = self.initial_prompt.format(
             issue_number=issue_number,
             issue_title=issue_title,
             prompt=self.prompt_path,
             worktree=worktree,
             model=self.model,
         )
+        # Escape single quotes in the prompt for shell safety
+        escaped_prompt = rendered_prompt.replace("'", "'\\''")
 
-    def get_initial_prompt(self, issue_number: int, issue_title: str, worktree: Path) -> str:
-        """Render the initial prompt template with actual values."""
-        return self.initial_prompt.format(
+        # Then render the full command with the prompt included
+        return self.command.format(
             issue_number=issue_number,
             issue_title=issue_title,
             prompt=self.prompt_path,
             worktree=worktree,
             model=self.model,
+            initial_prompt=escaped_prompt,
         )
 
 
