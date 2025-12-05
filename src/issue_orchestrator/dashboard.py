@@ -28,11 +28,11 @@ class StatusBar(Static):
     def on_mount(self) -> None:
         """Set initial content when widget is mounted."""
         logger.debug("StatusBar.on_mount called")
-        content = self._render_content()
+        content = self._build_content()
         logger.debug("StatusBar content: %s", content)
         self.update(content)
 
-    def _render_content(self) -> str:
+    def _build_content(self) -> str:
         """Render the status bar content."""
         state = self.orchestrator.state
         config = self.orchestrator.config
@@ -43,7 +43,7 @@ class StatusBar(Static):
 
     def refresh_content(self) -> None:
         """Update the status bar with current state."""
-        self.update(self._render_content())
+        self.update(self._build_content())
 
 
 class SessionsTable(Static):
