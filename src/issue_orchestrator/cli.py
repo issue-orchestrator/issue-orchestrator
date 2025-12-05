@@ -60,12 +60,21 @@ def _run_test_setup(repo: str) -> bool:
         capture_output=True
     )
 
-    # Create test issues
-    test_issues = [
-        ("[TEST] Simple backend task", "agent:backend", "priority:high"),
-        ("[TEST] Frontend feature", "agent:frontend", "priority:medium"),
-        ("[TEST] Mobile bug fix", "agent:mobile", "priority:low"),
-    ]
+    # Create test issues - 2 per agent type from config
+    from .config import Config
+    try:
+        config = Config.find_and_load()
+        agent_labels = list(config.agents.keys())
+    except Exception:
+        agent_labels = ["agent:backend", "agent:frontend", "agent:mobile"]
+
+    priorities = ["priority:high", "priority:medium", "priority:low"]
+    test_issues = []
+    for i, agent_label in enumerate(agent_labels):
+        agent_name = agent_label.replace("agent:", "")
+        priority = priorities[i % len(priorities)]
+        test_issues.append((f"[TEST] {agent_name.title()} task #1", agent_label, priority))
+        test_issues.append((f"[TEST] {agent_name.title()} task #2", agent_label, priorities[(i + 1) % len(priorities)]))
 
     for title, agent_label, priority_label in test_issues:
         # Create labels if needed
