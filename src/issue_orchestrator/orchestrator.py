@@ -12,7 +12,7 @@ from .github import (
     list_issues, add_label, remove_label,
     get_open_prs_for_branch, get_latest_blocked_info, get_latest_needs_human_info
 )
-from .locks import try_claim, release_claim, cleanup_stale_claims
+from .locks import try_claim, release_claim, cleanup_stale_claims, is_paused
 from .models import Issue, Session, SessionStatus, OrchestratorState
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
@@ -218,7 +218,8 @@ class Orchestrator:
                     self.handle_session_completion(session, status)
 
             # If not paused and have capacity, launch more sessions
-            if not self.state.paused:
+            # Check both in-memory state and file-based state for pause
+            if not self.state.paused and not is_paused():
                 available_slots = self.config.max_sessions - len(self.state.active_sessions)
 
                 if available_slots > 0:

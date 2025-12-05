@@ -5,12 +5,13 @@ import time
 from pathlib import Path
 from issue_orchestrator.locks import (
     try_claim, release_claim, is_claimed, list_claimed, LOCK_DIR,
-    get_claim_age, is_claim_stale, cleanup_stale_claims, TIMESTAMP_FILE
+    get_claim_age, is_claim_stale, cleanup_stale_claims, TIMESTAMP_FILE,
+    set_paused, is_paused, PAUSE_FILE
 )
 
 
 def _cleanup_lock_dir():
-    """Helper to clean up lock directory including timestamp files."""
+    """Helper to clean up lock directory including timestamp and pause files."""
     if LOCK_DIR.exists():
         for item in LOCK_DIR.iterdir():
             if item.is_dir():
@@ -18,6 +19,9 @@ def _cleanup_lock_dir():
                 for subitem in item.iterdir():
                     subitem.unlink()
                 item.rmdir()
+            elif item.is_file():
+                # Remove pause file if it exists
+                item.unlink()
         LOCK_DIR.rmdir()
 
 
@@ -511,3 +515,70 @@ class TestCleanupStaleClaims:
         # Only issue 3 should be cleaned (issue 2 has no timestamp, so not considered stale)
         assert cleaned == [3]
         assert set(list_claimed()) == {1, 2}
+
+
+class TestPauseResume:
+    """Test the pause/resume functionality."""
+
+    def test_is_paused_initially_false(self):
+        """Test that orchestrator is not paused initially."""
+        assert is_paused() is False
+
+    def test_set_paused_true(self):
+        """Test setting paused state to true."""
+        set_paused(True)
+        assert is_paused() is True
+        assert PAUSE_FILE.exists()
+
+    def test_set_paused_false(self):
+        """Test setting paused state to false."""
+        set_paused(True)
+        assert is_paused() is True
+
+        set_paused(False)
+        assert is_paused() is False
+        assert not PAUSE_FILE.exists()
+
+    def test_set_paused_creates_lock_dir(self):
+        """Test that set_paused creates the lock directory if it doesn't exist."""
+        # Ensure lock dir doesn't exist
+        if LOCK_DIR.exists():
+            for item in LOCK_DIR.iterdir():
+                if item.is_file():
+                    item.unlink()
+            LOCK_DIR.rmdir()
+
+        assert not LOCK_DIR.exists()
+
+        set_paused(True)
+
+        assert LOCK_DIR.exists()
+        assert LOCK_DIR.is_dir()
+        assert is_paused() is True
+
+    def test_set_paused_idempotent(self):
+        """Test that setting pause multiple times is idempotent."""
+        set_paused(True)
+        set_paused(True)
+        assert is_paused() is True
+
+        set_paused(False)
+        set_paused(False)
+        assert is_paused() is False
+
+    def test_pause_resume_cycle(self):
+        """Test complete pause/resume cycle."""
+        # Initially not paused
+        assert is_paused() is False
+
+        # Pause
+        set_paused(True)
+        assert is_paused() is True
+
+        # Resume
+        set_paused(False)
+        assert is_paused() is False
+
+        # Pause again
+        set_paused(True)
+        assert is_paused() is True

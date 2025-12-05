@@ -488,15 +488,30 @@ def cmd_output(args: argparse.Namespace) -> int:
 
 def cmd_pause(args: argparse.Namespace) -> int:
     """Pause the orchestrator."""
-    console.print("[yellow]Pausing issue-orchestrator...[/yellow]")
-    # TODO: implement pause logic
+    from .locks import set_paused, is_paused
+
+    if is_paused():
+        console.print("[yellow]Orchestrator is already paused[/yellow]")
+        return 0
+
+    set_paused(True)
+    console.print("[yellow]Orchestrator paused.[/yellow]")
+    console.print("[dim]Current sessions will finish, but no new sessions will start.[/dim]")
+    console.print("[dim]Use 'issue-orchestrator resume' to continue processing issues.[/dim]")
     return 0
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
     """Resume the orchestrator."""
-    console.print("[green]Resuming issue-orchestrator...[/green]")
-    # TODO: implement resume logic
+    from .locks import set_paused, is_paused
+
+    if not is_paused():
+        console.print("[yellow]Orchestrator is not paused[/yellow]")
+        return 0
+
+    set_paused(False)
+    console.print("[green]Orchestrator resumed.[/green]")
+    console.print("[dim]New sessions will be launched as capacity becomes available.[/dim]")
     return 0
 
 
