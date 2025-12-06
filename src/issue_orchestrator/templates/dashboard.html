@@ -374,6 +374,13 @@
             <svg viewBox="0 0 16 16" fill="currentColor" style="width:14px;height:14px"><path d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
             Open PR on GitHub
         </div>
+        <div class="context-menu-divider" id="menuHistoryDivider" style="display:none;"></div>
+        <div class="context-menu-item" id="menuRetry" style="display:none;">
+            <span>🔄</span> Retry Issue
+        </div>
+        <div class="context-menu-item" id="menuDismiss" style="display:none;">
+            <span>✕</span> Dismiss
+        </div>
     </div>
 
     <!-- Actions Menu -->
@@ -403,6 +410,10 @@
         </div>
         <div class="settings-menu-item" onclick="cleanupTestIssues()">
             <span>🧹</span> Cleanup Test Issues
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-menu-item" onclick="clearHistory()">
+            <span>🗑</span> Clear History
         </div>
         <div class="settings-divider"></div>
         <div class="settings-menu-item" onclick="showDebug()">
@@ -476,6 +487,9 @@
         const menuPrompt = document.getElementById('menuPrompt');
         const menuIssue = document.getElementById('menuIssue');
         const menuPR = document.getElementById('menuPR');
+        const menuRetry = document.getElementById('menuRetry');
+        const menuDismiss = document.getElementById('menuDismiss');
+        const menuHistoryDivider = document.getElementById('menuHistoryDivider');
         let currentRow = null;
 
         function showContextMenu(e, row) {
@@ -485,6 +499,7 @@
             const issueNumber = row.dataset.issue;
             const action = row.dataset.action;
             const prUrl = row.dataset.prUrl;
+            const status = row.dataset.status;
 
             // Enable/disable menu items based on context
             // Active sessions (action === 'focus') have iTerm tab and worktree
@@ -508,6 +523,18 @@
                 menuPrompt.classList.remove('disabled');
             } else {
                 menuPrompt.classList.add('disabled');
+            }
+
+            // Show Retry/Dismiss for history items (failed, blocked, completed, timed_out)
+            const historyStatuses = ['failed', 'blocked', 'completed', 'timed_out', 'needs_human'];
+            if (historyStatuses.includes(status)) {
+                menuHistoryDivider.style.display = 'block';
+                menuRetry.style.display = 'flex';
+                menuDismiss.style.display = 'flex';
+            } else {
+                menuHistoryDivider.style.display = 'none';
+                menuRetry.style.display = 'none';
+                menuDismiss.style.display = 'none';
             }
 
             // Position menu
@@ -567,6 +594,38 @@
             }
         });
 
+        menuRetry.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow) {
+                const issueNumber = currentRow.dataset.issue;
+                if (confirm(`Retry issue #${issueNumber}? It will be picked up on the next cycle.`)) {
+                    const res = await fetch(`/api/retry/${issueNumber}`, { method: 'POST' });
+                    const data = await res.json();
+                    if (data.retrying) {
+                        location.reload();
+                    } else {
+                        alert(data.error || 'Failed to retry issue');
+                    }
+                }
+            }
+        });
+
+        menuDismiss.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow) {
+                const issueNumber = currentRow.dataset.issue;
+                const res = await fetch(`/api/history/dismiss/${issueNumber}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.dismissed) {
+                    location.reload();
+                } else {
+                    alert(data.error || 'Failed to dismiss');
+                }
+            }
+        });
+
         // Settings menu
         const settingsMenu = document.getElementById('settingsMenu');
 
@@ -622,11 +681,21 @@
             settingsMenu.classList.remove('visible');
             const res = await fetch('/api/debug');
             const data = await res.json();
+            const opts = data.startup_options || {};
             const html = `
+                <h3 style="margin: 0 0 8px; font-size: 14px;">Startup Options</h3>
+                <div class="info-row"><span class="info-label">UI Mode</span><span class="info-value">${opts.ui_mode || '-'}</span></div>
+                <div class="info-row"><span class="info-label">Web Port</span><span class="info-value">${opts.web_port || '-'}</span></div>
+                <div class="info-row"><span class="info-label">Test Mode</span><span class="info-value">${opts.test_mode ? 'yes' : 'no'}</span></div>
+                <div class="info-row"><span class="info-label">Filter Label</span><span class="info-value">${opts.filter_label || 'none'}</span></div>
+                <div class="info-row"><span class="info-label">Filter Milestone</span><span class="info-value">${opts.filter_milestone || 'none'}</span></div>
+                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${opts.max_sessions || '-'}</span></div>
+                <h3 style="margin: 16px 0 8px; font-size: 14px;">State</h3>
                 <div class="info-row"><span class="info-label">Paused</span><span class="info-value">${data.paused}</span></div>
-                <div class="info-row"><span class="info-label">Config Path</span><span class="info-value">${data.config_path}</span></div>
-                <div class="info-row"><span class="info-label">Repo Root</span><span class="info-value">${data.repo_root}</span></div>
                 <div class="info-row"><span class="info-label">Priority Queue</span><span class="info-value">${data.priority_queue.length > 0 ? data.priority_queue.join(', ') : 'empty'}</span></div>
+                <h3 style="margin: 16px 0 8px; font-size: 14px;">Paths</h3>
+                <div class="info-row"><span class="info-label">Config Path</span><span class="info-value" style="font-size:11px">${data.config_path}</span></div>
+                <div class="info-row"><span class="info-label">Repo Root</span><span class="info-value" style="font-size:11px">${data.repo_root}</span></div>
                 <h3 style="margin: 16px 0 8px; font-size: 14px;">Agent Types</h3>
                 ${Object.entries(data.agents).map(([name, cfg]) => `
                     <div class="info-row"><span class="info-label">${name}</span><span class="info-value">timeout: ${cfg.timeout}m</span></div>
@@ -663,6 +732,19 @@
                 setTimeout(() => location.reload(), 2000);
             } else {
                 alert(data.error || 'Failed to cleanup test issues');
+            }
+        }
+
+        async function clearHistory() {
+            settingsMenu.classList.remove('visible');
+            if (!confirm('Clear all session history (completed, failed, etc.)?')) return;
+            const res = await fetch('/api/history/clear', { method: 'POST' });
+            const data = await res.json();
+            if (data.cleared !== undefined) {
+                openModal('History Cleared', `<p>Cleared ${data.cleared} history entries.</p>`);
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                alert(data.error || 'Failed to clear history');
             }
         }
     </script>
