@@ -105,6 +105,8 @@ async def dashboard(request: Request) -> HTMLResponse:
                 issue for issue in available
                 if issue.number not in active_numbers and issue.number not in history_numbers
             ]
+            # Sort by milestone, then priority (same order used for launching)
+            queue_issues = scheduler.sort_by_priority(queue_issues)
             queue_total = len(queue_issues)
 
             # Apply pagination
