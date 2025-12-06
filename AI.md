@@ -128,6 +128,10 @@ agents:
     model: sonnet
     # command: "claude --model {model} '{initial_prompt}'"  # Custom
 
+  "agent:mobile":
+    prompt: "examples/prompts/simple-fix.md"
+    model: haiku
+
 concurrency:
   max_sessions: 3
   session_timeout_minutes: 45
