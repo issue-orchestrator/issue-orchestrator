@@ -370,8 +370,8 @@ end tell'''
             # Run with web dashboard in browser
             from .web import run_with_web_dashboard
             console.print("[dim]Starting web dashboard...[/dim]")
-            console.print("[green]Dashboard will open in your browser[/green]")
-            asyncio.run(run_with_web_dashboard(orchestrator, port=8080))
+            console.print(f"[green]Dashboard will open at http://localhost:{args.port}[/green]")
+            asyncio.run(run_with_web_dashboard(orchestrator, port=args.port))
         else:
             # Run with interactive TUI dashboard (tmux or iterm2 mode)
             should_attach = asyncio.run(run_with_dashboard(orchestrator, config.ui_mode))
@@ -674,6 +674,12 @@ def main() -> int:
         choices=["tmux", "iterm2", "web"],
         default=None,
         help="UI mode: tmux (default), iterm2 (Mac tabs), or web (browser dashboard)"
+    )
+    start_parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port for web dashboard (default: 8080)"
     )
     start_parser.set_defaults(func=cmd_start)
 

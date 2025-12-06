@@ -59,7 +59,8 @@ issue-orchestrator start
 | Command | Description |
 |---------|-------------|
 | `issue-orchestrator start` | Start the orchestrator |
-| `issue-orchestrator start --ui-mode web` | Start with web dashboard on :8080 |
+| `issue-orchestrator start --ui-mode web` | Start with web dashboard (default :8080) |
+| `issue-orchestrator start --ui-mode web --port 3000` | Web dashboard on custom port |
 | `issue-orchestrator start --ui-mode iterm2` | Start with iTerm2 tabs (macOS) |
 | `issue-orchestrator start --test-mode` | Run with mock test data |
 | `issue-orchestrator start --milestone "v1.0"` | Filter to issues in milestone |
