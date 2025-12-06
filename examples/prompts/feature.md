@@ -35,8 +35,24 @@ You **MUST** use the `agent-done` command to complete your work. This command ha
 ```bash
 agent-done completed \
   --implementation "Brief description of what you implemented" \
-  --problems "Any problems encountered, or 'None' if none"
+  --problems "Problems encountered (see below)"
 ```
+
+**CRITICAL: Honest Problem Reporting**
+
+The `--problems` field is crucial for the CTO review agent to identify technical debt and issues. Do NOT hide or minimize problems. Report:
+
+- Test failures you couldn't fix or tests you skipped
+- Code smells, hacks, or workarounds you introduced
+- Dependencies or APIs that behaved unexpectedly
+- Documentation gaps or confusing code you encountered
+- Incomplete implementations or TODOs you left behind
+- Pre-existing issues you discovered but didn't fix
+- Architectural concerns or design compromises made
+
+If genuinely no problems: `--problems "None - implementation was straightforward"`
+
+**Note**: The CTO agent reviews your PR diff and will flag unreported issues. Hiding problems delays fixes and creates technical debt.
 
 ### If blocked:
 ```bash
