@@ -5,242 +5,663 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Issue Orchestrator</title>
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background: #1a1a2e;
-            color: #eee;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
             min-height: 100vh;
-            padding: 20px;
         }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
+        .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+
+        /* Header */
         header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 30px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid #333;
+            margin-bottom: 20px;
         }
-        h1 {
-            font-size: 24px;
-            font-weight: 600;
-            color: #fff;
-        }
-        .status-bar {
-            display: flex;
-            gap: 20px;
-            align-items: center;
-        }
+        .header-left { display: flex; align-items: center; gap: 12px; }
+        h1 { font-size: 18px; font-weight: 600; color: #fff; }
         .status-badge {
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 13px;
-            font-weight: 500;
-        }
-        .status-running { background: #22c55e; color: #000; }
-        .status-paused { background: #eab308; color: #000; }
-        .stat {
-            font-size: 14px;
-            color: #888;
-        }
-        .stat strong {
-            color: #fff;
-            font-size: 18px;
-        }
-        .controls {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 30px;
-        }
-        button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        button:hover {
-            transform: translateY(-1px);
-        }
-        .btn-primary { background: #3b82f6; color: #fff; }
-        .btn-primary:hover { background: #2563eb; }
-        .btn-warning { background: #eab308; color: #000; }
-        .btn-warning:hover { background: #ca8a04; }
-        .btn-danger { background: #ef4444; color: #fff; }
-        .btn-danger:hover { background: #dc2626; }
-        .section-title {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 15px;
-            color: #fff;
-        }
-        .sessions-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 15px;
-            margin-bottom: 30px;
-        }
-        .session-card {
-            background: #16213e;
+            padding: 3px 10px;
             border-radius: 12px;
-            padding: 20px;
-            border: 1px solid #333;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .status-running { background: #238636; color: #fff; }
+        .status-paused { background: #9e6a03; color: #fff; }
+        .controls { display: flex; gap: 8px; }
+        .controls button {
+            padding: 6px 12px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 12px;
             cursor: pointer;
-            transition: all 0.2s;
+            background: #21262d;
+            color: #c9d1d9;
         }
-        .session-card:hover {
-            border-color: #3b82f6;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+        .controls button:hover { background: #30363d; }
+        .btn-warning { background: #9e6a03; border-color: #9e6a03; color: #fff; }
+        .btn-primary { background: #238636; border-color: #238636; color: #fff; }
+
+        /* Issue List */
+        .issue-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
+        .issue-header {
+            display: grid;
+            grid-template-columns: 70px 100px 1fr 80px 70px 50px;
+            align-items: center;
+            padding: 8px 16px;
+            background: #161b22;
+            border-bottom: 1px solid #21262d;
+            font-size: 11px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
-        .session-header {
+        .issue-row {
+            display: grid;
+            grid-template-columns: 70px 100px 1fr 80px 70px 50px;
+            align-items: center;
+            padding: 12px 16px;
+            border-bottom: 1px solid #21262d;
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+        .issue-row:last-child { border-bottom: none; }
+        .issue-row:hover { background: #161b22; }
+        .issue-row.active-row { background: #0d1117; }
+        .issue-row.active-row:hover { background: #161b22; }
+        .issue-row.slow-row { background: #1c1710; }
+        .issue-row.slow-row:hover { background: #2a2010; }
+
+        .issue-num { font-weight: 600; color: #58a6ff; font-size: 13px; }
+        .issue-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+        }
+        .status-active .status-dot { background: #3fb950; animation: pulse 2s infinite; }
+        .status-slow .status-dot { background: #f85149; animation: pulse 1s infinite; }
+        .status-queue .status-dot { background: #8b949e; }
+        .status-completed .status-dot { background: #3fb950; }
+        .status-failed .status-dot { background: #f85149; }
+        .status-blocked .status-dot { background: #d29922; }
+        .status-needs_human .status-dot { background: #a371f7; }
+        .status-timed_out .status-dot { background: #f85149; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        .issue-title {
+            font-size: 13px;
+            color: #c9d1d9;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            padding-right: 12px;
+        }
+        .issue-agent { font-size: 12px; color: #8b949e; }
+        .issue-time { font-size: 12px; color: #8b949e; font-family: monospace; }
+        .issue-action {
+            font-size: 12px;
+            color: #8b949e;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 4px;
+        }
+        .issue-row:hover .issue-action { color: #58a6ff; }
+        .issue-action svg { width: 14px; height: 14px; }
+        .action-arrow { font-size: 10px; }
+
+        /* Empty State */
+        .empty-state {
+            padding: 48px;
+            text-align: center;
+            color: #8b949e;
+        }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 16px;
+            margin-top: 16px;
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .pagination button {
+            padding: 6px 12px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            background: #21262d;
+            color: #c9d1d9;
+        }
+        .pagination button:hover:not(:disabled) { background: #30363d; }
+        .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* Footer */
+        .footer {
+            margin-top: 20px;
+            font-size: 11px;
+            color: #484f58;
             display: flex;
             justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 12px;
         }
-        .session-number {
-            font-size: 14px;
-            color: #3b82f6;
-            font-weight: 600;
+
+        /* Context Menu */
+        .context-menu {
+            display: none;
+            position: fixed;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 4px 0;
+            min-width: 180px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            z-index: 1000;
         }
-        .session-status {
-            font-size: 12px;
-            padding: 3px 8px;
-            border-radius: 10px;
-        }
-        .session-status.running { background: #22c55e22; color: #22c55e; }
-        .session-status.slow { background: #eab30822; color: #eab308; }
-        .session-title {
-            font-size: 15px;
-            font-weight: 500;
-            color: #fff;
-            margin-bottom: 10px;
-            line-height: 1.4;
-        }
-        .session-meta {
-            display: flex;
-            gap: 15px;
+        .context-menu.visible { display: block; }
+        .context-menu-item {
+            padding: 8px 16px;
             font-size: 13px;
-            color: #888;
-        }
-        .session-meta span {
+            color: #c9d1d9;
+            cursor: pointer;
             display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 8px;
         }
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: #666;
+        .context-menu-item:hover { background: #30363d; }
+        .context-menu-item.disabled { color: #484f58; cursor: default; }
+        .context-menu-item.disabled:hover { background: transparent; }
+        .context-menu-divider { height: 1px; background: #30363d; margin: 4px 0; }
+
+        /* Settings Menu */
+        .settings-btn {
+            padding: 6px 10px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            background: #21262d;
+            color: #c9d1d9;
         }
-        .empty-state h3 {
-            font-size: 18px;
-            margin-bottom: 10px;
-            color: #888;
+        .settings-btn:hover { background: #30363d; }
+        .settings-menu {
+            display: none;
+            position: absolute;
+            right: 24px;
+            top: 60px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 4px 0;
+            min-width: 200px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+            z-index: 1000;
         }
-        .refresh-notice {
+        .settings-menu.visible { display: block; }
+        .settings-menu-item {
+            padding: 8px 16px;
+            font-size: 13px;
+            color: #c9d1d9;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .settings-menu-item:hover { background: #30363d; }
+        .settings-divider { height: 1px; background: #30363d; margin: 4px 0; }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
             position: fixed;
-            bottom: 20px;
-            right: 20px;
-            font-size: 12px;
-            color: #666;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
         }
+        .modal-overlay.visible { display: flex; }
+        .modal {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            max-width: 700px;
+            max-height: 80vh;
+            width: 90%;
+            overflow: hidden;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            border-bottom: 1px solid #30363d;
+        }
+        .modal-header h2 { font-size: 16px; font-weight: 600; }
+        .modal-close {
+            background: none;
+            border: none;
+            color: #8b949e;
+            font-size: 20px;
+            cursor: pointer;
+        }
+        .modal-close:hover { color: #c9d1d9; }
+        .modal-body {
+            padding: 16px;
+            overflow-y: auto;
+            max-height: calc(80vh - 60px);
+        }
+        .modal-body pre {
+            background: #0d1117;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #21262d;
+        }
+        .info-row:last-child { border-bottom: none; }
+        .info-label { color: #8b949e; }
+        .info-value { font-family: monospace; }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Issue Orchestrator</h1>
-            <div class="status-bar">
+            <div class="header-left">
+                <h1>Issue Orchestrator</h1>
                 <span class="status-badge {{ 'status-paused' if paused else 'status-running' }}">
-                    {{ 'PAUSED' if paused else 'RUNNING' }}
+                    {{ 'Paused' if paused else 'Running' }}
                 </span>
-                <span class="stat">Active: <strong>{{ sessions|length }}/{{ max_sessions }}</strong></span>
-                <span class="stat">Completed: <strong>{{ completed_count }}</strong></span>
+            </div>
+            <div class="controls">
+                <button class="settings-btn" onclick="toggleSettingsMenu(event)">☰</button>
             </div>
         </header>
 
-        <div class="controls">
-            {% if paused %}
-            <button class="btn-primary" onclick="resume()">Resume</button>
-            {% else %}
-            <button class="btn-warning" onclick="pause()">Pause</button>
-            {% endif %}
-            <button class="btn-danger" onclick="shutdown()">Shutdown</button>
-        </div>
-
-        <h2 class="section-title">Active Sessions</h2>
-
-        {% if sessions %}
-        <div class="sessions-grid">
-            {% for session in sessions %}
-            <div class="session-card" onclick="focusSession({{ session.issue_number }})">
-                <div class="session-header">
-                    <span class="session-number">#{{ session.issue_number }}</span>
-                    <span class="session-status {{ session.status }}">{{ session.status }}</span>
-                </div>
-                <div class="session-title">{{ session.title }}</div>
-                <div class="session-meta">
-                    <span>{{ session.agent_type }}</span>
-                    <span>{{ session.runtime_minutes }}m</span>
-                </div>
+        <div class="issue-list">
+            <div class="issue-header">
+                <span>Issue</span>
+                <span>Status</span>
+                <span>Title</span>
+                <span>Agent</span>
+                <span>Runtime</span>
+                <span>Action</span>
+            </div>
+            {% if issues %}
+            {% for issue in issues %}
+            <div class="issue-row {% if issue.status == 'active' %}active-row{% elif issue.status == 'slow' %}slow-row{% endif %}"
+                 data-status="{{ issue.status }}"
+                 data-issue="{{ issue.issue_number }}"
+                 data-title="{{ issue.title }}"
+                 data-agent="{{ issue.agent_type }}"
+                 data-time="{{ issue.time if issue.time else '' }}"
+                 data-action="{{ issue.action }}"
+                 data-url="{{ issue.url }}"
+                 data-issue-url="https://github.com/{{ repo }}/issues/{{ issue.issue_number }}"
+                 data-pr-url="{{ issue.pr_url if issue.pr_url else '' }}"
+                 title="{{ issue.action_hint }}"
+                 onclick="handleClick(this)"
+                 oncontextmenu="showContextMenu(event, this)">
+                <span class="issue-num">#{{ issue.issue_number }}</span>
+                <span class="issue-status status-{{ issue.status }}" title="{{ issue.status_reason if issue.status_reason else '' }}">
+                    <span class="status-dot"></span>
+                    {{ issue.status_label }}
+                </span>
+                <span class="issue-title" title="{{ issue.title }}">{{ issue.title }}</span>
+                <span class="issue-agent">{{ issue.agent_type }}</span>
+                <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
+                <span class="issue-action">
+                    {% if issue.action == 'focus' %}
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+                    <span class="action-arrow">→</span>
+                    {% else %}
+                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                    <span class="action-arrow">↗</span>
+                    {% endif %}
+                </span>
             </div>
             {% endfor %}
+            {% else %}
+            <div class="empty-state">No issues to display</div>
+            {% endif %}
         </div>
-        {% else %}
-        <div class="empty-state">
-            <h3>No active sessions</h3>
-            <p>Waiting for issues to process...</p>
+
+        {% if queue_total_pages > 1 %}
+        <div class="pagination">
+            <button onclick="goToPage({{ queue_page - 1 }})" {% if queue_page <= 1 %}disabled{% endif %}>← Prev</button>
+            <span>Page {{ queue_page }} of {{ queue_total_pages }} ({{ queue_total }} queued)</span>
+            <button onclick="goToPage({{ queue_page + 1 }})" {% if queue_page >= queue_total_pages %}disabled{% endif %}>Next →</button>
         </div>
         {% endif %}
+
+        <div class="footer">
+            <span>Auto-refreshes every 5s</span>
+            <span>{{ repo }}</span>
+        </div>
     </div>
 
-    <div class="refresh-notice">Auto-refreshes every 5s</div>
+    <!-- Context Menu -->
+    <div class="context-menu" id="contextMenu">
+        <div class="context-menu-item" id="menuFocus">
+            <span>→</span> Focus iTerm2 Tab
+        </div>
+        <div class="context-menu-item" id="menuFinder">
+            <span>📂</span> Open Worktree in Finder
+        </div>
+        <div class="context-menu-item" id="menuPrompt">
+            <span>📝</span> Open Agent Prompt
+        </div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item" id="menuIssue">
+            <svg viewBox="0 0 16 16" fill="currentColor" style="width:14px;height:14px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            Open Issue on GitHub
+        </div>
+        <div class="context-menu-item" id="menuPR">
+            <svg viewBox="0 0 16 16" fill="currentColor" style="width:14px;height:14px"><path d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
+            Open PR on GitHub
+        </div>
+    </div>
+
+    <!-- Actions Menu -->
+    <div class="settings-menu" id="settingsMenu">
+        {% if paused %}
+        <div class="settings-menu-item" onclick="resume()">
+            <span>▶</span> Resume
+        </div>
+        {% else %}
+        <div class="settings-menu-item" onclick="pause()">
+            <span>⏸</span> Pause
+        </div>
+        {% endif %}
+        <div class="settings-menu-item" onclick="shutdown()">
+            <span>⏻</span> Shutdown
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-menu-item" onclick="showInfo()">
+            <span>ℹ</span> About / Version
+        </div>
+        <div class="settings-menu-item" onclick="showConfig()">
+            <span>📄</span> View Config
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-menu-item" onclick="createTestIssues()">
+            <span>🧪</span> Create Test Issues
+        </div>
+        <div class="settings-menu-item" onclick="cleanupTestIssues()">
+            <span>🧹</span> Cleanup Test Issues
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-menu-item" onclick="showDebug()">
+            <span>🔧</span> Debug Info
+        </div>
+        <div class="settings-menu-item" onclick="openRepo()">
+            <span>↗</span> Open Repo on GitHub
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2 id="modalTitle">Title</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Content loaded dynamically -->
+            </div>
+        </div>
+    </div>
 
     <script>
-        // Auto-refresh every 5 seconds
-        setTimeout(() => location.reload(), 5000);
+        // Row click handler
+        async function handleClick(row) {
+            const action = row.dataset.action;
+            const issueNumber = row.dataset.issue;
+            const url = row.dataset.url;
 
+            if (action === 'focus') {
+                await fetch(`/api/focus/${issueNumber}`, { method: 'POST' });
+            } else if (url) {
+                window.open(url, '_blank');
+            }
+        }
+
+        // Controls
         async function pause() {
             await fetch('/api/pause', { method: 'POST' });
             location.reload();
         }
-
         async function resume() {
             await fetch('/api/resume', { method: 'POST' });
             location.reload();
         }
-
         async function shutdown() {
-            if (confirm('Are you sure you want to shutdown the orchestrator?')) {
+            if (confirm('Shutdown the orchestrator?')) {
                 await fetch('/api/shutdown', { method: 'POST' });
-                document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#888;">Orchestrator shutdown. Close this tab.</div>';
+                document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#8b949e;">Shutdown. Close this tab.</div>';
             }
         }
 
-        async function focusSession(issueNumber) {
-            console.log('Focusing session #' + issueNumber);
-            try {
-                const response = await fetch(`/api/focus/${issueNumber}`, { method: 'POST' });
-                const data = await response.json();
-                console.log('Focus response:', data);
-                if (!response.ok) {
-                    alert('Could not focus session: ' + (data.error || 'Unknown error'));
-                }
-            } catch (err) {
-                console.error('Focus error:', err);
-                alert('Error focusing session: ' + err.message);
+        // Pagination
+        function goToPage(page) {
+            const url = new URL(window.location);
+            url.searchParams.set('page', page);
+            window.location = url;
+        }
+
+        // Auto-refresh (preserves page param)
+        setTimeout(() => {
+            const url = new URL(window.location);
+            window.location = url;
+        }, 5000);
+
+        // Context menu
+        const contextMenu = document.getElementById('contextMenu');
+        const menuFocus = document.getElementById('menuFocus');
+        const menuFinder = document.getElementById('menuFinder');
+        const menuPrompt = document.getElementById('menuPrompt');
+        const menuIssue = document.getElementById('menuIssue');
+        const menuPR = document.getElementById('menuPR');
+        let currentRow = null;
+
+        function showContextMenu(e, row) {
+            e.preventDefault();
+            currentRow = row;
+
+            const issueNumber = row.dataset.issue;
+            const action = row.dataset.action;
+            const prUrl = row.dataset.prUrl;
+
+            // Enable/disable menu items based on context
+            // Active sessions (action === 'focus') have iTerm tab and worktree
+            if (action === 'focus') {
+                menuFocus.classList.remove('disabled');
+                menuFinder.classList.remove('disabled');
+            } else {
+                menuFocus.classList.add('disabled');
+                menuFinder.classList.add('disabled');
+            }
+
+            if (prUrl) {
+                menuPR.classList.remove('disabled');
+            } else {
+                menuPR.classList.add('disabled');
+            }
+
+            // Agent prompt is always available if we have an agent type
+            const agentType = row.dataset.agent;
+            if (agentType) {
+                menuPrompt.classList.remove('disabled');
+            } else {
+                menuPrompt.classList.add('disabled');
+            }
+
+            // Position menu
+            contextMenu.style.left = e.pageX + 'px';
+            contextMenu.style.top = e.pageY + 'px';
+            contextMenu.classList.add('visible');
+        }
+
+        // Hide context menu on click elsewhere
+        document.addEventListener('click', () => {
+            contextMenu.classList.remove('visible');
+        });
+
+        // Menu actions - must stopPropagation to prevent document click handler from interfering
+        menuFocus.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow && !menuFocus.classList.contains('disabled')) {
+                await fetch(`/api/focus/${currentRow.dataset.issue}`, { method: 'POST' });
+            }
+        });
+
+        menuFinder.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow && !menuFinder.classList.contains('disabled')) {
+                const res = await fetch(`/api/finder/${currentRow.dataset.issue}`, { method: 'POST' });
+                const data = await res.json();
+                console.log('Finder response:', data);
+            }
+        });
+
+        menuPrompt.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow && !menuPrompt.classList.contains('disabled')) {
+                const agentType = currentRow.dataset.agent;
+                const res = await fetch(`/api/prompt/${encodeURIComponent(agentType)}`, { method: 'POST' });
+                const data = await res.json();
+                console.log('Prompt response:', data);
+            }
+        });
+
+        menuIssue.addEventListener('click', (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow) {
+                window.open(currentRow.dataset.issueUrl, '_blank');
+            }
+        });
+
+        menuPR.addEventListener('click', (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow && currentRow.dataset.prUrl) {
+                window.open(currentRow.dataset.prUrl, '_blank');
+            }
+        });
+
+        // Settings menu
+        const settingsMenu = document.getElementById('settingsMenu');
+
+        function toggleSettingsMenu(e) {
+            e.stopPropagation();
+            settingsMenu.classList.toggle('visible');
+        }
+
+        document.addEventListener('click', () => {
+            settingsMenu.classList.remove('visible');
+        });
+
+        // Modal
+        const modalOverlay = document.getElementById('modalOverlay');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalBody = document.getElementById('modalBody');
+
+        function openModal(title, content) {
+            modalTitle.textContent = title;
+            modalBody.innerHTML = content;
+            modalOverlay.classList.add('visible');
+        }
+
+        function closeModal(e) {
+            if (!e || e.target === modalOverlay) {
+                modalOverlay.classList.remove('visible');
+            }
+        }
+
+        async function showInfo() {
+            settingsMenu.classList.remove('visible');
+            const res = await fetch('/api/info');
+            const data = await res.json();
+            const html = `
+                <div class="info-row"><span class="info-label">Version</span><span class="info-value">${data.version || 'dev'}</span></div>
+                <div class="info-row"><span class="info-label">Repository</span><span class="info-value">${data.repo}</span></div>
+                <div class="info-row"><span class="info-label">UI Mode</span><span class="info-value">${data.ui_mode}</span></div>
+                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${data.max_sessions}</span></div>
+                <div class="info-row"><span class="info-label">Active Sessions</span><span class="info-value">${data.active_sessions}</span></div>
+                <div class="info-row"><span class="info-label">Completed Today</span><span class="info-value">${data.completed_today}</span></div>
+            `;
+            openModal('About Issue Orchestrator', html);
+        }
+
+        async function showConfig() {
+            settingsMenu.classList.remove('visible');
+            const res = await fetch('/api/config');
+            const data = await res.json();
+            openModal('Configuration', `<pre>${data.config}</pre>`);
+        }
+
+        async function showDebug() {
+            settingsMenu.classList.remove('visible');
+            const res = await fetch('/api/debug');
+            const data = await res.json();
+            const html = `
+                <div class="info-row"><span class="info-label">Paused</span><span class="info-value">${data.paused}</span></div>
+                <div class="info-row"><span class="info-label">Config Path</span><span class="info-value">${data.config_path}</span></div>
+                <div class="info-row"><span class="info-label">Repo Root</span><span class="info-value">${data.repo_root}</span></div>
+                <div class="info-row"><span class="info-label">Priority Queue</span><span class="info-value">${data.priority_queue.length > 0 ? data.priority_queue.join(', ') : 'empty'}</span></div>
+                <h3 style="margin: 16px 0 8px; font-size: 14px;">Agent Types</h3>
+                ${Object.entries(data.agents).map(([name, cfg]) => `
+                    <div class="info-row"><span class="info-label">${name}</span><span class="info-value">timeout: ${cfg.timeout}m</span></div>
+                `).join('')}
+            `;
+            openModal('Debug Info', html);
+        }
+
+        function openRepo() {
+            settingsMenu.classList.remove('visible');
+            window.open('https://github.com/{{ repo }}', '_blank');
+        }
+
+        async function createTestIssues() {
+            settingsMenu.classList.remove('visible');
+            if (!confirm('Create 5 test issues with "test-data" label?')) return;
+            const res = await fetch('/api/test/create', { method: 'POST' });
+            const data = await res.json();
+            if (data.created) {
+                openModal('Test Issues Created', `<p>Created ${data.created.length} test issues:</p><ul>${data.created.map(url => `<li><a href="${url}" target="_blank">${url}</a></li>`).join('')}</ul>`);
+                setTimeout(() => location.reload(), 2000);
+            } else {
+                alert(data.error || 'Failed to create test issues');
+            }
+        }
+
+        async function cleanupTestIssues() {
+            settingsMenu.classList.remove('visible');
+            if (!confirm('Close all issues with "test-data" label?')) return;
+            const res = await fetch('/api/test/cleanup', { method: 'POST' });
+            const data = await res.json();
+            if (data.closed !== undefined) {
+                openModal('Test Issues Cleaned Up', `<p>Closed ${data.closed} test issues.</p>`);
+                setTimeout(() => location.reload(), 2000);
+            } else {
+                alert(data.error || 'Failed to cleanup test issues');
             }
         }
     </script>

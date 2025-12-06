@@ -16,7 +16,7 @@ from .locks import try_claim, release_claim, cleanup_stale_claims
 from .models import Issue, Session, SessionStatus, OrchestratorState
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
-from .tmux import create_session as tmux_create_session, session_exists as tmux_session_exists, kill_session as tmux_kill_session
+from .tmux import create_session, session_exists, kill_session
 from .worktree import create_worktree, remove_worktree, has_uncommitted_changes
 
 
@@ -53,7 +53,7 @@ class Orchestrator:
             issue_number = int(session_name.replace("issue-", ""))
             self._get_iterm_manager().create_session(issue_number, command, str(working_dir), title)
         else:
-            tmux_create_session(session_name, command, working_dir, title)
+            create_session(session_name, command, working_dir, title)
 
     def _session_exists(self, session_name: str) -> bool:
         """Check if a session exists using the appropriate backend."""
@@ -61,7 +61,7 @@ class Orchestrator:
             issue_number = int(session_name.replace("issue-", ""))
             return self._get_iterm_manager().session_exists(issue_number)
         else:
-            return tmux_session_exists(session_name)
+            return session_exists(session_name)
 
     def _kill_session(self, session_name: str) -> None:
         """Kill a session using the appropriate backend."""
@@ -69,7 +69,7 @@ class Orchestrator:
             issue_number = int(session_name.replace("issue-", ""))
             self._get_iterm_manager().kill_session(issue_number)
         else:
-            tmux_kill_session(session_name)
+            kill_session(session_name)
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filter_label if configured."""
@@ -147,6 +147,8 @@ class Orchestrator:
             repo_root=repo_root,
             issue_number=issue.number,
             issue_title=issue.title,
+            enforce_hooks=self.config.enforce_hooks,
+            pre_push_hook=self.config.pre_push_hook,
         )
 
         # Mark issue as in-progress
@@ -179,6 +181,9 @@ class Orchestrator:
 
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None:
         """Handle a completed session."""
+        from .models import SessionHistoryEntry
+        from .github import get_open_prs_for_branch
+
         print(f"Session #{session.issue.number} completed with status: {status.value}")
 
         # Release the claim on this issue
@@ -196,6 +201,34 @@ class Orchestrator:
         # Track completion
         if status == SessionStatus.COMPLETED:
             self.state.completed_today.append(session.issue.number)
+
+        # Record in session history
+        pr_url = None
+        if status == SessionStatus.COMPLETED:
+            prs = get_open_prs_for_branch(self.config.repo, session.branch_name)
+            if prs:
+                pr_url = prs[0].get("url")
+
+        # Generate human-readable status reason
+        status_reasons = {
+            SessionStatus.COMPLETED: "PR created successfully",
+            SessionStatus.BLOCKED: "Agent marked issue as blocked",
+            SessionStatus.NEEDS_HUMAN: "Agent requested human input",
+            SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
+            SessionStatus.FAILED: "Session ended without PR or status update",
+        }
+        status_reason = status_reasons.get(status, "Unknown")
+
+        history_entry = SessionHistoryEntry(
+            issue_number=session.issue.number,
+            title=session.issue.title,
+            agent_type=session.issue.agent_type or "unknown",
+            status=status.value,
+            runtime_minutes=session.runtime_minutes,
+            pr_url=pr_url,
+            status_reason=status_reason,
+        )
+        self.state.session_history.append(history_entry)
 
         # Cleanup worktree only if completed successfully
         # Leave it for blocked/failed so human can investigate
@@ -233,6 +266,13 @@ class Orchestrator:
                         all_issues.extend(issues)
 
                     available = self.scheduler.get_available_issues(all_issues)
+
+                    # Filter out issues already in session history (already processed today)
+                    history_numbers = {e.issue_number for e in self.state.session_history}
+                    active_numbers = {s.issue.number for s in self.state.active_sessions}
+                    exclude_numbers = history_numbers | active_numbers
+                    available = [i for i in available if i.number not in exclude_numbers]
+
                     sorted_issues = self.scheduler.sort_by_priority(available)
 
                     # Pick next batch

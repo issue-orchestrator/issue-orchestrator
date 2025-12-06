@@ -27,53 +27,28 @@ Implement the feature described in the issue.
 - Handle errors gracefully
 - Update relevant configuration files
 
-## When Done
+## Completion (MANDATORY)
 
-Post a comment on the issue using this exact format:
+You **MUST** use the `agent-done` command to complete your work. This command handles pushing code, creating PRs, and posting structured comments. Direct `gh issue comment` or `gh pr create` is NOT allowed.
 
-```
-## Implementation
-- Feature summary: what was implemented
-- Key files changed
-- How to test/use the feature
-
-## Problems Encountered
-- Any issues you ran into (or "None")
-- Any limitations or future improvements
-
-## Pull Request
-- Link to the PR you created
+### When work is complete:
+```bash
+agent-done completed \
+  --implementation "Brief description of what you implemented" \
+  --problems "Any problems encountered, or 'None' if none"
 ```
 
-Then exit.
-
-## If Blocked
-
-If you cannot complete the task:
-
-1. Add the 'blocked' label to the issue
-2. Post a comment using this exact format:
-
-```
-## Blocked
-- What you attempted
-- Why it didn't work
-- What's needed to proceed
+### If blocked:
+```bash
+agent-done blocked \
+  --reason "Why you cannot proceed" \
+  --attempted "What you tried"
 ```
 
-3. Exit
-
-## If You Need Human Input
-
-If you need clarification or a decision from a human:
-
-1. Add the 'needs-human' label to the issue
-2. Post a comment using this exact format:
-
-```
-## Needs Human Input
-- Your specific question or what decision is needed
-- Context for why you need this
+### If you need human input:
+```bash
+agent-done needs_human \
+  --question "Specific question for the human"
 ```
 
-3. Exit
+Run `agent-done --help` for full options. The orchestrator uses these signals to track progress. Sessions that exit without calling `agent-done` will be marked as "failed".

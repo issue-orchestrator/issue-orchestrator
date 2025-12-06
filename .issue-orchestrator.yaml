@@ -5,10 +5,13 @@ filter_label: test-data  # Only process test issues
 agents:
   "agent:backend":
     prompt: "examples/prompts/simple-fix.md"
+    model: haiku
   "agent:frontend":
     prompt: "examples/prompts/simple-fix.md"
+    model: haiku
   "agent:mobile":
     prompt: "examples/prompts/simple-fix.md"
+    model: haiku
 
 concurrency:
   max_sessions: 2

@@ -1,8 +1,13 @@
 """Git worktree management module."""
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
+
+
+# Path to bundled hooks (relative to this module)
+HOOKS_DIR = Path(__file__).parent / "hooks"
 
 
 class WorktreeError(Exception):
@@ -30,6 +35,43 @@ def slugify(text: str, max_length: int = 40) -> str:
     return slug[:max_length].rstrip('-')
 
 
+def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> None:
+    """
+    Install git hooks into a worktree.
+
+    Args:
+        worktree_path: Path to the worktree
+        pre_push_hook: Custom pre-push hook path (uses bundled if None)
+
+    Note:
+        Worktrees have a .git file (not directory) that points to the main repo.
+        We need to find the actual hooks directory.
+    """
+    worktree_path = Path(worktree_path)
+
+    # Read .git file to find the gitdir
+    git_file = worktree_path / ".git"
+    if not git_file.exists():
+        return  # Not a worktree
+
+    # .git file contains: gitdir: /path/to/main/repo/.git/worktrees/name
+    content = git_file.read_text().strip()
+    if not content.startswith("gitdir:"):
+        return
+
+    gitdir = Path(content.split(":", 1)[1].strip())
+    hooks_dir = gitdir / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use custom hook if provided, otherwise use bundled
+    src_hook = pre_push_hook if pre_push_hook else HOOKS_DIR / "pre-push"
+    if src_hook.exists():
+        dst_hook = hooks_dir / "pre-push"
+        shutil.copy2(src_hook, dst_hook)
+        # Make executable
+        dst_hook.chmod(0o755)
+
+
 def generate_branch_name(issue_number: int, issue_title: str) -> str:
     """
     Generate a branch name from issue number and title.
@@ -51,6 +93,8 @@ def create_worktree(
     issue_number: int,
     issue_title: str,
     worktree_base: Path | None = None,
+    enforce_hooks: bool = True,
+    pre_push_hook: Path | None = None,
 ) -> tuple[Path, str]:
     """
     Create a new git worktree for the given issue.
@@ -116,6 +160,10 @@ def create_worktree(
             raise WorktreeError(
                 f"Failed to create worktree: {result.stderr}"
             )
+
+        # Install git hooks for agent enforcement (if enabled)
+        if enforce_hooks:
+            install_hooks(worktree_path, pre_push_hook)
 
         return worktree_path, branch_name
 

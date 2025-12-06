@@ -41,6 +41,17 @@ class Config:
     # UI mode: "tmux" (default), "iterm2" (Mac iTerm2 tabs), "web" (browser dashboard)
     ui_mode: str = "tmux"
 
+    # Tab cleanup behavior
+    close_completed_tabs: bool = True   # Auto-close tabs for successful completions (has PR)
+    close_failed_tabs: bool = False     # Auto-close tabs for failed sessions (leave open to investigate)
+
+    # Enforcement options
+    enforce_hooks: bool = True  # Install pre-push hooks to enforce structured comments
+    pre_push_hook: Optional[Path] = None  # Custom pre-push hook path (uses bundled if None)
+
+    # Path to the config file (set during load)
+    config_path: Optional[Path] = None
+
     def prefixed_label(self, label: str) -> str:
         """Return label with prefix if configured.
 
@@ -76,6 +87,7 @@ class Config:
             data = yaml.safe_load(f)
 
         config = cls()
+        config.config_path = config_path.resolve()
 
         # Parse agents
         for label, agent_data in data.get("agents", {}).items():
@@ -110,6 +122,15 @@ class Config:
 
         # UI mode
         config.ui_mode = data.get("ui_mode", "tmux")
+
+        # Tab cleanup behavior
+        config.close_completed_tabs = data.get("close_completed_tabs", True)
+        config.close_failed_tabs = data.get("close_failed_tabs", False)
+
+        # Enforcement options
+        config.enforce_hooks = data.get("enforce_hooks", True)
+        if data.get("pre_push_hook"):
+            config.pre_push_hook = Path(data["pre_push_hook"])
 
         # Parse comment headings
         headings_data = data.get("comment_headings", {})

@@ -39,6 +39,7 @@ dev = [
 
 [project.scripts]
 issue-orchestrator = "issue_orchestrator.cli:main"
+agent-done = "issue_orchestrator.agent_done:main"
 
 [build-system]
 requires = ["hatchling"]

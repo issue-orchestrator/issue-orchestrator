@@ -13,28 +13,29 @@ You are working on issue #{issue_number}.
    git commit --allow-empty -m "test: minimal fix for #{issue_number}"
    ```
 
-2. Push your branch:
+2. Complete using `agent-done`:
    ```bash
-   git push -u origin $(git branch --show-current)
+   agent-done completed \
+     --implementation "Empty commit for orchestrator validation" \
+     --problems "None"
    ```
 
-3. Create a PR:
-   ```bash
-   gh pr create --title "Test: #{issue_number}" --body "Minimal test PR for orchestrator validation."
-   ```
-
-4. Post completion comment:
-   ```bash
-   gh issue comment {issue_number} --body "## ✅ Completed
-
-   **Status:** Test agent finished successfully
-   **PR:** Created"
-   ```
-
-5. Exit immediately after posting the comment.
+3. Exit immediately after the command completes.
 
 ## Important
 
 - Do NOT read any code files
 - Do NOT make any real changes
 - This is purely to test the orchestration workflow
+- The `agent-done` command handles push, PR creation, and comment posting
+
+## Completion (MANDATORY)
+
+You **MUST** use the `agent-done` command. Direct `gh issue comment` or `gh pr create` is NOT allowed.
+
+If you encounter any issues, use:
+```bash
+agent-done blocked --reason "Why blocked" --attempted "What you tried"
+```
+
+Sessions that exit without calling `agent-done` will be marked as "failed".

@@ -115,6 +115,7 @@ class Session:
     branch_name: str
     started_at: datetime = field(default_factory=datetime.now)
     status: SessionStatus = SessionStatus.RUNNING
+    exit_sent: bool = False  # Track if we've already sent /exit
 
     @property
     def runtime_minutes(self) -> int:
@@ -129,12 +130,25 @@ class Session:
 
 
 @dataclass
+class SessionHistoryEntry:
+    """Record of a completed session."""
+    issue_number: int
+    title: str
+    agent_type: str
+    status: str  # "completed", "failed", "blocked", "needs_human", "timed_out"
+    runtime_minutes: int
+    pr_url: Optional[str] = None  # Set if PR was created
+    status_reason: Optional[str] = None  # Human-readable explanation of status
+
+
+@dataclass
 class OrchestratorState:
     """Persisted state of the orchestrator."""
     active_sessions: list[Session] = field(default_factory=list)
     completed_today: list[int] = field(default_factory=list)  # issue numbers
     paused: bool = False
     priority_queue: list[int] = field(default_factory=list)  # manual priority overrides
+    session_history: list[SessionHistoryEntry] = field(default_factory=list)  # This session's history
 
 
 @dataclass

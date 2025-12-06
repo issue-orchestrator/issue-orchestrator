@@ -5,9 +5,11 @@
 agents:
   "agent:backend":
     prompt: ".issue-orchestrator/prompts/backend.md"
-    worktree_base: "../"
-    model: "sonnet"
-    timeout_minutes: 45
+    worktree_base: "../"           # Where to create worktrees (relative to repo)
+    model: "sonnet"                # Claude model (sonnet, opus, haiku)
+    timeout_minutes: 45            # Session timeout
+    # command: "claude --model {model} '{initial_prompt}'"  # Custom command
+    # repo_root: "/path/to/repo"   # Different repo for this agent
 
   "agent:frontend":
     prompt: ".issue-orchestrator/prompts/frontend.md"
@@ -17,14 +19,36 @@ agents:
 
 # Concurrency settings
 concurrency:
-  max_sessions: 3
-  session_timeout_minutes: 45
+  max_sessions: 3                  # Max parallel agent sessions
+  session_timeout_minutes: 45      # Default timeout for all agents
 
 # Label names (customize if your repo uses different labels)
 labels:
-  in_progress: "in-progress"
-  blocked: "blocked"
-  needs_human: "needs-human"
+  in_progress: "in-progress"       # Applied when work starts
+  blocked: "blocked"               # Applied when agent is blocked
+  needs_human: "needs-human"       # Applied when agent needs input
+  prefix: ""                       # Optional: prefix all labels (e.g., "bot" -> "bot:in-progress")
 
-# Optional: specify repo explicitly (otherwise auto-detected from git remote)
-# repo: "owner/repo-name"
+# UI mode: "tmux" (default), "iterm2" (Mac), or "web" (browser dashboard)
+ui_mode: "tmux"
+
+# Tab/window cleanup behavior
+close_completed_tabs: true         # Auto-close tabs for successful completions
+close_failed_tabs: false           # Keep failed tabs open for investigation
+
+# Enforcement options
+enforce_hooks: true                # Install pre-push hooks to enforce agent-done usage
+# pre_push_hook: "./custom-hook.sh"  # Custom pre-push hook (default: bundled validator)
+
+# GitHub settings
+# repo: "owner/repo-name"          # Explicit repo (otherwise auto-detected from git remote)
+# filter_label: "test-data"        # Only process issues with this label
+# filter_milestone: "v1.0"         # Only process issues in this milestone
+
+# Custom comment headings (for tooling integration)
+comment_headings:
+  implementation: "## Implementation"
+  problems: "## Problems Encountered"
+  pr_link: "## Pull Request"
+  blocked: "## Blocked"
+  needs_human: "## Needs Human Input"

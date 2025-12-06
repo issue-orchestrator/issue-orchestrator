@@ -6,7 +6,7 @@ from typing import Optional
 from .config import Config
 from .github import add_label, get_open_prs_for_branch, remove_label
 from .models import Session, SessionStatus
-from .tmux import kill_session as tmux_kill_session, session_exists as tmux_session_exists
+from .tmux import kill_session, session_exists
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class SessionMonitor:
             issue_number = int(session_name.replace("issue-", ""))
             return self._get_iterm_manager().session_exists(issue_number)
         else:
-            return tmux_session_exists(session_name)
+            return session_exists(session_name)
 
     def _kill_session(self, session_name: str) -> None:
         """Kill a session using the appropriate backend."""
@@ -49,19 +49,27 @@ class SessionMonitor:
             issue_number = int(session_name.replace("issue-", ""))
             self._get_iterm_manager().kill_session(issue_number)
         else:
-            tmux_kill_session(session_name)
+            kill_session(session_name)
+
+    def _send_exit_to_session(self, issue_number: int) -> bool:
+        """Send /exit command to a session."""
+        if self._using_iterm2:
+            return self._get_iterm_manager().send_to_session(issue_number, "/exit")
+        return False
 
     def check_session(self, session: Session) -> SessionStatus:
         """Check the status of a session.
 
         Logic:
-        1. If tmux session still running -> RUNNING
-        2. If tmux session exited:
+        1. If runtime > timeout -> TIMED_OUT
+        2. If session still running:
+           a. Check if PR exists -> send /exit, return RUNNING (will complete next check)
+           b. Otherwise -> RUNNING
+        3. If session exited:
            a. Check if PR exists for branch -> COMPLETED
            b. Check if issue has 'blocked' label -> BLOCKED
            c. Check if issue has 'needs-human' label -> NEEDS_HUMAN
            d. Otherwise -> FAILED
-        3. If runtime > timeout -> TIMED_OUT
 
         Args:
             session: The session to check
@@ -80,6 +88,23 @@ class SessionMonitor:
 
         # Check if session is still running
         if self._session_exists(session.tmux_session_name):
+            # Session still running - but check if it has a PR (meaning it's done but didn't exit)
+            # Only send /exit once to avoid spamming
+            if not session.exit_sent:
+                try:
+                    prs = get_open_prs_for_branch(
+                        repo=self.config.repo,
+                        branch=session.branch_name,
+                    )
+                    if prs:
+                        logger.info(
+                            f"Session #{session.issue.number} has PR but still running - sending /exit"
+                        )
+                        if self._send_exit_to_session(session.issue.number):
+                            session.exit_sent = True
+                except Exception as e:
+                    logger.debug(f"Could not check for PRs: {e}")
+
             logger.debug(
                 f"Session for issue #{session.issue.number} still running "
                 f"(session: {session.tmux_session_name})"
@@ -235,6 +260,19 @@ class SessionMonitor:
                         f"Failed to remove '{self.config.get_label_in_progress()}' label "
                         f"from issue #{issue_number}: {e}"
                     )
+
+            # Auto-close tab based on config
+            should_close = (
+                (status == SessionStatus.COMPLETED and self.config.close_completed_tabs) or
+                (status in (SessionStatus.FAILED, SessionStatus.BLOCKED, SessionStatus.NEEDS_HUMAN, SessionStatus.TIMED_OUT)
+                 and self.config.close_failed_tabs)
+            )
+            if should_close:
+                try:
+                    self._kill_session(session.tmux_session_name)
+                    logger.info(f"Closed tab for {status.value} session #{issue_number}")
+                except Exception as e:
+                    logger.debug(f"Could not close tab for #{issue_number}: {e}")
 
             logger.info(
                 f"Completed handling for issue #{issue_number} with status {status.value}"

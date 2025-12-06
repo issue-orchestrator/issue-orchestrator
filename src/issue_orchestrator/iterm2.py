@@ -221,34 +221,50 @@ end tell'''
             return False
 
     def session_exists(self, issue_number: int) -> bool:
-        """Check if a session exists for the issue."""
+        """Check if a session exists for the issue AND is still running a command.
+
+        Returns False if the tab doesn't exist OR if it's at a shell prompt
+        (meaning Claude has exited).
+        """
         if issue_number not in self._sessions:
             return False
 
-        # Verify the tab still exists by checking for it
-        tab_name = self._sessions[issue_number]["tab_name"]
+        # Check if tab exists AND is still processing (running a command)
         script = f'''
         tell application "iTerm"
             tell current window
                 repeat with t in tabs
                     tell current session of t
                         if name contains "#{issue_number}" then
-                            return true
+                            -- Check if session is processing (running a command)
+                            if is processing then
+                                return "running"
+                            else
+                                return "idle"
+                            end if
                         end if
                     end tell
                 end repeat
             end tell
         end tell
-        return false
+        return "notfound"
         '''
         success, output = run_applescript(script)
-        exists = success and "true" in output.lower()
+        output_lower = output.lower().strip()
 
-        if not exists:
-            # Clean up our tracking
-            del self._sessions[issue_number]
+        if not success or "notfound" in output_lower:
+            # Tab doesn't exist - clean up tracking
+            if issue_number in self._sessions:
+                del self._sessions[issue_number]
+            return False
 
-        return exists
+        if "idle" in output_lower:
+            # Tab exists but at shell prompt (Claude exited)
+            logger.info(f"Session #{issue_number} tab is idle (Claude exited)")
+            return False
+
+        # "running" - tab exists and command is still running
+        return True
 
     def kill_session(self, issue_number: int) -> bool:
         """Close the tab for an issue."""
@@ -275,6 +291,39 @@ end tell'''
     def select_session(self, issue_number: int) -> bool:
         """Switch to the tab for an issue."""
         return select_tab_by_name(f"#{issue_number}")
+
+    def send_to_session(self, issue_number: int, text: str) -> bool:
+        """Send text to a specific session by issue number.
+
+        Args:
+            issue_number: The issue number identifying the session
+            text: Text to send (will add newline)
+
+        Returns:
+            True if text was sent successfully
+        """
+        escaped_text = text.replace('"', '\\"')
+        # Use "tell application id" to avoid activating iTerm and stealing focus
+        script = f'''
+        tell application id "com.googlecode.iterm2"
+            tell current window
+                repeat with t in tabs
+                    tell current session of t
+                        if name contains "#{issue_number}" then
+                            write text "{escaped_text}"
+                            return true
+                        end if
+                    end tell
+                end repeat
+            end tell
+        end tell
+        return false
+        '''
+        success, output = run_applescript(script)
+        if success and "true" in output.lower():
+            logger.info("Sent text to session #%d", issue_number)
+            return True
+        return False
 
     def list_sessions(self) -> list[int]:
         """List all tracked issue numbers."""
