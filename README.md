@@ -91,6 +91,9 @@ agents:
     # command: "claude --model {model} '{initial_prompt}'"
     # Optional: different repo root for this agent
     # repo_root: "/path/to/repo"
+  "agent:mobile":
+    prompt: ".issue-orchestrator/prompts/mobile.md"
+    model: "haiku"                 # Faster for mobile issues
 
 # Concurrency settings
 concurrency:
