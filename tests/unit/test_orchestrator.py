@@ -992,6 +992,89 @@ class TestRunLoop:
             # Should try to launch both
             assert mock_launch.call_count == 2
 
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    async def test_run_loop_filters_out_blocked_issues(
+        self,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that run_loop filters out issues with unsatisfied dependencies."""
+        # Issue 1 (no dependencies) - should be launchable
+        issue1 = create_issue(1, labels=["agent:web"])
+
+        # Issue 2 depends on issue 1 - should NOT be launchable until 1 completes
+        issue2 = create_issue(
+            2,
+            labels=["agent:web"],
+            title="Task 2",
+        )
+        issue2.body = "Blocked by #1"
+
+        mock_list_issues.return_value = [issue1, issue2]
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        # Verify that the scheduler correctly identifies dependencies
+        dependencies = orchestrator.scheduler.analyze_dependencies([issue1, issue2])
+        assert dependencies == {2: [1]}, "Should find that issue 2 depends on issue 1"
+
+        # Verify that filtering works correctly
+        available = orchestrator.scheduler.get_available_issues([issue1, issue2])
+        assert len(available) == 2, "Both issues should be available (not blocked or in-progress)"
+
+        # Verify that dependency filtering would exclude issue 2
+        completed_issues = set()  # Issue 1 not yet completed
+        unblocked = []
+        for issue in available:
+            if issue.number not in dependencies:
+                unblocked.append(issue)
+            else:
+                blocking_issues = dependencies[issue.number]
+                if all(blocker in completed_issues for blocker in blocking_issues):
+                    unblocked.append(issue)
+
+        assert unblocked == [issue1], "Only issue 1 should be unblocked"
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    async def test_run_loop_launches_unblocked_issues_after_dependency_completes(
+        self,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that run_loop launches dependent issues once dependencies complete."""
+        # Issue 1 (no dependencies)
+        issue1 = create_issue(1, labels=["agent:web"])
+
+        # Issue 2 depends on issue 1
+        issue2 = create_issue(2, labels=["agent:web"])
+        issue2.body = "Blocked by #1"
+
+        mock_list_issues.return_value = [issue1, issue2]
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        # Mark issue 1 as completed
+        orchestrator.state.completed_today = [1]
+
+        with patch.object(orchestrator, "launch_session") as mock_launch:
+            mock_launch.return_value = create_session(issue2)
+
+            # Run one iteration
+            async def run_one_iteration():
+                await asyncio.sleep(0.01)
+                orchestrator.request_shutdown()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
+            )
+
+            # Should now be able to launch issue 2
+            launched_issues = {call[0][0].number for call in mock_launch.call_args_list}
+            assert 2 in launched_issues
+
 
 class TestControlMethods:
     """Test pause, resume, prioritize methods."""

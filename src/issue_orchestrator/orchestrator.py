@@ -233,7 +233,25 @@ class Orchestrator:
                         all_issues.extend(issues)
 
                     available = self.scheduler.get_available_issues(all_issues)
-                    sorted_issues = self.scheduler.sort_by_priority(available)
+
+                    # Analyze dependencies and filter out blocked issues
+                    dependencies = self.scheduler.analyze_dependencies(all_issues)
+                    completed_issues = set(self.state.completed_today)
+
+                    # Filter issues whose dependencies are not yet satisfied
+                    unblocked = []
+                    for issue in available:
+                        if issue.number not in dependencies:
+                            # No dependencies, issue is unblocked
+                            unblocked.append(issue)
+                        else:
+                            # Check if all blocking issues have been completed
+                            blocking_issues = dependencies[issue.number]
+                            if all(blocker in completed_issues for blocker in blocking_issues):
+                                unblocked.append(issue)
+                            # Issue has unsatisfied dependencies, skip it
+
+                    sorted_issues = self.scheduler.sort_by_priority(unblocked)
 
                     # Pick next batch
                     to_launch = self.scheduler.pick_next_batch(
