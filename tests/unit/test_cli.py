@@ -36,6 +36,7 @@ class TestCmdStart:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_sessions = 2
+                        mock_config.ui_mode = 'tmux'
                         mock_find.return_value = mock_config
 
                         # Setup orchestrator
@@ -44,11 +45,16 @@ class TestCmdStart:
                         mock_orchestrator.run_loop = AsyncMock()
                         mock_orch_class.return_value = mock_orchestrator
 
+                        # Setup asyncio.run to return None
+                        mock_asyncio.run.return_value = None
+                        mock_dashboard.return_value = False
+
                         args = argparse.Namespace(
                             test_mode=False,
                             milestone=None,
                             dry_run=False,
                             no_dashboard=False,
+                            debug=False,
                         )
 
                         result = cmd_start(args)
@@ -65,6 +71,7 @@ class TestCmdStart:
                     mock_config = Mock()
                     mock_config.agents = {'agent:test': Mock()}
                     mock_config.max_sessions = 2
+                    mock_config.ui_mode = 'tmux'
                     mock_find.return_value = mock_config
 
                     mock_orchestrator = Mock()
@@ -72,11 +79,15 @@ class TestCmdStart:
                     mock_orchestrator.run_loop = AsyncMock()
                     mock_orch_class.return_value = mock_orchestrator
 
+                    # Setup asyncio.run to return None
+                    mock_asyncio.run.return_value = None
+
                     args = argparse.Namespace(
                         test_mode=False,
                         milestone=None,
                         dry_run=False,
                         no_dashboard=True,
+                        debug=False,
                     )
 
                     result = cmd_start(args)

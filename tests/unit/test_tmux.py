@@ -411,7 +411,7 @@ class TestBackwardCompatibleFunctions:
             tmux.create_session("issue-42", "echo test", working_dir)
 
             mock_manager.create_issue_window.assert_called_once_with(
-                42, "echo test", working_dir
+                42, "echo test", working_dir, title=None
             )
 
     def test_create_session_invalid_name(self):

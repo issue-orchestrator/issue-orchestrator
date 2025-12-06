@@ -85,7 +85,8 @@ class TestOrchestratorWiring:
                 return (Path("/fake/worktree"), "456-test-feature")
             mock_worktree.side_effect = record_worktree
 
-            with patch('issue_orchestrator.orchestrator.create_session') as mock_create:
+            # Patch tmux_create_session where it's imported in orchestrator
+            with patch('issue_orchestrator.orchestrator.tmux_create_session') as mock_create:
                 def record_window(*args, **kwargs):
                     created['window'] = True
                 mock_create.side_effect = record_window
@@ -296,7 +297,7 @@ class TestMonitorWiring:
             started_at=datetime.now(),
         )
 
-        with patch('issue_orchestrator.monitor.session_exists', return_value=False):
+        with patch('issue_orchestrator.monitor.tmux_session_exists', return_value=False):
             with patch('issue_orchestrator.monitor.get_open_prs_for_branch') as mock_prs:
                 mock_prs.return_value = [{"url": "https://github.com/test/pull/1"}]
 
@@ -327,7 +328,7 @@ class TestMonitorWiring:
             started_at=datetime.now(),
         )
 
-        with patch('issue_orchestrator.monitor.session_exists', return_value=True):
+        with patch('issue_orchestrator.monitor.tmux_session_exists', return_value=True):
             status = monitor.check_session(session)
             assert status == SessionStatus.RUNNING
 

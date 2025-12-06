@@ -152,7 +152,7 @@ class TestStartup:
     @patch("issue_orchestrator.analysis.get_issue_branches")
     @patch("issue_orchestrator.orchestrator.list_issues")
     @patch("issue_orchestrator.analysis.analyze_issue")
-    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.tmux_session_exists")
     @patch("issue_orchestrator.orchestrator.remove_label")
     async def test_startup_cleans_stale_claims(
         self,
@@ -179,7 +179,7 @@ class TestStartup:
     @patch("issue_orchestrator.analysis.get_issue_branches")
     @patch("issue_orchestrator.orchestrator.list_issues")
     @patch("issue_orchestrator.analysis.analyze_issue")
-    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.tmux_session_exists")
     @patch("issue_orchestrator.orchestrator.remove_label")
     async def test_startup_checks_in_progress_issues(
         self,
@@ -210,7 +210,7 @@ class TestStartup:
     @patch("issue_orchestrator.analysis.get_issue_branches")
     @patch("issue_orchestrator.orchestrator.list_issues")
     @patch("issue_orchestrator.analysis.analyze_issue")
-    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.tmux_session_exists")
     @patch("issue_orchestrator.orchestrator.remove_label")
     async def test_startup_clears_orphaned_labels(
         self,
@@ -250,7 +250,7 @@ class TestStartup:
     @patch("issue_orchestrator.analysis.get_issue_branches")
     @patch("issue_orchestrator.orchestrator.list_issues")
     @patch("issue_orchestrator.analysis.analyze_issue")
-    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.tmux_session_exists")
     @patch("issue_orchestrator.orchestrator.remove_label")
     async def test_startup_skips_issues_with_open_prs(
         self,
@@ -287,7 +287,7 @@ class TestStartup:
     @patch("issue_orchestrator.analysis.get_issue_branches")
     @patch("issue_orchestrator.orchestrator.list_issues")
     @patch("issue_orchestrator.analysis.analyze_issue")
-    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.tmux_session_exists")
     @patch("issue_orchestrator.orchestrator.remove_label")
     async def test_startup_clears_labels_for_partial_work(
         self,
@@ -329,7 +329,7 @@ class TestLaunchSession:
     @patch("issue_orchestrator.orchestrator.try_claim")
     @patch("issue_orchestrator.orchestrator.create_worktree")
     @patch("issue_orchestrator.orchestrator.add_label")
-    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.tmux_create_session")
     def test_launch_session_creates_worktree(
         self,
         mock_create_tmux,
@@ -353,7 +353,7 @@ class TestLaunchSession:
     @patch("issue_orchestrator.orchestrator.try_claim")
     @patch("issue_orchestrator.orchestrator.create_worktree")
     @patch("issue_orchestrator.orchestrator.add_label")
-    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.tmux_create_session")
     def test_launch_session_adds_in_progress_label(
         self,
         mock_create_tmux,
@@ -378,7 +378,7 @@ class TestLaunchSession:
     @patch("issue_orchestrator.orchestrator.try_claim")
     @patch("issue_orchestrator.orchestrator.create_worktree")
     @patch("issue_orchestrator.orchestrator.add_label")
-    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.tmux_create_session")
     def test_launch_session_creates_tmux_session(
         self,
         mock_create_tmux,
@@ -405,7 +405,7 @@ class TestLaunchSession:
     @patch("issue_orchestrator.orchestrator.try_claim")
     @patch("issue_orchestrator.orchestrator.create_worktree")
     @patch("issue_orchestrator.orchestrator.add_label")
-    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.tmux_create_session")
     def test_launch_session_adds_to_active_sessions(
         self,
         mock_create_tmux,
@@ -431,7 +431,7 @@ class TestLaunchSession:
     @patch("issue_orchestrator.orchestrator.try_claim")
     @patch("issue_orchestrator.orchestrator.create_worktree")
     @patch("issue_orchestrator.orchestrator.add_label")
-    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.tmux_create_session")
     def test_launch_session_returns_session_object(
         self,
         mock_create_tmux,
@@ -489,7 +489,7 @@ class TestLaunchSession:
     @patch("issue_orchestrator.orchestrator.try_claim")
     @patch("issue_orchestrator.orchestrator.create_worktree")
     @patch("issue_orchestrator.orchestrator.add_label")
-    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.tmux_create_session")
     def test_launch_session_uses_agent_repo_root_if_configured(
         self,
         mock_create_tmux,
@@ -516,7 +516,7 @@ class TestLaunchSession:
     @patch("issue_orchestrator.orchestrator.try_claim")
     @patch("issue_orchestrator.orchestrator.create_worktree")
     @patch("issue_orchestrator.orchestrator.add_label")
-    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.tmux_create_session")
     def test_launch_session_falls_back_to_config_repo_root(
         self,
         mock_create_tmux,
