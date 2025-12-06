@@ -61,6 +61,11 @@ issue-orchestrator start
 | `issue-orchestrator start` | Start the orchestrator |
 | `issue-orchestrator start --ui-mode web` | Start with web dashboard on :8080 |
 | `issue-orchestrator start --ui-mode iterm2` | Start with iTerm2 tabs (macOS) |
+| `issue-orchestrator start --test-mode` | Run with mock test data |
+| `issue-orchestrator start --milestone "v1.0"` | Filter to issues in milestone |
+| `issue-orchestrator start --dry-run` | Show what would run without launching |
+| `issue-orchestrator start --debug` | Enable verbose logging to ~/.issue-orchestrator.log |
+| `issue-orchestrator start --no-dashboard` | Run headless (for CI/scripting) |
 | `issue-orchestrator status` | Show current status |
 | `issue-orchestrator attach <issue>` | Attach to a running session |
 | `issue-orchestrator pause` | Finish current, don't start new |
