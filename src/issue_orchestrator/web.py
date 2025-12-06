@@ -378,7 +378,7 @@ async def create_test_issues() -> JSONResponse:
 
 @app.post("/api/test/cleanup")
 async def cleanup_test_issues() -> JSONResponse:
-    """Close all test issues."""
+    """Close all test issues and clear their session history."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -389,9 +389,63 @@ async def cleanup_test_issues() -> JSONResponse:
         return JSONResponse({"error": "No repo configured"}, status_code=400)
     try:
         count = _cleanup_test_issues(config.repo)
+        # Also clear session history for test issues (titles starting with [TEST])
+        state = _orchestrator.state
+        state.session_history = [
+            entry for entry in state.session_history
+            if not entry.title.startswith("[TEST]")
+        ]
         return JSONResponse({"closed": count})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/history/clear")
+async def clear_history() -> JSONResponse:
+    """Clear all session history (completed, failed, etc.)."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    state = _orchestrator.state
+    count = len(state.session_history)
+    state.session_history = []
+    state.completed_today = []
+    return JSONResponse({"cleared": count})
+
+
+@app.post("/api/history/dismiss/{issue_number}")
+async def dismiss_history_entry(issue_number: int) -> JSONResponse:
+    """Dismiss a single history entry."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    state = _orchestrator.state
+    original_len = len(state.session_history)
+    state.session_history = [
+        entry for entry in state.session_history
+        if entry.issue_number != issue_number
+    ]
+    if issue_number in state.completed_today:
+        state.completed_today.remove(issue_number)
+    dismissed = original_len - len(state.session_history)
+    return JSONResponse({"dismissed": dismissed})
+
+
+@app.post("/api/retry/{issue_number}")
+async def retry_issue(issue_number: int) -> JSONResponse:
+    """Remove issue from history so it can be retried."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    state = _orchestrator.state
+    # Remove from history so scheduler will pick it up again
+    state.session_history = [
+        entry for entry in state.session_history
+        if entry.issue_number != issue_number
+    ]
+    if issue_number in state.completed_today:
+        state.completed_today.remove(issue_number)
+    return JSONResponse({"retrying": issue_number, "message": "Issue will be picked up on next cycle"})
 
 
 @app.get("/api/debug")
@@ -410,12 +464,23 @@ async def get_debug() -> JSONResponse:
             "command": agent_cfg.command[:50] + "..." if len(agent_cfg.command) > 50 else agent_cfg.command,
         }
 
+    # Startup options based on current config state
+    startup_options = {
+        "ui_mode": config.ui_mode,
+        "web_port": config.web_port,
+        "test_mode": config.filter_label == "test-data",  # Inferred from filter
+        "filter_label": config.filter_label,
+        "filter_milestone": config.filter_milestone,
+        "max_sessions": config.max_sessions,
+    }
+
     return JSONResponse({
         "paused": state.paused,
         "config_path": str(config.config_path) if config.config_path else "None",
         "repo_root": str(config.repo_root),
         "priority_queue": state.priority_queue,
         "agents": agents,
+        "startup_options": startup_options,
     })
 
 
