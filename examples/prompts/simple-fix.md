@@ -40,7 +40,7 @@ The `--problems` field is crucial for the CTO review agent to identify technical
 
 If genuinely no problems: `--problems "None - implementation was straightforward"`
 
-**Note**: The CTO agent reviews your PR diff and will flag unreported issues. Hiding problems delays fixes and creates technical debt.
+**Note**: The CTO agent reviews your PR diff and will flag unreported issues. Hiding problems prolongs technical debt.
 
 ### If blocked:
 ```bash
