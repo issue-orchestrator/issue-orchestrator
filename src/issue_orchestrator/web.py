@@ -53,6 +53,7 @@ async def dashboard(request: Request) -> HTMLResponse:
 
     issues = []  # Unified list
     seen_issues = set()  # Track issue numbers to avoid duplicates
+    queue_total = 0  # Initialize queue_total
 
     if state and config:
         active_numbers = {s.issue.number for s in state.active_sessions}
@@ -88,7 +89,6 @@ async def dashboard(request: Request) -> HTMLResponse:
             })
 
         # 2. Queue (available issues not active or in history)
-        queue_total = 0
         try:
             scheduler = Scheduler(config)
             all_issues = []
