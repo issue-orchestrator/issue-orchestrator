@@ -6,7 +6,7 @@ from typing import Optional
 from .config import Config
 from .github import add_label, get_open_prs_for_branch, remove_label
 from .models import Session, SessionStatus
-from .tmux import kill_session as tmux_kill_session, session_exists as tmux_session_exists
+from .tmux import kill_session, session_exists
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class SessionMonitor:
             issue_number = int(session_name.replace("issue-", ""))
             return self._get_iterm_manager().session_exists(issue_number)
         else:
-            return tmux_session_exists(session_name)
+            return session_exists(session_name)
 
     def _kill_session(self, session_name: str) -> None:
         """Kill a session using the appropriate backend."""
@@ -49,7 +49,7 @@ class SessionMonitor:
             issue_number = int(session_name.replace("issue-", ""))
             self._get_iterm_manager().kill_session(issue_number)
         else:
-            tmux_kill_session(session_name)
+            kill_session(session_name)
 
     def check_session(self, session: Session) -> SessionStatus:
         """Check the status of a session.
