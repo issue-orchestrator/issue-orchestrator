@@ -474,11 +474,20 @@
             window.location = url;
         }
 
-        // Auto-refresh (preserves page param)
-        setTimeout(() => {
+        // Auto-refresh (preserves page param) - uses queue_refresh_seconds from config
+        const queueRefreshSeconds = {{ queue_refresh_seconds }};
+        if (queueRefreshSeconds > 0) {
+            setTimeout(() => {
+                const url = new URL(window.location);
+                window.location = url;
+            }, queueRefreshSeconds * 1000);
+        }
+
+        // Manual refresh function
+        function refreshPage() {
             const url = new URL(window.location);
             window.location = url;
-        }, 5000);
+        }
 
         // Context menu
         const contextMenu = document.getElementById('contextMenu');

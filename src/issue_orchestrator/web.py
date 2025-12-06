@@ -170,6 +170,7 @@ async def dashboard(request: Request) -> HTMLResponse:
         queue_page=queue_page,
         queue_total_pages=queue_total_pages,
         queue_total=queue_total,
+        queue_refresh_seconds=config.queue_refresh_seconds if config else 600,
     )
     return HTMLResponse(content=html)
 

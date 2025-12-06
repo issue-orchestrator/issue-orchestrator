@@ -250,8 +250,12 @@ class Orchestrator:
                 if status != SessionStatus.RUNNING:
                     self.handle_session_completion(session, status)
 
-            # If not paused and have capacity, launch more sessions
-            if not self.state.paused:
+            # Check if we've hit the max issues limit for this session
+            max_issues = self.config.max_issues_to_start
+            hit_max_issues = max_issues > 0 and self.state.issues_started_count >= max_issues
+
+            # If not paused, not at max issues limit, and have capacity, launch more sessions
+            if not self.state.paused and not hit_max_issues:
                 available_slots = self.config.max_sessions - len(self.state.active_sessions)
 
                 if available_slots > 0:
@@ -283,11 +287,16 @@ class Orchestrator:
                     )
 
                     for issue in to_launch:
+                        # Check limit before each launch (might hit it mid-batch)
+                        if max_issues > 0 and self.state.issues_started_count >= max_issues:
+                            break
                         try:
                             session = self.launch_session(issue)
                             if session is None:
                                 # Issue was already claimed by another instance
                                 continue
+                            # Successfully launched - increment counter
+                            self.state.issues_started_count += 1
                         except Exception as e:
                             print(f"Failed to launch session for #{issue.number}: {e}")
 

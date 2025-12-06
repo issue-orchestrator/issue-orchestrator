@@ -149,6 +149,7 @@ class OrchestratorState:
     paused: bool = False
     priority_queue: list[int] = field(default_factory=list)  # manual priority overrides
     session_history: list[SessionHistoryEntry] = field(default_factory=list)  # This session's history
+    issues_started_count: int = 0  # Total issues started this session (for max_issues_to_start)
 
 
 @dataclass

@@ -150,6 +150,16 @@ def cmd_start(args: argparse.Namespace) -> int:
         config.ui_mode = args.ui_mode
     console.print(f"[dim]UI mode: {config.ui_mode}[/dim]")
 
+    # Handle queue_refresh override
+    if hasattr(args, 'queue_refresh') and args.queue_refresh is not None:
+        config.queue_refresh_seconds = args.queue_refresh
+
+    # Handle max_issues override
+    if hasattr(args, 'max_issues') and args.max_issues is not None:
+        config.max_issues_to_start = args.max_issues
+        if config.max_issues_to_start > 0:
+            console.print(f"[dim]Max issues to start: {config.max_issues_to_start}[/dim]")
+
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
     console.print(f"[dim]Max concurrent sessions: {config.max_sessions}[/dim]")
 
@@ -682,6 +692,18 @@ def main() -> int:
         type=int,
         default=8080,
         help="Port for web dashboard (default: 8080)"
+    )
+    start_parser.add_argument(
+        "--queue-refresh",
+        type=int,
+        default=None,
+        help="Seconds between queue refreshes from GitHub (default: 600, 0=manual only)"
+    )
+    start_parser.add_argument(
+        "--max-issues",
+        type=int,
+        default=None,
+        help="Max issues to start processing this session (default: 0=unlimited)"
     )
     start_parser.set_defaults(func=cmd_start)
 

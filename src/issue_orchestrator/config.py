@@ -41,6 +41,10 @@ class Config:
     # UI mode: "tmux" (default), "iterm2" (Mac iTerm2 tabs), "web" (browser dashboard)
     ui_mode: str = "tmux"
     web_port: int = 8080  # Port for web dashboard
+    queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
+
+    # Session limits
+    max_issues_to_start: int = 0  # Max issues to start processing (0 = unlimited)
 
     # Tab cleanup behavior
     close_completed_tabs: bool = True   # Auto-close tabs for successful completions (has PR)
@@ -124,6 +128,10 @@ class Config:
         # UI mode
         config.ui_mode = data.get("ui_mode", "tmux")
         config.web_port = data.get("web_port", 8080)
+        config.queue_refresh_seconds = data.get("queue_refresh_seconds", 600)
+
+        # Session limits
+        config.max_issues_to_start = data.get("max_issues_to_start", 0)
 
         # Tab cleanup behavior
         config.close_completed_tabs = data.get("close_completed_tabs", True)
