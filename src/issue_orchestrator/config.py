@@ -40,6 +40,7 @@ class Config:
 
     # UI mode: "tmux" (default), "iterm2" (Mac iTerm2 tabs), "web" (browser dashboard)
     ui_mode: str = "tmux"
+    web_port: int = 8080  # Port for web dashboard
 
     # Tab cleanup behavior
     close_completed_tabs: bool = True   # Auto-close tabs for successful completions (has PR)
@@ -122,6 +123,7 @@ class Config:
 
         # UI mode
         config.ui_mode = data.get("ui_mode", "tmux")
+        config.web_port = data.get("web_port", 8080)
 
         # Tab cleanup behavior
         config.close_completed_tabs = data.get("close_completed_tabs", True)

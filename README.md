@@ -106,6 +106,7 @@ labels:
 
 # UI mode: "tmux" (default), "iterm2", or "web"
 ui_mode: "tmux"
+web_port: 8080                     # Port for web dashboard
 
 # Tab cleanup behavior
 close_completed_tabs: true         # Auto-close tabs for successful completions

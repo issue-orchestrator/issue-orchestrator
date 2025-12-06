@@ -369,9 +369,11 @@ end tell'''
         elif config.ui_mode == "web":
             # Run with web dashboard in browser
             from .web import run_with_web_dashboard
+            # CLI --port overrides config web_port
+            port = args.port if args.port != 8080 else config.web_port
             console.print("[dim]Starting web dashboard...[/dim]")
-            console.print(f"[green]Dashboard will open at http://localhost:{args.port}[/green]")
-            asyncio.run(run_with_web_dashboard(orchestrator, port=args.port))
+            console.print(f"[green]Dashboard will open at http://localhost:{port}[/green]")
+            asyncio.run(run_with_web_dashboard(orchestrator, port=port))
         else:
             # Run with interactive TUI dashboard (tmux or iterm2 mode)
             should_attach = asyncio.run(run_with_dashboard(orchestrator, config.ui_mode))
