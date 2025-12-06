@@ -455,3 +455,79 @@ agents:
 
         agent = config.agents["agent:test"]
         assert agent.repo_root is None
+
+    def test_queue_refresh_seconds_default(self):
+        """Test that queue_refresh_seconds defaults to 600."""
+        config = Config()
+        assert config.queue_refresh_seconds == 600
+
+    def test_max_issues_to_start_default(self):
+        """Test that max_issues_to_start defaults to 0 (unlimited)."""
+        config = Config()
+        assert config.max_issues_to_start == 0
+
+    def test_queue_refresh_seconds_from_yaml(self, tmp_path):
+        """Test loading queue_refresh_seconds from YAML."""
+        config_content = """
+queue_refresh_seconds: 300
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.queue_refresh_seconds == 300
+
+    def test_max_issues_to_start_from_yaml(self, tmp_path):
+        """Test loading max_issues_to_start from YAML."""
+        config_content = """
+max_issues_to_start: 5
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.max_issues_to_start == 5
+
+    def test_queue_refresh_seconds_zero_disables_auto_refresh(self, tmp_path):
+        """Test that queue_refresh_seconds=0 means manual refresh only."""
+        config_content = """
+queue_refresh_seconds: 0
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.queue_refresh_seconds == 0
+
+    def test_both_new_settings_from_yaml(self, tmp_path):
+        """Test loading both queue_refresh_seconds and max_issues_to_start from YAML."""
+        config_content = """
+queue_refresh_seconds: 120
+max_issues_to_start: 10
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.queue_refresh_seconds == 120
+        assert config.max_issues_to_start == 10

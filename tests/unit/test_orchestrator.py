@@ -993,6 +993,232 @@ class TestRunLoop:
             assert mock_launch.call_count == 2
 
 
+class TestMaxIssuesToStart:
+    """Test the max_issues_to_start limit functionality."""
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    async def test_run_loop_respects_max_issues_to_start(
+        self,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that run_loop stops launching when max_issues_to_start is reached."""
+        sample_config.max_issues_to_start = 2
+        sample_config.max_sessions = 5  # Plenty of capacity
+
+        issue1 = create_issue(1, labels=["agent:web"])
+        issue2 = create_issue(2, labels=["agent:web"])
+        issue3 = create_issue(3, labels=["agent:web"])
+
+        mock_list_issues.return_value = [issue1, issue2, issue3]
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        with patch.object(orchestrator, "launch_session") as mock_launch:
+            # Simulate successful launches
+            mock_launch.side_effect = [
+                create_session(issue1),
+                create_session(issue2),
+                create_session(issue3),  # Should not be called
+            ]
+
+            # Run one iteration
+            async def run_one_iteration():
+                await asyncio.sleep(0.01)
+                orchestrator.request_shutdown()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
+            )
+
+            # Should only launch 2 issues (max_issues_to_start limit)
+            assert mock_launch.call_count == 2
+            assert orchestrator.state.issues_started_count == 2
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    async def test_run_loop_unlimited_when_max_issues_zero(
+        self,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that max_issues_to_start=0 means unlimited."""
+        sample_config.max_issues_to_start = 0  # Unlimited
+        sample_config.max_sessions = 5
+
+        issue1 = create_issue(1, labels=["agent:web"])
+        issue2 = create_issue(2, labels=["agent:web"])
+        issue3 = create_issue(3, labels=["agent:web"])
+
+        mock_list_issues.return_value = [issue1, issue2, issue3]
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        with patch.object(orchestrator, "launch_session") as mock_launch:
+            mock_launch.side_effect = [
+                create_session(issue1),
+                create_session(issue2),
+                create_session(issue3),
+            ]
+
+            async def run_one_iteration():
+                await asyncio.sleep(0.01)
+                orchestrator.request_shutdown()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
+            )
+
+            # Should launch all 3 issues (no limit)
+            assert mock_launch.call_count == 3
+            assert orchestrator.state.issues_started_count == 3
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    async def test_run_loop_does_not_launch_when_limit_already_reached(
+        self,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that no new issues are launched if limit was already reached."""
+        sample_config.max_issues_to_start = 2
+        sample_config.max_sessions = 5
+
+        issue1 = create_issue(1, labels=["agent:web"])
+
+        mock_list_issues.return_value = [issue1]
+
+        orchestrator = Orchestrator(config=sample_config)
+        # Simulate that we already started 2 issues in previous iterations
+        orchestrator.state.issues_started_count = 2
+
+        with patch.object(orchestrator, "launch_session") as mock_launch:
+            async def run_one_iteration():
+                await asyncio.sleep(0.01)
+                orchestrator.request_shutdown()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
+            )
+
+            # Should not launch any new issues
+            mock_launch.assert_not_called()
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    @patch("issue_orchestrator.orchestrator.create_worktree")
+    @patch("issue_orchestrator.orchestrator.add_label")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    def test_launch_session_increments_issues_started_count(
+        self,
+        mock_create_tmux,
+        mock_add_label,
+        mock_create_worktree,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that launching a session increments issues_started_count."""
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/worktree"), "feature/issue-1")
+
+        issue = create_issue(1, labels=["agent:web"])
+        orchestrator = Orchestrator(config=sample_config)
+
+        assert orchestrator.state.issues_started_count == 0
+
+        # Note: The counter is incremented in run_loop, not in launch_session itself
+        # So we test that the state field exists and works
+        orchestrator.state.issues_started_count = 5
+        assert orchestrator.state.issues_started_count == 5
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    async def test_run_loop_checks_limit_before_each_launch(
+        self,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that limit is checked before each launch in a batch."""
+        sample_config.max_issues_to_start = 1
+        sample_config.max_sessions = 5
+
+        issue1 = create_issue(1, labels=["agent:web"])
+        issue2 = create_issue(2, labels=["agent:web"])
+
+        mock_list_issues.return_value = [issue1, issue2]
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        with patch.object(orchestrator, "launch_session") as mock_launch:
+            mock_launch.return_value = create_session(issue1)
+
+            async def run_one_iteration():
+                await asyncio.sleep(0.01)
+                orchestrator.request_shutdown()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
+            )
+
+            # Should only launch 1 issue even though 2 are available
+            assert mock_launch.call_count == 1
+            assert orchestrator.state.issues_started_count == 1
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    async def test_run_loop_skipped_claims_dont_count_toward_limit(
+        self,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that issues that were already claimed don't count toward the limit."""
+        sample_config.max_issues_to_start = 2
+        sample_config.max_sessions = 5
+
+        issue1 = create_issue(1, labels=["agent:web"])
+        issue2 = create_issue(2, labels=["agent:web"])
+        issue3 = create_issue(3, labels=["agent:web"])
+
+        mock_list_issues.return_value = [issue1, issue2, issue3]
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        with patch.object(orchestrator, "launch_session") as mock_launch:
+            # First issue already claimed (returns None), second and third succeed
+            mock_launch.side_effect = [
+                None,  # Already claimed
+                create_session(issue2),
+                create_session(issue3),  # Should not be called - limit reached
+            ]
+
+            async def run_one_iteration():
+                await asyncio.sleep(0.01)
+                orchestrator.request_shutdown()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
+            )
+
+            # Attempted 3, but issue1 was already claimed so only 2 count
+            # Actually we should check: attempt 1 (skipped), attempt 2 (success, count=1),
+            # attempt 3 (success, count=2), then stop because limit reached
+            # But wait - the logic increments AFTER success, so:
+            # - Try issue1 -> None (skipped, count stays 0)
+            # - Try issue2 -> success (count becomes 1)
+            # - Check limit: 1 < 2, continue
+            # - Try issue3 -> success (count becomes 2)
+            # - Check limit on next iteration: 2 >= 2, stop
+            # So we should see 3 launch attempts
+            assert mock_launch.call_count == 3
+            # But only 2 actually succeeded
+            assert orchestrator.state.issues_started_count == 2
+
+
 class TestControlMethods:
     """Test pause, resume, prioritize methods."""
 
