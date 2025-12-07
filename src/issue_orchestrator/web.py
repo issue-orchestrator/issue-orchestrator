@@ -96,7 +96,7 @@ async def dashboard(request: Request) -> HTMLResponse:
                 labels = [agent_label]
                 if config.filter_label:
                     labels.append(config.filter_label)
-                fetched = list_issues(config.repo, labels=labels, milestone=config.filter_milestone)
+                fetched = list_issues(config.repo, labels=labels, milestone=config.filter_milestone, limit=config.issue_fetch_limit)
                 all_issues.extend(fetched)
 
             available = scheduler.get_available_issues(all_issues)

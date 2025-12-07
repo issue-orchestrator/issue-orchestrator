@@ -184,6 +184,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                 config.repo,
                 labels=labels,
                 milestone=config.filter_milestone,
+                limit=config.issue_fetch_limit,
             )
             all_issues.extend(issues)
 

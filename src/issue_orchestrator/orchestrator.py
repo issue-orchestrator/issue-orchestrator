@@ -102,6 +102,7 @@ class Orchestrator:
                 self.config.repo,
                 labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
                 milestone=self._get_milestone_filter(),
+                limit=self.config.issue_fetch_limit,
             )
 
             for issue in issues:
@@ -266,6 +267,7 @@ class Orchestrator:
                             self.config.repo,
                             labels=self._build_labels(agent_label),
                             milestone=self._get_milestone_filter(),
+                            limit=self.config.issue_fetch_limit,
                         )
                         all_issues.extend(issues)
 

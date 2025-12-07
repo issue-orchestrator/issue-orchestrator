@@ -34,6 +34,7 @@ class Config:
     repo: Optional[str] = None  # owner/repo, or None to auto-detect
     filter_label: Optional[str] = None  # Only consider issues with this label (e.g., "test-data")
     filter_milestone: Optional[str] = None  # Only consider issues in this milestone
+    issue_fetch_limit: int = 100  # Max issues to fetch per API call (gh default is 30)
 
     # Comment headings for structured worker comments
     comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
@@ -124,6 +125,7 @@ class Config:
         config.repo = data.get("repo")
         config.filter_label = data.get("filter_label")
         config.filter_milestone = data.get("filter_milestone")
+        config.issue_fetch_limit = data.get("issue_fetch_limit", 100)
 
         # UI mode
         config.ui_mode = data.get("ui_mode", "tmux")

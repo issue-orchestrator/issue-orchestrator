@@ -102,6 +102,7 @@ def list_issues(
     labels: list[str] | None = None,
     state: str = "open",
     milestone: str | None = None,
+    limit: int = 100,
 ) -> list[Issue]:
     """List issues with given labels.
 
@@ -110,6 +111,7 @@ def list_issues(
         labels: List of labels to filter by. All labels must be present.
         state: Issue state to filter by (default: "open")
         milestone: Optional milestone name to filter by
+        limit: Maximum number of issues to fetch (default: 100, gh default is 30)
 
     Returns:
         List of Issue objects
@@ -120,7 +122,7 @@ def list_issues(
     if labels is None:
         labels = []
 
-    args = ["issue", "list", "--state", state, "--json", "number,title,labels,state,body,milestone"]
+    args = ["issue", "list", "--state", state, "--limit", str(limit), "--json", "number,title,labels,state,body,milestone"]
 
     for label in labels:
         args.extend(["--label", label])
