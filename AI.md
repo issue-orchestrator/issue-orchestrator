@@ -128,9 +128,19 @@ agents:
     model: sonnet
     # command: "claude --model {model} '{initial_prompt}'"  # Custom
 
+  # Multi-repo example: mobile agent works on different repo
+  "agent:mobile":
+    prompt: ".issue-orchestrator/prompts/mobile.md"
+    repo_root: "/path/to/mobile-app"  # Different repo
+    timeout_minutes: 60
+
 concurrency:
   max_sessions: 3
   session_timeout_minutes: 45
+
+# Limits
+max_issues_to_start: 0  # Max issues to start this run (0 = unlimited)
+queue_refresh_seconds: 600  # Web UI GitHub refresh interval (0 = manual only)
 
 labels:
   in_progress: "in-progress"
@@ -193,14 +203,25 @@ Prompts MUST instruct agents to use `agent-done` for completion.
 
 ```bash
 source .venv/bin/activate
-pytest tests/unit/              # Run all tests
+pytest tests/unit/              # Run all tests (~15s, 771 tests)
 pytest tests/unit/ -v           # Verbose
-pytest tests/unit/ --cov        # With coverage
+pytest tests/unit/ --cov        # With coverage (90%+)
 ```
 
 **Test mode**: Use `--test-mode` flag to run with mock data:
 ```bash
 issue-orchestrator start --test-mode
+```
+
+## CLI Options
+
+Key `start` command options:
+```bash
+issue-orchestrator start \
+  --ui-mode web \           # tmux, iterm2, or web
+  --port 8080 \             # Web dashboard port
+  --milestone "Sprint 1" \  # Filter by milestone (name or number)
+  --max-issues 10           # Limit issues to start this run
 ```
 
 ## Quick Debugging
