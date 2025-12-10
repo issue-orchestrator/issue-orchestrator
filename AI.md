@@ -135,7 +135,7 @@ agents:
     timeout_minutes: 60
 
 concurrency:
-  max_sessions: 3
+  max_concurrent_sessions: 3
   session_timeout_minutes: 45
 
 # Limits

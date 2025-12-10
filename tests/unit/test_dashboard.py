@@ -88,7 +88,7 @@ def create_orchestrator(config=None):
     """Helper to create a mock orchestrator for testing."""
     if config is None:
         config = Config()
-        config.max_sessions = 3
+        config.max_concurrent_sessions = 3
         agent_config = AgentConfig(
             prompt_path=Path("/tmp/prompt.txt"),
             worktree_base=Path("/tmp"),
@@ -803,7 +803,7 @@ class TestStatusBarRendering:
     def test_render_content_max_capacity(self):
         """Test rendering when at max capacity."""
         orchestrator = create_orchestrator()
-        orchestrator.config.max_sessions = 3
+        orchestrator.config.max_concurrent_sessions = 3
 
         # Create 3 sessions (at max)
         sessions = []

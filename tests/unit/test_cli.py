@@ -7,7 +7,7 @@ import pytest
 from issue_orchestrator.cli import (
     cmd_start, cmd_status, cmd_init, cmd_attach, cmd_switch,
     cmd_dashboard, cmd_output, cmd_pause, cmd_resume, cmd_next,
-    cmd_test_reset, main, setup_logging, _run_test_setup
+    cmd_test_reset, main, setup_logging, _run_test_setup, _load_config
 )
 
 
@@ -40,7 +40,7 @@ class TestCmdStart:
                         # Setup config
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
-                        mock_config.max_sessions = 2
+                        mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_find.return_value = mock_config
 
@@ -74,7 +74,7 @@ class TestCmdStart:
                 with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                     mock_config = Mock()
                     mock_config.agents = {'agent:test': Mock()}
-                    mock_config.max_sessions = 2
+                    mock_config.max_concurrent_sessions = 2
                     mock_config.ui_mode = 'tmux'
                     mock_find.return_value = mock_config
 
@@ -111,7 +111,7 @@ class TestCmdStart:
                                     with patch('issue_orchestrator.analysis.analyze_orphan_branches', return_value=[]):
                                         mock_config = Mock()
                                         mock_config.agents = {'agent:test': Mock()}
-                                        mock_config.max_sessions = 2
+                                        mock_config.max_concurrent_sessions = 2
                                         mock_config.repo = 'test/repo'
                                         mock_config.filter_label = None
                                         mock_config.filter_milestone = None
@@ -147,7 +147,7 @@ class TestCmdStatus:
             with patch('issue_orchestrator.tmux.list_sessions', return_value=[]):
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
-                mock_config.max_sessions = 3
+                mock_config.max_concurrent_sessions = 3
                 mock_config.agents = {'agent:web': Mock(), 'agent:mobile': Mock()}
                 mock_config.filter_label = None
                 mock_config.filter_milestone = None
@@ -164,7 +164,7 @@ class TestCmdStatus:
             with patch('issue_orchestrator.tmux.list_sessions') as mock_list:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
-                mock_config.max_sessions = 3
+                mock_config.max_concurrent_sessions = 3
                 mock_config.agents = {'agent:web': Mock()}
                 mock_config.filter_label = None
                 mock_config.filter_milestone = None
@@ -686,7 +686,7 @@ class TestCmdStartAdvanced:
             mock_config = Mock()
             mock_config.repo = None
             mock_config.agents = {'agent:test': Mock()}
-            mock_config.max_sessions = 2
+            mock_config.max_concurrent_sessions = 2
             mock_find.return_value = mock_config
 
             args = argparse.Namespace(
@@ -710,7 +710,7 @@ class TestCmdStartAdvanced:
                             mock_config = Mock()
                             mock_config.repo = 'test/repo'
                             mock_config.agents = {'agent:test': Mock()}
-                            mock_config.max_sessions = 2
+                            mock_config.max_concurrent_sessions = 2
                             mock_config.ui_mode = 'tmux'
                             mock_find.return_value = mock_config
 
@@ -740,7 +740,7 @@ class TestCmdStartAdvanced:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
-                        mock_config.max_sessions = 2
+                        mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_config.filter_milestone = None
                         mock_find.return_value = mock_config
@@ -768,7 +768,7 @@ class TestCmdStartAdvanced:
                         with patch('issue_orchestrator.iterm2.is_running_in_iterm2') as mock_is_iterm2:
                             mock_config = Mock()
                             mock_config.agents = {'agent:test': Mock()}
-                            mock_config.max_sessions = 2
+                            mock_config.max_concurrent_sessions = 2
                             mock_config.ui_mode = 'tmux'
                             mock_find.return_value = mock_config
 
@@ -797,7 +797,7 @@ class TestCmdStartAdvanced:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
-                        mock_config.max_sessions = 2
+                        mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_config.queue_refresh_seconds = 600
                         mock_find.return_value = mock_config
@@ -825,7 +825,7 @@ class TestCmdStartAdvanced:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
-                        mock_config.max_sessions = 2
+                        mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_config.max_issues_to_start = 0
                         mock_find.return_value = mock_config
@@ -853,7 +853,7 @@ class TestCmdStartAdvanced:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
-                        mock_config.max_sessions = 2
+                        mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'web'
                         mock_config.web_port = 8080
                         mock_find.return_value = mock_config
@@ -882,7 +882,7 @@ class TestCmdStartAdvanced:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
-                        mock_config.max_sessions = 2
+                        mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'web'
                         mock_config.web_port = 8080
                         mock_find.return_value = mock_config
@@ -911,7 +911,7 @@ class TestCmdStartAdvanced:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
-                        mock_config.max_sessions = 2
+                        mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_find.return_value = mock_config
 
@@ -991,3 +991,162 @@ class TestCmdInitAdvanced:
                 result = cmd_init(args)
 
                 assert result == 1
+
+
+class TestLoadConfig:
+    """Tests for the _load_config helper function."""
+
+    def test_load_config_without_explicit_path(self):
+        """Verify _load_config calls find_and_load when no --config provided."""
+        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+            mock_config = Mock()
+            mock_find.return_value = mock_config
+
+            args = argparse.Namespace(config=None)
+            result = _load_config(args)
+
+            mock_find.assert_called_once()
+            assert result == mock_config
+
+    def test_load_config_with_explicit_path(self, tmp_path):
+        """Verify _load_config calls Config.load when --config provided."""
+        # Create a test config file
+        config_file = tmp_path / "custom-config.yaml"
+        config_file.write_text("""
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+""")
+
+        with patch('issue_orchestrator.config.Config.load') as mock_load:
+            mock_config = Mock()
+            mock_load.return_value = mock_config
+
+            args = argparse.Namespace(config=str(config_file))
+            result = _load_config(args)
+
+            mock_load.assert_called_once()
+            # Verify it was called with a Path object
+            call_args = mock_load.call_args[0][0]
+            assert str(call_args) == str(config_file)
+            # Verify repo_root was set to config file's parent
+            assert mock_config.repo_root == config_file.parent.resolve()
+
+    def test_load_config_explicit_path_not_found(self, tmp_path):
+        """Verify _load_config raises FileNotFoundError for missing config."""
+        nonexistent = tmp_path / "does-not-exist.yaml"
+
+        args = argparse.Namespace(config=str(nonexistent))
+
+        with pytest.raises(FileNotFoundError):
+            _load_config(args)
+
+    def test_load_config_no_config_attribute(self):
+        """Verify _load_config uses find_and_load when args lacks config attr."""
+        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+            mock_config = Mock()
+            mock_find.return_value = mock_config
+
+            args = argparse.Namespace()  # No config attribute
+            result = _load_config(args)
+
+            mock_find.assert_called_once()
+            assert result == mock_config
+
+
+class TestConfigCliArgument:
+    """Tests for --config CLI argument parsing."""
+
+    def test_main_parses_config_argument(self):
+        """Verify main parses --config argument correctly."""
+        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+            mock_cmd_start.return_value = 0
+
+            with patch('sys.argv', ['issue-orchestrator', '--config', '/path/to/config.yaml', 'start']):
+                result = main()
+
+            args = mock_cmd_start.call_args[0][0]
+            assert args.config == '/path/to/config.yaml'
+
+    def test_main_parses_config_short_form(self):
+        """Verify main parses -c short form correctly."""
+        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+            mock_cmd_start.return_value = 0
+
+            with patch('sys.argv', ['issue-orchestrator', '-c', '/custom/path.yaml', 'start']):
+                result = main()
+
+            args = mock_cmd_start.call_args[0][0]
+            assert args.config == '/custom/path.yaml'
+
+    def test_main_config_default_is_none(self):
+        """Verify --config defaults to None when not provided."""
+        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+            mock_cmd_start.return_value = 0
+
+            with patch('sys.argv', ['issue-orchestrator', 'start']):
+                result = main()
+
+            args = mock_cmd_start.call_args[0][0]
+            assert args.config is None
+
+    def test_config_argument_with_status_command(self):
+        """Verify --config works with status command."""
+        with patch('issue_orchestrator.cli.cmd_status') as mock_cmd_status:
+            mock_cmd_status.return_value = 0
+
+            with patch('sys.argv', ['issue-orchestrator', '--config', '/path/config.yaml', 'status']):
+                result = main()
+
+            args = mock_cmd_status.call_args[0][0]
+            assert args.config == '/path/config.yaml'
+
+    def test_config_argument_with_init_command(self):
+        """Verify --config works with init command."""
+        with patch('issue_orchestrator.cli.cmd_init') as mock_cmd_init:
+            mock_cmd_init.return_value = 0
+
+            with patch('sys.argv', ['issue-orchestrator', '--config', '/path/config.yaml', 'init']):
+                result = main()
+
+            args = mock_cmd_init.call_args[0][0]
+            assert args.config == '/path/config.yaml'
+
+    def test_cmd_start_uses_explicit_config(self, tmp_path):
+        """Verify cmd_start uses explicit config when --config provided."""
+        # Create a test config file
+        config_file = tmp_path / "test-config.yaml"
+        config_file.write_text("""
+repo: test/explicit-repo
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+""")
+
+        with patch('issue_orchestrator.config.Config.load') as mock_load:
+            with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+                mock_config = Mock()
+                mock_config.agents = {'agent:test': Mock()}
+                mock_config.max_concurrent_sessions = 2
+                mock_config.ui_mode = 'tmux'
+                mock_config.repo = 'test/explicit-repo'
+                mock_load.return_value = mock_config
+
+                args = argparse.Namespace(
+                    config=str(config_file),
+                    test_mode=False,
+                    milestone=None,
+                    dry_run=False,
+                    no_dashboard=True,
+                    debug=False,
+                )
+
+                with patch('issue_orchestrator.orchestrator.Orchestrator'):
+                    with patch('issue_orchestrator.cli.asyncio'):
+                        result = cmd_start(args)
+
+                # Config.load should be called, not find_and_load
+                mock_load.assert_called_once()
+                mock_find.assert_not_called()

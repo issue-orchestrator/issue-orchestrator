@@ -257,7 +257,7 @@ class Orchestrator:
 
             # If not paused, not at max issues limit, and have capacity, launch more sessions
             if not self.state.paused and not hit_max_issues:
-                available_slots = self.config.max_sessions - len(self.state.active_sessions)
+                available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
 
                 if available_slots > 0:
                     # Get available issues

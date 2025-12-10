@@ -19,7 +19,7 @@ def mock_config():
     """Create a mock config for testing."""
     config = Config()
     config.repo = "owner/repo"
-    config.max_sessions = 3
+    config.max_concurrent_sessions = 3
     config.session_timeout_minutes = 45
     config.label_in_progress = "in-progress"
     config.label_blocked = "blocked"
@@ -67,7 +67,7 @@ class TestSessionMonitorInit:
         """Test that config is properly stored."""
         monitor = SessionMonitor(mock_config)
         assert monitor.config.repo == "owner/repo"
-        assert monitor.config.max_sessions == 3
+        assert monitor.config.max_concurrent_sessions == 3
 
 
 class TestSessionMonitorProperties:

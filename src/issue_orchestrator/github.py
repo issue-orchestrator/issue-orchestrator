@@ -144,6 +144,8 @@ def list_issues(
                     state=item.get("state", "open"),
                     body=item.get("body"),
                     milestone=milestone_obj.get("title") if milestone_obj else None,
+                    milestone_number=milestone_obj.get("number") if milestone_obj else None,
+                    milestone_due_on=milestone_obj.get("dueOn") if milestone_obj else None,
                 )
                 issues.append(issue)
 

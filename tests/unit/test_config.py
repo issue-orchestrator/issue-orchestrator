@@ -14,7 +14,7 @@ class TestConfig:
         config = Config()
 
         assert config.agents == {}
-        assert config.max_sessions == 3
+        assert config.max_concurrent_sessions == 3
         assert config.session_timeout_minutes == 45
         assert config.label_in_progress == "in-progress"
         assert config.label_blocked == "blocked"
@@ -45,7 +45,7 @@ agents:
     timeout_minutes: 60
 
 concurrency:
-  max_sessions: 4
+  max_concurrent_sessions: 4
   session_timeout_minutes: 60
 
 labels:
@@ -76,7 +76,7 @@ repo: owner/repo
         assert mobile_config.prompt_path == prompt_mobile
 
         # Check concurrency settings
-        assert config.max_sessions == 4
+        assert config.max_concurrent_sessions == 4
         assert config.session_timeout_minutes == 60
 
         # Check labels
@@ -106,7 +106,7 @@ agents:
         assert simple_config.timeout_minutes == 45
 
         # Global defaults
-        assert config.max_sessions == 3
+        assert config.max_concurrent_sessions == 3
         assert config.session_timeout_minutes == 45
         assert config.label_in_progress == "in-progress"
         assert config.label_blocked == "blocked"
@@ -131,7 +131,7 @@ agents:
         """Test loading config with no agents defined."""
         config_content = """
 concurrency:
-  max_sessions: 2
+  max_concurrent_sessions: 2
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -139,7 +139,7 @@ concurrency:
         config = Config.load(config_file)
 
         assert config.agents == {}
-        assert config.max_sessions == 2
+        assert config.max_concurrent_sessions == 2
 
     def test_config_find_and_load_current_dir(self, tmp_path, monkeypatch):
         """Test finding config in current directory."""

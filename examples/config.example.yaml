@@ -19,7 +19,7 @@ agents:
 
 # Concurrency settings
 concurrency:
-  max_sessions: 3                  # Max parallel agent sessions
+  max_concurrent_sessions: 3                  # Max parallel agent sessions
   session_timeout_minutes: 45      # Default timeout for all agents
 
 # Label names (customize if your repo uses different labels)

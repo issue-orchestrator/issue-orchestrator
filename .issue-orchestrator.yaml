@@ -14,5 +14,5 @@ agents:
     model: haiku
 
 concurrency:
-  max_sessions: 2
+  max_concurrent_sessions: 2
   session_timeout_minutes: 10

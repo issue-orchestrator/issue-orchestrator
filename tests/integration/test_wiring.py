@@ -40,7 +40,7 @@ class TestOrchestratorWiring:
                 timeout_minutes=5,
             )
         }
-        config.max_sessions = 2
+        config.max_concurrent_sessions = 2
         return config
 
     @pytest.mark.asyncio
@@ -122,7 +122,7 @@ class TestCLIWiring:
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_config:
             mock_cfg = MagicMock()
             mock_cfg.agents = {"agent:test": MagicMock()}
-            mock_cfg.max_sessions = 2
+            mock_cfg.max_concurrent_sessions = 2
             mock_cfg.repo_root = Path("/fake")
             mock_config.return_value = mock_cfg
 
@@ -238,7 +238,7 @@ class TestDashboardWiring:
         mock_orch.state = OrchestratorState()
         mock_orch.state.paused = False
         mock_orch.config = MagicMock()
-        mock_orch.config.max_sessions = 2
+        mock_orch.config.max_concurrent_sessions = 2
         mock_orch._shutdown_requested = False
 
         dashboard = Dashboard(mock_orch)
@@ -258,7 +258,7 @@ class TestDashboardWiring:
         mock_orch.state = OrchestratorState()
         mock_orch.state.paused = True
         mock_orch.config = MagicMock()
-        mock_orch.config.max_sessions = 2
+        mock_orch.config.max_concurrent_sessions = 2
         mock_orch._shutdown_requested = False
 
         dashboard = Dashboard(mock_orch)
@@ -355,7 +355,7 @@ class TestSmoke:
     def test_config_default_values(self):
         """Verify config has sensible defaults."""
         config = Config()
-        assert config.max_sessions == 3
+        assert config.max_concurrent_sessions == 3
         assert config.session_timeout_minutes == 45
         assert config.label_in_progress == "in-progress"
         assert config.label_blocked == "blocked"

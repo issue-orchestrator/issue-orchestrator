@@ -672,7 +672,7 @@
                 <div class="info-row"><span class="info-label">Version</span><span class="info-value">${data.version || 'dev'}</span></div>
                 <div class="info-row"><span class="info-label">Repository</span><span class="info-value">${data.repo}</span></div>
                 <div class="info-row"><span class="info-label">UI Mode</span><span class="info-value">${data.ui_mode}</span></div>
-                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${data.max_sessions}</span></div>
+                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${data.max_concurrent_sessions}</span></div>
                 <div class="info-row"><span class="info-label">Active Sessions</span><span class="info-value">${data.active_sessions}</span></div>
                 <div class="info-row"><span class="info-label">Completed Today</span><span class="info-value">${data.completed_today}</span></div>
             `;
@@ -698,7 +698,7 @@
                 <div class="info-row"><span class="info-label">Test Mode</span><span class="info-value">${opts.test_mode ? 'yes' : 'no'}</span></div>
                 <div class="info-row"><span class="info-label">Filter Label</span><span class="info-value">${opts.filter_label || 'none'}</span></div>
                 <div class="info-row"><span class="info-label">Filter Milestone</span><span class="info-value">${opts.filter_milestone || 'none'}</span></div>
-                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${opts.max_sessions || '-'}</span></div>
+                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${opts.max_concurrent_sessions || '-'}</span></div>
                 <h3 style="margin: 16px 0 8px; font-size: 14px;">State</h3>
                 <div class="info-row"><span class="info-label">Paused</span><span class="info-value">${data.paused}</span></div>
                 <div class="info-row"><span class="info-label">Priority Queue</span><span class="info-value">${data.priority_queue.length > 0 ? data.priority_queue.join(', ') : 'empty'}</span></div>

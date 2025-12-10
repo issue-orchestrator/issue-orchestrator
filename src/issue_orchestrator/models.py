@@ -36,6 +36,8 @@ class Issue:
     state: str = "open"  # "open" or "closed"
     milestone: Optional[str] = None
     body: Optional[str] = None
+    milestone_number: Optional[int] = None
+    milestone_due_on: Optional[str] = None  # ISO date string
 
     @property
     def agent_type(self) -> Optional[str]:

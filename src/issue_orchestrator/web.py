@@ -198,7 +198,7 @@ async def get_status() -> JSONResponse:
     return JSONResponse({
         "paused": state.paused,
         "active_sessions": sessions,
-        "max_sessions": config.max_sessions,
+        "max_sessions": config.max_concurrent_sessions,
         "completed_today": state.completed_today,
         "queue": state.priority_queue,
     })
@@ -337,7 +337,7 @@ async def get_info() -> JSONResponse:
         "version": "0.1.0",  # TODO: get from package
         "repo": config.repo,
         "ui_mode": config.ui_mode,
-        "max_sessions": config.max_sessions,
+        "max_sessions": config.max_concurrent_sessions,
         "active_sessions": len(state.active_sessions),
         "completed_today": len(state.completed_today),
     })
@@ -474,7 +474,7 @@ async def get_debug() -> JSONResponse:
         "test_mode": config.filter_label == "test-data",  # Inferred from filter
         "filter_label": config.filter_label,
         "filter_milestone": config.filter_milestone,
-        "max_sessions": config.max_sessions,
+        "max_sessions": config.max_concurrent_sessions,
     }
 
     return JSONResponse({

@@ -26,7 +26,7 @@ def create_mock_orchestrator():
     # Create a real config object
     config = Config()
     config.repo = "owner/repo"
-    config.max_sessions = 3
+    config.max_concurrent_sessions = 3
     config.queue_refresh_seconds = 600
     config.ui_mode = "web"
     config.web_port = 8080

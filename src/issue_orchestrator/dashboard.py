@@ -39,7 +39,7 @@ class StatusBar(Static):
 
         status = "[yellow]PAUSED[/yellow]" if state.paused else "[green]RUNNING[/green]"
 
-        return f"[bold]issue-orchestrator[/bold] │ Status: {status} │ Active: {len(state.active_sessions)}/{config.max_sessions} │ Completed: {len(state.completed_today)}"
+        return f"[bold]issue-orchestrator[/bold] │ Status: {status} │ Active: {len(state.active_sessions)}/{config.max_concurrent_sessions} │ Completed: {len(state.completed_today)}"
 
     def refresh_content(self) -> None:
         """Update the status bar with current state."""

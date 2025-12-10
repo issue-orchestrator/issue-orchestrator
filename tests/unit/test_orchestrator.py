@@ -392,6 +392,7 @@ class TestLaunchSession:
         mock_create_worktree.return_value = (Path("/tmp/worktree"), "feature/issue-1")
 
         issue = create_issue(1, title="Test Issue", labels=["agent:web"])
+        sample_config.ui_mode = "tmux"  # Explicitly test tmux mode
         orchestrator = Orchestrator(config=sample_config)
 
         session = orchestrator.launch_session(issue)
@@ -878,7 +879,7 @@ class TestRunLoop:
         sample_config,
     ):
         """Test that run_loop respects max_sessions limit."""
-        sample_config.max_sessions = 2
+        sample_config.max_concurrent_sessions = 2
 
         issue1 = create_issue(1)
         issue2 = create_issue(2)
@@ -918,7 +919,7 @@ class TestRunLoop:
         sample_config,
     ):
         """Test that run_loop launches sessions when capacity is available."""
-        sample_config.max_sessions = 3
+        sample_config.max_concurrent_sessions = 3
 
         issue1 = create_issue(1, labels=["agent:web"])
 
@@ -1028,7 +1029,7 @@ class TestMaxIssuesToStart:
     ):
         """Test that run_loop stops launching when max_issues_to_start is reached."""
         sample_config.max_issues_to_start = 2
-        sample_config.max_sessions = 5  # Plenty of capacity
+        sample_config.max_concurrent_sessions = 5  # Plenty of capacity
 
         issue1 = create_issue(1, labels=["agent:web"])
         issue2 = create_issue(2, labels=["agent:web"])
@@ -1069,7 +1070,7 @@ class TestMaxIssuesToStart:
     ):
         """Test that max_issues_to_start=0 means unlimited."""
         sample_config.max_issues_to_start = 0  # Unlimited
-        sample_config.max_sessions = 5
+        sample_config.max_concurrent_sessions = 5
 
         issue1 = create_issue(1, labels=["agent:web"])
         issue2 = create_issue(2, labels=["agent:web"])
@@ -1108,7 +1109,7 @@ class TestMaxIssuesToStart:
     ):
         """Test that no new issues are launched if limit was already reached."""
         sample_config.max_issues_to_start = 2
-        sample_config.max_sessions = 5
+        sample_config.max_concurrent_sessions = 5
 
         issue1 = create_issue(1, labels=["agent:web"])
 
@@ -1166,7 +1167,7 @@ class TestMaxIssuesToStart:
     ):
         """Test that limit is checked before each launch in a batch."""
         sample_config.max_issues_to_start = 1
-        sample_config.max_sessions = 5
+        sample_config.max_concurrent_sessions = 5
 
         issue1 = create_issue(1, labels=["agent:web"])
         issue2 = create_issue(2, labels=["agent:web"])
@@ -1200,7 +1201,7 @@ class TestMaxIssuesToStart:
     ):
         """Test that issues that were already claimed don't count toward the limit."""
         sample_config.max_issues_to_start = 2
-        sample_config.max_sessions = 5
+        sample_config.max_concurrent_sessions = 5
 
         issue1 = create_issue(1, labels=["agent:web"])
         issue2 = create_issue(2, labels=["agent:web"])

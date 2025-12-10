@@ -26,7 +26,7 @@ def sample_config(sample_agent_config):
     """Create a sample Config object for testing."""
     config = Config()
     config.agents["agent:web"] = sample_agent_config
-    config.max_sessions = 3
+    config.max_concurrent_sessions = 3
     config.session_timeout_minutes = 45
     return config
 

@@ -3,7 +3,10 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .config import Config
 
 from rich.console import Console
 from rich.table import Table
@@ -116,11 +119,10 @@ def cmd_start(args: argparse.Namespace) -> int:
         console.print(f"[dim]Debug logging enabled (tail -f {LOG_FILE})[/dim]")
 
     try:
-        from .config import Config
         from .orchestrator import Orchestrator
         from .dashboard import run_with_dashboard
 
-        config = Config.find_and_load()
+        config = _load_config(args)
     except FileNotFoundError as e:
         logging.error(f"Config not found: {e}")
         console.print(f"[red]Error: {e}[/red]")
@@ -161,7 +163,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             console.print(f"[dim]Max issues to start: {config.max_issues_to_start}[/dim]")
 
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
-    console.print(f"[dim]Max concurrent sessions: {config.max_sessions}[/dim]")
+    console.print(f"[dim]Max concurrent sessions: {config.max_concurrent_sessions}[/dim]")
 
     # Handle dry-run mode
     if hasattr(args, 'dry_run') and args.dry_run:
@@ -247,7 +249,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         available = scheduler.get_available_issues(all_issues)
         console.print(f"\n[dim]Total issues: {len(all_issues)}[/dim]")
         console.print(f"[dim]Available to process: {len(available)}[/dim]")
-        console.print(f"[dim]Would launch up to {config.max_sessions} concurrent sessions[/dim]")
+        console.print(f"[dim]Would launch up to {config.max_concurrent_sessions} concurrent sessions[/dim]")
 
         # Warnings for stale issues
         stale_states = [s for s in states if s.is_stale]
@@ -401,10 +403,9 @@ end tell'''
 def cmd_status(args: argparse.Namespace) -> int:
     """Show current status."""
     try:
-        from .config import Config
         from .tmux import list_sessions
 
-        config = Config.find_and_load()
+        config = _load_config(args)
 
         # Get active tmux sessions that look like ours
         all_sessions = list_sessions()
@@ -413,7 +414,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         console.print("\n[cyan]Orchestrator Status[/cyan]")
         console.print(f"\n[bold]Config:[/bold]")
         console.print(f"  Repo: {config.repo or '(auto-detect)'}")
-        console.print(f"  Max sessions: {config.max_sessions}")
+        console.print(f"  Max sessions: {config.max_concurrent_sessions}")
         console.print(f"  Agents: {', '.join(config.agents.keys())}")
         if config.filter_label:
             console.print(f"  Filter label: {config.filter_label}")
@@ -534,9 +535,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     import subprocess
 
     try:
-        from .config import Config
-
-        config = Config.find_and_load()
+        config = _load_config(args)
     except FileNotFoundError as e:
         console.print(f"[red]Error: {e}[/red]")
         console.print("Create a .issue-orchestrator.yaml config file first.")
@@ -643,10 +642,40 @@ def cmd_test_reset(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_config(args: argparse.Namespace) -> "Config":
+    """Load config from explicit path or search for it.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Loaded Config object
+
+    Raises:
+        FileNotFoundError: If config file not found
+    """
+    from .config import Config
+
+    if hasattr(args, 'config') and args.config:
+        config_path = Path(args.config)
+        config = Config.load(config_path)
+        # Set repo_root to config file's parent directory
+        config.repo_root = config_path.parent.resolve()
+        return config
+    else:
+        return Config.find_and_load()
+
+
 def main() -> int:
     """Main entry point for the CLI."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
         description="Orchestrate AI agents working on GitHub issues"
+    )
+    parser.add_argument(
+        "--config", "-c",
+        type=str,
+        default=None,
+        help="Path to config file (default: search for .issue-orchestrator.yaml)"
     )
     subparsers: Any = parser.add_subparsers(
         dest="command", required=True

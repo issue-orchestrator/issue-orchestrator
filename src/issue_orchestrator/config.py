@@ -17,7 +17,7 @@ class Config:
     agents: dict[str, AgentConfig] = field(default_factory=dict)
 
     # Concurrency settings
-    max_sessions: int = 3
+    max_concurrent_sessions: int = 3
     session_timeout_minutes: int = 45
 
     # Label names (customizable)
@@ -39,13 +39,19 @@ class Config:
     # Comment headings for structured worker comments
     comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
 
-    # UI mode: "tmux" (default), "iterm2" (Mac iTerm2 tabs), "web" (browser dashboard)
-    ui_mode: str = "tmux"
+    # UI mode: "web" (default, browser dashboard), "tmux", "iterm2" (Mac iTerm2 tabs)
+    ui_mode: str = "web"
     web_port: int = 8080  # Port for web dashboard
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
 
     # Session limits
     max_issues_to_start: int = 0  # Max issues to start processing (0 = unlimited)
+
+    # Milestone sorting strategy - built-in: "due_date", "number", "pattern", "name"
+    # Or provide a custom class path like "mymodule.MyStrategy"
+    milestone_sort: str = "due_date"
+    # Config passed to strategy via **kwargs (e.g., pattern="M(\\d+)" for PatternStrategy)
+    milestone_sort_config: dict = field(default_factory=dict)
 
     # Tab cleanup behavior
     close_completed_tabs: bool = True   # Auto-close tabs for successful completions (has PR)
@@ -111,7 +117,7 @@ class Config:
 
         # Parse concurrency
         concurrency = data.get("concurrency", {})
-        config.max_sessions = concurrency.get("max_sessions", 3)
+        config.max_concurrent_sessions = concurrency.get("max_concurrent_sessions", 3)
         config.session_timeout_minutes = concurrency.get("session_timeout_minutes", 45)
 
         # Parse labels
@@ -134,6 +140,10 @@ class Config:
 
         # Session limits
         config.max_issues_to_start = data.get("max_issues_to_start", 0)
+
+        # Milestone sorting strategy
+        config.milestone_sort = data.get("milestone_sort", "due_date")
+        config.milestone_sort_config = data.get("milestone_sort_config", {})
 
         # Tab cleanup behavior
         config.close_completed_tabs = data.get("close_completed_tabs", True)

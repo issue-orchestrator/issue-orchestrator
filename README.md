@@ -10,6 +10,57 @@ Orchestrate AI agents working on GitHub issues in parallel.
 - Manages concurrency (N parallel sessions)
 - Provides a dashboard (web, tmux, or iTerm2) to monitor progress
 
+## Key Concepts
+
+Before diving in, understand these core concepts:
+
+### Agent Labels
+
+Issues are assigned to agents via GitHub labels. An issue with label `agent:backend` gets picked up by the agent configured under that key:
+
+```yaml
+agents:
+  "agent:backend":     # ← Matches the GitHub label
+    prompt: "prompts/backend.md"
+```
+
+You define which agents exist by adding entries to your config. Common setups:
+- Single agent: `agent:claude` for all issues
+- By domain: `agent:backend`, `agent:frontend`, `agent:mobile`
+- By task type: `agent:bugfix`, `agent:feature`
+
+### Worktrees
+
+Each issue gets an isolated [git worktree](https://git-scm.com/docs/git-worktree)—a separate checkout with its own branch. This lets multiple agents work in parallel without conflicts:
+
+```
+your-repo/          ← main repo
+your-repo-42/       ← worktree for issue #42, branch: 42-add-auth
+your-repo-57/       ← worktree for issue #57, branch: 57-fix-bug
+```
+
+Worktrees are cleaned up after successful completion. Configure cleanup with `close_completed_tabs` and `close_failed_tabs` in your config.
+
+### UI Modes
+
+The orchestrator provides three ways to monitor sessions:
+
+| Mode | Description |
+|------|-------------|
+| **web** (default) | Browser dashboard at http://localhost:8080 |
+| **tmux** | Terminal multiplexer with panes per session |
+| **iterm2** | macOS iTerm2 tabs (requires iTerm2) |
+
+### The `agent-done` Workflow
+
+Agents cannot just `git push`. They must complete work using the `agent-done` command, which:
+1. Adds structured metadata to their commit
+2. Pushes and creates a PR
+3. Posts a structured comment on the issue
+4. Updates labels appropriately
+
+This ensures all agent work is tracked and auditable.
+
 ## Installation
 
 ```bash
@@ -27,9 +78,9 @@ pip install -e ".[dev]"
 
 - Python 3.11+
 - `gh` CLI (authenticated)
-- `tmux` (for tmux mode)
 - `git`
 - `claude` CLI (Claude Code)
+- `tmux` (only for tmux mode)
 
 ## Quick Start
 
@@ -38,35 +89,41 @@ pip install -e ".[dev]"
 ```yaml
 # .issue-orchestrator.yaml
 agents:
-  "agent:web":
-    prompt: ".issue-orchestrator/prompts/web.md"
-    worktree_base: "../"
+  "agent:backend":                    # Label on GitHub issues
+    prompt: ".issue-orchestrator/prompts/backend.md"
 
 concurrency:
-  max_sessions: 3
+  max_concurrent_sessions: 3
 ```
 
 2. Create a prompt file for your agents (see [Agent Prompts](#agent-prompts))
 
-3. Run the orchestrator:
+3. Label some GitHub issues with `agent:backend`
+
+4. Run the orchestrator:
 
 ```bash
 issue-orchestrator start
 ```
 
+This opens a web dashboard at http://localhost:8080 showing active sessions and the issue queue.
+
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `issue-orchestrator start` | Start the orchestrator |
-| `issue-orchestrator start --ui-mode web` | Start with web dashboard (default :8080) |
-| `issue-orchestrator start --ui-mode web --port 3000` | Web dashboard on custom port |
-| `issue-orchestrator start --ui-mode iterm2` | Start with iTerm2 tabs (macOS) |
+| `issue-orchestrator start` | Start with web dashboard (default) |
+| `issue-orchestrator start --port 3000` | Web dashboard on custom port |
+| `issue-orchestrator start --ui-mode tmux` | Use tmux instead of web |
+| `issue-orchestrator start --ui-mode iterm2` | Use iTerm2 tabs (macOS) |
 | `issue-orchestrator start --test-mode` | Run with mock test data |
 | `issue-orchestrator start --milestone "v1.0"` | Filter to issues in milestone |
+| `issue-orchestrator start --max-issues 5` | Limit to N issues this session |
 | `issue-orchestrator start --dry-run` | Show what would run without launching |
 | `issue-orchestrator start --debug` | Enable verbose logging to ~/.issue-orchestrator.log |
 | `issue-orchestrator start --no-dashboard` | Run headless (for CI/scripting) |
+| `issue-orchestrator --config /path/config.yaml start` | Use custom config file |
+| `issue-orchestrator -c ./other-config.yaml status` | Short form of --config |
 | `issue-orchestrator status` | Show current status |
 | `issue-orchestrator attach <issue>` | Attach to a running session |
 | `issue-orchestrator pause` | Finish current, don't start new |
@@ -94,7 +151,7 @@ agents:
 
 # Concurrency settings
 concurrency:
-  max_sessions: 3
+  max_concurrent_sessions: 3
   session_timeout_minutes: 45
 
 # Label names (customize if your repo uses different labels)
@@ -104,11 +161,11 @@ labels:
   needs_human: "needs-human"
   prefix: "bot"                    # Optional: prefix all labels (e.g., "bot:in-progress")
 
-# UI mode: "tmux" (default), "iterm2", or "web"
-ui_mode: "tmux"
+# UI mode: "web" (default), "tmux", or "iterm2"
+ui_mode: "web"
 web_port: 8080                     # Port for web dashboard
 
-# Tab cleanup behavior
+# Tab/worktree cleanup behavior
 close_completed_tabs: true         # Auto-close tabs for successful completions
 close_failed_tabs: false           # Keep failed tabs open for investigation
 
@@ -125,6 +182,9 @@ pre_push_hook: "./my-hook.sh"      # Optional: custom pre-push hook path
 # Optional: specify repo explicitly (otherwise auto-detected)
 # repo: "owner/repo-name"
 
+# Optional: max issues to fetch per API call (default 100, gh default is 30)
+# issue_fetch_limit: 100
+
 # Optional: custom comment headings
 comment_headings:
   implementation: "## Implementation"
@@ -132,6 +192,155 @@ comment_headings:
   pr_link: "## Pull Request"
   blocked: "## Blocked"
   needs_human: "## Needs Human Input"
+```
+
+## Setup Guide
+
+This section explains key configuration concepts and how they work together.
+
+### How Agent Labels Connect to Config
+
+The orchestrator uses GitHub labels to route issues to agents. The connection is direct:
+
+```
+GitHub Issue Label  →  Config Key  →  Agent Settings
+    "agent:web"     →  agents["agent:web"]  →  prompt, model, timeout
+```
+
+**Step 1: Define agents in your config**
+```yaml
+agents:
+  "agent:backend":
+    prompt: "prompts/backend.md"
+  "agent:frontend":
+    prompt: "prompts/frontend.md"
+```
+
+**Step 2: Create matching labels on GitHub**
+```bash
+# Use the init command to create labels automatically
+issue-orchestrator init
+```
+
+**Step 3: Label issues to assign them to agents**
+- Add `agent:backend` label → picked up by backend agent config
+- Add `agent:frontend` label → picked up by frontend agent config
+
+Issues without an `agent:*` label are ignored by the orchestrator.
+
+### Priority Labels
+
+Issues are processed in priority order. Add priority labels to control the queue:
+
+| Label | Priority | Description |
+|-------|----------|-------------|
+| `priority:high` | 1 | Processed first |
+| `priority:medium` | 2 | Default priority |
+| `priority:low` | 3 | Processed last |
+| (no priority label) | 2 | Treated as medium |
+
+Within the same priority level, issues are sorted by milestone (if filtered), then by issue number.
+
+### Milestones and Sorting
+
+Filter by milestone to focus on specific releases:
+
+```bash
+# Process only issues in the v2.0 milestone
+issue-orchestrator start --milestone "v2.0"
+```
+
+Or set a default in your config:
+```yaml
+filter_milestone: "v2.0"
+```
+
+**Milestone Sorting Strategies**
+
+When processing issues in a milestone, you can control the sort order:
+
+```yaml
+# Sort milestones by due date (default)
+milestone_sort: "due_date"
+
+# Sort by milestone number (M1, M2, M3)
+milestone_sort: "number"
+
+# Sort by name alphabetically
+milestone_sort: "name"
+
+# Sort by pattern extraction (e.g., "Sprint 3" → 3)
+milestone_sort: "pattern"
+milestone_sort_config:
+  pattern: "Sprint (\\d+)"
+```
+
+### Concurrency Settings
+
+Two settings control how many issues are processed:
+
+**`max_concurrent_sessions`** - How many agents run in parallel
+```yaml
+concurrency:
+  max_concurrent_sessions: 3   # Run up to 3 agents at once
+```
+
+This is your parallelism limit. Set based on your machine's resources and API rate limits.
+
+**`max_issues_to_start`** - Total issues to start this session
+```yaml
+max_issues_to_start: 10   # Start at most 10 issues, then stop
+```
+
+Use this to:
+- Limit a test run: `issue-orchestrator start --max-issues 2`
+- Process a batch without running forever
+- Control costs/API usage
+
+Set to `0` (default) for unlimited.
+
+**Example: Controlled batch processing**
+```bash
+# Process up to 5 issues, 2 at a time
+issue-orchestrator start --max-issues 5
+
+# In config:
+concurrency:
+  max_concurrent_sessions: 2
+max_issues_to_start: 5
+```
+
+### Config File Location
+
+By default, the orchestrator searches for config in:
+1. `.issue-orchestrator.yaml` in current directory
+2. `.issue-orchestrator/config.yaml` in current directory
+3. Same paths in parent directories (walks up to repo root)
+
+To use a different config file:
+```bash
+issue-orchestrator --config /path/to/my-config.yaml start
+issue-orchestrator -c ./configs/production.yaml start
+```
+
+This is useful for:
+- Multiple config profiles (dev, staging, production)
+- Testing different configurations
+- CI/CD environments with custom paths
+
+## Web Dashboard
+
+The web dashboard (default mode) provides:
+
+- Real-time status of all active sessions
+- Issue queue showing what's next
+- Attach to running sessions
+- View issue details and comments
+- Pause/resume orchestration
+
+Start on a custom port:
+```bash
+issue-orchestrator start --port 3000
 ```
 
 ## Example Flow
@@ -454,29 +663,6 @@ agent-done needs_human --question "Should we use OAuth or API keys?"
 When `enforce_hooks: true`, the orchestrator installs a pre-push hook that:
 - Blocks `git push` unless commits have proper `Agent-Status:` trailers
 - Forces agents to use `agent-done` instead of pushing directly
-
-## Web Dashboard
-
-Start with `--ui-mode web` to get a browser dashboard on port 8080:
-
-```bash
-issue-orchestrator start --ui-mode web
-```
-
-Features:
-- Real-time status of all sessions
-- Attach to running sessions
-- View issue details and comments
-- Pause/resume orchestration
-
-## Git Worktrees
-
-Each issue gets an isolated worktree:
-- Location: `{worktree_base}/{repo_name}-{issue_number}`
-- Branch: `{issue_number}-{slugified-title}`
-- Example: `../myrepo-123` with branch `123-add-user-auth`
-
-Worktrees are cleaned up after session completion (configurable).
 
 ## Testing
 
