@@ -530,6 +530,14 @@ def cmd_next(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Run the interactive setup wizard."""
+    from .setup_wizard import run_wizard
+
+    run_wizard()
+    return 0
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """Initialize required GitHub labels."""
     import subprocess
@@ -812,6 +820,12 @@ def main() -> int:
         help="GitHub issue number to prioritize"
     )
     next_parser.set_defaults(func=cmd_next)
+
+    # setup command (interactive wizard)
+    setup_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "setup", help="Interactive setup wizard for new or existing projects"
+    )
+    setup_parser.set_defaults(func=cmd_setup)
 
     # init command
     init_parser: argparse.ArgumentParser = subparsers.add_parser(

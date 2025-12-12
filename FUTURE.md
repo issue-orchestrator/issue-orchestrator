@@ -94,6 +94,57 @@ However, this method is not currently wired into the scheduling flow.
 - Show each blocked issue with its unmet dependencies as clickable links
 - Badge showing count of dependency-blocked issues
 
+## Config Sync Investigation (Archived Learning)
+
+**Status**: Investigated and decided NOT to implement. Current approach is sufficient.
+
+### Problem Statement
+
+Keeping YAML config schema, CLI arguments, and config processing in sync could lead to drift. Explored options to enforce a single source of truth.
+
+### Options Explored
+
+1. **Validation tests**: Catch drift after the fact (reactive, not preventive)
+2. **Registry-based dynamic imports**: Auto-discover config fields (not very Pythonic)
+3. **Dataclass field metadata**: Attach YAML paths and CLI flags to field definitions
+   ```python
+   def config_meta(*, yaml_path: str, cli_flag: str | None, help: str) -> dict:
+       return {"yaml_path": yaml_path, "cli_flag": cli_flag, "help": help}
+
+   max_concurrent_sessions: int = field(
+       default=3,
+       metadata=config_meta(yaml_path="concurrency.max_concurrent_sessions",
+                           cli_flag="--max-sessions", help="Max sessions")
+   )
+   ```
+4. **pydantic-settings**: Off-the-shelf library for YAML + CLI + env vars
+
+### pydantic-settings Prototype Findings
+
+Prototyped approach #4 with `pydantic-settings`. Key findings:
+
+- **Still requires ~90 LOC of custom glue code**:
+  - Custom YAML source (~60 LOC) - pydantic-settings doesn't natively support nested YAML
+  - Nested model flattening (~30 LOC) - CLI flags need flat namespace
+  - CLI argument generation - argparse integration
+- **Trade-offs**:
+  - Gains: Type validation, env var support, cleaner validation errors
+  - Costs: New dependency, custom glue code maintenance, migration effort
+- **Verdict**: Not truly "off the shelf" - still requires significant custom code
+
+### Decision
+
+**Current dataclass-based config is sufficient.** Reasons:
+
+1. Config drift hasn't been an actual problem (theoretical concern)
+2. 90% test coverage already catches issues
+3. Adding ~90 LOC to prevent a theoretical problem is yak-shaving
+4. Revisit only if drift becomes a real, recurring issue
+
+### Key Insight
+
+> "Don't solve theoretical problems with real complexity. Current solution works."
+
 ## Other Ideas
 
 - Persistent history across sessions (SQLite or JSON file)
