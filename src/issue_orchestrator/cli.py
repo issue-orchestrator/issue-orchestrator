@@ -532,9 +532,12 @@ def cmd_next(args: argparse.Namespace) -> int:
 
 def cmd_setup(args: argparse.Namespace) -> int:
     """Run the interactive setup wizard."""
+    from pathlib import Path
+
     from .setup_wizard import run_wizard
 
-    run_wizard()
+    target_path = Path(args.path).expanduser().resolve() if args.path else None
+    run_wizard(target_path)
     return 0
 
 
@@ -824,6 +827,12 @@ def main() -> int:
     # setup command (interactive wizard)
     setup_parser: argparse.ArgumentParser = subparsers.add_parser(
         "setup", help="Interactive setup wizard for new or existing projects"
+    )
+    setup_parser.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Project directory to set up (default: prompts interactively)"
     )
     setup_parser.set_defaults(func=cmd_setup)
 

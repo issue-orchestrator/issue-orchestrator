@@ -613,14 +613,44 @@ echo "Starting issue-orchestrator..."
     script_path.chmod(0o755)
 
 
-def run_wizard() -> None:
-    """Main wizard entry point."""
+def run_wizard(target_path: Path | None = None) -> None:
+    """Main wizard entry point.
+
+    Args:
+        target_path: Directory to set up. If None, prompts user.
+    """
     print("\n" + "=" * 50)
     print("  issue-orchestrator Setup Wizard")
     print("=" * 50)
 
+    # Determine target directory
+    if target_path is None:
+        cwd = Path.cwd()
+        print(f"\nCurrent directory: {cwd}")
+
+        # Check if this looks like the issue-orchestrator package itself
+        if (cwd / "src" / "issue_orchestrator").exists():
+            print("⚠ This looks like the issue-orchestrator package directory.")
+            print("  You probably want to set up a different project.\n")
+
+        target_input = prompt_input("Project directory to set up", str(cwd))
+        target_path = Path(target_input).expanduser().resolve()
+
+        if not target_path.exists():
+            print(f"[red]Error: {target_path} does not exist[/red]")
+            sys.exit(1)
+        if not target_path.is_dir():
+            print(f"[red]Error: {target_path} is not a directory[/red]")
+            sys.exit(1)
+
+    # Change to target directory for the rest of the wizard
+    import os
+    original_cwd = Path.cwd()
+    os.chdir(target_path)
+    print(f"\nSetting up: {target_path}\n")
+
     # Check prerequisites
-    print("\nChecking prerequisites...")
+    print("Checking prerequisites...")
     prereqs = check_prerequisites()
 
     all_ok = True
