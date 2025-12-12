@@ -629,11 +629,18 @@ def run_wizard(target_path: Path | None = None) -> None:
         print(f"\nCurrent directory: {cwd}")
 
         # Check if this looks like the issue-orchestrator package itself
-        if (cwd / "src" / "issue_orchestrator").exists():
+        is_orchestrator_dir = (cwd / "src" / "issue_orchestrator").exists()
+        if is_orchestrator_dir:
             print("⚠ This looks like the issue-orchestrator package directory.")
             print("  You probably want to set up a different project.\n")
+            # Don't default to this directory
+            target_input = prompt_input("Project directory to set up (required)", "")
+            if not target_input:
+                print("Error: Please specify a project directory.")
+                sys.exit(1)
+        else:
+            target_input = prompt_input("Project directory to set up", str(cwd))
 
-        target_input = prompt_input("Project directory to set up", str(cwd))
         target_path = Path(target_input).expanduser().resolve()
 
         if not target_path.exists():
