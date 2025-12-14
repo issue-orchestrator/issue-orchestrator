@@ -335,7 +335,17 @@ def wizard_new_project() -> dict[str, Any]:
 
     # UI Mode
     print("\n--- UI Mode ---")
-    ui_mode = prompt_choice("How do you want to view agent sessions?", ["web", "tmux", "iterm2"])
+    print("How do you want to monitor agent sessions?\n")
+    print("  web    - Browser dashboard at localhost (recommended)")
+    print("           Best for most users. Visual overview of all agents.")
+    print("  tmux   - Terminal multiplexer sessions")
+    print("           For terminal power users. Requires tmux installed.")
+    print("  iterm2 - Native iTerm2 tabs (macOS only)")
+    print("           Each agent runs in its own iTerm2 tab.\n")
+    ui_mode = prompt_input("UI mode", "web")
+    if ui_mode not in ("web", "tmux", "iterm2"):
+        print(f"  Invalid mode '{ui_mode}', using 'web'")
+        ui_mode = "web"
     config["ui_mode"] = ui_mode
     if ui_mode == "web":
         port = prompt_input("Web dashboard port", "8080")
@@ -497,7 +507,17 @@ def wizard_existing_project(state: DetectedState) -> dict[str, Any]:
     # UI mode
     if "ui_mode" not in config:
         print("\n--- UI Mode ---")
-        ui_mode = prompt_choice("UI mode", ["web", "tmux", "iterm2"])
+        print("How do you want to monitor agent sessions?\n")
+        print("  web    - Browser dashboard at localhost (recommended)")
+        print("           Best for most users. Visual overview of all agents.")
+        print("  tmux   - Terminal multiplexer sessions")
+        print("           For terminal power users. Requires tmux installed.")
+        print("  iterm2 - Native iTerm2 tabs (macOS only)")
+        print("           Each agent runs in its own iTerm2 tab.\n")
+        ui_mode = prompt_input("UI mode", "web")
+        if ui_mode not in ("web", "tmux", "iterm2"):
+            print(f"  Invalid mode '{ui_mode}', using 'web'")
+            ui_mode = "web"
         config["ui_mode"] = ui_mode
         if ui_mode == "web":
             config["web_port"] = int(prompt_input("Web port", "8080"))
