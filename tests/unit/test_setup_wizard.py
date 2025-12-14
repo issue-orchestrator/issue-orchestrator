@@ -1,0 +1,351 @@
+"""Unit tests for the setup wizard."""
+
+import pytest
+from pathlib import Path
+from unittest.mock import patch, Mock
+
+from issue_orchestrator.setup_wizard import (
+    create_starter_prompt,
+    create_cto_review_prompt,
+    detect_repo,
+    check_prerequisites,
+    fetch_github_labels,
+    find_existing_config,
+    scan_existing_repo,
+    DetectedState,
+)
+
+
+class TestCreateStarterPrompt:
+    """Test the create_starter_prompt function."""
+
+    def test_creates_prompt_file(self, tmp_path):
+        """Test that starter prompt is created with correct content."""
+        prompt_path = tmp_path / "prompts" / "backend.md"
+
+        create_starter_prompt("agent:backend", prompt_path)
+
+        assert prompt_path.exists()
+        content = prompt_path.read_text()
+        assert "Backend Agent Prompt" in content
+        assert "{issue_number}" in content
+        assert "{issue_title}" in content
+        assert "agent-done" in content
+
+    def test_creates_parent_directories(self, tmp_path):
+        """Test that parent directories are created."""
+        prompt_path = tmp_path / "deep" / "nested" / "prompt.md"
+
+        create_starter_prompt("agent:test", prompt_path)
+
+        assert prompt_path.exists()
+        assert prompt_path.parent.exists()
+
+    def test_extracts_agent_short_name(self, tmp_path):
+        """Test that agent short name is extracted correctly."""
+        prompt_path = tmp_path / "prompt.md"
+
+        create_starter_prompt("agent:frontend-ui", prompt_path)
+
+        content = prompt_path.read_text()
+        assert "Frontend-Ui Agent Prompt" in content
+
+
+class TestCreateCtoReviewPrompt:
+    """Test the create_cto_review_prompt function."""
+
+    def test_creates_cto_prompt_with_labels(self, tmp_path):
+        """Test that CTO prompt is created with label values substituted."""
+        prompt_path = tmp_path / "cto.md"
+
+        create_cto_review_prompt(prompt_path, "needs-cto-review", "cto-reviewed")
+
+        assert prompt_path.exists()
+        content = prompt_path.read_text()
+
+        # Check labels are substituted (not placeholders)
+        assert "needs-cto-review" in content
+        assert "cto-reviewed" in content
+        assert "{review_label}" not in content
+        assert "{reviewed_label}" not in content
+
+    def test_includes_gh_commands_with_labels(self, tmp_path):
+        """Test that gh commands include the actual labels."""
+        prompt_path = tmp_path / "cto.md"
+
+        create_cto_review_prompt(prompt_path, "my-review-label", "my-reviewed-label")
+
+        content = prompt_path.read_text()
+
+        # Check gh commands have correct labels
+        assert 'gh pr list --label "my-review-label"' in content
+        assert '--remove-label "my-review-label"' in content
+        assert '--add-label "my-reviewed-label"' in content
+
+    def test_preserves_template_variables(self, tmp_path):
+        """Test that issue_number and issue_title placeholders are preserved."""
+        prompt_path = tmp_path / "cto.md"
+
+        create_cto_review_prompt(prompt_path, "review", "reviewed")
+
+        content = prompt_path.read_text()
+
+        # These should remain as template variables for runtime substitution
+        assert "{issue_number}" in content
+        assert "{issue_title}" in content
+
+    def test_includes_batch_review_workflow(self, tmp_path):
+        """Test that batch review workflow is included."""
+        prompt_path = tmp_path / "cto.md"
+
+        create_cto_review_prompt(prompt_path, "review", "reviewed")
+
+        content = prompt_path.read_text()
+
+        assert "Batch Review" in content
+        assert "CTO Batch Review Report" in content
+        assert "PRs Reviewed" in content
+        assert "Patterns Observed" in content
+
+    def test_includes_single_issue_review(self, tmp_path):
+        """Test that single issue review workflow is included."""
+        prompt_path = tmp_path / "cto.md"
+
+        create_cto_review_prompt(prompt_path, "review", "reviewed")
+
+        content = prompt_path.read_text()
+
+        assert "Single Issue Review" in content
+
+    def test_includes_agent_done_completion(self, tmp_path):
+        """Test that agent-done completion instructions are included."""
+        prompt_path = tmp_path / "cto.md"
+
+        create_cto_review_prompt(prompt_path, "review", "reviewed")
+
+        content = prompt_path.read_text()
+
+        assert "agent-done completed" in content
+        assert "--implementation" in content
+        assert "--problems" in content
+
+    def test_creates_parent_directories(self, tmp_path):
+        """Test that parent directories are created."""
+        prompt_path = tmp_path / "deep" / "nested" / "cto.md"
+
+        create_cto_review_prompt(prompt_path, "review", "reviewed")
+
+        assert prompt_path.exists()
+
+
+class TestDetectRepo:
+    """Test the detect_repo function."""
+
+    @patch("issue_orchestrator.setup_wizard.run_git")
+    def test_detect_https_url(self, mock_run_git):
+        """Test detecting repo from HTTPS URL."""
+        mock_run_git.return_value = (True, "https://github.com/owner/repo.git")
+
+        repo = detect_repo()
+
+        assert repo == "owner/repo"
+
+    @patch("issue_orchestrator.setup_wizard.run_git")
+    def test_detect_ssh_url(self, mock_run_git):
+        """Test detecting repo from SSH URL."""
+        mock_run_git.return_value = (True, "git@github.com:owner/repo.git")
+
+        repo = detect_repo()
+
+        assert repo == "owner/repo"
+
+    @patch("issue_orchestrator.setup_wizard.run_git")
+    def test_detect_https_without_git_suffix(self, mock_run_git):
+        """Test detecting repo from HTTPS URL without .git suffix."""
+        mock_run_git.return_value = (True, "https://github.com/owner/repo")
+
+        repo = detect_repo()
+
+        assert repo == "owner/repo"
+
+    @patch("issue_orchestrator.setup_wizard.run_git")
+    def test_returns_none_on_failure(self, mock_run_git):
+        """Test that None is returned when git command fails."""
+        mock_run_git.return_value = (False, "")
+
+        repo = detect_repo()
+
+        assert repo is None
+
+    @patch("issue_orchestrator.setup_wizard.run_git")
+    def test_returns_none_for_non_github(self, mock_run_git):
+        """Test that None is returned for non-GitHub remotes."""
+        mock_run_git.return_value = (True, "https://gitlab.com/owner/repo.git")
+
+        repo = detect_repo()
+
+        assert repo is None
+
+
+class TestCheckPrerequisites:
+    """Test the check_prerequisites function."""
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("subprocess.run")
+    def test_all_prerequisites_met(self, mock_subprocess, mock_git, mock_gh):
+        """Test when all prerequisites are met."""
+        mock_git.return_value = (True, "git version 2.40.0")
+        mock_gh.return_value = (True, "gh version 2.30.0")
+        mock_subprocess.return_value = Mock(returncode=0)
+
+        checks = check_prerequisites()
+
+        assert checks["git"] is True
+        assert checks["gh"] is True
+        assert checks["claude"] is True
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("subprocess.run")
+    def test_missing_git(self, mock_subprocess, mock_git, mock_gh):
+        """Test when git is missing."""
+        mock_git.return_value = (False, "")
+        mock_gh.return_value = (True, "gh version 2.30.0")
+        mock_subprocess.return_value = Mock(returncode=0)
+
+        checks = check_prerequisites()
+
+        assert checks["git"] is False
+        assert checks["gh"] is True
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("subprocess.run")
+    def test_gh_not_authenticated(self, mock_subprocess, mock_git, mock_gh):
+        """Test when gh is not authenticated."""
+        mock_git.return_value = (True, "git version 2.40.0")
+        # First call is --version (success), second is auth status (fail)
+        mock_gh.side_effect = [(True, "gh version"), (False, "not logged in")]
+        mock_subprocess.return_value = Mock(returncode=0)
+
+        checks = check_prerequisites()
+
+        assert checks["gh"] is True
+        assert checks["gh_auth"] is False
+
+
+class TestFetchGithubLabels:
+    """Test the fetch_github_labels function."""
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_fetches_labels(self, mock_run_gh):
+        """Test successful label fetching."""
+        mock_run_gh.return_value = (True, '[{"name": "bug"}, {"name": "agent:web"}]')
+
+        labels = fetch_github_labels("owner/repo")
+
+        assert labels == ["bug", "agent:web"]
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_returns_empty_on_failure(self, mock_run_gh):
+        """Test that empty list is returned on failure."""
+        mock_run_gh.return_value = (False, "")
+
+        labels = fetch_github_labels("owner/repo")
+
+        assert labels == []
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_returns_empty_on_invalid_json(self, mock_run_gh):
+        """Test that empty list is returned for invalid JSON."""
+        mock_run_gh.return_value = (True, "not json")
+
+        labels = fetch_github_labels("owner/repo")
+
+        assert labels == []
+
+
+class TestFindExistingConfig:
+    """Test the find_existing_config function."""
+
+    def test_finds_config_in_current_dir(self, tmp_path):
+        """Test finding config in current directory."""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text("repo: owner/repo\nagents: {}")
+
+        path, config = find_existing_config(tmp_path)
+
+        assert path == config_file
+        assert config["repo"] == "owner/repo"
+
+    def test_finds_config_in_hidden_dir(self, tmp_path):
+        """Test finding config in .issue-orchestrator directory."""
+        hidden_dir = tmp_path / ".issue-orchestrator"
+        hidden_dir.mkdir()
+        config_file = hidden_dir / "config.yaml"
+        config_file.write_text("repo: owner/repo")
+
+        path, config = find_existing_config(tmp_path)
+
+        assert path == config_file
+
+    def test_returns_none_when_not_found(self, tmp_path):
+        """Test that None is returned when config not found."""
+        path, config = find_existing_config(tmp_path)
+
+        assert path is None
+        assert config is None
+
+    def test_prefers_root_over_hidden(self, tmp_path):
+        """Test that root config is preferred over hidden directory."""
+        # Create both configs
+        root_config = tmp_path / ".issue-orchestrator.yaml"
+        root_config.write_text("repo: root/repo")
+
+        hidden_dir = tmp_path / ".issue-orchestrator"
+        hidden_dir.mkdir()
+        hidden_config = hidden_dir / "config.yaml"
+        hidden_config.write_text("repo: hidden/repo")
+
+        path, config = find_existing_config(tmp_path)
+
+        assert path == root_config
+        assert config["repo"] == "root/repo"
+
+
+class TestScanExistingRepo:
+    """Test the scan_existing_repo function."""
+
+    @patch("issue_orchestrator.setup_wizard.find_prompt_candidates")
+    @patch("issue_orchestrator.setup_wizard.find_existing_config")
+    @patch("issue_orchestrator.setup_wizard.fetch_github_labels")
+    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    def test_scans_repo(self, mock_repo, mock_labels, mock_config, mock_prompts, tmp_path):
+        """Test scanning an existing repo."""
+        mock_repo.return_value = "owner/repo"
+        mock_labels.return_value = ["bug", "agent:web", "agent:backend"]
+        mock_config.return_value = (None, None)
+        mock_prompts.return_value = []
+
+        state = scan_existing_repo(tmp_path)
+
+        assert state.repo == "owner/repo"
+        assert state.agent_labels == ["agent:web", "agent:backend"]
+        assert len(state.github_labels) == 3
+
+    @patch("issue_orchestrator.setup_wizard.find_prompt_candidates")
+    @patch("issue_orchestrator.setup_wizard.find_existing_config")
+    @patch("issue_orchestrator.setup_wizard.fetch_github_labels")
+    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    def test_handles_no_repo(self, mock_repo, mock_labels, mock_config, mock_prompts, tmp_path):
+        """Test scanning when repo detection fails."""
+        mock_repo.return_value = None
+        mock_config.return_value = (None, None)
+        mock_prompts.return_value = []
+
+        state = scan_existing_repo(tmp_path)
+
+        assert state.repo is None
+        assert state.github_labels == []
+        assert state.agent_labels == []
