@@ -296,6 +296,22 @@ def wizard_new_project() -> dict[str, Any]:
 
         print(f"✓ Added {agent_name}\n")
 
+    # Create agent labels on GitHub
+    print("--- Agent Labels ---")
+    if prompt_yes_no("Create agent labels on GitHub now?"):
+        for agent_name in config["agents"].keys():
+            ok, _ = run_gh([
+                "label", "create", agent_name,
+                "--repo", config["repo"],
+                "--color", "1D76DB",
+                "--description", f"Issues for {agent_name.split(':')[-1]} agent",
+                "--force",
+            ])
+            if ok:
+                print(f"  ✓ {agent_name}")
+            else:
+                print(f"  ✗ {agent_name} (may already exist)")
+
     # Concurrency
     print("\n--- Concurrency Settings ---")
     max_sessions = prompt_input("Max concurrent agent sessions", "3")
@@ -750,25 +766,10 @@ def run_wizard(target_path: Path | None = None) -> None:
                 create_starter_prompt(agent_name, prompt_path)
                 print(f"  ✓ Created {prompt_path}")
 
-    # Create labels
-    if prompt_yes_no("\nCreate/verify GitHub labels?"):
+    # Create priority and status labels (agent labels handled earlier)
+    if prompt_yes_no("\nCreate priority & status labels on GitHub?"):
         repo = config.get("repo")
         if repo:
-            # Agent labels
-            for agent_name in config.get("agents", {}).keys():
-                run_gh(
-                    [
-                        "label",
-                        "create",
-                        agent_name,
-                        "--repo",
-                        repo,
-                        "--color",
-                        "1D76DB",
-                        "--force",
-                    ]
-                )
-
             # Priority labels
             priority_labels = [
                 ("priority:high", "D93F0B", "Urgent - do first"),
