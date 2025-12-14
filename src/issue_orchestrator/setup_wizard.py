@@ -117,8 +117,10 @@ def fetch_github_labels(repo: str) -> list[str]:
         return []
 
 
-def find_existing_config(start_path: Path = Path.cwd()) -> tuple[Path | None, dict | None]:
+def find_existing_config(start_path: Path | None = None) -> tuple[Path | None, dict | None]:
     """Find existing config file."""
+    if start_path is None:
+        start_path = Path.cwd()
     candidates = [
         ".issue-orchestrator.yaml",
         ".issue-orchestrator/config.yaml",
@@ -139,11 +141,13 @@ def find_existing_config(start_path: Path = Path.cwd()) -> tuple[Path | None, di
     return None, None
 
 
-def find_prompt_candidates(start_path: Path = Path.cwd()) -> list[Path]:
+def find_prompt_candidates(start_path: Path | None = None) -> list[Path]:
     """Find potential prompt files in the repo.
 
     Looks for markdown files that are likely agent prompts based on naming/location.
     """
+    if start_path is None:
+        start_path = Path.cwd()
     candidates = []
 
     # High-priority patterns (likely prompts)
@@ -182,8 +186,10 @@ def find_prompt_candidates(start_path: Path = Path.cwd()) -> list[Path]:
     return sorted(set(candidates))
 
 
-def scan_existing_repo(path: Path = Path.cwd()) -> DetectedState:
+def scan_existing_repo(path: Path | None = None) -> DetectedState:
     """Scan an existing repo and detect its state."""
+    if path is None:
+        path = Path.cwd()
     state = DetectedState()
 
     # Detect repo from the target path
