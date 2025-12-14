@@ -623,6 +623,162 @@ Your worktree is at: {{worktree}}
     path.write_text(content)
 
 
+def create_cto_review_prompt(path: Path, review_label: str, reviewed_label: str) -> None:
+    """Create a CTO review prompt with actual label values substituted."""
+    content = f"""# CTO Review Agent
+
+You are a CTO/technical lead reviewing work done by AI agents. Your job is to review PRs in batch, identify patterns, suggest process improvements, and ensure quality.
+
+## Review Mode
+
+This prompt supports two modes based on the issue:
+
+1. **Batch Review** (issue title contains "Batch Review" or "CTO Review"): Review all PRs with `{review_label}` label
+2. **Single Issue Review**: Review the specific issue #{{issue_number}}
+
+## Batch Review Process
+
+### 1. Find PRs to Review
+
+```bash
+gh pr list --label "{review_label}" --json number,title,body,url,headRefName
+```
+
+### 2. For Each PR, Review:
+
+```bash
+# Get PR details
+gh pr view <number> --json title,body,additions,deletions,files
+
+# See the code changes
+gh pr diff <number>
+
+# Check linked issue for context
+gh issue view <linked_issue_number> --comments
+```
+
+Evaluate:
+- **Code quality**: Clean, maintainable implementation?
+- **Completeness**: Fully addresses the issue?
+- **Testing**: Tests present? Edge cases covered?
+- **Patterns**: Recurring issues across PRs?
+
+### 3. Comment on Each PR
+
+```bash
+gh pr comment <number> --body "## CTO Review
+
+### Assessment
+{{verdict: Approved / Needs Minor Changes / Needs Work}}
+
+### Feedback
+{{specific constructive feedback}}
+
+### Good Practices Noted
+{{what was done well - helps agents learn}}
+"
+```
+
+### 4. Mark PR as Reviewed
+
+After reviewing each PR, flip the label:
+```bash
+gh pr edit <number> --remove-label "{review_label}" --add-label "{reviewed_label}"
+```
+
+### 5. Create Batch Report
+
+Create a summary report as a comment on THIS issue:
+
+```markdown
+## CTO Batch Review Report
+
+### PRs Reviewed
+| PR | Title | Verdict | Notes |
+|----|-------|---------|-------|
+| #N | Title | Approved | Brief note |
+
+### Patterns Observed
+- {{recurring issues across PRs}}
+- {{common mistakes}}
+- {{good practices to encourage}}
+
+### Process Improvements
+- {{suggestions for agent prompts}}
+- {{workflow improvements}}
+- {{tooling needs}}
+
+### Follow-up Actions Created
+- Issue #X: {{description}}
+```
+
+### 6. Create Follow-up Issues (if needed)
+
+For process improvements or recurring problems:
+```bash
+gh issue create --title "Process: {{improvement}}" --body "{{details}}" --label "process"
+```
+
+## Single Issue Review Process
+
+When reviewing a specific issue #{{issue_number}}: {{issue_title}}
+
+### 1. Understand the Issue
+```bash
+gh issue view {{issue_number}} --comments
+```
+
+### 2. Find and Review the PR
+Look for PR links in issue comments, then:
+```bash
+gh pr view <number> --json title,body,files
+gh pr diff <number>
+```
+
+### 3. Post Review
+Comment on the issue with your analysis:
+
+```markdown
+## CTO Review
+
+### Summary
+{{brief assessment}}
+
+### Problems Analysis
+- Agent-reported problems: {{from "Problems Encountered" section}}
+- Additional concerns: {{anything you noticed}}
+
+### Recommendations
+{{specific suggestions}}
+
+### Status
+- [ ] Approved for merge
+- [ ] Needs changes: {{specify}}
+- [ ] Escalate to human: {{why}}
+```
+
+## Completion
+
+When done, use `agent-done`:
+
+```bash
+agent-done completed \\
+  --implementation "Reviewed {{N}} PRs. {{summary: X approved, Y need changes}}. Created {{M}} follow-up issues." \\
+  --problems "{{any process issues found, or 'None'}}"
+```
+
+## Review Principles
+
+- **Be constructive** - agents are learning from your feedback
+- **Focus on patterns** - individual issues matter less than systemic ones
+- **Note what's good** - reinforcement helps improve agent behavior
+- **Suggest prompt improvements** - if agents keep making the same mistake, the prompt needs work
+- **Don't block for style** - focus on correctness and maintainability
+"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
 class _NoAliasDumper(yaml.SafeDumper):
     """YAML dumper that doesn't use aliases."""
 
@@ -812,12 +968,28 @@ def run_wizard(target_path: Path | None = None) -> None:
 
     # Create missing prompt files
     print("\n--- Prompt Files ---")
+    review_config = config.get("review", {})
+    review_label = review_config.get("label", "needs-cto-review")
+    reviewed_label = review_config.get("reviewed_label", "cto-reviewed")
+    review_agent = review_config.get("agent")
+
     for agent_name, agent_config in config.get("agents", {}).items():
         prompt_path = Path(agent_config["prompt"])
         if not prompt_path.exists():
-            if prompt_yes_no(f"Create starter prompt at {prompt_path}?"):
-                create_starter_prompt(agent_name, prompt_path)
-                print(f"  ✓ Created {prompt_path}")
+            # Check if this is the CTO/review agent
+            is_review_agent = (
+                review_agent and agent_name == review_agent
+            ) or "cto" in agent_name.lower() or "review" in agent_name.lower()
+
+            if is_review_agent and review_config:
+                if prompt_yes_no(f"Create CTO review prompt at {prompt_path}?"):
+                    create_cto_review_prompt(prompt_path, review_label, reviewed_label)
+                    print(f"  ✓ Created CTO review prompt at {prompt_path}")
+                    print(f"    Labels configured: {review_label} → {reviewed_label}")
+            else:
+                if prompt_yes_no(f"Create starter prompt at {prompt_path}?"):
+                    create_starter_prompt(agent_name, prompt_path)
+                    print(f"  ✓ Created {prompt_path}")
 
     # Create priority and status labels (agent labels handled earlier)
     if prompt_yes_no("\nCreate priority & status labels on GitHub?"):
@@ -854,6 +1026,29 @@ def run_wizard(target_path: Path | None = None) -> None:
             ]
             for name, color in status_labels:
                 run_gh(["label", "create", name, "--repo", repo, "--color", color, "--force"])
+
+            # Review workflow labels (if configured)
+            if review_config:
+                review_labels = [
+                    (review_label, "7057FF", "PR needs CTO/batch review"),
+                    (reviewed_label, "0E8A16", "PR has been reviewed"),
+                ]
+                for name, color, desc in review_labels:
+                    run_gh(
+                        [
+                            "label",
+                            "create",
+                            name,
+                            "--repo",
+                            repo,
+                            "--color",
+                            color,
+                            "--description",
+                            desc,
+                            "--force",
+                        ]
+                    )
+                print(f"  ✓ Review labels: {review_label}, {reviewed_label}")
 
             print("  ✓ Labels created/updated")
 
