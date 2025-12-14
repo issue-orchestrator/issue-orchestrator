@@ -1027,3 +1027,123 @@ class TestGetLatestNeedsHumanInfo:
 
         assert info is not None
         assert info.options == []
+
+
+class TestListPrsWithLabel:
+    """Test list_prs_with_label function."""
+
+    @patch("issue_orchestrator.github._run_gh_json")
+    def test_list_prs_with_label_success(self, mock_run_gh_json):
+        """Test successful PR listing by label."""
+        from issue_orchestrator.github import list_prs_with_label
+
+        mock_run_gh_json.return_value = [
+            {"number": 1, "title": "PR 1", "url": "https://github.com/owner/repo/pull/1"},
+            {"number": 2, "title": "PR 2", "url": "https://github.com/owner/repo/pull/2"},
+        ]
+
+        prs = list_prs_with_label("owner/repo", "needs-review")
+
+        assert len(prs) == 2
+        assert prs[0]["number"] == 1
+        assert prs[1]["number"] == 2
+
+    @patch("issue_orchestrator.github._run_gh_json")
+    def test_list_prs_with_label_empty(self, mock_run_gh_json):
+        """Test empty PR list."""
+        from issue_orchestrator.github import list_prs_with_label
+
+        mock_run_gh_json.return_value = []
+
+        prs = list_prs_with_label("owner/repo", "needs-review")
+
+        assert prs == []
+
+    @patch("issue_orchestrator.github._run_gh_json")
+    def test_list_prs_with_label_error_returns_empty(self, mock_run_gh_json):
+        """Test that errors return empty list."""
+        from issue_orchestrator.github import list_prs_with_label
+
+        mock_run_gh_json.side_effect = GitHubError("gh failed")
+
+        prs = list_prs_with_label("owner/repo", "needs-review")
+
+        assert prs == []
+
+    @patch("issue_orchestrator.github._run_gh_json")
+    def test_list_prs_with_label_non_list_returns_empty(self, mock_run_gh_json):
+        """Test non-list result returns empty list."""
+        from issue_orchestrator.github import list_prs_with_label
+
+        mock_run_gh_json.return_value = {"error": "something"}
+
+        prs = list_prs_with_label("owner/repo", "needs-review")
+
+        assert prs == []
+
+
+class TestCreateIssue:
+    """Test create_issue function."""
+
+    @patch("issue_orchestrator.github._run_gh")
+    def test_create_issue_success(self, mock_run_gh):
+        """Test successful issue creation."""
+        from issue_orchestrator.github import create_issue
+
+        mock_run_gh.return_value = "https://github.com/owner/repo/issues/42\n"
+
+        issue_number = create_issue(
+            "owner/repo",
+            title="Test Issue",
+            body="Test body",
+            labels=["bug", "priority:high"],
+        )
+
+        assert issue_number == 42
+
+    @patch("issue_orchestrator.github._run_gh")
+    def test_create_issue_no_labels(self, mock_run_gh):
+        """Test issue creation without labels."""
+        from issue_orchestrator.github import create_issue
+
+        mock_run_gh.return_value = "https://github.com/owner/repo/issues/123\n"
+
+        issue_number = create_issue(
+            "owner/repo",
+            title="Simple Issue",
+            body="Body",
+        )
+
+        assert issue_number == 123
+        args = mock_run_gh.call_args[0][0]
+        assert "--label" not in args
+
+    @patch("issue_orchestrator.github._run_gh")
+    def test_create_issue_error_returns_none(self, mock_run_gh):
+        """Test that errors return None."""
+        from issue_orchestrator.github import create_issue
+
+        mock_run_gh.side_effect = GitHubError("gh failed")
+
+        issue_number = create_issue(
+            "owner/repo",
+            title="Test",
+            body="Body",
+        )
+
+        assert issue_number is None
+
+    @patch("issue_orchestrator.github._run_gh")
+    def test_create_issue_invalid_output_returns_none(self, mock_run_gh):
+        """Test that invalid output returns None."""
+        from issue_orchestrator.github import create_issue
+
+        mock_run_gh.return_value = "unexpected output"
+
+        issue_number = create_issue(
+            "owner/repo",
+            title="Test",
+            body="Body",
+        )
+
+        assert issue_number is None

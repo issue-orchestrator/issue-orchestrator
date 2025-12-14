@@ -162,6 +162,15 @@ def cmd_start(args: argparse.Namespace) -> int:
         if config.max_issues_to_start > 0:
             console.print(f"[dim]Max issues to start: {config.max_issues_to_start}[/dim]")
 
+    # Handle review workflow overrides
+    if hasattr(args, 'review_label') and args.review_label is not None:
+        config.review_label = args.review_label
+        console.print(f"[dim]Review label: {config.review_label}[/dim]")
+    if hasattr(args, 'review_threshold') and args.review_threshold is not None:
+        config.review_threshold = args.review_threshold
+        if config.review_threshold > 0:
+            console.print(f"[dim]Review threshold: {config.review_threshold} PRs[/dim]")
+
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
     console.print(f"[dim]Max concurrent sessions: {config.max_concurrent_sessions}[/dim]")
 
@@ -745,6 +754,18 @@ def main() -> int:
         type=int,
         default=None,
         help="Max issues to start processing this session (default: 0=unlimited)"
+    )
+    start_parser.add_argument(
+        "--review-label",
+        type=str,
+        default=None,
+        help="Label to add to PRs for review (e.g., 'needs-cto-review')"
+    )
+    start_parser.add_argument(
+        "--review-threshold",
+        type=int,
+        default=None,
+        help="Auto-trigger CTO review after N PRs with review label (default: 0=manual only)"
     )
     start_parser.set_defaults(func=cmd_start)
 

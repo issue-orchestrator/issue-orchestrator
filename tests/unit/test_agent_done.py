@@ -655,14 +655,23 @@ class TestGitPush:
 class TestCreatePR:
     """Test the create_pr function."""
 
+    def _make_completion_data(self, implementation="Added feature", problems="None"):
+        """Helper to create CompletionData for tests."""
+        return CompletionData(
+            status=Status.COMPLETED,
+            implementation=implementation,
+            problems=problems,
+        )
+
     def test_create_pr_success(self):
         """Test creating PR successfully."""
+        data = self._make_completion_data()
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = Mock(
                 returncode=0,
                 stdout="https://github.com/owner/repo/pull/123\n"
             )
-            pr_url = create_pr(456, "Fix issue #456")
+            pr_url = create_pr(456, "Fix issue #456", data)
             assert pr_url == "https://github.com/owner/repo/pull/123"
 
             args = mock_run.call_args[0][0]
@@ -673,6 +682,7 @@ class TestCreatePR:
 
     def test_create_pr_already_exists(self):
         """Test handling when PR already exists."""
+        data = self._make_completion_data()
         with patch('subprocess.run') as mock_run:
             # First call fails with "already exists"
             # Second call gets existing PR URL
@@ -680,28 +690,50 @@ class TestCreatePR:
                 Mock(returncode=1, stderr="already exists"),
                 Mock(returncode=0, stdout="https://github.com/owner/repo/pull/999\n"),
             ]
-            pr_url = create_pr(456, "Fix issue #456")
+            pr_url = create_pr(456, "Fix issue #456", data)
             assert pr_url == "https://github.com/owner/repo/pull/999"
 
     def test_create_pr_failure(self):
         """Test error when PR creation fails."""
+        data = self._make_completion_data()
         with patch('subprocess.run') as mock_run:
             mock_run.return_value = Mock(
                 returncode=1,
                 stderr="Permission denied"
             )
             with pytest.raises(SystemExit):
-                create_pr(456, "Fix issue #456")
+                create_pr(456, "Fix issue #456", data)
 
     def test_create_pr_already_exists_but_cant_get_url(self):
         """Test error when PR exists but can't get URL."""
+        data = self._make_completion_data()
         with patch('subprocess.run') as mock_run:
             mock_run.side_effect = [
                 Mock(returncode=1, stderr="already exists"),
                 Mock(returncode=1, stderr="Not found"),
             ]
             with pytest.raises(SystemExit):
-                create_pr(456, "Fix issue #456")
+                create_pr(456, "Fix issue #456", data)
+
+    def test_create_pr_includes_implementation_in_body(self):
+        """Test that PR body includes implementation details."""
+        data = self._make_completion_data(
+            implementation="Implemented new user auth flow",
+            problems="Found a race condition in login"
+        )
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(
+                returncode=0,
+                stdout="https://github.com/owner/repo/pull/123\n"
+            )
+            create_pr(456, "Fix issue #456", data)
+
+            args = mock_run.call_args[0][0]
+            # Find the body argument
+            body_idx = args.index("--body") + 1
+            body = args[body_idx]
+            assert "Implemented new user auth flow" in body
+            assert "race condition" in body
 
 
 class TestUpdateCommentWithPR:

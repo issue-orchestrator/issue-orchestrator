@@ -64,6 +64,8 @@ class Config:
     # Review workflow (optional) - adds label to PRs for batch review
     review_label: Optional[str] = None  # Label to add to PRs (e.g., "needs-cto-review")
     review_agent: Optional[str] = None  # Agent that does reviews (e.g., "agent:cto")
+    reviewed_label: Optional[str] = None  # Label after review (e.g., "cto-reviewed")
+    review_threshold: int = 0  # Trigger review after N PRs (0 = manual only)
 
     # Path to the config file (set during load)
     config_path: Optional[Path] = None
@@ -162,6 +164,8 @@ class Config:
         review_config = data.get("review", {})
         config.review_label = review_config.get("label")
         config.review_agent = review_config.get("agent")
+        config.reviewed_label = review_config.get("reviewed_label", "cto-reviewed")
+        config.review_threshold = review_config.get("threshold", 0)
 
         # Parse comment headings
         headings_data = data.get("comment_headings", {})

@@ -1421,3 +1421,147 @@ class TestRunOrchestrator:
                 call_args_list = [call[0][0] for call in mock_signal.call_args_list]
                 assert signal.SIGINT in call_args_list
                 assert signal.SIGTERM in call_args_list
+
+
+class TestCheckReviewTrigger:
+    """Test the check_review_trigger method for CTO review workflow."""
+
+    def test_check_review_trigger_disabled_without_review_label(self, sample_config):
+        """Test that check_review_trigger does nothing without review_label configured."""
+        sample_config.review_label = None
+        sample_config.review_agent = "agent:cto"
+        sample_config.review_threshold = 5
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        # Should not raise and should not call any GitHub functions
+        with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
+            orchestrator.check_review_trigger()
+            mock_prs.assert_not_called()
+
+    def test_check_review_trigger_disabled_without_review_agent(self, sample_config):
+        """Test that check_review_trigger does nothing without review_agent configured."""
+        sample_config.review_label = "needs-cto-review"
+        sample_config.review_agent = None
+        sample_config.review_threshold = 5
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
+            orchestrator.check_review_trigger()
+            mock_prs.assert_not_called()
+
+    def test_check_review_trigger_disabled_with_zero_threshold(self, sample_config):
+        """Test that check_review_trigger does nothing with threshold=0."""
+        sample_config.review_label = "needs-cto-review"
+        sample_config.review_agent = "agent:cto"
+        sample_config.review_threshold = 0
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
+            orchestrator.check_review_trigger()
+            mock_prs.assert_not_called()
+
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    def test_check_review_trigger_below_threshold(self, mock_prs, sample_config):
+        """Test that no review issue is created when below threshold."""
+        sample_config.review_label = "needs-cto-review"
+        sample_config.review_agent = "agent:cto"
+        sample_config.review_threshold = 5
+
+        mock_prs.return_value = [
+            {"number": 1, "title": "PR 1"},
+            {"number": 2, "title": "PR 2"},
+        ]  # Only 2 PRs, below threshold of 5
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        with patch("issue_orchestrator.orchestrator.create_issue") as mock_create:
+            orchestrator.check_review_trigger()
+            mock_create.assert_not_called()
+
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    @patch("issue_orchestrator.orchestrator.create_issue")
+    def test_check_review_trigger_creates_review_issue(
+        self, mock_create, mock_prs, mock_issues, sample_config
+    ):
+        """Test that review issue is created when threshold is reached."""
+        sample_config.review_label = "needs-cto-review"
+        sample_config.review_agent = "agent:cto"
+        sample_config.review_threshold = 3
+
+        mock_prs.return_value = [
+            {"number": 1, "title": "PR 1"},
+            {"number": 2, "title": "PR 2"},
+            {"number": 3, "title": "PR 3"},
+        ]  # 3 PRs, meets threshold
+        mock_issues.return_value = []  # No existing review issues
+        mock_create.return_value = 42
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.check_review_trigger()
+
+        mock_create.assert_called_once()
+        call_args = mock_create.call_args
+        assert "CTO Batch Review" in call_args[1]["title"]
+        assert sample_config.review_agent in call_args[1]["labels"]
+
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    @patch("issue_orchestrator.orchestrator.create_issue")
+    def test_check_review_trigger_skips_if_review_issue_exists(
+        self, mock_create, mock_prs, mock_issues, sample_config
+    ):
+        """Test that no duplicate review issue is created."""
+        sample_config.review_label = "needs-cto-review"
+        sample_config.review_agent = "agent:cto"
+        sample_config.review_threshold = 3
+
+        mock_prs.return_value = [
+            {"number": 1, "title": "PR 1"},
+            {"number": 2, "title": "PR 2"},
+            {"number": 3, "title": "PR 3"},
+        ]
+
+        # Existing review issue
+        existing_issue = create_issue(100, title="CTO Batch Review: 3 PRs pending")
+        mock_issues.return_value = [existing_issue]
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.check_review_trigger()
+
+        # Should not create a new issue
+        mock_create.assert_not_called()
+
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    @patch("issue_orchestrator.orchestrator.create_issue")
+    def test_check_review_trigger_review_body_includes_pr_list(
+        self, mock_create, mock_prs, mock_issues, sample_config
+    ):
+        """Test that review issue body includes list of PRs."""
+        sample_config.review_label = "needs-cto-review"
+        sample_config.review_agent = "agent:cto"
+        sample_config.reviewed_label = "cto-reviewed"
+        sample_config.review_threshold = 2
+
+        mock_prs.return_value = [
+            {"number": 10, "title": "Fix bug A"},
+            {"number": 20, "title": "Add feature B"},
+        ]
+        mock_issues.return_value = []
+        mock_create.return_value = 42
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.check_review_trigger()
+
+        call_args = mock_create.call_args
+        body = call_args[1]["body"]
+        assert "PR #10" in body
+        assert "Fix bug A" in body
+        assert "PR #20" in body
+        assert "Add feature B" in body
+        assert "needs-cto-review" in body
+        assert "cto-reviewed" in body

@@ -414,3 +414,52 @@ def _extract_numbered_list(body: str, field_name: str) -> list[str]:
     list_text = match.group(1)
     items = re.findall(r"\d+\.\s*(.+)", list_text)
     return [item.strip() for item in items]
+
+
+def list_prs_with_label(repo: str | None, label: str) -> list[dict]:
+    """List open PRs with a specific label.
+
+    Args:
+        repo: Repository in owner/repo format
+        label: Label to filter by
+
+    Returns:
+        List of PR dicts with number, title, url
+    """
+    args = ["pr", "list", "--label", label, "--state", "open", "--json", "number,title,url"]
+    try:
+        output = _run_gh_json(args, repo)
+        return output if isinstance(output, list) else []
+    except GitHubError:
+        return []
+
+
+def create_issue(
+    repo: str | None,
+    title: str,
+    body: str,
+    labels: list[str] | None = None,
+) -> int | None:
+    """Create a new issue.
+
+    Args:
+        repo: Repository in owner/repo format
+        title: Issue title
+        body: Issue body
+        labels: Labels to add
+
+    Returns:
+        Issue number if created, None on failure
+    """
+    args = ["issue", "create", "--title", title, "--body", body]
+    if labels:
+        for label in labels:
+            args.extend(["--label", label])
+
+    try:
+        output = _run_gh(args, repo)
+        # Output is the issue URL, extract number
+        match = re.search(r"/issues/(\d+)", output)
+        return int(match.group(1)) if match else None
+    except GitHubError:
+        return None

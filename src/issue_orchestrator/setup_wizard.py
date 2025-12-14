@@ -382,13 +382,25 @@ def wizard_new_project() -> dict[str, Any]:
     print("This enables a review process where PRs accumulate, then get reviewed together.\n")
     if prompt_yes_no("Enable PR review labeling?", default=False):
         review_label = prompt_input("Label for PRs needing review", "needs-cto-review")
+        reviewed_label = prompt_input("Label after review complete", "cto-reviewed")
         review_agent = prompt_input("Review agent (leave empty if manual)", "agent:cto")
-        config["review"] = {
+        threshold = prompt_input("Auto-trigger review after N PRs (0 = manual only)", "3")
+
+        review_config: dict[str, Any] = {
             "label": review_label,
+            "reviewed_label": reviewed_label,
         }
         if review_agent:
-            config["review"]["agent"] = review_agent
-        print(f"  ✓ PRs will be labeled '{review_label}' for review")
+            review_config["agent"] = review_agent
+        try:
+            threshold_int = int(threshold)
+            if threshold_int > 0:
+                review_config["threshold"] = threshold_int
+                print(f"  ✓ CTO review triggers automatically after {threshold_int} PRs")
+        except ValueError:
+            pass
+        config["review"] = review_config
+        print(f"  ✓ PRs will be labeled '{review_label}' → '{reviewed_label}' after review")
 
     return config
 
@@ -559,13 +571,25 @@ def wizard_existing_project(state: DetectedState) -> dict[str, Any]:
         print("This enables a review process where PRs accumulate, then get reviewed together.\n")
         if prompt_yes_no("Enable PR review labeling?", default=False):
             review_label = prompt_input("Label for PRs needing review", "needs-cto-review")
+            reviewed_label = prompt_input("Label after review complete", "cto-reviewed")
             review_agent = prompt_input("Review agent (leave empty if manual)", "agent:cto")
-            config["review"] = {
+            threshold = prompt_input("Auto-trigger review after N PRs (0 = manual only)", "3")
+
+            review_config: dict[str, Any] = {
                 "label": review_label,
+                "reviewed_label": reviewed_label,
             }
             if review_agent:
-                config["review"]["agent"] = review_agent
-            print(f"  ✓ PRs will be labeled '{review_label}' for review")
+                review_config["agent"] = review_agent
+            try:
+                threshold_int = int(threshold)
+                if threshold_int > 0:
+                    review_config["threshold"] = threshold_int
+                    print(f"  ✓ CTO review triggers automatically after {threshold_int} PRs")
+            except ValueError:
+                pass
+            config["review"] = review_config
+            print(f"  ✓ PRs will be labeled '{review_label}' → '{reviewed_label}' after review")
 
     return config
 

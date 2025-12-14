@@ -10,7 +10,8 @@ from typing import Optional
 from .config import Config
 from .github import (
     list_issues, add_label, remove_label,
-    get_open_prs_for_branch, get_latest_blocked_info, get_latest_needs_human_info
+    get_open_prs_for_branch, get_latest_blocked_info, get_latest_needs_human_info,
+    list_prs_with_label, create_issue,
 )
 from .locks import try_claim, release_claim, cleanup_stale_claims
 from .models import Issue, Session, SessionStatus, OrchestratorState
@@ -251,6 +252,9 @@ class Orchestrator:
                 if status != SessionStatus.RUNNING:
                     self.handle_session_completion(session, status)
 
+            # Check if CTO review should be triggered
+            self.check_review_trigger()
+
             # Check if we've hit the max issues limit for this session
             max_issues = self.config.max_issues_to_start
             hit_max_issues = max_issues > 0 and self.state.issues_started_count >= max_issues
@@ -319,6 +323,57 @@ class Orchestrator:
         """Resume after pause."""
         self.state.paused = False
         print("Orchestrator resumed")
+
+    def check_review_trigger(self) -> None:
+        """Check if we should trigger a CTO review based on PR count.
+
+        Creates a review issue if:
+        - review.label and review.agent are configured
+        - review.threshold > 0
+        - Number of PRs with review_label >= threshold
+        - No existing open review issue exists
+        """
+        # Check if review is configured
+        if not self.config.review_label or not self.config.review_agent:
+            return
+        if self.config.review_threshold <= 0:
+            return
+
+        # Count PRs needing review
+        prs = list_prs_with_label(self.config.repo, self.config.review_label)
+        if len(prs) < self.config.review_threshold:
+            return
+
+        # Check if a review issue already exists (avoid duplicates)
+        # Look for open issues with the review agent label and "Batch Review" in title
+        existing = list_issues(
+            self.config.repo,
+            labels=[self.config.review_agent],
+            limit=10,
+        )
+        for issue in existing:
+            if "Batch Review" in issue.title or "CTO Review" in issue.title:
+                # Already have a pending review issue
+                return
+
+        # Create the review issue
+        pr_list = "\n".join(f"- PR #{pr['number']}: {pr['title']}" for pr in prs)
+        body = f"""## CTO Batch Review Triggered
+
+{len(prs)} PRs are ready for review:
+
+{pr_list}
+
+Review these PRs, provide feedback, and flip labels from `{self.config.review_label}` to `{self.config.reviewed_label}`.
+"""
+        issue_number = create_issue(
+            self.config.repo,
+            title=f"CTO Batch Review: {len(prs)} PRs pending",
+            body=body,
+            labels=[self.config.review_agent],
+        )
+        if issue_number:
+            print(f"📋 Created CTO review issue #{issue_number} for {len(prs)} PRs")
 
     def prioritize(self, issue_number: int) -> None:
         """Add an issue to the priority queue."""
