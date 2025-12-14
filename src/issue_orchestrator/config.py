@@ -61,6 +61,10 @@ class Config:
     enforce_hooks: bool = True  # Install pre-push hooks to enforce structured comments
     pre_push_hook: Optional[Path] = None  # Custom pre-push hook path (uses bundled if None)
 
+    # Review workflow (optional) - adds label to PRs for batch review
+    review_label: Optional[str] = None  # Label to add to PRs (e.g., "needs-cto-review")
+    review_agent: Optional[str] = None  # Agent that does reviews (e.g., "agent:cto")
+
     # Path to the config file (set during load)
     config_path: Optional[Path] = None
 
@@ -153,6 +157,11 @@ class Config:
         config.enforce_hooks = data.get("enforce_hooks", True)
         if data.get("pre_push_hook"):
             config.pre_push_hook = Path(data["pre_push_hook"])
+
+        # Review workflow
+        review_config = data.get("review", {})
+        config.review_label = review_config.get("label")
+        config.review_agent = review_config.get("agent")
 
         # Parse comment headings
         headings_data = data.get("comment_headings", {})

@@ -376,6 +376,20 @@ def wizard_new_project() -> dict[str, Any]:
             "needs_human": prompt_input("Needs-human label", "needs-human"),
         }
 
+    # Review workflow (optional)
+    print("\n--- Review Workflow (Optional) ---")
+    print("You can have PRs automatically labeled for batch review by a CTO/review agent.")
+    print("This enables a review process where PRs accumulate, then get reviewed together.\n")
+    if prompt_yes_no("Enable PR review labeling?", default=False):
+        review_label = prompt_input("Label for PRs needing review", "needs-cto-review")
+        review_agent = prompt_input("Review agent (leave empty if manual)", "agent:cto")
+        config["review"] = {
+            "label": review_label,
+        }
+        if review_agent:
+            config["review"]["agent"] = review_agent
+        print(f"  ✓ PRs will be labeled '{review_label}' for review")
+
     return config
 
 
@@ -537,6 +551,21 @@ def wizard_existing_project(state: DetectedState) -> dict[str, Any]:
         config["ui_mode"] = ui_mode
         if ui_mode == "web":
             config["web_port"] = int(prompt_input("Web port", "8080"))
+
+    # Review workflow (optional) - only ask if not already configured
+    if "review" not in config:
+        print("\n--- Review Workflow (Optional) ---")
+        print("You can have PRs automatically labeled for batch review by a CTO/review agent.")
+        print("This enables a review process where PRs accumulate, then get reviewed together.\n")
+        if prompt_yes_no("Enable PR review labeling?", default=False):
+            review_label = prompt_input("Label for PRs needing review", "needs-cto-review")
+            review_agent = prompt_input("Review agent (leave empty if manual)", "agent:cto")
+            config["review"] = {
+                "label": review_label,
+            }
+            if review_agent:
+                config["review"]["agent"] = review_agent
+            print(f"  ✓ PRs will be labeled '{review_label}' for review")
 
     return config
 
