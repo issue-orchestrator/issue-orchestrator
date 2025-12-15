@@ -391,10 +391,18 @@ end tell'''
         if orchestrator._shutdown_requested:
             # Second signal - force kill
             orchestrator.request_shutdown(force=True)
+            # Also stop the web server
+            if config.ui_mode == "web":
+                from .web import trigger_server_shutdown
+                trigger_server_shutdown()
             raise KeyboardInterrupt()  # Exit immediately
         else:
             # First signal - graceful shutdown
             orchestrator.request_shutdown()
+            # Also stop the web server
+            if config.ui_mode == "web":
+                from .web import trigger_server_shutdown
+                trigger_server_shutdown()
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)

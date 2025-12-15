@@ -4,7 +4,7 @@ import asyncio
 import logging
 import webbrowser
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -21,11 +21,20 @@ app = FastAPI(title="Issue Orchestrator")
 
 # Global reference to orchestrator (set at startup)
 _orchestrator: "Orchestrator | None" = None
+# Global reference to uvicorn server (for shutdown)
+_server: "Any" = None
 
 
 def get_orchestrator():
     """Get the orchestrator instance. Override in tests via app.dependency_overrides."""
     return _orchestrator
+
+
+def trigger_server_shutdown():
+    """Trigger uvicorn server shutdown."""
+    global _server
+    if _server:
+        _server.should_exit = True
 
 
 # Template directory
@@ -552,7 +561,7 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
         orchestrator: The orchestrator instance
         port: Port to run on (default 8080)
     """
-    global _orchestrator
+    global _orchestrator, _server
     _orchestrator = orchestrator
 
     import uvicorn
@@ -566,6 +575,7 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
         log_level="warning",  # Reduce noise, we have our own logging
     )
     server = uvicorn.Server(config)
+    _server = server  # Store for shutdown access
 
     # Open browser after a very short delay (server needs to be ready)
     async def open_browser():
