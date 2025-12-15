@@ -591,10 +591,19 @@ async def run_with_web_dashboard(orchestrator: "Orchestrator", port: int = 8080)
         orchestrator: The orchestrator instance
         port: Port to run web server on
     """
+    def run_startup_sync():
+        """Run startup synchronously in a thread."""
+        asyncio.run(orchestrator.startup())
+
     async def run_startup_and_loop():
         """Run startup then the orchestrator loop."""
+        # Wait for server to start and serve initial request before running startup
+        await asyncio.sleep(0.5)
         try:
-            await orchestrator.startup()
+            # Run startup in a thread pool to avoid blocking the event loop
+            # startup() makes synchronous GitHub API calls that would block serving requests
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, run_startup_sync)
             await orchestrator.run_loop()
         except asyncio.CancelledError:
             pass
