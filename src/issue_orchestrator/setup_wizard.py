@@ -1183,35 +1183,29 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
     prompter.print("=" * 50)
     prompter.print(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
-    # Save configuration
-    prompter.print("\n--- Save Configuration ---")
-    prompter.print(f"Project directory: {target_path}")
-
-    if not prompter.yes_no("Save this configuration?"):
+    # Save configuration - simple confirmation after reviewing summary
+    if not prompter.yes_no("\nSave changes?"):
         prompter.print("Aborted.")
         sys.exit(0)
 
-    # Choose output filename (relative to project directory)
-    # Default to existing config path if updating, otherwise standard name
     if existing_config_path:
-        default_path = str(existing_config_path.name)
+        # Updating existing config - save to same path
+        output_path = existing_config_path
+        write_config(config, output_path)
+        prompter.print(f"✓ Updated {output_path}")
     else:
+        # New config - ask for filename
         default_path = ".issue-orchestrator.yaml"
-    output_path = Path(prompter.input("Config filename", default_path))
+        output_path = Path(prompter.input(f"Config filename ({target_path}/)", default_path))
 
-    # Check for existing - but skip if we're updating the same file we started with
-    if output_path.exists():
-        is_same_as_existing = (
-            existing_config_path is not None
-            and output_path.resolve() == existing_config_path.resolve()
-        )
-        if not is_same_as_existing:
+        # Check for existing file
+        if output_path.exists():
             if not prompter.yes_no(f"{output_path} exists. Overwrite?"):
                 prompter.print("Aborted.")
                 sys.exit(0)
 
-    write_config(config, output_path)
-    prompter.print(f"\n✓ Saved config to {output_path}")
+        write_config(config, output_path)
+        prompter.print(f"✓ Saved {output_path}")
 
     # Create missing prompt files
     prompter.print("\n--- Prompt Files ---")
