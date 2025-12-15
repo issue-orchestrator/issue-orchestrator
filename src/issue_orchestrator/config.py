@@ -61,11 +61,16 @@ class Config:
     enforce_hooks: bool = True  # Install pre-push hooks to enforce structured comments
     pre_push_hook: Optional[Path] = None  # Custom pre-push hook path (uses bundled if None)
 
-    # Review workflow (optional) - adds label to PRs for batch review
-    review_label: Optional[str] = None  # Label to add to PRs (e.g., "needs-cto-review")
-    review_agent: Optional[str] = None  # Agent that does reviews (e.g., "agent:cto")
-    reviewed_label: Optional[str] = None  # Label after review (e.g., "cto-reviewed")
-    review_threshold: int = 0  # Trigger review after N PRs (0 = manual only)
+    # Code review workflow (optional) - per-PR review after agent creates PR
+    code_review_agent: Optional[str] = None  # Agent that reviews PRs (e.g., "agent:reviewer")
+    code_review_label: Optional[str] = None  # Label on PRs needing review (e.g., "needs-code-review")
+    code_reviewed_label: Optional[str] = None  # Label after review passes (e.g., "code-reviewed")
+
+    # CTO/batch review workflow (optional) - pattern review across multiple PRs
+    cto_review_agent: Optional[str] = None  # Agent that does batch reviews (e.g., "agent:cto")
+    cto_review_label: Optional[str] = None  # Label for PRs awaiting CTO review (uses code_reviewed_label if not set)
+    cto_reviewed_label: Optional[str] = None  # Label after CTO review (e.g., "cto-reviewed")
+    cto_review_threshold: int = 0  # Trigger CTO review after N PRs (0 = manual only)
 
     # Path to the config file (set during load)
     config_path: Optional[Path] = None
@@ -114,6 +119,7 @@ class Config:
                 "worktree_base": Path(agent_data.get("worktree_base", "../")),
                 "model": agent_data.get("model", "sonnet"),
                 "timeout_minutes": agent_data.get("timeout_minutes", 45),
+                "permission_mode": agent_data.get("permission_mode", "default"),
             }
             if "command" in agent_data:
                 agent_kwargs["command"] = agent_data["command"]
@@ -162,10 +168,25 @@ class Config:
 
         # Review workflow
         review_config = data.get("review", {})
-        config.review_label = review_config.get("label")
-        config.review_agent = review_config.get("agent")
-        config.reviewed_label = review_config.get("reviewed_label", "cto-reviewed")
-        config.review_threshold = review_config.get("threshold", 0)
+
+        # Code review (per-PR, immediate)
+        config.code_review_agent = review_config.get("code_review_agent")
+        config.code_review_label = review_config.get("code_review_label", "needs-code-review")
+        config.code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
+
+        # CTO review (batch)
+        config.cto_review_agent = review_config.get("cto_review_agent")
+        config.cto_review_label = review_config.get("cto_review_label")  # defaults to code_reviewed_label
+        config.cto_reviewed_label = review_config.get("cto_reviewed_label", "cto-reviewed")
+        config.cto_review_threshold = review_config.get("cto_review_threshold", 0)
+
+        # Backwards compatibility: map old fields to new
+        if "agent" in review_config and not config.cto_review_agent:
+            config.cto_review_agent = review_config["agent"]
+        if "label" in review_config and not config.code_review_label:
+            config.code_review_label = review_config["label"]
+        if "threshold" in review_config and config.cto_review_threshold == 0:
+            config.cto_review_threshold = review_config["threshold"]
 
         # Parse comment headings
         headings_data = data.get("comment_headings", {})

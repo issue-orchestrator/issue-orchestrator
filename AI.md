@@ -75,10 +75,78 @@ CLI (cli.py)
 
 5. handle_session_completion(session, status)
    - Remove in-progress label
-   - If COMPLETED: cleanup worktree
+   - If COMPLETED: cleanup worktree, trigger code review
    - If BLOCKED/NEEDS_HUMAN: leave for human review
    - Release lock
+
+6. Code Review (if configured)
+   - PR gets labeled "needs-code-review"
+   - Orchestrator launches review agent for that PR
+   - Review agent approves or requests changes
+   - Label flipped to "code-reviewed"
+
+7. CTO Batch Review (if threshold reached)
+   - Orchestrator counts "code-reviewed" PRs
+   - When threshold reached, creates issue for CTO agent
+   - CTO reviews patterns across multiple PRs
 ```
+
+## Two-Stage Review Workflow
+
+The orchestrator supports a two-stage review pipeline:
+
+```
+Work Agent creates PR
+       ↓
+[Stage 1: Code Review] (per-PR, immediate)
+  - Triggered immediately by orchestrator
+  - Review agent checks code quality, tests
+  - Approves or requests changes
+  - Label: "needs-code-review" → "code-reviewed"
+       ↓
+Humans can optionally review on GitHub
+       ↓
+[Stage 2: CTO Batch Review] (batch, threshold-triggered)
+  - Triggered when N code-reviewed PRs accumulate
+  - CTO agent reviews patterns across PRs
+  - Label: "code-reviewed" → "cto-reviewed"
+       ↓
+Manual merge
+```
+
+### Key Design Decisions
+
+1. **Orchestrator manages workflow** - Agents are workers with simple, focused jobs. The orchestrator triggers the right agent at the right time.
+
+2. **Two trigger modes**:
+   - **Immediate (in-memory)**: When work agent completes, orchestrator immediately queues code review
+   - **Recovery (label-based)**: On startup, scans GitHub for PRs with `needs-code-review` label
+
+3. **Labels as source of truth** - Crash-safe: labels persist, orchestrator picks up where it left off
+
+### Review Configuration
+
+```yaml
+review:
+  # Stage 1: Code Review (per-PR)
+  code_review_agent: "agent:reviewer"
+  code_review_label: "needs-code-review"
+  code_reviewed_label: "code-reviewed"
+
+  # Stage 2: CTO Batch Review
+  cto_review_agent: "agent:cto"
+  cto_reviewed_label: "cto-reviewed"
+  cto_review_threshold: 5  # Trigger after 5 PRs
+```
+
+### Orchestrator Methods
+
+| Method | Purpose |
+|--------|---------|
+| `queue_code_review()` | Queue PR for code review (called on work completion) |
+| `launch_review_session()` | Launch a code review agent for a PR |
+| `process_pending_reviews()` | Process queued reviews (called each loop) |
+| `check_cto_review_trigger()` | Check if CTO batch review should be triggered |
 
 ## The `agent-done` Command
 

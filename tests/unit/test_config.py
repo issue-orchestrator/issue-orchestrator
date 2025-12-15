@@ -535,10 +535,15 @@ agents:
     def test_review_workflow_defaults(self):
         """Test that review workflow options default to disabled."""
         config = Config()
-        assert config.review_label is None
-        assert config.review_agent is None
-        assert config.reviewed_label is None
-        assert config.review_threshold == 0
+        # Code review defaults (all None when not configured)
+        assert config.code_review_agent is None
+        assert config.code_review_label is None
+        assert config.code_reviewed_label is None
+        # CTO review defaults (all None when not configured)
+        assert config.cto_review_agent is None
+        assert config.cto_review_label is None
+        assert config.cto_reviewed_label is None
+        assert config.cto_review_threshold == 0
 
     def test_review_workflow_from_yaml(self, tmp_path):
         """Test loading review workflow config from YAML."""
@@ -549,23 +554,27 @@ agents:
     worktree_base: /tmp
 
 review:
-  label: needs-cto-review
-  agent: agent:cto
-  reviewed_label: cto-reviewed
-  threshold: 5
+  code_review_agent: agent:reviewer
+  code_review_label: needs-code-review
+  code_reviewed_label: code-reviewed
+  cto_review_agent: agent:cto
+  cto_reviewed_label: cto-reviewed
+  cto_review_threshold: 5
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
 
         config = Config.load(config_file)
 
-        assert config.review_label == "needs-cto-review"
-        assert config.review_agent == "agent:cto"
-        assert config.reviewed_label == "cto-reviewed"
-        assert config.review_threshold == 5
+        assert config.code_review_agent == "agent:reviewer"
+        assert config.code_review_label == "needs-code-review"
+        assert config.code_reviewed_label == "code-reviewed"
+        assert config.cto_review_agent == "agent:cto"
+        assert config.cto_reviewed_label == "cto-reviewed"
+        assert config.cto_review_threshold == 5
 
     def test_review_workflow_partial_config(self, tmp_path):
-        """Test loading review workflow with partial config."""
+        """Test loading review workflow with partial config (code review only)."""
         config_content = """
 agents:
   agent:test:
@@ -573,25 +582,24 @@ agents:
     worktree_base: /tmp
 
 review:
-  label: needs-review
-  agent: agent:reviewer
+  code_review_agent: agent:reviewer
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
 
         config = Config.load(config_file)
 
-        assert config.review_label == "needs-review"
-        assert config.review_agent == "agent:reviewer"
-        assert config.reviewed_label == "cto-reviewed"  # default
-        assert config.review_threshold == 0  # default
+        assert config.code_review_agent == "agent:reviewer"
+        assert config.code_review_label == "needs-code-review"  # default
+        assert config.code_reviewed_label == "code-reviewed"  # default
+        assert config.cto_review_agent is None  # not configured
+        assert config.cto_review_threshold == 0  # default
 
     def test_review_threshold_zero_means_manual_only(self):
-        """Test that review_threshold=0 means manual review only."""
+        """Test that cto_review_threshold=0 means manual CTO review only."""
         config = Config()
-        config.review_label = "needs-review"
-        config.review_agent = "agent:cto"
-        config.review_threshold = 0
+        config.cto_review_agent = "agent:cto"
+        config.cto_review_threshold = 0
 
         # Threshold of 0 means auto-trigger is disabled
-        assert config.review_threshold == 0
+        assert config.cto_review_threshold == 0

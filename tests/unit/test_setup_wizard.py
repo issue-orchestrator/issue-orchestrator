@@ -12,8 +12,57 @@ from issue_orchestrator.setup_wizard import (
     fetch_github_labels,
     find_existing_config,
     scan_existing_repo,
+    wizard_new_project,
+    wizard_existing_project,
+    run_wizard,
+    Prompter,
+    ConsolePrompter,
     DetectedState,
 )
+
+
+class MockPrompter:
+    """Mock prompter for testing wizard flows."""
+
+    def __init__(self, answers: list):
+        """Initialize with a list of answers to return in order.
+
+        Args:
+            answers: List of values to return for input/yes_no/choice calls.
+                    For yes_no, use True/False.
+                    For choice, use the choice string.
+                    For input, use the string value.
+        """
+        self.answers = list(answers)
+        self.answer_index = 0
+        self.printed: list[str] = []
+        self.questions_asked: list[str] = []
+
+    def _get_answer(self, question: str):
+        """Get the next answer from the queue."""
+        self.questions_asked.append(question)
+        if self.answer_index >= len(self.answers):
+            raise IndexError(f"No more answers available for question: {question}")
+        answer = self.answers[self.answer_index]
+        self.answer_index += 1
+        return answer
+
+    def print(self, message: str) -> None:
+        self.printed.append(message)
+
+    def input(self, question: str, default: str = "") -> str:
+        answer = self._get_answer(question)
+        return answer if answer != "" else default
+
+    def yes_no(self, question: str, default: bool = True) -> bool:
+        answer = self._get_answer(question)
+        if isinstance(answer, bool):
+            return answer
+        # Allow string answers
+        return answer.lower() in ("y", "yes", "true")
+
+    def choice(self, question: str, choices: list[str], allow_custom: bool = False) -> str:
+        return self._get_answer(question)
 
 
 class TestCreateStarterPrompt:
@@ -349,3 +398,591 @@ class TestScanExistingRepo:
         assert state.repo is None
         assert state.github_labels == []
         assert state.agent_labels == []
+
+
+class TestWizardNewProject:
+    """Test the wizard_new_project function."""
+
+    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_creates_basic_config(self, mock_run_gh, mock_detect_repo):
+        """Test creating a basic config with one agent."""
+        mock_detect_repo.return_value = "owner/repo"
+        mock_run_gh.return_value = (True, "")
+
+        prompter = MockPrompter([
+            "owner/repo",           # repo (accept detected)
+            "agent:backend",        # first agent label
+            ".prompts/backend.md",  # prompt path (accept default)
+            "45",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model choice
+            "default",              # permission mode
+            "",                     # empty to finish agents
+            True,                   # create labels on GitHub
+            "3",                    # max concurrent sessions
+            "../",                  # worktree base
+            "web",                  # ui mode
+            "8080",                 # web port
+            "",                     # label prefix (none)
+            False,                  # enable PR review labeling
+        ])
+
+        config = wizard_new_project(prompter)
+
+        assert config["repo"] == "owner/repo"
+        assert "agent:backend" in config["agents"]
+        assert config["agents"]["agent:backend"]["prompt"] == ".prompts/backend.md"
+        assert config["agents"]["agent:backend"]["model"] == "sonnet"
+        assert config["agents"]["agent:backend"]["timeout_minutes"] == 45
+        assert config["concurrency"]["max_concurrent_sessions"] == 3
+        assert config["ui_mode"] == "web"
+
+    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_adds_agent_prefix_when_missing(self, mock_run_gh, mock_detect_repo):
+        """Test that agent: prefix is added when user confirms."""
+        mock_detect_repo.return_value = None
+        mock_run_gh.return_value = (True, "")
+
+        prompter = MockPrompter([
+            "owner/repo",           # repo (no detection)
+            "backend",              # agent label without prefix
+            True,                   # yes to add prefix
+            ".prompts/backend.md",
+            "60",                   # timeout
+            "claude",               # agent type
+            "opus",                 # model
+            "default",              # permission mode
+            "",                     # finish agents
+            False,                  # don't create labels
+            "2",                    # max concurrent
+            "../",
+            "tmux",                 # ui mode (tmux doesn't need port)
+            "",                     # label prefix (none)
+            False,                  # no review workflow
+        ])
+
+        config = wizard_new_project(prompter)
+
+        assert "agent:backend" in config["agents"]
+        assert "backend" not in config["agents"]
+
+    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_multiple_agents(self, mock_run_gh, mock_detect_repo):
+        """Test creating config with multiple agents."""
+        mock_detect_repo.return_value = "owner/repo"
+        mock_run_gh.return_value = (True, "")
+
+        prompter = MockPrompter([
+            "owner/repo",
+            # First agent
+            "agent:frontend",
+            ".prompts/frontend.md",
+            "30",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model
+            "default",              # permission mode
+            # Second agent
+            "agent:backend",
+            ".prompts/backend.md",
+            "60",                   # timeout
+            "claude",               # agent type
+            "opus",                 # model
+            "bypassPermissions",    # permission mode (different for variety)
+            True,                   # confirm bypassPermissions
+            # Finish
+            "",
+            True,                   # create labels
+            "5",                    # max concurrent
+            "../",
+            "web",
+            "9000",                 # custom port
+            "",                     # label prefix (none)
+            False,                  # no review
+        ])
+
+        config = wizard_new_project(prompter)
+
+        assert len(config["agents"]) == 2
+        assert "agent:frontend" in config["agents"]
+        assert "agent:backend" in config["agents"]
+        assert config["agents"]["agent:frontend"]["model"] == "sonnet"
+        assert config["agents"]["agent:backend"]["model"] == "opus"
+
+    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_custom_agent_command(self, mock_run_gh, mock_detect_repo):
+        """Test creating config with a custom agent command."""
+        mock_detect_repo.return_value = "owner/repo"
+        mock_run_gh.return_value = (True, "")
+
+        prompter = MockPrompter([
+            "owner/repo",
+            "agent:custom",
+            ".prompts/custom.md",
+            "30",                   # timeout
+            "custom",               # agent type (custom command)
+            "my-agent --issue {issue_number} --prompt {prompt}",  # custom command
+            "",                     # finish agents
+            False,                  # don't create labels
+            "3",
+            "../",
+            "web",
+            "8080",
+            "",                     # label prefix (none)
+            False,                  # no review
+        ])
+
+        config = wizard_new_project(prompter)
+
+        assert "agent:custom" in config["agents"]
+        agent_cfg = config["agents"]["agent:custom"]
+        assert agent_cfg["command"] == "my-agent --issue {issue_number} --prompt {prompt}"
+        # Custom agents don't get permission_mode since it's Claude-specific
+        assert "permission_mode" not in agent_cfg
+
+    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_review_workflow_enabled(self, mock_run_gh, mock_detect_repo):
+        """Test enabling two-stage review workflow."""
+        mock_detect_repo.return_value = "owner/repo"
+        mock_run_gh.return_value = (True, "")
+
+        prompter = MockPrompter([
+            "owner/repo",
+            "agent:backend",
+            ".prompts/backend.md",
+            "45",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model
+            "default",              # permission mode
+            "",                     # finish agents
+            False,                  # don't create labels
+            "3",
+            "../",
+            "web",
+            "8080",
+            "",                     # label prefix (none)
+            True,                   # enable Stage 1: per-PR code review
+            "agent:reviewer",       # code review agent
+            "needs-code-review",    # code review label
+            "code-reviewed",        # code reviewed label
+            True,                   # enable Stage 2: CTO batch review
+            "agent:cto",            # CTO review agent
+            "cto-reviewed",         # CTO reviewed label
+            "5",                    # threshold
+        ])
+
+        config = wizard_new_project(prompter)
+
+        # Stage 1: Code Review
+        assert config["code_review_agent"] == "agent:reviewer"
+        assert config["code_review_label"] == "needs-code-review"
+        assert config["code_reviewed_label"] == "code-reviewed"
+
+        # Stage 2: CTO Batch Review
+        assert config["cto_review_agent"] == "agent:cto"
+        assert config["cto_reviewed_label"] == "cto-reviewed"
+        assert config["cto_review_threshold"] == 5
+
+    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_requires_at_least_one_agent(self, mock_run_gh, mock_detect_repo):
+        """Test that wizard requires at least one agent."""
+        mock_detect_repo.return_value = "owner/repo"
+        mock_run_gh.return_value = (True, "")
+
+        prompter = MockPrompter([
+            "owner/repo",
+            "",                     # try to finish with no agents
+            "agent:backend",        # now add one
+            ".prompts/backend.md",
+            "45",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model
+            "default",              # permission mode
+            "",                     # finish
+            False,                  # don't create labels
+            "3",
+            "../",
+            "web",
+            "8080",
+            "",                     # label prefix (none)
+            False,                  # no review
+        ])
+
+        config = wizard_new_project(prompter)
+
+        # Should have exactly one agent (after forcing user to add one)
+        assert len(config["agents"]) == 1
+        # Check that "You need at least one agent!" was printed
+        assert any("at least one agent" in msg for msg in prompter.printed)
+
+
+class TestWizardExistingProject:
+    """Test the wizard_existing_project function."""
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_basic_existing_project(self, mock_run_gh):
+        """Test onboarding an existing project."""
+        mock_run_gh.return_value = (True, "")
+
+        state = DetectedState(
+            repo="owner/repo",
+            github_labels=["bug", "agent:web"],
+            agent_labels=["agent:web"],
+            existing_config=None,
+            config_path=None,
+            prompt_candidates=[],
+        )
+
+        prompter = MockPrompter([
+            True,                   # add agent:web to config
+            ".prompts/web.md",      # prompt path
+            "45",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model
+            "default",              # permission mode
+            "3",                    # max concurrent
+            "../",                  # worktree base
+            "web",                  # ui mode
+            "8080",                 # port
+            "",                     # label prefix (none)
+            False,                  # no review workflow
+        ])
+
+        config = wizard_existing_project(state, prompter)
+
+        assert config["repo"] == "owner/repo"
+        assert "agent:web" in config["agents"]
+        assert config["concurrency"]["max_concurrent_sessions"] == 3
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_preserves_existing_config(self, mock_run_gh):
+        """Test that existing config is preserved when updating."""
+        mock_run_gh.return_value = (True, "")
+
+        state = DetectedState(
+            repo="owner/repo",
+            github_labels=["agent:web", "agent:backend"],
+            agent_labels=["agent:web", "agent:backend"],
+            existing_config={
+                "repo": "owner/repo",
+                "agents": {
+                    "agent:web": {
+                        "prompt": ".prompts/web.md",
+                        "model": "sonnet",
+                        "timeout_minutes": 45,
+                    }
+                },
+                "concurrency": {"max_concurrent_sessions": 3},
+                "ui_mode": "tmux",
+            },
+            config_path=Path(".issue-orchestrator.yaml"),
+            prompt_candidates=[],
+        )
+
+        prompter = MockPrompter([
+            True,                   # update existing config
+            # agent:backend is not in config, so wizard asks about it
+            True,                   # add agent:backend
+            ".prompts/backend.md",  # prompt path
+            "60",                   # timeout
+            "claude",               # agent type
+            "opus",                 # model
+            "default",              # permission mode
+            # No more missing agents
+            # agent:web is in config but let's say it's in github_labels too (no missing labels)
+            # Concurrency already configured - won't ask
+            # Worktrees needed for backend
+            "../",
+            # UI mode already configured - won't ask
+            # Label prefix not configured
+            "",                     # label prefix (none)
+            # Review not configured
+            False,                  # no review
+        ])
+
+        config = wizard_existing_project(state, prompter)
+
+        # Original config preserved
+        assert config["agents"]["agent:web"]["prompt"] == ".prompts/web.md"
+        assert config["agents"]["agent:web"]["model"] == "sonnet"
+        # New agent added
+        assert "agent:backend" in config["agents"]
+        assert config["agents"]["agent:backend"]["model"] == "opus"
+        # Existing settings preserved
+        assert config["ui_mode"] == "tmux"
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_creates_missing_github_labels(self, mock_run_gh):
+        """Test creating missing labels on GitHub."""
+        mock_run_gh.return_value = (True, "")
+
+        state = DetectedState(
+            repo="owner/repo",
+            github_labels=[],  # No labels on GitHub
+            agent_labels=[],
+            existing_config={
+                "repo": "owner/repo",
+                "agents": {
+                    "agent:web": {"prompt": ".prompts/web.md", "model": "sonnet", "timeout_minutes": 45},
+                },
+                "concurrency": {"max_concurrent_sessions": 3},
+            },
+            config_path=Path(".issue-orchestrator.yaml"),
+            prompt_candidates=[],
+        )
+
+        prompter = MockPrompter([
+            True,                   # update existing config
+            # No unconfigured agents
+            # agent:web is configured but missing from GitHub
+            True,                   # create missing labels
+            # Worktree missing
+            "../",
+            # UI mode missing
+            "web",
+            "8080",
+            # Label prefix
+            "",                     # label prefix (none)
+            # Review
+            False,
+        ])
+
+        config = wizard_existing_project(state, prompter)
+
+        # Verify gh label create was called
+        assert mock_run_gh.called
+        # Find the label create call
+        label_calls = [call for call in mock_run_gh.call_args_list
+                      if call[0][0][0] == "label" and call[0][0][1] == "create"]
+        assert len(label_calls) > 0
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_fresh_config_when_declined(self, mock_run_gh):
+        """Test starting fresh when declining to update existing config."""
+        mock_run_gh.return_value = (True, "")
+
+        state = DetectedState(
+            repo="owner/repo",
+            github_labels=["agent:web"],
+            agent_labels=["agent:web"],
+            existing_config={
+                "repo": "owner/repo",
+                "agents": {"agent:old": {"prompt": ".prompts/old.md", "model": "haiku", "timeout_minutes": 30}},
+            },
+            config_path=Path(".issue-orchestrator.yaml"),
+            prompt_candidates=[],
+        )
+
+        prompter = MockPrompter([
+            False,                  # DON'T update existing config - start fresh
+            # Now asks about agent:web since we started fresh
+            True,                   # add agent:web
+            ".prompts/web.md",
+            "45",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model
+            "default",              # permission mode
+            # Concurrency (fresh config needs this)
+            "2",
+            # Worktree
+            "../",
+            # UI mode (fresh)
+            "tmux",
+            # Label prefix
+            "",                     # label prefix (none)
+            # Review
+            False,
+        ])
+
+        config = wizard_existing_project(state, prompter)
+
+        # Old agent should NOT be in config
+        assert "agent:old" not in config["agents"]
+        # New agent should be
+        assert "agent:web" in config["agents"]
+
+    @patch("issue_orchestrator.setup_wizard.run_gh")
+    def test_prompts_for_repo_when_not_detected(self, mock_run_gh):
+        """Test that repo is prompted when not in state or config."""
+        mock_run_gh.return_value = (True, "")
+
+        state = DetectedState(
+            repo=None,  # Not detected
+            github_labels=[],
+            agent_labels=[],
+            existing_config=None,
+            config_path=None,
+            prompt_candidates=[],
+        )
+
+        prompter = MockPrompter([
+            "manual/repo",          # manual repo entry
+            # No agents to configure, so no worktree prompt
+            "3",                    # concurrency
+            "web",                  # ui mode
+            "8080",                 # port (since web mode)
+            "",                     # label prefix (none)
+            False,                  # no review
+        ])
+
+        config = wizard_existing_project(state, prompter)
+
+        assert config["repo"] == "manual/repo"
+
+
+class TestRunWizard:
+    """Test the run_wizard function."""
+
+    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.setup_wizard.scan_existing_repo")
+    @patch("issue_orchestrator.setup_wizard.write_config")
+    @patch("os.chdir")
+    def test_new_project_flow(self, mock_chdir, mock_write, mock_scan, mock_prereqs, tmp_path):
+        """Test the full wizard flow for a new project."""
+        mock_prereqs.return_value = {"git": True, "gh": True, "gh_auth": True, "claude": True}
+        mock_scan.return_value = DetectedState(repo="owner/repo")
+
+        # Create target directory
+        target = tmp_path / "myproject"
+        target.mkdir()
+
+        prompter = MockPrompter([
+            # Mode choice (no directory prompt since we pass target_path)
+            "New project - set up from scratch",
+            # wizard_new_project answers
+            "owner/repo",
+            "agent:backend",
+            ".prompts/backend.md",
+            "45",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model
+            "default",              # permission mode
+            "",                     # finish agents
+            False,                  # don't create agent labels on GitHub
+            "3",
+            "../",
+            "web",
+            "8080",
+            "",                     # label prefix (none)
+            False,                  # no review workflow
+            # Post-wizard
+            True,                   # save config
+            ".issue-orchestrator.yaml",  # output path
+            True,                   # overwrite existing (asked since os.chdir is mocked and we're in repo root)
+            True,                   # create prompt file
+            False,                  # don't create missing GitHub labels
+        ])
+
+        with patch("issue_orchestrator.setup_wizard.detect_repo", return_value="owner/repo"):
+            with patch("issue_orchestrator.setup_wizard.run_gh", return_value=(True, "")):
+                run_wizard(target_path=target, prompter=prompter)
+
+        # Verify config was written
+        assert mock_write.called
+
+    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("os.chdir")
+    def test_aborts_when_config_not_saved(self, mock_chdir, mock_prereqs, tmp_path):
+        """Test that wizard aborts when user doesn't save config."""
+        mock_prereqs.return_value = {"git": True, "gh": True, "gh_auth": True, "claude": True}
+
+        target = tmp_path / "myproject"
+        target.mkdir()
+
+        prompter = MockPrompter([
+            # No directory prompt since we pass target_path
+            "New project - set up from scratch",
+            "owner/repo",
+            "agent:backend",
+            ".prompts/backend.md",
+            "45",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model
+            "default",              # permission mode
+            "",
+            False,                  # don't create agent labels
+            "3",
+            "../",
+            "web",
+            "8080",
+            "",                     # label prefix (none)
+            False,                  # no review workflow
+            False,                  # DON'T save config (exits here)
+        ])
+
+        with patch("issue_orchestrator.setup_wizard.detect_repo", return_value="owner/repo"):
+            with patch("issue_orchestrator.setup_wizard.run_gh", return_value=(True, "")):
+                with pytest.raises(SystemExit):
+                    run_wizard(target_path=target, prompter=prompter)
+
+    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("os.chdir")
+    def test_warns_on_missing_prerequisites(self, mock_chdir, mock_prereqs, tmp_path):
+        """Test that wizard warns when prerequisites are missing."""
+        mock_prereqs.return_value = {
+            "git": True,
+            "gh": True,
+            "gh_auth": False,  # Not authenticated
+            "claude": False,   # Not installed
+        }
+
+        target = tmp_path / "myproject"
+        target.mkdir()
+
+        prompter = MockPrompter([
+            # No directory prompt since we pass target_path
+            False,                  # Don't continue without prereqs
+        ])
+
+        with pytest.raises(SystemExit):
+            run_wizard(target_path=target, prompter=prompter)
+
+        # Check that warning was printed
+        assert any("prerequisites" in msg.lower() or "missing" in msg.lower()
+                  for msg in prompter.printed)
+
+    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("os.chdir")
+    def test_continues_despite_missing_prerequisites(self, mock_chdir, mock_prereqs, tmp_path):
+        """Test that wizard can continue despite missing prerequisites."""
+        mock_prereqs.return_value = {
+            "git": True,
+            "gh": True,
+            "gh_auth": False,
+            "claude": False,
+        }
+
+        target = tmp_path / "myproject"
+        target.mkdir()
+
+        prompter = MockPrompter([
+            # No directory prompt since we pass target_path
+            True,                   # Continue anyway
+            "New project - set up from scratch",
+            "owner/repo",
+            "agent:backend",
+            ".prompts/backend.md",
+            "45",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model
+            "default",              # permission mode
+            "",
+            False,                  # don't create agent labels
+            "3",
+            "../",
+            "web",
+            "8080",
+            "",                     # label prefix (none)
+            False,                  # no review workflow
+            False,                  # Don't save - exits here
+        ])
+
+        with patch("issue_orchestrator.setup_wizard.detect_repo", return_value=None):
+            with patch("issue_orchestrator.setup_wizard.run_gh", return_value=(True, "")):
+                with pytest.raises(SystemExit):
+                    run_wizard(target_path=target, prompter=prompter)

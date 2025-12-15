@@ -2,11 +2,75 @@
 
 import subprocess
 import sys
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import yaml
+
+
+class Prompter(Protocol):
+    """Protocol for user interaction - enables testing via dependency injection."""
+
+    def print(self, message: str) -> None:
+        """Print a message to the user."""
+        ...
+
+    def input(self, question: str, default: str = "") -> str:
+        """Prompt for text input with optional default."""
+        ...
+
+    def yes_no(self, question: str, default: bool = True) -> bool:
+        """Prompt for yes/no answer."""
+        ...
+
+    def choice(self, question: str, choices: list[str], allow_custom: bool = False) -> str:
+        """Prompt user to choose from a list."""
+        ...
+
+
+class ConsolePrompter:
+    """Real console-based prompter for interactive use."""
+
+    def print(self, message: str) -> None:
+        print(message)
+
+    def input(self, question: str, default: str = "") -> str:
+        if default:
+            result = input(f"{question} [{default}]: ").strip()
+            return result if result else default
+        return input(f"{question}: ").strip()
+
+    def yes_no(self, question: str, default: bool = True) -> bool:
+        suffix = "[Y/n]" if default else "[y/N]"
+        result = input(f"{question} {suffix}: ").strip().lower()
+        if not result:
+            return default
+        return result in ("y", "yes")
+
+    def choice(self, question: str, choices: list[str], allow_custom: bool = False) -> str:
+        print(f"\n{question}")
+        for i, choice in enumerate(choices, 1):
+            print(f"  {i}. {choice}")
+        if allow_custom:
+            print(f"  {len(choices) + 1}. Other (enter custom)")
+
+        while True:
+            result = input("Choice: ").strip()
+            try:
+                idx = int(result) - 1
+                if 0 <= idx < len(choices):
+                    return choices[idx]
+                if allow_custom and idx == len(choices):
+                    return input("Enter custom value: ").strip()
+            except ValueError:
+                pass
+            print("Invalid choice, try again.")
+
+
+# Default prompter for backwards compatibility
+_default_prompter = ConsolePrompter()
 
 
 @dataclass
@@ -209,96 +273,100 @@ def scan_existing_repo(path: Path | None = None) -> DetectedState:
     return state
 
 
-def prompt_input(question: str, default: str = "") -> str:
-    """Prompt user for input with optional default."""
-    if default:
-        result = input(f"{question} [{default}]: ").strip()
-        return result if result else default
-    return input(f"{question}: ").strip()
-
-
-def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt user for yes/no answer."""
-    suffix = "[Y/n]" if default else "[y/N]"
-    result = input(f"{question} {suffix}: ").strip().lower()
-    if not result:
-        return default
-    return result in ("y", "yes")
-
-
-def prompt_choice(question: str, choices: list[str], allow_custom: bool = False) -> str:
-    """Prompt user to choose from a list."""
-    print(f"\n{question}")
-    for i, choice in enumerate(choices, 1):
-        print(f"  {i}. {choice}")
-    if allow_custom:
-        print(f"  {len(choices) + 1}. Other (enter custom)")
-
-    while True:
-        result = input("Choice: ").strip()
-        try:
-            idx = int(result) - 1
-            if 0 <= idx < len(choices):
-                return choices[idx]
-            if allow_custom and idx == len(choices):
-                return input("Enter custom value: ").strip()
-        except ValueError:
-            pass
-        print("Invalid choice, try again.")
-
-
-def wizard_new_project() -> dict[str, Any]:
+def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     """Walk through new project setup."""
     config: dict[str, Any] = {"agents": {}}
 
-    print("\n" + "=" * 50)
-    print("NEW PROJECT SETUP")
-    print("=" * 50)
+    prompter.print("\n" + "=" * 50)
+    prompter.print("NEW PROJECT SETUP")
+    prompter.print("=" * 50)
 
     # Repo
     detected_repo = detect_repo()
     if detected_repo:
-        config["repo"] = prompt_input("GitHub repo", detected_repo)
+        config["repo"] = prompter.input("GitHub repo", detected_repo)
     else:
-        config["repo"] = prompt_input("GitHub repo (owner/name)")
+        config["repo"] = prompter.input("GitHub repo (owner/name)")
 
     # Agents
-    print("\n--- Agent Configuration ---")
-    print("Agents are identified by GitHub labels (e.g., 'agent:backend').")
-    print("Each agent needs a prompt file with instructions.\n")
+    prompter.print("\n--- Agent Configuration ---")
+    prompter.print("Agents are identified by GitHub labels (e.g., 'agent:backend').")
+    prompter.print("Each agent needs a prompt file with instructions.\n")
 
     while True:
-        agent_name = prompt_input("Agent label (e.g., 'agent:backend', or empty to finish)")
+        agent_name = prompter.input("Agent label (e.g., 'agent:backend', or empty to finish)")
         if not agent_name:
             if not config["agents"]:
-                print("You need at least one agent!")
+                prompter.print("You need at least one agent!")
                 continue
             break
 
         if not agent_name.startswith("agent:"):
-            if prompt_yes_no(f"Add 'agent:' prefix to make it '{f'agent:{agent_name}'}'?"):
+            if prompter.yes_no(f"Add 'agent:' prefix to make it 'agent:{agent_name}'?"):
                 agent_name = f"agent:{agent_name}"
 
-        prompt_path = prompt_input(
+        prompt_path = prompter.input(
             f"Prompt file path for {agent_name}",
             f".issue-orchestrator/prompts/{agent_name.split(':')[-1]}.md",
         )
 
-        model = prompt_choice("Model for this agent", ["sonnet", "opus", "haiku"])
+        timeout = prompter.input("Timeout in minutes", "45")
 
-        timeout = prompt_input("Timeout in minutes", "45")
+        # Ask about custom command
+        prompter.print("\n  Agent command options:")
+        prompter.print("    claude  - Use Claude Code CLI (default)")
+        prompter.print("    custom  - Use a custom command/script")
+        agent_type = prompter.choice("Agent type", ["claude", "custom"])
 
-        config["agents"][agent_name] = {
+        custom_command = None
+        permission_mode = "default"
+
+        if agent_type == "custom":
+            prompter.print("\n  Enter your custom command template. Available variables:")
+            prompter.print("    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}")
+            custom_command = prompter.input("Custom command")
+            model = "sonnet"  # Not relevant for custom, but keep a default
+        else:
+            model = prompter.choice("Model for this agent", ["sonnet", "opus", "haiku"])
+
+            # Permission mode for Claude CLI
+            prompter.print("\n  Permission mode controls how Claude handles tool permissions:")
+            prompter.print("    default          - Prompt for each action (safest)")
+            prompter.print("    acceptEdits      - Auto-accept file edits, prompt for others")
+            prompter.print("    bypassPermissions - Skip all prompts (use for trusted automation)")
+            permission_mode = prompter.choice(
+                "Permission mode",
+                ["default", "acceptEdits", "bypassPermissions"]
+            )
+
+            # Safety confirmation for bypassPermissions
+            if permission_mode == "bypassPermissions":
+                prompter.print("\n  ⚠️  WARNING: bypassPermissions allows the agent to:")
+                prompter.print("     - Execute any shell commands without confirmation")
+                prompter.print("     - Read/write any files without confirmation")
+                prompter.print("     - Access network resources without confirmation")
+                if not prompter.yes_no("Are you sure you want to bypass all permission prompts?", default=False):
+                    permission_mode = "default"
+                    prompter.print("  → Using 'default' mode instead")
+
+        agent_config: dict[str, Any] = {
             "prompt": prompt_path,
             "model": model,
             "timeout_minutes": int(timeout),
         }
 
-        print(f"✓ Added {agent_name}\n")
+        if custom_command:
+            agent_config["command"] = custom_command
+        else:
+            agent_config["permission_mode"] = permission_mode
+
+        config["agents"][agent_name] = agent_config
+
+        prompter.print(f"✓ Added {agent_name}\n")
 
     # Create agent labels on GitHub
-    print("--- Agent Labels ---")
-    if prompt_yes_no("Create agent labels on GitHub now?"):
+    prompter.print("--- Agent Labels ---")
+    if prompter.yes_no("Create agent labels on GitHub now?"):
         for agent_name in config["agents"].keys():
             ok, _ = run_gh([
                 "label", "create", agent_name,
@@ -308,24 +376,24 @@ def wizard_new_project() -> dict[str, Any]:
                 "--force",
             ])
             if ok:
-                print(f"  ✓ {agent_name}")
+                prompter.print(f"  ✓ {agent_name}")
             else:
-                print(f"  ✗ {agent_name} (may already exist)")
+                prompter.print(f"  ✗ {agent_name} (may already exist)")
 
     # Concurrency
-    print("\n--- Concurrency Settings ---")
-    max_sessions = prompt_input("Max concurrent agent sessions", "3")
+    prompter.print("\n--- Concurrency Settings ---")
+    max_sessions = prompter.input("Max concurrent agent sessions", "3")
     config["concurrency"] = {
         "max_concurrent_sessions": int(max_sessions),
     }
 
     # Worktree location
-    print("\n--- Worktree Location ---")
-    print("Each issue gets its own git worktree for isolated work.")
-    print("Examples:")
-    print("  '../'           → sibling dirs (~/dev/myrepo-123)")
-    print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
-    worktree_base = prompt_input("Worktree base directory", "../")
+    prompter.print("\n--- Worktree Location ---")
+    prompter.print("Each issue gets its own git worktree for isolated work.")
+    prompter.print("Examples:")
+    prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
+    prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
+    worktree_base = prompter.input("Worktree base directory", "../")
 
     # Apply to all agents
     for agent_config in config["agents"].values():
@@ -341,89 +409,102 @@ def wizard_new_project() -> dict[str, Any]:
             gitignore_content = gitignore_path.read_text()
             if worktree_dir in gitignore_content:
                 needs_gitignore = False
-                print(f"  ✓ {worktree_dir} already in .gitignore")
+                prompter.print(f"  ✓ {worktree_dir} already in .gitignore")
 
         if needs_gitignore:
-            if prompt_yes_no(f"Add '{worktree_dir}/' to .gitignore?"):
+            if prompter.yes_no(f"Add '{worktree_dir}/' to .gitignore?"):
                 with open(gitignore_path, "a") as f:
                     f.write(f"\n# Issue orchestrator worktrees\n{worktree_dir}/\n")
-                print(f"  ✓ Added {worktree_dir}/ to .gitignore")
+                prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
 
     # UI Mode
-    print("\n--- UI Mode ---")
-    print("How do you want to monitor agent sessions?\n")
-    print("  web    - Browser dashboard at localhost (recommended)")
-    print("           Best for most users. Visual overview of all agents.")
-    print("  tmux   - Terminal multiplexer sessions")
-    print("           For terminal power users. Requires tmux installed.")
-    print("  iterm2 - Native iTerm2 tabs (macOS only)")
-    print("           Each agent runs in its own iTerm2 tab.\n")
-    ui_mode = prompt_input("UI mode", "web")
+    prompter.print("\n--- UI Mode ---")
+    prompter.print("How do you want to monitor agent sessions?\n")
+    prompter.print("  web    - Browser dashboard at localhost (recommended)")
+    prompter.print("           Best for most users. Visual overview of all agents.")
+    prompter.print("  tmux   - Terminal multiplexer sessions")
+    prompter.print("           For terminal power users. Requires tmux installed.")
+    prompter.print("  iterm2 - Native iTerm2 tabs (macOS only)")
+    prompter.print("           Each agent runs in its own iTerm2 tab.\n")
+    ui_mode = prompter.input("UI mode", "web")
     if ui_mode not in ("web", "tmux", "iterm2"):
-        print(f"  Invalid mode '{ui_mode}', using 'web'")
+        prompter.print(f"  Invalid mode '{ui_mode}', using 'web'")
         ui_mode = "web"
     config["ui_mode"] = ui_mode
     if ui_mode == "web":
-        port = prompt_input("Web dashboard port", "8080")
+        port = prompter.input("Web dashboard port", "8080")
         config["web_port"] = int(port)
 
-    # Labels
-    print("\n--- Label Configuration ---")
-    if not prompt_yes_no("Use default labels (in-progress, blocked, needs-human)?"):
-        config["labels"] = {
-            "in_progress": prompt_input("In-progress label", "in-progress"),
-            "blocked": prompt_input("Blocked label", "blocked"),
-            "needs_human": prompt_input("Needs-human label", "needs-human"),
-        }
+    # Labels - use defaults, can be customized in YAML later
+    # Default labels: in-progress, blocked, needs-human
+    prompter.print("\n--- Label Prefix (Optional) ---")
+    prompter.print("Add a prefix to avoid conflicts with existing labels.")
+    prompter.print("  Example: prefix 'bot' → 'bot:in-progress', 'bot:blocked', etc.\n")
+    label_prefix = prompter.input("Label prefix (leave empty for none)", "")
+    if label_prefix:
+        config["labels"] = {"prefix": label_prefix}
+        prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
 
-    # Review workflow (optional)
-    print("\n--- Review Workflow (Optional) ---")
-    print("You can have PRs automatically labeled for batch review by a CTO/review agent.")
-    print("This enables a review process where PRs accumulate, then get reviewed together.\n")
-    if prompt_yes_no("Enable PR review labeling?", default=False):
-        review_label = prompt_input("Label for PRs needing review", "needs-cto-review")
-        reviewed_label = prompt_input("Label after review complete", "cto-reviewed")
-        review_agent = prompt_input("Review agent (leave empty if manual)", "agent:cto")
-        threshold = prompt_input("Auto-trigger review after N PRs (0 = manual only)", "3")
+    # Two-stage review workflow (optional)
+    prompter.print("\n--- Review Workflow (Optional) ---")
+    prompter.print("Enable a two-stage review pipeline for PRs created by work agents:")
+    prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
+    prompter.print("  Stage 2: CTO batch review (when N reviewed PRs accumulate)\n")
 
-        review_config: dict[str, Any] = {
-            "label": review_label,
-            "reviewed_label": reviewed_label,
-        }
-        if review_agent:
-            review_config["agent"] = review_agent
-        try:
-            threshold_int = int(threshold)
-            if threshold_int > 0:
-                review_config["threshold"] = threshold_int
-                print(f"  ✓ CTO review triggers automatically after {threshold_int} PRs")
-        except ValueError:
-            pass
-        config["review"] = review_config
-        print(f"  ✓ PRs will be labeled '{review_label}' → '{reviewed_label}' after review")
+    # Stage 1: Per-PR Code Review
+    if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=False):
+        prompter.print("\n  --- Stage 1: Per-PR Code Review ---")
+        code_review_agent = prompter.input("  Code review agent label", "agent:reviewer")
+        code_review_label = prompter.input("  Label for PRs needing review", "needs-code-review")
+        code_reviewed_label = prompter.input("  Label after review passes", "code-reviewed")
+
+        config["code_review_agent"] = code_review_agent
+        config["code_review_label"] = code_review_label
+        config["code_reviewed_label"] = code_reviewed_label
+        prompter.print(f"  ✓ PRs will be reviewed by {code_review_agent}")
+        prompter.print(f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}")
+
+        # Stage 2: CTO Batch Review (only if Stage 1 enabled)
+        prompter.print("")
+        if prompter.yes_no("Enable Stage 2: CTO batch review?", default=False):
+            prompter.print("\n  --- Stage 2: CTO Batch Review ---")
+            cto_review_agent = prompter.input("  CTO review agent label", "agent:cto")
+            cto_reviewed_label = prompter.input("  Label after CTO review", "cto-reviewed")
+            threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
+
+            config["cto_review_agent"] = cto_review_agent
+            config["cto_reviewed_label"] = cto_reviewed_label
+            try:
+                threshold_int = int(threshold)
+                if threshold_int > 0:
+                    config["cto_review_threshold"] = threshold_int
+                    prompter.print(f"  ✓ CTO review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
+            except ValueError:
+                pass
+            prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {cto_reviewed_label}")
 
     return config
 
 
-def wizard_existing_project(state: DetectedState) -> dict[str, Any]:
+def wizard_existing_project(state: DetectedState, prompter: Prompter) -> dict[str, Any]:
     """Walk through existing project onboarding."""
-    print("\n" + "=" * 50)
-    print("EXISTING PROJECT ONBOARDING")
-    print("=" * 50)
+    prompter.print("\n" + "=" * 50)
+    prompter.print("EXISTING PROJECT ONBOARDING")
+    prompter.print("=" * 50)
 
     # Show what we found
-    print("\n--- Detected State ---")
-    print(f"  Repo: {state.repo or 'Not detected'}")
-    print(f"  Existing config: {state.config_path or 'None'}")
-    print(f"  GitHub labels: {len(state.github_labels)} total")
-    print(f"  Agent labels: {', '.join(state.agent_labels) or 'None'}")
-    print(f"  Prompt candidates: {len(state.prompt_candidates)} files")
+    prompter.print("\n--- Detected State ---")
+    prompter.print(f"  Repo: {state.repo or 'Not detected'}")
+    prompter.print(f"  Existing config: {state.config_path or 'None'}")
+    prompter.print(f"  GitHub labels: {len(state.github_labels)} total")
+    prompter.print(f"  Agent labels: {', '.join(state.agent_labels) or 'None'}")
+    prompter.print(f"  Prompt candidates: {len(state.prompt_candidates)} files")
 
     # Start with existing config or fresh
     config: dict[str, Any]
     if state.existing_config:
-        print(f"\n✓ Found existing config at {state.config_path}")
-        if prompt_yes_no("Update existing config?"):
+        prompter.print(f"\n✓ Found existing config at {state.config_path}")
+        if prompter.yes_no("Update existing config?"):
             config = dict(state.existing_config)
         else:
             config = {"agents": {}}
@@ -432,17 +513,17 @@ def wizard_existing_project(state: DetectedState) -> dict[str, Any]:
 
     # Ensure repo is set
     if "repo" not in config:
-        config["repo"] = state.repo or prompt_input("GitHub repo (owner/name)")
+        config["repo"] = state.repo or prompter.input("GitHub repo (owner/name)")
 
     # Check for agent labels not in config
     configured_agents = set(config.get("agents", {}).keys())
     unconfigured_agents = [a for a in state.agent_labels if a not in configured_agents]
 
     if unconfigured_agents:
-        print(f"\n--- Found {len(unconfigured_agents)} agent labels not in config ---")
+        prompter.print(f"\n--- Found {len(unconfigured_agents)} agent labels not in config ---")
         for agent_label in unconfigured_agents:
-            print(f"\nAgent: {agent_label}")
-            if prompt_yes_no(f"Add {agent_label} to config?"):
+            prompter.print(f"\nAgent: {agent_label}")
+            if prompter.yes_no(f"Add {agent_label} to config?"):
                 # Suggest prompt files
                 agent_short = agent_label.split(":")[-1]
                 matching_prompts = [
@@ -450,42 +531,85 @@ def wizard_existing_project(state: DetectedState) -> dict[str, Any]:
                 ]
 
                 if matching_prompts:
-                    print("  Possible prompt files:")
+                    prompter.print("  Possible prompt files:")
                     for i, p in enumerate(matching_prompts[:5], 1):
-                        print(f"    {i}. {p.relative_to(Path.cwd())}")
-                    choice = prompt_input("Choose (number) or enter path", "1")
+                        prompter.print(f"    {i}. {p.relative_to(Path.cwd())}")
+                    choice = prompter.input("Choose (number) or enter path", "1")
                     try:
                         idx = int(choice) - 1
                         prompt_path = str(matching_prompts[idx].relative_to(Path.cwd()))
                     except (ValueError, IndexError):
                         prompt_path = choice
                 else:
-                    prompt_path = prompt_input(
+                    prompt_path = prompter.input(
                         "Prompt file path",
                         f".issue-orchestrator/prompts/{agent_short}.md",
                     )
 
-                model = prompt_choice("Model", ["sonnet", "opus", "haiku"])
-                timeout = prompt_input("Timeout (minutes)", "45")
+                timeout = prompter.input("Timeout (minutes)", "45")
+
+                # Ask about custom command
+                prompter.print("\n  Agent command options:")
+                prompter.print("    claude  - Use Claude Code CLI (default)")
+                prompter.print("    custom  - Use a custom command/script")
+                agent_type = prompter.choice("Agent type", ["claude", "custom"])
+
+                custom_command = None
+                permission_mode = "default"
+
+                if agent_type == "custom":
+                    prompter.print("\n  Enter your custom command template. Available variables:")
+                    prompter.print("    {issue_number}, {issue_title}, {prompt}, {worktree}, {model}")
+                    custom_command = prompter.input("Custom command")
+                    model = "sonnet"  # Not relevant for custom, but keep a default
+                else:
+                    model = prompter.choice("Model", ["sonnet", "opus", "haiku"])
+
+                    # Permission mode for Claude CLI
+                    prompter.print("\n  Permission mode controls how Claude handles tool permissions:")
+                    prompter.print("    default          - Prompt for each action (safest)")
+                    prompter.print("    acceptEdits      - Auto-accept file edits, prompt for others")
+                    prompter.print("    bypassPermissions - Skip all prompts (use for trusted automation)")
+                    permission_mode = prompter.choice(
+                        "Permission mode",
+                        ["default", "acceptEdits", "bypassPermissions"]
+                    )
+
+                    # Safety confirmation for bypassPermissions
+                    if permission_mode == "bypassPermissions":
+                        prompter.print("\n  ⚠️  WARNING: bypassPermissions allows the agent to:")
+                        prompter.print("     - Execute any shell commands without confirmation")
+                        prompter.print("     - Read/write any files without confirmation")
+                        prompter.print("     - Access network resources without confirmation")
+                        if not prompter.yes_no("Are you sure you want to bypass all permission prompts?", default=False):
+                            permission_mode = "default"
+                            prompter.print("  → Using 'default' mode instead")
 
                 if "agents" not in config:
                     config["agents"] = {}
 
-                config["agents"][agent_label] = {
+                agent_cfg: dict[str, Any] = {
                     "prompt": prompt_path,
                     "model": model,
                     "timeout_minutes": int(timeout),
                 }
-                print(f"  ✓ Added {agent_label}")
+
+                if custom_command:
+                    agent_cfg["command"] = custom_command
+                else:
+                    agent_cfg["permission_mode"] = permission_mode
+
+                config["agents"][agent_label] = agent_cfg
+                prompter.print(f"  ✓ Added {agent_label}")
 
     # Check for configured agents with missing labels on GitHub
     if configured_agents:
         missing_labels = [a for a in configured_agents if a not in state.github_labels]
         if missing_labels:
-            print(f"\n⚠ These agents are in config but missing GitHub labels:")
+            prompter.print(f"\n⚠ These agents are in config but missing GitHub labels:")
             for label in missing_labels:
-                print(f"    - {label}")
-            if prompt_yes_no("Create missing labels on GitHub?"):
+                prompter.print(f"    - {label}")
+            if prompter.yes_no("Create missing labels on GitHub?"):
                 repo = str(config["repo"])
                 for label in missing_labels:
                     ok, _ = run_gh(
@@ -502,14 +626,14 @@ def wizard_existing_project(state: DetectedState) -> dict[str, Any]:
                         ]
                     )
                     if ok:
-                        print(f"  ✓ Created {label}")
+                        prompter.print(f"  ✓ Created {label}")
                     else:
-                        print(f"  ✗ Failed to create {label}")
+                        prompter.print(f"  ✗ Failed to create {label}")
 
     # Ensure we have concurrency settings
     if "concurrency" not in config:
-        print("\n--- Concurrency Settings ---")
-        max_sessions = prompt_input("Max concurrent sessions", "3")
+        prompter.print("\n--- Concurrency Settings ---")
+        max_sessions = prompter.input("Max concurrent sessions", "3")
         config["concurrency"] = {"max_concurrent_sessions": int(max_sessions)}
 
     # Check if agents need worktree_base
@@ -518,12 +642,12 @@ def wizard_existing_project(state: DetectedState) -> dict[str, Any]:
         if "worktree_base" not in cfg
     ]
     if agents_without_worktree:
-        print("\n--- Worktree Location ---")
-        print("Each issue gets its own git worktree for isolated work.")
-        print("Examples:")
-        print("  '../'           → sibling dirs (~/dev/myrepo-123)")
-        print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
-        worktree_base = prompt_input("Worktree base directory", "../")
+        prompter.print("\n--- Worktree Location ---")
+        prompter.print("Each issue gets its own git worktree for isolated work.")
+        prompter.print("Examples:")
+        prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
+        prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
+        worktree_base = prompter.input("Worktree base directory", "../")
 
         for agent_name in agents_without_worktree:
             config["agents"][agent_name]["worktree_base"] = worktree_base
@@ -538,58 +662,82 @@ def wizard_existing_project(state: DetectedState) -> dict[str, Any]:
                 gitignore_content = gitignore_path.read_text()
                 if worktree_dir in gitignore_content:
                     needs_gitignore = False
-                    print(f"  ✓ {worktree_dir} already in .gitignore")
+                    prompter.print(f"  ✓ {worktree_dir} already in .gitignore")
 
             if needs_gitignore:
-                if prompt_yes_no(f"Add '{worktree_dir}/' to .gitignore?"):
+                if prompter.yes_no(f"Add '{worktree_dir}/' to .gitignore?"):
                     with open(gitignore_path, "a") as f:
                         f.write(f"\n# Issue orchestrator worktrees\n{worktree_dir}/\n")
-                    print(f"  ✓ Added {worktree_dir}/ to .gitignore")
+                    prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
 
     # UI mode
     if "ui_mode" not in config:
-        print("\n--- UI Mode ---")
-        print("How do you want to monitor agent sessions?\n")
-        print("  web    - Browser dashboard at localhost (recommended)")
-        print("           Best for most users. Visual overview of all agents.")
-        print("  tmux   - Terminal multiplexer sessions")
-        print("           For terminal power users. Requires tmux installed.")
-        print("  iterm2 - Native iTerm2 tabs (macOS only)")
-        print("           Each agent runs in its own iTerm2 tab.\n")
-        ui_mode = prompt_input("UI mode", "web")
+        prompter.print("\n--- UI Mode ---")
+        prompter.print("How do you want to monitor agent sessions?\n")
+        prompter.print("  web    - Browser dashboard at localhost (recommended)")
+        prompter.print("           Best for most users. Visual overview of all agents.")
+        prompter.print("  tmux   - Terminal multiplexer sessions")
+        prompter.print("           For terminal power users. Requires tmux installed.")
+        prompter.print("  iterm2 - Native iTerm2 tabs (macOS only)")
+        prompter.print("           Each agent runs in its own iTerm2 tab.\n")
+        ui_mode = prompter.input("UI mode", "web")
         if ui_mode not in ("web", "tmux", "iterm2"):
-            print(f"  Invalid mode '{ui_mode}', using 'web'")
+            prompter.print(f"  Invalid mode '{ui_mode}', using 'web'")
             ui_mode = "web"
         config["ui_mode"] = ui_mode
         if ui_mode == "web":
-            config["web_port"] = int(prompt_input("Web port", "8080"))
+            config["web_port"] = int(prompter.input("Web port", "8080"))
 
-    # Review workflow (optional) - only ask if not already configured
-    if "review" not in config:
-        print("\n--- Review Workflow (Optional) ---")
-        print("You can have PRs automatically labeled for batch review by a CTO/review agent.")
-        print("This enables a review process where PRs accumulate, then get reviewed together.\n")
-        if prompt_yes_no("Enable PR review labeling?", default=False):
-            review_label = prompt_input("Label for PRs needing review", "needs-cto-review")
-            reviewed_label = prompt_input("Label after review complete", "cto-reviewed")
-            review_agent = prompt_input("Review agent (leave empty if manual)", "agent:cto")
-            threshold = prompt_input("Auto-trigger review after N PRs (0 = manual only)", "3")
+    # Label prefix (optional) - only ask if not already configured
+    if "labels" not in config or "prefix" not in config.get("labels", {}):
+        prompter.print("\n--- Label Prefix (Optional) ---")
+        prompter.print("Add a prefix to avoid conflicts with existing labels.")
+        prompter.print("  Example: prefix 'bot' → 'bot:in-progress', 'bot:blocked', etc.\n")
+        label_prefix = prompter.input("Label prefix (leave empty for none)", "")
+        if label_prefix:
+            if "labels" not in config:
+                config["labels"] = {}
+            config["labels"]["prefix"] = label_prefix
+            prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
 
-            review_config: dict[str, Any] = {
-                "label": review_label,
-                "reviewed_label": reviewed_label,
-            }
-            if review_agent:
-                review_config["agent"] = review_agent
-            try:
-                threshold_int = int(threshold)
-                if threshold_int > 0:
-                    review_config["threshold"] = threshold_int
-                    print(f"  ✓ CTO review triggers automatically after {threshold_int} PRs")
-            except ValueError:
-                pass
-            config["review"] = review_config
-            print(f"  ✓ PRs will be labeled '{review_label}' → '{reviewed_label}' after review")
+    # Two-stage review workflow (optional) - only ask if not already configured
+    if "code_review_agent" not in config:
+        prompter.print("\n--- Review Workflow (Optional) ---")
+        prompter.print("Enable a two-stage review pipeline for PRs created by work agents:")
+        prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
+        prompter.print("  Stage 2: CTO batch review (when N reviewed PRs accumulate)\n")
+
+        # Stage 1: Per-PR Code Review
+        if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=False):
+            prompter.print("\n  --- Stage 1: Per-PR Code Review ---")
+            code_review_agent = prompter.input("  Code review agent label", "agent:reviewer")
+            code_review_label = prompter.input("  Label for PRs needing review", "needs-code-review")
+            code_reviewed_label = prompter.input("  Label after review passes", "code-reviewed")
+
+            config["code_review_agent"] = code_review_agent
+            config["code_review_label"] = code_review_label
+            config["code_reviewed_label"] = code_reviewed_label
+            prompter.print(f"  ✓ PRs will be reviewed by {code_review_agent}")
+            prompter.print(f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}")
+
+            # Stage 2: CTO Batch Review (only if Stage 1 enabled)
+            prompter.print("")
+            if prompter.yes_no("Enable Stage 2: CTO batch review?", default=False):
+                prompter.print("\n  --- Stage 2: CTO Batch Review ---")
+                cto_review_agent = prompter.input("  CTO review agent label", "agent:cto")
+                cto_reviewed_label = prompter.input("  Label after CTO review", "cto-reviewed")
+                threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
+
+                config["cto_review_agent"] = cto_review_agent
+                config["cto_reviewed_label"] = cto_reviewed_label
+                try:
+                    threshold_int = int(threshold)
+                    if threshold_int > 0:
+                        config["cto_review_threshold"] = threshold_int
+                        prompter.print(f"  ✓ CTO review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
+                except ValueError:
+                    pass
+                prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {cto_reviewed_label}")
 
     return config
 
@@ -618,6 +766,114 @@ Your worktree is at: {{worktree}}
 - Always use `agent-done` when finished (not `git push` directly)
 - If blocked, use `agent-done --blocked "reason"`
 - If you need human input, use `agent-done --needs-human "question"`
+"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+def create_code_review_prompt(path: Path, code_review_label: str, code_reviewed_label: str) -> None:
+    """Create a code review prompt with actual label values substituted.
+
+    Template variables like {{pr_number}} become {pr_number} in output,
+    which get_command() substitutes at runtime.
+    """
+    content = f"""# Code Review Agent
+
+You are a code reviewer. Your job is to review PRs created by work agents, checking code quality, test coverage, and adherence to best practices.
+
+## Your Task
+
+You are reviewing PR #{{pr_number}} for issue #{{issue_number}}: {{issue_title}}
+
+The PR has the `{code_review_label}` label and needs your review.
+
+## Review Process
+
+### 1. Fetch PR Details
+
+```bash
+gh pr view {{pr_number}} --json title,body,additions,deletions,changedFiles,commits
+gh pr diff {{pr_number}}
+```
+
+### 2. Review Checklist
+
+Check each area and note any issues:
+
+- [ ] **Code Quality**: Clean, readable, follows project conventions
+- [ ] **Logic**: Implementation is correct and handles edge cases
+- [ ] **Tests**: Adequate test coverage for changes
+- [ ] **Security**: No obvious vulnerabilities introduced
+- [ ] **Performance**: No obvious performance issues
+- [ ] **Documentation**: Comments where needed, README updates if applicable
+
+### 3. Run Tests
+
+```bash
+# Run the project's test suite
+# Adjust command based on project type
+npm test  # or pytest, cargo test, etc.
+```
+
+### 4. Post Review Comments
+
+If you find issues that need fixing:
+
+```bash
+gh pr review {{pr_number}} --request-changes --body "## Code Review
+
+### Issues Found
+- Issue 1: description
+- Issue 2: description
+
+### Suggestions
+- Suggestion 1
+- Suggestion 2
+
+Please address these issues and push updates."
+```
+
+If the PR looks good:
+
+```bash
+gh pr review {{pr_number}} --approve --body "## Code Review
+
+LGTM! The implementation looks good.
+
+### What I Checked
+- Code quality and style
+- Test coverage
+- Logic correctness
+
+### Notes
+- Any minor observations (optional)"
+```
+
+### 5. Update Labels
+
+After approving, update the PR label:
+
+```bash
+gh pr edit {{pr_number}} --remove-label "{code_review_label}" --add-label "{code_reviewed_label}"
+```
+
+## Completion
+
+When done reviewing:
+
+```bash
+agent-done completed \\
+  --implementation "Reviewed PR #{{pr_number}}. [Approved/Requested changes]. [Summary of findings]" \\
+  --problems "None" # or describe any concerns
+```
+
+## Review Principles
+
+1. **Be constructive** - Explain why something should change, not just that it should
+2. **Be specific** - Point to exact lines/files when possible
+3. **Prioritize** - Distinguish blocking issues from nice-to-haves
+4. **Be consistent** - Apply the same standards across all PRs
+5. **Trust but verify** - Check that tests actually test the changes
 """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
@@ -792,144 +1048,76 @@ def write_config(config: dict[str, Any], path: Path) -> None:
         yaml.dump(config, f, Dumper=_NoAliasDumper, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
 
-def create_start_script(config: dict, script_path: Path) -> None:
-    """Create a shell script to start the orchestrator."""
-    ui_mode = config.get("ui_mode", "web")
-    web_port = config.get("web_port", 8080)
-
-    # Build the start command with options
-    start_cmd = "issue-orchestrator start"
-    if ui_mode != "web":
-        start_cmd += f" --ui-mode {ui_mode}"
-    if ui_mode == "web" and web_port != 8080:
-        start_cmd += f" --port {web_port}"
-
-    script_content = f'''#!/bin/bash
-# Start issue-orchestrator agents
-# Generated by: issue-orchestrator setup
-
-set -e
-
-# Change to the directory containing this script
-cd "$(dirname "$0")"
-
-# Activate virtual environment if it exists
-if [ -f ".venv/bin/activate" ]; then
-    source .venv/bin/activate
-elif [ -f "venv/bin/activate" ]; then
-    source venv/bin/activate
-fi
-
-# Start the orchestrator
-echo "Starting issue-orchestrator..."
-{start_cmd}
-'''
-
-    script_path.write_text(script_content)
-    # Make executable
-    script_path.chmod(0o755)
-
-
-def create_start_script_fish(config: dict, script_path: Path) -> None:
-    """Create a fish shell script to start the orchestrator."""
-    ui_mode = config.get("ui_mode", "web")
-    web_port = config.get("web_port", 8080)
-
-    start_cmd = "issue-orchestrator start"
-    if ui_mode != "web":
-        start_cmd += f" --ui-mode {ui_mode}"
-    if ui_mode == "web" and web_port != 8080:
-        start_cmd += f" --port {web_port}"
-
-    script_content = f'''#!/usr/bin/env fish
-# Start issue-orchestrator agents
-# Generated by: issue-orchestrator setup
-
-# Change to the directory containing this script
-cd (dirname (status filename))
-
-# Activate virtual environment if it exists
-if test -f ".venv/bin/activate.fish"
-    source .venv/bin/activate.fish
-else if test -f "venv/bin/activate.fish"
-    source venv/bin/activate.fish
-end
-
-# Start the orchestrator
-echo "Starting issue-orchestrator..."
-{start_cmd}
-'''
-
-    script_path.write_text(script_content)
-    script_path.chmod(0o755)
-
-
-def run_wizard(target_path: Path | None = None) -> None:
+def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None) -> None:
     """Main wizard entry point.
 
     Args:
         target_path: Directory to set up. If None, prompts user.
+        prompter: Prompter for user interaction. If None, uses ConsolePrompter.
     """
-    print("\n" + "=" * 50)
-    print("  issue-orchestrator Setup Wizard")
-    print("=" * 50)
+    if prompter is None:
+        prompter = ConsolePrompter()
+
+    prompter.print("\n" + "=" * 50)
+    prompter.print("  issue-orchestrator Setup Wizard")
+    prompter.print("=" * 50)
 
     # Determine target directory
     if target_path is None:
         cwd = Path.cwd()
-        print(f"\nCurrent directory: {cwd}")
+        prompter.print(f"\nCurrent directory: {cwd}")
 
         # Check if this looks like the issue-orchestrator package itself
         is_orchestrator_dir = (cwd / "src" / "issue_orchestrator").exists()
         if is_orchestrator_dir:
-            print("⚠ This looks like the issue-orchestrator package directory.")
-            print("  You probably want to set up a different project.\n")
+            prompter.print("⚠ This looks like the issue-orchestrator package directory.")
+            prompter.print("  You probably want to set up a different project.\n")
             # Don't default to this directory
-            target_input = prompt_input("Project directory to set up (required)", "")
+            target_input = prompter.input("Project directory to set up (required)", "")
             if not target_input:
-                print("Error: Please specify a project directory.")
+                prompter.print("Error: Please specify a project directory.")
                 sys.exit(1)
         else:
-            target_input = prompt_input("Project directory to set up", str(cwd))
+            target_input = prompter.input("Project directory to set up", str(cwd))
 
         target_path = Path(target_input).expanduser().resolve()
 
         if not target_path.exists():
-            print(f"[red]Error: {target_path} does not exist[/red]")
+            prompter.print(f"Error: {target_path} does not exist")
             sys.exit(1)
         if not target_path.is_dir():
-            print(f"[red]Error: {target_path} is not a directory[/red]")
+            prompter.print(f"Error: {target_path} is not a directory")
             sys.exit(1)
 
     # Change to target directory for the rest of the wizard
     import os
     original_cwd = Path.cwd()
     os.chdir(target_path)
-    print(f"\nSetting up: {target_path}\n")
+    prompter.print(f"\nSetting up: {target_path}\n")
 
     # Check prerequisites
-    print("Checking prerequisites...")
+    prompter.print("Checking prerequisites...")
     prereqs = check_prerequisites()
 
     all_ok = True
     for tool, ok in prereqs.items():
         status = "✓" if ok else "✗"
-        print(f"  {status} {tool}")
+        prompter.print(f"  {status} {tool}")
         if not ok:
             all_ok = False
 
     if not all_ok:
-        print("\n⚠ Some prerequisites are missing. Install them before continuing.")
+        prompter.print("\n⚠ Some prerequisites are missing. Install them before continuing.")
         if not prereqs["gh_auth"]:
-            print("  Run: gh auth login")
+            prompter.print("  Run: gh auth login")
         if not prereqs["claude"]:
-            print("  Install Claude Code CLI")
-        if not prompt_yes_no("Continue anyway?", default=False):
+            prompter.print("  Install Claude Code CLI")
+        if not prompter.yes_no("Continue anyway?", default=False):
             sys.exit(1)
 
     # Choose mode
-    print("\n" + "-" * 50)
-    mode = prompt_choice(
+    prompter.print("\n" + "-" * 50)
+    mode = prompter.choice(
         "What would you like to do?",
         [
             "New project - set up from scratch",
@@ -938,159 +1126,162 @@ def run_wizard(target_path: Path | None = None) -> None:
     )
 
     if "New" in mode:
-        config = wizard_new_project()
+        config = wizard_new_project(prompter)
     else:
         state = scan_existing_repo()
-        config = wizard_existing_project(state)
+        config = wizard_existing_project(state, prompter)
 
     # Review config
-    print("\n" + "=" * 50)
-    print("CONFIGURATION SUMMARY")
-    print("=" * 50)
-    print(yaml.dump(config, default_flow_style=False, sort_keys=False))
+    prompter.print("\n" + "=" * 50)
+    prompter.print("CONFIGURATION SUMMARY")
+    prompter.print("=" * 50)
+    prompter.print(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
-    if not prompt_yes_no("Save this configuration?"):
-        print("Aborted.")
+    # Save configuration
+    prompter.print("\n--- Save Configuration ---")
+    prompter.print(f"Project directory: {target_path}")
+
+    if not prompter.yes_no("Save this configuration?"):
+        prompter.print("Aborted.")
         sys.exit(0)
 
-    # Choose output path
+    # Choose output filename (relative to project directory)
     default_path = ".issue-orchestrator.yaml"
-    output_path = Path(prompt_input("Config file path", default_path))
+    output_path = Path(prompter.input("Config filename", default_path))
 
     # Check for existing
     if output_path.exists():
-        if not prompt_yes_no(f"{output_path} exists. Overwrite?"):
-            print("Aborted.")
+        if not prompter.yes_no(f"{output_path} exists. Overwrite?"):
+            prompter.print("Aborted.")
             sys.exit(0)
 
     write_config(config, output_path)
-    print(f"\n✓ Saved config to {output_path}")
+    prompter.print(f"\n✓ Saved config to {output_path}")
 
     # Create missing prompt files
-    print("\n--- Prompt Files ---")
-    review_config = config.get("review", {})
-    review_label = review_config.get("label", "needs-cto-review")
-    reviewed_label = review_config.get("reviewed_label", "cto-reviewed")
-    review_agent = review_config.get("agent")
+    prompter.print("\n--- Prompt Files ---")
+
+    # Get review config (new two-stage fields)
+    code_review_agent = config.get("code_review_agent")
+    code_review_label = config.get("code_review_label", "needs-code-review")
+    code_reviewed_label = config.get("code_reviewed_label", "code-reviewed")
+    cto_review_agent = config.get("cto_review_agent")
+    cto_reviewed_label = config.get("cto_reviewed_label", "cto-reviewed")
+
+    # Track all prompt files for the next steps summary
+    all_prompt_paths: list[Path] = []
 
     for agent_name, agent_config in config.get("agents", {}).items():
         prompt_path = Path(agent_config["prompt"])
-        if not prompt_path.exists():
-            # Check if this is the CTO/review agent
-            is_review_agent = (
-                review_agent and agent_name == review_agent
-            ) or "cto" in agent_name.lower() or "review" in agent_name.lower()
+        all_prompt_paths.append(prompt_path)
 
-            if is_review_agent and review_config:
-                if prompt_yes_no(f"Create CTO review prompt at {prompt_path}?"):
-                    create_cto_review_prompt(prompt_path, review_label, reviewed_label)
-                    print(f"  ✓ Created CTO review prompt at {prompt_path}")
-                    print(f"    Labels configured: {review_label} → {reviewed_label}")
+        if not prompt_path.exists():
+            # Check if this is the code review agent
+            is_code_review_agent = (
+                code_review_agent and agent_name == code_review_agent
+            ) or (agent_name.lower() == "agent:reviewer")
+
+            # Check if this is the CTO review agent
+            is_cto_review_agent = (
+                cto_review_agent and agent_name == cto_review_agent
+            ) or "cto" in agent_name.lower()
+
+            if is_code_review_agent and code_review_agent:
+                if prompter.yes_no(f"Create code review prompt at {prompt_path}?"):
+                    create_code_review_prompt(prompt_path, code_review_label, code_reviewed_label)
+                    prompter.print(f"  ✓ Created code review prompt at {prompt_path}")
+                    prompter.print(f"    Labels: {code_review_label} → {code_reviewed_label}")
+            elif is_cto_review_agent and cto_review_agent:
+                if prompter.yes_no(f"Create CTO review prompt at {prompt_path}?"):
+                    create_cto_review_prompt(prompt_path, code_reviewed_label, cto_reviewed_label)
+                    prompter.print(f"  ✓ Created CTO review prompt at {prompt_path}")
+                    prompter.print(f"    Labels: {code_reviewed_label} → {cto_reviewed_label}")
             else:
-                if prompt_yes_no(f"Create starter prompt at {prompt_path}?"):
+                if prompter.yes_no(f"Create starter prompt at {prompt_path}?"):
                     create_starter_prompt(agent_name, prompt_path)
-                    print(f"  ✓ Created {prompt_path}")
+                    prompter.print(f"  ✓ Created {prompt_path}")
 
     # Create priority and status labels (agent labels handled earlier)
-    if prompt_yes_no("\nCreate priority & status labels on GitHub?"):
-        repo = config.get("repo")
-        if repo:
-            # Priority labels
-            priority_labels = [
-                ("priority:high", "D93F0B", "Urgent - do first"),
-                ("priority:medium", "FBCA04", "Normal priority"),
-                ("priority:low", "0E8A16", "Nice to have"),
-            ]
-            for name, color, desc in priority_labels:
-                run_gh(
-                    [
-                        "label",
-                        "create",
-                        name,
-                        "--repo",
-                        repo,
-                        "--color",
-                        color,
-                        "--description",
-                        desc,
-                        "--force",
-                    ]
-                )
+    repo = config.get("repo")
+    if repo:
+        # Gather all labels we want to ensure exist
+        labels_config = config.get("labels", {})
+        label_prefix = labels_config.get("prefix", "")
 
-            # Status labels
-            labels_config = config.get("labels", {})
-            status_labels = [
-                (labels_config.get("in_progress", "in-progress"), "5319E7"),
-                (labels_config.get("blocked", "blocked"), "B60205"),
-                (labels_config.get("needs_human", "needs-human"), "FBCA04"),
-            ]
-            for name, color in status_labels:
-                run_gh(["label", "create", name, "--repo", repo, "--color", color, "--force"])
+        def prefixed(label: str) -> str:
+            """Apply label prefix if configured."""
+            return f"{label_prefix}:{label}" if label_prefix else label
 
-            # Review workflow labels (if configured)
-            if review_config:
-                review_labels = [
-                    (review_label, "7057FF", "PR needs CTO/batch review"),
-                    (reviewed_label, "0E8A16", "PR has been reviewed"),
-                ]
-                for name, color, desc in review_labels:
-                    run_gh(
-                        [
-                            "label",
-                            "create",
-                            name,
-                            "--repo",
-                            repo,
-                            "--color",
-                            color,
-                            "--description",
-                            desc,
-                            "--force",
-                        ]
-                    )
-                print(f"  ✓ Review labels: {review_label}, {reviewed_label}")
+        priority_labels = [
+            ("priority:high", "D93F0B", "Urgent - do first"),
+            ("priority:medium", "FBCA04", "Normal priority"),
+            ("priority:low", "0E8A16", "Nice to have"),
+        ]
+        status_labels = [
+            (prefixed(labels_config.get("in_progress", "in-progress")), "5319E7", "Agent is working on this"),
+            (prefixed(labels_config.get("blocked", "blocked")), "B60205", "Agent is blocked"),
+            (prefixed(labels_config.get("needs_human", "needs-human")), "FBCA04", "Agent needs human input"),
+        ]
+        all_labels = priority_labels + status_labels
 
-            print("  ✓ Labels created/updated")
+        # Add review labels if configured (two-stage review workflow)
+        if code_review_agent:
+            all_labels.extend([
+                (code_review_label, "7057FF", "PR needs code review"),
+                (code_reviewed_label, "0E8A16", "PR has been code reviewed"),
+            ])
+        if cto_review_agent:
+            all_labels.append(
+                (cto_reviewed_label, "1D76DB", "PR has been CTO reviewed")
+            )
 
-    # Offer to create start script
-    print("\n--- Start Script ---")
-    default_script = Path("start-agents.sh")
-    existing_scripts = list(Path.cwd().glob("start*.sh")) + list(Path.cwd().glob("run*.sh"))
+        # Check which labels already exist
+        existing_labels = set(fetch_github_labels(repo))
+        missing_labels = [(name, color, desc) for name, color, desc in all_labels if name not in existing_labels]
 
-    if existing_scripts:
-        print("Found existing scripts:")
-        for s in existing_scripts[:5]:
-            print(f"  - {s.name}")
-
-    if prompt_yes_no("Create a start script?", default=not existing_scripts):
-        script_name = prompt_input("Script name", str(default_script))
-        script_path = Path(script_name)
-
-        if script_path.exists():
-            if not prompt_yes_no(f"{script_path} exists. Overwrite?", default=False):
-                print("  Skipped.")
-            else:
-                create_start_script(config, script_path)
-                print(f"  ✓ Created {script_path}")
+        if not missing_labels:
+            prompter.print("\n--- GitHub Labels ---")
+            prompter.print("  ✓ All required labels already exist on GitHub")
         else:
-            create_start_script(config, script_path)
-            print(f"  ✓ Created {script_path}")
+            prompter.print("\n--- GitHub Labels ---")
+            prompter.print("The following labels are missing from GitHub:")
+            for name, _, desc in missing_labels:
+                prompter.print(f"  • {name} - {desc}")
 
-        # Also offer fish version if user might use fish
-        if prompt_yes_no("Also create fish shell version?", default=False):
-            fish_path = script_path.with_suffix(".fish")
-            create_start_script_fish(config, fish_path)
-            print(f"  ✓ Created {fish_path}")
+            if prompter.yes_no(f"\nCreate these {len(missing_labels)} labels on GitHub?"):
+                for name, color, desc in missing_labels:
+                    run_gh([
+                        "label", "create", name,
+                        "--repo", repo,
+                        "--color", color,
+                        "--description", desc,
+                        "--force",
+                    ])
+                prompter.print("  ✓ Labels created")
 
-    print("\n" + "=" * 50)
-    print("Setup complete! Next steps:")
-    print("=" * 50)
-    print("  1. Review/edit your prompt files")
-    print("  2. Add agent labels to your GitHub issues")
-    print("  3. Run: issue-orchestrator start")
-    if existing_scripts or default_script.exists():
-        print(f"     Or: ./{default_script.name if default_script.exists() else existing_scripts[0].name}")
-    print()
+
+    prompter.print("\n" + "=" * 50)
+    prompter.print("Setup complete! Next steps:")
+    prompter.print("=" * 50)
+
+    # List prompt files to review
+    prompter.print("\n  1. Review/edit your prompt files:")
+    for prompt_path in all_prompt_paths:
+        prompter.print(f"     • {prompt_path}")
+
+    # List agent labels to add to issues
+    agent_labels = list(config.get("agents", {}).keys())
+    # Exclude review agents from the list (they work on PRs, not issues)
+    work_agent_labels = [
+        label for label in agent_labels
+        if label != code_review_agent and label != cto_review_agent
+    ]
+    prompter.print("\n  2. Add agent labels to your GitHub issues:")
+    for label in work_agent_labels:
+        prompter.print(f"     • {label}")
+
+    prompter.print("\n  3. Run: issue-orchestrator start")
+    prompter.print("")
 
 
 if __name__ == "__main__":

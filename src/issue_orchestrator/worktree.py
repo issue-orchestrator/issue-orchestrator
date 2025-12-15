@@ -95,6 +95,7 @@ def create_worktree(
     worktree_base: Path | None = None,
     enforce_hooks: bool = True,
     pre_push_hook: Path | None = None,
+    branch_name: str | None = None,
 ) -> tuple[Path, str]:
     """
     Create a new git worktree for the given issue.
@@ -102,8 +103,11 @@ def create_worktree(
     Args:
         repo_root: Path to the main git repository
         issue_number: GitHub issue number
-        issue_title: GitHub issue title (used to generate branch name)
+        issue_title: GitHub issue title (used to generate branch name if not provided)
         worktree_base: Base directory for worktrees. Defaults to parent of repo_root.
+        enforce_hooks: Whether to install pre-push hooks
+        pre_push_hook: Custom pre-push hook path
+        branch_name: Specific branch to use (for checking out existing branches like PR reviews)
 
     Returns:
         Tuple of (worktree_path, branch_name)
@@ -124,8 +128,9 @@ def create_worktree(
 
     worktree_base.mkdir(parents=True, exist_ok=True)
 
-    # Generate branch name: {issue_number}-{slugified-title}
-    branch_name = generate_branch_name(issue_number, issue_title)
+    # Use provided branch name or generate one
+    if branch_name is None:
+        branch_name = generate_branch_name(issue_number, issue_title)
 
     # Get repo name for worktree directory
     repo_name = repo_root.name

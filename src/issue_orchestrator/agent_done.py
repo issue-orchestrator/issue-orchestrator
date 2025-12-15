@@ -82,15 +82,40 @@ def get_repo() -> str:
     return result.stdout.strip()
 
 
-def get_review_label() -> Optional[str]:
-    """Try to load review label from orchestrator config."""
+def get_code_review_label() -> Optional[str]:
+    """Try to load code review label from orchestrator config."""
     try:
         from .config import Config
         config = Config.find_and_load()
-        return config.review_label
+        # Only return label if code review agent is configured
+        if config.code_review_agent:
+            return config.code_review_label
+        return None
     except Exception:
         # Config not found or error loading - that's fine, review is optional
         return None
+
+
+def get_blocked_label() -> str:
+    """Get the blocked label from config (with prefix if configured)."""
+    try:
+        from .config import Config
+        config = Config.find_and_load()
+        return config.get_label_blocked()
+    except Exception:
+        # Config not found - use default
+        return "blocked"
+
+
+def get_needs_human_label() -> str:
+    """Get the needs-human label from config (with prefix if configured)."""
+    try:
+        from .config import Config
+        config = Config.find_and_load()
+        return config.get_label_needs_human()
+    except Exception:
+        # Config not found - use default
+        return "needs-human"
 
 
 def add_label_to_pr(pr_url: str, label: str) -> None:
@@ -469,10 +494,10 @@ STATUSES:
         pr_title = f"Fix #{issue_number}"  # TODO: get from branch/issue
         pr_url = create_pr(issue_number, pr_title, data)
 
-        # 3. Add review label if configured
-        review_label = get_review_label()
-        if review_label:
-            add_label_to_pr(pr_url, review_label)
+        # 3. Add code review label if configured (triggers code review agent)
+        code_review_label = get_code_review_label()
+        if code_review_label:
+            add_label_to_pr(pr_url, code_review_label)
 
         # 4. Update comment with PR URL and post
         comment_body = comment_body.replace("<PR_LINK_PLACEHOLDER>", pr_url)
@@ -486,9 +511,10 @@ STATUSES:
         print("🚀 Pushing work so far...")
         git_push()
 
-        # 2. Add blocked label
-        print("🏷️  Adding 'blocked' label...")
-        add_label(repo, issue_number, "blocked")
+        # 2. Add blocked label (with prefix if configured)
+        blocked_label = get_blocked_label()
+        print(f"🏷️  Adding '{blocked_label}' label...")
+        add_label(repo, issue_number, blocked_label)
 
         # 3. Post comment
         print("💬 Posting blocked comment...")
@@ -501,9 +527,10 @@ STATUSES:
         print("🚀 Pushing work so far...")
         git_push()
 
-        # 2. Add needs-human label
-        print("🏷️  Adding 'needs-human' label...")
-        add_label(repo, issue_number, "needs-human")
+        # 2. Add needs-human label (with prefix if configured)
+        needs_human_label = get_needs_human_label()
+        print(f"🏷️  Adding '{needs_human_label}' label...")
+        add_label(repo, issue_number, needs_human_label)
 
         # 3. Post comment
         print("💬 Posting question comment...")

@@ -164,12 +164,12 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     # Handle review workflow overrides
     if hasattr(args, 'review_label') and args.review_label is not None:
-        config.review_label = args.review_label
-        console.print(f"[dim]Review label: {config.review_label}[/dim]")
+        config.cto_review_label = args.review_label
+        console.print(f"[dim]Review label: {config.cto_review_label}[/dim]")
     if hasattr(args, 'review_threshold') and args.review_threshold is not None:
-        config.review_threshold = args.review_threshold
-        if config.review_threshold > 0:
-            console.print(f"[dim]Review threshold: {config.review_threshold} PRs[/dim]")
+        config.cto_review_threshold = args.review_threshold
+        if config.cto_review_threshold > 0:
+            console.print(f"[dim]Review threshold: {config.cto_review_threshold} PRs[/dim]")
 
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
     console.print(f"[dim]Max concurrent sessions: {config.max_concurrent_sessions}[/dim]")

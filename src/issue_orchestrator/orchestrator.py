@@ -14,7 +14,7 @@ from .github import (
     list_prs_with_label, create_issue,
 )
 from .locks import try_claim, release_claim, cleanup_stale_claims
-from .models import Issue, Session, SessionStatus, OrchestratorState
+from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
 from .tmux import create_session, session_exists, kill_session
@@ -48,27 +48,35 @@ class Orchestrator:
             self._iterm_manager = get_iterm_manager()
         return self._iterm_manager
 
+    def _extract_session_number(self, session_name: str) -> int:
+        """Extract the number from a session name like 'issue-42' or 'review-123'."""
+        import re
+        match = re.search(r"-(\d+)$", session_name)
+        if match:
+            return int(match.group(1))
+        raise ValueError(f"Could not extract number from session name: {session_name}")
+
     def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> None:
         """Create a session using the appropriate backend."""
         if self._using_iterm2:
-            issue_number = int(session_name.replace("issue-", ""))
-            self._get_iterm_manager().create_session(issue_number, command, str(working_dir), title)
+            session_number = self._extract_session_number(session_name)
+            self._get_iterm_manager().create_session(session_number, command, str(working_dir), title)
         else:
             create_session(session_name, command, working_dir, title)
 
     def _session_exists(self, session_name: str) -> bool:
         """Check if a session exists using the appropriate backend."""
         if self._using_iterm2:
-            issue_number = int(session_name.replace("issue-", ""))
-            return self._get_iterm_manager().session_exists(issue_number)
+            session_number = self._extract_session_number(session_name)
+            return self._get_iterm_manager().session_exists(session_number)
         else:
             return session_exists(session_name)
 
     def _kill_session(self, session_name: str) -> None:
         """Kill a session using the appropriate backend."""
         if self._using_iterm2:
-            issue_number = int(session_name.replace("issue-", ""))
-            self._get_iterm_manager().kill_session(issue_number)
+            session_number = self._extract_session_number(session_name)
+            self._get_iterm_manager().kill_session(session_number)
         else:
             kill_session(session_name)
 
@@ -127,6 +135,35 @@ class Orchestrator:
                 elif state.is_orphaned_label:
                     print(f"  #{issue.number}: No session or branch - clearing stale label")
                     remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
+
+        # Check for PRs needing code review (recovery after crash/restart)
+        if self.config.code_review_agent and self.config.code_review_label:
+            print("\nChecking for PRs needing code review...")
+            prs = list_prs_with_label(self.config.repo, self.config.code_review_label)
+            for pr in prs:
+                pr_number = pr.get("number")
+                if pr_number is None:
+                    continue
+                pr_url = pr.get("url", "")
+
+                # Check if review is already in progress
+                if not self._session_exists(f"review-{pr_number}"):
+                    # Extract issue number from PR (assumes PR title or body contains issue reference)
+                    # For now, use PR number as issue number fallback
+                    issue_number: int = pr_number  # TODO: extract from "Closes #N" in PR body
+
+                    # Queue for review
+                    review = PendingReview(
+                        issue_number=issue_number,
+                        pr_number=pr_number,
+                        pr_url=str(pr_url),
+                        branch_name="",  # Will need to fetch from PR
+                    )
+                    if review not in self.state.pending_reviews:
+                        self.state.pending_reviews.append(review)
+                        print(f"  PR #{pr_number}: Queued for code review")
+                else:
+                    print(f"  PR #{pr_number}: Review already in progress")
 
     def launch_session(self, issue: Issue) -> Optional[Session]:
         """Launch a new session for an issue."""
@@ -240,6 +277,14 @@ class Orchestrator:
             except Exception as e:
                 print(f"Warning: failed to remove worktree: {e}")
 
+            # Trigger code review immediately if configured
+            if pr_url and self.config.code_review_agent:
+                self.queue_code_review(
+                    issue_number=session.issue.number,
+                    pr_url=pr_url,
+                    branch_name=session.branch_name,
+                )
+
     async def run_loop(self) -> None:
         """Main orchestration loop."""
         print("Starting orchestration loop...")
@@ -252,8 +297,11 @@ class Orchestrator:
                 if status != SessionStatus.RUNNING:
                     self.handle_session_completion(session, status)
 
+            # Process pending code reviews
+            self.process_pending_reviews()
+
             # Check if CTO review should be triggered
-            self.check_review_trigger()
+            self.check_cto_review_trigger()
 
             # Check if we've hit the max issues limit for this session
             max_issues = self.config.max_issues_to_start
@@ -324,53 +372,176 @@ class Orchestrator:
         self.state.paused = False
         print("Orchestrator resumed")
 
-    def check_review_trigger(self) -> None:
-        """Check if we should trigger a CTO review based on PR count.
+    def queue_code_review(self, issue_number: int, pr_url: str, branch_name: str) -> None:
+        """Queue a PR for code review.
+
+        Called immediately after a work agent creates a PR.
+        The review will be processed in the next loop iteration.
+        """
+        import re
+
+        # Extract PR number from URL
+        match = re.search(r"/pull/(\d+)", pr_url)
+        if not match:
+            print(f"Warning: Could not extract PR number from {pr_url}")
+            return
+
+        pr_number = int(match.group(1))
+
+        # Check if already queued
+        for review in self.state.pending_reviews:
+            if review.pr_number == pr_number:
+                return
+
+        review = PendingReview(
+            issue_number=issue_number,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            branch_name=branch_name,
+        )
+        self.state.pending_reviews.append(review)
+        print(f"📝 Queued PR #{pr_number} for code review")
+
+    def launch_review_session(self, review: PendingReview) -> Optional[Session]:
+        """Launch a code review session for a PR.
+
+        Similar to launch_session but for reviewing PRs instead of implementing issues.
+        """
+        agent_label = self.config.code_review_agent
+        if not agent_label:
+            return None
+
+        agent_config = self.config.agents.get(agent_label)
+        if not agent_config:
+            print(f"Warning: No agent config for {agent_label}")
+            return None
+
+        # Try to claim the issue (prevent duplicate reviews)
+        if not try_claim(review.issue_number, prefix="review"):
+            print(f"PR #{review.pr_number} already being reviewed - skipping")
+            return None
+
+        # Use agent's repo_root if set, otherwise fall back to config.repo_root
+        repo_root = agent_config.repo_root or self.config.repo_root
+
+        # Create worktree for the review (checks out the PR branch)
+        from .worktree import create_worktree
+        worktree_path, _ = create_worktree(
+            repo_root=repo_root,
+            issue_number=review.issue_number,
+            issue_title=f"Review PR #{review.pr_number}",
+            branch_name=review.branch_name,  # Use existing PR branch
+            enforce_hooks=False,  # Reviewer doesn't need pre-push hooks
+        )
+
+        # Build command - review agent gets PR context
+        command = agent_config.get_command(
+            issue_number=review.issue_number,
+            issue_title=f"Review PR #{review.pr_number}",
+            worktree=worktree_path,
+            pr_number=review.pr_number,
+        )
+
+        # Create session
+        session_name = f"review-{review.pr_number}"
+        self._create_session(session_name, command, worktree_path, title=f"Review PR #{review.pr_number}")
+
+        # Create a pseudo-issue for the session
+        from .models import Issue
+        pseudo_issue = Issue(
+            number=review.issue_number,
+            title=f"Review PR #{review.pr_number}",
+            labels=[agent_label],
+        )
+
+        session = Session(
+            issue=pseudo_issue,
+            agent_config=agent_config,
+            tmux_session_name=session_name,
+            worktree_path=worktree_path,
+            branch_name=review.branch_name,
+        )
+
+        self.state.active_sessions.append(session)
+        print(f"🔍 Launched review session for PR #{review.pr_number}")
+
+        # Remove from pending queue
+        self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
+
+        return session
+
+    def process_pending_reviews(self) -> None:
+        """Process any pending code reviews.
+
+        Called each loop iteration to launch review sessions.
+        Respects max_concurrent_sessions.
+        """
+        if not self.config.code_review_agent:
+            return
+
+        if not self.state.pending_reviews:
+            return
+
+        # Check capacity
+        available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
+        if available_slots <= 0:
+            return
+
+        # Launch reviews up to capacity
+        for review in list(self.state.pending_reviews)[:available_slots]:
+            self.launch_review_session(review)
+
+    def check_cto_review_trigger(self) -> None:
+        """Check if we should trigger a CTO batch review based on PR count.
 
         Creates a review issue if:
-        - review.label and review.agent are configured
-        - review.threshold > 0
-        - Number of PRs with review_label >= threshold
-        - No existing open review issue exists
+        - cto_review_agent is configured
+        - cto_review_threshold > 0
+        - Number of code-reviewed PRs >= threshold
+        - No existing open CTO review issue exists
         """
-        # Check if review is configured
-        if not self.config.review_label or not self.config.review_agent:
+        # Check if CTO review is configured
+        if not self.config.cto_review_agent:
             return
-        if self.config.review_threshold <= 0:
-            return
-
-        # Count PRs needing review
-        prs = list_prs_with_label(self.config.repo, self.config.review_label)
-        if len(prs) < self.config.review_threshold:
+        if self.config.cto_review_threshold <= 0:
             return
 
-        # Check if a review issue already exists (avoid duplicates)
-        # Look for open issues with the review agent label and "Batch Review" in title
+        # Label to watch: either explicit cto_review_label or code_reviewed_label
+        watch_label = self.config.cto_review_label or self.config.code_reviewed_label
+        if not watch_label:
+            return
+
+        # Count PRs ready for CTO review
+        prs = list_prs_with_label(self.config.repo, watch_label)
+        if len(prs) < self.config.cto_review_threshold:
+            return
+
+        # Check if a CTO review issue already exists (avoid duplicates)
         existing = list_issues(
             self.config.repo,
-            labels=[self.config.review_agent],
+            labels=[self.config.cto_review_agent],
             limit=10,
         )
         for issue in existing:
             if "Batch Review" in issue.title or "CTO Review" in issue.title:
-                # Already have a pending review issue
                 return
 
-        # Create the review issue
+        # Create the CTO review issue
         pr_list = "\n".join(f"- PR #{pr['number']}: {pr['title']}" for pr in prs)
         body = f"""## CTO Batch Review Triggered
 
-{len(prs)} PRs are ready for review:
+{len(prs)} PRs have passed code review and are ready for CTO review:
 
 {pr_list}
 
-Review these PRs, provide feedback, and flip labels from `{self.config.review_label}` to `{self.config.reviewed_label}`.
+Review these PRs for patterns, architectural concerns, and process improvements.
+Flip labels from `{watch_label}` to `{self.config.cto_reviewed_label}` after review.
 """
         issue_number = create_issue(
             self.config.repo,
             title=f"CTO Batch Review: {len(prs)} PRs pending",
             body=body,
-            labels=[self.config.review_agent],
+            labels=[self.config.cto_review_agent],
         )
         if issue_number:
             print(f"📋 Created CTO review issue #{issue_number} for {len(prs)} PRs")

@@ -79,32 +79,48 @@ class AgentConfig:
     model: str = "sonnet"
     timeout_minutes: int = 45
     repo_root: Optional[Path] = None  # Per-agent repo root override
+    # Permission mode for Claude CLI: default, acceptEdits, bypassPermissions, plan, dontAsk
+    permission_mode: str = "default"
     # Command template - {initial_prompt} is passed as positional arg to claude
-    command: str = "claude --dangerously-skip-permissions --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
+    command: str = "claude --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit."
 
-    def get_command(self, issue_number: int, issue_title: str, worktree: Path) -> str:
-        """Render the command template with actual values, including initial prompt."""
+    def get_command(
+        self,
+        issue_number: int,
+        issue_title: str,
+        worktree: Path,
+        pr_number: Optional[int] = None,
+    ) -> str:
+        """Render the command template with actual values, including initial prompt.
+
+        Args:
+            issue_number: The GitHub issue number
+            issue_title: The issue title
+            worktree: Path to the worktree
+            pr_number: Optional PR number (for review agents). If a prompt template
+                       uses {pr_number} but this is not provided, a KeyError is raised.
+        """
+        # Build format kwargs - pr_number only included if provided (fail-fast if used but missing)
+        format_kwargs = {
+            "issue_number": issue_number,
+            "issue_title": issue_title,
+            "prompt": self.prompt_path,
+            "worktree": worktree,
+            "model": self.model,
+            "permission_mode": self.permission_mode,
+        }
+        if pr_number is not None:
+            format_kwargs["pr_number"] = pr_number
+
         # First render the initial prompt
-        rendered_prompt = self.initial_prompt.format(
-            issue_number=issue_number,
-            issue_title=issue_title,
-            prompt=self.prompt_path,
-            worktree=worktree,
-            model=self.model,
-        )
+        rendered_prompt = self.initial_prompt.format(**format_kwargs)
         # Escape single quotes in the prompt for shell safety
         escaped_prompt = rendered_prompt.replace("'", "'\\''")
 
         # Then render the full command with the prompt included
-        return self.command.format(
-            issue_number=issue_number,
-            issue_title=issue_title,
-            prompt=self.prompt_path,
-            worktree=worktree,
-            model=self.model,
-            initial_prompt=escaped_prompt,
-        )
+        format_kwargs["initial_prompt"] = escaped_prompt
+        return self.command.format(**format_kwargs)
 
 
 @dataclass
@@ -144,6 +160,15 @@ class SessionHistoryEntry:
 
 
 @dataclass
+class PendingReview:
+    """A PR queued for code review."""
+    issue_number: int
+    pr_number: int
+    pr_url: str
+    branch_name: str
+
+
+@dataclass
 class OrchestratorState:
     """Persisted state of the orchestrator."""
     active_sessions: list[Session] = field(default_factory=list)
@@ -152,6 +177,7 @@ class OrchestratorState:
     priority_queue: list[int] = field(default_factory=list)  # manual priority overrides
     session_history: list[SessionHistoryEntry] = field(default_factory=list)  # This session's history
     issues_started_count: int = 0  # Total issues started this session (for max_issues_to_start)
+    pending_reviews: list[PendingReview] = field(default_factory=list)  # PRs waiting for code review
 
 
 @dataclass

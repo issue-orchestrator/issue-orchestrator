@@ -9,10 +9,15 @@ LOCK_DIR = Path("/tmp/issue-orchestrator/locks")
 TIMESTAMP_FILE = "claimed_at"
 
 
-def try_claim(issue_number: int) -> bool:
-    """Try to claim an issue. Returns True if claimed, False if already claimed."""
+def try_claim(issue_number: int, prefix: str = "issue") -> bool:
+    """Try to claim an issue. Returns True if claimed, False if already claimed.
+
+    Args:
+        issue_number: The issue/PR number to claim
+        prefix: Lock prefix (default "issue", use "review" for code reviews)
+    """
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = LOCK_DIR / f"issue-{issue_number}"
+    lock_path = LOCK_DIR / f"{prefix}-{issue_number}"
 
     try:
         lock_path.mkdir()
@@ -24,9 +29,14 @@ def try_claim(issue_number: int) -> bool:
         return False
 
 
-def release_claim(issue_number: int) -> None:
-    """Release a claim on an issue."""
-    lock_path = LOCK_DIR / f"issue-{issue_number}"
+def release_claim(issue_number: int, prefix: str = "issue") -> None:
+    """Release a claim on an issue.
+
+    Args:
+        issue_number: The issue/PR number to release
+        prefix: Lock prefix (default "issue", use "review" for code reviews)
+    """
+    lock_path = LOCK_DIR / f"{prefix}-{issue_number}"
     if lock_path.exists():
         # Remove timestamp file first if it exists
         timestamp_path = lock_path / TIMESTAMP_FILE

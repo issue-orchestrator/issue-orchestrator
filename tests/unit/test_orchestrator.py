@@ -1423,52 +1423,40 @@ class TestRunOrchestrator:
                 assert signal.SIGTERM in call_args_list
 
 
-class TestCheckReviewTrigger:
-    """Test the check_review_trigger method for CTO review workflow."""
+class TestCheckCTOReviewTrigger:
+    """Test the check_cto_review_trigger method for CTO batch review workflow."""
 
-    def test_check_review_trigger_disabled_without_review_label(self, sample_config):
-        """Test that check_review_trigger does nothing without review_label configured."""
-        sample_config.review_label = None
-        sample_config.review_agent = "agent:cto"
-        sample_config.review_threshold = 5
+    def test_check_cto_review_trigger_disabled_without_agent(self, sample_config):
+        """Test that check_cto_review_trigger does nothing without cto_review_agent configured."""
+        sample_config.cto_review_agent = None
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.cto_review_threshold = 5
 
         orchestrator = Orchestrator(config=sample_config)
 
         # Should not raise and should not call any GitHub functions
         with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
-            orchestrator.check_review_trigger()
+            orchestrator.check_cto_review_trigger()
             mock_prs.assert_not_called()
 
-    def test_check_review_trigger_disabled_without_review_agent(self, sample_config):
-        """Test that check_review_trigger does nothing without review_agent configured."""
-        sample_config.review_label = "needs-cto-review"
-        sample_config.review_agent = None
-        sample_config.review_threshold = 5
+    def test_check_cto_review_trigger_disabled_with_zero_threshold(self, sample_config):
+        """Test that check_cto_review_trigger does nothing with threshold=0."""
+        sample_config.cto_review_agent = "agent:cto"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.cto_review_threshold = 0
 
         orchestrator = Orchestrator(config=sample_config)
 
         with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
-            orchestrator.check_review_trigger()
-            mock_prs.assert_not_called()
-
-    def test_check_review_trigger_disabled_with_zero_threshold(self, sample_config):
-        """Test that check_review_trigger does nothing with threshold=0."""
-        sample_config.review_label = "needs-cto-review"
-        sample_config.review_agent = "agent:cto"
-        sample_config.review_threshold = 0
-
-        orchestrator = Orchestrator(config=sample_config)
-
-        with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
-            orchestrator.check_review_trigger()
+            orchestrator.check_cto_review_trigger()
             mock_prs.assert_not_called()
 
     @patch("issue_orchestrator.orchestrator.list_prs_with_label")
-    def test_check_review_trigger_below_threshold(self, mock_prs, sample_config):
+    def test_check_cto_review_trigger_below_threshold(self, mock_prs, sample_config):
         """Test that no review issue is created when below threshold."""
-        sample_config.review_label = "needs-cto-review"
-        sample_config.review_agent = "agent:cto"
-        sample_config.review_threshold = 5
+        sample_config.cto_review_agent = "agent:cto"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.cto_review_threshold = 5
 
         mock_prs.return_value = [
             {"number": 1, "title": "PR 1"},
@@ -1478,19 +1466,19 @@ class TestCheckReviewTrigger:
         orchestrator = Orchestrator(config=sample_config)
 
         with patch("issue_orchestrator.orchestrator.create_issue") as mock_create:
-            orchestrator.check_review_trigger()
+            orchestrator.check_cto_review_trigger()
             mock_create.assert_not_called()
 
     @patch("issue_orchestrator.orchestrator.list_issues")
     @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.create_issue")
-    def test_check_review_trigger_creates_review_issue(
+    def test_check_cto_review_trigger_creates_review_issue(
         self, mock_create, mock_prs, mock_issues, sample_config
     ):
         """Test that review issue is created when threshold is reached."""
-        sample_config.review_label = "needs-cto-review"
-        sample_config.review_agent = "agent:cto"
-        sample_config.review_threshold = 3
+        sample_config.cto_review_agent = "agent:cto"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.cto_review_threshold = 3
 
         mock_prs.return_value = [
             {"number": 1, "title": "PR 1"},
@@ -1501,23 +1489,23 @@ class TestCheckReviewTrigger:
         mock_create.return_value = 42
 
         orchestrator = Orchestrator(config=sample_config)
-        orchestrator.check_review_trigger()
+        orchestrator.check_cto_review_trigger()
 
         mock_create.assert_called_once()
         call_args = mock_create.call_args
         assert "CTO Batch Review" in call_args[1]["title"]
-        assert sample_config.review_agent in call_args[1]["labels"]
+        assert sample_config.cto_review_agent in call_args[1]["labels"]
 
     @patch("issue_orchestrator.orchestrator.list_issues")
     @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.create_issue")
-    def test_check_review_trigger_skips_if_review_issue_exists(
+    def test_check_cto_review_trigger_skips_if_review_issue_exists(
         self, mock_create, mock_prs, mock_issues, sample_config
     ):
         """Test that no duplicate review issue is created."""
-        sample_config.review_label = "needs-cto-review"
-        sample_config.review_agent = "agent:cto"
-        sample_config.review_threshold = 3
+        sample_config.cto_review_agent = "agent:cto"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.cto_review_threshold = 3
 
         mock_prs.return_value = [
             {"number": 1, "title": "PR 1"},
@@ -1530,7 +1518,7 @@ class TestCheckReviewTrigger:
         mock_issues.return_value = [existing_issue]
 
         orchestrator = Orchestrator(config=sample_config)
-        orchestrator.check_review_trigger()
+        orchestrator.check_cto_review_trigger()
 
         # Should not create a new issue
         mock_create.assert_not_called()
@@ -1538,14 +1526,14 @@ class TestCheckReviewTrigger:
     @patch("issue_orchestrator.orchestrator.list_issues")
     @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.create_issue")
-    def test_check_review_trigger_review_body_includes_pr_list(
+    def test_check_cto_review_trigger_review_body_includes_pr_list(
         self, mock_create, mock_prs, mock_issues, sample_config
     ):
         """Test that review issue body includes list of PRs."""
-        sample_config.review_label = "needs-cto-review"
-        sample_config.review_agent = "agent:cto"
-        sample_config.reviewed_label = "cto-reviewed"
-        sample_config.review_threshold = 2
+        sample_config.cto_review_agent = "agent:cto"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.cto_reviewed_label = "cto-reviewed"
+        sample_config.cto_review_threshold = 2
 
         mock_prs.return_value = [
             {"number": 10, "title": "Fix bug A"},
@@ -1555,7 +1543,7 @@ class TestCheckReviewTrigger:
         mock_create.return_value = 42
 
         orchestrator = Orchestrator(config=sample_config)
-        orchestrator.check_review_trigger()
+        orchestrator.check_cto_review_trigger()
 
         call_args = mock_create.call_args
         body = call_args[1]["body"]
@@ -1563,5 +1551,684 @@ class TestCheckReviewTrigger:
         assert "Fix bug A" in body
         assert "PR #20" in body
         assert "Add feature B" in body
-        assert "needs-cto-review" in body
+        assert "code-reviewed" in body
         assert "cto-reviewed" in body
+
+
+class TestQueueCodeReview:
+    """Test the queue_code_review method."""
+
+    def test_queue_code_review_adds_to_pending_reviews(self, sample_config):
+        """Test that queue_code_review adds PR to pending_reviews."""
+        orchestrator = Orchestrator(config=sample_config)
+
+        assert len(orchestrator.state.pending_reviews) == 0
+
+        orchestrator.queue_code_review(
+            issue_number=42,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        assert len(orchestrator.state.pending_reviews) == 1
+        review = orchestrator.state.pending_reviews[0]
+        assert review.issue_number == 42
+        assert review.pr_number == 123
+        assert review.pr_url == "https://github.com/owner/repo/pull/123"
+        assert review.branch_name == "feature/issue-42"
+
+    def test_queue_code_review_extracts_pr_number_from_url(self, sample_config):
+        """Test that PR number is correctly extracted from various URL formats."""
+        orchestrator = Orchestrator(config=sample_config)
+
+        # Standard URL
+        orchestrator.queue_code_review(
+            issue_number=1,
+            pr_url="https://github.com/owner/repo/pull/456",
+            branch_name="feature/test",
+        )
+        assert orchestrator.state.pending_reviews[0].pr_number == 456
+
+        # URL with trailing slash or query params should still work
+        orchestrator.queue_code_review(
+            issue_number=2,
+            pr_url="https://github.com/owner/repo/pull/789/files",
+            branch_name="feature/test2",
+        )
+        assert orchestrator.state.pending_reviews[1].pr_number == 789
+
+    def test_queue_code_review_skips_invalid_pr_url(self, sample_config):
+        """Test that invalid PR URLs are skipped."""
+        orchestrator = Orchestrator(config=sample_config)
+
+        orchestrator.queue_code_review(
+            issue_number=42,
+            pr_url="https://github.com/owner/repo/issues/123",  # Not a pull URL
+            branch_name="feature/test",
+        )
+
+        # Should not add to pending reviews
+        assert len(orchestrator.state.pending_reviews) == 0
+
+    def test_queue_code_review_skips_duplicates(self, sample_config):
+        """Test that duplicate PRs are not queued twice."""
+        from issue_orchestrator.models import PendingReview
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        # Add first review
+        orchestrator.queue_code_review(
+            issue_number=42,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        # Try to add same PR again
+        orchestrator.queue_code_review(
+            issue_number=42,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        # Should still have only 1 review
+        assert len(orchestrator.state.pending_reviews) == 1
+
+
+class TestLaunchReviewSession:
+    """Test the launch_review_session method."""
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    @patch("issue_orchestrator.worktree.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    def test_launch_review_session_creates_worktree(
+        self,
+        mock_create_session,
+        mock_create_worktree,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that launch_review_session creates a worktree."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/review-worktree"), "feature/issue-42")
+
+        # Configure code review agent
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        session = orchestrator.launch_review_session(review)
+
+        mock_create_worktree.assert_called_once()
+        # Should pass branch_name to checkout existing PR branch
+        assert mock_create_worktree.call_args[1]["branch_name"] == "feature/issue-42"
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    @patch("issue_orchestrator.worktree.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    def test_launch_review_session_creates_tmux_session(
+        self,
+        mock_create_session,
+        mock_create_worktree,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that launch_review_session creates a tmux session."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/review-worktree"), "feature/issue-42")
+
+        sample_config.code_review_agent = "agent:web"
+        sample_config.ui_mode = "tmux"  # Explicitly use tmux mode
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        session = orchestrator.launch_review_session(review)
+
+        mock_create_session.assert_called_once()
+        # Session name should be review-{pr_number}
+        assert mock_create_session.call_args[0][0] == "review-123"
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    @patch("issue_orchestrator.worktree.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    def test_launch_review_session_adds_to_active_sessions(
+        self,
+        mock_create_session,
+        mock_create_worktree,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that launch_review_session adds session to active_sessions."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/review-worktree"), "feature/issue-42")
+
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        assert len(orchestrator.state.active_sessions) == 0
+
+        session = orchestrator.launch_review_session(review)
+
+        assert len(orchestrator.state.active_sessions) == 1
+        assert orchestrator.state.active_sessions[0] == session
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    @patch("issue_orchestrator.worktree.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    def test_launch_review_session_removes_from_pending_queue(
+        self,
+        mock_create_session,
+        mock_create_worktree,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that launch_review_session removes PR from pending_reviews."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/review-worktree"), "feature/issue-42")
+
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reviews.append(review)
+        assert len(orchestrator.state.pending_reviews) == 1
+
+        session = orchestrator.launch_review_session(review)
+
+        assert len(orchestrator.state.pending_reviews) == 0
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    def test_launch_review_session_returns_none_if_already_claimed(
+        self,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that launch_review_session returns None if review is already claimed."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = False  # Already claimed
+
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        session = orchestrator.launch_review_session(review)
+
+        assert session is None
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    def test_launch_review_session_uses_review_prefix_for_claim(
+        self,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that launch_review_session uses 'review' prefix for claiming."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = False
+
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.launch_review_session(review)
+
+        # Should use 'review' prefix instead of default 'issue'
+        mock_try_claim.assert_called_once_with(42, prefix="review")
+
+    def test_launch_review_session_returns_none_without_agent_config(self, sample_config):
+        """Test that launch_review_session returns None without code_review_agent configured."""
+        from issue_orchestrator.models import PendingReview
+
+        sample_config.code_review_agent = None  # Not configured
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        session = orchestrator.launch_review_session(review)
+
+        assert session is None
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    @patch("issue_orchestrator.worktree.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    def test_launch_review_session_does_not_enforce_hooks(
+        self,
+        mock_create_session,
+        mock_create_worktree,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that launch_review_session does not install pre-push hooks."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/review-worktree"), "feature/issue-42")
+
+        sample_config.code_review_agent = "agent:web"
+        sample_config.enforce_hooks = True  # Even if enabled globally
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        session = orchestrator.launch_review_session(review)
+
+        # Should explicitly disable hooks for review sessions
+        assert mock_create_worktree.call_args[1]["enforce_hooks"] is False
+
+
+class TestProcessPendingReviews:
+    """Test the process_pending_reviews method."""
+
+    def test_process_pending_reviews_does_nothing_without_agent(self, sample_config):
+        """Test that process_pending_reviews does nothing without code_review_agent."""
+        from issue_orchestrator.models import PendingReview
+
+        sample_config.code_review_agent = None
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reviews.append(review)
+
+        with patch.object(orchestrator, "launch_review_session") as mock_launch:
+            orchestrator.process_pending_reviews()
+            mock_launch.assert_not_called()
+
+    def test_process_pending_reviews_does_nothing_when_empty(self, sample_config):
+        """Test that process_pending_reviews does nothing when queue is empty."""
+        sample_config.code_review_agent = "agent:web"
+
+        orchestrator = Orchestrator(config=sample_config)
+        # pending_reviews is empty by default
+
+        with patch.object(orchestrator, "launch_review_session") as mock_launch:
+            orchestrator.process_pending_reviews()
+            mock_launch.assert_not_called()
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    @patch("issue_orchestrator.worktree.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    def test_process_pending_reviews_launches_reviews(
+        self,
+        mock_create_session,
+        mock_create_worktree,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that process_pending_reviews launches review sessions."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/review-worktree"), "feature/issue-42")
+
+        sample_config.code_review_agent = "agent:web"
+        sample_config.max_concurrent_sessions = 5
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reviews.append(review)
+
+        orchestrator.process_pending_reviews()
+
+        # Should have launched the review
+        assert len(orchestrator.state.active_sessions) == 1
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    @patch("issue_orchestrator.worktree.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    def test_process_pending_reviews_respects_capacity(
+        self,
+        mock_create_session,
+        mock_create_worktree,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that process_pending_reviews respects max_concurrent_sessions."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/review-worktree"), "feature/test")
+
+        sample_config.code_review_agent = "agent:web"
+        sample_config.max_concurrent_sessions = 2
+
+        reviews = [
+            PendingReview(issue_number=i, pr_number=i+100, pr_url=f"https://github.com/owner/repo/pull/{i+100}", branch_name=f"feature/issue-{i}")
+            for i in range(5)
+        ]
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reviews = reviews
+
+        # Already have 2 active sessions
+        issue1 = create_issue(1)
+        issue2 = create_issue(2)
+        orchestrator.state.active_sessions.append(create_session(issue1))
+        orchestrator.state.active_sessions.append(create_session(issue2))
+
+        orchestrator.process_pending_reviews()
+
+        # Should not launch any reviews - already at capacity
+        assert len(orchestrator.state.active_sessions) == 2
+        # All reviews should still be pending
+        assert len(orchestrator.state.pending_reviews) == 5
+
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    @patch("issue_orchestrator.worktree.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    def test_process_pending_reviews_launches_up_to_capacity(
+        self,
+        mock_create_session,
+        mock_create_worktree,
+        mock_try_claim,
+        sample_config,
+    ):
+        """Test that process_pending_reviews launches reviews up to available capacity."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/review-worktree"), "feature/test")
+
+        sample_config.code_review_agent = "agent:web"
+        sample_config.max_concurrent_sessions = 3
+
+        reviews = [
+            PendingReview(issue_number=i, pr_number=i+100, pr_url=f"https://github.com/owner/repo/pull/{i+100}", branch_name=f"feature/issue-{i}")
+            for i in range(5)
+        ]
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reviews = reviews
+
+        # Have 1 active session, capacity for 2 more
+        issue1 = create_issue(1)
+        orchestrator.state.active_sessions.append(create_session(issue1))
+
+        orchestrator.process_pending_reviews()
+
+        # Should launch 2 reviews (available capacity)
+        # 1 original + 2 new = 3 total
+        assert len(orchestrator.state.active_sessions) == 3
+
+
+class TestHandleSessionCompletionWithCodeReview:
+    """Test handle_session_completion triggering code review."""
+
+    @patch("issue_orchestrator.orchestrator.release_claim")
+    @patch("issue_orchestrator.orchestrator.remove_worktree")
+    @patch("issue_orchestrator.github.get_open_prs_for_branch")
+    def test_handle_completion_triggers_code_review(
+        self,
+        mock_get_prs,
+        mock_remove_worktree,
+        mock_release_claim,
+        sample_config,
+    ):
+        """Test that handle_session_completion queues code review for completed sessions."""
+        sample_config.code_review_agent = "agent:reviewer"
+        mock_get_prs.return_value = [{"url": "https://github.com/owner/repo/pull/456"}]
+
+        issue = create_issue(1)
+        session = create_session(issue, branch_name="feature/issue-1")
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.active_sessions.append(session)
+
+        with patch.object(orchestrator, "queue_code_review") as mock_queue:
+            orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
+
+            mock_queue.assert_called_once_with(
+                issue_number=1,
+                pr_url="https://github.com/owner/repo/pull/456",
+                branch_name="feature/issue-1",
+            )
+
+    @patch("issue_orchestrator.orchestrator.release_claim")
+    @patch("issue_orchestrator.orchestrator.remove_worktree")
+    @patch("issue_orchestrator.github.get_open_prs_for_branch")
+    def test_handle_completion_does_not_trigger_review_without_agent(
+        self,
+        mock_get_prs,
+        mock_remove_worktree,
+        mock_release_claim,
+        sample_config,
+    ):
+        """Test that handle_session_completion doesn't queue review without code_review_agent."""
+        sample_config.code_review_agent = None
+
+        mock_get_prs.return_value = [{"url": "https://github.com/owner/repo/pull/456"}]
+
+        issue = create_issue(1)
+        session = create_session(issue)
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.active_sessions.append(session)
+
+        with patch.object(orchestrator, "queue_code_review") as mock_queue:
+            orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
+
+            mock_queue.assert_not_called()
+
+    @patch("issue_orchestrator.orchestrator.release_claim")
+    @patch("issue_orchestrator.orchestrator.remove_worktree")
+    @patch("issue_orchestrator.github.get_open_prs_for_branch")
+    def test_handle_completion_does_not_trigger_review_for_blocked(
+        self,
+        mock_get_prs,
+        mock_remove_worktree,
+        mock_release_claim,
+        sample_config,
+    ):
+        """Test that handle_session_completion doesn't queue review for blocked sessions."""
+        sample_config.code_review_agent = "agent:reviewer"
+
+        issue = create_issue(1)
+        session = create_session(issue)
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.active_sessions.append(session)
+
+        with patch.object(orchestrator, "queue_code_review") as mock_queue:
+            orchestrator.handle_session_completion(session, SessionStatus.BLOCKED)
+
+            mock_queue.assert_not_called()
+
+    @patch("issue_orchestrator.orchestrator.release_claim")
+    @patch("issue_orchestrator.orchestrator.remove_worktree")
+    @patch("issue_orchestrator.github.get_open_prs_for_branch")
+    def test_handle_completion_does_not_trigger_review_without_pr(
+        self,
+        mock_get_prs,
+        mock_remove_worktree,
+        mock_release_claim,
+        sample_config,
+    ):
+        """Test that handle_session_completion doesn't queue review if no PR found."""
+        sample_config.code_review_agent = "agent:reviewer"
+
+        mock_get_prs.return_value = []  # No PR found
+
+        issue = create_issue(1)
+        session = create_session(issue)
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.active_sessions.append(session)
+
+        with patch.object(orchestrator, "queue_code_review") as mock_queue:
+            orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
+
+            mock_queue.assert_not_called()
+
+
+class TestStartupPendingReviews:
+    """Test startup recovery for pending code reviews."""
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.cleanup_stale_claims")
+    @patch("issue_orchestrator.analysis.get_issue_branches")
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    @patch("issue_orchestrator.orchestrator.session_exists")
+    async def test_startup_scans_for_pending_reviews(
+        self,
+        mock_session_exists,
+        mock_list_prs,
+        mock_list_issues,
+        mock_get_branches,
+        mock_cleanup_claims,
+        sample_config,
+    ):
+        """Test that startup scans for PRs with code_review_label."""
+        mock_cleanup_claims.return_value = []
+        mock_get_branches.return_value = {}
+        mock_list_issues.return_value = []
+        mock_session_exists.return_value = False
+
+        sample_config.code_review_agent = "agent:reviewer"
+        sample_config.code_review_label = "needs-code-review"
+
+        mock_list_prs.return_value = [
+            {"number": 123, "url": "https://github.com/owner/repo/pull/123"},
+            {"number": 456, "url": "https://github.com/owner/repo/pull/456"},
+        ]
+
+        orchestrator = Orchestrator(config=sample_config)
+        await orchestrator.startup()
+
+        # Should have queued both PRs for review
+        assert len(orchestrator.state.pending_reviews) == 2
+        assert orchestrator.state.pending_reviews[0].pr_number == 123
+        assert orchestrator.state.pending_reviews[1].pr_number == 456
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.cleanup_stale_claims")
+    @patch("issue_orchestrator.analysis.get_issue_branches")
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    async def test_startup_skips_reviews_already_in_progress(
+        self,
+        mock_list_prs,
+        mock_list_issues,
+        mock_get_branches,
+        mock_cleanup_claims,
+        sample_config,
+    ):
+        """Test that startup skips PRs with active review sessions."""
+        mock_cleanup_claims.return_value = []
+        mock_get_branches.return_value = {}
+        mock_list_issues.return_value = []
+
+        sample_config.code_review_agent = "agent:reviewer"
+        sample_config.code_review_label = "needs-code-review"
+
+        mock_list_prs.return_value = [
+            {"number": 123, "url": "https://github.com/owner/repo/pull/123"},
+            {"number": 456, "url": "https://github.com/owner/repo/pull/456"},
+        ]
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        # Session exists for PR 123 but not 456
+        def session_exists_side_effect(name):
+            return name == "review-123"
+
+        with patch.object(orchestrator, "_session_exists", side_effect=session_exists_side_effect):
+            await orchestrator.startup()
+
+        # Should only queue PR 456 (123 is already in progress)
+        assert len(orchestrator.state.pending_reviews) == 1
+        assert orchestrator.state.pending_reviews[0].pr_number == 456
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.cleanup_stale_claims")
+    @patch("issue_orchestrator.analysis.get_issue_branches")
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    async def test_startup_does_not_scan_without_code_review_config(
+        self,
+        mock_list_prs,
+        mock_list_issues,
+        mock_get_branches,
+        mock_cleanup_claims,
+        sample_config,
+    ):
+        """Test that startup doesn't scan for reviews without config."""
+        mock_cleanup_claims.return_value = []
+        mock_get_branches.return_value = {}
+        mock_list_issues.return_value = []
+
+        sample_config.code_review_agent = None
+        sample_config.code_review_label = None
+
+        orchestrator = Orchestrator(config=sample_config)
+        await orchestrator.startup()
+
+        # Should not call list_prs_with_label
+        mock_list_prs.assert_not_called()
+        assert len(orchestrator.state.pending_reviews) == 0
