@@ -190,6 +190,12 @@ class Orchestrator:
                 else:
                     print(f"  PR #{pr_number}: Review already in progress")
 
+        # Run queue audit to show what will be processed
+        self.state.startup_message = "Auditing queue..."
+        from .audit import audit_queue, print_audit
+        audit_entries = audit_queue(self.config, self.state)
+        print_audit(audit_entries)
+
         self.state.startup_status = "complete"
         self.state.startup_message = ""
         elapsed = time.time() - startup_start

@@ -687,6 +687,34 @@ def _load_config(args: argparse.Namespace) -> "Config":
         return Config.find_and_load()
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Audit the queue - show why issues are queued or skipped."""
+    from .audit import audit_queue, print_audit
+    from .config import Config
+
+    console.print("[bold]Queue Audit[/bold]\n")
+
+    # Load config
+    try:
+        if hasattr(args, 'config') and args.config:
+            config = Config.load(args.config)
+            config.repo_root = args.config.parent.resolve()
+        else:
+            config = Config.find_and_load()
+    except FileNotFoundError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        return 1
+
+    console.print(f"[dim]Repository: {config.repo}[/dim]")
+    console.print(f"[dim]Agents: {', '.join(config.agents.keys())}[/dim]")
+
+    # Run audit (no state = fresh start, no session history)
+    entries = audit_queue(config, state=None)
+    print_audit(entries)
+
+    return 0
+
+
 def main() -> int:
     """Main entry point for the CLI."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
@@ -869,6 +897,15 @@ def main() -> int:
         "test-reset", help="Reset test environment (teardown + setup)"
     )
     reset_parser.set_defaults(func=cmd_test_reset)
+
+    # audit command
+    audit_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "audit", help="Audit queue - show why issues are queued or skipped"
+    )
+    audit_parser.add_argument(
+        "--config", type=Path, help="Path to config file (default: auto-detect)"
+    )
+    audit_parser.set_defaults(func=cmd_audit)
 
     args: argparse.Namespace = parser.parse_args()
     return args.func(args)

@@ -101,25 +101,11 @@ async def dashboard(
             })
 
         # 2. Queue (available issues not active or in history)
+        # Use shared audit module for consistent filtering across UI and CLI
         queue_total = 0
         try:
-            scheduler = Scheduler(config)
-            all_issues = []
-            for agent_label in config.agents.keys():
-                labels = [agent_label]
-                if config.filter_label:
-                    labels.append(config.filter_label)
-                fetched = list_issues(config.repo, labels=labels, milestone=config.filter_milestone, limit=config.issue_fetch_limit)
-                all_issues.extend(fetched)
-
-            available = scheduler.get_available_issues(all_issues)
-            # Filter out active/history items first to get true queue
-            queue_issues = [
-                issue for issue in available
-                if issue.number not in active_numbers and issue.number not in history_numbers
-            ]
-            # Sort by milestone, then priority (same order used for launching)
-            queue_issues = scheduler.sort_by_priority(queue_issues)
+            from .audit import get_queue_issues
+            queue_issues = get_queue_issues(config, state)
             queue_total = len(queue_issues)
 
             # Apply pagination
