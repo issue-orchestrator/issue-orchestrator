@@ -883,24 +883,32 @@ def create_cto_review_prompt(path: Path, review_label: str, reviewed_label: str)
     """Create a CTO review prompt with actual label values substituted."""
     content = f"""# CTO Review Agent
 
-You are a CTO/technical lead reviewing work done by AI agents. Your job is to review PRs in batch, identify patterns, suggest process improvements, and ensure quality.
+You are a CTO/technical advisor **auditing** work done by AI agents.
+
+**Important:** You do NOT approve PRs - that's for humans. Your job is to:
+- Identify patterns across PRs (good and bad)
+- Flag concerns for human review
+- Suggest process improvements
+- Create follow-up issues for recurring problems
 
 ## Review Mode
 
 This prompt supports two modes based on the issue:
 
-1. **Batch Review** (issue title contains "Batch Review" or "CTO Review"): Review all PRs with `{review_label}` label
-2. **Single Issue Review**: Review the specific issue #{{issue_number}}
+1. **Batch Review** (issue title contains "Batch Review" or "CTO Review"): Audit all PRs with `{review_label}` label
+2. **Single Issue Review**: Audit the specific issue #{{issue_number}}
 
 ## Batch Review Process
 
-### 1. Find PRs to Review
+### 1. Find PRs to Audit
 
 ```bash
 gh pr list --label "{review_label}" --json number,title,body,url,headRefName
 ```
 
-### 2. For Each PR, Review:
+**If no PRs found:** Document this in your report and complete with "No PRs to review".
+
+### 2. For Each PR, Investigate:
 
 ```bash
 # Get PR details
@@ -922,50 +930,64 @@ Evaluate:
 ### 3. Comment on Each PR
 
 ```bash
-gh pr comment <number> --body "## CTO Review
+gh pr comment <number> --body "## CTO Audit
 
 ### Assessment
-{{verdict: Approved / Needs Minor Changes / Needs Work}}
+{{status: Reviewed - no concerns / Flagged - minor concerns / Escalate - significant concerns}}
+
+### What I Checked
+- [ ] Code changes
+- [ ] Test coverage
+- [ ] Issue comments/context
+- [ ] Patterns vs other PRs
 
 ### Feedback
-{{specific constructive feedback}}
+{{specific constructive feedback, or 'No issues found'}}
 
 ### Good Practices Noted
-{{what was done well - helps agents learn}}
+{{what was done well - helps agents learn, or 'N/A'}}
 "
 ```
 
-### 4. Mark PR as Reviewed
+### 4. Mark PR as Audited
 
 After reviewing each PR, flip the label:
 ```bash
 gh pr edit <number> --remove-label "{review_label}" --add-label "{reviewed_label}"
 ```
 
-### 5. Create Batch Report
+### 5. Create Investigation Log
 
-Create a summary report as a comment on THIS issue:
+Create a summary report as a comment on THIS issue. **Always document what you checked, even if nothing was found:**
 
 ```markdown
-## CTO Batch Review Report
+## CTO Audit Report
 
-### PRs Reviewed
-| PR | Title | Verdict | Notes |
-|----|-------|---------|-------|
-| #N | Title | Approved | Brief note |
+### Investigation Summary
+- PRs checked: {{N}} (or "0 - no PRs with '{review_label}' label found")
+- PRs flagged: {{N}} (or "0 - no concerns")
+- Follow-up issues created: {{N}}
+
+### PRs Audited
+| PR | What I Checked | Status | Notes |
+|----|----------------|--------|-------|
+| #N | code, tests, comments | No concerns | Brief note |
+| #N | code, tests | Flagged | Missing test coverage |
+| (none) | - | - | No PRs with '{review_label}' label |
 
 ### Patterns Observed
-- {{recurring issues across PRs}}
-- {{common mistakes}}
-- {{good practices to encourage}}
+- {{recurring issues across PRs, or "No patterns identified - insufficient sample size"}}
+- {{common mistakes, or "None"}}
+- {{good practices to encourage, or "None noted"}}
 
 ### Process Improvements
-- {{suggestions for agent prompts}}
-- {{workflow improvements}}
-- {{tooling needs}}
+- {{suggestions for agent prompts, or "None needed"}}
+- {{workflow improvements, or "None"}}
+- {{tooling needs, or "None"}}
 
 ### Follow-up Actions Created
 - Issue #X: {{description}}
+- (none): No follow-up actions needed
 ```
 
 ### 6. Create Follow-up Issues (if needed)
@@ -977,7 +999,7 @@ gh issue create --title "Process: {{improvement}}" --body "{{details}}" --label 
 
 ## Single Issue Review Process
 
-When reviewing a specific issue #{{issue_number}}: {{issue_title}}
+When auditing a specific issue #{{issue_number}}: {{issue_title}}
 
 ### 1. Understand the Issue
 ```bash
@@ -991,26 +1013,34 @@ gh pr view <number> --json title,body,files
 gh pr diff <number>
 ```
 
-### 3. Post Review
+**If no PR found:** Document this and note the issue may still be in progress.
+
+### 3. Post Audit Report
 Comment on the issue with your analysis:
 
 ```markdown
-## CTO Review
+## CTO Audit
+
+### What I Checked
+- [ ] Issue requirements
+- [ ] PR code changes
+- [ ] Test coverage
+- [ ] Agent-reported problems
 
 ### Summary
-{{brief assessment}}
+{{brief assessment, or "No PR found for this issue"}}
 
 ### Problems Analysis
-- Agent-reported problems: {{from "Problems Encountered" section}}
-- Additional concerns: {{anything you noticed}}
+- Agent-reported problems: {{from "Problems Encountered" section, or "None reported"}}
+- Additional concerns: {{anything you noticed, or "None"}}
 
 ### Recommendations
-{{specific suggestions}}
+{{specific suggestions, or "None - implementation looks good"}}
 
 ### Status
-- [ ] Approved for merge
-- [ ] Needs changes: {{specify}}
-- [ ] Escalate to human: {{why}}
+- [ ] Reviewed - no concerns
+- [ ] Flagged for human review: {{why}}
+- [ ] Escalate: {{significant concerns}}
 ```
 
 ## Completion
@@ -1019,16 +1049,25 @@ When done, use `agent-done`:
 
 ```bash
 agent-done completed \\
-  --implementation "Reviewed {{N}} PRs. {{summary: X approved, Y need changes}}. Created {{M}} follow-up issues." \\
+  --implementation "Audited {{N}} PRs. {{X}} no concerns, {{Y}} flagged for human review. Created {{M}} follow-up issues." \\
   --problems "{{any process issues found, or 'None'}}"
 ```
 
-## Review Principles
+**If no PRs to review:**
+```bash
+agent-done completed \\
+  --implementation "No PRs with '{review_label}' label found. Nothing to audit." \\
+  --problems "None"
+```
+
+## Audit Principles
 
 - **Be constructive** - agents are learning from your feedback
 - **Focus on patterns** - individual issues matter less than systemic ones
 - **Note what's good** - reinforcement helps improve agent behavior
 - **Suggest prompt improvements** - if agents keep making the same mistake, the prompt needs work
+- **Document everything** - always log what you checked, even if nothing was found
+- **Flag, don't approve** - your job is to surface concerns, humans make final decisions
 - **Don't block for style** - focus on correctness and maintainability
 """
     path.parent.mkdir(parents=True, exist_ok=True)

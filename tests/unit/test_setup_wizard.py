@@ -152,8 +152,8 @@ class TestCreateCtoReviewPrompt:
         content = prompt_path.read_text()
 
         assert "Batch Review" in content
-        assert "CTO Batch Review Report" in content
-        assert "PRs Reviewed" in content
+        assert "CTO Audit Report" in content
+        assert "PRs Audited" in content
         assert "Patterns Observed" in content
 
     def test_includes_single_issue_review(self, tmp_path):
