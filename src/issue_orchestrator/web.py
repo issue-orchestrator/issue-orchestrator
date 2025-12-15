@@ -46,6 +46,9 @@ async def dashboard(
     orchestrator=Depends(get_orchestrator)
 ) -> HTMLResponse:
     """Render the main dashboard."""
+    import time
+    request_start = time.time()
+
     from .github import list_issues
     from .scheduler import Scheduler
 
@@ -101,32 +104,37 @@ async def dashboard(
             })
 
         # 2. Queue (available issues not active or in history)
-        # Use shared audit module for consistent filtering across UI and CLI
+        # Skip queue fetch during startup to avoid competing API calls
+        # The dashboard will refresh automatically after startup completes
         queue_total = 0
-        try:
-            from .audit import get_queue_issues
-            queue_issues = get_queue_issues(config, state)
-            queue_total = len(queue_issues)
+        if state.startup_status == "complete":
+            try:
+                from .audit import get_queue_issues
+                queue_start = time.time()
+                queue_issues = get_queue_issues(config, state)
+                queue_elapsed = time.time() - queue_start
+                logger.info("[dashboard] get_queue_issues took %.2fs", queue_elapsed)
+                queue_total = len(queue_issues)
 
-            # Apply pagination
-            start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
-            end_idx = start_idx + QUEUE_PAGE_SIZE
-            for issue in queue_issues[start_idx:end_idx]:
-                seen_issues.add(issue.number)
-                issues.append({
-                    "issue_number": issue.number,
-                    "title": issue.title,
-                    "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
-                    "status": "queue",
-                    "status_label": "Queue",
-                    "time": "",
-                    "action": "open",
-                    "action_icon": "↗",
-                    "action_hint": "Click to open issue on GitHub",
-                    "url": f"https://github.com/{config.repo}/issues/{issue.number}",
-                })
-        except Exception as e:
-            logger.warning(f"Failed to fetch queue: {e}")
+                # Apply pagination
+                start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
+                end_idx = start_idx + QUEUE_PAGE_SIZE
+                for issue in queue_issues[start_idx:end_idx]:
+                    seen_issues.add(issue.number)
+                    issues.append({
+                        "issue_number": issue.number,
+                        "title": issue.title,
+                        "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
+                        "status": "queue",
+                        "status_label": "Queue",
+                        "time": "",
+                        "action": "open",
+                        "action_icon": "↗",
+                        "action_hint": "Click to open issue on GitHub",
+                        "url": f"https://github.com/{config.repo}/issues/{issue.number}",
+                    })
+            except Exception as e:
+                logger.warning(f"Failed to fetch queue: {e}")
 
         # 3. Session history (skip duplicates - an issue may appear multiple times in history)
         for entry in reversed(state.session_history[-20:]):
@@ -173,6 +181,8 @@ async def dashboard(
         queue_total=queue_total,
         queue_refresh_seconds=config.queue_refresh_seconds if config else 600,
     )
+    total_elapsed = time.time() - request_start
+    logger.info("[dashboard] Total request time: %.2fs", total_elapsed)
     return HTMLResponse(content=html)
 
 

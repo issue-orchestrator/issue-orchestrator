@@ -146,7 +146,8 @@ class TestDashboardEndpoint:
 
         web._orchestrator = mock_orch
         try:
-            with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
+            # Patch get_queue_issues which the dashboard now uses (via audit module)
+            with patch("issue_orchestrator.audit.list_issues") as mock_list_issues:
                 mock_list_issues.return_value = issues
 
                 client = TestClient(app)
