@@ -33,6 +33,7 @@
         }
         .status-running { background: #238636; color: #fff; }
         .status-paused { background: #9e6a03; color: #fff; }
+        .status-starting { background: #1f6feb; color: #fff; }
         .controls { display: flex; gap: 8px; }
         .controls button {
             padding: 6px 12px;
@@ -283,9 +284,19 @@
         <header>
             <div class="header-left">
                 <h1>Issue Orchestrator</h1>
-                <span class="status-badge {{ 'status-paused' if paused else 'status-running' }}">
-                    {{ 'Paused' if paused else 'Running' }}
+                {% if startup_status != 'complete' %}
+                <span class="status-badge status-starting">
+                    Starting...
                 </span>
+                {% elif paused %}
+                <span class="status-badge status-paused">
+                    Paused
+                </span>
+                {% else %}
+                <span class="status-badge status-running">
+                    Running
+                </span>
+                {% endif %}
             </div>
             <div class="controls">
                 <button class="settings-btn" onclick="toggleSettingsMenu(event)">☰</button>
@@ -301,7 +312,14 @@
                 <span>Runtime</span>
                 <span>Action</span>
             </div>
-            {% if issues %}
+            {% if startup_status != 'complete' %}
+            <div class="issue-row" style="justify-content: center; padding: 20px; color: #8b949e;">
+                <span style="display: flex; align-items: center; gap: 8px;">
+                    <span class="status-dot" style="background: #1f6feb; animation: pulse 1s infinite;"></span>
+                    {{ startup_message if startup_message else 'Starting up...' }}
+                </span>
+            </div>
+            {% elif issues %}
             {% for issue in issues %}
             <div class="issue-row {% if issue.status == 'active' %}active-row{% elif issue.status == 'slow' %}slow-row{% endif %}"
                  data-status="{{ issue.status }}"
@@ -448,6 +466,11 @@
                 window.open(url, '_blank');
             }
         }
+
+        // Auto-refresh during startup
+        {% if startup_status != 'complete' %}
+        setTimeout(() => location.reload(), 1000);  // Refresh every 1s during startup
+        {% endif %}
 
         // Controls
         let isPaused = {{ 'true' if paused else 'false' }};

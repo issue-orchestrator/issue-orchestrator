@@ -95,6 +95,8 @@ class Orchestrator:
         """Handle startup - check for stale in-progress issues."""
         from .analysis import analyze_issue, get_issue_branches
 
+        self.state.startup_status = "running"
+        self.state.startup_message = "Cleaning up stale claims..."
         print("Checking for stale in-progress issues...")
 
         # Clean up stale claims (default: 60 minutes)
@@ -103,9 +105,11 @@ class Orchestrator:
             print(f"  Cleaned up {len(cleaned)} stale lock claims: {cleaned}")
 
         # Get existing branches for issue detection
+        self.state.startup_message = "Scanning local branches..."
         issue_branches = get_issue_branches(self.config.repo_root)
 
         # Get all in-progress issues for our agent types
+        self.state.startup_message = "Checking in-progress issues on GitHub..."
         for agent_label in self.config.agents.keys():
             issues = list_issues(
                 self.config.repo,
@@ -115,6 +119,7 @@ class Orchestrator:
             )
 
             for issue in issues:
+                self.state.startup_message = f"Analyzing issue #{issue.number}..."
                 # Use shared analysis logic
                 state = analyze_issue(
                     issue=issue,
@@ -138,6 +143,7 @@ class Orchestrator:
 
         # Check for PRs needing code review (recovery after crash/restart)
         if self.config.code_review_agent and self.config.code_review_label:
+            self.state.startup_message = "Checking PRs needing code review..."
             print("\nChecking for PRs needing code review...")
             prs = list_prs_with_label(self.config.repo, self.config.code_review_label)
             for pr in prs:
@@ -164,6 +170,9 @@ class Orchestrator:
                         print(f"  PR #{pr_number}: Queued for code review")
                 else:
                     print(f"  PR #{pr_number}: Review already in progress")
+
+        self.state.startup_status = "complete"
+        self.state.startup_message = ""
 
     def launch_session(self, issue: Issue) -> Optional[Session]:
         """Launch a new session for an issue."""

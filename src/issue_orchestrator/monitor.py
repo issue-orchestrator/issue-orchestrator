@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from .config import Config
-from .github import add_label, get_open_prs_for_branch, remove_label
+from .github import add_label, get_issue_labels, get_open_prs_for_branch, remove_label
 from .models import Session, SessionStatus
 from .tmux import kill_session, session_exists
 
@@ -134,8 +134,16 @@ class SessionMonitor:
                 f"Failed to check for open PRs on branch {session.branch_name}: {e}"
             )
 
+        # Fetch fresh labels from GitHub (session.issue.labels is stale from launch time)
+        try:
+            current_labels = get_issue_labels(self.config.repo, session.issue.number)
+            logger.debug(f"Fresh labels for #{session.issue.number}: {current_labels}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch labels for #{session.issue.number}: {e}")
+            current_labels = session.issue.labels  # Fall back to stale labels
+
         # Check if issue has 'blocked' label
-        if self.config.get_label_blocked() in session.issue.labels:
+        if self.config.get_label_blocked() in current_labels:
             logger.info(
                 f"Issue #{session.issue.number} has '{self.config.get_label_blocked()}' label, "
                 f"marking session as BLOCKED"
@@ -143,7 +151,7 @@ class SessionMonitor:
             return SessionStatus.BLOCKED
 
         # Check if issue has 'needs-human' label
-        if self.config.get_label_needs_human() in session.issue.labels:
+        if self.config.get_label_needs_human() in current_labels:
             logger.info(
                 f"Issue #{session.issue.number} has '{self.config.get_label_needs_human()}' label, "
                 f"marking session as NEEDS_HUMAN"

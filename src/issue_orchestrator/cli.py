@@ -380,8 +380,9 @@ end tell'''
 
     orchestrator = Orchestrator(config=config)
 
-    # Run startup to clean up stale issues
-    asyncio.run(orchestrator.startup())
+    # Run startup to clean up stale issues (skip for web mode - it runs startup in background)
+    if config.ui_mode != "web":
+        asyncio.run(orchestrator.startup())
 
     try:
         if args.no_dashboard:

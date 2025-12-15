@@ -283,6 +283,26 @@ def get_open_prs_for_branch(
         raise GitHubError(f"Failed to get open PRs: {e}") from e
 
 
+def get_issue_labels(repo: str | None, issue_number: int) -> list[str]:
+    """Get current labels on an issue.
+
+    Args:
+        repo: Optional repository in owner/repo format. If None, uses current repo.
+        issue_number: The issue number
+
+    Returns:
+        List of label names currently on the issue
+    """
+    args = ["issue", "view", str(issue_number), "--json", "labels"]
+    try:
+        output = _run_gh_json(args, repo)
+        if isinstance(output, dict):
+            return [label["name"] for label in output.get("labels", [])]
+        return []
+    except Exception:
+        return []
+
+
 def get_issue_comments(repo: str | None, issue_number: int) -> list[dict]:
     """Get all comments on an issue, ordered oldest first."""
     args = ["issue", "view", str(issue_number), "--json", "comments"]

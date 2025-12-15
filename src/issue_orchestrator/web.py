@@ -170,6 +170,8 @@ async def dashboard(request: Request) -> HTMLResponse:
     html = template.render(
         issues=issues,
         paused=state.paused if state else False,
+        startup_status=state.startup_status if state else "pending",
+        startup_message=state.startup_message if state else "",
         repo=config.repo if config else "",
         queue_page=queue_page,
         queue_total_pages=queue_total_pages,
@@ -526,25 +528,26 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
 async def run_with_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> None:
     """Run orchestrator with web dashboard.
 
-    The orchestrator runs in a background task while the web server
-    handles HTTP requests in the foreground.
+    The web server starts immediately while startup runs in background.
+    The orchestrator loop waits for startup to complete before processing.
 
     Args:
         orchestrator: The orchestrator instance
         port: Port to run web server on
     """
-    async def run_orchestrator():
-        """Run the orchestrator loop."""
+    async def run_startup_and_loop():
+        """Run startup then the orchestrator loop."""
         try:
+            await orchestrator.startup()
             await orchestrator.run_loop()
         except asyncio.CancelledError:
             pass
 
-    # Start orchestrator in background
-    orchestrator_task = asyncio.create_task(run_orchestrator())
+    # Start orchestrator (startup + loop) in background
+    orchestrator_task = asyncio.create_task(run_startup_and_loop())
 
     try:
-        # Run web server in foreground
+        # Run web server in foreground (available immediately)
         await run_web_dashboard(orchestrator, port)
     finally:
         # When web server stops, stop orchestrator

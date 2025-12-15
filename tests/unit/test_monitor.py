@@ -289,72 +289,78 @@ class TestCheckSession:
 
         assert status == SessionStatus.COMPLETED
 
+    @patch('issue_orchestrator.monitor.get_issue_labels')
     @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
     @patch('issue_orchestrator.monitor.session_exists')
     def test_check_session_blocked_label(
-        self, mock_session_exists, mock_get_prs, monitor, sample_session
+        self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
         """Test check_session returns BLOCKED when issue has blocked label."""
         mock_session_exists.return_value = False
         mock_get_prs.return_value = []
-        sample_session.issue.labels.append("blocked")
+        mock_get_labels.return_value = ["blocked"]  # Fresh labels from GitHub
 
         status = monitor.check_session(sample_session)
 
         assert status == SessionStatus.BLOCKED
 
+    @patch('issue_orchestrator.monitor.get_issue_labels')
     @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
     @patch('issue_orchestrator.monitor.session_exists')
     def test_check_session_needs_human_label(
-        self, mock_session_exists, mock_get_prs, monitor, sample_session
+        self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
         """Test check_session returns NEEDS_HUMAN when issue has needs-human label."""
         mock_session_exists.return_value = False
         mock_get_prs.return_value = []
-        sample_session.issue.labels.append("needs-human")
+        mock_get_labels.return_value = ["needs-human"]  # Fresh labels from GitHub
 
         status = monitor.check_session(sample_session)
 
         assert status == SessionStatus.NEEDS_HUMAN
 
+    @patch('issue_orchestrator.monitor.get_issue_labels')
     @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
     @patch('issue_orchestrator.monitor.session_exists')
     def test_check_session_failed_no_markers(
-        self, mock_session_exists, mock_get_prs, monitor, sample_session
+        self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
         """Test check_session returns FAILED when no completion markers found."""
         mock_session_exists.return_value = False
         mock_get_prs.return_value = []
+        mock_get_labels.return_value = []  # No labels
 
         status = monitor.check_session(sample_session)
 
         assert status == SessionStatus.FAILED
 
+    @patch('issue_orchestrator.monitor.get_issue_labels')
     @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
     @patch('issue_orchestrator.monitor.session_exists')
     def test_check_session_pr_check_exception_still_checks_labels(
-        self, mock_session_exists, mock_get_prs, monitor, sample_session
+        self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
         """Test that label checks still happen if PR check fails."""
         mock_session_exists.return_value = False
         mock_get_prs.side_effect = Exception("API error")
-        sample_session.issue.labels.append("blocked")
+        mock_get_labels.return_value = ["blocked"]  # Fresh labels from GitHub
 
         status = monitor.check_session(sample_session)
 
         assert status == SessionStatus.BLOCKED
 
+    @patch('issue_orchestrator.monitor.get_issue_labels')
     @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
     @patch('issue_orchestrator.monitor.session_exists')
     def test_check_session_with_custom_labels(
-        self, mock_session_exists, mock_get_prs, monitor, sample_session
+        self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
         """Test check_session works with custom label configurations."""
         monitor.config.label_blocked = "custom-blocked"
         monitor.config.label_needs_human = "custom-needs-human"
         mock_session_exists.return_value = False
         mock_get_prs.return_value = []
-        sample_session.issue.labels.append("custom-blocked")
+        mock_get_labels.return_value = ["custom-blocked"]  # Fresh labels from GitHub
 
         status = monitor.check_session(sample_session)
 
@@ -414,10 +420,11 @@ class TestCheckAllSessions:
 
         assert statuses[123] == SessionStatus.FAILED
 
+    @patch('issue_orchestrator.monitor.get_issue_labels')
     @patch('issue_orchestrator.monitor.session_exists')
     @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
     def test_check_all_sessions_mixed_statuses(
-        self, mock_get_prs, mock_session_exists, monitor, sample_agent_config
+        self, mock_get_prs, mock_session_exists, mock_get_labels, monitor, sample_agent_config
     ):
         """Test checking sessions with different statuses."""
         # Session 1: Running
@@ -441,7 +448,7 @@ class TestCheckAllSessions:
         )
 
         # Session 3: Blocked
-        issue3 = Issue(number=3, title="Blocked", labels=["agent:web", "blocked"])
+        issue3 = Issue(number=3, title="Blocked", labels=["agent:web"])
         session3 = Session(
             issue=issue3,
             agent_config=sample_agent_config,
@@ -458,8 +465,14 @@ class TestCheckAllSessions:
                 return [MagicMock()]
             return []
 
+        def get_labels_side_effect(repo, issue_number):
+            if issue_number == 3:
+                return ["blocked"]  # Fresh labels from GitHub for session 3
+            return []
+
         mock_session_exists.side_effect = session_exists_side_effect
         mock_get_prs.side_effect = get_prs_side_effect
+        mock_get_labels.side_effect = get_labels_side_effect
 
         statuses = monitor.check_all_sessions([session1, session2, session3])
 

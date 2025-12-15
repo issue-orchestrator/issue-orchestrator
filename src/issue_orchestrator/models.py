@@ -178,6 +178,8 @@ class OrchestratorState:
     session_history: list[SessionHistoryEntry] = field(default_factory=list)  # This session's history
     issues_started_count: int = 0  # Total issues started this session (for max_issues_to_start)
     pending_reviews: list[PendingReview] = field(default_factory=list)  # PRs waiting for code review
+    startup_status: str = "pending"  # "pending", "running", "complete"
+    startup_message: str = ""  # Current startup task description
 
 
 @dataclass
