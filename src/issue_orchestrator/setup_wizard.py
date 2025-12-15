@@ -387,6 +387,27 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
         "max_concurrent_sessions": int(max_sessions),
     }
 
+    # Milestone sorting
+    prompter.print("\n--- Issue Prioritization ---")
+    prompter.print("How should issues be sorted when multiple are available?\n")
+    prompter.print("  due_date - By milestone due date (earliest first)")
+    prompter.print("  number   - By milestone number (lowest first)")
+    prompter.print("  pattern  - Extract number from milestone name (e.g., 'M13' → 13)")
+    prompter.print("  name     - Alphabetically by milestone name\n")
+    milestone_sort = prompter.input("Milestone sort strategy", "due_date")
+    if milestone_sort not in ("due_date", "number", "pattern", "name"):
+        prompter.print(f"  Invalid strategy '{milestone_sort}', using 'due_date'")
+        milestone_sort = "due_date"
+    config["milestone_sort"] = milestone_sort
+
+    if milestone_sort == "pattern":
+        prompter.print("\n  Enter a regex pattern with one capture group for the number.")
+        prompter.print("  Examples:")
+        prompter.print("    M(\\d+)       → matches 'M13' → 13")
+        prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
+        pattern = prompter.input("  Pattern", r"M(\d+)")
+        config["milestone_sort_config"] = {"pattern": pattern}
+
     # Worktree location
     prompter.print("\n--- Worktree Location ---")
     prompter.print("Each issue gets its own git worktree for isolated work.")
@@ -641,6 +662,28 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
         prompter.print("\n--- Concurrency Settings ---")
         max_sessions = prompter.input("Max concurrent sessions", "3")
         config["concurrency"] = {"max_concurrent_sessions": int(max_sessions)}
+
+    # Milestone sorting - only ask if not already configured
+    if "milestone_sort" not in config:
+        prompter.print("\n--- Issue Prioritization ---")
+        prompter.print("How should issues be sorted when multiple are available?\n")
+        prompter.print("  due_date - By milestone due date (earliest first)")
+        prompter.print("  number   - By milestone number (lowest first)")
+        prompter.print("  pattern  - Extract number from milestone name (e.g., 'M13' → 13)")
+        prompter.print("  name     - Alphabetically by milestone name\n")
+        milestone_sort = prompter.input("Milestone sort strategy", "due_date")
+        if milestone_sort not in ("due_date", "number", "pattern", "name"):
+            prompter.print(f"  Invalid strategy '{milestone_sort}', using 'due_date'")
+            milestone_sort = "due_date"
+        config["milestone_sort"] = milestone_sort
+
+        if milestone_sort == "pattern":
+            prompter.print("\n  Enter a regex pattern with one capture group for the number.")
+            prompter.print("  Examples:")
+            prompter.print("    M(\\d+)       → matches 'M13' → 13")
+            prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
+            pattern = prompter.input("  Pattern", r"M(\d+)")
+            config["milestone_sort_config"] = {"pattern": pattern}
 
     # Check if agents need worktree_base
     agents_without_worktree = [

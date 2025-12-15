@@ -421,6 +421,7 @@ class TestWizardNewProject:
             "",                     # empty to finish agents
             True,                   # create labels on GitHub
             "3",                    # max concurrent sessions
+            "due_date",             # milestone sort strategy
             "../",                  # worktree base
             "web",                  # ui mode
             "8080",                 # web port
@@ -457,6 +458,7 @@ class TestWizardNewProject:
             "",                     # finish agents
             False,                  # don't create labels
             "2",                    # max concurrent
+            "due_date",             # milestone sort strategy
             "../",
             "tmux",                 # ui mode (tmux doesn't need port)
             "",                     # label prefix (none)
@@ -496,6 +498,7 @@ class TestWizardNewProject:
             "",
             True,                   # create labels
             "5",                    # max concurrent
+            "due_date",             # milestone sort strategy
             "../",
             "web",
             "9000",                 # custom port
@@ -528,6 +531,7 @@ class TestWizardNewProject:
             "",                     # finish agents
             False,                  # don't create labels
             "3",
+            "due_date",             # milestone sort strategy
             "../",
             "web",
             "8080",
@@ -561,6 +565,7 @@ class TestWizardNewProject:
             "",                     # finish agents
             False,                  # don't create labels
             "3",
+            "due_date",             # milestone sort strategy
             "../",
             "web",
             "8080",
@@ -606,6 +611,7 @@ class TestWizardNewProject:
             "",                     # finish
             False,                  # don't create labels
             "3",
+            "due_date",             # milestone sort strategy
             "../",
             "web",
             "8080",
@@ -646,6 +652,7 @@ class TestWizardExistingProject:
             "sonnet",               # model
             "default",              # permission mode
             "3",                    # max concurrent
+            "due_date",             # milestone sort strategy
             "../",                  # worktree base
             "web",                  # ui mode
             "8080",                 # port
@@ -696,6 +703,8 @@ class TestWizardExistingProject:
             # No more missing agents
             # agent:web is in config but let's say it's in github_labels too (no missing labels)
             # Concurrency already configured - won't ask
+            # Milestone sort not configured - will ask
+            "due_date",             # milestone sort strategy
             # Worktrees needed for backend
             "../",
             # UI mode already configured - won't ask
@@ -741,6 +750,8 @@ class TestWizardExistingProject:
             # No unconfigured agents
             # agent:web is configured but missing from GitHub
             True,                   # create missing labels
+            # Milestone sort missing
+            "due_date",             # milestone sort strategy
             # Worktree missing
             "../",
             # UI mode missing
@@ -789,6 +800,8 @@ class TestWizardExistingProject:
             "default",              # permission mode
             # Concurrency (fresh config needs this)
             "2",
+            # Milestone sort (fresh config needs this)
+            "due_date",             # milestone sort strategy
             # Worktree
             "../",
             # UI mode (fresh)
@@ -824,6 +837,7 @@ class TestWizardExistingProject:
             "manual/repo",          # manual repo entry
             # No agents to configure, so no worktree prompt
             "3",                    # concurrency
+            "due_date",             # milestone sort strategy
             "web",                  # ui mode
             "8080",                 # port (since web mode)
             "",                     # label prefix (none)
@@ -865,6 +879,7 @@ class TestRunWizard:
             "",                     # finish agents
             False,                  # don't create agent labels on GitHub
             "3",
+            "due_date",             # milestone sort strategy
             "../",
             "web",
             "8080",
@@ -907,6 +922,7 @@ class TestRunWizard:
             "",
             False,                  # don't create agent labels
             "3",
+            "due_date",             # milestone sort strategy
             "../",
             "web",
             "8080",
@@ -974,6 +990,7 @@ class TestRunWizard:
             "",
             False,                  # don't create agent labels
             "3",
+            "due_date",             # milestone sort strategy
             "../",
             "web",
             "8080",
