@@ -1,9 +1,12 @@
 """Git worktree management module."""
 
+import logging
 import re
 import shutil
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 # Path to bundled hooks (relative to this module)
@@ -144,9 +147,29 @@ def create_worktree(
         capture_output=True, check=False
     )
 
-    # Check if worktree already exists
+    # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
     if worktree_path.exists():
-        raise WorktreeError(f"Worktree already exists at {worktree_path}")
+        # Verify it's a valid git worktree
+        git_dir = worktree_path / ".git"
+        if git_dir.exists():
+            # Valid worktree - reuse it by pulling latest changes
+            logger.info("Reusing existing worktree at %s", worktree_path)
+            # Try to get current branch
+            branch_result = subprocess.run(
+                ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, check=False
+            )
+            if branch_result.returncode == 0:
+                existing_branch = branch_result.stdout.strip()
+                # Pull latest changes (best effort)
+                subprocess.run(
+                    ["git", "-C", str(worktree_path), "pull", "--rebase"],
+                    capture_output=True, check=False
+                )
+                return worktree_path, existing_branch
+        # Invalid worktree directory - remove it
+        logger.warning("Removing invalid worktree directory at %s", worktree_path)
+        shutil.rmtree(worktree_path, ignore_errors=True)
 
     try:
         # Check if branch already exists

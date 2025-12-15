@@ -557,9 +557,9 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
     )
     server = uvicorn.Server(config)
 
-    # Open browser after a short delay
+    # Open browser after a very short delay (server needs to be ready)
     async def open_browser():
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.3)
         url = f"http://127.0.0.1:{port}"
         print(f"[web] Opening browser to {url}")
         webbrowser.open(url)
