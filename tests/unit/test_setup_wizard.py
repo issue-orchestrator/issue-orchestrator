@@ -653,7 +653,7 @@ class TestWizardExistingProject:
             False,                  # no review workflow
         ])
 
-        config = wizard_existing_project(state, prompter)
+        config, _ = wizard_existing_project(state, prompter)
 
         assert config["repo"] == "owner/repo"
         assert "agent:web" in config["agents"]
@@ -705,7 +705,7 @@ class TestWizardExistingProject:
             False,                  # no review
         ])
 
-        config = wizard_existing_project(state, prompter)
+        config, _ = wizard_existing_project(state, prompter)
 
         # Original config preserved
         assert config["agents"]["agent:web"]["prompt"] == ".prompts/web.md"
@@ -752,7 +752,7 @@ class TestWizardExistingProject:
             False,
         ])
 
-        config = wizard_existing_project(state, prompter)
+        config, _ = wizard_existing_project(state, prompter)
 
         # Verify gh label create was called
         assert mock_run_gh.called
@@ -799,7 +799,7 @@ class TestWizardExistingProject:
             False,
         ])
 
-        config = wizard_existing_project(state, prompter)
+        config, _ = wizard_existing_project(state, prompter)
 
         # Old agent should NOT be in config
         assert "agent:old" not in config["agents"]
@@ -830,7 +830,7 @@ class TestWizardExistingProject:
             False,                  # no review
         ])
 
-        config = wizard_existing_project(state, prompter)
+        config, _ = wizard_existing_project(state, prompter)
 
         assert config["repo"] == "manual/repo"
 

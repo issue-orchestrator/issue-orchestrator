@@ -5,7 +5,7 @@ import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 
 import yaml
 
@@ -486,8 +486,12 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     return config
 
 
-def wizard_existing_project(state: DetectedState, prompter: Prompter) -> dict[str, Any]:
-    """Walk through existing project onboarding."""
+def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[dict[str, Any], Optional[Path]]:
+    """Walk through existing project onboarding.
+
+    Returns:
+        Tuple of (config dict, existing_config_path if updating else None)
+    """
     prompter.print("\n" + "=" * 50)
     prompter.print("EXISTING PROJECT ONBOARDING")
     prompter.print("=" * 50)
@@ -502,10 +506,12 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> dict[st
 
     # Start with existing config or fresh
     config: dict[str, Any]
+    updating_existing_path: Optional[Path] = None
     if state.existing_config:
         prompter.print(f"\n✓ Found existing config at {state.config_path}")
         if prompter.yes_no("Update existing config?"):
             config = dict(state.existing_config)
+            updating_existing_path = state.config_path
         else:
             config = {"agents": {}}
     else:
@@ -739,7 +745,7 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> dict[st
                     pass
                 prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {cto_reviewed_label}")
 
-    return config
+    return config, updating_existing_path
 
 
 def create_starter_prompt(agent_name: str, path: Path) -> None:
@@ -1164,11 +1170,12 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
         ],
     )
 
+    existing_config_path: Optional[Path] = None
     if "New" in mode:
         config = wizard_new_project(prompter)
     else:
         state = scan_existing_repo()
-        config = wizard_existing_project(state, prompter)
+        config, existing_config_path = wizard_existing_project(state, prompter)
 
     # Review config
     prompter.print("\n" + "=" * 50)
@@ -1185,14 +1192,23 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
         sys.exit(0)
 
     # Choose output filename (relative to project directory)
-    default_path = ".issue-orchestrator.yaml"
+    # Default to existing config path if updating, otherwise standard name
+    if existing_config_path:
+        default_path = str(existing_config_path.name)
+    else:
+        default_path = ".issue-orchestrator.yaml"
     output_path = Path(prompter.input("Config filename", default_path))
 
-    # Check for existing
+    # Check for existing - but skip if we're updating the same file we started with
     if output_path.exists():
-        if not prompter.yes_no(f"{output_path} exists. Overwrite?"):
-            prompter.print("Aborted.")
-            sys.exit(0)
+        is_same_as_existing = (
+            existing_config_path is not None
+            and output_path.resolve() == existing_config_path.resolve()
+        )
+        if not is_same_as_existing:
+            if not prompter.yes_no(f"{output_path} exists. Overwrite?"):
+                prompter.print("Aborted.")
+                sys.exit(0)
 
     write_config(config, output_path)
     prompter.print(f"\n✓ Saved config to {output_path}")
