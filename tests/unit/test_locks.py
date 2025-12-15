@@ -5,7 +5,8 @@ import time
 from pathlib import Path
 from issue_orchestrator.locks import (
     try_claim, release_claim, is_claimed, list_claimed, LOCK_DIR,
-    get_claim_age, is_claim_stale, cleanup_stale_claims, TIMESTAMP_FILE
+    get_claim_age, is_claim_stale, cleanup_stale_claims, cleanup_orphaned_claims,
+    TIMESTAMP_FILE
 )
 
 
@@ -511,3 +512,111 @@ class TestCleanupStaleClaims:
         # Only issue 3 should be cleaned (issue 2 has no timestamp, so not considered stale)
         assert cleaned == [3]
         assert set(list_claimed()) == {1, 2}
+
+
+class TestCleanupOrphanedClaims:
+    """Test the cleanup_orphaned_claims function."""
+
+    def test_cleanup_orphaned_claims_no_claims(self):
+        """Test cleanup when there are no claims."""
+        def session_exists(name: str) -> bool:
+            return False
+
+        cleaned = cleanup_orphaned_claims(session_exists)
+        assert cleaned == []
+
+    def test_cleanup_orphaned_claims_all_have_sessions(self):
+        """Test cleanup when all claims have active sessions."""
+        try_claim(1)
+        try_claim(2)
+
+        # All sessions exist
+        def session_exists(name: str) -> bool:
+            return True
+
+        cleaned = cleanup_orphaned_claims(session_exists)
+
+        assert cleaned == []
+        # All claims should still exist
+        assert set(list_claimed()) == {1, 2}
+
+    def test_cleanup_orphaned_claims_none_have_sessions(self):
+        """Test cleanup when no claims have active sessions."""
+        try_claim(1)
+        try_claim(2)
+        try_claim(3)
+
+        # No sessions exist
+        def session_exists(name: str) -> bool:
+            return False
+
+        cleaned = cleanup_orphaned_claims(session_exists)
+
+        assert set(cleaned) == {1, 2, 3}
+        # All claims should be removed
+        assert list_claimed() == []
+
+    def test_cleanup_orphaned_claims_mixed(self):
+        """Test cleanup with mix of claims with and without sessions."""
+        try_claim(1)
+        try_claim(2)
+        try_claim(3)
+
+        # Only issue-1 has an active session
+        def session_exists(name: str) -> bool:
+            return name == "issue-1"
+
+        cleaned = cleanup_orphaned_claims(session_exists)
+
+        assert set(cleaned) == {2, 3}
+        # Only issue 1 should remain
+        assert list_claimed() == [1]
+
+    def test_cleanup_orphaned_claims_checks_session_name(self):
+        """Test that session_exists is called with correct session names."""
+        try_claim(42)
+        try_claim(123)
+
+        called_with = []
+        def session_exists(name: str) -> bool:
+            called_with.append(name)
+            return True
+
+        cleanup_orphaned_claims(session_exists)
+
+        assert set(called_with) == {"issue-42", "issue-123"}
+
+    def test_cleanup_orphaned_claims_custom_prefix(self):
+        """Test cleanup with a custom prefix."""
+        # Create review claims manually (try_claim uses "issue" prefix by default)
+        for num in [10, 20]:
+            lock_path = LOCK_DIR / f"review-{num}"
+            LOCK_DIR.mkdir(parents=True, exist_ok=True)
+            lock_path.mkdir()
+            (lock_path / TIMESTAMP_FILE).write_text(str(time.time()))
+
+        # Also create issue claim
+        try_claim(30)
+
+        # No review sessions exist
+        def session_exists(name: str) -> bool:
+            return False
+
+        cleaned = cleanup_orphaned_claims(session_exists, prefix="review")
+
+        assert set(cleaned) == {10, 20}
+        # Issue claim should still exist (different prefix)
+        assert is_claimed(30)
+
+    def test_cleanup_orphaned_claims_returns_list(self):
+        """Test that cleanup returns a list of cleaned issue numbers."""
+        try_claim(10)
+        try_claim(20)
+
+        def session_exists(name: str) -> bool:
+            return False
+
+        cleaned = cleanup_orphaned_claims(session_exists)
+
+        assert isinstance(cleaned, list)
+        assert set(cleaned) == {10, 20}

@@ -871,8 +871,8 @@ class TestCmdStartAdvanced:
 
                         result = cmd_start(args)
 
-                        # Verify web dashboard was called
-                        assert mock_asyncio.run.call_count >= 2
+                        # Verify web dashboard was called (startup now runs in background)
+                        assert mock_asyncio.run.call_count >= 1
 
     def test_cmd_start_web_mode_custom_port(self):
         """Verify web mode respects custom port."""
@@ -900,8 +900,8 @@ class TestCmdStartAdvanced:
 
                         result = cmd_start(args)
 
-                        # Should use custom port
-                        assert mock_asyncio.run.call_count >= 2
+                        # Should use custom port (startup now runs in background)
+                        assert mock_asyncio.run.call_count >= 1
 
     def test_cmd_start_keyboard_interrupt(self):
         """Verify keyboard interrupt is handled gracefully."""

@@ -3,7 +3,7 @@
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 LOCK_DIR = Path("/tmp/issue-orchestrator/locks")
 TIMESTAMP_FILE = "claimed_at"
@@ -103,5 +103,43 @@ def cleanup_stale_claims(max_age_minutes: int = 60) -> list[int]:
         if is_claim_stale(issue_number, max_age_minutes):
             release_claim(issue_number)
             cleaned.append(issue_number)
+
+    return cleaned
+
+
+def cleanup_orphaned_claims(
+    session_exists_fn: Callable[[str], bool],
+    prefix: str = "issue"
+) -> list[int]:
+    """
+    Clean up claims that don't have active sessions (orphaned locks).
+
+    This handles cases where a session crashed immediately (e.g., command not found)
+    before the claim could be released, leaving "fresh" locks that aren't stale by age.
+
+    Args:
+        session_exists_fn: Callback that takes session_name (e.g. "issue-123")
+                          and returns True if session is active
+        prefix: Lock prefix to check (default "issue")
+
+    Returns:
+        List of issue numbers that were cleaned up.
+    """
+    cleaned = []
+
+    if not LOCK_DIR.exists():
+        return cleaned
+
+    for item in LOCK_DIR.iterdir():
+        if item.is_dir() and item.name.startswith(f"{prefix}-"):
+            try:
+                issue_number = int(item.name.replace(f"{prefix}-", ""))
+            except ValueError:
+                continue
+
+            session_name = f"{prefix}-{issue_number}"
+            if not session_exists_fn(session_name):
+                release_claim(issue_number, prefix)
+                cleaned.append(issue_number)
 
     return cleaned

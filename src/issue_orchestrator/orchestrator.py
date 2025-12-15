@@ -13,7 +13,7 @@ from .github import (
     get_open_prs_for_branch, get_latest_blocked_info, get_latest_needs_human_info,
     list_prs_with_label, create_issue,
 )
-from .locks import try_claim, release_claim, cleanup_stale_claims
+from .locks import try_claim, release_claim, cleanup_stale_claims, cleanup_orphaned_claims
 from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
@@ -103,6 +103,13 @@ class Orchestrator:
         cleaned = cleanup_stale_claims()
         if cleaned:
             print(f"  Cleaned up {len(cleaned)} stale lock claims: {cleaned}")
+
+        # Clean up orphaned claims (locks without active sessions)
+        # This handles cases where sessions crashed immediately (e.g., command not found)
+        self.state.startup_message = "Cleaning up orphaned claims..."
+        orphaned = cleanup_orphaned_claims(self._session_exists)
+        if orphaned:
+            print(f"  Cleaned up {len(orphaned)} orphaned lock claims: {orphaned}")
 
         # Get existing branches for issue detection
         self.state.startup_message = "Scanning local branches..."

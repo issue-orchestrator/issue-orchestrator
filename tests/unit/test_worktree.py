@@ -132,9 +132,10 @@ class TestCreateWorktree:
 
         worktree_base = tmp_path / "worktrees"
 
-        # Mock: first call checks if branch exists (returncode=1 means no),
-        # second call creates the worktree
+        # Mock: first call prunes stale worktrees, second checks if branch exists,
+        # third creates the worktree
         mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # prune succeeds
             MagicMock(returncode=1, stderr=""),  # branch doesn't exist
             MagicMock(returncode=0, stderr=""),  # worktree create succeeds
         ]
@@ -149,15 +150,20 @@ class TestCreateWorktree:
         assert worktree_path == worktree_base / "repo-123"
 
         # Check git commands were called correctly
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
 
-        # First call: check if branch exists
-        branch_check_cmd = mock_run.call_args_list[0][0][0]
+        # First call: prune stale worktrees
+        prune_cmd = mock_run.call_args_list[0][0][0]
+        assert prune_cmd[:3] == ["git", "-C", str(repo_root)]
+        assert "prune" in prune_cmd
+
+        # Second call: check if branch exists
+        branch_check_cmd = mock_run.call_args_list[1][0][0]
         assert branch_check_cmd[:3] == ["git", "-C", str(repo_root)]
         assert "rev-parse" in branch_check_cmd
 
-        # Second call: create worktree with new branch (-b flag)
-        worktree_cmd = mock_run.call_args_list[1][0][0]
+        # Third call: create worktree with new branch (-b flag)
+        worktree_cmd = mock_run.call_args_list[2][0][0]
         assert worktree_cmd[0] == "git"
         assert worktree_cmd[3] == "worktree"
         assert worktree_cmd[4] == "add"
@@ -211,12 +217,17 @@ class TestCreateWorktree:
         existing_worktree = worktree_base / "repo-123"
         existing_worktree.mkdir()
 
+        # Mock prune call (happens before existence check)
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Worktree already exists"):
             create_worktree(repo_root, 123, "Test", worktree_base)
 
-        # Git should not have been called
-        mock_run.assert_not_called()
+        # Only the prune call should have been made (before the existence check)
+        assert mock_run.call_count == 1
+        prune_cmd = mock_run.call_args_list[0][0][0]
+        assert "prune" in prune_cmd
 
     @patch("issue_orchestrator.worktree.subprocess.run")
     def test_create_worktree_git_command_fails(self, mock_run, tmp_path):
@@ -281,8 +292,11 @@ class TestCreateWorktree:
         repo_root.mkdir()
         (repo_root / ".git").mkdir()
 
-        # Mock subprocess exception
-        mock_run.side_effect = OSError("Command not found")
+        # Mock: prune succeeds, then subprocess exception on branch check
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # prune succeeds
+            OSError("Command not found"),  # exception on branch check
+        ]
 
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Error creating worktree"):
