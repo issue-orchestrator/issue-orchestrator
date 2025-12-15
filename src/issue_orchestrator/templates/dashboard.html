@@ -344,11 +344,9 @@
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
                 <span class="issue-action">
                     {% if issue.action == 'focus' %}
-                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-                    <span class="action-arrow">→</span>
+                    <span>👁</span><span class="action-arrow">→</span>
                     {% else %}
-                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-                    <span class="action-arrow">↗</span>
+                    <span>🔗</span><span class="action-arrow">↗</span>
                     {% endif %}
                 </span>
             </div>
@@ -383,14 +381,15 @@
         <div class="context-menu-item" id="menuPrompt">
             <span>📝</span> Open Agent Prompt
         </div>
+        <div class="context-menu-item" id="menuKill" style="display:none;">
+            <span style="color:#f85149;">⏹</span> Kill Session
+        </div>
         <div class="context-menu-divider"></div>
         <div class="context-menu-item" id="menuIssue">
-            <svg viewBox="0 0 16 16" fill="currentColor" style="width:14px;height:14px"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-            Open Issue on GitHub
+            <span>🔗</span> Open Issue on GitHub
         </div>
         <div class="context-menu-item" id="menuPR">
-            <svg viewBox="0 0 16 16" fill="currentColor" style="width:14px;height:14px"><path d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z"/></svg>
-            Open PR on GitHub
+            <span>🔀</span> Open PR on GitHub
         </div>
         <div class="context-menu-divider" id="menuHistoryDivider" style="display:none;"></div>
         <div class="context-menu-item" id="menuRetry" style="display:none;">
@@ -506,32 +505,45 @@
             }
         }
         async function shutdown() {
-            if (confirm('Shutdown the orchestrator?')) {
-                await fetch('/api/shutdown', { method: 'POST' });
-                document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#8b949e;">Shutdown. Close this tab.</div>';
+            // First, check if there are active sessions
+            const statusRes = await fetch('/api/status');
+            const status = await statusRes.json();
+            const activeSessions = status.active_sessions || [];
+
+            if (activeSessions.length > 0) {
+                const sessionList = activeSessions.map(s => `#${s.issue_number}: ${s.title}`).join('\n');
+                const choice = confirm(
+                    `There are ${activeSessions.length} active session(s):\n\n${sessionList}\n\n` +
+                    `Click OK to wait for them to finish, or Cancel to go back.\n\n` +
+                    `(To force kill sessions, use Ctrl+C twice in the terminal)`
+                );
+                if (!choice) return;
+            } else {
+                if (!confirm('Shutdown the orchestrator?')) return;
             }
+
+            await fetch('/api/shutdown', { method: 'POST' });
+            document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#8b949e;">Shutdown requested. Close this tab.</div>';
         }
 
         // Pagination
         function goToPage(page) {
-            const url = new URL(window.location);
+            const url = new URL(window.location.href);
             url.searchParams.set('page', page);
-            window.location = url;
+            window.location.href = url.toString();
         }
 
         // Auto-refresh (preserves page param) - uses queue_refresh_seconds from config
         const queueRefreshSeconds = {{ queue_refresh_seconds }};
         if (queueRefreshSeconds > 0) {
             setTimeout(() => {
-                const url = new URL(window.location);
-                window.location = url;
+                window.location.reload();
             }, queueRefreshSeconds * 1000);
         }
 
         // Manual refresh function
         function refreshPage() {
-            const url = new URL(window.location);
-            window.location = url;
+            window.location.reload();
         }
 
         // Context menu
@@ -539,6 +551,7 @@
         const menuFocus = document.getElementById('menuFocus');
         const menuFinder = document.getElementById('menuFinder');
         const menuPrompt = document.getElementById('menuPrompt');
+        const menuKill = document.getElementById('menuKill');
         const menuIssue = document.getElementById('menuIssue');
         const menuPR = document.getElementById('menuPR');
         const menuRetry = document.getElementById('menuRetry');
@@ -577,6 +590,13 @@
                 menuPrompt.classList.remove('disabled');
             } else {
                 menuPrompt.classList.add('disabled');
+            }
+
+            // Show Kill option for active/slow sessions
+            if (action === 'focus') {
+                menuKill.style.display = 'flex';
+            } else {
+                menuKill.style.display = 'none';
             }
 
             // Show Retry/Dismiss for history items (failed, blocked, completed, timed_out)
@@ -629,6 +649,24 @@
                 const res = await fetch(`/api/prompt/${encodeURIComponent(agentType)}`, { method: 'POST' });
                 const data = await res.json();
                 console.log('Prompt response:', data);
+            }
+        });
+
+        menuKill.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow) {
+                const issueNumber = currentRow.dataset.issue;
+                const title = currentRow.dataset.title;
+                if (confirm(`Kill session #${issueNumber}: ${title}?\n\nThis will terminate the Claude agent immediately.`)) {
+                    const res = await fetch(`/api/kill/${issueNumber}`, { method: 'POST' });
+                    const data = await res.json();
+                    if (data.status === 'killed') {
+                        location.reload();
+                    } else {
+                        alert(data.error || 'Failed to kill session');
+                    }
+                }
             }
         });
 

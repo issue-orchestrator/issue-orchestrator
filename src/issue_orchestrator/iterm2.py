@@ -200,7 +200,10 @@ class ITermSessionManager:
         escaped_tab_name = tab_name.replace('"', '\\"')
         # Wrap command in zsh -l -c to ensure proper PATH (iTerm may default to bash)
         # The -l flag sources login profile (~/.zshrc) so tools like claude are in PATH
-        zsh_wrapped_cmd = f"zsh -l -c 'cd \"{working_dir}\" && {command}'"
+        # IMPORTANT: Escape single quotes in the command before wrapping in single quotes
+        # In shell, 'foo'\''bar' produces foo'bar (end quote, escaped quote, start quote)
+        cmd_with_escaped_quotes = command.replace("'", "'\\''")
+        zsh_wrapped_cmd = f"zsh -l -c 'cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
         escaped_zsh_cmd = zsh_wrapped_cmd.replace('\\', '\\\\').replace('"', '\\"')
         script = f'''tell application "iTerm"
 tell current window
@@ -211,6 +214,10 @@ write text "{escaped_zsh_cmd}"
 end tell
 end tell
 end tell'''
+
+        # Log the command being executed for debugging
+        logger.info("Creating iTerm2 tab for issue #%d with command: %s", issue_number, command[:100] + "..." if len(command) > 100 else command)
+        logger.debug("Full zsh-wrapped command: %s", zsh_wrapped_cmd)
 
         success, output = run_applescript(script)
         if success:

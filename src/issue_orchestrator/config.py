@@ -114,8 +114,16 @@ class Config:
 
         # Parse agents
         for label, agent_data in data.get("agents", {}).items():
+            # Resolve prompt path relative to repo_root (not worktree) so prompts work
+            # even when the branch doesn't have the prompt file
+            prompt_path = Path(agent_data["prompt"])
+            if not prompt_path.is_absolute():
+                # Get repo_root for this agent (or use config.repo_root which we set below)
+                agent_repo_root = Path(agent_data["repo_root"]) if "repo_root" in agent_data else config_path.parent
+                prompt_path = (agent_repo_root / prompt_path).resolve()
+
             agent_kwargs = {
-                "prompt_path": Path(agent_data["prompt"]),
+                "prompt_path": prompt_path,
                 "worktree_base": Path(agent_data.get("worktree_base", "../")),
                 "model": agent_data.get("model", "sonnet"),
                 "timeout_minutes": agent_data.get("timeout_minutes", 45),

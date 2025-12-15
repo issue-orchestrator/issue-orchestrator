@@ -6,7 +6,7 @@ import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
@@ -22,6 +22,12 @@ app = FastAPI(title="Issue Orchestrator")
 # Global reference to orchestrator (set at startup)
 _orchestrator: "Orchestrator | None" = None
 
+
+def get_orchestrator():
+    """Get the orchestrator instance. Override in tests via app.dependency_overrides."""
+    return _orchestrator
+
+
 # Template directory
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -35,7 +41,10 @@ QUEUE_PAGE_SIZE = 20
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request) -> HTMLResponse:
+async def dashboard(
+    request: Request,
+    orchestrator=Depends(get_orchestrator)
+) -> HTMLResponse:
     """Render the main dashboard."""
     from .github import list_issues
     from .scheduler import Scheduler
@@ -48,8 +57,8 @@ async def dashboard(request: Request) -> HTMLResponse:
     templates = get_templates()
     template = templates.get_template("dashboard.html")
 
-    state = _orchestrator.state if _orchestrator else None
-    config = _orchestrator.config if _orchestrator else None
+    state = orchestrator.state if orchestrator else None
+    config = orchestrator.config if orchestrator else None
 
     issues = []  # Unified list
     seen_issues = set()  # Track issue numbers to avoid duplicates
@@ -228,6 +237,45 @@ async def resume() -> JSONResponse:
     return JSONResponse({"status": "resumed"})
 
 
+@app.post("/api/kill/{issue_number}")
+async def kill_session(issue_number: int) -> JSONResponse:
+    """Force kill a specific session."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    # Find the session
+    session = None
+    for s in _orchestrator.state.active_sessions:
+        if s.issue.number == issue_number:
+            session = s
+            break
+
+    if not session:
+        return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
+
+    # Kill the session
+    try:
+        _orchestrator._kill_session(session.tmux_session_name)
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to kill session: {e}"}, status_code=500)
+
+    # Remove from active sessions
+    _orchestrator.state.active_sessions = [
+        s for s in _orchestrator.state.active_sessions
+        if s.issue.number != issue_number
+    ]
+
+    # Release the claim
+    from .locks import release_claim
+    release_claim(issue_number)
+
+    return JSONResponse({
+        "status": "killed",
+        "issue_number": issue_number,
+        "title": session.issue.title,
+    })
+
+
 @app.post("/api/focus/{issue_number}")
 async def focus_session(issue_number: int) -> JSONResponse:
     """Focus the iTerm2 tab for a specific session."""
@@ -322,12 +370,20 @@ async def open_agent_prompt(agent_type: str) -> JSONResponse:
 
 
 @app.post("/api/shutdown")
-async def shutdown() -> JSONResponse:
-    """Request orchestrator shutdown."""
+async def shutdown(force: bool = False) -> JSONResponse:
+    """Request orchestrator shutdown.
+
+    Args:
+        force: If True, kill active sessions immediately instead of waiting.
+    """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-    _orchestrator.request_shutdown()
-    return JSONResponse({"status": "shutdown_requested"})
+    _orchestrator.request_shutdown(force=force)
+    active_count = len(_orchestrator.state.active_sessions)
+    return JSONResponse({
+        "status": "force_shutdown" if force else "shutdown_requested",
+        "active_sessions": active_count,
+    })
 
 
 @app.get("/api/info")
@@ -505,11 +561,13 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
 
     import uvicorn
 
+    print(f"[web] Starting uvicorn server on 127.0.0.1:{port}")
+
     config = uvicorn.Config(
         app,
         host="127.0.0.1",
         port=port,
-        log_level="warning",  # Reduce noise
+        log_level="info",  # Enable info logging to see requests
     )
     server = uvicorn.Server(config)
 
@@ -517,12 +575,14 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
     async def open_browser():
         await asyncio.sleep(1)
         url = f"http://127.0.0.1:{port}"
-        logger.info(f"Opening browser to {url}")
+        print(f"[web] Opening browser to {url}")
         webbrowser.open(url)
 
     asyncio.create_task(open_browser())
 
+    print(f"[web] Server starting...")
     await server.serve()
+    print(f"[web] Server stopped")
 
 
 async def run_with_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> None:

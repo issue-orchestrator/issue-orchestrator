@@ -1,11 +1,15 @@
 """Main orchestrator - ties everything together."""
 
 import asyncio
+import logging
 import signal
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .config import Config
 from .github import (
@@ -95,13 +99,16 @@ class Orchestrator:
         """Handle startup - check for stale in-progress issues."""
         from .analysis import analyze_issue, get_issue_branches
 
+        startup_start = time.time()
         self.state.startup_status = "running"
         self.state.startup_message = "Cleaning up stale claims..."
+        logger.info("Starting up - checking for stale in-progress issues...")
         print("Checking for stale in-progress issues...")
 
         # Clean up stale claims (default: 60 minutes)
         cleaned = cleanup_stale_claims()
         if cleaned:
+            logger.info("Cleaned up %d stale lock claims: %s", len(cleaned), cleaned)
             print(f"  Cleaned up {len(cleaned)} stale lock claims: {cleaned}")
 
         # Clean up orphaned claims (locks without active sessions)
@@ -109,6 +116,7 @@ class Orchestrator:
         self.state.startup_message = "Cleaning up orphaned claims..."
         orphaned = cleanup_orphaned_claims(self._session_exists)
         if orphaned:
+            logger.info("Cleaned up %d orphaned lock claims: %s", len(orphaned), orphaned)
             print(f"  Cleaned up {len(orphaned)} orphaned lock claims: {orphaned}")
 
         # Get existing branches for issue detection
@@ -118,12 +126,16 @@ class Orchestrator:
         # Get all in-progress issues for our agent types
         self.state.startup_message = "Checking in-progress issues on GitHub..."
         for agent_label in self.config.agents.keys():
+            api_start = time.time()
             issues = list_issues(
                 self.config.repo,
                 labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
                 milestone=self._get_milestone_filter(),
                 limit=self.config.issue_fetch_limit,
             )
+            elapsed = time.time() - api_start
+            logger.debug("Fetched %d in-progress issues for %s in %.1fs", len(issues), agent_label, elapsed)
+            print(f"[startup] Fetched {len(issues)} in-progress issues for {agent_label} in {elapsed:.1f}s")
 
             for issue in issues:
                 self.state.startup_message = f"Analyzing issue #{issue.number}..."
@@ -180,9 +192,15 @@ class Orchestrator:
 
         self.state.startup_status = "complete"
         self.state.startup_message = ""
+        elapsed = time.time() - startup_start
+        logger.info("Startup complete in %.1fs", elapsed)
+        print(f"[startup] Total startup time: {elapsed:.1f}s")
 
     def launch_session(self, issue: Issue) -> Optional[Session]:
         """Launch a new session for an issue."""
+        launch_start = time.time()
+        logger.info("Launching session for issue #%d: %s", issue.number, issue.title)
+
         if issue.agent_type is None:
             raise ValueError(f"Issue #{issue.number} has no agent type label")
         agent_config = self.config.agents.get(issue.agent_type)
@@ -191,6 +209,7 @@ class Orchestrator:
 
         # Try to claim the issue first - if another instance is working on it, skip
         if not try_claim(issue.number):
+            logger.debug("Issue #%d already claimed - skipping", issue.number)
             print(f"Issue #{issue.number} already claimed by another instance - skipping")
             return None
 
@@ -198,6 +217,9 @@ class Orchestrator:
         repo_root = agent_config.repo_root or self.config.repo_root
 
         # Create worktree (sibling to repo, named {repo}-{issue_number})
+        step_start = time.time()
+        logger.debug("Creating worktree for issue #%d", issue.number)
+        print(f"[launch] Creating worktree for issue #{issue.number}...")
         worktree_path, branch_name = create_worktree(
             repo_root=repo_root,
             issue_number=issue.number,
@@ -205,9 +227,16 @@ class Orchestrator:
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
         )
+        worktree_time = time.time() - step_start
+        logger.debug("Worktree created in %.1fs", worktree_time)
+        print(f"[launch] Worktree created in {worktree_time:.1f}s")
 
         # Mark issue as in-progress
+        step_start = time.time()
         add_label(self.config.repo, issue.number, self.config.get_label_in_progress())
+        label_time = time.time() - step_start
+        logger.debug("Label added in %.1fs", label_time)
+        print(f"[launch] Label added in {label_time:.1f}s")
 
         # Build command
         command = agent_config.get_command(
@@ -218,7 +247,11 @@ class Orchestrator:
 
         # Create session (tmux or iTerm2 tab) - command includes the initial prompt as a CLI argument
         session_name = f"issue-{issue.number}"
+        step_start = time.time()
         self._create_session(session_name, command, worktree_path, title=issue.title)
+        session_time = time.time() - step_start
+        logger.debug("Session created in %.1fs", session_time)
+        print(f"[launch] Session created in {session_time:.1f}s")
 
         # Create session object
         session = Session(
@@ -230,6 +263,9 @@ class Orchestrator:
         )
 
         self.state.active_sessions.append(session)
+        total_time = time.time() - launch_start
+        logger.info("Session launched for issue #%d in %.1fs (worktree=%.1fs, label=%.1fs, session=%.1fs)",
+                    issue.number, total_time, worktree_time, label_time, session_time)
         print(f"Launched session for issue #{issue.number}: {issue.title}")
 
         return session
@@ -376,9 +412,31 @@ class Orchestrator:
             # Wait before next check
             await asyncio.sleep(10)
 
-    def request_shutdown(self) -> None:
-        """Request graceful shutdown."""
-        print("Shutdown requested - waiting for active sessions...")
+    def request_shutdown(self, force: bool = False) -> None:
+        """Request graceful shutdown.
+
+        Args:
+            force: If True, kill active sessions immediately instead of waiting.
+        """
+        active = self.state.active_sessions
+        if active:
+            if force:
+                print(f"Force shutdown - killing {len(active)} active session(s):")
+                for s in active:
+                    print(f"  #{s.issue.number}: {s.issue.title}")
+                    try:
+                        self._kill_session(s.tmux_session_name)
+                    except Exception as e:
+                        print(f"    Warning: failed to kill session: {e}")
+                self.state.active_sessions = []
+                print("All sessions killed. Exiting...")
+            else:
+                print(f"Shutdown requested - waiting for {len(active)} active session(s):")
+                for s in active:
+                    print(f"  #{s.issue.number}: {s.issue.title} ({s.runtime_minutes} min)")
+                print("\nPress Ctrl+C again to force kill all sessions.")
+        else:
+            print("Shutdown requested - no active sessions, exiting...")
         self._shutdown_requested = True
 
     def pause(self) -> None:
@@ -591,9 +649,14 @@ async def run_orchestrator(config_path: Optional[Path] = None) -> None:
 
     orchestrator = Orchestrator(config=config)
 
-    # Setup signal handlers
+    # Setup signal handlers with force kill on second Ctrl+C
     def handle_signal(signum, frame):
-        orchestrator.request_shutdown()
+        if orchestrator._shutdown_requested:
+            # Second signal - force kill
+            orchestrator.request_shutdown(force=True)
+        else:
+            # First signal - graceful shutdown
+            orchestrator.request_shutdown()
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)

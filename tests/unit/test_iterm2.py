@@ -517,6 +517,40 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.iterm2.run_applescript")
     @patch("issue_orchestrator.iterm2.subprocess.run")
+    def test_create_session_single_quote_escaping(self, mock_subprocess, mock_run_as):
+        """Test that single quotes in commands are properly escaped for zsh wrapper.
+
+        This is critical: the command gets wrapped in zsh -l -c '...' so any
+        single quotes in the command must be escaped as '\\'' (end quote, escaped
+        quote, start quote) to avoid breaking the shell syntax.
+        """
+        mock_run_as.return_value = (True, "")
+        mock_subprocess.return_value = MagicMock(stdout="1638360000\n")
+
+        manager = ITermSessionManager()
+        # Command with single quotes (typical claude command)
+        command = "claude --append-system-prompt 'Read prompt.md' 'Work on issue #42'"
+        result = manager.create_session(
+            issue_number=42,
+            command=command,
+            working_dir="/tmp/test",
+        )
+
+        assert result is True
+        script = mock_run_as.call_args[0][0]
+
+        # The script contains a zsh -l -c wrapper with properly escaped quotes
+        # Single quotes should be escaped as '\\'' not left as is
+        # Look for the escaped pattern in the write text command
+        assert "zsh -l -c" in script
+
+        # The original unescaped pattern should NOT appear as that breaks shell
+        # Instead, single quotes should be escaped
+        assert "'\\\\''Read prompt.md'\\\\''".replace("\\\\", "\\") in script or \
+               "'\\\\''" in script  # Either form of escaping
+
+    @patch("issue_orchestrator.iterm2.run_applescript")
+    @patch("issue_orchestrator.iterm2.subprocess.run")
     def test_create_session_failure(self, mock_subprocess, mock_run_as):
         """Test failed session creation."""
         mock_run_as.return_value = (False, "error message")

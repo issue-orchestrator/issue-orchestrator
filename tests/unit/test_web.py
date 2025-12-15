@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, Mock
 from fastapi.testclient import TestClient
 
-from issue_orchestrator.web import app, _orchestrator
+from issue_orchestrator.web import app, get_orchestrator
 from issue_orchestrator.models import (
     Issue,
     Session,
@@ -51,6 +51,7 @@ def create_mock_orchestrator():
         completed_today=[],
         paused=False,
         priority_queue=[],
+        startup_status="complete",  # Required for dashboard to show issues
     )
 
     mock_orch.config = config
@@ -95,25 +96,25 @@ class TestDashboardEndpoint:
 
     def test_dashboard_returns_html(self):
         """Test that dashboard returns HTML response."""
-        # Import and set orchestrator
         from issue_orchestrator import web
         mock_orch = create_mock_orchestrator()
+
         web._orchestrator = mock_orch
+        try:
+            with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
+                mock_list_issues.return_value = []
 
-        with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
-            mock_list_issues.return_value = []
+                client = TestClient(app)
+                response = client.get("/")
 
-            client = TestClient(app)
-            response = client.get("/")
+                assert response.status_code == 200
+                assert "text/html" in response.headers["content-type"]
+        finally:
+            web._orchestrator = None
 
-            assert response.status_code == 200
-            assert "text/html" in response.headers["content-type"]
-
-    @pytest.mark.skip(reason="TestClient doesn't see module-level mock in pytest context - needs investigation")
     def test_dashboard_with_active_sessions(self):
         """Test dashboard displays active sessions."""
-        import issue_orchestrator.web as web_module
-
+        from issue_orchestrator import web
         mock_orch = create_mock_orchestrator()
 
         # Add an active session
@@ -121,7 +122,8 @@ class TestDashboardEndpoint:
         session = create_session(issue)
         mock_orch.state.active_sessions = [session]
 
-        with patch.object(web_module, "_orchestrator", mock_orch):
+        web._orchestrator = mock_orch
+        try:
             with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
                 mock_list_issues.return_value = []
 
@@ -131,50 +133,56 @@ class TestDashboardEndpoint:
                 assert response.status_code == 200
                 assert "Active Issue" in response.text
                 assert "#1" in response.text
+        finally:
+            web._orchestrator = None
 
-    @pytest.mark.skip(reason="TestClient doesn't see module-level mock in pytest context - needs investigation")
     def test_dashboard_with_queue_pagination(self):
         """Test dashboard queue pagination."""
         from issue_orchestrator import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
 
         # Create 25 issues to trigger pagination (page size is 20)
         issues = [create_issue(i, f"Queue Issue {i}") for i in range(1, 26)]
 
-        with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
-            mock_list_issues.return_value = issues
+        web._orchestrator = mock_orch
+        try:
+            with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
+                mock_list_issues.return_value = issues
 
-            client = TestClient(app)
+                client = TestClient(app)
 
-            # Test first page
-            response = client.get("/?page=1")
-            assert response.status_code == 200
-            assert "Queue Issue 1" in response.text
+                # Test first page
+                response = client.get("/?page=1")
+                assert response.status_code == 200
+                assert "Queue Issue 1" in response.text
 
-            # Test second page
-            response = client.get("/?page=2")
-            assert response.status_code == 200
-            assert "Queue Issue 21" in response.text
+                # Test second page
+                response = client.get("/?page=2")
+                assert response.status_code == 200
+                assert "Queue Issue 21" in response.text
+        finally:
+            web._orchestrator = None
 
     def test_dashboard_when_paused(self):
         """Test dashboard shows paused state."""
         from issue_orchestrator import web
         mock_orch = create_mock_orchestrator()
         mock_orch.state.paused = True
+
         web._orchestrator = mock_orch
+        try:
+            with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
+                mock_list_issues.return_value = []
 
-        with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
-            mock_list_issues.return_value = []
+                client = TestClient(app)
+                response = client.get("/")
 
-            client = TestClient(app)
-            response = client.get("/")
+                assert response.status_code == 200
+                # The template should handle paused state
+                assert response.status_code == 200
+        finally:
+            web._orchestrator = None
 
-            assert response.status_code == 200
-            # The template should handle paused state
-            assert response.status_code == 200
-
-    @pytest.mark.skip(reason="TestClient doesn't see module-level mock in pytest context - needs investigation")
     def test_dashboard_with_session_history(self):
         """Test dashboard displays session history."""
         from issue_orchestrator import web
@@ -192,15 +200,17 @@ class TestDashboardEndpoint:
         mock_orch.state.session_history = [history_entry]
 
         web._orchestrator = mock_orch
+        try:
+            with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
+                mock_list_issues.return_value = []
 
-        with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
-            mock_list_issues.return_value = []
+                client = TestClient(app)
+                response = client.get("/")
 
-            client = TestClient(app)
-            response = client.get("/")
-
-            assert response.status_code == 200
-            assert "Completed Issue" in response.text
+                assert response.status_code == 200
+                assert "Completed Issue" in response.text
+        finally:
+            web._orchestrator = None
 
 
 class TestApiStatusEndpoint:
@@ -217,6 +227,7 @@ class TestApiStatusEndpoint:
 
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/json"
+        web._orchestrator = None
 
     def test_status_includes_basic_info(self):
         """Test status includes basic orchestrator info."""
@@ -234,6 +245,7 @@ class TestApiStatusEndpoint:
         assert "completed_today" in data
         assert data["paused"] is False
         assert data["max_sessions"] == 3
+        web._orchestrator = None
 
     def test_status_with_active_sessions(self):
         """Test status includes active session details."""
@@ -254,6 +266,7 @@ class TestApiStatusEndpoint:
         assert data["active_sessions"][0]["issue_number"] == 1
         assert data["active_sessions"][0]["title"] == "Test Issue"
         assert data["active_sessions"][0]["branch"] == "feature/issue-1"
+        web._orchestrator = None
 
     def test_status_when_orchestrator_not_running(self):
         """Test status returns 503 when orchestrator not initialized."""
