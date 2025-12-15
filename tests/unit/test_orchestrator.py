@@ -2232,3 +2232,109 @@ class TestStartupPendingReviews:
         # Should not call list_prs_with_label
         mock_list_prs.assert_not_called()
         assert len(orchestrator.state.pending_reviews) == 0
+
+
+class TestPauseBehavior:
+    """Test that pause stops all new work from starting."""
+
+    def test_process_pending_reviews_does_nothing_when_paused(self, sample_config):
+        """Test that process_pending_reviews does nothing when paused."""
+        from issue_orchestrator.models import PendingReview
+
+        sample_config.code_review_agent = "agent:web"
+        sample_config.max_concurrent_sessions = 5
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reviews.append(review)
+        orchestrator.state.paused = True  # PAUSED
+
+        with patch.object(orchestrator, "launch_review_session") as mock_launch:
+            orchestrator.process_pending_reviews()
+            mock_launch.assert_not_called()
+
+        # Review should still be in queue
+        assert len(orchestrator.state.pending_reviews) == 1
+
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    def test_check_cto_review_trigger_does_nothing_when_paused(
+        self, mock_prs, sample_config
+    ):
+        """Test that check_cto_review_trigger does nothing when paused."""
+        sample_config.cto_review_agent = "agent:cto"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.cto_review_threshold = 3
+
+        mock_prs.return_value = [
+            {"number": 1, "title": "PR 1"},
+            {"number": 2, "title": "PR 2"},
+            {"number": 3, "title": "PR 3"},
+        ]  # At threshold
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.paused = True  # PAUSED
+
+        with patch("issue_orchestrator.orchestrator.create_issue") as mock_create:
+            orchestrator.check_cto_review_trigger()
+            # Should not even check PRs when paused
+            mock_prs.assert_not_called()
+            mock_create.assert_not_called()
+
+    @pytest.fixture(autouse=True)
+    def mock_sleep(self):
+        """Mock asyncio.sleep to yield control but not wait."""
+        original_sleep = asyncio.sleep
+
+        async def instant_yield(*args):
+            await original_sleep(0)
+
+        with patch("issue_orchestrator.orchestrator.asyncio.sleep", side_effect=instant_yield):
+            yield
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    async def test_run_loop_stops_batch_when_paused_mid_launch(
+        self,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that run_loop stops launching when paused mid-batch."""
+        sample_config.max_concurrent_sessions = 5
+
+        issue1 = create_issue(1, labels=["agent:web"])
+        issue2 = create_issue(2, labels=["agent:web"])
+        issue3 = create_issue(3, labels=["agent:web"])
+
+        mock_list_issues.return_value = [issue1, issue2, issue3]
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        launch_count = 0
+
+        def launch_side_effect(issue):
+            nonlocal launch_count
+            launch_count += 1
+            # Pause after first launch
+            if launch_count == 1:
+                orchestrator.state.paused = True
+            return create_session(issue)
+
+        with patch.object(orchestrator, "launch_session", side_effect=launch_side_effect) as mock_launch:
+            async def run_one_iteration():
+                await asyncio.sleep(0.01)
+                orchestrator.request_shutdown()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
+            )
+
+            # Should only launch 1 issue (paused after first)
+            assert mock_launch.call_count == 1
+            assert orchestrator.state.paused is True

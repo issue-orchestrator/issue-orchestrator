@@ -341,7 +341,10 @@ class Orchestrator:
                     )
 
                     for issue in to_launch:
-                        # Check limit before each launch (might hit it mid-batch)
+                        # Check pause and limit before each launch (might change mid-batch)
+                        if self.state.paused:
+                            print("Paused - stopping batch launch")
+                            break
                         if max_issues > 0 and self.state.issues_started_count >= max_issues:
                             break
                         try:
@@ -474,12 +477,16 @@ class Orchestrator:
         """Process any pending code reviews.
 
         Called each loop iteration to launch review sessions.
-        Respects max_concurrent_sessions.
+        Respects max_concurrent_sessions and paused state.
         """
         if not self.config.code_review_agent:
             return
 
         if not self.state.pending_reviews:
+            return
+
+        # Don't start reviews while paused
+        if self.state.paused:
             return
 
         # Check capacity
@@ -499,7 +506,12 @@ class Orchestrator:
         - cto_review_threshold > 0
         - Number of code-reviewed PRs >= threshold
         - No existing open CTO review issue exists
+        - Orchestrator is not paused
         """
+        # Don't trigger new reviews while paused
+        if self.state.paused:
+            return
+
         # Check if CTO review is configured
         if not self.config.cto_review_agent:
             return
