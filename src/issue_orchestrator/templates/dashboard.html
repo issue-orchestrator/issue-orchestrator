@@ -385,15 +385,13 @@
 
     <!-- Actions Menu -->
     <div class="settings-menu" id="settingsMenu">
-        {% if paused %}
-        <div class="settings-menu-item" onclick="resume()">
+        <div class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()">
+            {% if paused %}
             <span>▶</span> Resume
-        </div>
-        {% else %}
-        <div class="settings-menu-item" onclick="pause()">
+            {% else %}
             <span>⏸</span> Pause
+            {% endif %}
         </div>
-        {% endif %}
         <div class="settings-menu-item" onclick="shutdown()">
             <span>⏻</span> Shutdown
         </div>
@@ -452,13 +450,37 @@
         }
 
         // Controls
-        async function pause() {
-            await fetch('/api/pause', { method: 'POST' });
-            location.reload();
-        }
-        async function resume() {
-            await fetch('/api/resume', { method: 'POST' });
-            location.reload();
+        let isPaused = {{ 'true' if paused else 'false' }};
+
+        async function togglePause() {
+            const badge = document.querySelector('.status-badge');
+            const menuItem = document.getElementById('pauseResumeItem');
+            const menu = document.getElementById('settingsMenu');
+
+            // Close the menu
+            menu.classList.remove('show');
+
+            if (isPaused) {
+                // Resume
+                badge.textContent = 'Resuming...';
+                badge.classList.remove('status-paused');
+                badge.classList.add('status-running');
+
+                await fetch('/api/resume', { method: 'POST' });
+                badge.textContent = 'Running';
+                menuItem.innerHTML = '<span>⏸</span> Pause';
+                isPaused = false;
+            } else {
+                // Pause
+                badge.textContent = 'Pausing...';
+                badge.classList.remove('status-running');
+                badge.classList.add('status-paused');
+
+                await fetch('/api/pause', { method: 'POST' });
+                badge.textContent = 'Paused';
+                menuItem.innerHTML = '<span>▶</span> Resume';
+                isPaused = true;
+            }
         }
         async function shutdown() {
             if (confirm('Shutdown the orchestrator?')) {
