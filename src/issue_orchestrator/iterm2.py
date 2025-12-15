@@ -198,12 +198,16 @@ class ITermSessionManager:
 
         # Use escape sequence to set tab name (set name to doesn't work reliably)
         escaped_tab_name = tab_name.replace('"', '\\"')
+        # Wrap command in zsh -l -c to ensure proper PATH (iTerm may default to bash)
+        # The -l flag sources login profile (~/.zshrc) so tools like claude are in PATH
+        zsh_wrapped_cmd = f"zsh -l -c 'cd \"{working_dir}\" && {command}'"
+        escaped_zsh_cmd = zsh_wrapped_cmd.replace('\\', '\\\\').replace('"', '\\"')
         script = f'''tell application "iTerm"
 tell current window
 set newTab to (create tab with default profile)
 tell current session of newTab
 write text "printf \\"\\\\033]0;{escaped_tab_name}\\\\007\\""
-write text "cd \\"{escaped_dir}\\" && {escaped_cmd}"
+write text "{escaped_zsh_cmd}"
 end tell
 end tell
 end tell'''
