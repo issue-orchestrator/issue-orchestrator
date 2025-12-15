@@ -557,13 +557,13 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
 
     import uvicorn
 
-    print(f"[web] Starting uvicorn server on 127.0.0.1:{port}")
+    logger.info("[web] Starting uvicorn server on 127.0.0.1:%d", port)
 
     config = uvicorn.Config(
         app,
         host="127.0.0.1",
         port=port,
-        log_level="info",  # Enable info logging to see requests
+        log_level="warning",  # Reduce noise, we have our own logging
     )
     server = uvicorn.Server(config)
 
@@ -571,14 +571,14 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
     async def open_browser():
         await asyncio.sleep(0.3)
         url = f"http://127.0.0.1:{port}"
-        print(f"[web] Opening browser to {url}")
+        logger.info("[web] Opening browser to %s", url)
         webbrowser.open(url)
 
     asyncio.create_task(open_browser())
 
-    print(f"[web] Server starting...")
+    logger.info("[web] Server starting...")
     await server.serve()
-    print(f"[web] Server stopped")
+    logger.info("[web] Server stopped")
 
 
 async def run_with_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> None:
