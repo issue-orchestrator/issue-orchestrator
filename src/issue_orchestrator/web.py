@@ -67,6 +67,10 @@ async def dashboard(request: Request) -> HTMLResponse:
                 status = "slow"
                 status_label = "Slow"
                 status_reason = f"Over timeout ({runtime} min / {timeout} min)"
+            elif runtime == 0:
+                status = "active"
+                status_label = "Starting"
+                status_reason = "Agent launching..."
             else:
                 status = "active"
                 status_label = "Active"
