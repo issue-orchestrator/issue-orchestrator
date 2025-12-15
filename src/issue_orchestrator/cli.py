@@ -384,6 +384,21 @@ end tell'''
     if config.ui_mode != "web":
         asyncio.run(orchestrator.startup())
 
+    # Setup signal handlers for graceful shutdown (double Ctrl+C = force kill)
+    import signal
+
+    def handle_signal(signum, frame):
+        if orchestrator._shutdown_requested:
+            # Second signal - force kill
+            orchestrator.request_shutdown(force=True)
+            raise KeyboardInterrupt()  # Exit immediately
+        else:
+            # First signal - graceful shutdown
+            orchestrator.request_shutdown()
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
     try:
         if args.no_dashboard:
             # Run orchestrator without dashboard (useful for CI/debugging)
