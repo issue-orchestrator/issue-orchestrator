@@ -1236,19 +1236,20 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
             ) or "cto" in agent_name.lower()
 
             if is_code_review_agent and code_review_agent:
-                if prompter.yes_no(f"Create code review prompt at {prompt_path}?"):
+                prompter.print(f"\n  Code review agent reviews each PR for quality, tests, and issues.")
+                if prompter.yes_no(f"  Create code review prompt at {prompt_path}?"):
                     create_code_review_prompt(prompt_path, code_review_label, code_reviewed_label)
-                    prompter.print(f"  ✓ Created code review prompt at {prompt_path}")
-                    prompter.print(f"    Labels: {code_review_label} → {code_reviewed_label}")
+                    prompter.print(f"    ✓ Created - labels: {code_review_label} → {code_reviewed_label}")
             elif is_cto_review_agent and cto_review_agent:
-                if prompter.yes_no(f"Create CTO review prompt at {prompt_path}?"):
+                prompter.print(f"\n  CTO agent audits PRs in batch, identifies patterns, flags concerns for humans.")
+                if prompter.yes_no(f"  Create CTO audit prompt at {prompt_path}?"):
                     create_cto_review_prompt(prompt_path, code_reviewed_label, cto_reviewed_label)
-                    prompter.print(f"  ✓ Created CTO review prompt at {prompt_path}")
-                    prompter.print(f"    Labels: {code_reviewed_label} → {cto_reviewed_label}")
+                    prompter.print(f"    ✓ Created - labels: {code_reviewed_label} → {cto_reviewed_label}")
             else:
-                if prompter.yes_no(f"Create starter prompt at {prompt_path}?"):
+                prompter.print(f"\n  Work agent implements issues and creates PRs.")
+                if prompter.yes_no(f"  Create starter prompt at {prompt_path}?"):
                     create_starter_prompt(agent_name, prompt_path)
-                    prompter.print(f"  ✓ Created {prompt_path}")
+                    prompter.print(f"    ✓ Created {prompt_path}")
 
     # Create priority and status labels (agent labels handled earlier)
     repo = config.get("repo")
