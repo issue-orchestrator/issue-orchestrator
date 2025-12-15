@@ -146,7 +146,7 @@ class Config:
         config.issue_fetch_limit = data.get("issue_fetch_limit", 100)
 
         # UI mode
-        config.ui_mode = data.get("ui_mode", "web")
+        config.ui_mode = data.get("ui_mode", "tmux")
         config.web_port = data.get("web_port", 8080)
         config.queue_refresh_seconds = data.get("queue_refresh_seconds", 600)
 
