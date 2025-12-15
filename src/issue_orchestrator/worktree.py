@@ -138,6 +138,12 @@ def create_worktree(
     # Worktree path: {base}/{repo_name}-{issue_number}
     worktree_path = worktree_base / f"{repo_name}-{issue_number}"
 
+    # Prune stale worktrees (handles case where directory was deleted but git still has it registered)
+    subprocess.run(
+        ["git", "-C", str(repo_root), "worktree", "prune"],
+        capture_output=True, check=False
+    )
+
     # Check if worktree already exists
     if worktree_path.exists():
         raise WorktreeError(f"Worktree already exists at {worktree_path}")
