@@ -101,9 +101,20 @@ Work Agent creates PR
 [Stage 1: Code Review] (per-PR, immediate)
   - Triggered immediately by orchestrator
   - Review agent checks code quality, tests
-  - Approves or requests changes
-  - Label: "needs-code-review" → "code-reviewed"
+  - Uses: agent-done approved --summary "..." OR agent-done changes_requested --issues "..."
+  - Label: "needs-code-review" → "code-reviewed" (approved) or "needs-rework" (changes_requested)
        ↓
+     /   \
+Approved  Changes Requested
+    |           ↓
+    |     [Rework Loop] (automatic, up to max_rework_cycles)
+    |       - Orchestrator detects "needs-rework" label
+    |       - Re-queues work agent to fix issues
+    |       - Tracks cycle via "rework-1", "rework-2" labels
+    |       - After max cycles: escalates to "needs-human"
+    |           ↓
+    |     Back to Code Review
+    ↓
 Humans can optionally review on GitHub
        ↓
 [Stage 2: CTO Batch Review] (batch, threshold-triggered)
@@ -133,20 +144,29 @@ review:
   code_review_label: "needs-code-review"
   code_reviewed_label: "code-reviewed"
 
+  # Rework iteration limit
+  max_rework_cycles: 2  # Escalate to needs-human after N rework cycles
+
   # Stage 2: CTO Batch Review
   cto_review_agent: "agent:cto"
   cto_reviewed_label: "cto-reviewed"
   cto_review_threshold: 5  # Trigger after 5 PRs
+
+labels:
+  needs_rework: "needs-rework"  # Label for PRs needing rework after review
 ```
 
 ### Orchestrator Methods (orchestrator.py)
 
-| Method | Line | Purpose |
-|--------|------|---------|
-| `queue_code_review()` | 564 | Queue PR for code review (called on work completion) |
-| `launch_review_session()` | 594 | Launch a code review agent for a PR |
-| `process_pending_reviews()` | 662 | Process queued reviews (called each loop) |
-| `check_cto_review_trigger()` | 687 | Check if CTO batch review should be triggered |
+| Method | Purpose |
+|--------|---------|
+| `queue_code_review()` | Queue PR for code review (called on work completion) |
+| `launch_review_session()` | Launch a code review agent for a PR |
+| `process_pending_reviews()` | Process queued reviews (called each loop) |
+| `scan_needs_rework_prs()` | Scan for PRs with needs-rework label |
+| `launch_rework_session()` | Launch work agent to fix review issues |
+| `process_pending_reworks()` | Process queued reworks (called each loop) |
+| `check_cto_review_trigger()` | Check if CTO batch review should be triggered |
 
 ### UI Phase Detection (web.py:115-118)
 
@@ -174,14 +194,20 @@ This is the **enforced** way for agents to complete work. Direct `git push` is b
 
 **Usage**:
 ```bash
-# Successful completion
+# Work agent - successful completion
 agent-done completed --implementation "What was done" --problems "None"
 
-# Blocked
+# Work agent - blocked
 agent-done blocked --reason "Why" --attempted "What was tried"
 
-# Need human input
+# Work agent - need human input
 agent-done needs_human --question "Question for human"
+
+# Reviewer agent - approve PR
+agent-done approved --summary "Code is clean, tests pass"
+
+# Reviewer agent - request changes
+agent-done changes_requested --issues "Missing tests for X, error handling in Y"
 ```
 
 **What it does**:
@@ -189,8 +215,10 @@ agent-done needs_human --question "Question for human"
 2. Adds `Agent-Status:` trailers to last commit
 3. Pushes code (pre-push hook validates trailers)
 4. Creates PR (for completions)
-5. Posts structured comment on issue
-6. Adds appropriate labels (blocked, needs-human)
+5. Posts structured comment on issue/PR
+6. Adds appropriate labels:
+   - `blocked`, `needs-human` (work agent issues)
+   - `code-reviewed` (reviewer approved), `needs-rework` (reviewer requests changes)
 
 ## Pre-push Hook Enforcement
 

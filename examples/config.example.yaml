@@ -82,6 +82,9 @@ code_review_agent: "agent:reviewer"   # Agent that reviews PRs
 code_review_label: "needs-code-review"  # Label applied to PRs needing review
 code_reviewed_label: "code-reviewed"    # Label after review passes
 
+# Rework iteration (when reviewer requests changes)
+# max_rework_cycles: 2                  # Max rework attempts before escalating to needs-human (default: 2)
+
 # Stage 2: CTO batch review (triggered when N reviewed PRs accumulate)
 # cto_review_agent: "agent:cto"         # Uncomment to enable batch review
 # cto_reviewed_label: "cto-reviewed"    # Label after CTO review

@@ -43,7 +43,7 @@ from .github import (
     list_prs_with_label, create_issue,
 )
 from .locks import try_claim, release_claim, cleanup_stale_claims, cleanup_orphaned_claims
-from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview
+from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
 from .tmux import create_session, session_exists, kill_session
@@ -430,6 +430,10 @@ class Orchestrator:
             # Process pending code reviews
             self.process_pending_reviews()
 
+            # Scan for PRs needing rework and process them
+            self.scan_needs_rework_prs()
+            self.process_pending_reworks()
+
             # Check if CTO review should be triggered
             self.check_cto_review_trigger()
 
@@ -744,6 +748,222 @@ Flip labels from `{watch_label}` to `{self.config.cto_reviewed_label}` after rev
         )
         if issue_number:
             print(f"📋 Created CTO review issue #{issue_number} for {len(prs)} PRs")
+
+    def scan_needs_rework_prs(self) -> None:
+        """Scan for PRs with needs-rework label and queue them for rework.
+
+        Called periodically to pick up PRs where reviewers requested changes.
+        """
+        if not self.config.code_review_agent:
+            return  # Review workflow not configured
+
+        rework_label = self.config.get_label_needs_rework()
+        prs = list_prs_with_label(self.config.repo, rework_label)
+
+        for pr in prs:
+            pr_number = pr.get("number")
+            if not pr_number:
+                continue
+
+            # Check if already queued or being processed
+            if any(r.pr_number == pr_number for r in self.state.pending_reworks):
+                continue
+
+            # Check if already being worked on
+            if any(s.issue.number == pr_number for s in self.state.active_sessions):
+                continue
+
+            # Get the PR details to find associated issue and branch
+            import re
+            pr_body = pr.get("body", "")
+            issue_match = re.search(r"Closes #(\d+)", pr_body)
+            issue_number = int(issue_match.group(1)) if issue_match else pr_number
+
+            branch_name = pr.get("headRefName", f"{issue_number}-rework")
+
+            # Determine rework cycle from labels
+            rework_cycle = self._get_rework_cycle_from_labels(pr.get("labels", []))
+
+            # Check if we've exceeded max rework cycles
+            if rework_cycle > self.config.max_rework_cycles:
+                self._escalate_to_needs_human(pr_number, issue_number, rework_cycle)
+                continue
+
+            # Queue for rework
+            rework = PendingRework(
+                issue_number=issue_number,
+                pr_number=pr_number,
+                pr_url=pr.get("url", f"https://github.com/{self.config.repo}/pull/{pr_number}"),
+                branch_name=branch_name,
+                rework_cycle=rework_cycle,
+            )
+            self.state.pending_reworks.append(rework)
+            print(f"🔄 Queued PR #{pr_number} for rework (cycle {rework_cycle})")
+
+    def _get_rework_cycle_from_labels(self, labels: list) -> int:
+        """Extract rework cycle number from PR labels.
+
+        Looks for labels like "rework-1", "rework-2", etc.
+        Returns 1 if no rework label found (first rework).
+        """
+        import re
+        for label in labels:
+            label_name = label.get("name", "") if isinstance(label, dict) else str(label)
+            match = re.match(r"rework-(\d+)", label_name)
+            if match:
+                return int(match.group(1)) + 1  # Next cycle
+        return 1  # First rework
+
+    def _escalate_to_needs_human(self, pr_number: int, issue_number: int, rework_cycle: int) -> None:
+        """Escalate PR to needs-human after max rework cycles.
+
+        Removes needs-rework label and adds needs-human label.
+        """
+        needs_human_label = self.config.get_label_needs_human()
+        rework_label = self.config.get_label_needs_rework()
+
+        # Add needs-human label and remove needs-rework
+        try:
+            subprocess.run([
+                "gh", "pr", "edit", str(pr_number),
+                "--add-label", needs_human_label,
+                "--remove-label", rework_label,
+            ], capture_output=True, text=True, check=True)
+            print(f"⚠️  PR #{pr_number} escalated to {needs_human_label} after {rework_cycle} rework cycles")
+
+            # Post comment explaining escalation
+            comment = f"""## ⚠️ Escalated to Human Review
+
+This PR has gone through {rework_cycle - 1} rework cycles without passing review.
+Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
+
+**A human needs to review and either:**
+- Approve the PR manually
+- Provide specific guidance for the agent
+- Take over the implementation
+"""
+            subprocess.run(["gh", "pr", "comment", str(pr_number), "--body", comment], capture_output=True, text=True, check=True)
+        except Exception as e:
+            print(f"Warning: Failed to escalate PR #{pr_number}: {e}")
+
+    def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
+        """Launch a rework session to fix issues found in review.
+
+        Similar to launch_session but for fixing an existing PR.
+        """
+        # Find the original issue to get the agent type
+        issues = list_issues(self.config.repo, limit=200)
+        original_issue = None
+        for issue in issues:
+            if issue.number == rework.issue_number:
+                original_issue = issue
+                break
+
+        if not original_issue:
+            print(f"Warning: Could not find issue #{rework.issue_number} for rework")
+            return None
+
+        agent_label = original_issue.agent_type
+        if not agent_label:
+            print(f"Warning: Issue #{rework.issue_number} has no agent label")
+            return None
+
+        agent_config = self.config.agents.get(agent_label)
+        if not agent_config:
+            print(f"Warning: No agent config for {agent_label}")
+            return None
+
+        # Try to claim the issue (prevent duplicate rework sessions)
+        if not try_claim(rework.issue_number, prefix="rework"):
+            print(f"Issue #{rework.issue_number} already being reworked - skipping")
+            return None
+
+        # Use agent's repo_root if set, otherwise fall back to config.repo_root
+        repo_root = agent_config.repo_root or self.config.repo_root
+
+        # Create worktree for rework (checks out the existing PR branch)
+        worktree_path, _ = create_worktree(
+            repo_root=repo_root,
+            issue_number=rework.issue_number,
+            issue_title=f"Rework #{rework.pr_number}",
+            branch_name=rework.branch_name,  # Use existing PR branch
+            enforce_hooks=self.config.enforce_hooks,
+            pre_push_hook=self.config.pre_push_hook,
+        )
+
+        # Build command - include rework context
+        command = agent_config.get_command(
+            issue_number=rework.issue_number,
+            issue_title=f"Rework PR #{rework.pr_number} (cycle {rework.rework_cycle})",
+            worktree=worktree_path,
+            pr_number=rework.pr_number,
+        )
+
+        # Create session
+        session_name = f"rework-{rework.issue_number}"
+        self._create_session(session_name, command, worktree_path, title=f"Rework #{rework.issue_number}")
+
+        session = Session(
+            issue=original_issue,
+            agent_config=agent_config,
+            tmux_session_name=session_name,
+            worktree_path=worktree_path,
+            branch_name=rework.branch_name,
+        )
+
+        self.state.active_sessions.append(session)
+        print(f"🔧 Launched rework session for issue #{rework.issue_number} (cycle {rework.rework_cycle})")
+
+        # Update rework cycle label on PR
+        self._update_rework_cycle_label(rework.pr_number, rework.rework_cycle)
+
+        # Remove from pending queue and remove needs-rework label
+        self.state.pending_reworks = [r for r in self.state.pending_reworks if r.pr_number != rework.pr_number]
+        rework_label = self.config.get_label_needs_rework()
+        try:
+            subprocess.run(["gh", "pr", "edit", str(rework.pr_number), "--remove-label", rework_label],
+                          capture_output=True, text=True)
+        except Exception:
+            pass
+
+        return session
+
+    def _update_rework_cycle_label(self, pr_number: int, cycle: int) -> None:
+        """Update the rework cycle label on a PR."""
+        try:
+            # Remove old rework labels and add new one
+            for i in range(1, cycle):
+                try:
+                    subprocess.run(["gh", "pr", "edit", str(pr_number), "--remove-label", f"rework-{i}"],
+                                  capture_output=True, text=True)
+                except Exception:
+                    pass
+            subprocess.run(["gh", "pr", "edit", str(pr_number), "--add-label", f"rework-{cycle}"],
+                          capture_output=True, text=True, check=True)
+        except Exception as e:
+            print(f"Warning: Failed to update rework label on PR #{pr_number}: {e}")
+
+    def process_pending_reworks(self) -> None:
+        """Process any pending rework requests.
+
+        Called each loop iteration to launch rework sessions.
+        Respects max_concurrent_sessions and paused state.
+        """
+        if not self.state.pending_reworks:
+            return
+
+        # Don't start reworks while paused
+        if self.state.paused:
+            return
+
+        # Check capacity
+        available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
+        if available_slots <= 0:
+            return
+
+        # Launch reworks up to capacity
+        for rework in list(self.state.pending_reworks)[:available_slots]:
+            self.launch_rework_session(rework)
 
     def prioritize(self, issue_number: int) -> None:
         """Add an issue to the priority queue."""

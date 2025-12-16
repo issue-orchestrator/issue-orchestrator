@@ -24,6 +24,7 @@ class Config:
     label_in_progress: str = "in-progress"
     label_blocked: str = "blocked"
     label_needs_human: str = "needs-human"
+    label_needs_rework: str = "needs-rework"  # Applied to PR when reviewer requests changes
     label_prefix: Optional[str] = None  # Optional prefix for all labels (e.g., "bot")
 
     # Paths
@@ -76,6 +77,9 @@ class Config:
     cto_reviewed_label: Optional[str] = None  # Label after CTO review (e.g., "cto-reviewed")
     cto_review_threshold: int = 0  # Trigger CTO review after N PRs (0 = manual only)
 
+    # Rework cycle limit (when reviewer requests changes)
+    max_rework_cycles: int = 2  # Max times to re-queue work agent before escalating to needs-human
+
     # Path to the config file (set during load)
     config_path: Optional[Path] = None
 
@@ -103,6 +107,10 @@ class Config:
     def get_label_needs_human(self) -> str:
         """Get the needs-human label with prefix if configured."""
         return self.prefixed_label(self.label_needs_human)
+
+    def get_label_needs_rework(self) -> str:
+        """Get the needs-rework label with prefix if configured."""
+        return self.prefixed_label(self.label_needs_rework)
 
     @classmethod
     def load(cls, config_path: Path) -> "Config":
@@ -150,6 +158,7 @@ class Config:
         config.label_in_progress = labels.get("in_progress", "in-progress")
         config.label_blocked = labels.get("blocked", "blocked")
         config.label_needs_human = labels.get("needs_human", "needs-human")
+        config.label_needs_rework = labels.get("needs_rework", "needs-rework")
         config.label_prefix = labels.get("prefix")
 
         # GitHub settings
@@ -195,6 +204,9 @@ class Config:
         config.cto_review_label = review_config.get("cto_review_label")  # defaults to code_reviewed_label
         config.cto_reviewed_label = review_config.get("cto_reviewed_label", "cto-reviewed")
         config.cto_review_threshold = review_config.get("cto_review_threshold", 0)
+
+        # Rework cycle limit
+        config.max_rework_cycles = review_config.get("max_rework_cycles", 2)
 
         # Backwards compatibility: map old fields to new
         if "agent" in review_config and not config.cto_review_agent:

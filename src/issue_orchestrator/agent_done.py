@@ -19,6 +19,9 @@ class Status(Enum):
     COMPLETED = "completed"
     BLOCKED = "blocked"
     NEEDS_HUMAN = "needs_human"
+    # Reviewer statuses
+    APPROVED = "approved"
+    CHANGES_REQUESTED = "changes_requested"
 
 
 # Required fields per status - agents MUST provide these
@@ -26,6 +29,8 @@ REQUIRED_FIELDS = {
     Status.COMPLETED: ["implementation", "problems"],
     Status.BLOCKED: ["reason", "attempted"],
     Status.NEEDS_HUMAN: ["question"],
+    Status.APPROVED: ["summary"],
+    Status.CHANGES_REQUESTED: ["issues"],
 }
 
 
@@ -45,6 +50,9 @@ class CompletionData:
     context: str | None = None
     options: list[str] | None = None
     default_action: str | None = None
+    # Reviewer fields
+    summary: str | None = None  # For approved
+    issues: str | None = None   # For changes_requested
 
 
 def die(message: str) -> NoReturn:
@@ -118,6 +126,26 @@ def get_needs_human_label() -> str:
         return "needs-human"
 
 
+def get_needs_rework_label() -> str:
+    """Get the needs-rework label from config (with prefix if configured)."""
+    try:
+        from .config import Config
+        config = Config.find_and_load()
+        return config.get_label_needs_rework()
+    except Exception:
+        return "needs-rework"
+
+
+def get_code_reviewed_label() -> Optional[str]:
+    """Get the code-reviewed label from config."""
+    try:
+        from .config import Config
+        config = Config.find_and_load()
+        return config.code_reviewed_label
+    except Exception:
+        return None
+
+
 def add_label_to_pr(pr_url: str, label: str) -> None:
     """Add a label to a PR."""
     # Extract PR number from URL
@@ -135,6 +163,43 @@ def add_label_to_pr(pr_url: str, label: str) -> None:
         print(f"⚠️  Could not add label '{label}' to PR: {result.stderr}", file=sys.stderr)
     else:
         print(f"🏷️  Added '{label}' label to PR")
+
+
+def remove_label_from_pr(pr_number: int, label: str) -> None:
+    """Remove a label from a PR."""
+    result = subprocess.run(
+        ["gh", "pr", "edit", str(pr_number), "--remove-label", label],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        # Label might not exist, that's okay
+        if "not found" not in result.stderr.lower():
+            print(f"⚠️  Could not remove label '{label}' from PR: {result.stderr}", file=sys.stderr)
+
+
+def get_pr_for_branch() -> Optional[int]:
+    """Get the PR number for the current branch, if one exists."""
+    result = subprocess.run(
+        ["gh", "pr", "view", "--json", "number", "-q", ".number"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def post_pr_comment(pr_number: int, body: str) -> str:
+    """Post a comment to a PR. Returns comment URL."""
+    result = subprocess.run(
+        ["gh", "pr", "comment", str(pr_number), "--body", body],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        die(f"Failed to post PR comment: {result.stderr}")
+    return result.stdout.strip()
 
 
 def validate_fields(data: CompletionData) -> None:
@@ -198,6 +263,23 @@ def format_needs_human_comment(data: CompletionData) -> str:
     return "\n".join(parts)
 
 
+def format_approved_comment(data: CompletionData) -> str:
+    """Format an approved review comment."""
+    return f"""## ✅ Code Review Approved
+
+{data.summary}"""
+
+
+def format_changes_requested_comment(data: CompletionData) -> str:
+    """Format a changes-requested review comment."""
+    return f"""## 🔄 Changes Requested
+
+{data.issues}
+
+---
+*The work agent will be re-queued to address these issues.*"""
+
+
 def post_comment(repo: str, issue_number: int, body: str) -> str:
     """Post a comment to the issue. Returns comment URL."""
     result = subprocess.run(
@@ -234,10 +316,14 @@ def add_trailers_to_commit(data: CompletionData) -> None:
         trailers.append(f"Agent-Attempted: {data.attempted}")
         if data.blocked_by:
             trailers.append(f"Agent-Blocked-By: {','.join(str(n) for n in data.blocked_by)}")
-    else:  # NEEDS_HUMAN
+    elif data.status == Status.NEEDS_HUMAN:
         trailers.append(f"Agent-Question: {data.question}")
         if data.context:
             trailers.append(f"Agent-Context: {data.context}")
+    elif data.status == Status.APPROVED:
+        trailers.append(f"Agent-Summary: {data.summary}")
+    elif data.status == Status.CHANGES_REQUESTED:
+        trailers.append(f"Agent-Issues: {data.issues}")
 
     # Get current commit message
     result = subprocess.run(
@@ -371,17 +457,25 @@ EXAMPLES:
     agent-done needs_human --question "Should we use OAuth or API keys?"
     agent-done needs_human --question "Which approach?" --options "Use Redis" "Use Postgres" --default "Use Redis"
 
+  Review approved:
+    agent-done approved --summary "Code is clean, tests pass, follows patterns"
+
+  Review requests changes:
+    agent-done changes_requested --issues "Missing error handling in foo(), needs tests for bar()"
+
 STATUSES:
-  completed   - Work done, PR ready (requires: --implementation, --problems)
-  blocked     - Cannot proceed (requires: --reason, --attempted)
-  needs_human - Need decision/clarification (requires: --question)
+  completed          - Work done, PR ready (requires: --implementation, --problems)
+  blocked            - Cannot proceed (requires: --reason, --attempted)
+  needs_human        - Need decision/clarification (requires: --question)
+  approved           - Review passed (requires: --summary)
+  changes_requested  - Review needs fixes (requires: --issues)
 """
     )
 
     # Positional: status (required, validated)
     parser.add_argument(
         "status",
-        choices=["completed", "blocked", "needs_human"],
+        choices=["completed", "blocked", "needs_human", "approved", "changes_requested"],
         help="Completion status (only these values allowed)"
     )
 
@@ -429,6 +523,16 @@ STATUSES:
         help="Default action if no response (optional, for 'needs_human')"
     )
 
+    # Reviewer fields
+    parser.add_argument(
+        "--summary", "-s",
+        help="Summary of review (required for 'approved')"
+    )
+    parser.add_argument(
+        "--issues",
+        help="Issues found that need fixing (required for 'changes_requested')"
+    )
+
     # Meta options
     parser.add_argument(
         "--dry-run",
@@ -453,6 +557,8 @@ STATUSES:
         context=args.context,
         options=args.options,
         default_action=args.default,
+        summary=args.summary,
+        issues=args.issues,
     )
 
     # Validate required fields (strict!)
@@ -470,8 +576,12 @@ STATUSES:
         comment_body = format_completion_comment(data)
     elif status == Status.BLOCKED:
         comment_body = format_blocked_comment(data)
-    else:  # NEEDS_HUMAN
+    elif status == Status.NEEDS_HUMAN:
         comment_body = format_needs_human_comment(data)
+    elif status == Status.APPROVED:
+        comment_body = format_approved_comment(data)
+    else:  # CHANGES_REQUESTED
+        comment_body = format_changes_requested_comment(data)
 
     if args.dry_run:
         print("\n--- DRY RUN: Would post this comment ---")
@@ -522,7 +632,7 @@ STATUSES:
 
         print(f"\n🚧 BLOCKED: Issue #{issue_number} marked as blocked")
 
-    else:  # NEEDS_HUMAN
+    elif status == Status.NEEDS_HUMAN:
         # 1. Push any work done (trailers included)
         print("🚀 Pushing work so far...")
         git_push()
@@ -537,6 +647,61 @@ STATUSES:
         post_comment(repo, issue_number, comment_body)
 
         print(f"\n❓ NEEDS HUMAN: Question posted on issue #{issue_number}")
+
+    elif status == Status.APPROVED:
+        # Reviewer approved the PR
+        # 1. Get PR number (reviewer is working in PR context)
+        pr_number = get_pr_for_branch()
+        if not pr_number:
+            die("Could not find PR for current branch. Are you in a review worktree?")
+
+        # 2. Remove needs-code-review label, add code-reviewed label
+        code_review_label = get_code_review_label()
+        if code_review_label:
+            print(f"🏷️  Removing '{code_review_label}' label...")
+            remove_label_from_pr(pr_number, code_review_label)
+
+        code_reviewed_label = get_code_reviewed_label()
+        if code_reviewed_label:
+            result = subprocess.run(
+                ["gh", "pr", "edit", str(pr_number), "--add-label", code_reviewed_label],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                print(f"🏷️  Added '{code_reviewed_label}' label to PR")
+
+        # 3. Post review comment on PR
+        print("💬 Posting review comment...")
+        post_pr_comment(pr_number, comment_body)
+
+        print(f"\n✅ APPROVED: PR #{pr_number} approved by reviewer")
+
+    elif status == Status.CHANGES_REQUESTED:
+        # Reviewer requested changes
+        # 1. Get PR number
+        pr_number = get_pr_for_branch()
+        if not pr_number:
+            die("Could not find PR for current branch. Are you in a review worktree?")
+
+        # 2. Remove needs-code-review, add needs-rework label
+        code_review_label = get_code_review_label()
+        if code_review_label:
+            print(f"🏷️  Removing '{code_review_label}' label...")
+            remove_label_from_pr(pr_number, code_review_label)
+
+        needs_rework_label = get_needs_rework_label()
+        result = subprocess.run(
+            ["gh", "pr", "edit", str(pr_number), "--add-label", needs_rework_label],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            print(f"🏷️  Added '{needs_rework_label}' label to PR")
+
+        # 3. Post review comment on PR
+        print("💬 Posting review comment...")
+        post_pr_comment(pr_number, comment_body)
+
+        print(f"\n🔄 CHANGES REQUESTED: PR #{pr_number} needs rework")
 
 
 if __name__ == "__main__":

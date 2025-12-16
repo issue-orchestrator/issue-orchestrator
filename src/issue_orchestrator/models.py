@@ -171,6 +171,16 @@ class PendingReview:
 
 
 @dataclass
+class PendingRework:
+    """A PR that needs rework after review requested changes."""
+    issue_number: int
+    pr_number: int
+    pr_url: str
+    branch_name: str
+    rework_cycle: int = 1  # Which rework iteration this is (1, 2, etc.)
+
+
+@dataclass
 class OrchestratorState:
     """Persisted state of the orchestrator."""
     active_sessions: list[Session] = field(default_factory=list)
@@ -180,6 +190,7 @@ class OrchestratorState:
     session_history: list[SessionHistoryEntry] = field(default_factory=list)  # This session's history
     issues_started_count: int = 0  # Total issues started this session (for max_issues_to_start)
     pending_reviews: list[PendingReview] = field(default_factory=list)  # PRs waiting for code review
+    pending_reworks: list[PendingRework] = field(default_factory=list)  # PRs needing rework after review
     startup_status: str = "pending"  # "pending", "running", "complete"
     startup_message: str = ""  # Current startup task description
     cached_queue_issues: list["Issue"] = field(default_factory=list)  # Cached queue for instant pagination
