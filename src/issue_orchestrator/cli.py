@@ -748,6 +748,153 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Verify the orchestrator setup works correctly."""
+    import subprocess
+    import shutil
+
+    console.print("[bold cyan]Orchestrator Setup Verification[/bold cyan]\n")
+
+    errors = []
+    warnings = []
+
+    # 1. Check config file
+    console.print("[bold]1. Configuration[/bold]")
+    try:
+        config = _load_config(args)
+        console.print(f"  [green]✓[/green] Config file found")
+        console.print(f"    Repo: {config.repo or '(auto-detect)'}")
+        console.print(f"    Agents: {', '.join(config.agents.keys())}")
+        console.print(f"    Repo root: {config.repo_root}")
+    except FileNotFoundError as e:
+        console.print(f"  [red]✗[/red] Config not found: {e}")
+        errors.append("Config file not found - run 'issue-orchestrator setup'")
+        # Can't continue without config
+        console.print(f"\n[bold red]Verification failed: {len(errors)} error(s)[/bold red]")
+        return 1
+
+    # 2. Check git repository
+    console.print("\n[bold]2. Git Repository[/bold]")
+    git_check = subprocess.run(
+        ["git", "-C", str(config.repo_root), "rev-parse", "--git-dir"],
+        capture_output=True, text=True
+    )
+    if git_check.returncode == 0:
+        console.print(f"  [green]✓[/green] Valid git repository")
+    else:
+        console.print(f"  [red]✗[/red] Not a git repository: {config.repo_root}")
+        errors.append("Not a git repository")
+
+    # 3. Check GitHub CLI
+    console.print("\n[bold]3. GitHub CLI[/bold]")
+    gh_path = shutil.which("gh")
+    if gh_path:
+        console.print(f"  [green]✓[/green] gh CLI found: {gh_path}")
+        # Check authentication
+        auth_check = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True, text=True
+        )
+        if auth_check.returncode == 0:
+            console.print(f"  [green]✓[/green] gh authenticated")
+        else:
+            console.print(f"  [red]✗[/red] gh not authenticated")
+            errors.append("GitHub CLI not authenticated - run 'gh auth login'")
+    else:
+        console.print(f"  [red]✗[/red] gh CLI not found")
+        errors.append("GitHub CLI not installed")
+
+    # 4. Check hooks setup
+    console.print("\n[bold]4. Git Hooks[/bold]")
+    from .worktree import HOOKS_DIR
+
+    bundled_hook = HOOKS_DIR / "pre-push"
+    if bundled_hook.exists():
+        console.print(f"  [green]✓[/green] Bundled pre-push hook exists")
+    else:
+        console.print(f"  [red]✗[/red] Bundled pre-push hook missing: {bundled_hook}")
+        errors.append("Bundled pre-push hook not found")
+
+    # Check if project uses custom hooksPath
+    hooks_path_check = subprocess.run(
+        ["git", "-C", str(config.repo_root), "config", "--get", "core.hooksPath"],
+        capture_output=True, text=True
+    )
+    if hooks_path_check.returncode == 0:
+        custom_path = hooks_path_check.stdout.strip()
+        console.print(f"  [cyan]ℹ[/cyan] Project uses custom hooksPath: {custom_path}")
+        project_hook = config.repo_root / custom_path / "pre-push"
+        if project_hook.exists():
+            console.print(f"  [green]✓[/green] Project pre-push hook found")
+            console.print(f"  [cyan]ℹ[/cyan] Hooks will be chained in worktrees")
+        else:
+            console.print(f"  [yellow]![/yellow] No project pre-push hook at {project_hook}")
+            warnings.append("No project pre-push hook found (chaining not needed)")
+    else:
+        # Check standard hooks location
+        main_hook = config.repo_root / ".git" / "hooks" / "pre-push"
+        if main_hook.exists():
+            console.print(f"  [green]✓[/green] Project pre-push hook found")
+            console.print(f"  [cyan]ℹ[/cyan] Hooks will be chained in worktrees")
+        else:
+            console.print(f"  [yellow]![/yellow] No project pre-push hook")
+            warnings.append("No project pre-push hook (only orchestrator hook will run)")
+
+    # 5. Check agent commands
+    console.print("\n[bold]5. Agent Commands[/bold]")
+    for agent_name, agent_config in config.agents.items():
+        cmd = agent_config.command
+        if cmd:
+            # Get first word of command (the executable)
+            executable = cmd.split()[0]
+            if shutil.which(executable):
+                console.print(f"  [green]✓[/green] {agent_name}: {executable} found")
+            else:
+                console.print(f"  [yellow]![/yellow] {agent_name}: {executable} not in PATH")
+                warnings.append(f"Agent '{agent_name}' command '{executable}' not in PATH")
+        else:
+            console.print(f"  [yellow]![/yellow] {agent_name}: no command configured")
+            warnings.append(f"Agent '{agent_name}' has no command")
+
+    # 6. Check tmux (if using tmux mode)
+    console.print("\n[bold]6. Tmux[/bold]")
+    tmux_path = shutil.which("tmux")
+    if tmux_path:
+        console.print(f"  [green]✓[/green] tmux found: {tmux_path}")
+        # Check version
+        version_check = subprocess.run(
+            ["tmux", "-V"],
+            capture_output=True, text=True
+        )
+        if version_check.returncode == 0:
+            console.print(f"  [cyan]ℹ[/cyan] Version: {version_check.stdout.strip()}")
+    else:
+        if config.ui_mode == "tmux":
+            console.print(f"  [red]✗[/red] tmux not found (required for ui_mode: tmux)")
+            errors.append("tmux not installed")
+        else:
+            console.print(f"  [yellow]![/yellow] tmux not found (ok if using web/none mode)")
+            warnings.append("tmux not installed")
+
+    # Summary
+    console.print("\n" + "=" * 50)
+    if errors:
+        console.print(f"\n[bold red]Verification FAILED: {len(errors)} error(s), {len(warnings)} warning(s)[/bold red]")
+        for err in errors:
+            console.print(f"  [red]✗[/red] {err}")
+        for warn in warnings:
+            console.print(f"  [yellow]![/yellow] {warn}")
+        return 1
+    elif warnings:
+        console.print(f"\n[bold yellow]Verification PASSED with {len(warnings)} warning(s)[/bold yellow]")
+        for warn in warnings:
+            console.print(f"  [yellow]![/yellow] {warn}")
+        return 0
+    else:
+        console.print(f"\n[bold green]Verification PASSED - all checks OK[/bold green]")
+        return 0
+
+
 def main() -> int:
     """Main entry point for the CLI."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
@@ -951,6 +1098,15 @@ def main() -> int:
         "--config", type=Path, help="Path to config file (default: auto-detect)"
     )
     audit_parser.set_defaults(func=cmd_audit)
+
+    # verify command
+    verify_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "verify", help="Verify the orchestrator setup works correctly"
+    )
+    verify_parser.add_argument(
+        "--config", type=Path, help="Path to config file (default: auto-detect)"
+    )
+    verify_parser.set_defaults(func=cmd_verify)
 
     args: argparse.Namespace = parser.parse_args()
     return args.func(args)

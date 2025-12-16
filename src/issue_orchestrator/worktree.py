@@ -52,6 +52,9 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     Note:
         Worktrees have a .git file (not directory) that points to the main repo.
         We need to find the actual hooks directory.
+
+        If the project uses core.hooksPath (e.g., .githooks/), we override it
+        for this worktree and copy the project hooks to the worktree's hooks dir.
     """
     worktree_path = Path(worktree_path)
 
@@ -69,10 +72,33 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     hooks_dir = gitdir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check if project has an existing pre-push hook in the main repo
-    # The gitdir is like /repo/.git/worktrees/name, so main repo is gitdir.parent.parent
-    main_repo_hooks = gitdir.parent.parent / "hooks"
-    project_hook = main_repo_hooks / "pre-push"
+    # Check if project uses core.hooksPath (common pattern for version-controlled hooks)
+    hooks_path_result = subprocess.run(
+        ["git", "-C", str(worktree_path), "config", "--get", "core.hooksPath"],
+        capture_output=True, text=True, check=False
+    )
+    custom_hooks_path = hooks_path_result.stdout.strip() if hooks_path_result.returncode == 0 else None
+
+    # Find the project's pre-push hook
+    project_hook = None
+    if custom_hooks_path:
+        # Project uses custom hooksPath (e.g., .githooks/)
+        # Resolve relative to worktree root
+        custom_hooks_dir = worktree_path / custom_hooks_path
+        project_hook = custom_hooks_dir / "pre-push"
+
+        # Override hooksPath for this worktree to use gitdir/hooks
+        # This allows our chained hooks to run while preserving project hooks
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "config", "--local", "core.hooksPath", str(hooks_dir)],
+            capture_output=True, check=False
+        )
+        logger.info("Overriding core.hooksPath to %s for hook chaining", hooks_dir)
+    else:
+        # Standard hooks location in main repo
+        # The gitdir is like /repo/.git/worktrees/name, so main repo is gitdir.parent.parent
+        main_repo_hooks = gitdir.parent.parent / "hooks"
+        project_hook = main_repo_hooks / "pre-push"
 
     dst_hook = hooks_dir / "pre-push"
     orchestrator_hook = pre_push_hook if pre_push_hook else HOOKS_DIR / "pre-push"

@@ -891,3 +891,59 @@ class TestInstallHooks:
         assert pre_push.stat().st_mode & 0o111, "Wrapper should be executable"
         assert pre_push_project.stat().st_mode & 0o111, "Project hook should be executable"
         assert pre_push_orchestrator.stat().st_mode & 0o111, "Orchestrator hook should be executable"
+
+    @patch("issue_orchestrator.worktree.subprocess.run")
+    def test_install_hooks_with_custom_hooks_path(self, mock_run, tmp_path):
+        """Test hook installation when project uses core.hooksPath (e.g., .githooks/)."""
+        # Setup fake git structure
+        main_repo = tmp_path / "main_repo"
+        main_repo.mkdir()
+        main_git = main_repo / ".git"
+        main_git.mkdir()
+        main_hooks = main_git / "hooks"
+        main_hooks.mkdir()
+
+        worktrees_dir = main_git / "worktrees" / "test-worktree"
+        worktrees_dir.mkdir(parents=True)
+        hooks_dir = worktrees_dir / "hooks"
+
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        (worktree_path / ".git").write_text(f"gitdir: {worktrees_dir}")
+
+        # Create .githooks directory with project hook (simulating version-controlled hooks)
+        custom_hooks_dir = worktree_path / ".githooks"
+        custom_hooks_dir.mkdir()
+        project_hook = custom_hooks_dir / "pre-push"
+        project_hook.write_text("#!/bin/bash\necho 'Custom hooks path hook'\nexit 0\n")
+        project_hook.chmod(0o755)
+
+        # Mock git config to return custom hooksPath
+        def mock_git_command(*args, **kwargs):
+            cmd = args[0]
+            if "config" in cmd and "--get" in cmd and "core.hooksPath" in cmd:
+                return MagicMock(returncode=0, stdout=".githooks\n", stderr="")
+            elif "config" in cmd and "--local" in cmd and "core.hooksPath" in cmd:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="")
+
+        mock_run.side_effect = mock_git_command
+
+        install_hooks(worktree_path)
+
+        # Verify chained hooks were created in gitdir/hooks (not .githooks)
+        pre_push = hooks_dir / "pre-push"
+        pre_push_project = hooks_dir / "pre-push.project"
+        pre_push_orchestrator = hooks_dir / "pre-push.orchestrator"
+
+        assert pre_push.exists(), "Wrapper hook should exist in gitdir/hooks"
+        assert pre_push_project.exists(), "Project hook copy should exist"
+        assert pre_push_orchestrator.exists(), "Orchestrator hook copy should exist"
+
+        # Verify git config was called to override hooksPath for the worktree
+        config_calls = [call for call in mock_run.call_args_list
+                        if "config" in str(call) and "--local" in str(call)]
+        assert len(config_calls) >= 1, "Should have set local hooksPath config"
+
+        # Verify project hook was copied from custom hooks path
+        assert "Custom hooks path hook" in pre_push_project.read_text()
