@@ -139,14 +139,32 @@ review:
   cto_review_threshold: 5  # Trigger after 5 PRs
 ```
 
-### Orchestrator Methods
+### Orchestrator Methods (orchestrator.py)
 
-| Method | Purpose |
-|--------|---------|
-| `queue_code_review()` | Queue PR for code review (called on work completion) |
-| `launch_review_session()` | Launch a code review agent for a PR |
-| `process_pending_reviews()` | Process queued reviews (called each loop) |
-| `check_cto_review_trigger()` | Check if CTO batch review should be triggered |
+| Method | Line | Purpose |
+|--------|------|---------|
+| `queue_code_review()` | 564 | Queue PR for code review (called on work completion) |
+| `launch_review_session()` | 594 | Launch a code review agent for a PR |
+| `process_pending_reviews()` | 662 | Process queued reviews (called each loop) |
+| `check_cto_review_trigger()` | 687 | Check if CTO batch review should be triggered |
+
+### UI Phase Detection (web.py:115-118)
+
+The dashboard shows whether a session is "Coding" or "Reviewing" based on the tmux session name:
+- Tmux sessions starting with `issue-*` → "Coding" phase
+- Tmux sessions starting with `review-*` → "Reviewing" phase
+
+```python
+tmux_name = session.tmux_session_name or ""
+is_review = tmux_name.startswith("review-")
+phase = "Reviewing" if is_review else "Coding"
+```
+
+### Setup Wizard Defaults
+
+The setup wizard (`setup_wizard.py`) defaults to enabling the review workflow (opt-out):
+- New projects: Line 476 - `default=True` for Stage 1 review
+- Existing projects: Line 760 - offers to add review if not present
 
 ## The `agent-done` Command
 

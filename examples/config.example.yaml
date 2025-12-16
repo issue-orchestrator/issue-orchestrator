@@ -17,6 +17,20 @@ agents:
     model: "sonnet"
     timeout_minutes: 45
 
+  # Reviewer agent for Stage 1 (per-PR code review)
+  "agent:reviewer":
+    prompt: ".issue-orchestrator/prompts/reviewer.md"
+    worktree_base: "../"
+    model: "sonnet"
+    timeout_minutes: 10
+
+  # CTO agent for Stage 2 (batch review)
+  "agent:cto":
+    prompt: ".issue-orchestrator/prompts/cto-review.md"
+    worktree_base: "../"
+    model: "sonnet"
+    timeout_minutes: 30
+
 # Concurrency settings
 concurrency:
   max_concurrent_sessions: 3                  # Max parallel agent sessions
@@ -53,3 +67,14 @@ comment_headings:
   pr_link: "## Pull Request"
   blocked: "## Blocked"
   needs_human: "## Needs Human Input"
+
+# Two-stage code review workflow (recommended)
+# Stage 1: Per-PR code review (immediate, after each PR)
+code_review_agent: "agent:reviewer"   # Agent that reviews PRs
+code_review_label: "needs-code-review"  # Label applied to PRs needing review
+code_reviewed_label: "code-reviewed"    # Label after review passes
+
+# Stage 2: CTO batch review (triggered when N reviewed PRs accumulate)
+# cto_review_agent: "agent:cto"         # Uncomment to enable batch review
+# cto_reviewed_label: "cto-reviewed"    # Label after CTO review
+# cto_review_threshold: 5               # Trigger after N reviewed PRs

@@ -466,14 +466,14 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
         config["labels"] = {"prefix": label_prefix}
         prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
 
-    # Two-stage review workflow (optional)
-    prompter.print("\n--- Review Workflow (Optional) ---")
-    prompter.print("Enable a two-stage review pipeline for PRs created by work agents:")
+    # Two-stage review workflow (enabled by default)
+    prompter.print("\n--- Review Workflow ---")
+    prompter.print("Code review is RECOMMENDED to catch issues before merging:")
     prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
     prompter.print("  Stage 2: CTO batch review (when N reviewed PRs accumulate)\n")
 
-    # Stage 1: Per-PR Code Review
-    if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=False):
+    # Stage 1: Per-PR Code Review (default enabled)
+    if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=True):
         prompter.print("\n  --- Stage 1: Per-PR Code Review ---")
         code_review_agent = prompter.input("  Code review agent label", "agent:reviewer")
         code_review_label = prompter.input("  Label for PRs needing review", "needs-code-review")
@@ -749,15 +749,15 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
             config["labels"]["prefix"] = label_prefix
             prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
 
-    # Two-stage review workflow (optional) - only ask if not already configured
+    # Two-stage review workflow - ask if not already configured (default enabled)
     if "code_review_agent" not in config:
-        prompter.print("\n--- Review Workflow (Optional) ---")
-        prompter.print("Enable a two-stage review pipeline for PRs created by work agents:")
+        prompter.print("\n--- Review Workflow ---")
+        prompter.print("Code review is RECOMMENDED to catch issues before merging:")
         prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
         prompter.print("  Stage 2: CTO batch review (when N reviewed PRs accumulate)\n")
 
-        # Stage 1: Per-PR Code Review
-        if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=False):
+        # Stage 1: Per-PR Code Review (default enabled)
+        if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=True):
             prompter.print("\n  --- Stage 1: Per-PR Code Review ---")
             code_review_agent = prompter.input("  Code review agent label", "agent:reviewer")
             code_review_label = prompter.input("  Label for PRs needing review", "needs-code-review")

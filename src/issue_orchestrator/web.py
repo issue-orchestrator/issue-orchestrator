@@ -111,6 +111,12 @@ async def dashboard(
             # Determine if session is over its timeout
             timeout = session.agent_config.timeout_minutes
             runtime = session.runtime_minutes
+
+            # Determine phase: coding (issue-*) or reviewing (review-*)
+            tmux_name = session.tmux_session_name or ""
+            is_review = tmux_name.startswith("review-")
+            phase = "Reviewing" if is_review else "Coding"
+
             if runtime >= timeout:
                 status = "slow"
                 status_label = "Slow"
@@ -118,10 +124,10 @@ async def dashboard(
             elif runtime == 0:
                 status = "active"
                 status_label = "Starting"
-                status_reason = "Agent launching..."
+                status_reason = f"{phase} - Agent launching..."
             else:
                 status = "active"
-                status_label = "Active"
+                status_label = phase  # Show "Coding" or "Reviewing" as the label
                 status_reason = f"Running for {runtime} min"
 
             seen_issues.add(session.issue.number)
@@ -132,6 +138,7 @@ async def dashboard(
                 "status": status,
                 "status_label": status_label,
                 "status_reason": status_reason,
+                "phase": phase,  # Add phase for additional UI use
                 "time": f"{runtime} min",
                 "action": "focus",
                 "action_icon": "→",
