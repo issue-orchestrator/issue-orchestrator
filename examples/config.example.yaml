@@ -17,6 +17,14 @@ agents:
     model: "sonnet"
     timeout_minutes: 45
 
+  # Domain expert agent (no code, skip code review)
+  "agent:domain-expert":
+    prompt: ".issue-orchestrator/prompts/domain-expert.md"
+    worktree_base: "../"
+    model: "sonnet"
+    timeout_minutes: 30
+    skip_review: true  # Skip code review for non-code agents
+
   # Reviewer agent for Stage 1 (per-PR code review)
   "agent:reviewer":
     prompt: ".issue-orchestrator/prompts/reviewer.md"

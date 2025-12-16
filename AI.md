@@ -220,6 +220,11 @@ agents:
     repo_root: "/path/to/mobile-app"  # Different repo
     timeout_minutes: 60
 
+  # Non-code agent: skip code review
+  "agent:domain-expert":
+    prompt: ".issue-orchestrator/prompts/domain-expert.md"
+    skip_review: true  # Skip code review for non-code agents
+
 concurrency:
   max_concurrent_sessions: 3
   session_timeout_minutes: 45

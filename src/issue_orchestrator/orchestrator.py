@@ -404,7 +404,8 @@ class Orchestrator:
                 print(f"Warning: failed to remove worktree: {e}")
 
             # Trigger code review immediately if configured
-            if pr_url and self.config.code_review_agent:
+            # Skip if agent has skip_review set (e.g., domain-expert agents)
+            if pr_url and self.config.code_review_agent and not session.agent_config.skip_review:
                 self.queue_code_review(
                     issue_number=session.issue.number,
                     pr_url=pr_url,

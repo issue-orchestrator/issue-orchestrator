@@ -132,6 +132,7 @@ class Config:
                 "model": agent_data.get("model", "sonnet"),
                 "timeout_minutes": agent_data.get("timeout_minutes", 45),
                 "permission_mode": agent_data.get("permission_mode", "default"),
+                "skip_review": agent_data.get("skip_review", False),
             }
             if "command" in agent_data:
                 agent_kwargs["command"] = agent_data["command"]

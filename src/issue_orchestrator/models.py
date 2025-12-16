@@ -81,6 +81,8 @@ class AgentConfig:
     repo_root: Optional[Path] = None  # Per-agent repo root override
     # Permission mode for Claude CLI: default, acceptEdits, bypassPermissions, plan, dontAsk
     permission_mode: str = "default"
+    # Skip code review for this agent (e.g., domain-expert agents that don't produce code)
+    skip_review: bool = False
     # Command template - {initial_prompt} is passed as positional arg to claude
     command: str = "claude --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit."
