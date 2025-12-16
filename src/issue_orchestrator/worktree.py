@@ -89,17 +89,43 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
 set -e
 
 HOOKS_DIR="$(dirname "$0")"
+AUDIT_LOG="$HOOKS_DIR/pre-push.log"
+
+# Audit logging function
+audit() {{
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$AUDIT_LOG"
+    echo "[orchestrator] $1"
+}}
+
+audit "Pre-push hook started (commit: $(git rev-parse --short HEAD))"
 
 # Run project's pre-push hook first (lint, tests, etc.)
 if [ -x "$HOOKS_DIR/pre-push.project" ]; then
-    echo "[orchestrator] Running project pre-push hook..."
-    "$HOOKS_DIR/pre-push.project" "$@"
+    audit "Running project pre-push hook..."
+    if "$HOOKS_DIR/pre-push.project" "$@"; then
+        audit "Project hook PASSED"
+    else
+        audit "Project hook FAILED (exit $?)"
+        exit 1
+    fi
+else
+    audit "No project hook found"
 fi
 
 # Then run orchestrator's trailer validation
 if [ -x "$HOOKS_DIR/pre-push.orchestrator" ]; then
-    "$HOOKS_DIR/pre-push.orchestrator" "$@"
+    audit "Running orchestrator pre-push hook..."
+    if "$HOOKS_DIR/pre-push.orchestrator" "$@"; then
+        audit "Orchestrator hook PASSED"
+    else
+        audit "Orchestrator hook FAILED (exit $?)"
+        exit 1
+    fi
+else
+    audit "No orchestrator hook found"
 fi
+
+audit "Pre-push hook completed successfully"
 """
         dst_hook.write_text(wrapper_content)
         dst_hook.chmod(0o755)
