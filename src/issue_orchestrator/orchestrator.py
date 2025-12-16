@@ -23,14 +23,18 @@ def _emit_event(event_type: str, data: dict | None = None) -> None:
         from .web import broadcast_event, _event_subscribers
         # Only try to emit if there are subscribers
         if not _event_subscribers:
+            logger.debug("[SSE] No subscribers, skipping event: %s", event_type)
             return
         # Schedule the async broadcast in the current event loop
         loop = asyncio.get_event_loop()
         if loop.is_running():
+            logger.info("[SSE] Emitting event '%s' to %d subscribers, data=%s",
+                       event_type, len(_event_subscribers), data)
             asyncio.create_task(broadcast_event(event_type, data))
-    except Exception:
-        # Silently ignore - SSE is optional enhancement
-        pass
+        else:
+            logger.debug("[SSE] Event loop not running, skipping event: %s", event_type)
+    except Exception as e:
+        logger.warning("[SSE] Failed to emit event %s: %s", event_type, e)
 
 from .config import Config
 from .github import (
@@ -411,6 +415,8 @@ class Orchestrator:
         """Main orchestration loop."""
         print("Starting orchestration loop...")
         last_cache_update = time.time()
+        last_ui_update = time.time()
+        ui_update_interval = 30  # Emit state_changed every 30 seconds for UI refresh
 
         while not self._shutdown_requested:
             # Check status of all active sessions
@@ -489,6 +495,16 @@ class Orchestrator:
             if cache_age >= self.config.queue_refresh_seconds:
                 self.update_queue_cache()
                 last_cache_update = time.time()
+
+            # Periodically emit state_changed for UI to update runtimes
+            # This ensures "Starting" transitions to "Active" as time passes
+            ui_age = time.time() - last_ui_update
+            if ui_age >= ui_update_interval and self.state.active_sessions:
+                _emit_event("state_changed", {
+                    "active_count": len(self.state.active_sessions),
+                    "sessions": [s.issue.number for s in self.state.active_sessions],
+                })
+                last_ui_update = time.time()
 
             # Wait before next check
             await asyncio.sleep(10)
