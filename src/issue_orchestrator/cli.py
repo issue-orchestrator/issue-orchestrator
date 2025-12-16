@@ -384,29 +384,6 @@ end tell'''
     if config.ui_mode != "web":
         asyncio.run(orchestrator.startup())
 
-    # Setup signal handlers for graceful shutdown (double Ctrl+C = force kill)
-    import signal
-
-    def handle_signal(signum, frame):
-        if orchestrator._shutdown_requested:
-            # Second signal - force kill
-            orchestrator.request_shutdown(force=True)
-            # Also stop the web server
-            if config.ui_mode == "web":
-                from .web import trigger_server_shutdown
-                trigger_server_shutdown()
-            raise KeyboardInterrupt()  # Exit immediately
-        else:
-            # First signal - graceful shutdown
-            orchestrator.request_shutdown()
-            # Also stop the web server
-            if config.ui_mode == "web":
-                from .web import trigger_server_shutdown
-                trigger_server_shutdown()
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-
     try:
         if args.no_dashboard:
             # Run orchestrator without dashboard (useful for CI/debugging)
@@ -419,7 +396,30 @@ end tell'''
             port = args.port if args.port != 8080 else config.web_port
             console.print("[dim]Starting web dashboard...[/dim]")
             console.print(f"[green]Dashboard will open at http://localhost:{port}[/green]")
-            asyncio.run(run_with_web_dashboard(orchestrator, port=port))
+
+            # Wrapper to set up signal handlers inside asyncio context
+            # (asyncio.run() overwrites signal handlers set before it)
+            async def run_with_signals():
+                import signal
+                from .web import trigger_server_shutdown
+
+                def handle_signal():
+                    if orchestrator._shutdown_requested:
+                        # Second signal - force kill
+                        orchestrator.request_shutdown(force=True)
+                        trigger_server_shutdown()
+                    else:
+                        # First signal - graceful shutdown
+                        orchestrator.request_shutdown()
+                        trigger_server_shutdown()
+
+                loop = asyncio.get_running_loop()
+                loop.add_signal_handler(signal.SIGINT, handle_signal)
+                loop.add_signal_handler(signal.SIGTERM, handle_signal)
+
+                await run_with_web_dashboard(orchestrator, port=port)
+
+            asyncio.run(run_with_signals())
         else:
             # Run with interactive TUI dashboard (tmux or iterm2 mode)
             should_attach = asyncio.run(run_with_dashboard(orchestrator, config.ui_mode))
