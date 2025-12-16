@@ -148,10 +148,12 @@ async def dashboard(
             queue_total = len(queue_issues)
             logger.info("[dashboard] Using %d cached queue issues", queue_total)
 
-            # Apply pagination
+            # Apply pagination (filtering out already-seen issues like active sessions)
             start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
             end_idx = start_idx + QUEUE_PAGE_SIZE
             for issue in queue_issues[start_idx:end_idx]:
+                if issue.number in seen_issues:
+                    continue  # Skip active sessions that may also be in queue
                 seen_issues.add(issue.number)
                 issues.append({
                     "issue_number": issue.number,
@@ -201,9 +203,15 @@ async def dashboard(
         queue_page = queue_total_pages
     logger.info("[dashboard] Pagination: page=%d, total_pages=%d, total_items=%d", queue_page, queue_total_pages, queue_total)
 
+    # Compute active session count for status display
+    active_count = len(state.active_sessions) if state else 0
+    shutdown_requested = getattr(orchestrator, '_shutdown_requested', False) if orchestrator else False
+
     html = template.render(
         issues=issues,
         paused=state.paused if state else False,
+        shutdown_requested=shutdown_requested,
+        active_session_count=active_count,
         startup_status=state.startup_status if state else "pending",
         startup_message=state.startup_message if state else "",
         repo=config.repo if config else "",
@@ -239,6 +247,7 @@ async def get_status() -> JSONResponse:
 
     return JSONResponse({
         "paused": state.paused,
+        "shutdown_requested": getattr(_orchestrator, '_shutdown_requested', False),
         "active_sessions": sessions,
         "max_sessions": config.max_concurrent_sessions,
         "completed_today": state.completed_today,

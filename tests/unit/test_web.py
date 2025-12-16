@@ -59,6 +59,7 @@ def create_mock_orchestrator():
     mock_orch.pause = MagicMock()
     mock_orch.resume = MagicMock()
     mock_orch.request_shutdown = MagicMock()
+    mock_orch._shutdown_requested = False  # Explicit value for JSON serialization
 
     return mock_orch
 

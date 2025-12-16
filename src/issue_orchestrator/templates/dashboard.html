@@ -288,6 +288,18 @@
                 <span class="status-badge status-starting">
                     Starting...
                 </span>
+                {% elif shutdown_requested and active_session_count > 0 %}
+                <span class="status-badge status-paused">
+                    Shutting down... ({{ active_session_count }})
+                </span>
+                {% elif shutdown_requested %}
+                <span class="status-badge status-paused">
+                    Shutdown
+                </span>
+                {% elif paused and active_session_count > 0 %}
+                <span class="status-badge status-paused">
+                    Pausing... ({{ active_session_count }})
+                </span>
                 {% elif paused %}
                 <span class="status-badge status-paused">
                     Paused
