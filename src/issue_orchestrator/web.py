@@ -106,41 +106,45 @@ async def dashboard(
         active_numbers = {s.issue.number for s in state.active_sessions}
         history_numbers = {e.issue_number for e in state.session_history}
 
-        # 1. Active sessions (sorted first)
-        for session in state.active_sessions:
-            # Determine if session is over its timeout
-            timeout = session.agent_config.timeout_minutes
-            runtime = session.runtime_minutes
+        # Always track active sessions to avoid showing them in queue on later pages
+        seen_issues.update(active_numbers)
 
-            # Determine phase: coding (issue-*) or reviewing (review-*)
-            tmux_name = session.tmux_session_name or ""
-            is_review = tmux_name.startswith("review-")
-            phase = "Reviewing" if is_review else "Coding"
+        # 1. Active sessions (only on page 1)
+        if queue_page == 1:
+            for session in state.active_sessions:
+                # Determine if session is over its timeout
+                timeout = session.agent_config.timeout_minutes
+                runtime = session.runtime_minutes
 
-            if runtime >= timeout:
-                status = "slow"
-                status_label = "Slow"
-                status_reason = f"Over timeout ({runtime} min / {timeout} min)"
-            else:
-                status = "active"
-                status_label = phase  # Show "Coding" or "Reviewing"
-                status_reason = f"Running for {runtime} min"
+                # Determine phase: coding (issue-*) or reviewing (review-*)
+                tmux_name = session.tmux_session_name or ""
+                is_review = tmux_name.startswith("review-")
+                phase = "Reviewing" if is_review else "Coding"
 
-            seen_issues.add(session.issue.number)
-            issues.append({
-                "issue_number": session.issue.number,
-                "title": session.issue.title,
-                "agent_type": (session.issue.agent_type or "unknown").replace("agent:", ""),
-                "status": status,
-                "status_label": status_label,
-                "status_reason": status_reason,
-                "phase": phase,  # Add phase for additional UI use
-                "time": f"{runtime} min",
-                "action": "focus",
-                "action_icon": "→",
-                "action_hint": "Click to focus iTerm2 tab",
-                "url": "",
-            })
+                if runtime >= timeout:
+                    status = "slow"
+                    status_label = "Slow"
+                    status_reason = f"Over timeout ({runtime} min / {timeout} min)"
+                else:
+                    status = "active"
+                    status_label = phase  # Show "Coding" or "Reviewing"
+                    status_reason = f"Running for {runtime} min"
+
+                seen_issues.add(session.issue.number)
+                issues.append({
+                    "issue_number": session.issue.number,
+                    "title": session.issue.title,
+                    "agent_type": (session.issue.agent_type or "unknown").replace("agent:", ""),
+                    "status": status,
+                    "status_label": status_label,
+                    "status_reason": status_reason,
+                    "phase": phase,  # Add phase for additional UI use
+                    "time": f"{runtime} min",
+                    "action": "focus",
+                    "action_icon": "→",
+                    "action_hint": "Click to focus iTerm2 tab",
+                    "url": "",
+                })
 
         # 2. Queue (use cached issues for instant pagination)
         # Cache is populated during startup and refreshed periodically by the orchestrator loop
