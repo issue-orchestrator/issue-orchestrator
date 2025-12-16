@@ -81,6 +81,73 @@ class TestClaudeExecution:
         assert "hello" in result.stdout.lower(), f"Expected 'hello' in output: {result.stdout}"
 
 
+    def test_claude_read_file_with_bypass_permissions(self):
+        """Test that Claude can read files when permissions are bypassed.
+
+        This tests the scenario where orchestrator runs unattended and needs
+        to read instruction files without waiting for permission prompts.
+        """
+        # Create a test file to read
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
+            f.write("# Test Instructions\n\nThis is a test file for Claude to read.\n")
+            test_file = f.name
+
+        try:
+            result = subprocess.run(
+                [
+                    "claude",
+                    "--print",
+                    "--dangerously-skip-permissions",  # Bypass permission prompts
+                    f"Read the file at {test_file} and tell me what the title is. Reply with just the title text.",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+            assert result.returncode == 0, f"Claude failed: {result.stderr}"
+            # Should find "Test Instructions" in the output
+            assert "Test Instructions" in result.stdout or "test" in result.stdout.lower(), \
+                f"Expected file content reference in output: {result.stdout}"
+        finally:
+            Path(test_file).unlink(missing_ok=True)
+
+    def test_claude_read_from_specific_directory(self):
+        """Test reading from a subdirectory like docs/10-ai/.
+
+        This mimics what the orchestrator does when agents read their instructions.
+        """
+        import tempfile
+        import os
+
+        # Create a directory structure like docs/10-ai/
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ai_dir = Path(tmpdir) / "docs" / "10-ai"
+            ai_dir.mkdir(parents=True)
+
+            # Create an instruction file
+            instruction_file = ai_dir / "test-instructions.md"
+            instruction_file.write_text("# Agent Instructions\n\nDo the thing.\n")
+
+            result = subprocess.run(
+                [
+                    "claude",
+                    "--print",
+                    "--dangerously-skip-permissions",
+                    f"Read {instruction_file} and confirm you can see 'Agent Instructions' in it. Reply YES or NO.",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=tmpdir,  # Run from the temp directory
+            )
+
+            assert result.returncode == 0, f"Claude failed: {result.stderr}"
+            assert "YES" in result.stdout.upper() or "agent" in result.stdout.lower(), \
+                f"Claude couldn't read the file: {result.stdout}"
+
+
 class TestShellEscaping:
     """Test shell escaping without requiring Claude CLI."""
 
