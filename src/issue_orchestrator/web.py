@@ -121,13 +121,9 @@ async def dashboard(
                 status = "slow"
                 status_label = "Slow"
                 status_reason = f"Over timeout ({runtime} min / {timeout} min)"
-            elif runtime == 0:
-                status = "active"
-                status_label = "Starting"
-                status_reason = f"{phase} - Agent launching..."
             else:
                 status = "active"
-                status_label = phase  # Show "Coding" or "Reviewing" as the label
+                status_label = phase  # Show "Coding" or "Reviewing"
                 status_reason = f"Running for {runtime} min"
 
             seen_issues.add(session.issue.number)
