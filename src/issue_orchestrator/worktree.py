@@ -42,6 +42,9 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     """
     Install git hooks into a worktree.
 
+    This function CHAINS hooks - if the project already has a pre-push hook,
+    we preserve it and run it BEFORE the orchestrator's hook.
+
     Args:
         worktree_path: Path to the worktree
         pre_push_hook: Custom pre-push hook path (uses bundled if None)
@@ -66,13 +69,53 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     hooks_dir = gitdir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
-    # Use custom hook if provided, otherwise use bundled
-    src_hook = pre_push_hook if pre_push_hook else HOOKS_DIR / "pre-push"
-    if src_hook.exists():
-        dst_hook = hooks_dir / "pre-push"
-        shutil.copy2(src_hook, dst_hook)
-        # Make executable
+    # Check if project has an existing pre-push hook in the main repo
+    # The gitdir is like /repo/.git/worktrees/name, so main repo is gitdir.parent.parent
+    main_repo_hooks = gitdir.parent.parent / "hooks"
+    project_hook = main_repo_hooks / "pre-push"
+
+    dst_hook = hooks_dir / "pre-push"
+    orchestrator_hook = pre_push_hook if pre_push_hook else HOOKS_DIR / "pre-push"
+
+    if project_hook.exists() and project_hook.is_file():
+        # Chain hooks: copy project hook, then create wrapper that runs both
+        project_hook_copy = hooks_dir / "pre-push.project"
+        shutil.copy2(project_hook, project_hook_copy)
+        project_hook_copy.chmod(0o755)
+
+        # Create wrapper that runs project hook first, then orchestrator hook
+        wrapper_content = f"""#!/bin/bash
+# Chained pre-push hook: runs project hook first, then orchestrator hook
+set -e
+
+HOOKS_DIR="$(dirname "$0")"
+
+# Run project's pre-push hook first (lint, tests, etc.)
+if [ -x "$HOOKS_DIR/pre-push.project" ]; then
+    echo "[orchestrator] Running project pre-push hook..."
+    "$HOOKS_DIR/pre-push.project" "$@"
+fi
+
+# Then run orchestrator's trailer validation
+if [ -x "$HOOKS_DIR/pre-push.orchestrator" ]; then
+    "$HOOKS_DIR/pre-push.orchestrator" "$@"
+fi
+"""
+        dst_hook.write_text(wrapper_content)
         dst_hook.chmod(0o755)
+
+        # Copy orchestrator hook as pre-push.orchestrator
+        if orchestrator_hook.exists():
+            orch_hook_copy = hooks_dir / "pre-push.orchestrator"
+            shutil.copy2(orchestrator_hook, orch_hook_copy)
+            orch_hook_copy.chmod(0o755)
+
+        logger.info("Installed chained pre-push hooks (project + orchestrator)")
+    elif orchestrator_hook.exists():
+        # No project hook, just install orchestrator's hook directly
+        shutil.copy2(orchestrator_hook, dst_hook)
+        dst_hook.chmod(0o755)
+        logger.info("Installed orchestrator pre-push hook")
 
 
 def generate_branch_name(issue_number: int, issue_title: str) -> str:
@@ -166,6 +209,9 @@ def create_worktree(
                     ["git", "-C", str(worktree_path), "pull", "--rebase"],
                     capture_output=True, check=False
                 )
+                # Reinstall hooks (ensures latest hook chaining logic is applied)
+                if enforce_hooks:
+                    install_hooks(worktree_path, pre_push_hook)
                 return worktree_path, existing_branch
         # Invalid worktree directory - remove it
         logger.warning("Removing invalid worktree directory at %s", worktree_path)

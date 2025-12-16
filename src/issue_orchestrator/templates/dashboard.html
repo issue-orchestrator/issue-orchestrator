@@ -546,6 +546,39 @@
             window.location.reload();
         }
 
+        // Server-Sent Events for real-time updates
+        {% if startup_status == 'complete' %}
+        (function() {
+            const evtSource = new EventSource('/api/events');
+            let reconnectAttempts = 0;
+            const maxReconnectAttempts = 5;
+
+            evtSource.onopen = function() {
+                console.log('[SSE] Connected to event stream');
+                reconnectAttempts = 0;
+            };
+
+            // Listen for specific events that should trigger refresh
+            const refreshEvents = ['session_started', 'session_completed', 'paused', 'resumed', 'startup_complete'];
+            refreshEvents.forEach(eventType => {
+                evtSource.addEventListener(eventType, function(e) {
+                    console.log('[SSE] Received event:', eventType, e.data);
+                    // Slight delay to let server state settle
+                    setTimeout(() => window.location.reload(), 200);
+                });
+            });
+
+            evtSource.onerror = function(e) {
+                console.log('[SSE] Connection error, will reconnect automatically');
+                reconnectAttempts++;
+                if (reconnectAttempts >= maxReconnectAttempts) {
+                    console.log('[SSE] Max reconnect attempts reached, closing');
+                    evtSource.close();
+                }
+            };
+        })();
+        {% endif %}
+
         // Context menu
         const contextMenu = document.getElementById('contextMenu');
         const menuFocus = document.getElementById('menuFocus');

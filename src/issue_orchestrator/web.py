@@ -1,6 +1,7 @@
 """Web dashboard for the orchestrator."""
 
 import asyncio
+import json
 import logging
 import webbrowser
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from sse_starlette.sse import EventSourceResponse
 from jinja2 import Environment, FileSystemLoader
 
 if TYPE_CHECKING:
@@ -23,6 +24,31 @@ app = FastAPI(title="Issue Orchestrator")
 _orchestrator: "Orchestrator | None" = None
 # Global reference to uvicorn server (for shutdown)
 _server: "Any" = None
+
+# SSE event subscribers - set of asyncio.Queue objects
+_event_subscribers: set[asyncio.Queue] = set()
+
+
+async def broadcast_event(event_type: str, data: dict | None = None) -> None:
+    """Broadcast an event to all SSE subscribers.
+
+    Args:
+        event_type: Type of event (e.g., "session_started", "session_completed", "state_changed")
+        data: Optional data to include with the event
+    """
+    event = {"type": event_type, "data": data or {}}
+    dead_subscribers = []
+
+    for queue in _event_subscribers:
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            # Queue full, mark for removal
+            dead_subscribers.append(queue)
+
+    # Clean up dead subscribers
+    for queue in dead_subscribers:
+        _event_subscribers.discard(queue)
 
 
 def get_orchestrator():
@@ -420,6 +446,41 @@ async def get_config() -> JSONResponse:
         config_text = config.config_path.read_text()
 
     return JSONResponse({"config": config_text})
+
+
+@app.get("/api/events")
+async def events(request: Request):
+    """Server-Sent Events endpoint for real-time updates.
+
+    The dashboard connects to this endpoint to receive instant notifications
+    when sessions start, complete, or state changes.
+    """
+    async def event_generator():
+        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        _event_subscribers.add(queue)
+        logger.info("[SSE] Client connected, %d total subscribers", len(_event_subscribers))
+
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+                try:
+                    # Wait for event with timeout (sends keepalive)
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield {
+                        "event": event["type"],
+                        "data": json.dumps(event["data"]),
+                    }
+                except asyncio.TimeoutError:
+                    # Send keepalive comment to prevent connection timeout
+                    yield {"comment": "keepalive"}
+        finally:
+            _event_subscribers.discard(queue)
+            logger.info("[SSE] Client disconnected, %d remaining subscribers", len(_event_subscribers))
+
+    return EventSourceResponse(event_generator())
 
 
 @app.post("/api/test/create")

@@ -12,6 +12,26 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _emit_event(event_type: str, data: dict | None = None) -> None:
+    """Emit an SSE event to connected dashboard clients.
+
+    This is a fire-and-forget operation - if no event loop is running
+    or the web module isn't imported, it silently does nothing.
+    """
+    try:
+        from .web import broadcast_event, _event_subscribers
+        # Only try to emit if there are subscribers
+        if not _event_subscribers:
+            return
+        # Schedule the async broadcast in the current event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(broadcast_event(event_type, data))
+    except Exception:
+        # Silently ignore - SSE is optional enhancement
+        pass
+
 from .config import Config
 from .github import (
     list_issues, add_label, remove_label,
@@ -61,13 +81,18 @@ class Orchestrator:
             return int(match.group(1))
         raise ValueError(f"Could not extract number from session name: {session_name}")
 
-    def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> None:
-        """Create a session using the appropriate backend."""
+    def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> bool:
+        """Create a session using the appropriate backend.
+
+        Returns:
+            True if session was created successfully, False otherwise.
+        """
         if self._using_iterm2:
             session_number = self._extract_session_number(session_name)
-            self._get_iterm_manager().create_session(session_number, command, str(working_dir), title)
+            return self._get_iterm_manager().create_session(session_number, command, str(working_dir), title)
         else:
             create_session(session_name, command, working_dir, title)
+            return True  # tmux create_session doesn't return status, assume success
 
     def _session_exists(self, session_name: str) -> bool:
         """Check if a session exists using the appropriate backend."""
@@ -206,6 +231,7 @@ class Orchestrator:
         elapsed = time.time() - startup_start
         logger.info("Startup complete in %.1fs", elapsed)
         print(f"[startup] Total startup time: {elapsed:.1f}s")
+        _emit_event("startup_complete")
 
     def launch_session(self, issue: Issue) -> Optional[Session]:
         """Launch a new session for an issue."""
@@ -279,8 +305,19 @@ class Orchestrator:
         # Create session (tmux or iTerm2 tab) - command includes the initial prompt as a CLI argument
         session_name = f"issue-{issue.number}"
         step_start = time.time()
-        self._create_session(session_name, command, worktree_path, title=issue.title)
+        session_created = self._create_session(session_name, command, worktree_path, title=issue.title)
         session_time = time.time() - step_start
+
+        if not session_created:
+            # Session creation failed - clean up and return None
+            logger.error("Failed to create session for issue #%d", issue.number)
+            print(f"[launch] ERROR: Failed to create session for issue #{issue.number}")
+            print("[launch] Is iTerm2 running with a window open?")
+            # Release the claim and remove the in-progress label
+            release_claim(issue.number)
+            remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
+            return None
+
         logger.debug("Session created in %.1fs", session_time)
         print(f"[launch] Session created in {session_time:.1f}s")
 
@@ -298,6 +335,7 @@ class Orchestrator:
         logger.info("Session launched for issue #%d in %.1fs (worktree=%.1fs, label=%.1fs, session=%.1fs)",
                     issue.number, total_time, worktree_time, label_time, session_time)
         print(f"Launched session for issue #{issue.number}: {issue.title}")
+        _emit_event("session_started", {"issue_number": issue.number, "title": issue.title})
 
         return session
 
@@ -307,6 +345,7 @@ class Orchestrator:
         from .github import get_open_prs_for_branch
 
         print(f"Session #{session.issue.number} completed with status: {status.value}")
+        _emit_event("session_completed", {"issue_number": session.issue.number, "status": status.value})
 
         # Release the claim on this issue
         release_claim(session.issue.number)
@@ -485,11 +524,13 @@ class Orchestrator:
         """Pause - don't start new sessions."""
         self.state.paused = True
         print("Orchestrator paused - will finish current sessions but not start new ones")
+        _emit_event("paused")
 
     def resume(self) -> None:
         """Resume after pause."""
         self.state.paused = False
         print("Orchestrator resumed")
+        _emit_event("resumed")
 
     def update_queue_cache(self) -> None:
         """Update the cached queue issues for instant dashboard pagination.

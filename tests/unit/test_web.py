@@ -972,3 +972,122 @@ class TestGetTemplates:
 
         env = get_templates()
         assert isinstance(env, Environment)
+
+
+class TestSSEFunctionality:
+    """Test Server-Sent Events functionality."""
+
+    @pytest.mark.asyncio
+    async def test_broadcast_event_to_subscribers(self):
+        """Test broadcasting events to subscribers."""
+        import asyncio
+        from issue_orchestrator.web import broadcast_event, _event_subscribers
+
+        # Create a test queue and add it as a subscriber
+        test_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        _event_subscribers.add(test_queue)
+
+        try:
+            # Broadcast an event
+            await broadcast_event("test_event", {"key": "value"})
+
+            # Check the queue received the event
+            assert not test_queue.empty()
+            event = test_queue.get_nowait()
+            assert event["type"] == "test_event"
+            assert event["data"] == {"key": "value"}
+        finally:
+            _event_subscribers.discard(test_queue)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_event_handles_empty_data(self):
+        """Test broadcasting events with no data."""
+        import asyncio
+        from issue_orchestrator.web import broadcast_event, _event_subscribers
+
+        test_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        _event_subscribers.add(test_queue)
+
+        try:
+            await broadcast_event("empty_event")
+
+            event = test_queue.get_nowait()
+            assert event["type"] == "empty_event"
+            assert event["data"] == {}
+        finally:
+            _event_subscribers.discard(test_queue)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_event_removes_full_queues(self):
+        """Test that full queues are removed from subscribers."""
+        import asyncio
+        from issue_orchestrator.web import broadcast_event, _event_subscribers
+
+        # Create a queue with size 1 and fill it
+        full_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        full_queue.put_nowait({"dummy": "event"})
+
+        _event_subscribers.add(full_queue)
+        assert full_queue in _event_subscribers
+
+        try:
+            # This should fail silently and remove the full queue
+            await broadcast_event("overflow_event")
+
+            # Queue should be removed from subscribers
+            assert full_queue not in _event_subscribers
+        finally:
+            _event_subscribers.discard(full_queue)
+
+    @pytest.mark.asyncio
+    async def test_broadcast_event_no_subscribers(self):
+        """Test broadcasting when there are no subscribers."""
+        from issue_orchestrator.web import broadcast_event, _event_subscribers
+
+        # Ensure no subscribers
+        original_subscribers = _event_subscribers.copy()
+        _event_subscribers.clear()
+
+        try:
+            # Should not raise any errors
+            await broadcast_event("no_listeners", {"data": "test"})
+        finally:
+            # Restore original subscribers
+            _event_subscribers.update(original_subscribers)
+
+    def test_events_endpoint_exists(self):
+        """Test that /api/events endpoint is registered."""
+        from issue_orchestrator.web import app
+
+        # Check the endpoint is registered by looking at routes
+        routes = [route.path for route in app.routes]
+        assert "/api/events" in routes
+
+
+class TestEmitEventHelper:
+    """Test the _emit_event helper function in orchestrator."""
+
+    def test_emit_event_does_nothing_without_subscribers(self):
+        """Test that _emit_event silently does nothing when no subscribers."""
+        from issue_orchestrator.orchestrator import _emit_event
+        from issue_orchestrator.web import _event_subscribers
+
+        # Ensure no subscribers
+        original_subscribers = _event_subscribers.copy()
+        _event_subscribers.clear()
+
+        try:
+            # Should not raise any errors
+            _emit_event("test_event", {"data": "test"})
+        finally:
+            _event_subscribers.update(original_subscribers)
+
+    def test_emit_event_handles_import_error(self):
+        """Test that _emit_event handles errors gracefully."""
+        from issue_orchestrator.orchestrator import _emit_event
+
+        # This should not raise, even if something goes wrong
+        with patch("issue_orchestrator.orchestrator.asyncio.get_event_loop") as mock_loop:
+            mock_loop.side_effect = RuntimeError("No event loop")
+            # Should not raise
+            _emit_event("test_event")

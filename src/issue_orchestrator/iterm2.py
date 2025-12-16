@@ -205,7 +205,12 @@ class ITermSessionManager:
         cmd_with_escaped_quotes = command.replace("'", "'\\''")
         zsh_wrapped_cmd = f"zsh -l -c 'cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
         escaped_zsh_cmd = zsh_wrapped_cmd.replace('\\', '\\\\').replace('"', '\\"')
+        # AppleScript that creates a window if none exists, then creates a tab
         script = f'''tell application "iTerm"
+-- Ensure iTerm2 has at least one window
+if (count of windows) = 0 then
+    create window with default profile
+end if
 tell current window
 set newTab to (create tab with default profile)
 tell current session of newTab

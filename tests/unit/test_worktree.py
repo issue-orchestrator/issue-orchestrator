@@ -14,6 +14,7 @@ from issue_orchestrator.worktree import (
     worktree_exists,
     has_uncommitted_changes,
     _get_worktree_branch,
+    install_hooks,
     WorktreeError,
 )
 
@@ -202,8 +203,9 @@ class TestCreateWorktree:
         # Git should not have been called
         mock_run.assert_not_called()
 
+    @patch("issue_orchestrator.worktree.install_hooks")
     @patch("issue_orchestrator.worktree.subprocess.run")
-    def test_create_worktree_already_exists(self, mock_run, tmp_path):
+    def test_create_worktree_already_exists(self, mock_run, mock_install_hooks, tmp_path):
         """Test error when worktree path already exists."""
         # Setup
         repo_root = tmp_path / "repo"
@@ -241,6 +243,8 @@ class TestCreateWorktree:
         # Verify it returned the existing worktree
         assert path == existing_worktree
         assert branch == "existing-branch"
+        # Verify hooks were reinstalled on reuse
+        mock_install_hooks.assert_called_once_with(existing_worktree, None)
 
     @patch("issue_orchestrator.worktree.subprocess.run")
     def test_create_worktree_git_command_fails(self, mock_run, tmp_path):
@@ -786,3 +790,104 @@ class TestIntegrationScenarios:
                 repo_root, issue_num, title, tmp_path / "worktrees"
             )
             assert branch_name == expected_branch
+
+
+class TestInstallHooks:
+    """Test the install_hooks function including hook chaining."""
+
+    def test_install_hooks_no_git_file(self, tmp_path):
+        """Test that install_hooks does nothing if .git file doesn't exist."""
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        # No .git file
+        
+        # Should not raise, just return
+        install_hooks(worktree_path)
+
+    def test_install_hooks_invalid_git_file(self, tmp_path):
+        """Test that install_hooks handles invalid .git file content."""
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        (worktree_path / ".git").write_text("invalid content")
+        
+        # Should not raise, just return
+        install_hooks(worktree_path)
+
+    def test_install_hooks_no_project_hook(self, tmp_path):
+        """Test installing hooks when project has no pre-push hook."""
+        # Setup fake git structure
+        main_repo = tmp_path / "main_repo"
+        main_repo.mkdir()
+        main_git = main_repo / ".git"
+        main_git.mkdir()
+        main_hooks = main_git / "hooks"
+        main_hooks.mkdir()
+        # No pre-push hook in main repo
+        
+        worktrees_dir = main_git / "worktrees" / "test-worktree"
+        worktrees_dir.mkdir(parents=True)
+        hooks_dir = worktrees_dir / "hooks"
+        
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        (worktree_path / ".git").write_text(f"gitdir: {worktrees_dir}")
+        
+        # Create a fake orchestrator hook
+        from issue_orchestrator.worktree import HOOKS_DIR
+        
+        install_hooks(worktree_path)
+        
+        # Should have installed orchestrator's hook directly (no chaining)
+        pre_push = hooks_dir / "pre-push"
+        assert pre_push.exists()
+        # Should NOT have project or orchestrator suffixed hooks
+        assert not (hooks_dir / "pre-push.project").exists()
+        assert not (hooks_dir / "pre-push.orchestrator").exists()
+
+    def test_install_hooks_chains_with_project_hook(self, tmp_path):
+        """Test that hooks are chained when project has a pre-push hook."""
+        # Setup fake git structure
+        main_repo = tmp_path / "main_repo"
+        main_repo.mkdir()
+        main_git = main_repo / ".git"
+        main_git.mkdir()
+        main_hooks = main_git / "hooks"
+        main_hooks.mkdir()
+        
+        # Create a project pre-push hook
+        project_hook = main_hooks / "pre-push"
+        project_hook.write_text("#!/bin/bash\necho 'Project hook'\nexit 0\n")
+        project_hook.chmod(0o755)
+        
+        worktrees_dir = main_git / "worktrees" / "test-worktree"
+        worktrees_dir.mkdir(parents=True)
+        hooks_dir = worktrees_dir / "hooks"
+        
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        (worktree_path / ".git").write_text(f"gitdir: {worktrees_dir}")
+        
+        install_hooks(worktree_path)
+        
+        # Verify chained hooks were created
+        pre_push = hooks_dir / "pre-push"
+        pre_push_project = hooks_dir / "pre-push.project"
+        pre_push_orchestrator = hooks_dir / "pre-push.orchestrator"
+        
+        assert pre_push.exists(), "Wrapper hook should exist"
+        assert pre_push_project.exists(), "Project hook copy should exist"
+        assert pre_push_orchestrator.exists(), "Orchestrator hook copy should exist"
+        
+        # Verify wrapper content chains both hooks
+        wrapper_content = pre_push.read_text()
+        assert "pre-push.project" in wrapper_content, "Wrapper should call project hook"
+        assert "pre-push.orchestrator" in wrapper_content, "Wrapper should call orchestrator hook"
+        assert "set -e" in wrapper_content, "Wrapper should fail on error"
+        
+        # Verify project hook was copied correctly
+        assert "Project hook" in pre_push_project.read_text()
+        
+        # Verify all hooks are executable
+        assert pre_push.stat().st_mode & 0o111, "Wrapper should be executable"
+        assert pre_push_project.stat().st_mode & 0o111, "Project hook should be executable"
+        assert pre_push_orchestrator.stat().st_mode & 0o111, "Orchestrator hook should be executable"
