@@ -528,10 +528,9 @@
 
         // Pagination
         function goToPage(page) {
-            console.log('goToPage called with page:', page);
+            alert('goToPage called with page: ' + page);
             const url = new URL(window.location.href);
             url.searchParams.set('page', page);
-            console.log('Navigating to:', url.toString());
             window.location.href = url.toString();
         }
 
