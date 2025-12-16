@@ -144,23 +144,22 @@ class TestDashboardEndpoint:
         # Create 25 issues to trigger pagination (page size is 20)
         issues = [create_issue(i, f"Queue Issue {i}") for i in range(1, 26)]
 
+        # Set cached queue issues (dashboard uses cache instead of calling API)
+        mock_orch.state.cached_queue_issues = issues
+
         web._orchestrator = mock_orch
         try:
-            # Patch get_queue_issues which the dashboard now uses (via audit module)
-            with patch("issue_orchestrator.audit.list_issues") as mock_list_issues:
-                mock_list_issues.return_value = issues
+            client = TestClient(app)
 
-                client = TestClient(app)
+            # Test first page
+            response = client.get("/?page=1")
+            assert response.status_code == 200
+            assert "Queue Issue 1" in response.text
 
-                # Test first page
-                response = client.get("/?page=1")
-                assert response.status_code == 200
-                assert "Queue Issue 1" in response.text
-
-                # Test second page
-                response = client.get("/?page=2")
-                assert response.status_code == 200
-                assert "Queue Issue 21" in response.text
+            # Test second page
+            response = client.get("/?page=2")
+            assert response.status_code == 200
+            assert "Queue Issue 21" in response.text
         finally:
             web._orchestrator = None
 

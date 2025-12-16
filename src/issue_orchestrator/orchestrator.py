@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import signal
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -196,6 +197,10 @@ class Orchestrator:
         audit_entries = audit_queue(self.config, self.state)
         print_audit(audit_entries)
 
+        # Cache queue issues for instant dashboard pagination
+        self.state.startup_message = "Caching queue..."
+        self.update_queue_cache()
+
         self.state.startup_status = "complete"
         self.state.startup_message = ""
         elapsed = time.time() - startup_start
@@ -236,6 +241,26 @@ class Orchestrator:
         worktree_time = time.time() - step_start
         logger.debug("Worktree created in %.1fs", worktree_time)
         print(f"[launch] Worktree created in {worktree_time:.1f}s")
+
+        # Run setup commands in worktree (e.g., npm install)
+        if self.config.setup_worktree:
+            step_start = time.time()
+            for cmd in self.config.setup_worktree:
+                logger.debug("Running setup command: %s", cmd)
+                print(f"[launch] Running setup: {cmd}")
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    cwd=str(worktree_path),
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    logger.warning("Setup command failed: %s\n%s", cmd, result.stderr)
+                    print(f"[launch] Warning: setup command failed: {cmd}")
+            setup_time = time.time() - step_start
+            logger.debug("Setup commands completed in %.1fs", setup_time)
+            print(f"[launch] Setup completed in {setup_time:.1f}s")
 
         # Mark issue as in-progress
         step_start = time.time()
@@ -346,6 +371,7 @@ class Orchestrator:
     async def run_loop(self) -> None:
         """Main orchestration loop."""
         print("Starting orchestration loop...")
+        last_cache_update = time.time()
 
         while not self._shutdown_requested:
             # Check status of all active sessions
@@ -415,6 +441,12 @@ class Orchestrator:
                         except Exception as e:
                             print(f"Failed to launch session for #{issue.number}: {e}")
 
+            # Periodically refresh the queue cache for the dashboard
+            cache_age = time.time() - last_cache_update
+            if cache_age >= self.config.queue_refresh_seconds:
+                self.update_queue_cache()
+                last_cache_update = time.time()
+
             # Wait before next check
             await asyncio.sleep(10)
 
@@ -454,6 +486,19 @@ class Orchestrator:
         """Resume after pause."""
         self.state.paused = False
         print("Orchestrator resumed")
+
+    def update_queue_cache(self) -> None:
+        """Update the cached queue issues for instant dashboard pagination.
+
+        This should be called after startup and periodically in run_loop.
+        """
+        from .audit import get_queue_issues
+        try:
+            queue_issues = get_queue_issues(self.config, self.state)
+            self.state.cached_queue_issues = queue_issues
+            logger.debug("Updated queue cache with %d issues", len(queue_issues))
+        except Exception as e:
+            logger.warning("Failed to update queue cache: %s", e)
 
     def queue_code_review(self, issue_number: int, pr_url: str, branch_name: str) -> None:
         """Queue a PR for code review.

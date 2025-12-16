@@ -113,38 +113,32 @@ async def dashboard(
                 "url": "",
             })
 
-        # 2. Queue (available issues not active or in history)
-        # Skip queue fetch during startup to avoid competing API calls
-        # The dashboard will refresh automatically after startup completes
+        # 2. Queue (use cached issues for instant pagination)
+        # Cache is populated during startup and refreshed periodically by the orchestrator loop
         queue_total = 0
         if state.startup_status == "complete":
-            try:
-                from .audit import get_queue_issues
-                queue_start = time.time()
-                queue_issues = get_queue_issues(config, state)
-                queue_elapsed = time.time() - queue_start
-                logger.info("[dashboard] get_queue_issues took %.2fs", queue_elapsed)
-                queue_total = len(queue_issues)
+            # Use cached queue issues (no API call needed)
+            queue_issues = state.cached_queue_issues
+            queue_total = len(queue_issues)
+            logger.info("[dashboard] Using %d cached queue issues", queue_total)
 
-                # Apply pagination
-                start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
-                end_idx = start_idx + QUEUE_PAGE_SIZE
-                for issue in queue_issues[start_idx:end_idx]:
-                    seen_issues.add(issue.number)
-                    issues.append({
-                        "issue_number": issue.number,
-                        "title": issue.title,
-                        "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
-                        "status": "queue",
-                        "status_label": "Queue",
-                        "time": "",
-                        "action": "open",
-                        "action_icon": "↗",
-                        "action_hint": "Click to open issue on GitHub",
-                        "url": f"https://github.com/{config.repo}/issues/{issue.number}",
-                    })
-            except Exception as e:
-                logger.warning(f"Failed to fetch queue: {e}")
+            # Apply pagination
+            start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
+            end_idx = start_idx + QUEUE_PAGE_SIZE
+            for issue in queue_issues[start_idx:end_idx]:
+                seen_issues.add(issue.number)
+                issues.append({
+                    "issue_number": issue.number,
+                    "title": issue.title,
+                    "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
+                    "status": "queue",
+                    "status_label": "Queue",
+                    "time": "",
+                    "action": "open",
+                    "action_icon": "↗",
+                    "action_hint": "Click to open issue on GitHub",
+                    "url": f"https://github.com/{config.repo}/issues/{issue.number}",
+                })
 
         # 3. Session history (skip duplicates - an issue may appear multiple times in history)
         for entry in reversed(state.session_history[-20:]):

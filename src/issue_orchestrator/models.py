@@ -180,6 +180,7 @@ class OrchestratorState:
     pending_reviews: list[PendingReview] = field(default_factory=list)  # PRs waiting for code review
     startup_status: str = "pending"  # "pending", "running", "complete"
     startup_message: str = ""  # Current startup task description
+    cached_queue_issues: list["Issue"] = field(default_factory=list)  # Cached queue for instant pagination
 
 
 @dataclass

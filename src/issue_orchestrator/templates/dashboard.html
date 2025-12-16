@@ -365,7 +365,7 @@
         {% endif %}
 
         <div class="footer">
-            <span>Auto-refreshes every 5s</span>
+            <span>Queue refreshes every {{ queue_refresh_seconds }}s</span>
             <span>{{ repo }}</span>
         </div>
     </div>
@@ -528,7 +528,6 @@
 
         // Pagination
         function goToPage(page) {
-            alert('goToPage called with page: ' + page);
             const url = new URL(window.location.href);
             url.searchParams.set('page', page);
             window.location.href = url.toString();
