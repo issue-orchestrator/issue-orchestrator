@@ -365,3 +365,47 @@ def get_iterm_manager() -> ITermSessionManager:
     if _iterm_manager is None:
         _iterm_manager = ITermSessionManager()
     return _iterm_manager
+
+
+def discover_issue_tabs() -> list[int]:
+    """Discover existing iTerm2 tabs with issue-related names.
+
+    Scans all iTerm2 tabs across all windows for tabs whose names start with '#'
+    followed by a number (our naming convention for issue tabs).
+
+    Returns:
+        List of issue numbers found in tab names
+    """
+    import re
+
+    script = '''
+    tell application "iTerm"
+        set tabNames to {}
+        repeat with w in windows
+            repeat with t in tabs of w
+                tell current session of t
+                    set end of tabNames to name
+                end tell
+            end repeat
+        end repeat
+        return tabNames
+    end tell
+    '''
+    success, output = run_applescript(script)
+    if not success:
+        logger.warning("Failed to enumerate iTerm2 tabs: %s", output)
+        return []
+
+    # Parse output - AppleScript returns comma-separated list
+    # Look for patterns like "#123" or "#123 Some title"
+    issue_numbers = []
+    pattern = re.compile(r'#(\d+)')
+
+    for name in output.split(','):
+        name = name.strip()
+        match = pattern.match(name)
+        if match:
+            issue_numbers.append(int(match.group(1)))
+
+    logger.info("Discovered %d issue tabs in iTerm2: %s", len(issue_numbers), issue_numbers)
+    return issue_numbers

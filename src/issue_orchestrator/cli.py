@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .config import Config
+    from .orchestrator import Orchestrator
 
 from rich.console import Console
 from rich.table import Table
@@ -390,6 +391,10 @@ end tell'''
 
     orchestrator = Orchestrator(config=config)
 
+    # Adopt existing sessions if requested (for restart)
+    if getattr(args, 'adopt_sessions', False) and config.ui_mode == "iterm2":
+        _adopt_iterm2_sessions(orchestrator, config)
+
     # Run startup to clean up stale issues (skip for web mode - it runs startup in background)
     if config.ui_mode != "web":
         asyncio.run(orchestrator.startup())
@@ -563,6 +568,95 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_restart(args: argparse.Namespace) -> int:
+    """Restart the orchestrator, preserving existing iTerm2 sessions.
+
+    This command:
+    1. Sends shutdown to the running orchestrator (via API)
+    2. Waits for it to exit
+    3. Starts a new orchestrator with --adopt-sessions flag
+    """
+    import subprocess
+    import sys
+    import time
+    import httpx
+
+    port = args.port or 8080
+    base_url = f"http://localhost:{port}"
+
+    # Step 1: Check if orchestrator is running
+    console.print("[cyan]Checking for running orchestrator...[/cyan]")
+    try:
+        resp = httpx.get(f"{base_url}/api/status", timeout=2.0)
+        if resp.status_code == 200:
+            console.print(f"[green]Found orchestrator on port {port}[/green]")
+        else:
+            console.print(f"[yellow]Orchestrator responded with {resp.status_code}[/yellow]")
+    except httpx.ConnectError:
+        console.print(f"[yellow]No orchestrator running on port {port}[/yellow]")
+        console.print("[cyan]Starting fresh with --adopt-sessions...[/cyan]")
+        # Just start fresh
+        return _start_with_adopt_sessions(args)
+
+    # Step 2: Send shutdown request
+    console.print("[cyan]Sending shutdown request...[/cyan]")
+    try:
+        resp = httpx.post(f"{base_url}/api/shutdown", timeout=5.0)
+        if resp.status_code == 200:
+            console.print("[green]Shutdown request accepted[/green]")
+        else:
+            console.print(f"[yellow]Shutdown returned {resp.status_code}[/yellow]")
+    except Exception as e:
+        console.print(f"[yellow]Error sending shutdown: {e}[/yellow]")
+
+    # Step 3: Wait for orchestrator to exit (poll the port)
+    console.print("[cyan]Waiting for orchestrator to exit...[/cyan]")
+    for i in range(30):  # Wait up to 30 seconds
+        try:
+            httpx.get(f"{base_url}/api/status", timeout=1.0)
+            # Still running
+            time.sleep(1)
+            if i % 5 == 4:
+                console.print(f"[dim]Still waiting... ({i+1}s)[/dim]")
+        except httpx.ConnectError:
+            # Orchestrator has exited
+            console.print("[green]Orchestrator stopped[/green]")
+            break
+    else:
+        console.print("[yellow]Orchestrator didn't stop in time, continuing anyway...[/yellow]")
+
+    # Step 4: Start new orchestrator with --adopt-sessions
+    console.print("[cyan]Starting new orchestrator with session adoption...[/cyan]")
+    return _start_with_adopt_sessions(args)
+
+
+def _start_with_adopt_sessions(args: argparse.Namespace) -> int:
+    """Start orchestrator with --adopt-sessions flag."""
+    import subprocess
+    import sys
+
+    # Build command to run start with adopt-sessions
+    cmd = [sys.executable, "-m", "issue_orchestrator.cli", "start", "--adopt-sessions"]
+
+    # Pass through relevant flags
+    if hasattr(args, 'config') and args.config:
+        cmd.extend(["--config", args.config])
+    if hasattr(args, 'port') and args.port:
+        cmd.extend(["--port", str(args.port)])
+    if hasattr(args, 'debug') and args.debug:
+        cmd.append("--debug")
+    if hasattr(args, 'ui_mode') and args.ui_mode:
+        cmd.extend(["--ui-mode", args.ui_mode])
+
+    console.print(f"[dim]Running: {' '.join(cmd)}[/dim]")
+
+    # Replace this process with the new orchestrator
+    import os
+    os.execvp(cmd[0], cmd)
+    # execvp doesn't return on success
+    return 1
+
+
 def cmd_next(args: argparse.Namespace) -> int:
     """Prioritize an issue."""
     issue_number: int = args.issue_number
@@ -694,6 +788,105 @@ def cmd_test_reset(args: argparse.Namespace) -> int:
     console.print("[green]✓ Test reset complete![/green]")
     console.print("\nNow run: [bold]issue-orchestrator start[/bold]")
     return 0
+
+
+def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> None:
+    """Discover and adopt existing iTerm2 tabs as active sessions.
+
+    This allows restarting the orchestrator without losing track of
+    running Claude sessions.
+    """
+    from .iterm2 import discover_issue_tabs, get_iterm_manager
+    from .models import Session, Issue
+    from datetime import datetime
+    import subprocess
+    import json
+
+    console.print("[cyan]Discovering existing iTerm2 sessions...[/cyan]")
+
+    issue_numbers = discover_issue_tabs()
+    if not issue_numbers:
+        console.print("[dim]No existing issue tabs found[/dim]")
+        return
+
+    console.print(f"[green]Found {len(issue_numbers)} issue tab(s): {issue_numbers}[/green]")
+
+    # Get the iTerm manager and register discovered sessions
+    iterm_mgr = get_iterm_manager()
+
+    adopted = 0
+    for issue_num in issue_numbers:
+        # Try to find the worktree
+        repo_name = config.repo_root.name
+        worktree_path = config.repo_root.parent / f"{repo_name}-{issue_num}"
+
+        if not worktree_path.exists():
+            console.print(f"  [yellow]#{issue_num}: No worktree found, skipping[/yellow]")
+            continue
+
+        # Try to get issue info from GitHub using gh CLI
+        try:
+            gh_args = ["gh", "issue", "view", str(issue_num), "--json", "title,labels,state"]
+            if config.repo:
+                gh_args.extend(["--repo", config.repo])
+            gh_result = subprocess.run(gh_args, capture_output=True, text=True)
+            if gh_result.returncode == 0:
+                issue_data = json.loads(gh_result.stdout)
+                issue = Issue(
+                    number=issue_num,
+                    title=issue_data.get("title", f"Issue #{issue_num}"),
+                    labels=[lbl["name"] for lbl in issue_data.get("labels", [])],
+                    state=issue_data.get("state", "open"),
+                )
+            else:
+                raise RuntimeError(gh_result.stderr)
+        except Exception as e:
+            console.print(f"  [yellow]#{issue_num}: Couldn't fetch issue: {e}[/yellow]")
+            issue = Issue(number=issue_num, title=f"Issue #{issue_num}", labels=[])
+
+        # Find agent config for this issue
+        agent_type = issue.agent_type
+        if not agent_type or agent_type not in config.agents:
+            # Default to first agent
+            agent_type = list(config.agents.keys())[0] if config.agents else None
+
+        if not agent_type:
+            console.print(f"  [yellow]#{issue_num}: No agent config, skipping[/yellow]")
+            continue
+
+        agent_config = config.agents[agent_type]
+
+        # Get branch name from worktree
+        import subprocess
+        branch_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True
+        )
+        branch_name = branch_result.stdout.strip() if branch_result.returncode == 0 else f"{issue_num}-unknown"
+
+        # Create Session object
+        session = Session(
+            issue=issue,
+            agent_config=agent_config,
+            tmux_session_name=f"issue-{issue_num}",  # Convention for phase detection
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            started_at=datetime.now(),  # We don't know real start time
+        )
+
+        # Add to orchestrator's active sessions
+        orchestrator.state.active_sessions.append(session)
+
+        # Register with iTerm manager so it can track the session
+        iterm_mgr._sessions[issue_num] = {
+            "tab_name": f"#{issue_num}",
+            "created_at": "adopted",
+        }
+
+        console.print(f"  [green]#{issue_num}: Adopted ({agent_type})[/green]")
+        adopted += 1
+
+    console.print(f"[green]Adopted {adopted} session(s)[/green]")
 
 
 def _load_config(args: argparse.Namespace) -> "Config":
@@ -988,6 +1181,11 @@ def main() -> int:
         default=None,
         help="Auto-trigger CTO review after N PRs with review label (default: 0=manual only)"
     )
+    start_parser.add_argument(
+        "--adopt-sessions",
+        action="store_true",
+        help="Adopt existing iTerm2 tabs as active sessions (for restart without losing sessions)"
+    )
     start_parser.set_defaults(func=cmd_start)
 
     # status command
@@ -1054,6 +1252,29 @@ def main() -> int:
         "resume", help="Resume the orchestrator"
     )
     resume_parser.set_defaults(func=cmd_resume)
+
+    # restart command
+    restart_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "restart", help="Restart orchestrator, preserving existing iTerm2 sessions"
+    )
+    restart_parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port of running orchestrator (default: 8080)"
+    )
+    restart_parser.add_argument(
+        "--ui-mode",
+        choices=["tmux", "iterm2", "web"],
+        default=None,
+        help="UI mode for new orchestrator"
+    )
+    restart_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging"
+    )
+    restart_parser.set_defaults(func=cmd_restart)
 
     # next command
     next_parser: argparse.ArgumentParser = subparsers.add_parser(
