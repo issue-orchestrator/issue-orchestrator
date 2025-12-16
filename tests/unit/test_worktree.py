@@ -213,21 +213,34 @@ class TestCreateWorktree:
         worktree_base = tmp_path / "worktrees"
         worktree_base.mkdir()
 
-        # Create existing worktree directory
+        # Create existing worktree directory with valid .git file
         existing_worktree = worktree_base / "repo-123"
         existing_worktree.mkdir()
+        # Create .git file to make it look like a valid worktree
+        (existing_worktree / ".git").write_text("gitdir: /some/path")
 
-        # Mock prune call (happens before existence check)
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        # Mock subprocess calls:
+        # 1. prune call
+        # 2. rev-parse to get current branch
+        # 3. pull --rebase
+        def mock_subprocess(*args, **kwargs):
+            cmd = args[0]
+            if "prune" in cmd:
+                return MagicMock(returncode=0, stderr="")
+            if "rev-parse" in cmd and "--abbrev-ref" in cmd:
+                return MagicMock(returncode=0, stdout="existing-branch\n")
+            if "pull" in cmd:
+                return MagicMock(returncode=0, stderr="")
+            return MagicMock(returncode=0, stderr="")
 
-        # Execute & Verify
-        with pytest.raises(WorktreeError, match="Worktree already exists"):
-            create_worktree(repo_root, 123, "Test", worktree_base)
+        mock_run.side_effect = mock_subprocess
 
-        # Only the prune call should have been made (before the existence check)
-        assert mock_run.call_count == 1
-        prune_cmd = mock_run.call_args_list[0][0][0]
-        assert "prune" in prune_cmd
+        # Execute - should reuse existing worktree instead of raising error
+        path, branch = create_worktree(repo_root, 123, "Test", worktree_base)
+
+        # Verify it returned the existing worktree
+        assert path == existing_worktree
+        assert branch == "existing-branch"
 
     @patch("issue_orchestrator.worktree.subprocess.run")
     def test_create_worktree_git_command_fails(self, mock_run, tmp_path):

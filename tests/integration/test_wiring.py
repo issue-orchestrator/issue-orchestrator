@@ -33,6 +33,7 @@ class TestOrchestratorWiring:
         """Create a minimal config."""
         config = Config()
         config.repo_root = temp_repo
+        config.ui_mode = "tmux"  # Use tmux so tests can patch create_session
         config.agents = {
             "agent:test": AgentConfig(
                 prompt_path=Path("test.md"),
