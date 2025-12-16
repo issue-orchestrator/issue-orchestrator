@@ -7,8 +7,10 @@ should use this module.
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
+from .analysis import analyze_issue, get_issue_branches
 from .config import Config
 from .github import list_issues
 from .models import Issue, OrchestratorState
@@ -20,6 +22,8 @@ class SkipReason(Enum):
     QUEUED = "queued"
     CLOSED = "closed"
     IN_PROGRESS = "in-progress label"
+    HAS_OPEN_PR = "has open PR"
+    HAS_BRANCH = "has branch (no PR)"
     BLOCKED = "blocked label"
     NEEDS_HUMAN = "needs-human label"
     IN_HISTORY = "in session history"
@@ -142,6 +146,9 @@ def audit_queue(
         history_numbers = {e.issue_number for e in state.session_history}
         active_numbers = {s.issue.number for s in state.active_sessions}
 
+    # Pre-compute issue branches for efficient lookup (used by analyze_issue)
+    issue_branches = get_issue_branches(config.repo_root)
+
     # Fetch all issues
     all_issues = fetch_all_issues(config)
 
@@ -150,7 +157,7 @@ def audit_queue(
 
     # Audit each issue
     for issue in all_issues:
-        entry = _audit_issue(issue, config, history_numbers, active_numbers)
+        entry = _audit_issue(issue, config, history_numbers, active_numbers, issue_branches)
         entries.append(entry)
 
     return entries
@@ -161,6 +168,7 @@ def _audit_issue(
     config: Config,
     history_numbers: set[int],
     active_numbers: set[int],
+    issue_branches: Optional[dict[int, str]] = None,
 ) -> IssueAuditEntry:
     """Determine why an issue is queued or skipped."""
 
@@ -178,7 +186,22 @@ def _audit_issue(
     label_needs_human = config.get_label_needs_human()
 
     if label_in_progress in issue.labels or "in-progress" in issue.labels:
-        return IssueAuditEntry(issue, SkipReason.IN_PROGRESS, "will be cleaned if orphaned")
+        # Use analyze_issue to get accurate state (same logic as startup)
+        if issue_branches is not None:
+            state = analyze_issue(
+                issue=issue,
+                repo=config.repo,
+                issue_branches=issue_branches,
+                check_session_fn=lambda n: n in active_numbers,
+            )
+            if state.has_open_pr:
+                return IssueAuditEntry(issue, SkipReason.HAS_OPEN_PR, f"PR pending review")
+            elif state.has_partial_work:
+                return IssueAuditEntry(issue, SkipReason.HAS_BRANCH, f"branch '{state.branch}' exists")
+            elif state.is_orphaned_label:
+                return IssueAuditEntry(issue, SkipReason.IN_PROGRESS, "orphaned - will be cleaned at startup")
+        # Fallback if no branches info
+        return IssueAuditEntry(issue, SkipReason.IN_PROGRESS, "work in progress")
 
     if label_blocked in issue.labels or "blocked" in issue.labels:
         return IssueAuditEntry(issue, SkipReason.BLOCKED)
