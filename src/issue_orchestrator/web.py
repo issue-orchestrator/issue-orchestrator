@@ -65,6 +65,7 @@ async def dashboard(
     queue_page = int(request.query_params.get("page", 1))
     if queue_page < 1:
         queue_page = 1
+    logger.info("[dashboard] Request URL: %s, page param: %s", request.url, queue_page)
 
     templates = get_templates()
     template = templates.get_template("dashboard.html")
@@ -178,6 +179,7 @@ async def dashboard(
     queue_total_pages = (queue_total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE if queue_total > 0 else 1
     if queue_page > queue_total_pages:
         queue_page = queue_total_pages
+    logger.info("[dashboard] Pagination: page=%d, total_pages=%d, total_items=%d", queue_page, queue_total_pages, queue_total)
 
     html = template.render(
         issues=issues,
