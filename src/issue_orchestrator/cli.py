@@ -147,6 +147,16 @@ def cmd_start(args: argparse.Namespace) -> int:
         config.filter_milestone = args.milestone
         console.print(f"[cyan]Filtering by milestone: {args.milestone}[/cyan]")
 
+    # Handle label override
+    if hasattr(args, 'label') and args.label:
+        config.filter_label = args.label
+        console.print(f"[cyan]Filtering by label: {args.label}[/cyan]")
+
+    # Handle single issue filter
+    if hasattr(args, 'issue') and args.issue:
+        config.filter_issue = args.issue
+        console.print(f"[cyan]Processing only issue #{args.issue}[/cyan]")
+
     # Handle ui_mode override
     if hasattr(args, 'ui_mode') and args.ui_mode:
         config.ui_mode = args.ui_mode
@@ -772,6 +782,18 @@ def main() -> int:
         type=str,
         default=None,
         help="Filter issues by milestone name"
+    )
+    start_parser.add_argument(
+        "--label",
+        type=str,
+        default=None,
+        help="Filter issues by label (e.g., 'agent:test' for e2e testing)"
+    )
+    start_parser.add_argument(
+        "--issue",
+        type=int,
+        default=None,
+        help="Process only this specific issue number"
     )
     start_parser.add_argument(
         "--dry-run",

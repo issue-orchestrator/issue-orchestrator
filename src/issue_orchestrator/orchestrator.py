@@ -415,6 +415,10 @@ class Orchestrator:
                     exclude_numbers = history_numbers | active_numbers
                     available = [i for i in available if i.number not in exclude_numbers]
 
+                    # Filter to single issue if specified
+                    if self.config.filter_issue:
+                        available = [i for i in available if i.number == self.config.filter_issue]
+
                     sorted_issues = self.scheduler.sort_by_priority(available)
 
                     # Pick next batch
