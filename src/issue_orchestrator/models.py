@@ -93,6 +93,7 @@ class AgentConfig:
         issue_title: str,
         worktree: Path,
         pr_number: Optional[int] = None,
+        existing_work: Optional[str] = None,
     ) -> str:
         """Render the command template with actual values, including initial prompt.
 
@@ -102,6 +103,8 @@ class AgentConfig:
             worktree: Path to the worktree
             pr_number: Optional PR number (for review agents). If a prompt template
                        uses {pr_number} but this is not provided, a KeyError is raised.
+            existing_work: Optional context about existing commits in the worktree.
+                          If provided, prepended to prompt so agent knows to complete vs restart.
         """
         # Build format kwargs - pr_number only included if provided (fail-fast if used but missing)
         format_kwargs = {
@@ -117,6 +120,11 @@ class AgentConfig:
 
         # First render the initial prompt
         rendered_prompt = self.initial_prompt.format(**format_kwargs)
+
+        # Prepend existing work context if provided
+        if existing_work:
+            rendered_prompt = f"IMPORTANT: {existing_work}\n\n{rendered_prompt}"
+
         # Escape single quotes in the prompt for shell safety
         escaped_prompt = rendered_prompt.replace("'", "'\\''")
 

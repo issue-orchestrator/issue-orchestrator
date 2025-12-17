@@ -50,6 +50,55 @@ from .tmux import create_session, session_exists, kill_session
 from .worktree import create_worktree, remove_worktree, has_uncommitted_changes
 
 
+def detect_existing_work(worktree_path: Path) -> Optional[str]:
+    """Check if worktree has commits ahead of main and return context for agent.
+
+    Returns:
+        Context string if existing work found, None otherwise.
+    """
+    try:
+        # Get commits ahead of main
+        result = subprocess.run(
+            ["git", "-C", str(worktree_path), "log", "--oneline", "main..HEAD"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        commits = result.stdout.strip().split('\n')
+        num_commits = len(commits)
+
+        if num_commits == 0:
+            return None
+
+        # Get branch name
+        branch_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "branch", "--show-current"],
+            capture_output=True, text=True, timeout=5
+        )
+        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
+
+        # Build context message
+        commit_list = '\n'.join(f"  - {c}" for c in commits[:10])
+        if num_commits > 10:
+            commit_list += f"\n  ... and {num_commits - 10} more"
+
+        return (
+            f"This worktree has {num_commits} existing commit(s) from a previous session that was interrupted. "
+            f"Branch: {branch}\n"
+            f"Commits:\n{commit_list}\n\n"
+            f"BEFORE starting fresh work, evaluate if this existing work can be completed:\n"
+            f"1. Run 'git log main..HEAD' and 'git diff main..HEAD --stat' to see what was done\n"
+            f"2. Run tests to see if the work passes\n"
+            f"3. If work is complete and tests pass, just push and use agent-done\n"
+            f"4. If work needs minor fixes, fix and complete it\n"
+            f"5. Only start over if the existing work is fundamentally broken"
+        )
+    except Exception as e:
+        logger.warning("Failed to detect existing work: %s", e)
+        return None
+
+
 @dataclass
 class Orchestrator:
     """Main orchestrator that coordinates everything."""
@@ -335,11 +384,18 @@ class Orchestrator:
         logger.debug("Label added in %.1fs", label_time)
         print(f"[launch] Label added in {label_time:.1f}s")
 
+        # Check for existing work from previous interrupted session
+        existing_work = detect_existing_work(worktree_path)
+        if existing_work:
+            logger.info("Detected existing work in worktree for issue #%d", issue.number)
+            print(f"[launch] Found existing work - agent will evaluate before starting fresh")
+
         # Build command
         command = agent_config.get_command(
             issue_number=issue.number,
             issue_title=issue.title,
             worktree=worktree_path,
+            existing_work=existing_work,
         )
 
         # Create session (tmux or iTerm2 tab) - command includes the initial prompt as a CLI argument
