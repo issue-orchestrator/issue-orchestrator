@@ -406,11 +406,18 @@ class Orchestrator:
             # Trigger code review immediately if configured
             # Skip if agent has skip_review set (e.g., domain-expert agents)
             if pr_url and self.config.code_review_agent and not session.agent_config.skip_review:
+                logger.info(f"[REVIEW] Session #{session.issue.number} completed with PR, queuing code review")
                 self.queue_code_review(
                     issue_number=session.issue.number,
                     pr_url=pr_url,
                     branch_name=session.branch_name,
                 )
+            elif pr_url and not self.config.code_review_agent:
+                logger.info(f"[REVIEW] Session #{session.issue.number} completed but code review not configured")
+            elif pr_url and session.agent_config.skip_review:
+                logger.info(f"[REVIEW] Session #{session.issue.number} skipping review (skip_review=true)")
+            elif not pr_url:
+                logger.info(f"[REVIEW] Session #{session.issue.number} completed but no PR found")
 
     async def run_loop(self) -> None:
         """Main orchestration loop."""
@@ -571,8 +578,12 @@ class Orchestrator:
 
         Called immediately after a work agent creates a PR.
         The review will be processed in the next loop iteration.
+
+        Also ensures the needs-code-review label is added to the PR as a backup
+        (in case the agent didn't use agent-done and bypassed the label).
         """
         import re
+        import subprocess
 
         # Extract PR number from URL
         match = re.search(r"/pull/(\d+)", pr_url)
@@ -586,6 +597,21 @@ class Orchestrator:
         for review in self.state.pending_reviews:
             if review.pr_number == pr_number:
                 return
+
+        # Add needs-code-review label as backup (idempotent - won't duplicate if already present)
+        if self.config.code_review_label and self.config.repo:
+            try:
+                result = subprocess.run(
+                    ["gh", "pr", "edit", str(pr_number), "--add-label", self.config.code_review_label,
+                     "--repo", self.config.repo],
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0:
+                    logger.info(f"Added '{self.config.code_review_label}' label to PR #{pr_number}")
+                else:
+                    logger.warning(f"Could not add label to PR #{pr_number}: {result.stderr}")
+            except Exception as e:
+                logger.warning(f"Failed to add review label to PR #{pr_number}: {e}")
 
         review = PendingReview(
             issue_number=issue_number,
@@ -678,15 +704,23 @@ class Orchestrator:
 
         # Don't start reviews while paused
         if self.state.paused:
+            logger.debug("[REVIEW] Skipping reviews - orchestrator paused")
             return
 
         # Check capacity
         available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
         if available_slots <= 0:
+            logger.debug("[REVIEW] Skipping reviews - no capacity (active=%d, max=%d)",
+                        len(self.state.active_sessions), self.config.max_concurrent_sessions)
             return
+
+        logger.info("[REVIEW] Processing %d pending reviews (capacity=%d)",
+                   len(self.state.pending_reviews), available_slots)
 
         # Launch reviews up to capacity
         for review in list(self.state.pending_reviews)[:available_slots]:
+            logger.info("[REVIEW] Launching review for PR #%d (issue #%d)",
+                       review.pr_number, review.issue_number)
             self.launch_review_session(review)
 
     def check_cto_review_trigger(self) -> None:

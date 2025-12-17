@@ -923,7 +923,9 @@ class TestInstallHooks:
             cmd = args[0]
             if "config" in cmd and "--get" in cmd and "core.hooksPath" in cmd:
                 return MagicMock(returncode=0, stdout=".githooks\n", stderr="")
-            elif "config" in cmd and "--local" in cmd and "core.hooksPath" in cmd:
+            elif "config" in cmd and "extensions.worktreeConfig" in cmd:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            elif "config" in cmd and "--worktree" in cmd and "core.hooksPath" in cmd:
                 return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=1, stdout="", stderr="")
 
@@ -940,10 +942,15 @@ class TestInstallHooks:
         assert pre_push_project.exists(), "Project hook copy should exist"
         assert pre_push_orchestrator.exists(), "Orchestrator hook copy should exist"
 
-        # Verify git config was called to override hooksPath for the worktree
+        # Verify git config was called to enable worktreeConfig extension
+        worktree_config_calls = [call for call in mock_run.call_args_list
+                                 if "config" in str(call) and "extensions.worktreeConfig" in str(call)]
+        assert len(worktree_config_calls) >= 1, "Should have enabled worktreeConfig extension"
+
+        # Verify git config was called to override hooksPath for this worktree only
         config_calls = [call for call in mock_run.call_args_list
-                        if "config" in str(call) and "--local" in str(call)]
-        assert len(config_calls) >= 1, "Should have set local hooksPath config"
+                        if "config" in str(call) and "--worktree" in str(call)]
+        assert len(config_calls) >= 1, "Should have set worktree-specific hooksPath config"
 
         # Verify project hook was copied from custom hooks path
         assert "Custom hooks path hook" in pre_push_project.read_text()

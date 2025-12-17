@@ -87,13 +87,19 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
         custom_hooks_dir = worktree_path / custom_hooks_path
         project_hook = custom_hooks_dir / "pre-push"
 
-        # Override hooksPath for this worktree to use gitdir/hooks
+        # Override hooksPath for this worktree only (not repo-wide)
+        # Using --worktree flag stores config in worktree-specific config file
         # This allows our chained hooks to run while preserving project hooks
+        # First enable worktree config extension (required for --worktree flag)
         subprocess.run(
-            ["git", "-C", str(worktree_path), "config", "--local", "core.hooksPath", str(hooks_dir)],
+            ["git", "-C", str(worktree_path), "config", "extensions.worktreeConfig", "true"],
             capture_output=True, check=False
         )
-        logger.info("Overriding core.hooksPath to %s for hook chaining", hooks_dir)
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "config", "--worktree", "core.hooksPath", str(hooks_dir)],
+            capture_output=True, check=False
+        )
+        logger.info("Overriding core.hooksPath to %s for this worktree only", hooks_dir)
     else:
         # Standard hooks location in main repo
         # The gitdir is like /repo/.git/worktrees/name, so main repo is gitdir.parent.parent
