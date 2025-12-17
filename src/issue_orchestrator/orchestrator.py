@@ -161,6 +161,15 @@ class Orchestrator:
             logger.info("Cleaned up %d orphaned review lock claims: %s", len(orphaned_reviews), orphaned_reviews)
             print(f"  Cleaned up {len(orphaned_reviews)} orphaned review lock claims: {orphaned_reviews}")
 
+        # Clean up idle iTerm2 tabs (tabs at shell prompt where Claude has exited)
+        if self._using_iterm2:
+            self.state.startup_message = "Cleaning up idle iTerm2 tabs..."
+            from .iterm2 import cleanup_idle_tabs
+            closed_tabs = cleanup_idle_tabs()
+            if closed_tabs:
+                logger.info("Closed %d idle iTerm2 tabs", closed_tabs)
+                print(f"  Closed {closed_tabs} idle iTerm2 tabs")
+
         # Get existing branches for issue detection
         self.state.startup_message = "Scanning local branches..."
         issue_branches = get_issue_branches(self.config.repo_root)

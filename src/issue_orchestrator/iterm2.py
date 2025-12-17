@@ -409,3 +409,51 @@ def discover_issue_tabs() -> list[int]:
 
     logger.info("Discovered %d issue tabs in iTerm2: %s", len(issue_numbers), issue_numbers)
     return issue_numbers
+
+
+def cleanup_idle_tabs() -> int:
+    """Close all iTerm2 tabs that are at a shell prompt (idle).
+
+    This identifies tabs whose names start with '#' (our convention) and are
+    at a shell prompt (meaning Claude has exited), then closes them.
+
+    Returns:
+        Number of tabs closed
+    """
+    # AppleScript to find and close idle issue tabs
+    # A tab is idle if is_processing is false (at shell prompt)
+    script = '''
+    tell application "iTerm"
+        set closedCount to 0
+        repeat with w in windows
+            set tabsToClose to {}
+            repeat with t in tabs of w
+                tell current session of t
+                    if name starts with "#" then
+                        if is processing is false then
+                            set end of tabsToClose to t
+                        end if
+                    end if
+                end tell
+            end repeat
+            -- Close tabs in reverse order to avoid index shifting issues
+            repeat with i from (count of tabsToClose) to 1 by -1
+                close item i of tabsToClose
+                set closedCount to closedCount + 1
+            end repeat
+        end repeat
+        return closedCount
+    end tell
+    '''
+    success, output = run_applescript(script)
+    if success:
+        try:
+            closed = int(output.strip())
+            logger.info("Closed %d idle iTerm2 tabs", closed)
+            return closed
+        except ValueError:
+            logger.warning("Unexpected output from cleanup script: %s", output)
+            return 0
+    else:
+        logger.warning("Failed to cleanup idle tabs: %s", output)
+        return 0
