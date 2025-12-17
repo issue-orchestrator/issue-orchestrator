@@ -3,6 +3,10 @@
 import asyncio
 import json
 import logging
+import os
+import signal
+import socket
+import subprocess
 import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -252,6 +256,16 @@ async def get_status() -> JSONResponse:
             "branch": session.branch_name,
         })
 
+    # Serialize pending reviews
+    pending_reviews = []
+    for review in state.pending_reviews:
+        pending_reviews.append({
+            "issue_number": review.issue_number,
+            "pr_number": review.pr_number,
+            "pr_url": review.pr_url,
+            "branch_name": review.branch_name,
+        })
+
     return JSONResponse({
         "paused": state.paused,
         "shutdown_requested": getattr(_orchestrator, '_shutdown_requested', False),
@@ -259,6 +273,7 @@ async def get_status() -> JSONResponse:
         "max_sessions": config.max_concurrent_sessions,
         "completed_today": state.completed_today,
         "queue": state.priority_queue,
+        "pending_reviews": pending_reviews,
     })
 
 
@@ -627,6 +642,66 @@ async def get_debug() -> JSONResponse:
     })
 
 
+def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    """Check if a port is already in use."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return False
+        except OSError:
+            return True
+
+
+def _kill_process_on_port(port: int) -> bool:
+    """Kill any process using the specified port.
+
+    Returns True if a process was killed, False otherwise.
+    """
+    try:
+        # Use lsof to find process using the port (macOS/Linux)
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split("\n")
+            for pid in pids:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                    logger.info("[web] Killed existing process %s on port %d", pid, port)
+                except (ProcessLookupError, ValueError):
+                    pass
+            return True
+    except FileNotFoundError:
+        # lsof not available, try netstat approach or just fail gracefully
+        pass
+    return False
+
+
+def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
+    """Ensure the specified port is available, killing any existing process if needed."""
+    if not _is_port_in_use(port, host):
+        return
+
+    logger.warning("[web] Port %d is already in use, attempting to free it...", port)
+
+    if _kill_process_on_port(port):
+        # Wait a moment for the port to be released
+        import time
+        time.sleep(0.5)
+
+        if not _is_port_in_use(port, host):
+            logger.info("[web] Port %d is now available", port)
+            return
+
+    # Still in use - provide helpful error
+    raise RuntimeError(
+        f"Port {port} is already in use and could not be freed. "
+        f"Try: lsof -ti:{port} | xargs kill -9"
+    )
+
+
 async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> None:
     """Run the web dashboard server.
 
@@ -636,6 +711,9 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
     """
     global _orchestrator, _server
     _orchestrator = orchestrator
+
+    # Ensure port is available before starting
+    ensure_port_available(port)
 
     import uvicorn
 
