@@ -221,13 +221,28 @@ class Orchestrator:
                 if pr_number is None:
                     continue
                 pr_url = pr.get("url", "")
+                pr_body = pr.get("body", "")
+
+                # Extract issue number from "Closes #N" in PR body
+                import re
+                issue_match = re.search(r'Closes #(\d+)', pr_body, re.IGNORECASE)
+                issue_number: int = int(issue_match.group(1)) if issue_match else pr_number
+
+                # Verify PR was created via agent-done (has verification token)
+                from .agent_done import verify_pr_token, extract_pr_verification_status
+                has_marker, token = extract_pr_verification_status(pr_body)
+                if has_marker:
+                    is_verified = verify_pr_token(pr_body, issue_number)
+                    if not is_verified:
+                        logger.warning(f"PR #{pr_number}: Invalid verification token (issue #{issue_number})")
+                        print(f"  PR #{pr_number}: ⚠️  Invalid verification token - manual review needed")
+                else:
+                    # PR created without agent-done - flag it
+                    logger.warning(f"PR #{pr_number}: Missing verification token (not created via agent-done)")
+                    print(f"  PR #{pr_number}: ⚠️  No verification token - created outside agent-done")
 
                 # Check if review is already in progress
                 if not self._session_exists(f"review-{pr_number}"):
-                    # Extract issue number from PR (assumes PR title or body contains issue reference)
-                    # For now, use PR number as issue number fallback
-                    issue_number: int = pr_number  # TODO: extract from "Closes #N" in PR body
-
                     # Queue for review
                     review = PendingReview(
                         issue_number=issue_number,
@@ -629,6 +644,24 @@ class Orchestrator:
         for review in self.state.pending_reviews:
             if review.pr_number == pr_number:
                 return
+
+        # Fetch PR body to check verification (this is a new PR, may need verification)
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "view", str(pr_number), "--json", "body", "-q", ".body",
+                 "--repo", self.config.repo] if self.config.repo else
+                ["gh", "pr", "view", str(pr_number), "--json", "body", "-q", ".body"],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                pr_body = result.stdout.strip()
+                from .agent_done import extract_pr_verification_status
+                has_marker, _ = extract_pr_verification_status(pr_body)
+                if not has_marker:
+                    logger.warning(f"PR #{pr_number}: No verification token - created outside agent-done")
+                    print(f"  PR #{pr_number}: ⚠️  No verification token - created outside agent-done")
+        except Exception as e:
+            logger.warning(f"Could not check verification for PR #{pr_number}: {e}")
 
         # Add needs-code-review label as backup (idempotent - won't duplicate if already present)
         if self.config.code_review_label and self.config.repo:

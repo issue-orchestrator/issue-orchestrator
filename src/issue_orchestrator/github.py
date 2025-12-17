@@ -444,9 +444,9 @@ def list_prs_with_label(repo: str | None, label: str) -> list[dict]:
         label: Label to filter by
 
     Returns:
-        List of PR dicts with number, title, url
+        List of PR dicts with number, title, url, headRefName, body
     """
-    args = ["pr", "list", "--label", label, "--state", "open", "--json", "number,title,url,headRefName"]
+    args = ["pr", "list", "--label", label, "--state", "open", "--json", "number,title,url,headRefName,body"]
     try:
         output = _run_gh_json(args, repo)
         return output if isinstance(output, list) else []
