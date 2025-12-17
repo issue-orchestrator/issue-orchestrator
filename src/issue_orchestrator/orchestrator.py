@@ -491,8 +491,18 @@ class Orchestrator:
                 max_issues = self.config.max_issues_to_start
                 hit_max_issues = max_issues > 0 and self.state.issues_started_count >= max_issues
 
-                # If not paused, not at max issues limit, and have capacity, launch more sessions
-                if not self.state.paused and not hit_max_issues:
+                # PRIORITY: Reviews before new issues
+                # Only launch new issues if there are no pending reviews
+                # This ensures completed work (PRs) gets reviewed before starting new work
+                has_pending_reviews = bool(self.state.pending_reviews)
+                has_pending_reworks = bool(self.state.pending_reworks)
+
+                if has_pending_reviews or has_pending_reworks:
+                    logger.info("[PRIORITY] Skipping new issues - %d reviews and %d reworks pending",
+                               len(self.state.pending_reviews), len(self.state.pending_reworks))
+
+                # If not paused, not at max issues limit, no pending reviews, and have capacity, launch more sessions
+                if not self.state.paused and not hit_max_issues and not has_pending_reviews and not has_pending_reworks:
                     available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
 
                     if available_slots > 0:
