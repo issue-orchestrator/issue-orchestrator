@@ -711,8 +711,9 @@ class Orchestrator:
             print(f"Warning: No agent config for {agent_label}")
             return None
 
-        # Try to claim the issue (prevent duplicate reviews)
-        if not try_claim(review.issue_number, prefix="review"):
+        # Try to claim the PR (prevent duplicate reviews)
+        # Use pr_number to match session_name which is f"review-{pr_number}"
+        if not try_claim(review.pr_number, prefix="review"):
             print(f"PR #{review.pr_number} already being reviewed - skipping")
             return None
 
@@ -893,6 +894,7 @@ Flip labels from `{watch_label}` to `{self.config.cto_reviewed_label}` after rev
 
         rework_label = self.config.get_label_needs_rework()
         prs = list_prs_with_label(self.config.repo, rework_label)
+        logger.info("[REWORK] Scanned for '%s' label, found %d PRs", rework_label, len(prs))
 
         for pr in prs:
             pr_number = pr.get("number")
