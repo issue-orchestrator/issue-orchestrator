@@ -187,6 +187,14 @@ class ITermSessionManager:
         Returns:
             True if tab was created successfully
         """
+        # Close any idle zombie tabs for this issue
+        self._close_existing_tabs_for_issue(issue_number)
+
+        # Check if there's still a RUNNING session (Claude active) - if so, don't create duplicate
+        if self._has_running_tab_for_issue(issue_number):
+            logger.warning("Skipping session creation for #%d - active Claude session already exists in iTerm2", issue_number)
+            return False
+
         tab_name = f"#{issue_number}"
         if title:
             short_title = title[:20].replace('"', "'")
@@ -288,6 +296,72 @@ end tell'''
 
         # "running" - tab exists and command is still running
         return True
+
+    def _has_running_tab_for_issue(self, issue_number: int) -> bool:
+        """Check if there's a running (Claude active) tab for this issue."""
+        script = f'''
+        tell application "iTerm"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    tell current session of t
+                        if name starts with "#{issue_number} " or name is "#{issue_number}" then
+                            if is processing is true then
+                                return true
+                            end if
+                        end if
+                    end tell
+                end repeat
+            end repeat
+            return false
+        end tell
+        '''
+        success, output = run_applescript(script)
+        return success and "true" in output.lower()
+
+    def _close_existing_tabs_for_issue(self, issue_number: int) -> int:
+        """Close IDLE existing tabs for an issue number (prevents zombie duplicates).
+
+        Only closes tabs where Claude has exited (is processing = false).
+        Running sessions are left alone to avoid killing useful work.
+
+        Returns:
+            Number of tabs closed
+        """
+        # AppleScript to close only IDLE tabs with this issue number
+        script = f'''
+        tell application "iTerm"
+            set closedCount to 0
+            repeat with w in windows
+                set tabsToClose to {{}}
+                repeat with t in tabs of w
+                    tell current session of t
+                        if name starts with "#{issue_number} " or name is "#{issue_number}" then
+                            -- Only close if idle (Claude has exited)
+                            if is processing is false then
+                                set end of tabsToClose to t
+                            end if
+                        end if
+                    end tell
+                end repeat
+                -- Close tabs in reverse order to avoid index shifting issues
+                repeat with i from (count of tabsToClose) to 1 by -1
+                    close item i of tabsToClose
+                    set closedCount to closedCount + 1
+                end repeat
+            end repeat
+            return closedCount
+        end tell
+        '''
+        success, output = run_applescript(script)
+        if success:
+            try:
+                closed = int(output.strip())
+                if closed > 0:
+                    logger.info("Closed %d idle zombie tab(s) for issue #%d before creating new session", closed, issue_number)
+                return closed
+            except ValueError:
+                return 0
+        return 0
 
     def kill_session(self, issue_number: int) -> bool:
         """Close the tab for an issue."""

@@ -441,13 +441,17 @@ class Orchestrator:
 
             # Trigger code review immediately if configured
             # Skip if agent has skip_review set (e.g., domain-expert agents)
-            if pr_url and self.config.code_review_agent and not session.agent_config.skip_review:
+            # Skip if this was a review session (not a work session)
+            is_review_session = session.tmux_session_name.startswith("review-")
+            if pr_url and self.config.code_review_agent and not session.agent_config.skip_review and not is_review_session:
                 logger.info(f"[REVIEW] Session #{session.issue.number} completed with PR, queuing code review")
                 self.queue_code_review(
                     issue_number=session.issue.number,
                     pr_url=pr_url,
                     branch_name=session.branch_name,
                 )
+            elif pr_url and is_review_session:
+                logger.info(f"[REVIEW] Review session {session.tmux_session_name} completed - no re-queue needed")
             elif pr_url and not self.config.code_review_agent:
                 logger.info(f"[REVIEW] Session #{session.issue.number} completed but code review not configured")
             elif pr_url and session.agent_config.skip_review:
