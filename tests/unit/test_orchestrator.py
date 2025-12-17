@@ -164,7 +164,7 @@ class TestStartup:
         mock_cleanup_claims,
         sample_config,
     ):
-        """Test that startup cleans up stale lock claims."""
+        """Test that startup cleans up stale lock claims for both issue and review prefixes."""
         mock_cleanup_claims.return_value = ["issue-1.lock", "issue-2.lock"]
         mock_get_branches.return_value = {}
         mock_list_issues.return_value = []
@@ -172,7 +172,10 @@ class TestStartup:
         orchestrator = Orchestrator(config=sample_config)
         await orchestrator.startup()
 
-        mock_cleanup_claims.assert_called_once()
+        # Should be called twice - once for "issue" prefix, once for "review" prefix
+        assert mock_cleanup_claims.call_count == 2
+        mock_cleanup_claims.assert_any_call(prefix="issue")
+        mock_cleanup_claims.assert_any_call(prefix="review")
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.orchestrator.cleanup_stale_claims")

@@ -50,23 +50,23 @@ def is_claimed(issue_number: int) -> bool:
     return (LOCK_DIR / f"issue-{issue_number}").exists()
 
 
-def list_claimed() -> list[int]:
-    """List all claimed issue numbers."""
+def list_claimed(prefix: str = "issue") -> list[int]:
+    """List all claimed issue/PR numbers for the given prefix."""
     if not LOCK_DIR.exists():
         return []
     claimed = []
     for item in LOCK_DIR.iterdir():
-        if item.is_dir() and item.name.startswith("issue-"):
+        if item.is_dir() and item.name.startswith(f"{prefix}-"):
             try:
-                claimed.append(int(item.name.replace("issue-", "")))
+                claimed.append(int(item.name.replace(f"{prefix}-", "")))
             except ValueError:
                 pass
     return claimed
 
 
-def get_claim_age(issue_number: int) -> Optional[float]:
+def get_claim_age(issue_number: int, prefix: str = "issue") -> Optional[float]:
     """Get the age of a claim in seconds. Returns None if not claimed or no timestamp."""
-    lock_path = LOCK_DIR / f"issue-{issue_number}"
+    lock_path = LOCK_DIR / f"{prefix}-{issue_number}"
     if not lock_path.exists():
         return None
 
@@ -81,9 +81,9 @@ def get_claim_age(issue_number: int) -> Optional[float]:
         return None
 
 
-def is_claim_stale(issue_number: int, max_age_minutes: int = 60) -> bool:
+def is_claim_stale(issue_number: int, max_age_minutes: int = 60, prefix: str = "issue") -> bool:
     """Check if a claim is stale (older than max_age_minutes)."""
-    age_seconds = get_claim_age(issue_number)
+    age_seconds = get_claim_age(issue_number, prefix)
     if age_seconds is None:
         return False
 
@@ -91,17 +91,17 @@ def is_claim_stale(issue_number: int, max_age_minutes: int = 60) -> bool:
     return age_seconds > max_age_seconds
 
 
-def cleanup_stale_claims(max_age_minutes: int = 60) -> list[int]:
+def cleanup_stale_claims(max_age_minutes: int = 60, prefix: str = "issue") -> list[int]:
     """
     Clean up stale claims (older than max_age_minutes).
-    Returns list of issue numbers that were cleaned up.
+    Returns list of issue/PR numbers that were cleaned up.
     """
     cleaned = []
-    claimed_issues = list_claimed()
+    claimed_issues = list_claimed(prefix)
 
     for issue_number in claimed_issues:
-        if is_claim_stale(issue_number, max_age_minutes):
-            release_claim(issue_number)
+        if is_claim_stale(issue_number, max_age_minutes, prefix):
+            release_claim(issue_number, prefix)
             cleaned.append(issue_number)
 
     return cleaned

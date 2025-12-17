@@ -192,6 +192,41 @@ def generate_branch_name(issue_number: int, issue_title: str) -> str:
     return f"{issue_number}-{slug}"
 
 
+def find_worktree_for_branch(repo_root: Path, branch_name: str) -> Path | None:
+    """
+    Find an existing worktree that has the given branch checked out.
+
+    Args:
+        repo_root: Path to the main git repository
+        branch_name: Branch name to search for
+
+    Returns:
+        Path to the worktree if found, None otherwise
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
+        capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        return None
+
+    # Parse porcelain output:
+    # worktree /path/to/worktree
+    # HEAD abc123
+    # branch refs/heads/branch-name
+    # (blank line)
+    current_worktree = None
+    for line in result.stdout.split("\n"):
+        if line.startswith("worktree "):
+            current_worktree = Path(line.split(" ", 1)[1])
+        elif line.startswith("branch refs/heads/"):
+            current_branch = line.split("refs/heads/", 1)[1]
+            if current_branch == branch_name and current_worktree:
+                return current_worktree
+
+    return None
+
+
 def create_worktree(
     repo_root: Path,
     issue_number: int,
@@ -247,6 +282,22 @@ def create_worktree(
         ["git", "-C", str(repo_root), "worktree", "prune"],
         capture_output=True, check=False
     )
+
+    # If a specific branch was requested, check if it's already checked out in another worktree
+    # This is common when reviewing PRs - the branch may still be checked out from the work session
+    if branch_name:
+        existing_worktree = find_worktree_for_branch(repo_root, branch_name)
+        if existing_worktree and existing_worktree.exists():
+            logger.info("Branch '%s' already checked out at %s - reusing", branch_name, existing_worktree)
+            # Pull latest changes (best effort)
+            subprocess.run(
+                ["git", "-C", str(existing_worktree), "pull", "--rebase"],
+                capture_output=True, check=False
+            )
+            # Reinstall hooks if needed
+            if enforce_hooks:
+                install_hooks(existing_worktree, pre_push_hook)
+            return existing_worktree, branch_name
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
     if worktree_path.exists():

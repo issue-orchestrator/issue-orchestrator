@@ -133,10 +133,10 @@ class TestCreateWorktree:
 
         worktree_base = tmp_path / "worktrees"
 
-        # Mock: first call prunes stale worktrees, second checks if branch exists,
-        # third creates the worktree
+        # Mock: prune, find existing worktree, check if branch exists, create worktree
         mock_run.side_effect = [
             MagicMock(returncode=0, stderr=""),  # prune succeeds
+            MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch (no match)
             MagicMock(returncode=1, stderr=""),  # branch doesn't exist
             MagicMock(returncode=0, stderr=""),  # worktree create succeeds
         ]
@@ -151,20 +151,24 @@ class TestCreateWorktree:
         assert worktree_path == worktree_base / "repo-123"
 
         # Check git commands were called correctly
-        assert mock_run.call_count == 3
+        assert mock_run.call_count == 4
 
         # First call: prune stale worktrees
         prune_cmd = mock_run.call_args_list[0][0][0]
         assert prune_cmd[:3] == ["git", "-C", str(repo_root)]
         assert "prune" in prune_cmd
 
-        # Second call: check if branch exists
-        branch_check_cmd = mock_run.call_args_list[1][0][0]
+        # Second call: find worktree for branch
+        find_cmd = mock_run.call_args_list[1][0][0]
+        assert "worktree" in find_cmd and "list" in find_cmd
+
+        # Third call: check if branch exists
+        branch_check_cmd = mock_run.call_args_list[2][0][0]
         assert branch_check_cmd[:3] == ["git", "-C", str(repo_root)]
         assert "rev-parse" in branch_check_cmd
 
-        # Third call: create worktree with new branch (-b flag)
-        worktree_cmd = mock_run.call_args_list[2][0][0]
+        # Fourth call: create worktree with new branch (-b flag)
+        worktree_cmd = mock_run.call_args_list[3][0][0]
         assert worktree_cmd[0] == "git"
         assert worktree_cmd[3] == "worktree"
         assert worktree_cmd[4] == "add"
@@ -309,9 +313,10 @@ class TestCreateWorktree:
         repo_root.mkdir()
         (repo_root / ".git").mkdir()
 
-        # Mock: prune succeeds, then subprocess exception on branch check
+        # Mock: prune succeeds, find worktree (no match), then exception on branch check
         mock_run.side_effect = [
             MagicMock(returncode=0, stderr=""),  # prune succeeds
+            MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch (no match)
             OSError("Command not found"),  # exception on branch check
         ]
 
@@ -429,6 +434,54 @@ class TestRemoveWorktree:
 
         # Verify only worktree removal was called (not branch deletion)
         assert mock_run.call_count == 1
+
+
+class TestFindWorktreeForBranch:
+    """Test the find_worktree_for_branch function."""
+
+    @patch("issue_orchestrator.worktree.subprocess.run")
+    def test_find_worktree_for_branch_found(self, mock_run, tmp_path):
+        """Test finding an existing worktree for a branch."""
+        from issue_orchestrator.worktree import find_worktree_for_branch
+
+        mock_output = """worktree /path/to/main
+HEAD abc123
+branch refs/heads/main
+
+worktree /path/to/worktree-128
+HEAD def456
+branch refs/heads/128-m9-ios-styling
+
+"""
+        mock_run.return_value = MagicMock(returncode=0, stdout=mock_output, stderr="")
+
+        result = find_worktree_for_branch(tmp_path, "128-m9-ios-styling")
+        assert result == Path("/path/to/worktree-128")
+
+    @patch("issue_orchestrator.worktree.subprocess.run")
+    def test_find_worktree_for_branch_not_found(self, mock_run, tmp_path):
+        """Test when branch is not checked out in any worktree."""
+        from issue_orchestrator.worktree import find_worktree_for_branch
+
+        mock_output = """worktree /path/to/main
+HEAD abc123
+branch refs/heads/main
+
+"""
+        mock_run.return_value = MagicMock(returncode=0, stdout=mock_output, stderr="")
+
+        result = find_worktree_for_branch(tmp_path, "nonexistent-branch")
+        assert result is None
+
+    @patch("issue_orchestrator.worktree.subprocess.run")
+    def test_find_worktree_for_branch_git_fails(self, mock_run, tmp_path):
+        """Test when git command fails."""
+        from issue_orchestrator.worktree import find_worktree_for_branch
+
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
+
+        result = find_worktree_for_branch(tmp_path, "some-branch")
+        assert result is None
 
 
 class TestListWorktrees:

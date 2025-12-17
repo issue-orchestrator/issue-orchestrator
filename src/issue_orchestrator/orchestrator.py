@@ -136,18 +136,30 @@ class Orchestrator:
         print("Checking for stale in-progress issues...")
 
         # Clean up stale claims (default: 60 minutes)
-        cleaned = cleanup_stale_claims()
+        cleaned = cleanup_stale_claims(prefix="issue")
         if cleaned:
-            logger.info("Cleaned up %d stale lock claims: %s", len(cleaned), cleaned)
-            print(f"  Cleaned up {len(cleaned)} stale lock claims: {cleaned}")
+            logger.info("Cleaned up %d stale issue lock claims: %s", len(cleaned), cleaned)
+            print(f"  Cleaned up {len(cleaned)} stale issue lock claims: {cleaned}")
+
+        # Also clean up stale review locks
+        cleaned_reviews = cleanup_stale_claims(prefix="review")
+        if cleaned_reviews:
+            logger.info("Cleaned up %d stale review lock claims: %s", len(cleaned_reviews), cleaned_reviews)
+            print(f"  Cleaned up {len(cleaned_reviews)} stale review lock claims: {cleaned_reviews}")
 
         # Clean up orphaned claims (locks without active sessions)
         # This handles cases where sessions crashed immediately (e.g., command not found)
         self.state.startup_message = "Cleaning up orphaned claims..."
-        orphaned = cleanup_orphaned_claims(self._session_exists)
+        orphaned = cleanup_orphaned_claims(self._session_exists, prefix="issue")
         if orphaned:
-            logger.info("Cleaned up %d orphaned lock claims: %s", len(orphaned), orphaned)
-            print(f"  Cleaned up {len(orphaned)} orphaned lock claims: {orphaned}")
+            logger.info("Cleaned up %d orphaned issue lock claims: %s", len(orphaned), orphaned)
+            print(f"  Cleaned up {len(orphaned)} orphaned issue lock claims: {orphaned}")
+
+        # Also clean up orphaned review locks
+        orphaned_reviews = cleanup_orphaned_claims(self._session_exists, prefix="review")
+        if orphaned_reviews:
+            logger.info("Cleaned up %d orphaned review lock claims: %s", len(orphaned_reviews), orphaned_reviews)
+            print(f"  Cleaned up {len(orphaned_reviews)} orphaned review lock claims: {orphaned_reviews}")
 
         # Get existing branches for issue detection
         self.state.startup_message = "Scanning local branches..."
@@ -426,97 +438,108 @@ class Orchestrator:
         last_ui_update = time.time()
         ui_update_interval = 30  # Emit state_changed every 30 seconds for UI refresh
 
+        loop_iteration = 0
         while not self._shutdown_requested:
-            # Check status of all active sessions
-            for session in list(self.state.active_sessions):
-                status = self.monitor.check_session(session)
+            loop_iteration += 1
+            logger.info("[LOOP] Iteration %d - active=%d, pending_reviews=%d, paused=%s",
+                       loop_iteration, len(self.state.active_sessions),
+                       len(self.state.pending_reviews), self.state.paused)
 
-                if status != SessionStatus.RUNNING:
-                    self.handle_session_completion(session, status)
+            try:
+                # Check status of all active sessions
+                for session in list(self.state.active_sessions):
+                    status = self.monitor.check_session(session)
 
-            # Process pending code reviews
-            self.process_pending_reviews()
+                    if status != SessionStatus.RUNNING:
+                        self.handle_session_completion(session, status)
 
-            # Scan for PRs needing rework and process them
-            self.scan_needs_rework_prs()
-            self.process_pending_reworks()
+                # Process pending code reviews
+                self.process_pending_reviews()
 
-            # Check if CTO review should be triggered
-            self.check_cto_review_trigger()
+                # Scan for PRs needing rework and process them
+                self.scan_needs_rework_prs()
+                self.process_pending_reworks()
 
-            # Check if we've hit the max issues limit for this session
-            max_issues = self.config.max_issues_to_start
-            hit_max_issues = max_issues > 0 and self.state.issues_started_count >= max_issues
+                # Check if CTO review should be triggered
+                self.check_cto_review_trigger()
 
-            # If not paused, not at max issues limit, and have capacity, launch more sessions
-            if not self.state.paused and not hit_max_issues:
-                available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
+                # Check if we've hit the max issues limit for this session
+                max_issues = self.config.max_issues_to_start
+                hit_max_issues = max_issues > 0 and self.state.issues_started_count >= max_issues
 
-                if available_slots > 0:
-                    # Get available issues
-                    all_issues = []
-                    for agent_label in self.config.agents.keys():
-                        issues = list_issues(
-                            self.config.repo,
-                            labels=self._build_labels(agent_label),
-                            milestone=self._get_milestone_filter(),
-                            limit=self.config.issue_fetch_limit,
+                # If not paused, not at max issues limit, and have capacity, launch more sessions
+                if not self.state.paused and not hit_max_issues:
+                    available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
+
+                    if available_slots > 0:
+                        # Get available issues
+                        all_issues = []
+                        for agent_label in self.config.agents.keys():
+                            issues = list_issues(
+                                self.config.repo,
+                                labels=self._build_labels(agent_label),
+                                milestone=self._get_milestone_filter(),
+                                limit=self.config.issue_fetch_limit,
+                            )
+                            all_issues.extend(issues)
+
+                        available = self.scheduler.get_available_issues(all_issues)
+
+                        # Filter out issues already in session history (already processed today)
+                        history_numbers = {e.issue_number for e in self.state.session_history}
+                        active_numbers = {s.issue.number for s in self.state.active_sessions}
+                        exclude_numbers = history_numbers | active_numbers
+                        available = [i for i in available if i.number not in exclude_numbers]
+
+                        # Filter to single issue if specified
+                        if self.config.filter_issue:
+                            available = [i for i in available if i.number == self.config.filter_issue]
+
+                        sorted_issues = self.scheduler.sort_by_priority(available)
+
+                        # Pick next batch
+                        to_launch = self.scheduler.pick_next_batch(
+                            sorted_issues,
+                            len(self.state.active_sessions),
+                            self.state.priority_queue,
                         )
-                        all_issues.extend(issues)
 
-                    available = self.scheduler.get_available_issues(all_issues)
+                        for issue in to_launch:
+                            # Check pause and limit before each launch (might change mid-batch)
+                            if self.state.paused:
+                                print("Paused - stopping batch launch")
+                                break
+                            if max_issues > 0 and self.state.issues_started_count >= max_issues:
+                                break
+                            try:
+                                session = self.launch_session(issue)
+                                if session is None:
+                                    # Issue was already claimed by another instance
+                                    continue
+                                # Successfully launched - increment counter
+                                self.state.issues_started_count += 1
+                            except Exception as e:
+                                print(f"Failed to launch session for #{issue.number}: {e}")
 
-                    # Filter out issues already in session history (already processed today)
-                    history_numbers = {e.issue_number for e in self.state.session_history}
-                    active_numbers = {s.issue.number for s in self.state.active_sessions}
-                    exclude_numbers = history_numbers | active_numbers
-                    available = [i for i in available if i.number not in exclude_numbers]
+                # Periodically refresh the queue cache for the dashboard
+                cache_age = time.time() - last_cache_update
+                if cache_age >= self.config.queue_refresh_seconds:
+                    self.update_queue_cache()
+                    last_cache_update = time.time()
 
-                    # Filter to single issue if specified
-                    if self.config.filter_issue:
-                        available = [i for i in available if i.number == self.config.filter_issue]
+                # Periodically emit state_changed for UI to update runtimes
+                # This ensures "Starting" transitions to "Active" as time passes
+                ui_age = time.time() - last_ui_update
+                if ui_age >= ui_update_interval and self.state.active_sessions:
+                    _emit_event("state_changed", {
+                        "active_count": len(self.state.active_sessions),
+                        "sessions": [s.issue.number for s in self.state.active_sessions],
+                    })
+                    last_ui_update = time.time()
 
-                    sorted_issues = self.scheduler.sort_by_priority(available)
-
-                    # Pick next batch
-                    to_launch = self.scheduler.pick_next_batch(
-                        sorted_issues,
-                        len(self.state.active_sessions),
-                        self.state.priority_queue,
-                    )
-
-                    for issue in to_launch:
-                        # Check pause and limit before each launch (might change mid-batch)
-                        if self.state.paused:
-                            print("Paused - stopping batch launch")
-                            break
-                        if max_issues > 0 and self.state.issues_started_count >= max_issues:
-                            break
-                        try:
-                            session = self.launch_session(issue)
-                            if session is None:
-                                # Issue was already claimed by another instance
-                                continue
-                            # Successfully launched - increment counter
-                            self.state.issues_started_count += 1
-                        except Exception as e:
-                            print(f"Failed to launch session for #{issue.number}: {e}")
-
-            # Periodically refresh the queue cache for the dashboard
-            cache_age = time.time() - last_cache_update
-            if cache_age >= self.config.queue_refresh_seconds:
-                self.update_queue_cache()
-                last_cache_update = time.time()
-
-            # Periodically emit state_changed for UI to update runtimes
-            # This ensures "Starting" transitions to "Active" as time passes
-            ui_age = time.time() - last_ui_update
-            if ui_age >= ui_update_interval and self.state.active_sessions:
-                _emit_event("state_changed", {
-                    "active_count": len(self.state.active_sessions),
-                    "sessions": [s.issue.number for s in self.state.active_sessions],
-                })
-                last_ui_update = time.time()
+            except Exception as e:
+                logger.exception("[LOOP] Error in iteration %d: %s", loop_iteration, e)
+                print(f"[LOOP] Error in iteration {loop_iteration}: {e}")
 
             # Wait before next check
             await asyncio.sleep(10)
@@ -697,21 +720,22 @@ class Orchestrator:
         Respects max_concurrent_sessions and paused state.
         """
         if not self.config.code_review_agent:
+            logger.info("[REVIEW] No code_review_agent configured - skipping")
             return
 
         if not self.state.pending_reviews:
-            return
+            return  # Normal case when queue is empty, no logging needed
 
         # Don't start reviews while paused
         if self.state.paused:
-            logger.debug("[REVIEW] Skipping reviews - orchestrator paused")
+            logger.info("[REVIEW] Skipping reviews - orchestrator paused")
             return
 
         # Check capacity
         available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
         if available_slots <= 0:
-            logger.debug("[REVIEW] Skipping reviews - no capacity (active=%d, max=%d)",
-                        len(self.state.active_sessions), self.config.max_concurrent_sessions)
+            logger.info("[REVIEW] Skipping reviews - no capacity (active=%d, max=%d)",
+                       len(self.state.active_sessions), self.config.max_concurrent_sessions)
             return
 
         logger.info("[REVIEW] Processing %d pending reviews (capacity=%d)",
@@ -721,7 +745,12 @@ class Orchestrator:
         for review in list(self.state.pending_reviews)[:available_slots]:
             logger.info("[REVIEW] Launching review for PR #%d (issue #%d)",
                        review.pr_number, review.issue_number)
-            self.launch_review_session(review)
+            try:
+                self.launch_review_session(review)
+            except Exception as e:
+                logger.exception("[REVIEW] Failed to launch review for PR #%d: %s",
+                                review.pr_number, e)
+                print(f"[REVIEW] Failed to launch review for PR #{review.pr_number}: {e}")
 
     def check_cto_review_trigger(self) -> None:
         """Check if we should trigger a CTO batch review based on PR count.
