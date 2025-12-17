@@ -806,22 +806,35 @@ class Orchestrator:
         """
         # Don't trigger new reviews while paused
         if self.state.paused:
+            logger.debug("[CTO] Skipped - orchestrator paused")
             return
 
         # Check if CTO review is configured
         if not self.config.cto_review_agent:
+            logger.debug("[CTO] Skipped - cto_review_agent not configured")
             return
         if self.config.cto_review_threshold <= 0:
+            logger.debug("[CTO] Skipped - threshold is 0 (manual only)")
             return
 
         # Label to watch: either explicit cto_review_label or code_reviewed_label
         watch_label = self.config.cto_review_label or self.config.code_reviewed_label
         if not watch_label:
+            logger.debug("[CTO] Skipped - no watch label configured")
             return
 
         # Count PRs ready for CTO review
         prs = list_prs_with_label(self.config.repo, watch_label)
-        if len(prs) < self.config.cto_review_threshold:
+        pr_count = len(prs)
+        threshold = self.config.cto_review_threshold
+
+        # Log the check (audit trail)
+        logger.info("[CTO] Check: %d PRs with '%s' label (threshold: %d)",
+                   pr_count, watch_label, threshold)
+
+        if pr_count < threshold:
+            logger.info("[CTO] Not triggered - %d/%d PRs (need %d more)",
+                       pr_count, threshold, threshold - pr_count)
             return
 
         # Check if a CTO review issue already exists (avoid duplicates)
@@ -832,9 +845,12 @@ class Orchestrator:
         )
         for issue in existing:
             if "Batch Review" in issue.title or "CTO Review" in issue.title:
+                logger.info("[CTO] Skipped - existing CTO review issue #%d already open",
+                           issue.number)
                 return
 
         # Create the CTO review issue
+        logger.info("[CTO] TRIGGERING batch review for %d PRs", pr_count)
         pr_list = "\n".join(f"- PR #{pr['number']}: {pr['title']}" for pr in prs)
         body = f"""## CTO Batch Review Triggered
 
@@ -852,7 +868,10 @@ Flip labels from `{watch_label}` to `{self.config.cto_reviewed_label}` after rev
             labels=[self.config.cto_review_agent],
         )
         if issue_number:
+            logger.info("[CTO] Created CTO review issue #%d for %d PRs", issue_number, pr_count)
             print(f"📋 Created CTO review issue #{issue_number} for {len(prs)} PRs")
+        else:
+            logger.error("[CTO] Failed to create CTO review issue")
 
     def scan_needs_rework_prs(self) -> None:
         """Scan for PRs with needs-rework label and queue them for rework.
