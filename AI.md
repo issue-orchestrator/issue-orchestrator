@@ -12,6 +12,7 @@ This document helps AI assistants quickly understand the codebase.
 4. Installs pre-push hooks to enforce structured completion via `agent-done`
 5. Monitors sessions for completion, blocked state, or timeout
 6. Manages concurrency (configurable N parallel sessions)
+7. Orchestrates code reviews and CTO batch reviews
 
 ## Architecture Overview
 
@@ -33,11 +34,11 @@ CLI (cli.py)
 
 | File | Purpose |
 |------|---------|
-| `orchestrator.py` | Main orchestration loop, session lifecycle |
+| `orchestrator.py` | Main orchestration loop, session lifecycle, review workflow |
 | `cli.py` | CLI commands (start, status, pause, resume, etc.) |
 | `agent_done.py` | `agent-done` CLI - enforced completion command |
 | `worktree.py` | Git worktree create/remove + pre-push hook installation |
-| `web.py` | FastAPI web dashboard with real-time updates |
+| `web.py` | FastAPI web dashboard with real-time updates, auto port handling |
 | `iterm2.py` | iTerm2 tab management (macOS) |
 | `tmux.py` | TmuxManager for session/window management |
 | `monitor.py` | SessionMonitor - detects completion/blocked/timeout |
@@ -54,15 +55,18 @@ CLI (cli.py)
 1. startup()
    - Clean stale in-progress labels
    - Release old locks
+   - Scan for PRs needing code review (label-based recovery)
 
 2. run_loop() (every 10 seconds)
    - Monitor active sessions for completion
    - Handle completions (cleanup worktree, update labels)
+   - Process pending code reviews
    - If capacity available, launch new sessions
 
 3. launch_session(issue)
    - Claim lock
    - Create worktree with issue branch
+   - Run setup_worktree commands (e.g., npm ci)
    - Install pre-push hook (if enforce_hooks: true)
    - Create tmux window / iTerm2 tab / web session
    - Start Claude Code with prompt
@@ -75,7 +79,7 @@ CLI (cli.py)
 
 5. handle_session_completion(session, status)
    - Remove in-progress label
-   - If COMPLETED: cleanup worktree, trigger code review
+   - If COMPLETED: cleanup worktree, queue code review
    - If BLOCKED/NEEDS_HUMAN: leave for human review
    - Release lock
 
@@ -100,6 +104,7 @@ Work Agent creates PR
        ↓
 [Stage 1: Code Review] (per-PR, immediate)
   - Triggered immediately by orchestrator
+  - Also scanned at startup for crash recovery
   - Review agent checks code quality, tests
   - Uses: agent-done approved --summary "..." OR agent-done changes_requested --issues "..."
   - Label: "needs-code-review" → "code-reviewed" (approved) or "needs-rework" (changes_requested)
@@ -168,7 +173,7 @@ labels:
 | `process_pending_reworks()` | Process queued reworks (called each loop) |
 | `check_cto_review_trigger()` | Check if CTO batch review should be triggered |
 
-### UI Phase Detection (web.py:115-118)
+### UI Phase Detection (web.py)
 
 The dashboard shows whether a session is "Coding" or "Reviewing" based on the tmux session name:
 - Tmux sessions starting with `issue-*` → "Coding" phase
@@ -179,12 +184,6 @@ tmux_name = session.tmux_session_name or ""
 is_review = tmux_name.startswith("review-")
 phase = "Reviewing" if is_review else "Coding"
 ```
-
-### Setup Wizard Defaults
-
-The setup wizard (`setup_wizard.py`) defaults to enabling the review workflow (opt-out):
-- New projects: Line 476 - `default=True` for Stage 1 review
-- Existing projects: Line 760 - offers to add review if not present
 
 ## The `agent-done` Command
 
@@ -234,12 +233,15 @@ This forces agents to use `agent-done` instead of pushing directly.
 ## Configuration (.issue-orchestrator.yaml)
 
 ```yaml
+repo: owner/repo  # Optional, defaults to git remote
+
 agents:
   "agent:web":
     prompt: ".issue-orchestrator/prompts/web.md"
     worktree_base: "../"
     timeout_minutes: 45
     model: sonnet
+    permission_mode: bypassPermissions  # or default
     # command: "claude --model {model} '{initial_prompt}'"  # Custom
 
   # Multi-repo example: mobile agent works on different repo
@@ -257,9 +259,18 @@ concurrency:
   max_concurrent_sessions: 3
   session_timeout_minutes: 45
 
-# Limits
+# Limits and API behavior
 max_issues_to_start: 0  # Max issues to start this run (0 = unlimited)
+issue_fetch_limit: 100  # Max issues to fetch from GitHub API (default: 100)
 queue_refresh_seconds: 600  # Web UI GitHub refresh interval (0 = manual only)
+
+# Milestone sorting
+milestone_sort: "due_date"  # or "number" - how to prioritize milestones
+
+# Worktree setup commands (run after creating worktree)
+setup_worktree:
+  - "cd src/frontend && npm ci --silent"
+  - "pip install -r requirements.txt"
 
 labels:
   in_progress: "in-progress"
@@ -269,6 +280,7 @@ labels:
 
 # UI mode
 ui_mode: "tmux"  # or "iterm2" or "web"
+web_port: 8080   # Port for web dashboard
 
 # Hook enforcement
 enforce_hooks: true
@@ -281,14 +293,6 @@ close_failed_tabs: false
 # Filtering
 filter_label: null
 filter_milestone: null
-
-# Comment headings (customizable)
-comment_headings:
-  implementation: "## Implementation"
-  problems: "## Problems Encountered"
-  pr_link: "## Pull Request"
-  blocked: "## Blocked"
-  needs_human: "## Needs Human Input"
 ```
 
 ## UI Modes
@@ -304,10 +308,23 @@ comment_headings:
 - Requires iTerm2 to be running
 
 ### web
-- FastAPI server on port 8080
+- FastAPI server on port 8080 (configurable)
 - Real-time dashboard in browser
 - REST API for status and control
+- **Auto port handling**: If port is in use, kills existing process automatically
 - Start with: `issue-orchestrator start --ui-mode web`
+
+## CLI Options
+
+Key `start` command options:
+```bash
+issue-orchestrator start \
+  --ui-mode web \           # tmux, iterm2, or web
+  --port 8080 \             # Web dashboard port
+  --config /path/to/config.yaml \  # Custom config file path
+  --milestone "Sprint 1" \  # Filter by milestone (name or number)
+  --max-issues 10           # Limit issues to start this run
+```
 
 ## Prompt Templates
 
@@ -322,7 +339,7 @@ Prompts MUST instruct agents to use `agent-done` for completion.
 
 ```bash
 source .venv/bin/activate
-pytest tests/unit/              # Run all tests (~15s, 771 tests)
+pytest tests/unit/              # Run all tests (~917 tests)
 pytest tests/unit/ -v           # Verbose
 pytest tests/unit/ --cov        # With coverage (90%+)
 ```
@@ -330,17 +347,6 @@ pytest tests/unit/ --cov        # With coverage (90%+)
 **Test mode**: Use `--test-mode` flag to run with mock data:
 ```bash
 issue-orchestrator start --test-mode
-```
-
-## CLI Options
-
-Key `start` command options:
-```bash
-issue-orchestrator start \
-  --ui-mode web \           # tmux, iterm2, or web
-  --port 8080 \             # Web dashboard port
-  --milestone "Sprint 1" \  # Filter by milestone (name or number)
-  --max-issues 10           # Limit issues to start this run
 ```
 
 ## Quick Debugging
@@ -366,7 +372,19 @@ tmux attach -t orchestrator:issue-<number>
 
 **Check web dashboard:**
 ```bash
-curl http://localhost:8080/api/status
+curl -s http://localhost:8080/api/status | python3 -m json.tool
+curl -s http://localhost:8080/api/state | python3 -m json.tool
+curl -s http://localhost:8080/api/config | python3 -m json.tool
+```
+
+**Debug pending reviews:**
+```bash
+curl -s http://localhost:8080/api/state | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('Pending reviews:', len(d.get('pending_reviews', [])))
+for p in d.get('pending_reviews', []):
+    print(f'  PR #{p[\"pr_number\"]}: {p[\"branch_name\"]}')"
 ```
 
 ## Dependencies
@@ -386,7 +404,7 @@ curl http://localhost:8080/api/status
 
 **Patching for tests:**
 ```python
-with patch('issue_orchestrator.github.run_gh_command') as mock_gh:
+with patch('issue_orchestrator.github._run_gh') as mock_gh:
     mock_gh.return_value = '{"data": ...}'
     # test code
 ```
@@ -424,6 +442,7 @@ issue-orchestrator/
 │   ├── monitor.py         # Session monitoring
 │   ├── orchestrator.py    # Main orchestrator
 │   ├── scheduler.py       # Issue scheduling
+│   ├── setup_wizard.py    # Interactive setup
 │   ├── templates/
 │   │   └── dashboard.html # Web dashboard template
 │   ├── test_data.py       # Mock data for testing
@@ -443,3 +462,35 @@ issue-orchestrator/
 ├── AI.md                  # This file
 └── pyproject.toml
 ```
+
+## Web Dashboard Features
+
+### Port Conflict Handling
+
+The web dashboard automatically handles port conflicts:
+- On startup, checks if the configured port is in use
+- If in use, automatically kills the blocking process using `lsof`
+- Logs the action and continues startup
+- Falls back to error with helpful message if kill fails
+
+### API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/` | GET | Dashboard HTML |
+| `/api/status` | GET | Current orchestrator status |
+| `/api/state` | GET | Full state including pending reviews |
+| `/api/config` | GET | Current configuration |
+| `/api/pause` | POST | Pause orchestrator |
+| `/api/resume` | POST | Resume orchestrator |
+| `/api/shutdown` | POST | Graceful shutdown |
+| `/api/refresh` | POST | Refresh issue queue from GitHub |
+| `/api/events` | GET | SSE stream for real-time updates |
+
+### Real-time Updates
+
+The dashboard uses Server-Sent Events (SSE) for real-time updates:
+- Session status changes
+- New sessions starting
+- Completions and failures
+- Queue changes
