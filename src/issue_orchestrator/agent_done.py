@@ -217,14 +217,16 @@ def add_label_to_pr(pr_url: str, label: str) -> None:
 
 def remove_label_from_pr(pr_number: int, label: str) -> None:
     """Remove a label from a PR."""
+    print(f"🏷️  Attempting to remove '{label}' from PR #{pr_number}...")
     result = subprocess.run(
         ["gh", "pr", "edit", str(pr_number), "--remove-label", label],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        # Label might not exist, that's okay
-        if "not found" not in result.stderr.lower():
-            print(f"⚠️  Could not remove label '{label}' from PR: {result.stderr}", file=sys.stderr)
+        # Log all errors (not just non-"not found")
+        print(f"⚠️  Label removal failed (code {result.returncode}): {result.stderr.strip()}", file=sys.stderr)
+    else:
+        print(f"✅ Successfully removed '{label}' from PR #{pr_number}")
 
 
 def get_pr_for_branch() -> Optional[int]:
@@ -715,17 +717,23 @@ STATUSES:
         # 2. Remove needs-code-review label, add code-reviewed label
         code_review_label = get_code_review_label()
         if code_review_label:
-            print(f"🏷️  Removing '{code_review_label}' label...")
             remove_label_from_pr(pr_number, code_review_label)
+        else:
+            print("⚠️  No code_review_label configured - skipping label removal", file=sys.stderr)
 
         code_reviewed_label = get_code_reviewed_label()
         if code_reviewed_label:
+            print(f"🏷️  Adding '{code_reviewed_label}' label to PR #{pr_number}...")
             result = subprocess.run(
                 ["gh", "pr", "edit", str(pr_number), "--add-label", code_reviewed_label],
                 capture_output=True, text=True
             )
             if result.returncode == 0:
-                print(f"🏷️  Added '{code_reviewed_label}' label to PR")
+                print(f"✅ Successfully added '{code_reviewed_label}' to PR #{pr_number}")
+            else:
+                print(f"⚠️  Failed to add label: {result.stderr.strip()}", file=sys.stderr)
+        else:
+            print("⚠️  No code_reviewed_label configured - skipping label addition", file=sys.stderr)
 
         # 3. Post review comment on PR
         print("💬 Posting review comment...")
@@ -743,16 +751,20 @@ STATUSES:
         # 2. Remove needs-code-review, add needs-rework label
         code_review_label = get_code_review_label()
         if code_review_label:
-            print(f"🏷️  Removing '{code_review_label}' label...")
             remove_label_from_pr(pr_number, code_review_label)
+        else:
+            print("⚠️  No code_review_label configured - skipping label removal", file=sys.stderr)
 
         needs_rework_label = get_needs_rework_label()
+        print(f"🏷️  Adding '{needs_rework_label}' label to PR #{pr_number}...")
         result = subprocess.run(
             ["gh", "pr", "edit", str(pr_number), "--add-label", needs_rework_label],
             capture_output=True, text=True
         )
         if result.returncode == 0:
-            print(f"🏷️  Added '{needs_rework_label}' label to PR")
+            print(f"✅ Successfully added '{needs_rework_label}' to PR #{pr_number}")
+        else:
+            print(f"⚠️  Failed to add label: {result.stderr.strip()}", file=sys.stderr)
 
         # 3. Post review comment on PR
         print("💬 Posting review comment...")
