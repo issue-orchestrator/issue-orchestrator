@@ -1,7 +1,7 @@
 #!/bin/bash
-# gh-wrapper - intercepts gh commands to block unauthorized pr create
+# gh-wrapper - intercepts gh commands to block unauthorized operations
 #
-# This wrapper prevents agents from bypassing agent-done by using gh pr create directly.
+# This wrapper prevents agents from bypassing agent-done by using gh directly.
 # Only agent-done knows the authorization token.
 
 # Check if this is a pr create command
@@ -25,6 +25,38 @@ if [[ "$1" == "pr" && "$2" == "create" ]]; then
         echo "" >&2
         exit 1
     fi
+fi
+
+# Check if this is a pr edit command with label manipulation
+if [[ "$1" == "pr" && "$2" == "edit" ]]; then
+    # Check if --add-label or --remove-label is in the arguments
+    for arg in "$@"; do
+        if [[ "$arg" == "--add-label" || "$arg" == "--remove-label" ]]; then
+            # Check for authorization token (only agent-done sets this)
+            if [[ "$ORCHESTRATOR_GH_AUTH" != "agent-done-authorized" ]]; then
+                echo "" >&2
+                echo "╔════════════════════════════════════════════════════════════════╗" >&2
+                echo "║  ❌ ERROR: Direct label manipulation is BLOCKED                ║" >&2
+                echo "╠════════════════════════════════════════════════════════════════╣" >&2
+                echo "║                                                                ║" >&2
+                echo "║  You MUST use 'agent-done' for label management.               ║" >&2
+                echo "║  This ensures proper workflow state tracking.                  ║" >&2
+                echo "║                                                                ║" >&2
+                echo "║  ✅ For code reviewers:                                        ║" >&2
+                echo "║     agent-done approved --summary \"Review summary\"             ║" >&2
+                echo "║     agent-done changes_requested --issues \"Issues found\"       ║" >&2
+                echo "║                                                                ║" >&2
+                echo "║  ✅ For work agents:                                           ║" >&2
+                echo "║     agent-done completed --implementation \"...\" --problems ... ║" >&2
+                echo "║     agent-done blocked --reason \"...\" --attempted \"...\"        ║" >&2
+                echo "║                                                                ║" >&2
+                echo "╚════════════════════════════════════════════════════════════════╝" >&2
+                echo "" >&2
+                exit 1
+            fi
+            break
+        fi
+    done
 fi
 
 # Find and exec real gh (search common locations)
