@@ -203,7 +203,14 @@ class ITermSessionManager:
         # IMPORTANT: Escape single quotes in the command before wrapping in single quotes
         # In shell, 'foo'\''bar' produces foo'bar (end quote, escaped quote, start quote)
         cmd_with_escaped_quotes = command.replace("'", "'\\''")
-        zsh_wrapped_cmd = f"zsh -l -c 'cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
+
+        # Prepend gh-wrapper directory to PATH to intercept unauthorized gh pr create
+        # This blocks agents from bypassing agent-done
+        from pathlib import Path
+        wrapper_dir = Path(__file__).parent / "scripts"
+        path_prefix = f'export PATH="{wrapper_dir}:$PATH" && '
+
+        zsh_wrapped_cmd = f"zsh -l -c '{path_prefix}cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
         escaped_zsh_cmd = zsh_wrapped_cmd.replace('\\', '\\\\').replace('"', '\\"')
         # AppleScript that creates a window if none exists, then creates a tab
         script = f'''tell application "iTerm"

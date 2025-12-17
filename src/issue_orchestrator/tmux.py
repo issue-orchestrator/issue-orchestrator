@@ -94,9 +94,14 @@ class TmuxManager:
             start_directory=str(working_dir),
         )
 
-        # Send the command
+        # Prepend gh-wrapper directory to PATH to intercept unauthorized gh pr create
+        wrapper_dir = Path(__file__).parent / "scripts"
+        path_cmd = f'export PATH="{wrapper_dir}:$PATH"'
+
+        # Send the PATH setup and then the command
         pane = window.active_pane
         if pane is not None:
+            pane.send_keys(path_cmd)
             pane.send_keys(command)
 
         return window

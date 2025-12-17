@@ -1,0 +1,45 @@
+#!/bin/bash
+# gh-wrapper - intercepts gh commands to block unauthorized pr create
+#
+# This wrapper prevents agents from bypassing agent-done by using gh pr create directly.
+# Only agent-done knows the authorization token.
+
+# Check if this is a pr create command
+if [[ "$1" == "pr" && "$2" == "create" ]]; then
+    # Check for authorization token (only agent-done sets this)
+    if [[ "$ORCHESTRATOR_GH_AUTH" != "agent-done-authorized" ]]; then
+        echo "" >&2
+        echo "╔════════════════════════════════════════════════════════════════╗" >&2
+        echo "║  ❌ ERROR: Direct 'gh pr create' is BLOCKED                    ║" >&2
+        echo "╠════════════════════════════════════════════════════════════════╣" >&2
+        echo "║                                                                ║" >&2
+        echo "║  You MUST use 'agent-done' to create PRs.                      ║" >&2
+        echo "║  This ensures proper tracking and code review workflow.        ║" >&2
+        echo "║                                                                ║" >&2
+        echo "║  ✅ Correct usage:                                             ║" >&2
+        echo "║     agent-done completed \\                                     ║" >&2
+        echo "║       --implementation \"What you implemented\" \\                ║" >&2
+        echo "║       --problems \"None\"                                        ║" >&2
+        echo "║                                                                ║" >&2
+        echo "╚════════════════════════════════════════════════════════════════╝" >&2
+        echo "" >&2
+        exit 1
+    fi
+fi
+
+# Find and exec real gh (search common locations)
+for gh_path in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
+    if [[ -x "$gh_path" ]]; then
+        exec "$gh_path" "$@"
+    fi
+done
+
+# Fallback: try to find gh in PATH (excluding this wrapper)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REAL_GH=$(which -a gh 2>/dev/null | grep -v "$SCRIPT_DIR" | head -1)
+if [[ -x "$REAL_GH" ]]; then
+    exec "$REAL_GH" "$@"
+fi
+
+echo "ERROR: Could not find real gh executable" >&2
+exit 1

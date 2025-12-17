@@ -454,9 +454,14 @@ def create_pr(issue_number: int, title: str, data: CompletionData) -> str:
 
     body = "\n".join(body_parts)
 
+    # Set auth env var to bypass gh-wrapper block (only agent-done knows this)
+    env = os.environ.copy()
+    env["ORCHESTRATOR_GH_AUTH"] = "agent-done-authorized"
+
     result = subprocess.run(
         ["gh", "pr", "create", "--title", title, "--body", body],
-        capture_output=True, text=True
+        capture_output=True, text=True,
+        env=env
     )
     if result.returncode != 0:
         # PR might already exist
