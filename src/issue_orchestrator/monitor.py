@@ -35,19 +35,28 @@ class SessionMonitor:
             self._iterm_manager = get_iterm_manager()
         return self._iterm_manager
 
+    def _extract_session_number(self, session_name: str) -> int:
+        """Extract the numeric ID from a session name (handles both issue- and review- prefixes)."""
+        if session_name.startswith("issue-"):
+            return int(session_name.replace("issue-", ""))
+        elif session_name.startswith("review-"):
+            return int(session_name.replace("review-", ""))
+        else:
+            raise ValueError(f"Unknown session name format: {session_name}")
+
     def _session_exists(self, session_name: str) -> bool:
         """Check if a session exists using the appropriate backend."""
         if self._using_iterm2:
-            issue_number = int(session_name.replace("issue-", ""))
-            return self._get_iterm_manager().session_exists(issue_number)
+            session_number = self._extract_session_number(session_name)
+            return self._get_iterm_manager().session_exists(session_number)
         else:
             return session_exists(session_name)
 
     def _kill_session(self, session_name: str) -> None:
         """Kill a session using the appropriate backend."""
         if self._using_iterm2:
-            issue_number = int(session_name.replace("issue-", ""))
-            self._get_iterm_manager().kill_session(issue_number)
+            session_number = self._extract_session_number(session_name)
+            self._get_iterm_manager().kill_session(session_number)
         else:
             kill_session(session_name)
 
