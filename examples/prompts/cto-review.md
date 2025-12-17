@@ -130,6 +130,72 @@ Comment on the issue with your analysis:
 - [ ] Escalate to human: {why}
 ```
 
+## Failure Analysis
+
+When reviewing issues with `failed` label, audit the Claude conversation logs to understand what actually happened:
+
+### 1. Find Failed Issues
+```bash
+gh issue list --label "failed" --json number,title,state
+```
+
+### 2. Locate Agent Logs
+
+Claude stores conversation logs in `~/.claude/projects/`. Find logs for a specific issue:
+```bash
+# List log files for an issue (replace REPO and NUMBER)
+ls -la ~/.claude/projects/-Users-*-dev-{repo}-{issue_number}/
+```
+
+### 3. Audit the Logs
+
+Parse the JSONL logs to see what the agent actually did:
+```python
+import json
+
+log_file = "~/.claude/projects/-Users-...-{issue}/*.jsonl"
+with open(log_file) as f:
+    for line in f:
+        entry = json.loads(line)
+        msg = entry.get('message', {})
+        if msg.get('role') == 'assistant':
+            # See what the agent said/did
+            print(msg.get('content', '')[:500])
+```
+
+Look for:
+- What did the agent attempt?
+- Where did it get stuck?
+- Did it try to use `agent-done`? What happened?
+- Were there pre-existing failures blocking progress?
+- Did the agent give up prematurely or make reasonable choices?
+
+### 4. Failure Categories
+
+Common failure patterns to identify:
+- **Tooling issues**: `agent-done` not found, PATH problems
+- **Pre-existing failures**: Tests/lint failing before agent's changes
+- **Blocking dependencies**: Issue depends on work not yet done
+- **Scope creep**: Agent tried to do too much
+- **Premature exit**: Agent gave up when it could have continued
+- **Missing context**: Agent didn't read enough before starting
+
+### 5. Create Improvement Issues
+
+For systemic problems found in failure analysis:
+```bash
+gh issue create --title "Process: {improvement needed}" \
+  --body "## Problem
+{what's breaking}
+
+## Evidence
+Found in failed issues: #X, #Y, #Z
+
+## Proposed Fix
+{specific change to prompts, tooling, or workflow}" \
+  --label "process"
+```
+
 ## Completion
 
 When done, use `agent-done`:
