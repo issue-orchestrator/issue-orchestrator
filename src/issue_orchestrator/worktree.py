@@ -73,8 +73,11 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     # Check if project uses core.hooksPath (common pattern for version-controlled hooks)
+    # IMPORTANT: Read from main repo config, not worktree config
+    # (worktree config may have our override from a previous install)
+    main_repo_root = gitdir.parent.parent  # /repo/.git from /repo/.git/worktrees/name
     hooks_path_result = subprocess.run(
-        ["git", "-C", str(worktree_path), "config", "--get", "core.hooksPath"],
+        ["git", "-C", str(main_repo_root), "config", "--local", "--get", "core.hooksPath"],
         capture_output=True, text=True, check=False
     )
     custom_hooks_path = hooks_path_result.stdout.strip() if hooks_path_result.returncode == 0 else None
@@ -83,9 +86,8 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     project_hook = None
     if custom_hooks_path:
         # Project uses custom hooksPath (e.g., .githooks/)
-        # Resolve relative to worktree root
-        custom_hooks_dir = worktree_path / custom_hooks_path
-        project_hook = custom_hooks_dir / "pre-push"
+        # Resolve relative to MAIN repo root (not worktree)
+        project_hook = main_repo_root.parent / custom_hooks_path / "pre-push"
 
         # Override hooksPath for this worktree only (not repo-wide)
         # Using --worktree flag stores config in worktree-specific config file
