@@ -494,3 +494,79 @@ The dashboard uses Server-Sent Events (SSE) for real-time updates:
 - New sessions starting
 - Completions and failures
 - Queue changes
+
+## Troubleshooting
+
+### Sessions Failing Without Completion
+
+**Symptom:** Sessions end with "without completion markers", marked as FAILED.
+
+**Causes:**
+1. Agent prompt doesn't include `agent-done` instructions
+2. Pre-push hook blocking push (agent can't complete)
+3. Agent crashing/timeout before completion
+
+**Fix:** Ensure agent prompts include `agent-done` usage in "When Done" section.
+
+### Pre-Push Hook Infinite Recursion
+
+**Symptom:** Push hangs forever, hook log shows repeated "Pre-push hook started".
+
+**Cause:** When worktrees are reused, `install_hooks()` was reading `core.hooksPath` from
+worktree config (which has our override), then copying the chained wrapper as the "project hook".
+
+**Fix:** Code now reads `core.hooksPath` from main repo config only. To repair existing worktrees:
+```bash
+# Copy original project hook to all worktrees
+MAIN_HOOK="/path/to/repo/.githooks/pre-push"
+for dir in /path/to/repo-*/; do
+  HOOKS_DIR="/path/to/repo/.git/worktrees/$(basename $dir)/hooks"
+  if grep -q "Chained pre-push" "$HOOKS_DIR/pre-push.project" 2>/dev/null; then
+    cp "$MAIN_HOOK" "$HOOKS_DIR/pre-push.project"
+  fi
+done
+```
+
+### Main Repo hooksPath Corrupted
+
+**Symptom:** Pushes from main repo fail, `git config core.hooksPath` shows worktree path.
+
+**Fix:**
+```bash
+cd /path/to/main/repo
+git config --unset core.hooksPath
+git config core.hooksPath .githooks
+```
+
+### iTerm2 Slowdown
+
+**Symptom:** Creating new tabs takes 30-60+ seconds.
+
+**Cause:** Too many accumulated idle tabs from previous sessions.
+
+**Fix:** Clean up idle tabs:
+```bash
+python -c "from issue_orchestrator.iterm2 import cleanup_idle_tabs; cleanup_idle_tabs()"
+```
+Or restart orchestrator (cleanup runs at startup for iTerm2/web modes).
+
+### Missing Labels
+
+**Symptom:** Warnings about labels not found (e.g., "failed" label).
+
+**Fix:** Create missing labels in the repo:
+```bash
+gh label create "failed" -R owner/repo --description "Agent session failed" --color "B60205"
+```
+
+### Lock Cleanup
+
+Locks are stored in `/tmp/issue-orchestrator/locks/`. Cleanup runs at startup:
+- Stale locks (>60 min old) are removed
+- Orphaned locks (no active session) are removed
+- Both `issue-*` and `review-*` prefixes are cleaned
+
+Manual cleanup:
+```bash
+rm -rf /tmp/issue-orchestrator/locks/*
+```
