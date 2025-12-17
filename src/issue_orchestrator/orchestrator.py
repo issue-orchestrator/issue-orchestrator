@@ -84,15 +84,15 @@ def detect_existing_work(worktree_path: Path) -> Optional[str]:
             commit_list += f"\n  ... and {num_commits - 10} more"
 
         return (
-            f"This worktree has {num_commits} existing commit(s) from a previous session that was interrupted. "
-            f"Branch: {branch}\n"
-            f"Commits:\n{commit_list}\n\n"
-            f"BEFORE starting fresh work, evaluate if this existing work can be completed:\n"
-            f"1. Run 'git log main..HEAD' and 'git diff main..HEAD --stat' to see what was done\n"
-            f"2. Run tests to see if the work passes\n"
-            f"3. If work is complete and tests pass, just push and use agent-done\n"
-            f"4. If work needs minor fixes, fix and complete it\n"
-            f"5. Only start over if the existing work is fundamentally broken"
+            f"This worktree has {num_commits} existing commit(s) from a previous session. "
+            f"Branch: {branch}. "
+            f"Commits: {commit_list}. "
+            f"EVALUATE this existing work BEFORE starting fresh: "
+            f"(1) Check git log and diff to see what was done. "
+            f"(2) Run tests. "
+            f"(3) If complete and tests pass, just push via agent-done. "
+            f"(4) If minor fixes needed, fix and complete. "
+            f"(5) Only restart if fundamentally broken."
         )
     except Exception as e:
         logger.warning("Failed to detect existing work: %s", e)
