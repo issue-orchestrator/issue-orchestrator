@@ -126,6 +126,115 @@ class Orchestrator:
             self._iterm_manager = get_iterm_manager()
         return self._iterm_manager
 
+    async def _restore_running_sessions(self, running: list[dict]) -> None:
+        """Restore tracking for sessions that are still running after orchestrator restart.
+
+        Args:
+            running: List of dicts from discover_running_sessions() with
+                     {issue_number, tab_name, is_review}
+        """
+        from .locks import try_claim
+        import re
+
+        for session_info in running:
+            issue_number = session_info["issue_number"]
+            tab_name = session_info["tab_name"]
+            is_review = session_info["is_review"]
+
+            try:
+                # Determine session type and session_name
+                if is_review:
+                    # Extract PR number from tab name like "#123 Review PR #456"
+                    pr_match = re.search(r'Review PR #(\d+)', tab_name)
+                    pr_number = int(pr_match.group(1)) if pr_match else issue_number
+                    session_name = f"review-{pr_number}"
+                    lock_prefix = "review"
+                    lock_number = pr_number
+                else:
+                    session_name = f"issue-{issue_number}"
+                    lock_prefix = "issue"
+                    lock_number = issue_number
+                    pr_number = None
+
+                # Try to claim the lock (may already be claimed from previous run)
+                claimed = try_claim(lock_number, prefix=lock_prefix)
+                if not claimed:
+                    logger.info("Session %s already has active claim - skipping restore", session_name)
+                    continue
+
+                # Find the worktree
+                worktree_path = None
+                branch_name = "unknown"
+
+                # Check all agent repo_roots for the worktree
+                for agent_label, agent_config in self.config.agents.items():
+                    repo_root = agent_config.repo_root or self.config.repo_root
+                    candidate_path = repo_root.parent / f"{repo_root.name}-{issue_number}"
+                    if candidate_path.exists():
+                        worktree_path = candidate_path
+                        # Get branch name from worktree
+                        result = subprocess.run(
+                            ["git", "-C", str(candidate_path), "branch", "--show-current"],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        if result.returncode == 0 and result.stdout.strip():
+                            branch_name = result.stdout.strip()
+                        break
+
+                if not worktree_path:
+                    logger.warning("Could not find worktree for session %s - releasing claim", session_name)
+                    from .locks import release_claim
+                    release_claim(lock_number, prefix=lock_prefix)
+                    continue
+
+                # Fetch issue details from GitHub to get agent type
+                issues = list_issues(self.config.repo, limit=200)
+                issue_obj = None
+                agent_config = None
+
+                for issue in issues:
+                    if issue.number == issue_number:
+                        issue_obj = issue
+                        if issue.agent_type:
+                            agent_config = self.config.agents.get(issue.agent_type)
+                        break
+
+                if not issue_obj:
+                    # Create minimal issue object for reviews or if issue not found
+                    from .models import Issue
+                    issue_obj = Issue(
+                        number=issue_number,
+                        title=tab_name.replace("#", "").strip(),
+                        labels=[],
+                    )
+
+                if not agent_config:
+                    # Use first available agent config as fallback
+                    agent_config = next(iter(self.config.agents.values()), None)
+
+                if not agent_config:
+                    logger.warning("No agent config available for session %s - releasing claim", session_name)
+                    from .locks import release_claim
+                    release_claim(lock_number, prefix=lock_prefix)
+                    continue
+
+                # Create session object
+                session = Session(
+                    issue=issue_obj,
+                    agent_config=agent_config,
+                    tmux_session_name=session_name,
+                    worktree_path=worktree_path,
+                    branch_name=branch_name,
+                )
+
+                self.state.active_sessions.append(session)
+                logger.info("Restored tracking for session %s (issue #%d)", session_name, issue_number)
+                print(f"  Restored: {session_name} (#{issue_number})")
+
+            except Exception as e:
+                logger.exception("Failed to restore session for issue #%d: %s", issue_number, e)
+                print(f"  Warning: Failed to restore session for #{issue_number}: {e}")
+
     def _extract_session_number(self, session_name: str) -> int:
         """Extract the number from a session name like 'issue-42' or 'review-123'."""
         import re
@@ -218,6 +327,15 @@ class Orchestrator:
             if closed_tabs:
                 logger.info("Closed %d idle iTerm2 tabs", closed_tabs)
                 print(f"  Closed {closed_tabs} idle iTerm2 tabs")
+
+            # Discover and restore tracking for running sessions
+            self.state.startup_message = "Discovering running sessions..."
+            from .iterm2 import discover_running_sessions
+            running = discover_running_sessions()
+            if running:
+                logger.info("Found %d running sessions to restore tracking", len(running))
+                print(f"  Found {len(running)} running sessions to restore tracking")
+                await self._restore_running_sessions(running)
 
         # Get existing branches for issue detection
         self.state.startup_message = "Scanning local branches..."
@@ -495,25 +613,33 @@ class Orchestrator:
             except Exception as e:
                 print(f"Warning: failed to remove worktree: {e}")
 
-            # Trigger code review immediately if configured
-            # Skip if agent has skip_review set (e.g., domain-expert agents)
-            # Skip if this was a review session (not a work session)
-            is_review_session = session.tmux_session_name.startswith("review-")
-            if pr_url and self.config.code_review_agent and not session.agent_config.skip_review and not is_review_session:
-                logger.info(f"[REVIEW] Session #{session.issue.number} completed with PR, queuing code review")
-                self.queue_code_review(
-                    issue_number=session.issue.number,
-                    pr_url=pr_url,
-                    branch_name=session.branch_name,
-                )
-            elif pr_url and is_review_session:
-                logger.info(f"[REVIEW] Review session {session.tmux_session_name} completed - no re-queue needed")
-            elif pr_url and not self.config.code_review_agent:
-                logger.info(f"[REVIEW] Session #{session.issue.number} completed but code review not configured")
-            elif pr_url and session.agent_config.skip_review:
-                logger.info(f"[REVIEW] Session #{session.issue.number} skipping review (skip_review=true)")
-            elif not pr_url:
-                logger.info(f"[REVIEW] Session #{session.issue.number} completed but no PR found")
+        # Close the terminal session/tab to prevent accumulation
+        # Uses _kill_session which handles both iTerm2 and tmux backends
+        try:
+            self._kill_session(session.tmux_session_name)
+            logger.info(f"Closed session for #{session.issue.number}")
+        except Exception as e:
+            logger.warning(f"Failed to close session for #{session.issue.number}: {e}")
+
+        # Trigger code review immediately if configured
+        # Skip if agent has skip_review set (e.g., domain-expert agents)
+        # Skip if this was a review session (not a work session)
+        is_review_session = session.tmux_session_name.startswith("review-")
+        if pr_url and self.config.code_review_agent and not session.agent_config.skip_review and not is_review_session:
+            logger.info(f"[REVIEW] Session #{session.issue.number} completed with PR, queuing code review")
+            self.queue_code_review(
+                issue_number=session.issue.number,
+                pr_url=pr_url,
+                branch_name=session.branch_name,
+            )
+        elif pr_url and is_review_session:
+            logger.info(f"[REVIEW] Review session {session.tmux_session_name} completed - no re-queue needed")
+        elif pr_url and not self.config.code_review_agent:
+            logger.info(f"[REVIEW] Session #{session.issue.number} completed but code review not configured")
+        elif pr_url and session.agent_config.skip_review:
+            logger.info(f"[REVIEW] Session #{session.issue.number} skipping review (skip_review=true)")
+        elif not pr_url:
+            logger.info(f"[REVIEW] Session #{session.issue.number} completed but no PR found")
 
     async def run_loop(self) -> None:
         """Main orchestration loop."""
@@ -537,7 +663,8 @@ class Orchestrator:
                     if status != SessionStatus.RUNNING:
                         self.handle_session_completion(session, status)
 
-                # Process pending code reviews
+                # Scan for PRs needing code review and process them
+                self.scan_needs_code_review_prs()
                 self.process_pending_reviews()
 
                 # Scan for PRs needing rework and process them
@@ -943,6 +1070,48 @@ Flip labels from `{watch_label}` to `{self.config.cto_reviewed_label}` after rev
             print(f"📋 Created CTO review issue #{issue_number} for {len(prs)} PRs")
         else:
             logger.error("[CTO] Failed to create CTO review issue")
+
+    def scan_needs_code_review_prs(self) -> None:
+        """Scan for PRs with needs-code-review label and queue them.
+
+        Called periodically to pick up PRs that need review but aren't queued.
+        This handles cases where review sessions crashed or the orchestrator restarted.
+        """
+        if not self.config.code_review_agent or not self.config.code_review_label:
+            return
+
+        prs = list_prs_with_label(self.config.repo, self.config.code_review_label)
+
+        for pr in prs:
+            pr_number = pr.get("number")
+            if pr_number is None:
+                continue
+
+            # Skip if already queued
+            if any(r.pr_number == pr_number for r in self.state.pending_reviews):
+                continue
+
+            # Skip if already being reviewed (check for active review session)
+            if self._session_exists(f"review-{pr_number}"):
+                continue
+
+            # Extract issue number from PR body
+            import re
+            pr_body = pr.get("body", "")
+            issue_match = re.search(r'Closes #(\d+)', pr_body, re.IGNORECASE)
+            issue_number = int(issue_match.group(1)) if issue_match else pr_number
+
+            pr_url = pr.get("url", f"https://github.com/{self.config.repo}/pull/{pr_number}")
+
+            review = PendingReview(
+                issue_number=issue_number,
+                pr_number=pr_number,
+                pr_url=str(pr_url),
+                branch_name=pr.get("headRefName", ""),
+            )
+            self.state.pending_reviews.append(review)
+            logger.info("[REVIEW] Queued orphaned PR #%d for code review", pr_number)
+            print(f"📝 Found orphaned PR #{pr_number} - queued for code review")
 
     def scan_needs_rework_prs(self) -> None:
         """Scan for PRs with needs-rework label and queue them for rework.

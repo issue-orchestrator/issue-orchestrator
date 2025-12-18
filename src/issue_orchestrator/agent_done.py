@@ -140,11 +140,57 @@ def get_repo() -> str:
     return result.stdout.strip()
 
 
+def get_issue_title(issue_number: int) -> str:
+    """Fetch the issue title from GitHub."""
+    result = subprocess.run(
+        ["gh", "issue", "view", str(issue_number), "--json", "title", "-q", ".title"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        # Fallback to just the issue number if we can't fetch
+        return f"Issue #{issue_number}"
+    return result.stdout.strip()
+
+
+def find_config_from_worktree() -> Optional[Path]:
+    """Find orchestrator config, handling worktrees that are siblings to main repo.
+
+    Worktrees are typically at /repo-parent/repo-N/ while config is at /repo-parent/repo/.
+    This function checks if we're in a worktree and looks for config in the main repo.
+    """
+    cwd = Path.cwd()
+
+    # First, try standard parent directory search
+    for path in [cwd, *cwd.parents]:
+        config_file = path / ".issue-orchestrator.yaml"
+        if config_file.exists():
+            return config_file
+
+    # Check if we're in a git worktree (has .git file, not .git directory)
+    git_path = cwd / ".git"
+    if git_path.is_file():
+        # .git file contains: gitdir: /path/to/main/repo/.git/worktrees/name
+        content = git_path.read_text().strip()
+        if content.startswith("gitdir:"):
+            gitdir = Path(content.split(":", 1)[1].strip())
+            # Navigate from /repo/.git/worktrees/name to /repo
+            main_repo = gitdir.parent.parent.parent
+            config_file = main_repo / ".issue-orchestrator.yaml"
+            if config_file.exists():
+                return config_file
+
+    return None
+
+
 def get_code_review_label() -> Optional[str]:
     """Try to load code review label from orchestrator config."""
     try:
+        config_path = find_config_from_worktree()
+        if not config_path:
+            return None
+
         from .config import Config
-        config = Config.find_and_load()
+        config = Config.load(config_path)
         # Only return label if code review agent is configured
         if config.code_review_agent:
             return config.code_review_label
@@ -157,8 +203,11 @@ def get_code_review_label() -> Optional[str]:
 def get_blocked_label() -> str:
     """Get the blocked label from config (with prefix if configured)."""
     try:
+        config_path = find_config_from_worktree()
+        if not config_path:
+            return "blocked"
         from .config import Config
-        config = Config.find_and_load()
+        config = Config.load(config_path)
         return config.get_label_blocked()
     except Exception:
         # Config not found - use default
@@ -168,8 +217,11 @@ def get_blocked_label() -> str:
 def get_needs_human_label() -> str:
     """Get the needs-human label from config (with prefix if configured)."""
     try:
+        config_path = find_config_from_worktree()
+        if not config_path:
+            return "needs-human"
         from .config import Config
-        config = Config.find_and_load()
+        config = Config.load(config_path)
         return config.get_label_needs_human()
     except Exception:
         # Config not found - use default
@@ -179,8 +231,11 @@ def get_needs_human_label() -> str:
 def get_needs_rework_label() -> str:
     """Get the needs-rework label from config (with prefix if configured)."""
     try:
+        config_path = find_config_from_worktree()
+        if not config_path:
+            return "needs-rework"
         from .config import Config
-        config = Config.find_and_load()
+        config = Config.load(config_path)
         return config.get_label_needs_rework()
     except Exception:
         return "needs-rework"
@@ -189,8 +244,11 @@ def get_needs_rework_label() -> str:
 def get_code_reviewed_label() -> Optional[str]:
     """Get the code-reviewed label from config."""
     try:
+        config_path = find_config_from_worktree()
+        if not config_path:
+            return None
         from .config import Config
-        config = Config.find_and_load()
+        config = Config.load(config_path)
         return config.code_reviewed_label
     except Exception:
         return None
@@ -408,6 +466,38 @@ def add_trailers_to_commit(data: CompletionData) -> None:
     print("📝 Added structured trailers to commit")
 
 
+def git_rebase_on_main() -> None:
+    """Fetch latest main and rebase current branch onto it.
+
+    This prevents merge conflicts by ensuring the branch is up-to-date
+    before creating a PR.
+    """
+    print("🔄 Rebasing on latest main...")
+
+    # Fetch latest main
+    result = subprocess.run(
+        ["git", "fetch", "origin", "main"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print(f"⚠️  Warning: Could not fetch main: {result.stderr}", file=sys.stderr)
+        return  # Continue without rebase - push may still work
+
+    # Rebase onto origin/main
+    result = subprocess.run(
+        ["git", "rebase", "origin/main"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        # Rebase failed - abort and continue without it
+        subprocess.run(["git", "rebase", "--abort"], capture_output=True)
+        print(f"⚠️  Warning: Rebase failed, continuing with current state", file=sys.stderr)
+        print(f"    Conflict details: {result.stderr}", file=sys.stderr)
+        return
+
+    print("✅ Rebased on latest main")
+
+
 def git_push() -> None:
     """Push current branch to origin."""
     branch = subprocess.run(
@@ -415,12 +505,19 @@ def git_push() -> None:
         capture_output=True, text=True
     ).stdout.strip()
 
+    # Use --force-with-lease for safety after rebase
     result = subprocess.run(
-        ["git", "push", "-u", "origin", branch],
+        ["git", "push", "-u", "--force-with-lease", "origin", branch],
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        die(f"Failed to push: {result.stderr}")
+        # Try regular push if force-with-lease fails (first push)
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", branch],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            die(f"Failed to push: {result.stderr}")
 
     print(f"✅ Pushed branch '{branch}' to origin")
 
@@ -654,13 +751,17 @@ STATUSES:
     add_trailers_to_commit(data)
 
     if status == Status.COMPLETED:
-        # 1. Push code (pre-push hook validates trailers)
+        # 1. Rebase on latest main to avoid merge conflicts
+        git_rebase_on_main()
+
+        # 2. Push code (pre-push hook validates trailers)
         print("🚀 Pushing code...")
         git_push()
 
         # 2. Create PR with structured content
         print("📝 Creating PR...")
-        pr_title = f"Fix #{issue_number}"  # TODO: get from branch/issue
+        issue_title = get_issue_title(issue_number)
+        pr_title = f"{issue_title} (#{issue_number})"
         pr_url = create_pr(issue_number, pr_title, data)
 
         # 3. Add code review label if configured (triggers code review agent)

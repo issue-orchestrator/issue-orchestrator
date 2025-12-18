@@ -492,6 +492,57 @@ def discover_issue_tabs() -> list[int]:
     return issue_numbers
 
 
+def discover_running_sessions() -> list[dict]:
+    """Discover iTerm2 tabs that are actively running Claude (is processing = true).
+
+    Returns:
+        List of dicts with {issue_number, tab_name, is_review} for each running session
+    """
+    import re
+
+    script = '''
+    tell application "iTerm"
+        set results to {}
+        repeat with w in windows
+            repeat with t in tabs of w
+                tell current session of t
+                    if is processing is true then
+                        set tabName to name
+                        if tabName starts with "#" then
+                            set end of results to tabName
+                        end if
+                    end if
+                end tell
+            end repeat
+        end repeat
+        return results
+    end tell
+    '''
+    success, output = run_applescript(script)
+    if not success:
+        logger.warning("Failed to discover running sessions: %s", output)
+        return []
+
+    sessions = []
+    pattern = re.compile(r'#(\d+)')
+
+    for name in output.split(','):
+        name = name.strip()
+        match = pattern.match(name)
+        if match:
+            issue_num = int(match.group(1))
+            is_review = "Review PR" in name or name.startswith("#") and "review" in name.lower()
+            sessions.append({
+                "issue_number": issue_num,
+                "tab_name": name,
+                "is_review": is_review,
+            })
+
+    logger.info("Discovered %d running sessions in iTerm2: %s",
+                len(sessions), [s["issue_number"] for s in sessions])
+    return sessions
+
+
 def cleanup_idle_tabs() -> int:
     """Close all iTerm2 tabs that are at a shell prompt (idle).
 

@@ -727,6 +727,67 @@ class TestHandleSessionCompletion:
         # Should not raise exception
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
+    @patch("issue_orchestrator.orchestrator.release_claim")
+    @patch("issue_orchestrator.orchestrator.remove_worktree")
+    def test_handle_completion_closes_session(
+        self,
+        mock_remove_worktree,
+        mock_release_claim,
+        sample_config,
+    ):
+        """Test that handle_session_completion closes the terminal session to prevent tab accumulation."""
+        issue = create_issue(1)
+        session = create_session(issue)
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.active_sessions.append(session)
+
+        with patch.object(orchestrator, "_kill_session") as mock_kill:
+            orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
+
+            # Verify _kill_session was called with the session name
+            mock_kill.assert_called_once_with(session.tmux_session_name)
+
+    @patch("issue_orchestrator.orchestrator.release_claim")
+    @patch("issue_orchestrator.orchestrator.remove_worktree")
+    def test_handle_completion_closes_session_on_failure(
+        self,
+        mock_remove_worktree,
+        mock_release_claim,
+        sample_config,
+    ):
+        """Test that session is closed even for failed sessions to prevent tab buildup."""
+        issue = create_issue(1)
+        session = create_session(issue)
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.active_sessions.append(session)
+
+        with patch.object(orchestrator, "_kill_session") as mock_kill:
+            orchestrator.handle_session_completion(session, SessionStatus.FAILED)
+
+            # Session should still be closed to prevent accumulation
+            mock_kill.assert_called_once_with(session.tmux_session_name)
+
+    @patch("issue_orchestrator.orchestrator.release_claim")
+    @patch("issue_orchestrator.orchestrator.remove_worktree")
+    def test_handle_completion_closes_session_gracefully_on_error(
+        self,
+        mock_remove_worktree,
+        mock_release_claim,
+        sample_config,
+    ):
+        """Test that session close errors are handled gracefully."""
+        issue = create_issue(1)
+        session = create_session(issue)
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.active_sessions.append(session)
+
+        with patch.object(orchestrator, "_kill_session", side_effect=Exception("Failed to close")):
+            # Should not raise exception
+            orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
+
 
 class TestRunLoop:
     """Test the run_loop method."""
@@ -1820,8 +1881,9 @@ class TestLaunchReviewSession:
         orchestrator = Orchestrator(config=sample_config)
         orchestrator.launch_review_session(review)
 
-        # Should use 'review' prefix instead of default 'issue'
-        mock_try_claim.assert_called_once_with(42, prefix="review")
+        # Should use 'review' prefix with pr_number (not issue_number)
+        # Reviews are keyed by PR number since a single issue could have multiple PRs
+        mock_try_claim.assert_called_once_with(123, prefix="review")
 
     def test_launch_review_session_returns_none_without_agent_config(self, sample_config):
         """Test that launch_review_session returns None without code_review_agent configured."""
