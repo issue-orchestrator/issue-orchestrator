@@ -568,7 +568,8 @@ class TestITermSessionManager:
     @patch("issue_orchestrator.iterm2.run_applescript")
     def test_session_exists_running(self, mock_run_as):
         """Test session_exists when session is running."""
-        mock_run_as.return_value = (True, "running")
+        # _has_running_tab_for_issue expects "true" in output
+        mock_run_as.return_value = (True, "true")
 
         manager = ITermSessionManager()
         manager._sessions[42] = {"tab_name": "#42"}
@@ -577,18 +578,9 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.iterm2.run_applescript")
     def test_session_exists_idle(self, mock_run_as):
-        """Test session_exists when session is idle."""
-        mock_run_as.return_value = (True, "idle")
-
-        manager = ITermSessionManager()
-        manager._sessions[42] = {"tab_name": "#42"}
-
-        assert manager.session_exists(42) is False
-
-    @patch("issue_orchestrator.iterm2.run_applescript")
-    def test_session_exists_not_found(self, mock_run_as):
-        """Test session_exists when tab is not found."""
-        mock_run_as.return_value = (True, "notfound")
+        """Test session_exists when session is idle (not running)."""
+        # _has_running_tab_for_issue returns False when no "true" in output
+        mock_run_as.return_value = (True, "false")
 
         manager = ITermSessionManager()
         manager._sessions[42] = {"tab_name": "#42"}
@@ -597,8 +589,35 @@ class TestITermSessionManager:
         # Session should be cleaned up
         assert 42 not in manager._sessions
 
-    def test_session_exists_not_tracked(self):
-        """Test session_exists for untracked session."""
+    @patch("issue_orchestrator.iterm2.run_applescript")
+    def test_session_exists_not_found(self, mock_run_as):
+        """Test session_exists when tab is not found."""
+        mock_run_as.return_value = (True, "false")
+
+        manager = ITermSessionManager()
+        manager._sessions[42] = {"tab_name": "#42"}
+
+        assert manager.session_exists(42) is False
+        # Session should be cleaned up
+        assert 42 not in manager._sessions
+
+    @patch("issue_orchestrator.iterm2.run_applescript")
+    def test_session_exists_not_tracked_but_running(self, mock_run_as):
+        """Test session_exists for untracked session that IS running in iTerm.
+
+        This is the critical case: orchestrator restarted, lost tracking,
+        but session is still running. Should detect it via iTerm directly.
+        """
+        mock_run_as.return_value = (True, "true")
+        manager = ITermSessionManager()
+        # NOT in _sessions - simulates orchestrator restart
+
+        assert manager.session_exists(42) is True
+
+    @patch("issue_orchestrator.iterm2.run_applescript")
+    def test_session_exists_not_tracked_not_running(self, mock_run_as):
+        """Test session_exists for untracked session that is NOT running."""
+        mock_run_as.return_value = (True, "false")
         manager = ITermSessionManager()
 
         assert manager.session_exists(42) is False
@@ -731,8 +750,9 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.iterm2.run_applescript")
     def test_list_sessions_all_valid(self, mock_run_as):
-        """Test listing sessions when all are valid."""
-        mock_run_as.return_value = (True, "running")
+        """Test listing sessions when all are valid (running)."""
+        # All sessions running - _has_running_tab_for_issue expects "true"
+        mock_run_as.return_value = (True, "true")
 
         manager = ITermSessionManager()
         manager._sessions = {
@@ -749,12 +769,11 @@ class TestITermSessionManager:
     def test_list_sessions_some_invalid(self, mock_run_as):
         """Test listing sessions when some are no longer valid."""
         def side_effect(script):
-            if "#1" in script:
-                return (True, "running")
-            elif "#2" in script:
-                return (True, "idle")
+            # _has_running_tab_for_issue checks for specific issue number
+            if "#1 " in script or '"#1"' in script:
+                return (True, "true")  # Running
             else:
-                return (True, "notfound")
+                return (True, "false")  # Not running
 
         mock_run_as.side_effect = side_effect
 

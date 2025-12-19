@@ -256,46 +256,19 @@ end tell'''
 
         Returns False if the tab doesn't exist OR if it's at a shell prompt
         (meaning Claude has exited).
+
+        NOTE: This checks iTerm directly, not just in-memory tracking.
+        This is critical for detecting sessions that survived orchestrator restart.
         """
-        if issue_number not in self._sessions:
-            return False
+        # Always check iTerm directly - don't rely on in-memory _sessions dict
+        # which is lost on orchestrator restart
+        has_running = self._has_running_tab_for_issue(issue_number)
 
-        # Check if tab exists AND is still processing (running a command)
-        script = f'''
-        tell application "iTerm"
-            tell current window
-                repeat with t in tabs
-                    tell current session of t
-                        if name contains "#{issue_number}" then
-                            -- Check if session is processing (running a command)
-                            if is processing then
-                                return "running"
-                            else
-                                return "idle"
-                            end if
-                        end if
-                    end tell
-                end repeat
-            end tell
-        end tell
-        return "notfound"
-        '''
-        success, output = run_applescript(script)
-        output_lower = output.lower().strip()
+        # Update in-memory tracking to match reality
+        if not has_running and issue_number in self._sessions:
+            del self._sessions[issue_number]
 
-        if not success or "notfound" in output_lower:
-            # Tab doesn't exist - clean up tracking
-            if issue_number in self._sessions:
-                del self._sessions[issue_number]
-            return False
-
-        if "idle" in output_lower:
-            # Tab exists but at shell prompt (Claude exited)
-            logger.info(f"Session #{issue_number} tab is idle (Claude exited)")
-            return False
-
-        # "running" - tab exists and command is still running
-        return True
+        return has_running
 
     def _has_running_tab_for_issue(self, issue_number: int) -> bool:
         """Check if there's a running (Claude active) tab for this issue."""
