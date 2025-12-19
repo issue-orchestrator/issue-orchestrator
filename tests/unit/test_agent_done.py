@@ -8,8 +8,11 @@ import pytest
 
 from issue_orchestrator.agent_done import (
     Status,
+    RiskLevel,
     CompletionData,
+    ParsedVerdict,
     REQUIRED_FIELDS,
+    STANDARD_CHECKS,
     die,
     get_issue_number,
     get_repo,
@@ -17,6 +20,10 @@ from issue_orchestrator.agent_done import (
     format_completion_comment,
     format_blocked_comment,
     format_needs_human_comment,
+    format_approved_comment,
+    format_changes_requested_comment,
+    format_verdict_block,
+    parse_verdict_block,
     post_comment,
     add_label,
     add_trailers_to_commit,
@@ -36,12 +43,32 @@ class TestStatus:
         assert Status.COMPLETED.value == "completed"
         assert Status.BLOCKED.value == "blocked"
         assert Status.NEEDS_HUMAN.value == "needs_human"
+        assert Status.APPROVED.value == "approved"
+        assert Status.CHANGES_REQUESTED.value == "changes_requested"
 
     def test_status_from_string(self):
         """Test creating Status from string value."""
         assert Status("completed") == Status.COMPLETED
         assert Status("blocked") == Status.BLOCKED
         assert Status("needs_human") == Status.NEEDS_HUMAN
+        assert Status("approved") == Status.APPROVED
+        assert Status("changes_requested") == Status.CHANGES_REQUESTED
+
+
+class TestRiskLevel:
+    """Test the RiskLevel enum."""
+
+    def test_risk_level_values(self):
+        """Test all risk level values are correct."""
+        assert RiskLevel.LOW.value == "low"
+        assert RiskLevel.MEDIUM.value == "medium"
+        assert RiskLevel.HIGH.value == "high"
+
+    def test_risk_level_from_string(self):
+        """Test creating RiskLevel from string value."""
+        assert RiskLevel("low") == RiskLevel.LOW
+        assert RiskLevel("medium") == RiskLevel.MEDIUM
+        assert RiskLevel("high") == RiskLevel.HIGH
 
 
 class TestRequiredFields:
@@ -58,6 +85,27 @@ class TestRequiredFields:
     def test_needs_human_required_fields(self):
         """Test required fields for needs_human status."""
         assert REQUIRED_FIELDS[Status.NEEDS_HUMAN] == ["question"]
+
+    def test_approved_required_fields(self):
+        """Test required fields for approved status include risk."""
+        assert REQUIRED_FIELDS[Status.APPROVED] == ["summary", "risk"]
+
+    def test_changes_requested_required_fields(self):
+        """Test required fields for changes_requested status include risk."""
+        assert REQUIRED_FIELDS[Status.CHANGES_REQUESTED] == ["issues", "risk"]
+
+
+class TestStandardChecks:
+    """Test STANDARD_CHECKS constant."""
+
+    def test_standard_checks_includes_common_checks(self):
+        """Test that standard checks include expected items."""
+        assert "tests_added" in STANDARD_CHECKS
+        assert "tests_pass" in STANDARD_CHECKS
+        assert "docs_updated" in STANDARD_CHECKS
+        assert "follows_patterns" in STANDARD_CHECKS
+        assert "error_handling" in STANDARD_CHECKS
+        assert "security_reviewed" in STANDARD_CHECKS
 
 
 class TestCompletionData:
@@ -291,6 +339,60 @@ class TestValidateFields:
         with pytest.raises(SystemExit):
             validate_fields(data)
 
+    def test_validate_approved_with_all_fields(self):
+        """Test validation passes for approved with summary and risk."""
+        data = CompletionData(
+            status=Status.APPROVED,
+            summary="Code looks good",
+            risk=RiskLevel.LOW,
+        )
+        validate_fields(data)
+
+    def test_validate_approved_missing_summary(self):
+        """Test validation fails when summary is missing."""
+        data = CompletionData(
+            status=Status.APPROVED,
+            risk=RiskLevel.LOW,
+        )
+        with pytest.raises(SystemExit):
+            validate_fields(data)
+
+    def test_validate_approved_missing_risk(self):
+        """Test validation fails when risk is missing."""
+        data = CompletionData(
+            status=Status.APPROVED,
+            summary="LGTM",
+        )
+        with pytest.raises(SystemExit):
+            validate_fields(data)
+
+    def test_validate_changes_requested_with_all_fields(self):
+        """Test validation passes for changes_requested with issues and risk."""
+        data = CompletionData(
+            status=Status.CHANGES_REQUESTED,
+            issues="Need more tests",
+            risk=RiskLevel.MEDIUM,
+        )
+        validate_fields(data)
+
+    def test_validate_changes_requested_missing_issues(self):
+        """Test validation fails when issues is missing."""
+        data = CompletionData(
+            status=Status.CHANGES_REQUESTED,
+            risk=RiskLevel.HIGH,
+        )
+        with pytest.raises(SystemExit):
+            validate_fields(data)
+
+    def test_validate_changes_requested_missing_risk(self):
+        """Test validation fails when risk is missing."""
+        data = CompletionData(
+            status=Status.CHANGES_REQUESTED,
+            issues="Security issue",
+        )
+        with pytest.raises(SystemExit):
+            validate_fields(data)
+
 
 class TestFormatCompletionComment:
     """Test the format_completion_comment function."""
@@ -440,6 +542,196 @@ class TestFormatNeedsHumanComment:
         assert "2. JWT" in comment
         assert "3. Session cookies" in comment
         assert "**Default if no response:** Use OAuth" in comment
+
+
+class TestFormatVerdictBlock:
+    """Test the format_verdict_block function."""
+
+    def test_format_verdict_block_approve_low_risk(self):
+        """Test formatting verdict block for approval with low risk."""
+        block = format_verdict_block(
+            verdict="approve",
+            risk=RiskLevel.LOW,
+            checks=["tests_added", "follows_patterns"],
+        )
+        assert "<!-- VERDICT_START -->" in block
+        assert "<!-- VERDICT_END -->" in block
+        assert "**Verdict:** `approve`" in block
+        assert "**Risk:** 🟢 `low`" in block
+        assert "**Checks passed:** `tests_added`, `follows_patterns`" in block
+
+    def test_format_verdict_block_changes_requested_high_risk(self):
+        """Test formatting verdict block for changes requested with high risk."""
+        block = format_verdict_block(
+            verdict="request_changes",
+            risk=RiskLevel.HIGH,
+            checks_needed=["security_reviewed", "error_handling"],
+        )
+        assert "**Verdict:** `request_changes`" in block
+        assert "**Risk:** 🔴 `high`" in block
+        assert "**Checks needed:** `security_reviewed`, `error_handling`" in block
+
+    def test_format_verdict_block_medium_risk(self):
+        """Test formatting verdict block with medium risk."""
+        block = format_verdict_block(
+            verdict="approve",
+            risk=RiskLevel.MEDIUM,
+        )
+        assert "**Risk:** 🟡 `medium`" in block
+
+    def test_format_verdict_block_no_checks(self):
+        """Test formatting verdict block without checks."""
+        block = format_verdict_block(
+            verdict="approve",
+            risk=RiskLevel.LOW,
+        )
+        assert "**Checks passed:**" not in block
+        assert "**Checks needed:**" not in block
+
+
+class TestFormatApprovedComment:
+    """Test the format_approved_comment function."""
+
+    def test_format_approved_comment_basic(self):
+        """Test formatting approved comment with structured verdict."""
+        data = CompletionData(
+            status=Status.APPROVED,
+            summary="Code is clean and well-tested",
+            risk=RiskLevel.LOW,
+        )
+        comment = format_approved_comment(data)
+        assert "## ✅ Code Review Approved" in comment
+        assert "Code is clean and well-tested" in comment
+        assert "<!-- VERDICT_START -->" in comment
+        assert "**Verdict:** `approve`" in comment
+        assert "**Risk:** 🟢 `low`" in comment
+
+    def test_format_approved_comment_with_checks(self):
+        """Test formatting approved comment with checks passed."""
+        data = CompletionData(
+            status=Status.APPROVED,
+            summary="LGTM",
+            risk=RiskLevel.MEDIUM,
+            checks=["tests_added", "docs_updated", "follows_patterns"],
+        )
+        comment = format_approved_comment(data)
+        assert "**Checks passed:** `tests_added`, `docs_updated`, `follows_patterns`" in comment
+
+
+class TestFormatChangesRequestedComment:
+    """Test the format_changes_requested_comment function."""
+
+    def test_format_changes_requested_comment_basic(self):
+        """Test formatting changes_requested comment with structured verdict."""
+        data = CompletionData(
+            status=Status.CHANGES_REQUESTED,
+            issues="Missing error handling in auth module",
+            risk=RiskLevel.MEDIUM,
+        )
+        comment = format_changes_requested_comment(data)
+        assert "## 🔄 Changes Requested" in comment
+        assert "Missing error handling in auth module" in comment
+        assert "<!-- VERDICT_START -->" in comment
+        assert "**Verdict:** `request_changes`" in comment
+        assert "**Risk:** 🟡 `medium`" in comment
+        assert "re-queued to address these issues" in comment
+
+    def test_format_changes_requested_comment_with_checks_needed(self):
+        """Test formatting changes_requested comment with checks needed."""
+        data = CompletionData(
+            status=Status.CHANGES_REQUESTED,
+            issues="Security vulnerability found",
+            risk=RiskLevel.HIGH,
+            checks_needed=["security_reviewed", "tests_added"],
+        )
+        comment = format_changes_requested_comment(data)
+        assert "**Checks needed:** `security_reviewed`, `tests_added`" in comment
+        assert "**Risk:** 🔴 `high`" in comment
+
+
+class TestParseVerdictBlock:
+    """Test the parse_verdict_block function."""
+
+    def test_parse_verdict_block_approve(self):
+        """Test parsing a complete verdict block for approval."""
+        comment = """## ✅ Code Review Approved
+
+Code looks good.
+
+---
+<!-- VERDICT_START -->
+**Verdict:** `approve`
+**Risk:** 🟢 `low`
+**Checks passed:** `tests_added`, `follows_patterns`
+<!-- VERDICT_END -->"""
+
+        result = parse_verdict_block(comment)
+        assert result is not None
+        assert result.verdict == "approve"
+        assert result.risk == "low"
+        assert result.checks == ["tests_added", "follows_patterns"]
+        assert result.checks_needed == []
+
+    def test_parse_verdict_block_changes_requested(self):
+        """Test parsing a verdict block for changes requested."""
+        comment = """## 🔄 Changes Requested
+
+Issues found.
+
+---
+<!-- VERDICT_START -->
+**Verdict:** `request_changes`
+**Risk:** 🔴 `high`
+**Checks needed:** `error_handling`, `security_reviewed`
+<!-- VERDICT_END -->"""
+
+        result = parse_verdict_block(comment)
+        assert result is not None
+        assert result.verdict == "request_changes"
+        assert result.risk == "high"
+        assert result.checks == []
+        assert result.checks_needed == ["error_handling", "security_reviewed"]
+
+    def test_parse_verdict_block_no_markers(self):
+        """Test parsing comment without verdict markers returns None."""
+        comment = "Just a regular comment without verdict block."
+        result = parse_verdict_block(comment)
+        assert result is None
+
+    def test_parse_verdict_block_incomplete_markers(self):
+        """Test parsing comment with only start marker returns None."""
+        comment = """<!-- VERDICT_START -->
+**Verdict:** `approve`
+No end marker!"""
+        result = parse_verdict_block(comment)
+        assert result is None
+
+    def test_parse_verdict_block_medium_risk(self):
+        """Test parsing medium risk verdict."""
+        comment = """<!-- VERDICT_START -->
+**Verdict:** `approve`
+**Risk:** 🟡 `medium`
+<!-- VERDICT_END -->"""
+
+        result = parse_verdict_block(comment)
+        assert result is not None
+        assert result.risk == "medium"
+
+    def test_parse_verdict_block_roundtrip(self):
+        """Test that formatted blocks can be parsed back correctly."""
+        # Format a verdict block
+        block = format_verdict_block(
+            verdict="approve",
+            risk=RiskLevel.LOW,
+            checks=["tests_added", "docs_updated"],
+        )
+
+        # Parse it back
+        result = parse_verdict_block(block)
+        assert result is not None
+        assert result.verdict == "approve"
+        assert result.risk == "low"
+        assert result.checks == ["tests_added", "docs_updated"]
 
 
 class TestPostComment:
@@ -652,6 +944,70 @@ class TestAddTrailersToCommit:
 
             amend_call = mock_run.call_args_list[1][0][0]
             assert "Agent-When-Unblocked: Implement auth using new endpoints" in amend_call[-1]
+
+    def test_add_trailers_approved_with_risk_and_checks(self, capsys):
+        """Test adding trailers for approved status with risk and checks."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout="Review commit\n"),
+                Mock(returncode=0),
+            ]
+
+            data = CompletionData(
+                status=Status.APPROVED,
+                summary="LGTM, code is clean",
+                risk=RiskLevel.LOW,
+                checks=["tests_added", "follows_patterns"],
+            )
+            add_trailers_to_commit(data)
+
+            amend_call = mock_run.call_args_list[1][0][0]
+            assert "Agent-Status: approved" in amend_call[-1]
+            assert "Agent-Summary: LGTM, code is clean" in amend_call[-1]
+            assert "Agent-Risk: low" in amend_call[-1]
+            assert "Agent-Checks: tests_added,follows_patterns" in amend_call[-1]
+
+    def test_add_trailers_approved_without_checks(self, capsys):
+        """Test adding trailers for approved status without checks."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout="Review commit\n"),
+                Mock(returncode=0),
+            ]
+
+            data = CompletionData(
+                status=Status.APPROVED,
+                summary="Looks good",
+                risk=RiskLevel.MEDIUM,
+            )
+            add_trailers_to_commit(data)
+
+            amend_call = mock_run.call_args_list[1][0][0]
+            assert "Agent-Status: approved" in amend_call[-1]
+            assert "Agent-Risk: medium" in amend_call[-1]
+            assert "Agent-Checks:" not in amend_call[-1]
+
+    def test_add_trailers_changes_requested_with_risk_and_checks_needed(self, capsys):
+        """Test adding trailers for changes_requested with risk and checks needed."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout="Review commit\n"),
+                Mock(returncode=0),
+            ]
+
+            data = CompletionData(
+                status=Status.CHANGES_REQUESTED,
+                issues="Missing error handling and tests",
+                risk=RiskLevel.HIGH,
+                checks_needed=["error_handling", "tests_added"],
+            )
+            add_trailers_to_commit(data)
+
+            amend_call = mock_run.call_args_list[1][0][0]
+            assert "Agent-Status: changes_requested" in amend_call[-1]
+            assert "Agent-Issues: Missing error handling and tests" in amend_call[-1]
+            assert "Agent-Risk: high" in amend_call[-1]
+            assert "Agent-Checks-Needed: error_handling,tests_added" in amend_call[-1]
 
 
 class TestGitPush:

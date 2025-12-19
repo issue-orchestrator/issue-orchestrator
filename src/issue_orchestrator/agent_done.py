@@ -30,13 +30,33 @@ class Status(Enum):
     CHANGES_REQUESTED = "changes_requested"
 
 
+class RiskLevel(Enum):
+    """Risk assessment for code reviews."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+# Standard checks that reviewers can mark as passed or needed
+STANDARD_CHECKS = [
+    "tests_added",
+    "tests_pass",
+    "docs_updated",
+    "follows_patterns",
+    "error_handling",
+    "security_reviewed",
+    "perf_considered",
+    "breaking_changes_noted",
+]
+
+
 # Required fields per status - agents MUST provide these
 REQUIRED_FIELDS = {
     Status.COMPLETED: ["implementation", "problems"],
     Status.BLOCKED: ["reason", "attempted"],
     Status.NEEDS_HUMAN: ["question"],
-    Status.APPROVED: ["summary"],
-    Status.CHANGES_REQUESTED: ["issues"],
+    Status.APPROVED: ["summary", "risk"],
+    Status.CHANGES_REQUESTED: ["issues", "risk"],
 }
 
 
@@ -60,6 +80,9 @@ class CompletionData:
     # Reviewer fields
     summary: str | None = None  # For approved
     issues: str | None = None   # For changes_requested
+    risk: RiskLevel | None = None  # Required for approved/changes_requested
+    checks: list[str] | None = None  # Checks passed (for approved)
+    checks_needed: list[str] | None = None  # Checks needed (for changes_requested)
 
 
 def die(message: str) -> NoReturn:
@@ -381,20 +404,145 @@ def format_needs_human_comment(data: CompletionData) -> str:
     return "\n".join(parts)
 
 
+@dataclass
+class ParsedVerdict:
+    """Parsed verdict from a review comment."""
+    verdict: str  # "approve" or "request_changes"
+    risk: str  # "low", "medium", or "high"
+    checks: list[str]  # Checks that passed
+    checks_needed: list[str]  # Checks that need to be done
+
+
+def parse_verdict_block(comment_body: str) -> ParsedVerdict | None:
+    """Parse the structured verdict block from a review comment.
+
+    This enables the orchestrator to:
+    - Batch PRs by risk level for CTO review
+    - Track which checks are commonly missing
+    - Make automated decisions based on verdict
+
+    Args:
+        comment_body: The full comment body containing the verdict block
+
+    Returns:
+        ParsedVerdict if found and valid, None otherwise
+    """
+    # Look for verdict block between markers
+    start_marker = "<!-- VERDICT_START -->"
+    end_marker = "<!-- VERDICT_END -->"
+
+    start_idx = comment_body.find(start_marker)
+    end_idx = comment_body.find(end_marker)
+
+    if start_idx == -1 or end_idx == -1:
+        return None
+
+    block = comment_body[start_idx + len(start_marker):end_idx]
+
+    # Parse fields from the block
+    verdict = None
+    risk = None
+    checks = []
+    checks_needed = []
+
+    for line in block.strip().split("\n"):
+        line = line.strip()
+
+        # Parse verdict
+        if line.startswith("**Verdict:**"):
+            match = re.search(r"`(\w+)`", line)
+            if match:
+                verdict = match.group(1)
+
+        # Parse risk
+        elif line.startswith("**Risk:**"):
+            match = re.search(r"`(\w+)`", line)
+            if match:
+                risk = match.group(1)
+
+        # Parse checks passed
+        elif line.startswith("**Checks passed:**"):
+            checks = re.findall(r"`(\w+)`", line)
+
+        # Parse checks needed
+        elif line.startswith("**Checks needed:**"):
+            checks_needed = re.findall(r"`(\w+)`", line)
+
+    if verdict and risk:
+        return ParsedVerdict(
+            verdict=verdict,
+            risk=risk,
+            checks=checks,
+            checks_needed=checks_needed,
+        )
+
+    return None
+
+
+def format_verdict_block(
+    verdict: str,
+    risk: RiskLevel,
+    checks: list[str] | None = None,
+    checks_needed: list[str] | None = None,
+) -> str:
+    """Format the structured verdict block for machine parsing.
+
+    This block is both human-readable and machine-parseable, enabling:
+    - Automated CTO triage based on risk level
+    - Batch processing of review outcomes
+    - Quick human scanning for trust assessment
+    """
+    risk_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴"}[risk.value]
+
+    lines = [
+        "---",
+        "<!-- VERDICT_START -->",
+        f"**Verdict:** `{verdict}`",
+        f"**Risk:** {risk_emoji} `{risk.value}`",
+    ]
+
+    if checks:
+        checks_str = ", ".join(f"`{c}`" for c in checks)
+        lines.append(f"**Checks passed:** {checks_str}")
+
+    if checks_needed:
+        checks_str = ", ".join(f"`{c}`" for c in checks_needed)
+        lines.append(f"**Checks needed:** {checks_str}")
+
+    lines.append("<!-- VERDICT_END -->")
+
+    return "\n".join(lines)
+
+
 def format_approved_comment(data: CompletionData) -> str:
-    """Format an approved review comment."""
+    """Format an approved review comment with structured verdict."""
+    verdict_block = format_verdict_block(
+        verdict="approve",
+        risk=data.risk,
+        checks=data.checks,
+    )
+
     return f"""## ✅ Code Review Approved
 
-{data.summary}"""
+{data.summary}
+
+{verdict_block}"""
 
 
 def format_changes_requested_comment(data: CompletionData) -> str:
-    """Format a changes-requested review comment."""
+    """Format a changes-requested review comment with structured verdict."""
+    verdict_block = format_verdict_block(
+        verdict="request_changes",
+        risk=data.risk,
+        checks_needed=data.checks_needed,
+    )
+
     return f"""## 🔄 Changes Requested
 
 {data.issues}
 
----
+{verdict_block}
+
 *The work agent will be re-queued to address these issues.*"""
 
 
@@ -442,8 +590,14 @@ def add_trailers_to_commit(data: CompletionData) -> None:
             trailers.append(f"Agent-Context: {data.context}")
     elif data.status == Status.APPROVED:
         trailers.append(f"Agent-Summary: {data.summary}")
+        trailers.append(f"Agent-Risk: {data.risk.value}")
+        if data.checks:
+            trailers.append(f"Agent-Checks: {','.join(data.checks)}")
     elif data.status == Status.CHANGES_REQUESTED:
         trailers.append(f"Agent-Issues: {data.issues}")
+        trailers.append(f"Agent-Risk: {data.risk.value}")
+        if data.checks_needed:
+            trailers.append(f"Agent-Checks-Needed: {','.join(data.checks_needed)}")
 
     # Get current commit message
     result = subprocess.run(
@@ -704,18 +858,29 @@ EXAMPLES:
     agent-done needs_human --question "Should we use OAuth or API keys?"
     agent-done needs_human --question "Which approach?" --options "Use Redis" "Use Postgres" --default "Use Redis"
 
-  Review approved:
-    agent-done approved --summary "Code is clean, tests pass, follows patterns"
+  Review approved (with structured verdict):
+    agent-done approved --summary "Code is clean, tests pass" --risk low --checks tests_added follows_patterns
+    agent-done approved --summary "Major refactor looks good" --risk medium --checks tests_pass docs_updated
 
-  Review requests changes:
-    agent-done changes_requested --issues "Missing error handling in foo(), needs tests for bar()"
+  Review requests changes (with structured verdict):
+    agent-done changes_requested --issues "Missing error handling" --risk medium --checks-needed error_handling tests_added
+    agent-done changes_requested --issues "Security concern in auth" --risk high --checks-needed security_reviewed
 
 STATUSES:
   completed          - Work done, PR ready (requires: --implementation, --problems)
   blocked            - Cannot proceed (requires: --reason, --attempted)
   needs_human        - Need decision/clarification (requires: --question)
-  approved           - Review passed (requires: --summary)
-  changes_requested  - Review needs fixes (requires: --issues)
+  approved           - Review passed (requires: --summary, --risk)
+  changes_requested  - Review needs fixes (requires: --issues, --risk)
+
+RISK LEVELS:
+  low     - Minor changes, low impact, safe to batch-merge
+  medium  - Moderate changes, should be reviewed by CTO in batch
+  high    - Critical changes, requires immediate CTO attention
+
+STANDARD CHECKS:
+  tests_added, tests_pass, docs_updated, follows_patterns,
+  error_handling, security_reviewed, perf_considered, breaking_changes_noted
 """
     )
 
@@ -783,6 +948,21 @@ STATUSES:
         "--issues",
         help="Issues found that need fixing (required for 'changes_requested')"
     )
+    parser.add_argument(
+        "--risk",
+        choices=["low", "medium", "high"],
+        help="Risk level of changes (required for 'approved' and 'changes_requested')"
+    )
+    parser.add_argument(
+        "--checks",
+        nargs="+",
+        help="Checks that passed (for 'approved'). E.g., tests_added follows_patterns"
+    )
+    parser.add_argument(
+        "--checks-needed",
+        nargs="+",
+        help="Checks that need to be done (for 'changes_requested'). E.g., tests_added error_handling"
+    )
 
     # Meta options
     parser.add_argument(
@@ -797,6 +977,7 @@ STATUSES:
     status = Status(args.status)
 
     # Build completion data
+    risk = RiskLevel(args.risk) if args.risk else None
     data = CompletionData(
         status=status,
         implementation=args.implementation,
@@ -811,6 +992,9 @@ STATUSES:
         default_action=args.default,
         summary=args.summary,
         issues=args.issues,
+        risk=risk,
+        checks=args.checks,
+        checks_needed=getattr(args, 'checks_needed', None),
     )
 
     # Validate required fields (strict!)
