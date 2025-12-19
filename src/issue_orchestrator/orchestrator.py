@@ -74,6 +74,11 @@ from .monitor import SessionMonitor
 from .scheduler import Scheduler
 # Terminal backend handled via adapters (see _terminal_adapter property)
 from .worktree import create_worktree, remove_worktree, has_uncommitted_changes
+# State machine infrastructure
+from .domain.events import EventBus, IssueEvent, SessionEvent
+from .domain.state_machines.issue_machine import IssueStateMachine, IssueState
+from .domain.state_machines.session_machine import SessionStateMachine, SessionState
+from .adapters.github_adapter import GitHubAdapter
 
 
 def detect_existing_work(worktree_path: Path) -> Optional[str]:
@@ -140,6 +145,17 @@ class Orchestrator:
         self.monitor = SessionMonitor(self.config)
         self._plugin_manager_instance = None  # Lazy init
 
+        # State machine infrastructure
+        self.event_bus = EventBus()
+        self.issue_machines: dict[int, IssueStateMachine] = {}
+        self.session_machines: dict[str, SessionStateMachine] = {}
+
+        # GitHub adapter (optional port-based access)
+        self.github_adapter = GitHubAdapter(self.config.repo) if hasattr(self.config, 'repo') and self.config.repo else None
+
+        # Set up event handlers
+        self._setup_event_handlers()
+
     @property
     def _using_iterm2(self) -> bool:
         """Check if we're using iTerm2 mode (or web mode, which also uses iTerm2 tabs)."""
@@ -199,6 +215,94 @@ class Orchestrator:
         return worktree_base / f"{repo_name}-{issue_number}"
 
     # ==================== End Naming Conventions ====================
+
+    # ==================== State Machine Helpers ====================
+
+    def _get_issue_machine(self, issue_number: int) -> IssueStateMachine:
+        """Get or create issue state machine.
+
+        Args:
+            issue_number: The GitHub issue number
+
+        Returns:
+            IssueStateMachine for the given issue
+        """
+        if issue_number not in self.issue_machines:
+            self.issue_machines[issue_number] = IssueStateMachine(issue_number, self.event_bus)
+            logger.debug(f"Created IssueStateMachine for issue #{issue_number}")
+        return self.issue_machines[issue_number]
+
+    def _get_session_machine(
+        self, session_name: str, issue_number: int, timeout_minutes: int
+    ) -> SessionStateMachine:
+        """Get or create session state machine.
+
+        Args:
+            session_name: Terminal session name (e.g., "issue-123")
+            issue_number: The GitHub issue number
+            timeout_minutes: Session timeout in minutes
+
+        Returns:
+            SessionStateMachine for the given session
+        """
+        if session_name not in self.session_machines:
+            self.session_machines[session_name] = SessionStateMachine(
+                session_name, issue_number, self.event_bus, timeout_minutes=timeout_minutes
+            )
+            logger.debug(f"Created SessionStateMachine for session {session_name}")
+        return self.session_machines[session_name]
+
+    def _setup_event_handlers(self) -> None:
+        """Set up event handlers for state machine events.
+
+        Connects state machine events to existing _emit_event for dashboard integration.
+        """
+        # Issue lifecycle events
+        self.event_bus.subscribe(IssueEvent.CLAIMED, self._on_issue_claimed)
+        self.event_bus.subscribe(IssueEvent.SESSION_STARTED, self._on_issue_session_started)
+        self.event_bus.subscribe(IssueEvent.PR_CREATED, self._on_issue_pr_created)
+        self.event_bus.subscribe(IssueEvent.COMPLETED, self._on_issue_completed)
+
+        # Session lifecycle events
+        self.event_bus.subscribe(SessionEvent.LAUNCHED, self._on_session_launched)
+        self.event_bus.subscribe(SessionEvent.STARTED, self._on_session_started)
+        self.event_bus.subscribe(SessionEvent.COMPLETED, self._on_session_completed)
+
+        logger.info("Event handlers configured for state machine integration")
+
+    def _on_issue_claimed(self, event) -> None:
+        """Handle issue claimed event from state machine."""
+        logger.debug(f"[STATE_MACHINE] Issue #{event.entity_id} claimed")
+        _emit_event("issue_claimed", {"issue_number": event.entity_id})
+
+    def _on_issue_session_started(self, event) -> None:
+        """Handle issue session started event from state machine."""
+        logger.debug(f"[STATE_MACHINE] Issue #{event.entity_id} session started")
+        _emit_event("issue_session_started", {"issue_number": event.entity_id})
+
+    def _on_issue_pr_created(self, event) -> None:
+        """Handle issue PR created event from state machine."""
+        logger.debug(f"[STATE_MACHINE] Issue #{event.entity_id} PR created")
+        _emit_event("issue_pr_created", {"issue_number": event.entity_id})
+
+    def _on_issue_completed(self, event) -> None:
+        """Handle issue completed event from state machine."""
+        logger.debug(f"[STATE_MACHINE] Issue #{event.entity_id} completed")
+        _emit_event("issue_completed", {"issue_number": event.entity_id})
+
+    def _on_session_launched(self, event) -> None:
+        """Handle session launched event from state machine."""
+        logger.debug(f"[STATE_MACHINE] Session launched for issue #{event.entity_id}")
+
+    def _on_session_started(self, event) -> None:
+        """Handle session started event from state machine."""
+        logger.debug(f"[STATE_MACHINE] Session started for issue #{event.entity_id}")
+
+    def _on_session_completed(self, event) -> None:
+        """Handle session completed event from state machine."""
+        logger.debug(f"[STATE_MACHINE] Session completed for issue #{event.entity_id}")
+
+    # ==================== End State Machine Helpers ====================
 
     async def _restore_running_sessions(self, running: list[dict]) -> None:
         """Restore tracking for sessions that are still running after orchestrator restart.
@@ -655,6 +759,25 @@ class Orchestrator:
                     issue.number, total_time, worktree_time, label_time, session_time)
         print(f"Launched session for issue #{issue.number}: {issue.title}")
         _emit_event("session_started", {"issue_number": issue.number, "title": issue.title})
+
+        # Trigger state machine transitions
+        # Note: claim/start/launch/started are dynamically added by transitions library
+        logger.debug(f"[STATE_MACHINE] Triggering transitions for issue #{issue.number}")
+        issue_machine = self._get_issue_machine(issue.number)
+        if issue_machine.state == IssueState.AVAILABLE.value:
+            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: AVAILABLE -> CLAIMED")
+            issue_machine.claim()  # type: ignore[attr-defined]
+            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: CLAIMED -> IN_PROGRESS")
+            issue_machine.start()  # type: ignore[attr-defined]
+
+        # Create session state machine
+        session_machine = self._get_session_machine(
+            session_name, issue.number, agent_config.timeout_minutes
+        )
+        logger.debug(f"[STATE_MACHINE] Session {session_name}: PENDING -> STARTING")
+        session_machine.launch()  # type: ignore[attr-defined]
+        logger.debug(f"[STATE_MACHINE] Session {session_name}: STARTING -> RUNNING")
+        session_machine.started()  # type: ignore[attr-defined]
 
         return session
 

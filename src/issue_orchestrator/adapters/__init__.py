@@ -31,6 +31,7 @@ Third-party plugins can be registered via entry points in pyproject.toml:
 from .manager import PluginManager, create_plugin_manager, BUILTIN_PLUGINS
 from .terminal_tmux import TmuxPlugin
 from .terminal_iterm import ITermPlugin
+from .github_adapter import GitHubAdapter
 
 __all__ = [
     # Main interface
@@ -40,4 +41,6 @@ __all__ = [
     # Built-in plugins (for direct import if needed)
     "TmuxPlugin",
     "ITermPlugin",
+    # Repository adapters
+    "GitHubAdapter",
 ]
