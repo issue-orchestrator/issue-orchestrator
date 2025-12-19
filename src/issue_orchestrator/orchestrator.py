@@ -64,8 +64,10 @@ def _emit_event(event_type: str, data: dict | None = None) -> None:
 
 from .config import Config
 from .github import (
-    list_issues, add_label, remove_label,
-    get_open_prs_for_branch, get_latest_blocked_info, get_latest_needs_human_info,
+    # Core functions (adapter-preferred but kept for backward compatibility and tests)
+    list_issues, add_label, remove_label, get_issue_labels, get_open_prs_for_branch,
+    # Functions still used directly (no adapter equivalent yet)
+    get_latest_blocked_info, get_latest_needs_human_info,
     list_prs_with_label, create_issue,
 )
 # Lock files removed - using direct iTerm/active_sessions checks instead
@@ -75,9 +77,10 @@ from .scheduler import Scheduler
 # Terminal backend handled via adapters (see _terminal_adapter property)
 from .worktree import create_worktree, remove_worktree, has_uncommitted_changes
 # State machine infrastructure
-from .domain.events import EventBus, IssueEvent, SessionEvent
+from .domain.events import EventBus, IssueEvent, SessionEvent, ReviewEvent
 from .domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from .domain.state_machines.session_machine import SessionStateMachine, SessionState
+from .domain.state_machines.review_machine import ReviewStateMachine, ReviewState
 from .adapters.github_adapter import GitHubAdapter
 
 
@@ -136,12 +139,16 @@ class Orchestrator:
 
     config: Config
     state: OrchestratorState = field(default_factory=OrchestratorState)
+    # Dependency injection: adapter can be provided for testing
+    github_adapter: Optional[GitHubAdapter] = None
     scheduler: Scheduler = field(init=False)
     monitor: SessionMonitor = field(init=False)
     _shutdown_requested: bool = field(default=False, init=False)
 
     def __post_init__(self):
         self.scheduler = Scheduler(self.config)
+        # Note: Monitor is initialized without session_machines initially
+        # We'll update the reference after session_machines is created
         self.monitor = SessionMonitor(self.config)
         self._plugin_manager_instance = None  # Lazy init
 
@@ -149,12 +156,26 @@ class Orchestrator:
         self.event_bus = EventBus()
         self.issue_machines: dict[int, IssueStateMachine] = {}
         self.session_machines: dict[str, SessionStateMachine] = {}
+        self.review_machines: dict[int, ReviewStateMachine] = {}  # keyed by PR number
 
-        # GitHub adapter (optional port-based access)
-        self.github_adapter = GitHubAdapter(self.config.repo) if hasattr(self.config, 'repo') and self.config.repo else None
+        # GitHub adapter - use injected adapter or create real one
+        if self.github_adapter is None:
+            self.github_adapter = GitHubAdapter(self.config.repo)
+
+        # State persistence
+        from .adapters.json_store import JsonSessionStore
+        # Use the state_file directory for state machine persistence
+        store_path = self.config.state_file.parent / "state_machines.json"
+        self.state_store = JsonSessionStore(store_path)
 
         # Set up event handlers
         self._setup_event_handlers()
+
+        # Recover state machines from persisted state
+        self._recover_state_machines()
+
+        # Update monitor's reference to session machines
+        self.monitor.session_machines = self.session_machines
 
     @property
     def _using_iterm2(self) -> bool:
@@ -252,6 +273,23 @@ class Orchestrator:
             logger.debug(f"Created SessionStateMachine for session {session_name}")
         return self.session_machines[session_name]
 
+    def _get_review_machine(self, pr_number: int, issue_number: int) -> ReviewStateMachine:
+        """Get or create review state machine for a PR.
+
+        Args:
+            pr_number: The GitHub PR number
+            issue_number: The associated GitHub issue number
+
+        Returns:
+            ReviewStateMachine for the given PR
+        """
+        if pr_number not in self.review_machines:
+            self.review_machines[pr_number] = ReviewStateMachine(
+                pr_number, issue_number, self.event_bus, max_rework_cycles=self.config.max_rework_cycles
+            )
+            logger.debug(f"Created ReviewStateMachine for PR #{pr_number}")
+        return self.review_machines[pr_number]
+
     def _setup_event_handlers(self) -> None:
         """Set up event handlers for state machine events.
 
@@ -267,6 +305,42 @@ class Orchestrator:
         self.event_bus.subscribe(SessionEvent.LAUNCHED, self._on_session_launched)
         self.event_bus.subscribe(SessionEvent.STARTED, self._on_session_started)
         self.event_bus.subscribe(SessionEvent.COMPLETED, self._on_session_completed)
+
+        # Review lifecycle events
+        self.event_bus.subscribe(ReviewEvent.APPROVED, self._on_review_approved)
+        self.event_bus.subscribe(ReviewEvent.CHANGES_REQUESTED, self._on_review_changes_requested)
+
+        # Label automation based on state changes
+        self.event_bus.subscribe(IssueEvent.CLAIMED, self._sync_label_in_progress)
+        self.event_bus.subscribe(IssueEvent.BLOCKED, self._sync_label_blocked)
+        self.event_bus.subscribe(IssueEvent.NEEDS_HUMAN, self._sync_label_needs_human)
+        self.event_bus.subscribe(IssueEvent.UNBLOCKED, self._sync_label_unblocked)
+        self.event_bus.subscribe(IssueEvent.COMPLETED, self._sync_label_completed)
+        self.event_bus.subscribe(IssueEvent.RELEASED, self._sync_label_released)
+
+        # State persistence on significant state changes
+        # Subscribe to all state transitions to ensure state is persisted
+        self.event_bus.subscribe(SessionEvent.STARTED, self._on_state_change_persist)
+        self.event_bus.subscribe(SessionEvent.COMPLETED, self._on_state_change_persist)
+        self.event_bus.subscribe(SessionEvent.FAILED, self._on_state_change_persist)
+        self.event_bus.subscribe(SessionEvent.TIMED_OUT, self._on_state_change_persist)
+        self.event_bus.subscribe(SessionEvent.BLOCKED, self._on_state_change_persist)
+        self.event_bus.subscribe(SessionEvent.NEEDS_HUMAN, self._on_state_change_persist)
+        self.event_bus.subscribe(IssueEvent.CLAIMED, self._on_state_change_persist)
+        self.event_bus.subscribe(IssueEvent.SESSION_STARTED, self._on_state_change_persist)
+        self.event_bus.subscribe(IssueEvent.BLOCKED, self._on_state_change_persist)
+        self.event_bus.subscribe(IssueEvent.NEEDS_HUMAN, self._on_state_change_persist)
+        self.event_bus.subscribe(IssueEvent.UNBLOCKED, self._on_state_change_persist)
+        self.event_bus.subscribe(IssueEvent.PR_CREATED, self._on_state_change_persist)
+        self.event_bus.subscribe(IssueEvent.COMPLETED, self._on_state_change_persist)
+        self.event_bus.subscribe(IssueEvent.RELEASED, self._on_state_change_persist)
+        self.event_bus.subscribe(ReviewEvent.REVIEW_STARTED, self._on_state_change_persist)
+        self.event_bus.subscribe(ReviewEvent.APPROVED, self._on_state_change_persist)
+        self.event_bus.subscribe(ReviewEvent.CHANGES_REQUESTED, self._on_state_change_persist)
+        self.event_bus.subscribe(ReviewEvent.REWORK_STARTED, self._on_state_change_persist)
+        self.event_bus.subscribe(ReviewEvent.REWORK_COMPLETED, self._on_state_change_persist)
+        self.event_bus.subscribe(ReviewEvent.MERGED, self._on_state_change_persist)
+        self.event_bus.subscribe(ReviewEvent.CLOSED, self._on_state_change_persist)
 
         logger.info("Event handlers configured for state machine integration")
 
@@ -302,7 +376,210 @@ class Orchestrator:
         """Handle session completed event from state machine."""
         logger.debug(f"[STATE_MACHINE] Session completed for issue #{event.entity_id}")
 
+    def _on_review_approved(self, event) -> None:
+        """Handle review approved event from state machine."""
+        pr_number = event.entity_id
+        logger.info(f"[STATE_MACHINE] PR #{pr_number} approved")
+        _emit_event("review_approved", {"pr_number": pr_number})
+
+    def _on_review_changes_requested(self, event) -> None:
+        """Handle review changes requested event from state machine."""
+        pr_number = event.entity_id
+        rework_count = event.data.get("rework_count", 0)
+        logger.info(f"[STATE_MACHINE] PR #{pr_number} changes requested (rework cycle {rework_count})")
+        _emit_event("review_changes_requested", {"pr_number": pr_number, "rework_count": rework_count})
+
+    # ==================== Label Sync Handlers ====================
+
+    def _sync_label_in_progress(self, event) -> None:
+        """Add in-progress label when issue is claimed."""
+        try:
+            logger.debug("[ADAPTER] Using GitHubAdapter for add_label")
+            self.github_adapter.add_label(event.entity_id, "in-progress")
+            logger.debug(f"[LABEL_SYNC] Added 'in-progress' to #{event.entity_id}")
+        except Exception as e:
+            logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
+
+    def _sync_label_blocked(self, event) -> None:
+        """Add blocked label when issue is blocked."""
+        reason = event.data.get('reason', '')
+        label = f"blocked-{reason}" if reason else "blocked"
+        try:
+            logger.debug("[ADAPTER] Using GitHubAdapter for add_label")
+            self.github_adapter.add_label(event.entity_id, label)
+            logger.debug(f"[LABEL_SYNC] Added '{label}' to #{event.entity_id}")
+        except Exception as e:
+            logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
+
+    def _sync_label_needs_human(self, event) -> None:
+        """Add needs-human label."""
+        try:
+            logger.debug("[ADAPTER] Using GitHubAdapter for add_label")
+            self.github_adapter.add_label(event.entity_id, "blocked-needs-human")
+            logger.debug(f"[LABEL_SYNC] Added 'blocked-needs-human' to #{event.entity_id}")
+        except Exception as e:
+            logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
+
+    def _sync_label_unblocked(self, event) -> None:
+        """Remove blocking labels when unblocked."""
+        try:
+            logger.debug("[ADAPTER] Using GitHubAdapter for get_issue_labels and remove_label")
+            labels = self.github_adapter.get_issue_labels(event.entity_id)
+            for label in labels:
+                if label.startswith("blocked"):
+                    self.github_adapter.remove_label(event.entity_id, label)
+                    logger.debug(f"[LABEL_SYNC] Removed '{label}' from #{event.entity_id}")
+        except Exception as e:
+            logger.warning(f"[LABEL_SYNC] Failed to remove labels: {e}")
+
+    def _sync_label_completed(self, event) -> None:
+        """Remove in-progress label when completed."""
+        try:
+            logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
+            self.github_adapter.remove_label(event.entity_id, "in-progress")
+            logger.debug(f"[LABEL_SYNC] Removed 'in-progress' from #{event.entity_id}")
+        except Exception as e:
+            logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
+
+    def _sync_label_released(self, event) -> None:
+        """Remove in-progress label when released."""
+        try:
+            logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
+            self.github_adapter.remove_label(event.entity_id, "in-progress")
+            logger.debug(f"[LABEL_SYNC] Removed 'in-progress' from #{event.entity_id}")
+        except Exception as e:
+            logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
+
     # ==================== End State Machine Helpers ====================
+
+    # ==================== State Persistence ====================
+
+    def _persist_state_machines(self) -> None:
+        """Persist current state machine states to disk.
+
+        This method saves the state of all active state machines to enable
+        recovery after orchestrator restarts.
+        """
+        try:
+            # Persist session machines
+            for session_id, machine in self.session_machines.items():
+                self.state_store.save_session_state(
+                    session_id=session_id,
+                    issue_number=machine.issue_number,
+                    state=machine.state,
+                    started_at=machine.started_at,
+                    metadata={'timeout_minutes': machine.timeout_minutes}
+                )
+
+            # Persist issue machines
+            for issue_number, machine in self.issue_machines.items():
+                self.state_store.save_issue_state(
+                    issue_number=issue_number,
+                    state=machine.state
+                )
+
+            # Persist review machines
+            for pr_number, machine in self.review_machines.items():
+                self.state_store.save_review_state(
+                    pr_number=pr_number,
+                    state=machine.state,
+                    rework_count=machine.rework_count,
+                    metadata={'issue_number': machine.issue_number}
+                )
+
+            logger.debug("[PERSISTENCE] State machines persisted successfully")
+        except Exception as e:
+            logger.error(f"[PERSISTENCE] Failed to persist state machines: {e}")
+
+    def _recover_state_machines(self) -> None:
+        """Recover state machines from persisted state after restart.
+
+        This method restores state machines from the persisted state store,
+        allowing the orchestrator to resume where it left off after a crash
+        or restart.
+        """
+        try:
+            # Recover session machines
+            for session_id, data in self.state_store.get_all_sessions().items():
+                if session_id not in self.session_machines:
+                    try:
+                        initial_state = SessionState(data["state"])
+                        timeout_minutes = data.get("metadata", {}).get("timeout_minutes") or self.config.default_timeout
+
+                        machine = SessionStateMachine(
+                            session_id=session_id,
+                            issue_number=data["issue_number"],
+                            event_bus=self.event_bus,
+                            initial_state=initial_state,
+                            timeout_minutes=timeout_minutes
+                        )
+
+                        # Restore started_at if available
+                        if data.get("started_at"):
+                            machine.started_at = datetime.fromisoformat(data["started_at"])
+
+                        self.session_machines[session_id] = machine
+                        logger.info(f"[RECOVERY] Restored SessionStateMachine for {session_id} in state {data['state']}")
+                    except Exception as e:
+                        logger.warning(f"[RECOVERY] Failed to restore session {session_id}: {e}")
+
+            # Recover issue machines
+            for issue_number_str, data in self.state_store._cache.get("issue_machines", {}).items():
+                issue_number = int(issue_number_str)
+                if issue_number not in self.issue_machines:
+                    try:
+                        initial_state = IssueState(data["state"])
+                        machine = IssueStateMachine(
+                            issue_number=issue_number,
+                            event_bus=self.event_bus,
+                            initial_state=initial_state
+                        )
+                        self.issue_machines[issue_number] = machine
+                        logger.info(f"[RECOVERY] Restored IssueStateMachine for issue #{issue_number} in state {data['state']}")
+                    except Exception as e:
+                        logger.warning(f"[RECOVERY] Failed to restore issue #{issue_number}: {e}")
+
+            # Recover review machines
+            for pr_number_str, data in self.state_store._cache.get("review_machines", {}).items():
+                pr_number = int(pr_number_str)
+                if pr_number not in self.review_machines:
+                    try:
+                        initial_state = ReviewState(data["state"])
+                        # We need the issue number - try to get it from metadata or skip
+                        issue_number = data.get("metadata", {}).get("issue_number")
+                        if not issue_number:
+                            logger.warning(f"[RECOVERY] Skipping PR #{pr_number} - no issue_number in metadata")
+                            continue
+
+                        machine = ReviewStateMachine(
+                            pr_number=pr_number,
+                            issue_number=issue_number,
+                            event_bus=self.event_bus,
+                            initial_state=initial_state,
+                            max_rework_cycles=self.config.max_rework_cycles
+                        )
+                        machine.rework_count = data.get("rework_count", 0)
+                        self.review_machines[pr_number] = machine
+                        logger.info(f"[RECOVERY] Restored ReviewStateMachine for PR #{pr_number} in state {data['state']}")
+                    except Exception as e:
+                        logger.warning(f"[RECOVERY] Failed to restore review PR #{pr_number}: {e}")
+
+            logger.info("[RECOVERY] State machine recovery completed")
+        except Exception as e:
+            logger.error(f"[RECOVERY] Failed to recover state machines: {e}")
+
+    def _on_state_change_persist(self, event) -> None:
+        """Persist state after significant state changes.
+
+        This handler is triggered on terminal state transitions to ensure
+        state is saved to disk.
+
+        Args:
+            event: The state change event
+        """
+        self._persist_state_machines()
+
+    # ==================== End State Persistence ====================
 
     async def _restore_running_sessions(self, running: list[dict]) -> None:
         """Restore tracking for sessions that are still running after orchestrator restart.
@@ -357,7 +634,8 @@ class Orchestrator:
                     continue
 
                 # Fetch issue details from GitHub to get agent type
-                issues = list_issues(self.config.repo, limit=200)
+                logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
+                issues = self.github_adapter.list_issues(limit=200)
                 issue_obj = None
                 agent_config = None
 
@@ -481,8 +759,8 @@ class Orchestrator:
         self.state.startup_message = "Checking in-progress issues on GitHub..."
         for agent_label in self.config.agents.keys():
             api_start = time.time()
-            issues = list_issues(
-                self.config.repo,
+            logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
+            issues = self.github_adapter.list_issues(
                 labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
                 milestone=self._get_milestone_filter(),
                 limit=self.config.issue_fetch_limit,
@@ -521,7 +799,8 @@ class Orchestrator:
                     # No work done at all - claim was made but nothing happened
                     # Clear label so issue becomes available again
                     print(f"  #{issue.number}: No session or branch - clearing stale label")
-                    remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
+                    logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
+                    self.github_adapter.remove_label(issue.number, self.config.get_label_in_progress())
 
         # Check for PRs needing code review (recovery after crash/restart)
         if self.config.code_review_agent and self.config.code_review_label:
@@ -572,8 +851,8 @@ class Orchestrator:
         if self.config.cto_review_agent:
             self.state.startup_message = "Checking for pending CTO review issues..."
             print("\nChecking for pending CTO review issues...")
-            cto_issues = list_issues(
-                self.config.repo,
+            logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
+            cto_issues = self.github_adapter.list_issues(
                 labels=[self.config.cto_review_agent],
                 limit=20,
             )
@@ -706,7 +985,7 @@ class Orchestrator:
 
         # Mark issue as in-progress
         step_start = time.time()
-        add_label(self.config.repo, issue.number, self.config.get_label_in_progress())
+        self.github_adapter.add_label(issue.number, self.config.get_label_in_progress())
         label_time = time.time() - step_start
         logger.debug("Label added in %.1fs", label_time)
         print(f"[launch] Label added in {label_time:.1f}s")
@@ -737,7 +1016,8 @@ class Orchestrator:
             print(f"[launch] ERROR: Failed to create session for issue #{issue.number}")
             print("[launch] Is iTerm2 running with a window open?")
             # Remove the in-progress label (no lock to release)
-            remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
+            logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
+            self.github_adapter.remove_label(issue.number, self.config.get_label_in_progress())
             return None
 
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
@@ -784,7 +1064,6 @@ class Orchestrator:
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None:
         """Handle a completed session."""
         from .models import SessionHistoryEntry
-        from .github import get_open_prs_for_branch
 
         # Determine entity type from session name
         is_review = session.tmux_session_name.startswith("review-")
@@ -821,9 +1100,12 @@ class Orchestrator:
         pr_url = None
         prs = None
         if status == SessionStatus.COMPLETED:
-            prs = get_open_prs_for_branch(self.config.repo, session.branch_name)
-            if prs:
-                pr_url = prs[0].get("url")
+            logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
+            pr_infos = self.github_adapter.get_prs_for_branch(session.branch_name)
+            if pr_infos:
+                pr_url = pr_infos[0].url
+                # Convert PRInfo to dict for backward compatibility
+                prs = [{"url": pi.url, "number": pi.number, "title": pi.title} for pi in pr_infos]
 
         # Generate human-readable status reason
         status_reasons = {
@@ -845,6 +1127,83 @@ class Orchestrator:
             status_reason=status_reason,
         )
         self.state.session_history.append(history_entry)
+
+        # Trigger state machine transitions based on session status
+        logger.debug(f"[STATE_MACHINE] Triggering transitions for session {session.tmux_session_name}")
+
+        # 1. Update session state machine
+        session_machine = self.session_machines.get(session.tmux_session_name)
+        if session_machine:
+            logger.debug(f"[STATE_MACHINE] Found session machine for {session.tmux_session_name}")
+            if status == SessionStatus.COMPLETED:
+                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> COMPLETED")
+                session_machine.complete()  # type: ignore[attr-defined]
+            elif status == SessionStatus.FAILED:
+                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> FAILED (reason: {status_reason})")
+                session_machine.fail(data={'reason': status_reason})  # type: ignore[attr-defined]
+            elif status == SessionStatus.TIMED_OUT:
+                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> TIMED_OUT")
+                session_machine.timeout()  # type: ignore[attr-defined]
+            elif status == SessionStatus.BLOCKED:
+                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> BLOCKED")
+                session_machine.block()  # type: ignore[attr-defined]
+            elif status == SessionStatus.NEEDS_HUMAN:
+                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> NEEDS_HUMAN")
+                session_machine.needs_human()  # type: ignore[attr-defined]
+        else:
+            logger.debug(f"[STATE_MACHINE] No session machine found for {session.tmux_session_name} (may be restored session)")
+
+        # 2. Update issue state machine
+        issue_machine = self.issue_machines.get(session.issue.number)
+        if issue_machine:
+            logger.debug(f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}")
+            if status == SessionStatus.COMPLETED and pr_url:
+                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> PR_PENDING (PR: {pr_url})")
+                issue_machine.pr_created(data={'pr_url': pr_url})  # type: ignore[attr-defined]
+            elif status == SessionStatus.BLOCKED:
+                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> BLOCKED")
+                issue_machine.block()  # type: ignore[attr-defined]
+            elif status == SessionStatus.NEEDS_HUMAN:
+                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> NEEDS_HUMAN")
+                issue_machine.needs_human()  # type: ignore[attr-defined]
+        else:
+            logger.debug(f"[STATE_MACHINE] No issue machine found for issue #{session.issue.number} (may be restored session)")
+
+        # 3. Update review state machine (if this is a review session)
+        if is_review and status == SessionStatus.COMPLETED:
+            # Extract PR number from review session name (e.g., "review-123")
+            import re
+            match = re.match(r"review-(\d+)", session.tmux_session_name)
+            if match:
+                pr_number_review = int(match.group(1))
+                review_machine = self.review_machines.get(pr_number_review)
+                if review_machine:
+                    logger.debug(f"[STATE_MACHINE] Found review machine for PR #{pr_number_review}")
+                    # Check PR labels to determine outcome
+                    # The agent-done script adds either code-reviewed or needs-rework label
+                    try:
+                        result = subprocess.run(
+                            ["gh", "pr", "view", str(pr_number_review), "--json", "labels", "-q", ".labels[].name"],
+                            capture_output=True, text=True, timeout=10
+                        )
+                        if result.returncode == 0:
+                            labels = result.stdout.strip().split('\n')
+                            if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
+                                # Review was approved
+                                logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: IN_REVIEW -> APPROVED")
+                                review_machine.approve()  # type: ignore[attr-defined]
+                                # Could also trigger merge here if appropriate
+                                # review_machine.merge()  # type: ignore[attr-defined]
+                            elif self.config.get_label_needs_rework() in labels:
+                                # Changes requested
+                                logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: IN_REVIEW -> CHANGES_REQUESTED")
+                                review_machine.request_changes()  # type: ignore[attr-defined]
+                                logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: CHANGES_REQUESTED -> REWORK_PENDING")
+                                review_machine.queue_rework()  # type: ignore[attr-defined]
+                    except Exception as e:
+                        logger.warning(f"Failed to check PR labels for review outcome: {e}")
+                else:
+                    logger.debug(f"[STATE_MACHINE] No review machine found for PR #{pr_number_review}")
 
         # Determine cleanup strategy based on config and status
         # Non-completed sessions: never cleanup (leave for investigation)
@@ -1026,8 +1385,8 @@ class Orchestrator:
                         # Get available issues
                         all_issues = []
                         for agent_label in self.config.agents.keys():
-                            issues = list_issues(
-                                self.config.repo,
+                            logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
+                            issues = self.github_adapter.list_issues(
                                 labels=self._build_labels(agent_label),
                                 milestone=self._get_milestone_filter(),
                                 limit=self.config.issue_fetch_limit,
@@ -1215,6 +1574,10 @@ class Orchestrator:
         log_transition("review", pr_number, "CREATED", "QUEUED", f"from issue #{issue_number}")
         print(f"📝 Queued PR #{pr_number} for code review")
 
+        # Create review state machine (starts in PENDING state)
+        review_machine = self._get_review_machine(pr_number, issue_number)
+        logger.debug(f"[STATE_MACHINE] ReviewStateMachine for PR #{pr_number} in {review_machine.state}")
+
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:
         """Launch a code review session for a PR.
 
@@ -1287,6 +1650,12 @@ class Orchestrator:
         self.state.active_sessions.append(session)
         log_transition("review", review.pr_number, "LAUNCHING", "ACTIVE", "session launched")
         print(f"🔍 Launched review session for PR #{review.pr_number}")
+
+        # Trigger state machine transition
+        review_machine = self._get_review_machine(review.pr_number, review.issue_number)
+        if review_machine.state == ReviewState.PENDING.value:
+            logger.debug(f"[STATE_MACHINE] PR #{review.pr_number}: PENDING -> IN_REVIEW")
+            review_machine.start_review()  # type: ignore[attr-defined]
 
         # Remove from pending queue
         self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
@@ -1613,8 +1982,8 @@ class Orchestrator:
             return
 
         # Check if a CTO review issue already exists (avoid duplicates)
-        existing = list_issues(
-            self.config.repo,
+        logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
+        existing = self.github_adapter.list_issues(
             labels=[self.config.cto_review_agent],
             limit=10,
         )
@@ -1867,7 +2236,8 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         Similar to launch_session but for fixing an existing PR.
         """
         # Find the original issue to get the agent type
-        issues = list_issues(self.config.repo, limit=200)
+        logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
+        issues = self.github_adapter.list_issues(limit=200)
         original_issue = None
         for issue in issues:
             if issue.number == rework.issue_number:

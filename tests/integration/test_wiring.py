@@ -3,6 +3,9 @@
 These tests mock only at the subprocess boundary (gh, git, tmux commands)
 and let the internal Python code actually run. This catches wiring bugs
 that unit tests miss when they mock everything.
+
+Note: We still inject mock adapters (like MockGitHubAdapter) to avoid real
+API calls, but this tests the actual wiring between components.
 """
 
 import asyncio
@@ -17,6 +20,7 @@ from issue_orchestrator.models import (
     Issue, AgentConfig, Session, OrchestratorState, SessionStatus,
     CommentHeadings
 )
+# Import MockGitHubAdapter from conftest (it's available as fixture)
 
 
 class TestOrchestratorWiring:
@@ -42,30 +46,31 @@ class TestOrchestratorWiring:
             )
         }
         config.max_concurrent_sessions = 2
+        # Use temp directory for state file to isolate tests
+        config.state_file = temp_repo / ".issue-orchestrator" / "state.json"
         return config
 
     @pytest.mark.asyncio
-    async def test_startup_queries_in_progress_issues(self, config):
+    async def test_startup_queries_in_progress_issues(self, config, mock_github_adapter):
         """Verify startup() queries for in-progress issues."""
         from issue_orchestrator.orchestrator import Orchestrator
 
-        orchestrator = Orchestrator(config)
+        orchestrator = Orchestrator(config, github_adapter=mock_github_adapter)
 
-        with patch('issue_orchestrator.orchestrator.list_issues', return_value=[]) as mock_list:
-            with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
-                await orchestrator.startup()
+        with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
+            await orchestrator.startup()
 
-                # Verify list_issues was called to check for in-progress issues
-                mock_list.assert_called()
+            # Verify list_issues was called via the adapter
+            assert len(mock_github_adapter.list_issues_calls) > 0
 
-    def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager):
+    def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager, mock_github_adapter):
         """Verify launch_session actually creates worktree and tmux window."""
         from issue_orchestrator.orchestrator import Orchestrator
 
         # Configure mock plugin to allow session creation
         patch_plugin_manager.plugin.session_exists_override = False
 
-        orchestrator = Orchestrator(config)
+        orchestrator = Orchestrator(config, github_adapter=mock_github_adapter)
         test_issue = Issue(
             number=456,
             title="Test Feature",
@@ -73,7 +78,7 @@ class TestOrchestratorWiring:
             state="open"
         )
 
-        created = {"worktree": False, "label": False}
+        created = {"worktree": False}
 
         # Patch where functions are USED (in orchestrator module)
         with patch('issue_orchestrator.orchestrator.create_worktree') as mock_worktree:
@@ -82,21 +87,17 @@ class TestOrchestratorWiring:
                 return (Path("/fake/worktree"), "456-test-feature")
             mock_worktree.side_effect = record_worktree
 
-            with patch('issue_orchestrator.orchestrator.add_label') as mock_label:
-                def record_label(*args, **kwargs):
-                    created['label'] = True
-                mock_label.side_effect = record_label
+            # launch_session only takes issue - gets agent_config internally
+            session = orchestrator.launch_session(test_issue)
 
-                # launch_session only takes issue - gets agent_config internally
-                session = orchestrator.launch_session(test_issue)
-
-                # Verify all steps happened
-                assert created['worktree'], "Worktree should be created"
-                # Verify window created via plugin manager
-                assert len(patch_plugin_manager.plugin.create_session_calls) == 1, "Tmux window should be created"
-                assert created['label'], "In-progress label should be added"
-                assert session is not None
-                assert session.issue.number == 456
+            # Verify all steps happened
+            assert created['worktree'], "Worktree should be created"
+            # Verify window created via plugin manager
+            assert len(patch_plugin_manager.plugin.create_session_calls) == 1, "Tmux window should be created"
+            # Verify label added via the mock adapter
+            assert (456, "in-progress") in mock_github_adapter.add_label_calls, "In-progress label should be added"
+            assert session is not None
+            assert session.issue.number == 456
 
 
 class TestCLIWiring:

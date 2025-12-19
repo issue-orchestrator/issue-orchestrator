@@ -37,6 +37,12 @@ def monitor(mock_config):
 
 
 @pytest.fixture
+def monitor_with_machines(mock_config):
+    """Create a SessionMonitor instance with mock session machines for testing."""
+    return SessionMonitor(mock_config, session_machines={})
+
+
+@pytest.fixture
 def sample_session(sample_agent_config, tmp_path):
     """Create a sample session for testing."""
     issue = Issue(
@@ -62,12 +68,25 @@ class TestSessionMonitorInit:
         monitor = SessionMonitor(mock_config)
         assert monitor.config == mock_config
         assert monitor._iterm_manager is None
+        assert monitor.session_machines == {}
 
     def test_init_stores_config(self, mock_config):
         """Test that config is properly stored."""
         monitor = SessionMonitor(mock_config)
         assert monitor.config.repo == "owner/repo"
         assert monitor.config.max_concurrent_sessions == 3
+
+    def test_init_with_session_machines(self, mock_config):
+        """Test initializing monitor with session machines."""
+        machines = {"issue-1": MagicMock(), "issue-2": MagicMock()}
+        monitor = SessionMonitor(mock_config, session_machines=machines)
+        assert monitor.config == mock_config
+        assert monitor.session_machines == machines
+
+    def test_init_session_machines_defaults_to_empty_dict(self, mock_config):
+        """Test that session_machines defaults to empty dict when None."""
+        monitor = SessionMonitor(mock_config, session_machines=None)
+        assert monitor.session_machines == {}
 
 
 class TestSessionMonitorProperties:
@@ -213,6 +232,52 @@ class TestCheckSession:
         assert status == SessionStatus.TIMED_OUT
         # Should not check if session exists
         mock_session_exists.assert_not_called()
+
+    def test_check_session_timed_out_via_state_machine(self, monitor_with_machines, sample_session):
+        """Test check_session returns TIMED_OUT when state machine detects timeout."""
+        # Create a mock state machine that indicates timeout
+        mock_machine = MagicMock()
+        mock_machine.check_timeout.return_value = True
+        mock_machine._get_runtime_minutes.return_value = 60.0
+        mock_machine.timeout_minutes = 30
+
+        # Add machine to monitor
+        monitor_with_machines.session_machines["issue-123"] = mock_machine
+
+        status = monitor_with_machines.check_session(sample_session)
+
+        assert status == SessionStatus.TIMED_OUT
+        mock_machine.check_timeout.assert_called_once()
+
+    def test_check_session_not_timed_out_via_state_machine(self, monitor_with_machines, sample_session):
+        """Test check_session continues when state machine doesn't detect timeout."""
+        # Create a mock state machine that doesn't indicate timeout
+        mock_machine = MagicMock()
+        mock_machine.check_timeout.return_value = False
+
+        # Add machine to monitor
+        monitor_with_machines.session_machines["issue-123"] = mock_machine
+
+        # Mock session exists to avoid going further in the logic
+        with patch.object(monitor_with_machines, '_session_exists', return_value=True):
+            status = monitor_with_machines.check_session(sample_session)
+
+        assert status == SessionStatus.RUNNING
+        mock_machine.check_timeout.assert_called_once()
+
+    def test_check_session_fallback_timeout_when_no_machine(self, monitor, sample_session):
+        """Test check_session falls back to session timeout when no state machine exists."""
+        # Set up session that has timed out
+        old_time = datetime.now() - timedelta(minutes=60)
+        sample_session.started_at = old_time
+        sample_session.agent_config.timeout_minutes = 30
+
+        # Monitor has empty session_machines dict (no machine for this session)
+        assert "issue-123" not in monitor.session_machines
+
+        status = monitor.check_session(sample_session)
+
+        assert status == SessionStatus.TIMED_OUT
 
     @patch('issue_orchestrator.monitor.session_exists')
     def test_check_session_still_running(self, mock_session_exists, monitor, sample_session):

@@ -32,6 +32,7 @@ from .manager import PluginManager, create_plugin_manager, BUILTIN_PLUGINS
 from .terminal_tmux import TmuxPlugin
 from .terminal_iterm import ITermPlugin
 from .github_adapter import GitHubAdapter
+from .json_store import JsonSessionStore
 
 __all__ = [
     # Main interface
@@ -43,4 +44,6 @@ __all__ = [
     "ITermPlugin",
     # Repository adapters
     "GitHubAdapter",
+    # Session stores
+    "JsonSessionStore",
 ]

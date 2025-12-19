@@ -40,5 +40,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Project specific
-.issue-orchestrator/state.json
+# Project specific - local state files
+.issue-orchestrator/
+.agent-done-marker

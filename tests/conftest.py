@@ -2,10 +2,124 @@
 
 import pytest
 from pathlib import Path
+from typing import Optional
 from unittest.mock import MagicMock, PropertyMock, patch
 from issue_orchestrator.models import AgentConfig, Issue
 from issue_orchestrator.config import Config
 from issue_orchestrator.hookspec import hookimpl
+from issue_orchestrator.ports.pr_repository import PRInfo
+
+
+class MockGitHubAdapter:
+    """Mock GitHub adapter implementing port interfaces for testing.
+
+    This is the proper way to test hexagonal architecture - inject a mock
+    adapter rather than patching individual functions.
+    """
+
+    def __init__(self):
+        # Storage for test data
+        self.issues: list[Issue] = []
+        self.labels: dict[int, set[str]] = {}  # issue_number -> labels
+        self.prs: dict[str, list[PRInfo]] = {}  # branch -> PRs
+        self.comments: list[dict] = []
+
+        # Call tracking for assertions
+        self.add_label_calls: list[tuple] = []
+        self.remove_label_calls: list[tuple] = []
+        self.list_issues_calls: list[dict] = []
+        self.get_prs_calls: list[dict] = []
+
+    # IssueRepository methods
+    def list_issues(
+        self,
+        labels: list[str] | None = None,
+        milestone: str | None = None,
+        state: str = "open",
+        limit: int = 100,
+    ) -> list[Issue]:
+        """Return configured test issues, filtered by labels."""
+        self.list_issues_calls.append({
+            "labels": labels, "milestone": milestone, "state": state, "limit": limit
+        })
+        result = self.issues
+        if labels:
+            result = [i for i in result if any(l in i.labels for l in labels)]
+        return result[:limit]
+
+    def get_issue(self, issue_number: int) -> Optional[Issue]:
+        """Get a specific issue."""
+        for issue in self.issues:
+            if issue.number == issue_number:
+                return issue
+        return None
+
+    def get_issue_labels(self, issue_number: int) -> list[str]:
+        """Get labels for an issue."""
+        return list(self.labels.get(issue_number, set()))
+
+    # LabelManager methods
+    def add_label(self, issue_number: int, label: str) -> None:
+        """Add a label to an issue."""
+        self.add_label_calls.append((issue_number, label))
+        self.labels.setdefault(issue_number, set()).add(label)
+
+    def remove_label(self, issue_number: int, label: str) -> None:
+        """Remove a label from an issue."""
+        self.remove_label_calls.append((issue_number, label))
+        self.labels.get(issue_number, set()).discard(label)
+
+    def has_label(self, issue_number: int, label: str) -> bool:
+        """Check if issue has a specific label."""
+        return label in self.labels.get(issue_number, set())
+
+    # PRRepository methods
+    def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
+        """Get PRs for a branch."""
+        self.get_prs_calls.append({"branch": branch, "state": state})
+        return self.prs.get(branch, [])
+
+    def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
+        """Get PRs with a specific label."""
+        result = []
+        for prs in self.prs.values():
+            for pr in prs:
+                if label in pr.labels:
+                    result.append(pr)
+        return result
+
+    def get_pr(self, pr_number: int) -> Optional[PRInfo]:
+        """Get a specific PR."""
+        for prs in self.prs.values():
+            for pr in prs:
+                if pr.number == pr_number:
+                    return pr
+        return None
+
+    def create_pr(self, title: str, body: str, head: str, base: str = "main") -> PRInfo:
+        """Create a new PR (mock)."""
+        pr = PRInfo(
+            number=100,
+            title=title,
+            url=f"https://github.com/test/repo/pull/100",
+            branch=head,
+            body=body,
+            state="open",
+            labels=[],
+        )
+        self.prs.setdefault(head, []).append(pr)
+        return pr
+
+    def add_comment(self, issue_or_pr_number: int, body: str) -> str:
+        """Add a comment (mock)."""
+        self.comments.append({"number": issue_or_pr_number, "body": body})
+        return f"https://github.com/test/repo/issues/{issue_or_pr_number}#comment"
+
+
+@pytest.fixture
+def mock_github_adapter():
+    """Create a mock GitHub adapter for testing."""
+    return MockGitHubAdapter()
 
 
 class MockTerminalPlugin:
@@ -182,14 +296,24 @@ def sample_agent_config(tmp_path):
 
 
 @pytest.fixture
-def sample_config(sample_agent_config):
+def sample_config(sample_agent_config, tmp_path):
     """Create a sample Config object for testing."""
     config = Config()
     config.agents["agent:web"] = sample_agent_config
     config.max_concurrent_sessions = 3
     config.session_timeout_minutes = 45
     config.ui_mode = "tmux"  # Avoid iTerm2 detection during tests
+    # Use temp directory for state file to isolate tests
+    config.state_file = tmp_path / ".issue-orchestrator" / "state.json"
     return config
+
+
+@pytest.fixture
+def sample_orchestrator(sample_config, mock_github_adapter, patch_plugin_manager):
+    """Create an Orchestrator with mock adapter injected (proper DI for testing)."""
+    from issue_orchestrator.orchestrator import Orchestrator
+    patch_plugin_manager.plugin.session_exists_override = False
+    return Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
 
 
 @pytest.fixture

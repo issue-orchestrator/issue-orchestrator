@@ -15,13 +15,15 @@ logger = logging.getLogger(__name__)
 class SessionMonitor:
     """Monitor running sessions and handle their completion."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, session_machines: dict[str, "SessionStateMachine"] | None = None) -> None:
         """Initialize the monitor with configuration.
 
         Args:
             config: Orchestrator configuration
+            session_machines: Optional dict mapping session names to state machines
         """
         self.config = config
+        self.session_machines = session_machines or {}
         self._iterm_manager = None  # Lazy init
 
     @property
@@ -71,7 +73,7 @@ class SessionMonitor:
         """Check the status of a session.
 
         Logic:
-        1. If runtime > timeout -> TIMED_OUT
+        1. If runtime > timeout -> TIMED_OUT (uses state machine if available)
         2. If session still running:
            a. Check if PR exists -> send /exit, return RUNNING (will complete next check)
            b. Otherwise -> RUNNING
@@ -87,7 +89,17 @@ class SessionMonitor:
         Returns:
             SessionStatus indicating the current state of the session
         """
-        # Check if session has timed out first
+        # Check timeout using state machine if available (primary method)
+        machine = self.session_machines.get(session.tmux_session_name)
+        if machine and machine.check_timeout():
+            logger.info(
+                f"[STATE_MACHINE] Session {session.tmux_session_name} timed out "
+                f"(runtime: {machine._get_runtime_minutes():.1f}m, "
+                f"timeout: {machine.timeout_minutes}m)"
+            )
+            return SessionStatus.TIMED_OUT
+
+        # Fallback to session-level timeout check (for sessions without state machines)
         if session.is_timed_out:
             logger.info(
                 f"Session for issue #{session.issue.number} has timed out "
