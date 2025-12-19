@@ -201,11 +201,14 @@ class SessionMonitor:
         """Handle session completion based on status.
 
         Actions:
-        - COMPLETED: remove in-progress label
-        - BLOCKED: remove in-progress label (blocked label already set by agent)
-        - NEEDS_HUMAN: remove in-progress label
-        - FAILED: remove in-progress label, optionally add 'failed' label
+        - COMPLETED: remove in-progress label (work done, PR created)
+        - BLOCKED: keep in-progress label (maintains claim, blocked label coexists)
+        - NEEDS_HUMAN: keep in-progress label (maintains claim, needs-human label coexists)
+        - FAILED: remove in-progress label (releases claim)
         - TIMED_OUT: kill tmux session, add 'timed-out' label, remove in-progress label
+
+        Note: BLOCKED and NEEDS_HUMAN keep in-progress to maintain ownership claim.
+        When the blocker is resolved, work can resume immediately.
 
         Args:
             session: The completed session
@@ -255,11 +258,10 @@ class SessionMonitor:
                         f"Failed to add 'failed' label to issue #{issue_number}: {e}"
                     )
 
-            # Remove in-progress label for all completion statuses
+            # Remove in-progress label only for statuses that release ownership
+            # BLOCKED and NEEDS_HUMAN keep in-progress to maintain claim
             if status in (
                 SessionStatus.COMPLETED,
-                SessionStatus.BLOCKED,
-                SessionStatus.NEEDS_HUMAN,
                 SessionStatus.FAILED,
                 SessionStatus.TIMED_OUT,
             ):

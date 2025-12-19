@@ -1,0 +1,21 @@
+#!/bin/bash
+# Claude Code Stop hook to check if agent-done was called
+#
+# This hook runs when Claude finishes responding. It checks for a marker file
+# that agent-done creates when it runs. If the marker is missing, it warns
+# that the session may not have been properly completed.
+
+MARKER_FILE=".agent-done-marker"
+
+if [ -f "$MARKER_FILE" ]; then
+    # agent-done was called - all good
+    exit 0
+else
+    # agent-done was NOT called - warn
+    echo "⚠️  WARNING: Session ending without agent-done being called!"
+    echo "   Work may not be properly recorded. Please run:"
+    echo "   agent-done completed --implementation '...' --problems '...'"
+    echo "   or: agent-done blocked --reason '...' --attempted '...'"
+    # Exit 0 so we don't block - this is informational
+    exit 0
+fi

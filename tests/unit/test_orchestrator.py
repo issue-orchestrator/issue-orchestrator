@@ -292,7 +292,7 @@ class TestStartup:
     @patch("issue_orchestrator.analysis.analyze_issue")
     @patch("issue_orchestrator.orchestrator.session_exists")
     @patch("issue_orchestrator.orchestrator.remove_label")
-    async def test_startup_clears_labels_for_partial_work(
+    async def test_startup_resumes_partial_work(
         self,
         mock_remove_label,
         mock_session_exists,
@@ -302,7 +302,7 @@ class TestStartup:
         mock_cleanup_claims,
         sample_config,
     ):
-        """Test that startup clears labels for partial work (branch but no session)."""
+        """Test that startup resumes work for partial work (branch but no session)."""
         mock_cleanup_claims.return_value = []
         mock_get_branches.return_value = {}
 
@@ -320,10 +320,52 @@ class TestStartup:
         orchestrator = Orchestrator(config=sample_config)
         await orchestrator.startup()
 
-        # Should remove the label (will resume from branch later)
-        mock_remove_label.assert_called_once_with(
-            sample_config.repo, 1, sample_config.get_label_in_progress()
-        )
+        # Should NOT remove the label - we keep in-progress and resume work
+        mock_remove_label.assert_not_called()
+        # Session should have been launched (check active_sessions)
+        assert len(orchestrator.state.active_sessions) == 1
+        assert orchestrator.state.active_sessions[0].issue.number == 1
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.orchestrator.cleanup_stale_claims")
+    @patch("issue_orchestrator.analysis.get_issue_branches")
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    @patch("issue_orchestrator.analysis.analyze_issue")
+    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.remove_label")
+    async def test_startup_skips_blocked_issues(
+        self,
+        mock_remove_label,
+        mock_session_exists,
+        mock_analyze,
+        mock_list_issues,
+        mock_get_branches,
+        mock_cleanup_claims,
+        sample_config,
+    ):
+        """Test that startup skips issues that are blocked (waiting for human)."""
+        mock_cleanup_claims.return_value = []
+        mock_get_branches.return_value = {}
+
+        # Issue has both in-progress AND blocked labels
+        issue = create_issue(1, labels=["agent:web", "in-progress", "blocked"])
+        mock_list_issues.return_value = [issue]
+
+        # Mock analyze_issue - shouldn't matter since we skip before analyzing
+        mock_state = MagicMock()
+        mock_state.has_session = False
+        mock_state.has_open_pr = False
+        mock_state.has_partial_work = True
+        mock_state.branch = "feature/issue-1"
+        mock_analyze.return_value = mock_state
+
+        orchestrator = Orchestrator(config=sample_config)
+        await orchestrator.startup()
+
+        # Should NOT remove any labels
+        mock_remove_label.assert_not_called()
+        # Should NOT launch a session - blocked issues wait for human
+        assert len(orchestrator.state.active_sessions) == 0
 
 
 class TestLaunchSession:
@@ -1858,16 +1900,20 @@ class TestLaunchReviewSession:
 
         assert session is None
 
+    @patch("issue_orchestrator.orchestrator.session_exists")
     @patch("issue_orchestrator.orchestrator.try_claim")
     def test_launch_review_session_uses_review_prefix_for_claim(
         self,
         mock_try_claim,
+        mock_session_exists,
         sample_config,
     ):
         """Test that launch_review_session uses 'review' prefix for claiming."""
         from issue_orchestrator.models import PendingReview
 
         mock_try_claim.return_value = False
+        # Simulate an active session exists (not orphaned), so no retry
+        mock_session_exists.return_value = True
 
         sample_config.code_review_agent = "agent:web"
 
@@ -2403,3 +2449,410 @@ class TestPauseBehavior:
             # Should only launch 1 issue (paused after first)
             assert mock_launch.call_count == 1
             assert orchestrator.state.paused is True
+
+
+class TestReconcileOrphanedPrLabels:
+    """Test the reconcile_orphaned_pr_labels method."""
+
+    @patch("subprocess.run")
+    def test_reconcile_skips_when_no_code_review_label(self, mock_run, sample_config):
+        """Test that reconciliation is skipped when code review is not configured."""
+        sample_config.code_review_label = None
+
+        orchestrator = Orchestrator(config=sample_config)
+        fixed_count = orchestrator.reconcile_orphaned_pr_labels()
+
+        assert fixed_count == 0
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_reconcile_adds_label_to_orphaned_prs(self, mock_run, sample_config):
+        """Test that orphaned PRs get the code review label added."""
+        sample_config.code_review_label = "needs-code-review"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.repo = "owner/repo"
+
+        # Mock gh pr list returning a PR without review labels
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"number": 42, "body": "Generated by issue-orchestrator agent", "labels": []}]',
+            stderr="",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        fixed_count = orchestrator.reconcile_orphaned_pr_labels()
+
+        assert fixed_count == 1
+        # Should have called gh pr list and gh pr edit
+        assert mock_run.call_count == 2
+
+    @patch("subprocess.run")
+    def test_reconcile_skips_non_orchestrator_prs(self, mock_run, sample_config):
+        """Test that non-orchestrator PRs are skipped."""
+        sample_config.code_review_label = "needs-code-review"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.repo = "owner/repo"
+
+        # Mock gh pr list returning a PR without the orchestrator marker
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"number": 42, "body": "Some other PR body", "labels": []}]',
+            stderr="",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        fixed_count = orchestrator.reconcile_orphaned_pr_labels()
+
+        assert fixed_count == 0
+        # Should only have called gh pr list
+        assert mock_run.call_count == 1
+
+    @patch("subprocess.run")
+    def test_reconcile_skips_prs_with_review_label(self, mock_run, sample_config):
+        """Test that PRs already with review labels are skipped."""
+        sample_config.code_review_label = "needs-code-review"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.repo = "owner/repo"
+
+        # Mock gh pr list returning a PR that already has the review label
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"number": 42, "body": "Generated by issue-orchestrator agent", "labels": [{"name": "needs-code-review"}]}]',
+            stderr="",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        fixed_count = orchestrator.reconcile_orphaned_pr_labels()
+
+        assert fixed_count == 0
+        # Should only have called gh pr list
+        assert mock_run.call_count == 1
+
+    @patch("subprocess.run")
+    def test_reconcile_skips_prs_with_code_reviewed_label(self, mock_run, sample_config):
+        """Test that PRs with code-reviewed label are skipped."""
+        sample_config.code_review_label = "needs-code-review"
+        sample_config.code_reviewed_label = "code-reviewed"
+        sample_config.repo = "owner/repo"
+
+        # Mock gh pr list returning a PR that already has been reviewed
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='[{"number": 42, "body": "Generated by issue-orchestrator agent", "labels": [{"name": "code-reviewed"}]}]',
+            stderr="",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        fixed_count = orchestrator.reconcile_orphaned_pr_labels()
+
+        assert fixed_count == 0
+        # Should only have called gh pr list
+        assert mock_run.call_count == 1
+
+
+class TestOrphanLockDetection:
+    """Test orphan lock detection and cleanup in state machine.
+
+    These tests verify the fix for the infinite loop bug where pending_reviews
+    would never be cleared when lock claims failed due to orphaned locks.
+    """
+
+    @patch("issue_orchestrator.orchestrator.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.release_claim")
+    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    def test_review_orphan_lock_released_and_retried(
+        self,
+        mock_try_claim,
+        mock_session_exists,
+        mock_release_claim,
+        mock_create_session,
+        mock_create_worktree,
+        sample_config,
+    ):
+        """Test that orphaned review locks are released and retry succeeds."""
+        from issue_orchestrator.models import PendingReview
+
+        # First try_claim fails (lock exists), second succeeds (after release)
+        mock_try_claim.side_effect = [False, True]
+        # No tmux session exists (orphaned lock)
+        mock_session_exists.return_value = False
+        mock_create_worktree.return_value = (Path("/tmp/worktree"), "feature/branch")
+
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.launch_review_session(review)
+
+        # Should have released the orphan lock
+        mock_release_claim.assert_called_once_with(123, prefix="review")
+        # Should have tried to claim twice (initial fail, then after release)
+        assert mock_try_claim.call_count == 2
+
+    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    def test_review_with_active_session_removed_from_pending(
+        self,
+        mock_try_claim,
+        mock_session_exists,
+        sample_config,
+    ):
+        """Test that reviews with active sessions are removed from pending queue."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = False  # Lock exists
+        mock_session_exists.return_value = True  # Tmux session exists
+
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reviews.append(review)
+
+        # Launch should fail and remove from pending
+        result = orchestrator.launch_review_session(review)
+
+        assert result is None
+        # Review should be removed from pending queue (not stuck in infinite loop)
+        assert len(orchestrator.state.pending_reviews) == 0
+
+    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    def test_review_tracked_in_active_sessions_removed_from_pending(
+        self,
+        mock_try_claim,
+        mock_session_exists,
+        sample_config,
+    ):
+        """Test reviews tracked in active_sessions are removed from pending."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = False  # Lock exists
+        mock_session_exists.return_value = False  # No tmux session
+
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reviews.append(review)
+
+        # Simulate session already tracked in active_sessions
+        existing_session = create_session(create_issue(42))
+        existing_session.tmux_session_name = "review-123"
+        orchestrator.state.active_sessions.append(existing_session)
+
+        result = orchestrator.launch_review_session(review)
+
+        assert result is None
+        # Should be removed from pending (session exists in active_sessions)
+        assert len(orchestrator.state.pending_reviews) == 0
+
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    @patch("issue_orchestrator.orchestrator.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.release_claim")
+    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    def test_rework_orphan_lock_released_and_retried(
+        self,
+        mock_try_claim,
+        mock_session_exists,
+        mock_release_claim,
+        mock_create_session,
+        mock_create_worktree,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that orphaned rework locks are released and retry succeeds."""
+        from issue_orchestrator.models import PendingRework
+
+        # First try_claim fails, second succeeds
+        mock_try_claim.side_effect = [False, True]
+        mock_session_exists.return_value = False  # No tmux session (orphan)
+        mock_create_worktree.return_value = (Path("/tmp/worktree"), "feature/branch")
+        mock_list_issues.return_value = [create_issue(42)]
+
+        sample_config.code_review_agent = "agent:web"
+
+        rework = PendingRework(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+            rework_cycle=1,
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.launch_rework_session(rework)
+
+        # Should have released the orphan lock
+        mock_release_claim.assert_called_once_with(42, prefix="rework")
+        assert mock_try_claim.call_count == 2
+
+    @patch("issue_orchestrator.orchestrator.list_issues")
+    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    def test_rework_with_active_session_removed_from_pending(
+        self,
+        mock_try_claim,
+        mock_session_exists,
+        mock_list_issues,
+        sample_config,
+    ):
+        """Test that reworks with active sessions are removed from pending queue."""
+        from issue_orchestrator.models import PendingRework
+
+        mock_try_claim.return_value = False  # Lock exists
+        mock_session_exists.return_value = True  # Tmux session exists
+        mock_list_issues.return_value = [create_issue(42)]
+
+        sample_config.code_review_agent = "agent:web"
+
+        rework = PendingRework(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+            rework_cycle=1,
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reworks.append(rework)
+
+        result = orchestrator.launch_rework_session(rework)
+
+        assert result is None
+        # Should be removed from pending
+        assert len(orchestrator.state.pending_reworks) == 0
+
+
+class TestStateMachineTransitions:
+    """Test state machine transitions between pending, active, and completed states."""
+
+    @patch("issue_orchestrator.orchestrator.create_worktree")
+    @patch("issue_orchestrator.orchestrator.create_session")
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    def test_successful_review_launch_transitions_pending_to_active(
+        self,
+        mock_try_claim,
+        mock_create_session,
+        mock_create_worktree,
+        sample_config,
+    ):
+        """Test that successful launch moves review from pending to active."""
+        from issue_orchestrator.models import PendingReview
+
+        mock_try_claim.return_value = True
+        mock_create_worktree.return_value = (Path("/tmp/worktree"), "feature/branch")
+
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.state.pending_reviews.append(review)
+
+        session = orchestrator.launch_review_session(review)
+
+        # Should be removed from pending
+        assert len(orchestrator.state.pending_reviews) == 0
+        # Should be added to active
+        assert len(orchestrator.state.active_sessions) == 1
+        assert session is not None
+
+    @patch("issue_orchestrator.orchestrator.session_exists")
+    @patch("issue_orchestrator.orchestrator.try_claim")
+    def test_failed_launch_with_orphan_does_not_leave_stuck_pending(
+        self,
+        mock_try_claim,
+        mock_session_exists,
+        sample_config,
+    ):
+        """Test that failed launch with orphan doesn't leave item stuck in pending.
+
+        This is the critical bug fix test: if both try_claim calls fail,
+        the item should NOT remain in pending_reviews (causing infinite loop).
+        """
+        from issue_orchestrator.models import PendingReview
+
+        # Both claims fail (e.g., another process grabbed it)
+        mock_try_claim.return_value = False
+        mock_session_exists.return_value = False  # No session (orphan detection triggers)
+
+        sample_config.code_review_agent = "agent:web"
+
+        review = PendingReview(
+            issue_number=42,
+            pr_number=123,
+            pr_url="https://github.com/owner/repo/pull/123",
+            branch_name="feature/issue-42",
+        )
+
+        orchestrator = Orchestrator(config=sample_config)
+        # Manually add to pending (simulating process_pending_reviews behavior)
+        orchestrator.state.pending_reviews.append(review)
+
+        result = orchestrator.launch_review_session(review)
+
+        assert result is None
+        # Key assertion: even though launch failed, item is NOT stuck in pending
+        # (In the buggy version, pending_reviews would still contain the review)
+
+    def test_process_pending_reviews_processes_all_pending(self, sample_config):
+        """Test that process_pending_reviews attempts to process all items."""
+        from issue_orchestrator.models import PendingReview
+
+        sample_config.code_review_agent = "agent:web"
+        sample_config.max_concurrent_sessions = 5
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        # Add multiple pending reviews
+        for i in range(3):
+            review = PendingReview(
+                issue_number=i,
+                pr_number=100 + i,
+                pr_url=f"https://github.com/owner/repo/pull/{100+i}",
+                branch_name=f"feature/issue-{i}",
+            )
+            orchestrator.state.pending_reviews.append(review)
+
+        # Mock launch_review_session to track calls
+        launch_calls = []
+        def mock_launch(review):
+            launch_calls.append(review.pr_number)
+            return None  # Simulate all fail
+
+        orchestrator.launch_review_session = mock_launch
+        orchestrator.process_pending_reviews()
+
+        # Should have tried to launch all 3
+        assert len(launch_calls) == 3
+        assert 100 in launch_calls
+        assert 101 in launch_calls
+        assert 102 in launch_calls

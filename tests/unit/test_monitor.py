@@ -547,32 +547,32 @@ class TestHandleCompletion:
         )
 
     @patch('issue_orchestrator.monitor.remove_label')
-    def test_handle_completion_blocked(
+    def test_handle_completion_blocked_keeps_in_progress(
         self, mock_remove_label, monitor, sample_session
     ):
-        """Test handling BLOCKED status."""
+        """Test handling BLOCKED status keeps in-progress label.
+
+        BLOCKED maintains ownership claim - in-progress should NOT be removed.
+        When the blocker is resolved, work can resume immediately.
+        """
         monitor.handle_completion(sample_session, SessionStatus.BLOCKED)
 
-        # Should remove in-progress label
-        mock_remove_label.assert_called_once_with(
-            repo="owner/repo",
-            issue_number=123,
-            label="in-progress",
-        )
+        # Should NOT remove in-progress label - blocked coexists with in-progress
+        mock_remove_label.assert_not_called()
 
     @patch('issue_orchestrator.monitor.remove_label')
-    def test_handle_completion_needs_human(
+    def test_handle_completion_needs_human_keeps_in_progress(
         self, mock_remove_label, monitor, sample_session
     ):
-        """Test handling NEEDS_HUMAN status."""
+        """Test handling NEEDS_HUMAN status keeps in-progress label.
+
+        NEEDS_HUMAN maintains ownership claim - in-progress should NOT be removed.
+        When human provides input, work can resume immediately.
+        """
         monitor.handle_completion(sample_session, SessionStatus.NEEDS_HUMAN)
 
-        # Should remove in-progress label
-        mock_remove_label.assert_called_once_with(
-            repo="owner/repo",
-            issue_number=123,
-            label="in-progress",
-        )
+        # Should NOT remove in-progress label - needs-human coexists with in-progress
+        mock_remove_label.assert_not_called()
 
     @patch('issue_orchestrator.monitor.remove_label')
     @patch('issue_orchestrator.monitor.add_label')
@@ -672,30 +672,34 @@ class TestHandleCompletion:
         # Should not close the tab
         mock_kill.assert_not_called()
 
-    @patch('issue_orchestrator.monitor.remove_label')
     @patch('issue_orchestrator.monitor.kill_session')
     def test_handle_completion_close_blocked_tabs(
-        self, mock_kill, mock_remove_label, monitor, sample_session
+        self, mock_kill, monitor, sample_session
     ):
-        """Test closing blocked tabs when close_failed_tabs is enabled."""
+        """Test closing blocked tabs when close_failed_tabs is enabled.
+
+        Note: BLOCKED keeps in-progress label but can still close the tab.
+        """
         monitor.config.close_failed_tabs = True
 
         monitor.handle_completion(sample_session, SessionStatus.BLOCKED)
 
-        # Should close the tab
+        # Should close the tab (but NOT remove in-progress label)
         mock_kill.assert_called_once_with("issue-123")
 
-    @patch('issue_orchestrator.monitor.remove_label')
     @patch('issue_orchestrator.monitor.kill_session')
     def test_handle_completion_close_needs_human_tabs(
-        self, mock_kill, mock_remove_label, monitor, sample_session
+        self, mock_kill, monitor, sample_session
     ):
-        """Test closing needs-human tabs when close_failed_tabs is enabled."""
+        """Test closing needs-human tabs when close_failed_tabs is enabled.
+
+        Note: NEEDS_HUMAN keeps in-progress label but can still close the tab.
+        """
         monitor.config.close_failed_tabs = True
 
         monitor.handle_completion(sample_session, SessionStatus.NEEDS_HUMAN)
 
-        # Should close the tab
+        # Should close the tab (but NOT remove in-progress label)
         mock_kill.assert_called_once_with("issue-123")
 
     @patch('issue_orchestrator.monitor.remove_label')

@@ -810,7 +810,7 @@ class TestIntegrationScenarios:
         assert worktree_path == worktree_base / "repo-123"
 
         # Check for uncommitted changes (should be clean)
-        worktree_path.mkdir(parents=True)  # Create for existence check
+        worktree_path.mkdir(parents=True, exist_ok=True)  # Create for existence check
         result = has_uncommitted_changes(worktree_path)
         assert result is False
 
@@ -964,8 +964,9 @@ class TestInstallHooks:
         worktree_path.mkdir()
         (worktree_path / ".git").write_text(f"gitdir: {worktrees_dir}")
 
-        # Create .githooks directory with project hook (simulating version-controlled hooks)
-        custom_hooks_dir = worktree_path / ".githooks"
+        # Create .githooks directory with project hook in MAIN REPO (simulating version-controlled hooks)
+        # The hook should be in the main repo, not the worktree - worktrees share the main repo's hooks
+        custom_hooks_dir = main_repo / ".githooks"
         custom_hooks_dir.mkdir()
         project_hook = custom_hooks_dir / "pre-push"
         project_hook.write_text("#!/bin/bash\necho 'Custom hooks path hook'\nexit 0\n")
@@ -1007,3 +1008,52 @@ class TestInstallHooks:
 
         # Verify project hook was copied from custom hooks path
         assert "Custom hooks path hook" in pre_push_project.read_text()
+
+
+class TestInstallClaudeSettings:
+    """Tests for install_claude_settings function."""
+
+    def test_install_claude_settings_creates_file(self, tmp_path):
+        """Test that install_claude_settings creates .claude/settings.json."""
+        from issue_orchestrator.worktree import install_claude_settings
+
+        install_claude_settings(tmp_path)
+
+        settings_file = tmp_path / ".claude" / "settings.json"
+        assert settings_file.exists()
+
+    def test_install_claude_settings_has_stop_hook(self, tmp_path):
+        """Test that the settings contain a Stop hook."""
+        import json
+        from issue_orchestrator.worktree import install_claude_settings
+
+        install_claude_settings(tmp_path)
+
+        settings_file = tmp_path / ".claude" / "settings.json"
+        settings = json.loads(settings_file.read_text())
+
+        assert "hooks" in settings
+        assert "Stop" in settings["hooks"]
+        assert len(settings["hooks"]["Stop"]) > 0
+
+    def test_install_claude_settings_merges_with_existing(self, tmp_path):
+        """Test that install_claude_settings merges with existing settings."""
+        import json
+        from issue_orchestrator.worktree import install_claude_settings
+
+        # Create existing settings
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        settings_file = claude_dir / "settings.json"
+        existing = {"some_key": "some_value", "hooks": {"PreToolUse": []}}
+        settings_file.write_text(json.dumps(existing))
+
+        install_claude_settings(tmp_path)
+
+        settings = json.loads(settings_file.read_text())
+
+        # Original content preserved
+        assert settings["some_key"] == "some_value"
+        assert "PreToolUse" in settings["hooks"]
+        # New hook added
+        assert "Stop" in settings["hooks"]

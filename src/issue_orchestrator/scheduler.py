@@ -179,11 +179,14 @@ class Scheduler:
             List of issues that are not blocked or in-progress.
         """
         available = []
+        label_blocked = self.config.get_label_blocked()
         for issue in all_issues:
-            # Skip issues that are in-progress
             if issue.state == "closed":
                 continue
             if "in-progress" in issue.labels:
+                continue
+            # Check both configured label (may have prefix) and bare "blocked"
+            if label_blocked in issue.labels or "blocked" in issue.labels:
                 continue
             available.append(issue)
         return available

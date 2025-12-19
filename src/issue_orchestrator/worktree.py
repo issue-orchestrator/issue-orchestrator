@@ -1,5 +1,6 @@
 """Git worktree management module."""
 
+import json
 import logging
 import re
 import shutil
@@ -12,11 +13,69 @@ logger = logging.getLogger(__name__)
 # Path to bundled hooks (relative to this module)
 HOOKS_DIR = Path(__file__).parent / "hooks"
 
+# Claude Code settings to enforce agent-done on exit
+# The Stop hook checks for a marker file that agent-done creates
+CLAUDE_SETTINGS_FOR_AGENTS = {
+    "hooks": {
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "test -f .agent-done-marker || echo '⚠️  WARNING: Session ending without agent-done! Run: agent-done completed/blocked/needs_human'",
+                        "timeout": 5
+                    }
+                ]
+            }
+        ]
+    }
+}
+
 
 class WorktreeError(Exception):
     """Raised when a worktree operation fails."""
 
     pass
+
+
+def install_claude_settings(worktree_path: Path) -> None:
+    """
+    Install Claude Code settings to enforce agent-done on exit.
+
+    Creates .claude/settings.json in the worktree with a Stop hook
+    that checks if agent-done was called before allowing exit.
+
+    Args:
+        worktree_path: Path to the worktree
+    """
+    worktree_path = Path(worktree_path)
+    claude_dir = worktree_path / ".claude"
+    settings_file = claude_dir / "settings.json"
+
+    # Create .claude directory if it doesn't exist
+    claude_dir.mkdir(parents=True, exist_ok=True)
+
+    # If settings.json already exists, merge our hooks with existing
+    if settings_file.exists():
+        try:
+            existing = json.loads(settings_file.read_text())
+            # Merge hooks - add our Stop hook
+            if "hooks" not in existing:
+                existing["hooks"] = {}
+            if "Stop" not in existing["hooks"]:
+                existing["hooks"]["Stop"] = []
+            # Add our hook if not already present
+            our_hook = CLAUDE_SETTINGS_FOR_AGENTS["hooks"]["Stop"][0]
+            if our_hook not in existing["hooks"]["Stop"]:
+                existing["hooks"]["Stop"].append(our_hook)
+            settings_file.write_text(json.dumps(existing, indent=2))
+        except (json.JSONDecodeError, KeyError):
+            # If existing file is invalid, overwrite
+            settings_file.write_text(json.dumps(CLAUDE_SETTINGS_FOR_AGENTS, indent=2))
+    else:
+        settings_file.write_text(json.dumps(CLAUDE_SETTINGS_FOR_AGENTS, indent=2))
+
+    logger.debug("Installed Claude settings at %s", settings_file)
 
 
 def slugify(text: str, max_length: int = 40) -> str:
@@ -355,6 +414,9 @@ def create_worktree(
         # Install git hooks for agent enforcement (if enabled)
         if enforce_hooks:
             install_hooks(worktree_path, pre_push_hook)
+
+        # Install Claude Code settings with exit hook to enforce agent-done
+        install_claude_settings(worktree_path)
 
         return worktree_path, branch_name
 

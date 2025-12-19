@@ -118,10 +118,13 @@ class TestTmuxManager:
         manager._session = mock_session
         assert manager.has_session() is True
 
-    def test_has_session_false(self):
+    def test_has_session_false(self, mock_server):
         """Test has_session returns False when session doesn't exist."""
         manager = tmux.TmuxManager()
+        manager._server = mock_server
         manager._session = None
+        # Mock server.sessions.get to return None (no session found)
+        mock_server.sessions.get.return_value = None
         assert manager.has_session() is False
 
     def test_create_issue_window_success(self, mock_session, mock_window):
@@ -140,7 +143,10 @@ class TestTmuxManager:
             window_name="issue-42",
             start_directory=str(working_dir),
         )
-        mock_window.active_pane.send_keys.assert_called_once_with("echo test")
+        # send_keys is called twice: first to add scripts to PATH, then to run command
+        assert mock_window.active_pane.send_keys.call_count == 2
+        # Second (last) call should be the actual command
+        mock_window.active_pane.send_keys.assert_called_with("echo test")
 
     def test_create_issue_window_already_exists(self, mock_session, mock_window):
         """Test create_issue_window raises error if window exists."""
@@ -258,10 +264,13 @@ class TestTmuxManager:
         result = manager.select_dashboard()
         assert result is False
 
-    def test_select_dashboard_no_session(self):
+    def test_select_dashboard_no_session(self, mock_server):
         """Test select_dashboard returns False when no session."""
         manager = tmux.TmuxManager()
+        manager._server = mock_server
         manager._session = None
+        # Mock server.sessions.get to return None (no session found)
+        mock_server.sessions.get.return_value = None
         assert manager.select_dashboard() is False
 
     def test_list_issue_windows(self, mock_session):

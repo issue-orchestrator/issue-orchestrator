@@ -335,7 +335,20 @@ class TestFormatBlockedComment:
         assert "## Blocked" in comment
         assert "**Reason:** Need API credentials" in comment
         assert "**Attempted:** Checked environment variables" in comment
-        assert "**Unblock action:** Need API credentials" in comment
+
+    def test_format_blocked_comment_with_when_unblocked(self):
+        """Test formatting blocked comment with when_unblocked hint."""
+        data = CompletionData(
+            status=Status.BLOCKED,
+            reason="Waiting for API docs",
+            attempted="Searched existing docs",
+            when_unblocked="Implement auth flow using new endpoints",
+        )
+        comment = format_blocked_comment(data)
+        assert "## Blocked" in comment
+        assert "**Reason:** Waiting for API docs" in comment
+        assert "**Attempted:** Searched existing docs" in comment
+        assert "**When unblocked:** Implement auth flow using new endpoints" in comment
 
     def test_format_blocked_comment_with_blocked_by(self):
         """Test formatting blocked comment with blocked_by issues."""
@@ -620,33 +633,73 @@ class TestAddTrailersToCommit:
             amend_call = mock_run.call_args_list[1][0][0]
             assert "Agent-Blocked-By: 123,456,789" in amend_call[-1]
 
+    def test_add_trailers_blocked_with_when_unblocked(self):
+        """Test adding trailers with when_unblocked hint."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout="Commit\n"),
+                Mock(returncode=0),
+            ]
+
+            data = CompletionData(
+                status=Status.BLOCKED,
+                reason="Waiting for API docs",
+                attempted="Searched everywhere",
+                when_unblocked="Implement auth using new endpoints",
+            )
+            add_trailers_to_commit(data)
+
+            amend_call = mock_run.call_args_list[1][0][0]
+            assert "Agent-When-Unblocked: Implement auth using new endpoints" in amend_call[-1]
+
 
 class TestGitPush:
     """Test the git_push function."""
 
-    def test_git_push_success(self, capsys):
-        """Test pushing successfully."""
+    def test_git_push_success_with_force_lease(self, capsys):
+        """Test pushing successfully with --force-with-lease (after rebase)."""
         with patch('subprocess.run') as mock_run:
             mock_run.side_effect = [
-                Mock(returncode=0, stdout="feature-branch\n"),
-                Mock(returncode=0),
+                Mock(returncode=0, stdout="feature-branch\n"),  # git branch --show-current
+                Mock(returncode=0),  # git push --force-with-lease succeeds
             ]
             git_push()
 
             assert mock_run.call_count == 2
-            # Check git push call
+            # Check git push call includes --force-with-lease
             push_call = mock_run.call_args_list[1][0][0]
-            assert push_call == ["git", "push", "-u", "origin", "feature-branch"]
+            assert push_call == ["git", "push", "-u", "--force-with-lease", "origin", "feature-branch"]
+
+            captured = capsys.readouterr()
+            assert "Pushed branch 'feature-branch' to origin" in captured.out
+
+    def test_git_push_fallback_to_regular_push(self, capsys):
+        """Test fallback to regular push when --force-with-lease fails (first push)."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout="feature-branch\n"),  # git branch --show-current
+                Mock(returncode=1, stderr="force-with-lease failed"),  # --force-with-lease fails
+                Mock(returncode=0),  # regular push succeeds
+            ]
+            git_push()
+
+            assert mock_run.call_count == 3
+            # Second call should be force-with-lease
+            assert "--force-with-lease" in mock_run.call_args_list[1][0][0]
+            # Third call should be regular push
+            regular_push = mock_run.call_args_list[2][0][0]
+            assert regular_push == ["git", "push", "-u", "origin", "feature-branch"]
 
             captured = capsys.readouterr()
             assert "Pushed branch 'feature-branch' to origin" in captured.out
 
     def test_git_push_failure(self):
-        """Test error when push fails."""
+        """Test error when both push attempts fail."""
         with patch('subprocess.run') as mock_run:
             mock_run.side_effect = [
-                Mock(returncode=0, stdout="feature-branch\n"),
-                Mock(returncode=1, stderr="Push rejected"),
+                Mock(returncode=0, stdout="feature-branch\n"),  # git branch --show-current
+                Mock(returncode=1, stderr="force-with-lease failed"),  # --force-with-lease fails
+                Mock(returncode=1, stderr="Push rejected"),  # regular push also fails
             ]
             with pytest.raises(SystemExit):
                 git_push()
@@ -935,7 +988,8 @@ class TestMainIntegration:
 
         with patch('sys.argv', args):
             with patch('subprocess.run') as mock_run:
-                # Setup subprocess mocks for various git/gh calls
+                # Setup subprocess mocks for the full workflow:
+                # 1. get_issue_number, 2. get_repo, 3. add_trailers, 4. rebase, 5. push, 6. get_title, 7. create_pr, 8. post_comment
                 mock_run.side_effect = [
                     # get_issue_number: git branch --show-current
                     Mock(returncode=0, stdout="123-add-oauth\n"),
@@ -945,10 +999,16 @@ class TestMainIntegration:
                     Mock(returncode=0, stdout="Initial commit\n"),
                     # add_trailers_to_commit: git commit --amend
                     Mock(returncode=0),
+                    # git_rebase_on_main: git fetch origin main
+                    Mock(returncode=0),
+                    # git_rebase_on_main: git rebase origin/main
+                    Mock(returncode=0),
                     # git_push: git branch --show-current
                     Mock(returncode=0, stdout="123-add-oauth\n"),
-                    # git_push: git push
+                    # git_push: git push --force-with-lease
                     Mock(returncode=0),
+                    # get_issue_title: gh issue view
+                    Mock(returncode=0, stdout="Add OAuth support\n"),
                     # create_pr: gh pr create
                     Mock(returncode=0, stdout="https://github.com/owner/repo/pull/5\n"),
                     # post_comment: gh issue comment

@@ -28,6 +28,7 @@ def sample_config(sample_agent_config):
     config.agents["agent:web"] = sample_agent_config
     config.max_concurrent_sessions = 3
     config.session_timeout_minutes = 45
+    config.ui_mode = "tmux"  # Avoid iTerm2 detection during tests
     return config
 
 

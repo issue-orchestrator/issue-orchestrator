@@ -43,7 +43,7 @@ from .github import (
     list_prs_with_label, create_issue,
 )
 from .locks import try_claim, release_claim, cleanup_stale_claims, cleanup_orphaned_claims
-from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework
+from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, ORCHESTRATOR_PR_MARKER
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
 from .tmux import create_session, session_exists, kill_session
@@ -341,6 +341,9 @@ class Orchestrator:
         self.state.startup_message = "Scanning local branches..."
         issue_branches = get_issue_branches(self.config.repo_root)
 
+        # Collect issues that need to be resumed (have partial work)
+        issues_to_resume: list[tuple[Issue, str]] = []  # (issue, agent_label)
+
         # Get all in-progress issues for our agent types
         self.state.startup_message = "Checking in-progress issues on GitHub..."
         for agent_label in self.config.agents.keys():
@@ -365,6 +368,12 @@ class Orchestrator:
                     check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
                 )
 
+                # Check if blocked or needs human - skip these, waiting for intervention
+                if issue.is_blocked or issue.needs_human:
+                    status = "blocked" if issue.is_blocked else "needs-human"
+                    print(f"  #{issue.number}: Marked as {status} - waiting for human intervention")
+                    continue
+
                 if state.has_session:
                     print(f"  #{issue.number}: Active session found - resuming monitoring")
                     # TODO: recreate Session object and add to state
@@ -372,9 +381,13 @@ class Orchestrator:
                     print(f"  #{issue.number}: Has open PR ({state.pr_url or 'unknown'}) - skipping")
                     # Don't clear label - PR is pending review
                 elif state.has_partial_work:
-                    print(f"  #{issue.number}: Has branch '{state.branch}' but no session/PR - clearing label (will resume from branch)")
-                    remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
+                    # Keep in-progress label - we still own this issue
+                    # Queue for immediate resume when main loop starts
+                    print(f"  #{issue.number}: Has branch '{state.branch}' with commits - queuing for resume")
+                    issues_to_resume.append((issue, agent_label))
                 elif state.is_orphaned_label:
+                    # No work done at all - claim was made but nothing happened
+                    # Clear label so issue becomes available again
                     print(f"  #{issue.number}: No session or branch - clearing stale label")
                     remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
 
@@ -422,6 +435,26 @@ class Orchestrator:
                         print(f"  PR #{pr_number}: Queued for code review")
                 else:
                     print(f"  PR #{pr_number}: Review already in progress")
+
+        # Resume issues with partial work (have in-progress label and commits but no session)
+        if issues_to_resume:
+            self.state.startup_message = f"Resuming {len(issues_to_resume)} in-progress issue(s)..."
+            print(f"\n🔄 Resuming {len(issues_to_resume)} in-progress issue(s) with partial work...")
+            for issue, agent_label in issues_to_resume:
+                # Check capacity before starting
+                if len(self.state.active_sessions) >= self.config.max_concurrent_sessions:
+                    print(f"  #{issue.number}: At max capacity, will resume when slot available")
+                    # Add to priority queue so it gets picked up first
+                    if issue.number not in self.state.priority_queue:
+                        self.state.priority_queue.insert(0, issue.number)
+                    continue
+
+                print(f"  #{issue.number}: Starting session to resume work...")
+                session = self.launch_session(issue)
+                if session:
+                    print(f"  #{issue.number}: ✅ Session started")
+                else:
+                    print(f"  #{issue.number}: ❌ Failed to start session")
 
         # Run queue audit to show what will be processed
         self.state.startup_message = "Auditing queue..."
@@ -644,6 +677,10 @@ class Orchestrator:
     async def run_loop(self) -> None:
         """Main orchestration loop."""
         print("Starting orchestration loop...")
+
+        # Reconcile any orphaned PR labels on startup
+        self.reconcile_orphaned_pr_labels()
+
         last_cache_update = time.time()
         last_ui_update = time.time()
         ui_update_interval = 30  # Emit state_changed every 30 seconds for UI refresh
@@ -900,9 +937,24 @@ class Orchestrator:
 
         # Try to claim the PR (prevent duplicate reviews)
         # Use pr_number to match session_name which is f"review-{pr_number}"
+        session_name = f"review-{review.pr_number}"
         if not try_claim(review.pr_number, prefix="review"):
-            print(f"PR #{review.pr_number} already being reviewed - skipping")
-            return None
+            # Lock exists - check if it's orphaned (no active session)
+            has_session = session_exists(session_name)
+            has_active = any(s.tmux_session_name == session_name for s in self.state.active_sessions)
+
+            if not has_session and not has_active:
+                # Orphaned lock (e.g., from before laptop sleep) - release and retry
+                logger.info("[REVIEW] Releasing orphaned lock for PR #%d (no active session)", review.pr_number)
+                release_claim(review.pr_number, prefix="review")
+                if not try_claim(review.pr_number, prefix="review"):
+                    logger.warning("[REVIEW] Still cannot claim PR #%d after releasing orphan", review.pr_number)
+                    return None
+            else:
+                # Actually being reviewed - remove from pending queue
+                logger.info("[REVIEW] PR #%d has active session - removing from pending", review.pr_number)
+                self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
+                return None
 
         # Use agent's repo_root if set, otherwise fall back to config.repo_root
         repo_root = agent_config.repo_root or self.config.repo_root
@@ -1211,6 +1263,74 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         except Exception as e:
             print(f"Warning: Failed to escalate PR #{pr_number}: {e}")
 
+    def reconcile_orphaned_pr_labels(self) -> int:
+        """Reconcile labels on agent-created PRs that are missing review labels.
+
+        Called on startup to catch PRs where label addition failed due to
+        orchestrator crash/restart or other failures.
+
+        Returns the number of PRs that were fixed.
+        """
+        if not self.config.code_review_label or not self.config.repo:
+            return 0
+
+        fixed_count = 0
+        code_reviewed_label = self.config.code_reviewed_label
+
+        # Get all open PRs
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "list", "--repo", self.config.repo, "--state", "open",
+                 "--json", "number,body,labels", "--limit", "100"],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                logger.warning("Failed to list PRs for label reconciliation: %s", result.stderr)
+                return 0
+
+            import json
+            prs = json.loads(result.stdout)
+        except Exception as e:
+            logger.warning("Failed to list PRs for label reconciliation: %s", e)
+            return 0
+
+        for pr in prs:
+            pr_number = pr.get("number")
+            body = pr.get("body", "")
+            labels = [l.get("name", "") for l in pr.get("labels", [])]
+
+            # Only reconcile PRs created by the orchestrator
+            if ORCHESTRATOR_PR_MARKER not in body:
+                continue
+
+            # Check if it already has a review label
+            has_review_label = (
+                self.config.code_review_label in labels or
+                code_reviewed_label in labels
+            )
+
+            if not has_review_label:
+                # Add the needs-code-review label
+                try:
+                    result = subprocess.run(
+                        ["gh", "pr", "edit", str(pr_number), "--add-label",
+                         self.config.code_review_label, "--repo", self.config.repo],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode == 0:
+                        fixed_count += 1
+                        print(f"🏷️  Added '{self.config.code_review_label}' to orphaned PR #{pr_number}")
+                        logger.info("Reconciled label on PR #%d", pr_number)
+                    else:
+                        logger.warning("Failed to add label to PR #%d: %s", pr_number, result.stderr)
+                except Exception as e:
+                    logger.warning("Failed to reconcile label on PR #%d: %s", pr_number, e)
+
+        if fixed_count > 0:
+            print(f"✅ Reconciled labels on {fixed_count} orphaned PR(s)")
+
+        return fixed_count
+
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
         """Launch a rework session to fix issues found in review.
 
@@ -1239,9 +1359,24 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
             return None
 
         # Try to claim the issue (prevent duplicate rework sessions)
+        session_name = f"rework-{rework.issue_number}"
         if not try_claim(rework.issue_number, prefix="rework"):
-            print(f"Issue #{rework.issue_number} already being reworked - skipping")
-            return None
+            # Lock exists - check if it's orphaned (no active session)
+            has_session = session_exists(session_name)
+            has_active = any(s.tmux_session_name == session_name for s in self.state.active_sessions)
+
+            if not has_session and not has_active:
+                # Orphaned lock - release and retry
+                logger.info("[REWORK] Releasing orphaned lock for issue #%d (no active session)", rework.issue_number)
+                release_claim(rework.issue_number, prefix="rework")
+                if not try_claim(rework.issue_number, prefix="rework"):
+                    logger.warning("[REWORK] Still cannot claim issue #%d after releasing orphan", rework.issue_number)
+                    return None
+            else:
+                # Actually being reworked - remove from pending queue
+                logger.info("[REWORK] Issue #%d has active session - removing from pending", rework.issue_number)
+                self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_number != rework.issue_number]
+                return None
 
         # Use agent's repo_root if set, otherwise fall back to config.repo_root
         repo_root = agent_config.repo_root or self.config.repo_root
