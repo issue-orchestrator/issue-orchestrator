@@ -202,6 +202,25 @@ class LifecycleIPCPlugin:
         })
 
     @hookimpl
+    def on_review_escalated(
+        self,
+        pr_number: int,
+        issue_number: int,
+        rework_count: int,
+        max_rework_cycles: int,
+    ) -> None:
+        """Forward review escalated event to IPC.
+
+        This is a critical event - the bounded review loop has failed.
+        """
+        self._broadcast("review_escalated", {
+            "pr_number": pr_number,
+            "issue_number": issue_number,
+            "rework_count": rework_count,
+            "max_rework_cycles": max_rework_cycles,
+        })
+
+    @hookimpl
     def on_orchestrator_state_changed(
         self,
         active_count: int,

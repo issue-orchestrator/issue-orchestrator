@@ -28,6 +28,7 @@ class ReviewState(Enum):
     CTO_REVIEWED = "cto_reviewed"
     MERGED = "merged"
     CLOSED = "closed"
+    ESCALATED = "escalated"  # Rework limit exceeded, needs human intervention
 
 
 class ReviewStateMachine:
@@ -44,9 +45,11 @@ class ReviewStateMachine:
     - CTO_REVIEWED: CTO has reviewed the changes
     - MERGED: PR has been merged
     - CLOSED: PR closed without merging
+    - ESCALATED: Rework limit exceeded, requires human intervention
 
-    The state machine tracks rework cycles and can enforce limits on the
-    number of rework iterations allowed.
+    The state machine tracks rework cycles and enforces limits. When the
+    maximum rework cycles are exceeded, the review automatically escalates
+    to ESCALATED state rather than silently blocking.
 
     Each state transition emits an event via the EventBus to enable
     decoupled components to react to state changes.
@@ -111,12 +114,19 @@ class ReviewStateMachine:
                 'after': '_on_changes_requested',
                 'before': '_increment_rework_count'
             },
-            # Move from changes_requested to rework_pending
+            # Move from changes_requested to rework_pending (if within limit)
             {
                 'trigger': 'queue_rework',
                 'source': ReviewState.CHANGES_REQUESTED.value,
                 'dest': ReviewState.REWORK_PENDING.value,
                 'conditions': '_can_rework'
+            },
+            # Escalate when rework limit exceeded
+            {
+                'trigger': 'escalate',
+                'source': ReviewState.CHANGES_REQUESTED.value,
+                'dest': ReviewState.ESCALATED.value,
+                'after': '_on_escalated'
             },
             # Start rework
             {
@@ -354,6 +364,32 @@ class ReviewStateMachine:
             source="ReviewStateMachine"
         )
         logger.info(f"PR {self.pr_number} closed without merging")
+
+    def _on_escalated(self, event):
+        """Callback for escalate transition.
+
+        This is called when the rework limit has been exceeded and the
+        review needs human intervention to proceed.
+
+        Args:
+            event: Transition event data from transitions library
+        """
+        data = event.kwargs.get('data', {})
+        self.event_bus.publish(
+            ReviewEvent.ESCALATED,
+            entity_id=self.pr_number,
+            data={
+                **data,
+                'issue_number': self.issue_number,
+                'rework_count': self.rework_count,
+                'max_rework_cycles': self.max_rework_cycles,
+            },
+            source="ReviewStateMachine"
+        )
+        logger.warning(
+            f"PR {self.pr_number} ESCALATED: exceeded rework limit "
+            f"({self.rework_count}/{self.max_rework_cycles} cycles)"
+        )
 
     def get_state(self) -> ReviewState:
         """Get the current state as an enum.

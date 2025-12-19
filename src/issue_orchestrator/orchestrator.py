@@ -168,6 +168,9 @@ class Orchestrator:
         store_path = self.config.state_file.parent / "state_machines.json"
         self.state_store = JsonSessionStore(store_path)
 
+        # IPC server for external UI processes (lazy init, started in startup())
+        self._ipc_server = None
+
         # Set up event handlers
         self._setup_event_handlers()
 
@@ -196,6 +199,41 @@ class Orchestrator:
                 ui_mode=self.config.ui_mode,
             )
         return self._plugin_manager_instance
+
+    # ==================== IPC Server ====================
+    # Unix socket server for external UI processes to receive events.
+
+    async def _start_ipc_server(self) -> None:
+        """Start the IPC server for external UI processes.
+
+        Creates a Unix socket server and registers the LifecycleIPCPlugin
+        to forward lifecycle events to all connected UI clients.
+        """
+        from .ipc import EventServer
+        from .adapters import LifecycleIPCPlugin
+
+        try:
+            self._ipc_server = EventServer()
+            await self._ipc_server.start()
+
+            # Register lifecycle plugin to forward events to IPC
+            lifecycle_plugin = LifecycleIPCPlugin(self._ipc_server)
+            self._plugins.register_plugin(lifecycle_plugin, name="lifecycle_ipc")
+
+            logger.info("IPC server started at %s", self._ipc_server.socket_path)
+        except Exception as e:
+            logger.warning("Failed to start IPC server: %s", e)
+            self._ipc_server = None
+
+    async def _stop_ipc_server(self) -> None:
+        """Stop the IPC server gracefully."""
+        if self._ipc_server:
+            try:
+                await self._ipc_server.stop()
+                logger.info("IPC server stopped")
+            except Exception as e:
+                logger.warning("Error stopping IPC server: %s", e)
+            self._ipc_server = None
 
     # ==================== Naming Conventions ====================
     # Centralized methods for deriving session names and paths.
@@ -729,6 +767,11 @@ class Orchestrator:
 
         startup_start = time.time()
         self.state.startup_status = "running"
+
+        # Start IPC server for external UI processes
+        self.state.startup_message = "Starting IPC server..."
+        await self._start_ipc_server()
+
         self.state.startup_message = "Cleaning up stale claims..."
         logger.info("Starting up - checking for stale in-progress issues...")
         print("Checking for stale in-progress issues...")
@@ -1479,6 +1522,11 @@ class Orchestrator:
                 print("\nPress Ctrl+C again to force kill all sessions.")
         else:
             print("Shutdown requested - no active sessions, exiting...")
+
+        # Stop IPC server
+        if self._ipc_server:
+            asyncio.create_task(self._stop_ipc_server())
+
         self._shutdown_requested = True
 
     def pause(self) -> None:

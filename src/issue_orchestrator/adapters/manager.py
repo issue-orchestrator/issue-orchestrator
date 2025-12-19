@@ -305,6 +305,25 @@ class PluginManager:
             rework_count=rework_count,
         )
 
+    def notify_review_escalated(
+        self,
+        pr_number: int,
+        issue_number: int,
+        rework_count: int,
+        max_rework_cycles: int,
+    ) -> None:
+        """Notify all plugins that a review was escalated.
+
+        This is a critical event - the bounded review loop has failed
+        and human intervention is required.
+        """
+        self._pm.hook.on_review_escalated(
+            pr_number=pr_number,
+            issue_number=issue_number,
+            rework_count=rework_count,
+            max_rework_cycles=max_rework_cycles,
+        )
+
     def notify_state_changed(
         self,
         active_count: int,

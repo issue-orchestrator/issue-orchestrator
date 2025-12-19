@@ -261,6 +261,27 @@ class LifecycleSpec:
         """
 
     @hookspec
+    def on_review_escalated(
+        self,
+        pr_number: int,
+        issue_number: int,
+        rework_count: int,
+        max_rework_cycles: int,
+    ) -> None:
+        """Called when a review is escalated due to exceeding rework limits.
+
+        This is a critical event indicating that the bounded review loop has
+        failed and human intervention is required. The PR cannot proceed through
+        the normal automation path.
+
+        Args:
+            pr_number: The PR number
+            issue_number: The associated issue number
+            rework_count: Number of rework cycles attempted
+            max_rework_cycles: The configured maximum allowed
+        """
+
+    @hookspec
     def on_orchestrator_state_changed(
         self,
         active_count: int,

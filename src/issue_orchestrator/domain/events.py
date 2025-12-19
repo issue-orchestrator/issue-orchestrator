@@ -53,6 +53,7 @@ class ReviewEvent(Enum):
     CTO_APPROVED = "cto_approved"
     MERGED = "merged"
     CLOSED = "closed"
+    ESCALATED = "escalated"  # Rework limit exceeded, requires human intervention
 
 
 class LabelEvent(Enum):

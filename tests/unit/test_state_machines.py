@@ -1249,6 +1249,110 @@ class TestReviewStateMachine:
         assert machine.rework_count == 2
         assert machine.can_transition('queue_rework') is False
 
+    def test_escalate_when_rework_limit_exceeded(self, event_bus):
+        """Test explicit escalation when rework limit is exceeded."""
+        machine = ReviewStateMachine(
+            pr_number=123,
+            issue_number=456,
+            event_bus=event_bus,
+            max_rework_cycles=2
+        )
+
+        machine.start_review()
+
+        # Do 2 rework cycles (max allowed)
+        for _ in range(2):
+            machine.request_changes()
+            machine.queue_rework()
+            machine.start_rework()
+            machine.complete_rework()
+
+        # Third changes_requested exceeds limit
+        machine.request_changes()
+        assert machine.rework_count == 3
+        assert machine.has_exceeded_rework_limit() is True
+        assert machine.get_state() == ReviewState.CHANGES_REQUESTED
+
+        # Cannot queue_rework anymore
+        assert machine.can_transition('queue_rework') is False
+
+        # But CAN escalate
+        assert machine.can_transition('escalate') is True
+        machine.escalate()
+        assert machine.get_state() == ReviewState.ESCALATED
+
+    def test_escalate_emits_event(self, event_bus):
+        """Test that ESCALATED event is emitted with full context."""
+        machine = ReviewStateMachine(
+            pr_number=123,
+            issue_number=456,
+            event_bus=event_bus,
+            max_rework_cycles=1
+        )
+
+        machine.start_review()
+        machine.request_changes()
+        machine.queue_rework()
+        machine.start_rework()
+        machine.complete_rework()
+
+        # Second changes_requested exceeds limit
+        machine.request_changes()
+        machine.escalate()
+
+        events = event_bus.get_history(event_type=ReviewEvent.ESCALATED)
+        assert len(events) == 1
+        assert events[0].entity_id == 123
+        assert events[0].data["issue_number"] == 456
+        assert events[0].data["rework_count"] == 2
+        assert events[0].data["max_rework_cycles"] == 1
+
+    def test_cannot_close_from_escalated(self, event_bus):
+        """Test that escalated state cannot be closed (needs human resolution)."""
+        machine = ReviewStateMachine(
+            pr_number=123,
+            issue_number=456,
+            event_bus=event_bus,
+            max_rework_cycles=1
+        )
+
+        machine.start_review()
+        machine.request_changes()
+        machine.queue_rework()
+        machine.start_rework()
+        machine.complete_rework()
+        machine.request_changes()
+        machine.escalate()
+
+        assert machine.get_state() == ReviewState.ESCALATED
+
+        # Cannot close from escalated - needs human intervention
+        with pytest.raises(MachineError):
+            machine.close()
+
+    def test_escalated_state_is_terminal(self, event_bus):
+        """Test that ESCALATED is a terminal state requiring human intervention."""
+        machine = ReviewStateMachine(
+            pr_number=123,
+            issue_number=456,
+            event_bus=event_bus,
+            max_rework_cycles=1
+        )
+
+        machine.start_review()
+        machine.request_changes()
+        machine.queue_rework()
+        machine.start_rework()
+        machine.complete_rework()
+        machine.request_changes()
+        machine.escalate()
+
+        # Cannot transition out of escalated state automatically
+        assert machine.can_transition('queue_rework') is False
+        assert machine.can_transition('start_review') is False
+        assert machine.can_transition('approve') is False
+        assert machine.can_transition('merge') is False
+
     def test_invalid_transitions_raise_error(self, event_bus):
         """Test that invalid transitions raise MachineError."""
         machine = ReviewStateMachine(

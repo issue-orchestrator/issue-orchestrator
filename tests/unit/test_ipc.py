@@ -323,6 +323,7 @@ class TestLifecycleIPCPlugin:
             ("on_pr_created", {"issue_number": 1, "pr_number": 10, "pr_url": "http://...", "title": "PR"}),
             ("on_review_requested", {"pr_number": 10, "issue_number": 1, "review_type": "code"}),
             ("on_review_completed", {"pr_number": 10, "issue_number": 1, "result": "approved", "rework_count": 0}),
+            ("on_review_escalated", {"pr_number": 10, "issue_number": 1, "rework_count": 4, "max_rework_cycles": 3}),
             ("on_orchestrator_state_changed", {"active_count": 2, "paused": False, "completed_today": 5}),
         ]
 
