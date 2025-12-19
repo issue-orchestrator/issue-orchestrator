@@ -13,6 +13,32 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def log_transition(
+    entity_type: str,  # "issue", "review", "rework"
+    number: int,
+    from_state: str,
+    to_state: str,
+    reason: str,
+    extra: dict | None = None,
+) -> None:
+    """Log a state transition in a consistent, searchable format.
+
+    Format: [TRANSITION] {type} #{number}: {from} → {to} ({reason})
+
+    Args:
+        entity_type: Type of entity (issue, review, rework)
+        number: Issue or PR number
+        from_state: Previous state
+        to_state: New state
+        reason: Why the transition happened
+        extra: Optional extra context (logged at debug level)
+    """
+    msg = f"[TRANSITION] {entity_type} #{number}: {from_state} → {to_state} ({reason})"
+    logger.info(msg)
+    if extra:
+        logger.debug(f"[TRANSITION] #{number} extra: {extra}")
+
+
 def _emit_event(event_type: str, data: dict | None = None) -> None:
     """Emit an SSE event to connected dashboard clients.
 
@@ -486,9 +512,11 @@ class Orchestrator:
 
         # Try to claim the issue first - if another instance is working on it, skip
         if not try_claim(issue.number):
-            logger.debug("Issue #%d already claimed - skipping", issue.number)
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already claimed by another instance")
             print(f"Issue #{issue.number} already claimed by another instance - skipping")
             return None
+
+        log_transition("issue", issue.number, "AVAILABLE", "CLAIMED", "lock acquired")
 
         # Use agent's repo_root if set, otherwise fall back to config.repo_root
         repo_root = agent_config.repo_root or self.config.repo_root
@@ -557,7 +585,7 @@ class Orchestrator:
 
         if not session_created:
             # Session creation failed - clean up and return None
-            logger.error("Failed to create session for issue #%d", issue.number)
+            log_transition("issue", issue.number, "CLAIMED", "FAILED", "session creation failed")
             print(f"[launch] ERROR: Failed to create session for issue #{issue.number}")
             print("[launch] Is iTerm2 running with a window open?")
             # Release the claim and remove the in-progress label
@@ -565,6 +593,7 @@ class Orchestrator:
             remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
             return None
 
+        log_transition("issue", issue.number, "CLAIMED", "ACTIVE", "session launched", {"agent": issue.agent_type})
         logger.debug("Session created in %.1fs", session_time)
         print(f"[launch] Session created in {session_time:.1f}s")
 
@@ -590,6 +619,21 @@ class Orchestrator:
         """Handle a completed session."""
         from .models import SessionHistoryEntry
         from .github import get_open_prs_for_branch
+
+        # Determine entity type from session name
+        is_review = session.tmux_session_name.startswith("review-")
+        is_rework = session.tmux_session_name.startswith("rework-")
+        entity_type = "review" if is_review else ("rework" if is_rework else "issue")
+
+        # Log the state transition
+        log_transition(
+            entity_type,
+            session.issue.number,
+            "ACTIVE",
+            status.value.upper(),
+            f"runtime={session.runtime_minutes}min",
+            {"agent": session.issue.agent_type, "branch": session.branch_name},
+        )
 
         print(f"Session #{session.issue.number} completed with status: {status.value}")
         _emit_event("session_completed", {"issue_number": session.issue.number, "status": status.value})
@@ -919,6 +963,7 @@ class Orchestrator:
             branch_name=branch_name,
         )
         self.state.pending_reviews.append(review)
+        log_transition("review", pr_number, "CREATED", "QUEUED", f"from issue #{issue_number}")
         print(f"📝 Queued PR #{pr_number} for code review")
 
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:
@@ -940,21 +985,23 @@ class Orchestrator:
         session_name = f"review-{review.pr_number}"
         if not try_claim(review.pr_number, prefix="review"):
             # Lock exists - check if it's orphaned (no active session)
-            has_session = session_exists(session_name)
+            has_session = self._session_exists(session_name)
             has_active = any(s.tmux_session_name == session_name for s in self.state.active_sessions)
 
             if not has_session and not has_active:
                 # Orphaned lock (e.g., from before laptop sleep) - release and retry
-                logger.info("[REVIEW] Releasing orphaned lock for PR #%d (no active session)", review.pr_number)
+                log_transition("review", review.pr_number, "QUEUED", "ORPHAN_CLEANUP", "releasing stale lock")
                 release_claim(review.pr_number, prefix="review")
                 if not try_claim(review.pr_number, prefix="review"):
-                    logger.warning("[REVIEW] Still cannot claim PR #%d after releasing orphan", review.pr_number)
+                    log_transition("review", review.pr_number, "ORPHAN_CLEANUP", "SKIP", "still claimed after release")
                     return None
             else:
                 # Actually being reviewed - remove from pending queue
-                logger.info("[REVIEW] PR #%d has active session - removing from pending", review.pr_number)
+                log_transition("review", review.pr_number, "QUEUED", "DEDUP", "already has active session")
                 self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
                 return None
+
+        log_transition("review", review.pr_number, "QUEUED", "CLAIMED", "lock acquired")
 
         # Use agent's repo_root if set, otherwise fall back to config.repo_root
         repo_root = agent_config.repo_root or self.config.repo_root
@@ -998,6 +1045,7 @@ class Orchestrator:
         )
 
         self.state.active_sessions.append(session)
+        log_transition("review", review.pr_number, "CLAIMED", "ACTIVE", "session launched")
         print(f"🔍 Launched review session for PR #{review.pr_number}")
 
         # Remove from pending queue
@@ -1362,21 +1410,23 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         session_name = f"rework-{rework.issue_number}"
         if not try_claim(rework.issue_number, prefix="rework"):
             # Lock exists - check if it's orphaned (no active session)
-            has_session = session_exists(session_name)
+            has_session = self._session_exists(session_name)
             has_active = any(s.tmux_session_name == session_name for s in self.state.active_sessions)
 
             if not has_session and not has_active:
                 # Orphaned lock - release and retry
-                logger.info("[REWORK] Releasing orphaned lock for issue #%d (no active session)", rework.issue_number)
+                log_transition("rework", rework.issue_number, "QUEUED", "ORPHAN_CLEANUP", "releasing stale lock")
                 release_claim(rework.issue_number, prefix="rework")
                 if not try_claim(rework.issue_number, prefix="rework"):
-                    logger.warning("[REWORK] Still cannot claim issue #%d after releasing orphan", rework.issue_number)
+                    log_transition("rework", rework.issue_number, "ORPHAN_CLEANUP", "SKIP", "still claimed after release")
                     return None
             else:
                 # Actually being reworked - remove from pending queue
-                logger.info("[REWORK] Issue #%d has active session - removing from pending", rework.issue_number)
+                log_transition("rework", rework.issue_number, "QUEUED", "DEDUP", "already has active session")
                 self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_number != rework.issue_number]
                 return None
+
+        log_transition("rework", rework.issue_number, "QUEUED", "CLAIMED", f"lock acquired, cycle={rework.rework_cycle}")
 
         # Use agent's repo_root if set, otherwise fall back to config.repo_root
         repo_root = agent_config.repo_root or self.config.repo_root
@@ -1412,6 +1462,7 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         )
 
         self.state.active_sessions.append(session)
+        log_transition("rework", rework.issue_number, "CLAIMED", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
         print(f"🔧 Launched rework session for issue #{rework.issue_number} (cycle {rework.rework_cycle})")
 
         # Update rework cycle label on PR

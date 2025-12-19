@@ -236,12 +236,20 @@ def create_session(session_name: str, command: str, working_dir: Path, title: st
 
 
 def session_exists(session_name: str) -> bool:
-    """Check if a window exists for the issue (backward-compatible wrapper)."""
-    if not session_name.startswith("issue-"):
+    """Check if a window exists for the session name (backward-compatible wrapper).
+
+    Handles issue-N, review-N, and rework-N session names.
+    """
+    import re
+    match = re.match(r"(issue|review|rework)-(\d+)", session_name)
+    if not match:
         return False
-    issue_number = int(session_name.replace("issue-", ""))
+
+    # For now, all session types use issue-based windows
+    # The number is issue_number for issue/rework, pr_number for review
+    number = int(match.group(2))
     manager = get_manager()
-    return manager.window_exists(issue_number)
+    return manager.window_exists(number)
 
 
 def kill_session(session_name: str) -> None:
