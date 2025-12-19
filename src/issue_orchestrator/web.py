@@ -91,11 +91,12 @@ async def dashboard(
     from .github import list_issues
     from .scheduler import Scheduler
 
-    # Get queue page from query params
+    # Get query params
     queue_page = int(request.query_params.get("page", 1))
     if queue_page < 1:
         queue_page = 1
-    logger.info("[dashboard] Request URL: %s, page param: %s", request.url, queue_page)
+    active_tab = request.query_params.get("tab", "work")  # "work" or "problems"
+    logger.info("[dashboard] Request URL: %s, page=%s, tab=%s", request.url, queue_page, active_tab)
 
     templates = get_templates()
     template = templates.get_template("dashboard.html")
@@ -103,17 +104,23 @@ async def dashboard(
     state = orchestrator.state if orchestrator else None
     config = orchestrator.config if orchestrator else None
 
-    issues = []  # Unified list
+    work_items = []  # Active + Queue + Completed
+    problems = []    # Failed + Blocked + Needs-human + Timed-out
     seen_issues = set()  # Track issue numbers to avoid duplicates
+
+    # Problem statuses that go to the problems tab
+    PROBLEM_STATUSES = {"failed", "blocked", "needs_human", "timed_out"}
+
+    def make_issue_url(issue_number: int) -> str:
+        return f"https://github.com/{config.repo}/issues/{issue_number}" if config and config.repo else ""
 
     if state and config:
         active_numbers = {s.issue.number for s in state.active_sessions}
-        history_numbers = {e.issue_number for e in state.session_history}
 
         # Always track active sessions to avoid showing them in queue on later pages
         seen_issues.update(active_numbers)
 
-        # 1. Active sessions (only on page 1)
+        # 1. Active sessions (only on page 1 of work tab)
         if queue_page == 1:
             for session in state.active_sessions:
                 # Determine if session is over its timeout
@@ -135,66 +142,78 @@ async def dashboard(
                     status_reason = f"Running for {runtime} min"
 
                 seen_issues.add(session.issue.number)
-                issues.append({
+                item = {
                     "issue_number": session.issue.number,
                     "title": session.issue.title,
                     "agent_type": (session.issue.agent_type or "unknown").replace("agent:", ""),
                     "status": status,
                     "status_label": status_label,
                     "status_reason": status_reason,
-                    "phase": phase,  # Add phase for additional UI use
+                    "phase": phase,
                     "time": f"{runtime} min",
                     "action": "focus",
                     "action_icon": "→",
                     "action_hint": "Click to focus iTerm2 tab",
                     "url": "",
-                })
+                    # Quick links
+                    "issue_url": make_issue_url(session.issue.number),
+                    "pr_url": "",  # Active sessions may not have PR yet
+                    "has_terminal": True,
+                    "worktree_path": str(session.worktree_path) if session.worktree_path else "",
+                }
+                work_items.append(item)
 
         # 2. Queue (use cached issues for instant pagination)
-        # Cache is populated during startup and refreshed periodically by the orchestrator loop
         queue_total = 0
         if state.startup_status == "complete":
-            # Use cached queue issues (no API call needed)
             queue_issues = state.cached_queue_issues
             queue_total = len(queue_issues)
             logger.info("[dashboard] Using %d cached queue issues", queue_total)
 
-            # Apply pagination (filtering out already-seen issues like active sessions)
             start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
             end_idx = start_idx + QUEUE_PAGE_SIZE
             for issue in queue_issues[start_idx:end_idx]:
                 if issue.number in seen_issues:
-                    continue  # Skip active sessions that may also be in queue
+                    continue
                 seen_issues.add(issue.number)
-                issues.append({
+                item = {
                     "issue_number": issue.number,
                     "title": issue.title,
                     "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
                     "status": "queue",
                     "status_label": "Queue",
+                    "status_reason": "",
                     "time": "",
                     "action": "open",
                     "action_icon": "↗",
                     "action_hint": "Click to open issue on GitHub",
-                    "url": f"https://github.com/{config.repo}/issues/{issue.number}",
-                })
+                    "url": make_issue_url(issue.number),
+                    # Quick links
+                    "issue_url": make_issue_url(issue.number),
+                    "pr_url": "",
+                    "has_terminal": False,
+                    "worktree_path": "",
+                }
+                work_items.append(item)
 
-        # 3. Session history (skip duplicates - an issue may appear multiple times in history)
-        for entry in reversed(state.session_history[-20:]):
+        # 3. Session history - separate into work (completed) vs problems
+        status_labels = {
+            "completed": "Done",
+            "failed": "Failed",
+            "blocked": "Blocked",
+            "needs_human": "Human",
+            "timed_out": "Timeout",
+        }
+        for entry in reversed(state.session_history[-50:]):  # Increased limit for problems
             if entry.issue_number in seen_issues:
                 continue
             seen_issues.add(entry.issue_number)
-            status_labels = {
-                "completed": "Done",
-                "failed": "Failed",
-                "blocked": "Blocked",
-                "needs_human": "Human",
-                "timed_out": "Timeout",
-            }
-            url = entry.pr_url if entry.pr_url else f"https://github.com/{config.repo}/issues/{entry.issue_number}"
+
+            url = entry.pr_url if entry.pr_url else make_issue_url(entry.issue_number)
             action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
             status_reason = getattr(entry, 'status_reason', None) or status_labels.get(entry.status, entry.status)
-            issues.append({
+
+            item = {
                 "issue_number": entry.issue_number,
                 "title": entry.title,
                 "agent_type": entry.agent_type.replace("agent:", ""),
@@ -206,7 +225,20 @@ async def dashboard(
                 "action_icon": "↗",
                 "action_hint": action_hint,
                 "url": url,
-            })
+                # Quick links
+                "issue_url": make_issue_url(entry.issue_number),
+                "pr_url": entry.pr_url or "",
+                "has_terminal": False,
+                "worktree_path": "",
+            }
+
+            if entry.status in PROBLEM_STATUSES:
+                problems.append(item)
+            elif entry.status == "completed":
+                work_items.append(item)
+
+    # For backwards compatibility, create combined issues list based on active tab
+    issues = work_items if active_tab == "work" else problems
 
     # Calculate pagination info
     queue_total_pages = (queue_total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE if queue_total > 0 else 1
@@ -220,6 +252,10 @@ async def dashboard(
 
     html = template.render(
         issues=issues,
+        work_items=work_items,
+        problems=problems,
+        problem_count=len(problems),
+        active_tab=active_tab,
         paused=state.paused if state else False,
         shutdown_requested=shutdown_requested,
         active_session_count=active_count,
@@ -323,10 +359,6 @@ async def kill_session(issue_number: int) -> JSONResponse:
         if s.issue.number != issue_number
     ]
 
-    # Release the claim
-    from .locks import release_claim
-    release_claim(issue_number)
-
     return JSONResponse({
         "status": "killed",
         "issue_number": issue_number,
@@ -393,6 +425,90 @@ async def open_in_finder(issue_number: int) -> JSONResponse:
         return JSONResponse({"status": "opened", "path": str(worktree_path)})
     else:
         return JSONResponse({"error": "Finder is only available on macOS"}, status_code=400)
+
+
+@app.get("/api/log/{issue_number}")
+async def get_session_log(issue_number: int) -> JSONResponse:
+    """Get Claude session log for an issue.
+
+    Finds the most recent session log from ~/.claude/projects/<worktree-path>/
+    """
+    import os
+    from pathlib import Path
+
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    # Find worktree path from active session or history
+    worktree_path = None
+
+    # Check active sessions first
+    for s in _orchestrator.state.active_sessions:
+        if s.issue.number == issue_number:
+            worktree_path = s.worktree_path
+            break
+
+    # If not found, check history
+    if not worktree_path:
+        for entry in _orchestrator.state.session_history:
+            if entry.issue_number == issue_number:
+                # History entries may have worktree_path stored
+                worktree_path = getattr(entry, 'worktree_path', None)
+                break
+
+    if not worktree_path:
+        return JSONResponse({
+            "error": f"No worktree path found for issue #{issue_number}",
+            "hint": "Session may have been cleaned up or never started"
+        }, status_code=404)
+
+    # Convert path to Claude's escaped format
+    # /path/to/worktree -> -path-to-worktree
+    path_str = str(worktree_path)
+    escaped_path = path_str.replace("/", "-")
+    if not escaped_path.startswith("-"):
+        escaped_path = "-" + escaped_path
+
+    # Find session logs
+    claude_projects = Path.home() / ".claude" / "projects" / escaped_path
+    if not claude_projects.exists():
+        return JSONResponse({
+            "error": f"Claude project directory not found",
+            "path": str(claude_projects),
+            "hint": "Session may not have been started yet"
+        }, status_code=404)
+
+    # Find most recent .jsonl file
+    jsonl_files = sorted(claude_projects.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not jsonl_files:
+        return JSONResponse({
+            "error": "No session logs found",
+            "path": str(claude_projects)
+        }, status_code=404)
+
+    latest_log = jsonl_files[0]
+
+    # Read log content (limit to last 100 lines for large logs)
+    try:
+        lines = latest_log.read_text().strip().split("\n")
+        total_lines = len(lines)
+
+        # Return last 100 lines max
+        if total_lines > 100:
+            lines = lines[-100:]
+            truncated = True
+        else:
+            truncated = False
+
+        return JSONResponse({
+            "issue_number": issue_number,
+            "log_path": str(latest_log),
+            "total_lines": total_lines,
+            "truncated": truncated,
+            "lines": lines
+        })
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
 
 
 @app.post("/api/prompt/{agent_type}")
@@ -752,8 +868,15 @@ async def run_with_web_dashboard(orchestrator: "Orchestrator", port: int = 8080)
         orchestrator: The orchestrator instance
         port: Port to run web server on
     """
+    import time
+
     def run_startup_sync():
-        """Run startup synchronously in a thread."""
+        """Run startup synchronously in a thread.
+
+        Note: _emit_event calls during startup won't reach SSE subscribers
+        because asyncio.Queue is not thread-safe. The startup_complete event
+        is emitted after returning to the main event loop.
+        """
         asyncio.run(orchestrator.startup())
 
     async def run_startup_and_loop():
@@ -763,8 +886,19 @@ async def run_with_web_dashboard(orchestrator: "Orchestrator", port: int = 8080)
         try:
             # Run startup in a thread pool to avoid blocking the event loop
             # startup() makes synchronous GitHub API calls that would block serving requests
+            startup_start = time.time()
+            logger.info("[web] Starting orchestrator startup in thread pool...")
+
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, run_startup_sync)
+
+            startup_elapsed = time.time() - startup_start
+            logger.info("[web] Startup completed in %.1fs, emitting startup_complete event", startup_elapsed)
+
+            # Emit startup_complete HERE in the main event loop (not from thread)
+            # This ensures SSE subscribers receive it properly
+            await broadcast_event("startup_complete", {"elapsed_seconds": startup_elapsed})
+
             await orchestrator.run_loop()
         except asyncio.CancelledError:
             pass

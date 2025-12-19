@@ -68,11 +68,11 @@ from .github import (
     get_open_prs_for_branch, get_latest_blocked_info, get_latest_needs_human_info,
     list_prs_with_label, create_issue,
 )
-from .locks import try_claim, release_claim, cleanup_stale_claims, cleanup_orphaned_claims
-from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, ORCHESTRATOR_PR_MARKER
+# Lock files removed - using direct iTerm/active_sessions checks instead
+from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingCTOReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
 from .monitor import SessionMonitor
 from .scheduler import Scheduler
-from .tmux import create_session, session_exists, kill_session
+# Terminal backend handled via adapters (see _terminal_adapter property)
 from .worktree import create_worktree, remove_worktree, has_uncommitted_changes
 
 
@@ -138,19 +138,67 @@ class Orchestrator:
     def __post_init__(self):
         self.scheduler = Scheduler(self.config)
         self.monitor = SessionMonitor(self.config)
-        self._iterm_manager = None  # Lazy init
+        self._plugin_manager_instance = None  # Lazy init
 
     @property
     def _using_iterm2(self) -> bool:
         """Check if we're using iTerm2 mode (or web mode, which also uses iTerm2 tabs)."""
+        # Check explicit terminal_adapter first, then fall back to ui_mode
+        if self.config.terminal_adapter:
+            return "iterm" in self.config.terminal_adapter.lower()
         return self.config.ui_mode in ("iterm2", "web")
 
-    def _get_iterm_manager(self):
-        """Get the iTerm2 session manager (lazy init)."""
-        if self._iterm_manager is None:
-            from .iterm2 import get_iterm_manager
-            self._iterm_manager = get_iterm_manager()
-        return self._iterm_manager
+    @property
+    def _plugins(self):
+        """Get the plugin manager (lazy init)."""
+        if self._plugin_manager_instance is None:
+            from .adapters import PluginManager
+
+            self._plugin_manager_instance = PluginManager(
+                terminal_plugin=self.config.terminal_adapter,
+                ui_mode=self.config.ui_mode,
+            )
+        return self._plugin_manager_instance
+
+    # ==================== Naming Conventions ====================
+    # Centralized methods for deriving session names and paths.
+    # These ensure consistency across launch, recovery, and cleanup.
+
+    def _get_session_name(self, number: int, session_type: str = "issue") -> str:
+        """Get the terminal session name for a given issue/PR number.
+
+        Args:
+            number: Issue number (for issue/rework) or PR number (for review)
+            session_type: One of "issue", "review", or "rework"
+
+        Returns:
+            Session name like "issue-123", "review-456", or "rework-123"
+        """
+        if session_type not in ("issue", "review", "rework"):
+            raise ValueError(f"Invalid session_type: {session_type}")
+        return f"{session_type}-{number}"
+
+    def _get_worktree_path(self, issue_number: int, agent_config: AgentConfig) -> Path:
+        """Get the worktree path for a given issue number.
+
+        Args:
+            issue_number: The GitHub issue number
+            agent_config: Agent configuration (for worktree_base and repo_root)
+
+        Returns:
+            Path to the worktree directory
+        """
+        repo_root = agent_config.repo_root or self.config.repo_root
+        worktree_base = agent_config.worktree_base
+        if worktree_base is None:
+            worktree_base = repo_root.parent
+        else:
+            worktree_base = Path(worktree_base).resolve()
+
+        repo_name = repo_root.name
+        return worktree_base / f"{repo_name}-{issue_number}"
+
+    # ==================== End Naming Conventions ====================
 
     async def _restore_running_sessions(self, running: list[dict]) -> None:
         """Restore tracking for sessions that are still running after orchestrator restart.
@@ -159,7 +207,6 @@ class Orchestrator:
             running: List of dicts from discover_running_sessions() with
                      {issue_number, tab_name, is_review}
         """
-        from .locks import try_claim
         import re
 
         for session_info in running:
@@ -174,18 +221,12 @@ class Orchestrator:
                     pr_match = re.search(r'Review PR #(\d+)', tab_name)
                     pr_number = int(pr_match.group(1)) if pr_match else issue_number
                     session_name = f"review-{pr_number}"
-                    lock_prefix = "review"
-                    lock_number = pr_number
                 else:
                     session_name = f"issue-{issue_number}"
-                    lock_prefix = "issue"
-                    lock_number = issue_number
-                    pr_number = None
 
-                # Try to claim the lock (may already be claimed from previous run)
-                claimed = try_claim(lock_number, prefix=lock_prefix)
-                if not claimed:
-                    logger.info("Session %s already has active claim - skipping restore", session_name)
+                # Skip if already tracking this session
+                if any(s.tmux_session_name == session_name for s in self.state.active_sessions):
+                    logger.info("Session %s already tracked - skipping restore", session_name)
                     continue
 
                 # Find the worktree
@@ -208,9 +249,7 @@ class Orchestrator:
                         break
 
                 if not worktree_path:
-                    logger.warning("Could not find worktree for session %s - releasing claim", session_name)
-                    from .locks import release_claim
-                    release_claim(lock_number, prefix=lock_prefix)
+                    logger.warning("Could not find worktree for session %s - skipping", session_name)
                     continue
 
                 # Fetch issue details from GitHub to get agent type
@@ -239,9 +278,7 @@ class Orchestrator:
                     agent_config = next(iter(self.config.agents.values()), None)
 
                 if not agent_config:
-                    logger.warning("No agent config available for session %s - releasing claim", session_name)
-                    from .locks import release_claim
-                    release_claim(lock_number, prefix=lock_prefix)
+                    logger.warning("No agent config available for session %s - skipping", session_name)
                     continue
 
                 # Create session object
@@ -270,33 +307,28 @@ class Orchestrator:
         raise ValueError(f"Could not extract number from session name: {session_name}")
 
     def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> bool:
-        """Create a session using the appropriate backend.
+        """Create a session using the terminal plugin.
 
         Returns:
             True if session was created successfully, False otherwise.
         """
-        if self._using_iterm2:
-            session_number = self._extract_session_number(session_name)
-            return self._get_iterm_manager().create_session(session_number, command, str(working_dir), title)
-        else:
-            create_session(session_name, command, working_dir, title)
-            return True  # tmux create_session doesn't return status, assume success
+        session_id = self._extract_session_number(session_name)
+        return self._plugins.create_session(
+            session_id=session_id,
+            command=command,
+            working_dir=str(working_dir),
+            title=title,
+        )
 
     def _session_exists(self, session_name: str) -> bool:
-        """Check if a session exists using the appropriate backend."""
-        if self._using_iterm2:
-            session_number = self._extract_session_number(session_name)
-            return self._get_iterm_manager().session_exists(session_number)
-        else:
-            return session_exists(session_name)
+        """Check if a session exists using the terminal plugin."""
+        session_id = self._extract_session_number(session_name)
+        return self._plugins.session_exists(session_id)
 
     def _kill_session(self, session_name: str) -> None:
-        """Kill a session using the appropriate backend."""
-        if self._using_iterm2:
-            session_number = self._extract_session_number(session_name)
-            self._get_iterm_manager().kill_session(session_number)
-        else:
-            kill_session(session_name)
+        """Kill a session using the terminal plugin."""
+        session_id = self._extract_session_number(session_name)
+        self._plugins.kill_session(session_id)
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filter_label if configured."""
@@ -319,49 +351,20 @@ class Orchestrator:
         logger.info("Starting up - checking for stale in-progress issues...")
         print("Checking for stale in-progress issues...")
 
-        # Clean up stale claims (default: 60 minutes)
-        cleaned = cleanup_stale_claims(prefix="issue")
-        if cleaned:
-            logger.info("Cleaned up %d stale issue lock claims: %s", len(cleaned), cleaned)
-            print(f"  Cleaned up {len(cleaned)} stale issue lock claims: {cleaned}")
+        # Clean up idle terminal sessions (tabs at shell prompt where Claude has exited)
+        self.state.startup_message = "Cleaning up idle terminal sessions..."
+        closed_tabs = self._plugins.cleanup_idle_sessions()
+        if closed_tabs:
+            logger.info("Closed %d idle terminal sessions", closed_tabs)
+            print(f"  Closed {closed_tabs} idle terminal sessions")
 
-        # Also clean up stale review locks
-        cleaned_reviews = cleanup_stale_claims(prefix="review")
-        if cleaned_reviews:
-            logger.info("Cleaned up %d stale review lock claims: %s", len(cleaned_reviews), cleaned_reviews)
-            print(f"  Cleaned up {len(cleaned_reviews)} stale review lock claims: {cleaned_reviews}")
-
-        # Clean up orphaned claims (locks without active sessions)
-        # This handles cases where sessions crashed immediately (e.g., command not found)
-        self.state.startup_message = "Cleaning up orphaned claims..."
-        orphaned = cleanup_orphaned_claims(self._session_exists, prefix="issue")
-        if orphaned:
-            logger.info("Cleaned up %d orphaned issue lock claims: %s", len(orphaned), orphaned)
-            print(f"  Cleaned up {len(orphaned)} orphaned issue lock claims: {orphaned}")
-
-        # Also clean up orphaned review locks
-        orphaned_reviews = cleanup_orphaned_claims(self._session_exists, prefix="review")
-        if orphaned_reviews:
-            logger.info("Cleaned up %d orphaned review lock claims: %s", len(orphaned_reviews), orphaned_reviews)
-            print(f"  Cleaned up {len(orphaned_reviews)} orphaned review lock claims: {orphaned_reviews}")
-
-        # Clean up idle iTerm2 tabs (tabs at shell prompt where Claude has exited)
-        if self._using_iterm2:
-            self.state.startup_message = "Cleaning up idle iTerm2 tabs..."
-            from .iterm2 import cleanup_idle_tabs
-            closed_tabs = cleanup_idle_tabs()
-            if closed_tabs:
-                logger.info("Closed %d idle iTerm2 tabs", closed_tabs)
-                print(f"  Closed {closed_tabs} idle iTerm2 tabs")
-
-            # Discover and restore tracking for running sessions
-            self.state.startup_message = "Discovering running sessions..."
-            from .iterm2 import discover_running_sessions
-            running = discover_running_sessions()
-            if running:
-                logger.info("Found %d running sessions to restore tracking", len(running))
-                print(f"  Found {len(running)} running sessions to restore tracking")
-                await self._restore_running_sessions(running)
+        # Discover and restore tracking for running sessions
+        self.state.startup_message = "Discovering running sessions..."
+        running = self._plugins.discover_running_sessions()
+        if running:
+            logger.info("Found %d running sessions to restore tracking", len(running))
+            print(f"  Found {len(running)} running sessions to restore tracking")
+            await self._restore_running_sessions(running)
 
         # Get existing branches for issue detection
         self.state.startup_message = "Scanning local branches..."
@@ -394,10 +397,9 @@ class Orchestrator:
                     check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
                 )
 
-                # Check if blocked or needs human - skip these, waiting for intervention
-                if issue.is_blocked or issue.needs_human:
-                    status = "blocked" if issue.is_blocked else "needs-human"
-                    print(f"  #{issue.number}: Marked as {status} - waiting for human intervention")
+                # Check if blocked - skip these, waiting for intervention
+                if issue.is_blocked:
+                    print(f"  #{issue.number}: Blocked - waiting for intervention")
                     continue
 
                 if state.has_session:
@@ -462,6 +464,42 @@ class Orchestrator:
                 else:
                     print(f"  PR #{pr_number}: Review already in progress")
 
+        # Check for pending CTO review issues (recovery after crash/restart)
+        if self.config.cto_review_agent:
+            self.state.startup_message = "Checking for pending CTO review issues..."
+            print("\nChecking for pending CTO review issues...")
+            cto_issues = list_issues(
+                self.config.repo,
+                labels=[self.config.cto_review_agent],
+                limit=20,
+            )
+            for cto_issue in cto_issues:
+                # Skip if already in active session
+                session_name = f"issue-{cto_issue.number}"
+                if self._session_exists(session_name):
+                    print(f"  CTO issue #{cto_issue.number}: Already running")
+                    continue
+
+                # Skip if already queued
+                if any(r.issue_number == cto_issue.number for r in self.state.pending_cto_reviews):
+                    print(f"  CTO issue #{cto_issue.number}: Already queued")
+                    continue
+
+                # Queue for processing
+                self.state.pending_cto_reviews.append(
+                    PendingCTOReview(
+                        issue_number=cto_issue.number,
+                        title=cto_issue.title,
+                    )
+                )
+                print(f"  CTO issue #{cto_issue.number}: Queued ({cto_issue.title})")
+
+            if self.state.pending_cto_reviews:
+                print(f"  Found {len(self.state.pending_cto_reviews)} CTO review(s) to process")
+
+        # Recover orphaned cleanups (worktrees for PRs that were reviewed but not cleaned up)
+        self._recover_orphaned_cleanups()
+
         # Resume issues with partial work (have in-progress label and commits but no session)
         if issues_to_resume:
             self.state.startup_message = f"Resuming {len(issues_to_resume)} in-progress issue(s)..."
@@ -510,13 +548,19 @@ class Orchestrator:
         if not agent_config:
             raise ValueError(f"No agent config for {issue.agent_type}")
 
-        # Try to claim the issue first - if another instance is working on it, skip
-        if not try_claim(issue.number):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already claimed by another instance")
-            print(f"Issue #{issue.number} already claimed by another instance - skipping")
+        # Check if already being worked on (no lock files - direct reality check)
+        session_name = f"issue-{issue.number}"
+        if any(s.issue.number == issue.number for s in self.state.active_sessions):
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
+            print(f"Issue #{issue.number} already in active sessions - skipping")
             return None
 
-        log_transition("issue", issue.number, "AVAILABLE", "CLAIMED", "lock acquired")
+        if self._session_exists(session_name):
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "iTerm tab already running")
+            print(f"Issue #{issue.number} already has running iTerm tab - skipping")
+            return None
+
+        log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
 
         # Use agent's repo_root if set, otherwise fall back to config.repo_root
         repo_root = agent_config.repo_root or self.config.repo_root
@@ -585,15 +629,14 @@ class Orchestrator:
 
         if not session_created:
             # Session creation failed - clean up and return None
-            log_transition("issue", issue.number, "CLAIMED", "FAILED", "session creation failed")
+            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
             print(f"[launch] ERROR: Failed to create session for issue #{issue.number}")
             print("[launch] Is iTerm2 running with a window open?")
-            # Release the claim and remove the in-progress label
-            release_claim(issue.number)
+            # Remove the in-progress label (no lock to release)
             remove_label(self.config.repo, issue.number, self.config.get_label_in_progress())
             return None
 
-        log_transition("issue", issue.number, "CLAIMED", "ACTIVE", "session launched", {"agent": issue.agent_type})
+        log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
         logger.debug("Session created in %.1fs", session_time)
         print(f"[launch] Session created in {session_time:.1f}s")
 
@@ -638,10 +681,7 @@ class Orchestrator:
         print(f"Session #{session.issue.number} completed with status: {status.value}")
         _emit_event("session_completed", {"issue_number": session.issue.number, "status": status.value})
 
-        # Release the claim on this issue
-        release_claim(session.issue.number)
-
-        # Remove from active sessions
+        # Remove from active sessions (no lock to release)
         self.state.active_sessions = [
             s for s in self.state.active_sessions
             if s.issue.number != session.issue.number
@@ -656,6 +696,7 @@ class Orchestrator:
 
         # Record in session history
         pr_url = None
+        prs = None
         if status == SessionStatus.COMPLETED:
             prs = get_open_prs_for_branch(self.config.repo, session.branch_name)
             if prs:
@@ -682,21 +723,58 @@ class Orchestrator:
         )
         self.state.session_history.append(history_entry)
 
-        # Cleanup worktree only if completed successfully
-        # Leave it for blocked/failed so human can investigate
-        if status == SessionStatus.COMPLETED:
-            try:
-                remove_worktree(session.worktree_path)
-            except Exception as e:
-                print(f"Warning: failed to remove worktree: {e}")
+        # Determine cleanup strategy based on config and status
+        # Non-completed sessions: never cleanup (leave for investigation)
+        # Completed sessions: may defer cleanup until review completes
+        is_work_session = not session.tmux_session_name.startswith(("review-", "rework-"))
+        should_defer_cleanup = False
+        pr_number = prs[0].get("number") if prs else None
 
-        # Close the terminal session/tab to prevent accumulation
-        # Uses _kill_session which handles both iTerm2 and tmux backends
-        try:
-            self._kill_session(session.tmux_session_name)
-            logger.info(f"Closed session for #{session.issue.number}")
-        except Exception as e:
-            logger.warning(f"Failed to close session for #{session.issue.number}: {e}")
+        if status == SessionStatus.COMPLETED and is_work_session and pr_url and pr_number:
+            # Check if we should defer cleanup based on review workflow
+            if self.config.cto_review_agent:
+                # CTO workflow: defer until CTO review passes
+                should_defer_cleanup = self.config.cleanup.with_cto.close_ai_session_tabs
+            elif self.config.code_review_agent:
+                # Code review only: defer if configured to wait
+                should_defer_cleanup = (
+                    self.config.cleanup.without_cto.wait_for_code_review
+                    and self.config.cleanup.without_cto.close_ai_session_tabs
+                )
+            # No review workflow: cleanup immediately (should_defer_cleanup stays False)
+
+        if should_defer_cleanup:
+            # Defer cleanup until review completes
+            # pr_number and pr_url are guaranteed non-None here (checked in condition on line 733)
+            assert pr_number is not None
+            assert pr_url is not None
+            pending = PendingCleanup(
+                issue_number=session.issue.number,
+                pr_number=pr_number,
+                pr_url=pr_url,
+                branch_name=session.branch_name,
+                terminal_session_name=session.tmux_session_name,
+                worktree_path=session.worktree_path,
+            )
+            self.state.pending_cleanups.append(pending)
+            logger.info(f"[CLEANUP] Deferred cleanup for #{session.issue.number} until review completes")
+        else:
+            # Immediate cleanup
+            if status == SessionStatus.COMPLETED:
+                # Remove worktree for completed sessions
+                if self.config.cleanup.without_cto.close_ai_session_tabs or not self.config.code_review_agent:
+                    try:
+                        remove_worktree(session.worktree_path)
+                    except Exception as e:
+                        print(f"Warning: failed to remove worktree: {e}")
+
+            # Close the terminal session/tab
+            # Uses _kill_session which handles both iTerm2 and tmux backends
+            try:
+                self._kill_session(session.tmux_session_name)
+                logger.info(f"Closed session for #{session.issue.number}")
+            except Exception as e:
+                logger.warning(f"Failed to close session for #{session.issue.number}: {e}")
 
         # Trigger code review immediately if configured
         # Skip if agent has skip_review set (e.g., domain-expert agents)
@@ -717,6 +795,46 @@ class Orchestrator:
             logger.info(f"[REVIEW] Session #{session.issue.number} skipping review (skip_review=true)")
         elif not pr_url:
             logger.info(f"[REVIEW] Session #{session.issue.number} completed but no PR found")
+
+        # Trigger CTO review on failure if configured
+        if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
+            self._queue_cto_failure_review(session, status)
+
+    def _queue_cto_failure_review(self, session: Session, status: SessionStatus) -> None:
+        """Queue a CTO review to investigate a session failure.
+
+        Only queues if:
+        - cto_review_on_failure is enabled (default: True)
+        - cto_review_agent is configured
+        - No CTO review is already pending for this issue
+        """
+        if not self.config.cto_review_on_failure:
+            logger.debug("[CTO] Skipping failure review - cto_review_on_failure disabled")
+            return
+
+        if not self.config.cto_review_agent:
+            logger.debug("[CTO] Skipping failure review - cto_review_agent not configured")
+            return
+
+        # Check if already queued
+        already_queued = any(
+            r.issue_number == session.issue.number
+            for r in self.state.pending_cto_reviews
+        )
+        if already_queued:
+            logger.debug("[CTO] Skipping failure review - already queued for #%d", session.issue.number)
+            return
+
+        logger.info("[CTO] Queuing failure review for issue #%d (%s)",
+                   session.issue.number, status.value)
+        print(f"[CTO] Queuing failure investigation for #{session.issue.number}")
+
+        self.state.pending_cto_reviews.append(
+            PendingCTOReview(
+                issue_number=session.issue.number,
+                title=f"Investigate: {session.issue.title} ({status.value})",
+            )
+        )
 
     async def run_loop(self) -> None:
         """Main orchestration loop."""
@@ -752,8 +870,14 @@ class Orchestrator:
                 self.scan_needs_rework_prs()
                 self.process_pending_reworks()
 
-                # Check if CTO review should be triggered
+                # Process pending CTO reviews (from failures or batch trigger)
+                self.process_pending_cto_reviews()
+
+                # Check if CTO review should be triggered (batch threshold)
                 self.check_cto_review_trigger()
+
+                # Process deferred cleanups (sessions waiting for review to complete)
+                self.process_deferred_cleanups()
 
                 # Check if we've hit the max issues limit for this session
                 max_issues = self.config.max_issues_to_start
@@ -764,13 +888,15 @@ class Orchestrator:
                 # This ensures completed work (PRs) gets reviewed before starting new work
                 has_pending_reviews = bool(self.state.pending_reviews)
                 has_pending_reworks = bool(self.state.pending_reworks)
+                has_pending_cto = bool(self.state.pending_cto_reviews)
 
-                if has_pending_reviews or has_pending_reworks:
-                    logger.info("[PRIORITY] Skipping new issues - %d reviews and %d reworks pending",
-                               len(self.state.pending_reviews), len(self.state.pending_reworks))
+                if has_pending_reviews or has_pending_reworks or has_pending_cto:
+                    logger.info("[PRIORITY] Skipping new issues - %d reviews, %d reworks, %d CTO pending",
+                               len(self.state.pending_reviews), len(self.state.pending_reworks),
+                               len(self.state.pending_cto_reviews))
 
                 # If not paused, not at max issues limit, no pending reviews, and have capacity, launch more sessions
-                if not self.state.paused and not hit_max_issues and not has_pending_reviews and not has_pending_reworks:
+                if not self.state.paused and not hit_max_issues and not has_pending_reviews and not has_pending_reworks and not has_pending_cto:
                     available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
 
                     if available_slots > 0:
@@ -980,28 +1106,19 @@ class Orchestrator:
             print(f"Warning: No agent config for {agent_label}")
             return None
 
-        # Try to claim the PR (prevent duplicate reviews)
-        # Use pr_number to match session_name which is f"review-{pr_number}"
+        # Check if already being worked on (no lock files - direct reality check)
         session_name = f"review-{review.pr_number}"
-        if not try_claim(review.pr_number, prefix="review"):
-            # Lock exists - check if it's orphaned (no active session)
-            has_session = self._session_exists(session_name)
-            has_active = any(s.tmux_session_name == session_name for s in self.state.active_sessions)
+        if any(s.tmux_session_name == session_name for s in self.state.active_sessions):
+            log_transition("review", review.pr_number, "QUEUED", "SKIP", "already in active_sessions")
+            self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
+            return None
 
-            if not has_session and not has_active:
-                # Orphaned lock (e.g., from before laptop sleep) - release and retry
-                log_transition("review", review.pr_number, "QUEUED", "ORPHAN_CLEANUP", "releasing stale lock")
-                release_claim(review.pr_number, prefix="review")
-                if not try_claim(review.pr_number, prefix="review"):
-                    log_transition("review", review.pr_number, "ORPHAN_CLEANUP", "SKIP", "still claimed after release")
-                    return None
-            else:
-                # Actually being reviewed - remove from pending queue
-                log_transition("review", review.pr_number, "QUEUED", "DEDUP", "already has active session")
-                self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
-                return None
+        if self._session_exists(session_name):
+            log_transition("review", review.pr_number, "QUEUED", "SKIP", "iTerm tab already running")
+            self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
+            return None
 
-        log_transition("review", review.pr_number, "QUEUED", "CLAIMED", "lock acquired")
+        log_transition("review", review.pr_number, "QUEUED", "LAUNCHING", "no conflicts")
 
         # Use agent's repo_root if set, otherwise fall back to config.repo_root
         repo_root = agent_config.repo_root or self.config.repo_root
@@ -1045,7 +1162,7 @@ class Orchestrator:
         )
 
         self.state.active_sessions.append(session)
-        log_transition("review", review.pr_number, "CLAIMED", "ACTIVE", "session launched")
+        log_transition("review", review.pr_number, "LAUNCHING", "ACTIVE", "session launched")
         print(f"🔍 Launched review session for PR #{review.pr_number}")
 
         # Remove from pending queue
@@ -1091,6 +1208,243 @@ class Orchestrator:
                 logger.exception("[REVIEW] Failed to launch review for PR #%d: %s",
                                 review.pr_number, e)
                 print(f"[REVIEW] Failed to launch review for PR #{review.pr_number}: {e}")
+
+    def process_pending_cto_reviews(self) -> None:
+        """Process any pending CTO reviews (failure investigations or batch reviews).
+
+        Called each loop iteration to launch CTO sessions.
+        Respects max_concurrent_sessions and paused state.
+        CTO reviews are treated with same priority as code reviews.
+        """
+        if not self.config.cto_review_agent:
+            return  # CTO not configured
+
+        if not self.state.pending_cto_reviews:
+            return  # Normal case when queue is empty
+
+        # Don't start reviews while paused
+        if self.state.paused:
+            logger.info("[CTO] Skipping CTO reviews - orchestrator paused")
+            return
+
+        # Check capacity
+        available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
+        if available_slots <= 0:
+            logger.info("[CTO] Skipping CTO reviews - no capacity (active=%d, max=%d)",
+                       len(self.state.active_sessions), self.config.max_concurrent_sessions)
+            return
+
+        logger.info("[CTO] Processing %d pending CTO reviews (capacity=%d)",
+                   len(self.state.pending_cto_reviews), available_slots)
+
+        # Launch CTO reviews up to capacity
+        for cto_review in list(self.state.pending_cto_reviews)[:available_slots]:
+            logger.info("[CTO] Launching CTO review for issue #%d: %s",
+                       cto_review.issue_number, cto_review.title)
+            try:
+                self._launch_cto_session(cto_review)
+                # Remove from queue after successful launch
+                self.state.pending_cto_reviews = [
+                    r for r in self.state.pending_cto_reviews
+                    if r.issue_number != cto_review.issue_number
+                ]
+            except Exception as e:
+                logger.exception("[CTO] Failed to launch CTO review for #%d: %s",
+                                cto_review.issue_number, e)
+                print(f"[CTO] Failed to launch CTO review for #{cto_review.issue_number}: {e}")
+                # Remove from queue to prevent infinite retry loop
+                self.state.pending_cto_reviews = [
+                    r for r in self.state.pending_cto_reviews
+                    if r.issue_number != cto_review.issue_number
+                ]
+
+    def _launch_cto_session(self, cto_review: PendingCTOReview) -> None:
+        """Launch a CTO session to investigate a failure or review PRs.
+
+        Creates a worktree, launches the CTO agent, and tracks the session.
+        """
+        cto_agent_name = self.config.cto_review_agent
+        if not cto_agent_name:
+            raise ValueError("No CTO review agent configured")
+
+        agent_config = self.config.agents.get(cto_agent_name)
+        if not agent_config:
+            raise ValueError(f"No agent config for {cto_agent_name}")
+
+        # Create a synthetic Issue for the CTO session
+        # This allows reusing the normal session launch flow
+        cto_issue = Issue(
+            number=cto_review.issue_number,
+            title=cto_review.title,
+            labels=[cto_agent_name],
+        )
+
+        # Launch using normal flow
+        session = self.launch_session(cto_issue)
+        if session:
+            print(f"[CTO] Launched investigation session for #{cto_review.issue_number}")
+
+    def process_deferred_cleanups(self) -> None:
+        """Process deferred cleanups for sessions awaiting review completion.
+
+        Checks pending cleanups and performs cleanup when:
+        - CTO workflow: PR has cto-reviewed label
+        - Code review workflow: PR has code-reviewed label
+
+        Called each loop iteration.
+        """
+        if not self.state.pending_cleanups:
+            return  # Nothing to process
+
+        # Determine which label indicates review is complete
+        if self.config.cto_review_agent:
+            cleanup_label = self.config.cto_reviewed_label
+        elif self.config.code_review_agent:
+            cleanup_label = self.config.code_reviewed_label
+        else:
+            # No review workflow - shouldn't have deferred cleanups
+            logger.warning("[CLEANUP] Found deferred cleanups but no review workflow configured")
+            return
+
+        if not cleanup_label:
+            logger.warning("[CLEANUP] No cleanup label configured")
+            return
+
+        # Get all PRs with the cleanup label
+        try:
+            reviewed_prs = list_prs_with_label(self.config.repo, cleanup_label)
+            reviewed_pr_numbers = {pr.get("number") for pr in reviewed_prs}
+        except Exception as e:
+            logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
+            return
+
+        # Process each pending cleanup
+        cleanups_to_remove = []
+        for pending in self.state.pending_cleanups:
+            if pending.pr_number in reviewed_pr_numbers:
+                logger.info(f"[CLEANUP] PR #{pending.pr_number} has '{cleanup_label}' label - cleaning up")
+
+                # Close terminal session if configured
+                close_tabs = (
+                    self.config.cleanup.with_cto.close_ai_session_tabs
+                    if self.config.cto_review_agent
+                    else self.config.cleanup.without_cto.close_ai_session_tabs
+                )
+                if close_tabs:
+                    try:
+                        self._kill_session(pending.terminal_session_name)
+                        logger.info(f"[CLEANUP] Closed terminal session for #{pending.issue_number}")
+                    except Exception as e:
+                        logger.warning(f"[CLEANUP] Failed to close session for #{pending.issue_number}: {e}")
+
+                # Remove worktree if configured
+                remove_wt = (
+                    self.config.cleanup.with_cto.remove_worktrees
+                    if self.config.cto_review_agent
+                    else self.config.cleanup.without_cto.remove_worktrees
+                )
+                if remove_wt:
+                    try:
+                        remove_worktree(pending.worktree_path)
+                        logger.info(f"[CLEANUP] Removed worktree for #{pending.issue_number}")
+                    except Exception as e:
+                        logger.warning(f"[CLEANUP] Failed to remove worktree for #{pending.issue_number}: {e}")
+
+                cleanups_to_remove.append(pending)
+
+        # Remove processed cleanups
+        for cleanup in cleanups_to_remove:
+            self.state.pending_cleanups.remove(cleanup)
+
+        if cleanups_to_remove:
+            logger.info(f"[CLEANUP] Processed {len(cleanups_to_remove)} deferred cleanups")
+
+    def _recover_orphaned_cleanups(self) -> None:
+        """Recover and process orphaned cleanups from before restart.
+
+        Called during startup to clean up worktrees for PRs that were reviewed
+        (have cto-reviewed or code-reviewed label) but weren't cleaned up before
+        the orchestrator stopped.
+
+        Uses centralized naming conventions to derive worktree paths.
+        """
+        import re
+
+        # Determine which label indicates cleanup is due
+        if self.config.cto_review_agent:
+            cleanup_label = self.config.cto_reviewed_label
+            close_tabs = self.config.cleanup.with_cto.close_ai_session_tabs
+            remove_wt = self.config.cleanup.with_cto.remove_worktrees
+        elif self.config.code_review_agent:
+            cleanup_label = self.config.code_reviewed_label
+            close_tabs = self.config.cleanup.without_cto.close_ai_session_tabs
+            remove_wt = self.config.cleanup.without_cto.remove_worktrees
+        else:
+            # No review workflow - nothing to recover
+            return
+
+        if not cleanup_label:
+            return
+
+        self.state.startup_message = "Checking for orphaned cleanups..."
+        print(f"\nChecking for orphaned cleanups (PRs with '{cleanup_label}' label)...")
+
+        try:
+            reviewed_prs = list_prs_with_label(self.config.repo, cleanup_label)
+        except Exception as e:
+            logger.warning(f"[CLEANUP] Failed to fetch reviewed PRs: {e}")
+            return
+
+        if not reviewed_prs:
+            print("  No reviewed PRs found")
+            return
+
+        cleaned_count = 0
+        for pr in reviewed_prs:
+            # Extract issue number from branch name (e.g., "issue-123-description" -> 123)
+            branch = pr.get("headRefName", "")
+            match = re.match(r'issue-(\d+)', branch)
+            if not match:
+                continue
+
+            issue_number = int(match.group(1))
+            session_name = self._get_session_name(issue_number, "issue")
+
+            # Check if session is still running (skip if so)
+            if self._session_exists(session_name):
+                logger.debug(f"[CLEANUP] Session {session_name} still running - skipping")
+                continue
+
+            # Check each agent config for matching worktree
+            for agent_label, agent_config in self.config.agents.items():
+                worktree_path = self._get_worktree_path(issue_number, agent_config)
+
+                if worktree_path.exists():
+                    logger.info(f"[CLEANUP] Found orphaned worktree for #{issue_number} at {worktree_path}")
+                    print(f"  #{issue_number}: Cleaning up orphaned worktree")
+
+                    # Close terminal if configured (may already be closed)
+                    if close_tabs:
+                        try:
+                            self._kill_session(session_name)
+                        except Exception:
+                            pass  # Session probably already gone
+
+                    # Remove worktree if configured
+                    if remove_wt:
+                        try:
+                            remove_worktree(worktree_path)
+                            logger.info(f"[CLEANUP] Removed orphaned worktree for #{issue_number}")
+                        except Exception as e:
+                            logger.warning(f"[CLEANUP] Failed to remove worktree for #{issue_number}: {e}")
+
+                    cleaned_count += 1
+                    break  # Found the worktree, no need to check other agents
+
+        if cleaned_count > 0:
+            print(f"  Cleaned up {cleaned_count} orphaned worktree(s)")
+        else:
+            print("  No orphaned worktrees found")
 
     def check_cto_review_trigger(self) -> None:
         """Check if we should trigger a CTO batch review based on PR count.
@@ -1159,15 +1513,20 @@ class Orchestrator:
 Review these PRs for patterns, architectural concerns, and process improvements.
 Flip labels from `{watch_label}` to `{self.config.cto_reviewed_label}` after review.
 """
+        title = f"CTO Batch Review: {len(prs)} PRs pending"
         issue_number = create_issue(
             self.config.repo,
-            title=f"CTO Batch Review: {len(prs)} PRs pending",
+            title=title,
             body=body,
             labels=[self.config.cto_review_agent],
         )
         if issue_number:
             logger.info("[CTO] Created CTO review issue #%d for %d PRs", issue_number, pr_count)
             print(f"📋 Created CTO review issue #{issue_number} for {len(prs)} PRs")
+            # Queue for immediate processing
+            self.state.pending_cto_reviews.append(
+                PendingCTOReview(issue_number=issue_number, title=title)
+            )
         else:
             logger.error("[CTO] Failed to create CTO review issue")
 
@@ -1406,27 +1765,19 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
             print(f"Warning: No agent config for {agent_label}")
             return None
 
-        # Try to claim the issue (prevent duplicate rework sessions)
+        # Check if already being worked on (no lock files - direct reality check)
         session_name = f"rework-{rework.issue_number}"
-        if not try_claim(rework.issue_number, prefix="rework"):
-            # Lock exists - check if it's orphaned (no active session)
-            has_session = self._session_exists(session_name)
-            has_active = any(s.tmux_session_name == session_name for s in self.state.active_sessions)
+        if any(s.tmux_session_name == session_name for s in self.state.active_sessions):
+            log_transition("rework", rework.issue_number, "QUEUED", "SKIP", "already in active_sessions")
+            self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_number != rework.issue_number]
+            return None
 
-            if not has_session and not has_active:
-                # Orphaned lock - release and retry
-                log_transition("rework", rework.issue_number, "QUEUED", "ORPHAN_CLEANUP", "releasing stale lock")
-                release_claim(rework.issue_number, prefix="rework")
-                if not try_claim(rework.issue_number, prefix="rework"):
-                    log_transition("rework", rework.issue_number, "ORPHAN_CLEANUP", "SKIP", "still claimed after release")
-                    return None
-            else:
-                # Actually being reworked - remove from pending queue
-                log_transition("rework", rework.issue_number, "QUEUED", "DEDUP", "already has active session")
-                self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_number != rework.issue_number]
-                return None
+        if self._session_exists(session_name):
+            log_transition("rework", rework.issue_number, "QUEUED", "SKIP", "iTerm tab already running")
+            self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_number != rework.issue_number]
+            return None
 
-        log_transition("rework", rework.issue_number, "QUEUED", "CLAIMED", f"lock acquired, cycle={rework.rework_cycle}")
+        log_transition("rework", rework.issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")
 
         # Use agent's repo_root if set, otherwise fall back to config.repo_root
         repo_root = agent_config.repo_root or self.config.repo_root
@@ -1462,7 +1813,7 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         )
 
         self.state.active_sessions.append(session)
-        log_transition("rework", rework.issue_number, "CLAIMED", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
+        log_transition("rework", rework.issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
         print(f"🔧 Launched rework session for issue #{rework.issue_number} (cycle {rework.rework_cycle})")
 
         # Update rework cycle label on PR

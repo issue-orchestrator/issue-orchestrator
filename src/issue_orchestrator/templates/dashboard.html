@@ -48,6 +48,52 @@
         .btn-warning { background: #9e6a03; border-color: #9e6a03; color: #fff; }
         .btn-primary { background: #238636; border-color: #238636; color: #fff; }
 
+        /* Tab Bar */
+        .tab-bar {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 16px;
+            border-bottom: 1px solid #21262d;
+            padding-bottom: 0;
+        }
+        .tab {
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #8b949e;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+            transition: color 0.15s, border-color 0.15s;
+        }
+        .tab:hover {
+            color: #c9d1d9;
+        }
+        .tab.active {
+            color: #c9d1d9;
+            border-bottom-color: #f78166;
+        }
+        .tab-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 18px;
+            height: 18px;
+            padding: 0 6px;
+            margin-left: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #f85149;
+            color: #fff;
+            border-radius: 10px;
+        }
+        .tab-badge.empty {
+            background: #30363d;
+            color: #8b949e;
+        }
+
         /* Issue List */
         .issue-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
         .issue-header {
@@ -315,6 +361,16 @@
             </div>
         </header>
 
+        <div class="tab-bar">
+            <button class="tab {% if active_tab == 'work' %}active{% endif %}" onclick="switchTab('work')">
+                Work
+            </button>
+            <button class="tab {% if active_tab == 'problems' %}active{% endif %}" onclick="switchTab('problems')">
+                Problems
+                <span class="tab-badge {% if problem_count == 0 %}empty{% endif %}">{{ problem_count }}</span>
+            </button>
+        </div>
+
         <div class="issue-list">
             <div class="issue-header">
                 <span>Issue</span>
@@ -341,8 +397,10 @@
                  data-time="{{ issue.time if issue.time else '' }}"
                  data-action="{{ issue.action }}"
                  data-url="{{ issue.url }}"
-                 data-issue-url="https://github.com/{{ repo }}/issues/{{ issue.issue_number }}"
+                 data-issue-url="{{ issue.issue_url }}"
                  data-pr-url="{{ issue.pr_url if issue.pr_url else '' }}"
+                 data-has-terminal="{{ 'true' if issue.has_terminal else 'false' }}"
+                 data-worktree-path="{{ issue.worktree_path if issue.worktree_path else '' }}"
                  title="{{ issue.action_hint }}"
                  onclick="handleClick(this)"
                  oncontextmenu="showContextMenu(event, this)">
@@ -364,7 +422,13 @@
             </div>
             {% endfor %}
             {% else %}
-            <div class="empty-state">No issues to display</div>
+            <div class="empty-state">
+                {% if active_tab == 'problems' %}
+                No problems - all systems running smoothly! 🎉
+                {% else %}
+                No issues to display
+                {% endif %}
+            </div>
             {% endif %}
         </div>
 
@@ -389,6 +453,9 @@
         </div>
         <div class="context-menu-item" id="menuFinder">
             <span>📂</span> Open Worktree in Finder
+        </div>
+        <div class="context-menu-item" id="menuLog">
+            <span>📋</span> View Session Log
         </div>
         <div class="context-menu-item" id="menuPrompt">
             <span>📝</span> Open Agent Prompt
@@ -538,7 +605,15 @@
             document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#8b949e;">Shutdown requested. Close this tab.</div>';
         }
 
-        // Pagination
+        // Tab switching
+        function switchTab(tab) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('tab', tab);
+            url.searchParams.set('page', '1');  // Reset to page 1 when switching tabs
+            window.location.href = url.toString();
+        }
+
+        // Pagination (preserves current tab)
         function goToPage(page) {
             const url = new URL(window.location.href);
             url.searchParams.set('page', page);
@@ -559,14 +634,15 @@
         }
 
         // Server-Sent Events for real-time updates
-        {% if startup_status == 'complete' %}
+        // Always connect - even during startup - so we can receive startup_complete
         (function() {
+            const startupComplete = {{ 'true' if startup_status == 'complete' else 'false' }};
             const evtSource = new EventSource('/api/events');
             let reconnectAttempts = 0;
             const maxReconnectAttempts = 5;
 
             evtSource.onopen = function() {
-                console.log('[SSE] Connected to event stream');
+                console.log('[SSE] Connected to event stream (startup_complete=' + startupComplete + ')');
                 reconnectAttempts = 0;
             };
 
@@ -590,12 +666,12 @@
                 }
             };
         })();
-        {% endif %}
 
         // Context menu
         const contextMenu = document.getElementById('contextMenu');
         const menuFocus = document.getElementById('menuFocus');
         const menuFinder = document.getElementById('menuFinder');
+        const menuLog = document.getElementById('menuLog');
         const menuPrompt = document.getElementById('menuPrompt');
         const menuKill = document.getElementById('menuKill');
         const menuIssue = document.getElementById('menuIssue');
@@ -684,6 +760,46 @@
                 const res = await fetch(`/api/finder/${currentRow.dataset.issue}`, { method: 'POST' });
                 const data = await res.json();
                 console.log('Finder response:', data);
+            }
+        });
+
+        menuLog.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow) {
+                const issueNumber = currentRow.dataset.issue;
+                const res = await fetch(`/api/log/${issueNumber}`);
+                const data = await res.json();
+
+                if (data.error) {
+                    alert(data.error + (data.hint ? '\n\n' + data.hint : ''));
+                    return;
+                }
+
+                // Format log content for display
+                let logContent = '';
+                if (data.truncated) {
+                    logContent += `<p style="color:#8b949e;margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} entries...</p>`;
+                }
+                logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;">';
+                for (const line of data.lines) {
+                    try {
+                        const entry = JSON.parse(line);
+                        // Show role and truncated content
+                        const role = entry.type || entry.role || 'unknown';
+                        const content = (entry.message?.content || entry.content || JSON.stringify(entry)).substring(0, 200);
+                        logContent += `<span style="color:#58a6ff;">[${role}]</span> ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}...\n`;
+                    } catch {
+                        logContent += line.substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
+                    }
+                }
+                logContent += '</pre>';
+                logContent += `<p style="color:#8b949e;font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
+
+                // Show in modal
+                document.getElementById('modalTitle').textContent = `Session Log #${issueNumber}`;
+                document.getElementById('modalBody').innerHTML = logContent;
+                document.getElementById('modalOverlay').classList.add('visible');
             }
         });
 

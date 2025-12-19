@@ -2,9 +2,169 @@
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock, patch
 from issue_orchestrator.models import AgentConfig, Issue
 from issue_orchestrator.config import Config
+from issue_orchestrator.hookspec import hookimpl
+
+
+class MockTerminalPlugin:
+    """Mock terminal plugin for testing.
+
+    Implements terminal hooks and tracks calls for test assertions.
+    """
+
+    def __init__(self):
+        self.sessions: dict[int, dict] = {}
+        self.create_session_calls = []
+        self.session_exists_calls = []
+        self.kill_session_calls = []
+        # Control behavior for tests
+        self.session_exists_override = None  # Set to True/False to override
+
+    @hookimpl
+    def create_session(
+        self,
+        session_id: int,
+        command: str,
+        working_dir: str,
+        title: str | None,
+    ) -> bool:
+        """Track session creation."""
+        self.create_session_calls.append({
+            "session_id": session_id,
+            "command": command,
+            "working_dir": working_dir,
+            "title": title,
+        })
+        self.sessions[session_id] = {
+            "command": command,
+            "working_dir": working_dir,
+            "title": title,
+        }
+        return True
+
+    @hookimpl
+    def session_exists(self, session_id: int) -> bool:
+        """Check if session was created."""
+        self.session_exists_calls.append(session_id)
+        if self.session_exists_override is not None:
+            return self.session_exists_override
+        return session_id in self.sessions
+
+    @hookimpl
+    def kill_session(self, session_id: int) -> bool:
+        """Remove session."""
+        self.kill_session_calls.append(session_id)
+        self.sessions.pop(session_id, None)
+        return True
+
+    @hookimpl
+    def discover_running_sessions(self) -> list[dict]:
+        """Return empty list for tests."""
+        return []
+
+    @hookimpl
+    def cleanup_idle_sessions(self) -> int:
+        """Return 0 for tests."""
+        return 0
+
+    @hookimpl
+    def get_session_output(self, session_id: int, lines: int) -> str | None:
+        """Return None for tests."""
+        return None
+
+
+class MockPluginManager:
+    """Mock plugin manager for testing.
+
+    Wraps MockTerminalPlugin with the same interface as PluginManager.
+    """
+
+    def __init__(self, plugin: MockTerminalPlugin | None = None):
+        self._plugin = plugin or MockTerminalPlugin()
+
+    @property
+    def plugin(self) -> MockTerminalPlugin:
+        """Access the underlying mock plugin for assertions."""
+        return self._plugin
+
+    def create_session(
+        self,
+        session_id: int,
+        command: str,
+        working_dir: str,
+        title: str | None = None,
+    ) -> bool:
+        return self._plugin.create_session(
+            session_id=session_id,
+            command=command,
+            working_dir=working_dir,
+            title=title,
+        )
+
+    def session_exists(self, session_id: int) -> bool:
+        return self._plugin.session_exists(session_id=session_id)
+
+    def kill_session(self, session_id: int) -> None:
+        self._plugin.kill_session(session_id=session_id)
+
+    def discover_running_sessions(self) -> list[dict]:
+        return self._plugin.discover_running_sessions()
+
+    def cleanup_idle_sessions(self) -> int:
+        return self._plugin.cleanup_idle_sessions()
+
+    def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
+        return self._plugin.get_session_output(session_id=session_id, lines=lines)
+
+
+@pytest.fixture
+def mock_terminal_plugin():
+    """Create a mock terminal plugin for testing."""
+    return MockTerminalPlugin()
+
+
+@pytest.fixture
+def mock_plugin_manager(mock_terminal_plugin):
+    """Create a mock plugin manager for testing."""
+    return MockPluginManager(mock_terminal_plugin)
+
+
+@pytest.fixture(autouse=True)
+def patch_plugin_manager(monkeypatch, request):
+    """Auto-patch the plugin manager for all tests.
+
+    This replaces the real PluginManager with MockPluginManager so tests
+    don't need actual tmux/iTerm2 installed.
+
+    Tests can inject custom behavior by defining a 'mock_terminal_plugin' fixture
+    or by accessing orchestrator._mock_plugin_manager.plugin after creation.
+    """
+    # Use provided mock_terminal_plugin if test requests it, otherwise create new
+    if 'mock_terminal_plugin' in request.fixturenames:
+        plugin = request.getfixturevalue('mock_terminal_plugin')
+    else:
+        plugin = MockTerminalPlugin()
+
+    mock_pm = MockPluginManager(plugin)
+
+    def mock_plugins_property(self):
+        # Store on instance so tests can access it
+        if not hasattr(self, '_mock_plugin_manager'):
+            self._mock_plugin_manager = mock_pm
+        return self._mock_plugin_manager
+
+    # Patch the _plugins property on Orchestrator
+    from issue_orchestrator.orchestrator import Orchestrator
+    monkeypatch.setattr(
+        Orchestrator,
+        '_plugins',
+        property(mock_plugins_property),
+    )
+
+    # Return the mock so tests can access it
+    return mock_pm
 
 
 @pytest.fixture

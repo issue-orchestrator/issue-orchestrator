@@ -161,6 +161,26 @@ labels:
   needs_rework: "needs-rework"  # Label for PRs needing rework after review
 ```
 
+### Cleanup Configuration
+
+Control when AI session tabs are closed and worktrees are removed:
+
+```yaml
+cleanup:
+  with_cto:                       # When CTO review is enabled
+    close_ai_session_tabs: true   # Close tabs after CTO review passes
+    remove_worktrees: false       # Keep worktrees for reference
+
+  without_cto:                    # When CTO review is NOT enabled
+    wait_for_code_review: true    # true = after code review, false = on completion
+    close_ai_session_tabs: true   # Close tabs at cleanup point
+    remove_worktrees: false       # Keep worktrees for reference
+```
+
+The cleanup timing depends on your workflow:
+- **With CTO review**: Cleanup happens after CTO marks PR as reviewed
+- **Without CTO review**: Cleanup happens after code review (if `wait_for_code_review: true`) or immediately on completion
+
 ### Orchestrator Methods (orchestrator.py)
 
 | Method | Purpose |
@@ -358,9 +378,15 @@ web_port: 8080   # Port for web dashboard
 enforce_hooks: true
 # pre_push_hook: "./custom-hook.sh"  # Optional custom hook
 
-# Tab cleanup
-close_completed_tabs: true
-close_failed_tabs: false
+# Cleanup - when to close AI session tabs and remove worktrees
+cleanup:
+  with_cto:                        # When CTO review IS enabled
+    close_ai_session_tabs: true    # Close tabs after CTO reviews
+    remove_worktrees: false        # Keep worktrees for reference
+  without_cto:                     # When CTO review is NOT enabled
+    wait_for_code_review: true     # true = after code review, false = on completion
+    close_ai_session_tabs: true
+    remove_worktrees: false
 
 # Filtering
 filter_label: null
@@ -420,6 +446,49 @@ pytest tests/unit/ --cov        # With coverage (90%+)
 ```bash
 issue-orchestrator start --test-mode
 ```
+
+## Claude Session Logs
+
+Each Claude Code session creates logs that can be useful for debugging:
+
+**Log Locations:**
+```
+~/.claude/
+├── projects/<escaped-path>/     # Per-project session history
+│   └── <session-id>.jsonl       # Conversation history for each session
+├── debug/<session-id>.txt       # Debug logs (low-level, timestamps)
+├── history.jsonl                # Global command history with session IDs
+└── todos/<session-id>-*.json    # Todo lists per session
+```
+
+**Path Escaping:** Paths are escaped with `-` prefix and `/` → `-`:
+- `/Users/bruce/dev/myproject` → `-Users-bruce-dev-myproject`
+- Worktrees get their own directories
+
+**Finding Session Logs for an Issue:**
+1. Know the worktree path (e.g., `/tmp/worktrees/issue-42-fix-bug`)
+2. Escape the path: `-tmp-worktrees-issue-42-fix-bug`
+3. Look in `~/.claude/projects/-tmp-worktrees-issue-42-fix-bug/`
+4. Most recent `.jsonl` file is the latest session
+
+**Quick Commands:**
+```bash
+# Find sessions for a worktree
+WORKTREE="/path/to/worktree"
+ESCAPED=$(echo "$WORKTREE" | sed 's|^/|-|' | tr '/' '-')
+ls -la ~/.claude/projects/$ESCAPED/
+
+# View most recent session log
+ls -t ~/.claude/projects/$ESCAPED/*.jsonl | head -1 | xargs head -100
+
+# Search for issue mentions in history
+grep -l "issue-42" ~/.claude/projects/-*/*.jsonl
+```
+
+**Log Content:**
+- `.jsonl` files contain conversation turns (user messages, assistant responses)
+- Each line is a JSON object with role, content, timestamp
+- Useful for understanding what the agent tried
 
 ## Quick Debugging
 

@@ -23,6 +23,7 @@ from issue_orchestrator.agent_done import (
     git_push,
     create_pr,
     update_comment_with_pr,
+    run_preflight_checks,
     main,
 )
 
@@ -843,17 +844,18 @@ class TestMain:
             '--implementation', 'Fixed bug',
             '--problems', 'None'
         ]):
-            with patch('issue_orchestrator.agent_done.get_issue_number', return_value=456):
-                with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
-                    with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
-                        with patch('issue_orchestrator.agent_done.git_push'):
-                            with patch('issue_orchestrator.agent_done.create_pr', return_value='https://pr.url'):
-                                with patch('issue_orchestrator.agent_done.post_comment'):
-                                    main()
+            with patch('issue_orchestrator.agent_done.run_preflight_checks'):
+                with patch('issue_orchestrator.agent_done.get_issue_number', return_value=456):
+                    with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
+                        with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
+                            with patch('issue_orchestrator.agent_done.git_push'):
+                                with patch('issue_orchestrator.agent_done.create_pr', return_value='https://pr.url'):
+                                    with patch('issue_orchestrator.agent_done.post_comment'):
+                                        main()
 
-                                    captured = capsys.readouterr()
-                                    assert "COMPLETED" in captured.out
-                                    assert "https://pr.url" in captured.out
+                                        captured = capsys.readouterr()
+                                        assert "COMPLETED" in captured.out
+                                        assert "https://pr.url" in captured.out
 
     def test_main_blocked_success(self, capsys):
         """Test successful blocked workflow."""
@@ -862,16 +864,17 @@ class TestMain:
             '--reason', 'Need API key',
             '--attempted', 'Checked env vars'
         ]):
-            with patch('issue_orchestrator.agent_done.get_issue_number', return_value=789):
-                with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
-                    with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
-                        with patch('issue_orchestrator.agent_done.git_push'):
-                            with patch('issue_orchestrator.agent_done.add_label'):
-                                with patch('issue_orchestrator.agent_done.post_comment'):
-                                    main()
+            with patch('issue_orchestrator.agent_done.run_preflight_checks'):
+                with patch('issue_orchestrator.agent_done.get_issue_number', return_value=789):
+                    with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
+                        with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
+                            with patch('issue_orchestrator.agent_done.git_push'):
+                                with patch('issue_orchestrator.agent_done.add_label'):
+                                    with patch('issue_orchestrator.agent_done.post_comment'):
+                                        main()
 
-                                    captured = capsys.readouterr()
-                                    assert "BLOCKED" in captured.out
+                                        captured = capsys.readouterr()
+                                        assert "BLOCKED" in captured.out
 
     def test_main_blocked_with_blocked_by(self, capsys):
         """Test blocked workflow with blocked_by issues."""
@@ -881,16 +884,17 @@ class TestMain:
             '--attempted', 'Nothing',
             '--blocked-by', '123', '456'
         ]):
-            with patch('issue_orchestrator.agent_done.get_issue_number', return_value=789):
-                with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
-                    with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
-                        with patch('issue_orchestrator.agent_done.git_push'):
-                            with patch('issue_orchestrator.agent_done.add_label'):
-                                with patch('issue_orchestrator.agent_done.post_comment'):
-                                    main()
+            with patch('issue_orchestrator.agent_done.run_preflight_checks'):
+                with patch('issue_orchestrator.agent_done.get_issue_number', return_value=789):
+                    with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
+                        with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
+                            with patch('issue_orchestrator.agent_done.git_push'):
+                                with patch('issue_orchestrator.agent_done.add_label'):
+                                    with patch('issue_orchestrator.agent_done.post_comment'):
+                                        main()
 
-                                    captured = capsys.readouterr()
-                                    assert "BLOCKED" in captured.out
+                                        captured = capsys.readouterr()
+                                        assert "BLOCKED" in captured.out
 
     def test_main_needs_human_success(self, capsys):
         """Test successful needs_human workflow."""
@@ -898,16 +902,17 @@ class TestMain:
             'agent-done', 'needs_human',
             '--question', 'Which approach?'
         ]):
-            with patch('issue_orchestrator.agent_done.get_issue_number', return_value=111):
-                with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
-                    with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
-                        with patch('issue_orchestrator.agent_done.git_push'):
-                            with patch('issue_orchestrator.agent_done.add_label'):
-                                with patch('issue_orchestrator.agent_done.post_comment'):
-                                    main()
+            with patch('issue_orchestrator.agent_done.run_preflight_checks'):
+                with patch('issue_orchestrator.agent_done.get_issue_number', return_value=111):
+                    with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
+                        with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
+                            with patch('issue_orchestrator.agent_done.git_push'):
+                                with patch('issue_orchestrator.agent_done.add_label'):
+                                    with patch('issue_orchestrator.agent_done.post_comment'):
+                                        main()
 
-                                    captured = capsys.readouterr()
-                                    assert "NEEDS HUMAN" in captured.out
+                                        captured = capsys.readouterr()
+                                        assert "NEEDS HUMAN" in captured.out
 
     def test_main_needs_human_with_options(self, capsys):
         """Test needs_human with options and default."""
@@ -918,16 +923,17 @@ class TestMain:
             '--options', 'MySQL', 'PostgreSQL',
             '--default', 'PostgreSQL'
         ]):
-            with patch('issue_orchestrator.agent_done.get_issue_number', return_value=222):
-                with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
-                    with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
-                        with patch('issue_orchestrator.agent_done.git_push'):
-                            with patch('issue_orchestrator.agent_done.add_label'):
-                                with patch('issue_orchestrator.agent_done.post_comment'):
-                                    main()
+            with patch('issue_orchestrator.agent_done.run_preflight_checks'):
+                with patch('issue_orchestrator.agent_done.get_issue_number', return_value=222):
+                    with patch('issue_orchestrator.agent_done.get_repo', return_value='owner/repo'):
+                        with patch('issue_orchestrator.agent_done.add_trailers_to_commit'):
+                            with patch('issue_orchestrator.agent_done.git_push'):
+                                with patch('issue_orchestrator.agent_done.add_label'):
+                                    with patch('issue_orchestrator.agent_done.post_comment'):
+                                        main()
 
-                                    captured = capsys.readouterr()
-                                    assert "NEEDS HUMAN" in captured.out
+                                        captured = capsys.readouterr()
+                                        assert "NEEDS HUMAN" in captured.out
 
     def test_main_missing_required_field(self):
         """Test error when required field is missing."""
@@ -989,8 +995,15 @@ class TestMainIntegration:
         with patch('sys.argv', args):
             with patch('subprocess.run') as mock_run:
                 # Setup subprocess mocks for the full workflow:
-                # 1. get_issue_number, 2. get_repo, 3. add_trailers, 4. rebase, 5. push, 6. get_title, 7. create_pr, 8. post_comment
+                # 0. preflight git status, 1. preflight pytest collect, 2. preflight pytest run,
+                # 3. get_issue_number, 4. get_repo, 5. add_trailers, 6. rebase, 7. push, 8. get_title, 9. create_pr, 10. post_comment
                 mock_run.side_effect = [
+                    # run_preflight_checks: git status --porcelain (no uncommitted changes)
+                    Mock(returncode=0, stdout=""),
+                    # run_preflight_checks: pytest --collect-only (test collection passes)
+                    Mock(returncode=0, stdout=""),
+                    # run_preflight_checks: pytest (tests pass)
+                    Mock(returncode=0, stdout=""),
                     # get_issue_number: git branch --show-current
                     Mock(returncode=0, stdout="123-add-oauth\n"),
                     # get_repo: gh repo view
@@ -1035,6 +1048,8 @@ class TestMainIntegration:
         with patch('sys.argv', args):
             with patch('subprocess.run') as mock_run:
                 mock_run.side_effect = [
+                    # run_preflight_checks: git status --porcelain (no uncommitted changes)
+                    Mock(returncode=0, stdout=""),
                     # get_issue_number
                     Mock(returncode=0, stdout="789-api-integration\n"),
                     # get_repo
@@ -1073,6 +1088,8 @@ class TestMainIntegration:
         with patch('sys.argv', args):
             with patch('subprocess.run') as mock_run:
                 mock_run.side_effect = [
+                    # run_preflight_checks: git status --porcelain (no uncommitted changes)
+                    Mock(returncode=0, stdout=""),
                     # get_issue_number
                     Mock(returncode=0, stdout="999-legacy-fix\n"),
                     # get_repo
@@ -1191,3 +1208,86 @@ class TestEdgeCases:
         updated = comment.replace("<PR_LINK_PLACEHOLDER>", "https://github.com/owner/repo/pull/1")
         assert "https://github.com/owner/repo/pull/1" in updated
         assert "<PR_LINK_PLACEHOLDER>" not in updated
+
+
+class TestPreflightChecks:
+    """Test pre-flight checks that run before agent-done workflow."""
+
+    def test_preflight_passes_clean_state(self, capsys):
+        """Test preflight passes when git is clean."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="")
+
+            # Should not raise
+            run_preflight_checks(Status.BLOCKED)
+
+            captured = capsys.readouterr()
+            assert "Pre-flight checks passed" in captured.out
+
+    def test_preflight_fails_uncommitted_changes(self):
+        """Test preflight fails when there are uncommitted changes."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(
+                returncode=0,
+                stdout=" M src/foo.py\n?? new_file.txt\n"
+            )
+
+            with pytest.raises(SystemExit) as exc_info:
+                run_preflight_checks(Status.COMPLETED)
+
+            assert exc_info.value.code == 1
+
+    def test_preflight_dry_run_reports_issues(self, capsys):
+        """Test preflight in dry-run mode reports but doesn't fail."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(
+                returncode=0,
+                stdout=" M src/foo.py\n"
+            )
+
+            # Should not raise in dry-run
+            run_preflight_checks(Status.COMPLETED, dry_run=True)
+
+            captured = capsys.readouterr()
+            assert "PRE-FLIGHT CHECK ISSUES" in captured.out
+            assert "Uncommitted changes" in captured.out
+
+    def test_preflight_tests_only_for_completed(self, capsys):
+        """Test that pytest checks only run for COMPLETED status."""
+        with patch('subprocess.run') as mock_run:
+            # Only git status check, no pytest
+            mock_run.return_value = Mock(returncode=0, stdout="")
+
+            run_preflight_checks(Status.BLOCKED)
+
+            # Should only call git status, not pytest
+            assert mock_run.call_count == 1
+            assert "git" in str(mock_run.call_args_list[0])
+
+    def test_preflight_runs_tests_for_completed(self, capsys):
+        """Test that pytest runs for COMPLETED status."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout=""),  # git status
+                Mock(returncode=0, stdout=""),  # pytest --collect-only
+                Mock(returncode=0, stdout=""),  # pytest
+            ]
+
+            run_preflight_checks(Status.COMPLETED)
+
+            # Should call git status + 2 pytest calls
+            assert mock_run.call_count == 3
+
+    def test_preflight_fails_on_test_failure(self):
+        """Test preflight fails when tests fail."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout=""),  # git status clean
+                Mock(returncode=0, stdout=""),  # pytest --collect-only
+                Mock(returncode=1, stdout="FAILED test_foo.py", stderr=""),  # pytest fails
+            ]
+
+            with pytest.raises(SystemExit) as exc_info:
+                run_preflight_checks(Status.COMPLETED)
+
+            assert exc_info.value.code == 1

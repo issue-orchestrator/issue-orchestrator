@@ -45,29 +45,25 @@ class TestOrchestratorWiring:
         return config
 
     @pytest.mark.asyncio
-    async def test_startup_calls_lock_cleanup(self, config):
-        """Verify startup() actually calls the cleanup functions."""
+    async def test_startup_queries_in_progress_issues(self, config):
+        """Verify startup() queries for in-progress issues."""
         from issue_orchestrator.orchestrator import Orchestrator
 
         orchestrator = Orchestrator(config)
-        cleanup_called = []
 
-        # Must patch where function is USED (orchestrator module), not where defined
-        with patch('issue_orchestrator.orchestrator.cleanup_stale_claims') as mock_cleanup:
-            mock_cleanup.side_effect = lambda *args: cleanup_called.append('cleanup')
-            mock_cleanup.return_value = []
+        with patch('issue_orchestrator.orchestrator.list_issues', return_value=[]) as mock_list:
+            with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
+                await orchestrator.startup()
 
-            with patch('issue_orchestrator.orchestrator.list_issues', return_value=[]):
-                # get_issue_branches is imported inside startup, so patch analysis module
-                with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
-                    await orchestrator.startup()
+                # Verify list_issues was called to check for in-progress issues
+                mock_list.assert_called()
 
-                    # Verify cleanup was actually called
-                    assert 'cleanup' in cleanup_called, "Expected cleanup_stale_claims to be called"
-
-    def test_launch_session_creates_worktree_and_window(self, config):
+    def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager):
         """Verify launch_session actually creates worktree and tmux window."""
         from issue_orchestrator.orchestrator import Orchestrator
+
+        # Configure mock plugin to allow session creation
+        patch_plugin_manager.plugin.session_exists_override = False
 
         orchestrator = Orchestrator(config)
         test_issue = Issue(
@@ -77,7 +73,7 @@ class TestOrchestratorWiring:
             state="open"
         )
 
-        created = {"worktree": False, "window": False, "label": False}
+        created = {"worktree": False, "label": False}
 
         # Patch where functions are USED (in orchestrator module)
         with patch('issue_orchestrator.orchestrator.create_worktree') as mock_worktree:
@@ -86,26 +82,21 @@ class TestOrchestratorWiring:
                 return (Path("/fake/worktree"), "456-test-feature")
             mock_worktree.side_effect = record_worktree
 
-            with patch('issue_orchestrator.orchestrator.create_session') as mock_create:
-                def record_window(*args, **kwargs):
-                    created['window'] = True
-                mock_create.side_effect = record_window
+            with patch('issue_orchestrator.orchestrator.add_label') as mock_label:
+                def record_label(*args, **kwargs):
+                    created['label'] = True
+                mock_label.side_effect = record_label
 
-                with patch('issue_orchestrator.orchestrator.add_label') as mock_label:
-                    def record_label(*args, **kwargs):
-                        created['label'] = True
-                    mock_label.side_effect = record_label
+                # launch_session only takes issue - gets agent_config internally
+                session = orchestrator.launch_session(test_issue)
 
-                    with patch('issue_orchestrator.orchestrator.try_claim', return_value=True):
-                        # launch_session only takes issue - gets agent_config internally
-                        session = orchestrator.launch_session(test_issue)
-
-                        # Verify all steps happened
-                        assert created['worktree'], "Worktree should be created"
-                        assert created['window'], "Tmux window should be created"
-                        assert created['label'], "In-progress label should be added"
-                        assert session is not None
-                        assert session.issue.number == 456
+                # Verify all steps happened
+                assert created['worktree'], "Worktree should be created"
+                # Verify window created via plugin manager
+                assert len(patch_plugin_manager.plugin.create_session_calls) == 1, "Tmux window should be created"
+                assert created['label'], "In-progress label should be added"
+                assert session is not None
+                assert session.issue.number == 456
 
 
 class TestCLIWiring:
@@ -342,7 +333,6 @@ class TestSmoke:
         from issue_orchestrator import config
         from issue_orchestrator import dashboard
         from issue_orchestrator import github
-        from issue_orchestrator import locks
         from issue_orchestrator import models
         from issue_orchestrator import monitor
         from issue_orchestrator import orchestrator

@@ -7,6 +7,7 @@ from .config import Config
 from .github import add_label, get_issue_labels, get_open_prs_for_branch, remove_label
 from .models import Session, SessionStatus
 from .tmux import kill_session, session_exists
+from . import labels
 
 logger = logging.getLogger(__name__)
 
@@ -231,31 +232,31 @@ class SessionMonitor:
                         f"Failed to kill session {session.tmux_session_name}: {e}"
                     )
 
-                # Add timed-out label
+                # Add blocking label to prevent re-queuing
                 try:
                     add_label(
                         repo=repo,
                         issue_number=issue_number,
-                        label="timed-out",
+                        label=labels.BLOCKED_FAILED,
                     )
-                    logger.info(f"Added 'timed-out' label to issue #{issue_number}")
+                    logger.info(f"Added '{labels.BLOCKED_FAILED}' label to issue #{issue_number} (timed out)")
                 except Exception as e:
                     logger.error(
-                        f"Failed to add 'timed-out' label to issue #{issue_number}: {e}"
+                        f"Failed to add '{labels.BLOCKED_FAILED}' label to issue #{issue_number}: {e}"
                     )
 
             elif status == SessionStatus.FAILED:
-                # Add failed label (optional, helps track failures)
+                # Add blocking label to prevent re-queuing
                 try:
                     add_label(
                         repo=repo,
                         issue_number=issue_number,
-                        label="failed",
+                        label=labels.BLOCKED_FAILED,
                     )
-                    logger.info(f"Added 'failed' label to issue #{issue_number}")
+                    logger.info(f"Added '{labels.BLOCKED_FAILED}' label to issue #{issue_number}")
                 except Exception as e:
                     logger.warning(
-                        f"Failed to add 'failed' label to issue #{issue_number}: {e}"
+                        f"Failed to add '{labels.BLOCKED_FAILED}' label to issue #{issue_number}: {e}"
                     )
 
             # Remove in-progress label only for statuses that release ownership

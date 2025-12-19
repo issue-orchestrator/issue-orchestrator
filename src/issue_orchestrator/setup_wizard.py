@@ -1220,6 +1220,36 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
         state = scan_existing_repo()
         config, existing_config_path = wizard_existing_project(state, prompter)
 
+    # Add cleanup config with defaults (don't prompt - users can edit later)
+    if "cleanup" not in config:
+        # Include section based on their review workflow
+        if config.get("cto_review_agent"):
+            # CTO workflow - cleanup happens after CTO review
+            config["cleanup"] = {
+                "with_cto": {
+                    "close_ai_session_tabs": True,
+                    "remove_worktrees": False,
+                }
+            }
+        elif config.get("code_review_agent"):
+            # Code review only - cleanup after code review
+            config["cleanup"] = {
+                "without_cto": {
+                    "wait_for_code_review": True,
+                    "close_ai_session_tabs": True,
+                    "remove_worktrees": False,
+                }
+            }
+        else:
+            # No review workflow - cleanup on completion
+            config["cleanup"] = {
+                "without_cto": {
+                    "wait_for_code_review": False,
+                    "close_ai_session_tabs": True,
+                    "remove_worktrees": False,
+                }
+            }
+
     # Review config
     prompter.print("\n" + "=" * 50)
     prompter.print("CONFIGURATION SUMMARY")

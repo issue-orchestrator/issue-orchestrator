@@ -27,6 +27,7 @@ dependencies = [
     "uvicorn>=0.24",   # ASGI server
     "jinja2>=3.1",     # HTML templates
     "sse-starlette>=1.6",  # Server-Sent Events for real-time updates
+    "pluggy>=1.3",     # Plugin architecture (same as pytest uses)
 ]
 
 [project.optional-dependencies]
@@ -41,6 +42,12 @@ dev = [
 [project.scripts]
 issue-orchestrator = "issue_orchestrator.cli:main"
 agent-done = "issue_orchestrator.agent_done:main"
+
+# Plugin entry points - third-party packages can add their own
+[project.entry-points."issue_orchestrator.plugins"]
+# Built-in plugins are loaded directly, but listed here for reference
+# tmux = "issue_orchestrator.adapters.terminal_tmux:TmuxPlugin"
+# iterm2 = "issue_orchestrator.adapters.terminal_iterm:ITermPlugin"
 
 [build-system]
 requires = ["hatchling"]

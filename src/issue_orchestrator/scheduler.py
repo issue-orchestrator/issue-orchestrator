@@ -8,6 +8,7 @@ from typing import Optional, Protocol
 
 from .models import Issue, AgentConfig
 from .config import Config
+from . import labels
 
 
 # Built-in strategy aliases map to full module paths
@@ -179,14 +180,12 @@ class Scheduler:
             List of issues that are not blocked or in-progress.
         """
         available = []
-        label_blocked = self.config.get_label_blocked()
         for issue in all_issues:
             if issue.state == "closed":
                 continue
-            if "in-progress" in issue.labels:
+            if labels.is_in_progress(issue.labels):
                 continue
-            # Check both configured label (may have prefix) and bare "blocked"
-            if label_blocked in issue.labels or "blocked" in issue.labels:
+            if labels.is_blocking_any(issue.labels):
                 continue
             available.append(issue)
         return available

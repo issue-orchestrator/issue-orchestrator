@@ -476,6 +476,83 @@ def add_trailers_to_commit(data: CompletionData) -> None:
     print("📝 Added structured trailers to commit")
 
 
+def run_preflight_checks(status: Status, dry_run: bool = False) -> None:
+    """Run pre-flight checks before executing the completion workflow.
+
+    These checks catch common issues early:
+    - Uncommitted changes that would cause rebase to fail
+    - Test failures that would block push via pre-push hooks
+
+    Args:
+        status: The completion status being executed
+        dry_run: If True, only report issues without failing
+
+    Raises:
+        SystemExit: If checks fail and not in dry_run mode
+    """
+    issues = []
+
+    # Check 1: Clean git status (no uncommitted changes)
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True, text=True
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        uncommitted = result.stdout.strip().split('\n')
+        issues.append(
+            f"Uncommitted changes detected ({len(uncommitted)} files):\n"
+            f"  {chr(10).join('  ' + line for line in uncommitted[:5])}"
+            + (f"\n  ... and {len(uncommitted) - 5} more" if len(uncommitted) > 5 else "")
+            + "\n  Fix: Stage and commit all changes before running agent-done"
+        )
+
+    # Check 2: Tests pass (only for completed status which pushes with pre-push hooks)
+    if status == Status.COMPLETED and not issues:  # Skip if already have issues
+        print("🧪 Running pre-flight test check...")
+        # Run a quick test to verify the pre-push hook won't block us
+        # Use --collect-only first to check for collection errors, then run tests
+        result = subprocess.run(
+            ["python", "-m", "pytest", "--tb=no", "-q", "--co", "-q"],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            issues.append(
+                "Test collection failed - tests would block push:\n"
+                f"  {result.stderr.strip()[:500]}\n"
+                "  Fix: Ensure all tests can be collected (fix import errors, syntax errors)"
+            )
+        else:
+            # Actually run the tests
+            result = subprocess.run(
+                ["python", "-m", "pytest", "--tb=short", "-q"],
+                capture_output=True, text=True,
+                timeout=300  # 5 minute timeout
+            )
+            if result.returncode != 0:
+                # Extract failure count from pytest output
+                output = result.stdout + result.stderr
+                issues.append(
+                    "Tests are failing - push would be blocked by pre-push hook:\n"
+                    f"  {output.strip()[-500:]}\n"
+                    "  Fix: Make all tests pass before running agent-done"
+                )
+
+    if issues:
+        if dry_run:
+            print("\n⚠️  PRE-FLIGHT CHECK ISSUES (dry-run, not blocking):")
+            for issue in issues:
+                print(f"\n{issue}")
+            print()
+        else:
+            print("\n❌ PRE-FLIGHT CHECKS FAILED:", file=sys.stderr)
+            for issue in issues:
+                print(f"\n{issue}", file=sys.stderr)
+            print("\nFix the issues above and run agent-done again.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("✅ Pre-flight checks passed")
+
+
 def git_rebase_on_main() -> None:
     """Fetch latest main and rebase current branch onto it.
 
@@ -744,6 +821,10 @@ STATUSES:
     from pathlib import Path
     marker_file = Path(".agent-done-marker")
     marker_file.write_text(f"agent-done {status.value} called at {__import__('datetime').datetime.now().isoformat()}\n")
+
+    # Run pre-flight checks before doing anything destructive
+    # This catches issues like uncommitted changes or failing tests early
+    run_preflight_checks(status, dry_run=args.dry_run)
 
     # Get context
     issue_number = get_issue_number()

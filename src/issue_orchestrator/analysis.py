@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Optional
 
 from .github import get_open_prs_for_branch
-from .locks import is_claimed, get_claim_age, is_claim_stale
 from .models import Issue
 
 
@@ -18,9 +17,6 @@ class IssueState:
     branch: Optional[str] = None
     has_open_pr: bool = False
     pr_url: Optional[str] = None
-    is_claimed: bool = False
-    claim_age_minutes: Optional[int] = None
-    claim_is_stale: bool = False
 
     @property
     def is_stale(self) -> bool:
@@ -59,8 +55,6 @@ class IssueState:
             return "pr-pending"
         if self.issue.is_blocked:
             return "blocked"
-        if self.issue.needs_human:
-            return "needs-human"
         if self.issue.is_in_progress:
             if self.branch:
                 return "stale-with-branch"
@@ -129,14 +123,6 @@ def analyze_issue(
                 state.pr_url = prs[0].get("url")
         except Exception:
             pass
-
-    # Check claim status
-    state.is_claimed = is_claimed(issue.number)
-    if state.is_claimed:
-        age = get_claim_age(issue.number)
-        if age is not None:
-            state.claim_age_minutes = int(age / 60)
-        state.claim_is_stale = is_claim_stale(issue.number)
 
     return state
 

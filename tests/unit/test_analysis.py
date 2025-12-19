@@ -214,11 +214,11 @@ class TestIssueState:
         state = IssueState(issue=issue, has_session=False, has_open_pr=False)
         assert state.status_summary == "blocked"
 
-    def test_status_summary_needs_human_when_label_exists(self):
-        """Status is 'needs-human' when needs-human label exists."""
+    def test_status_summary_blocked_when_needs_human_label(self):
+        """Status is 'blocked' when needs-human label exists (it's a blocking label)."""
         issue = Issue(number=1, title="Test", labels=["needs-human"])
         state = IssueState(issue=issue, has_session=False, has_open_pr=False)
-        assert state.status_summary == "needs-human"
+        assert state.status_summary == "blocked"
 
     def test_status_summary_stale_with_branch(self):
         """Status is 'stale-with-branch' when in-progress with branch but no activity."""
@@ -358,17 +358,10 @@ class TestAnalyzeIssue:
     """Test the analyze_issue function."""
 
     @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    @patch("issue_orchestrator.analysis.is_claim_stale")
-    @patch("issue_orchestrator.analysis.get_claim_age")
-    @patch("issue_orchestrator.analysis.is_claimed")
-    def test_analyze_issue_basic(
-        self, mock_is_claimed, mock_get_claim_age, mock_is_claim_stale, mock_get_prs
-    ):
+    def test_analyze_issue_basic(self, mock_get_prs):
         """Test basic issue analysis with no branch or session."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
-
-        mock_is_claimed.return_value = False
 
         result = analyze_issue(issue, "owner/repo", {}, check_session)
 
@@ -377,38 +370,24 @@ class TestAnalyzeIssue:
         assert result.branch is None
         assert result.has_open_pr is False
         assert result.pr_url is None
-        assert result.is_claimed is False
         check_session.assert_called_once_with(5)
 
     @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    @patch("issue_orchestrator.analysis.is_claim_stale")
-    @patch("issue_orchestrator.analysis.get_claim_age")
-    @patch("issue_orchestrator.analysis.is_claimed")
-    def test_analyze_issue_with_session(
-        self, mock_is_claimed, mock_get_claim_age, mock_is_claim_stale, mock_get_prs
-    ):
+    def test_analyze_issue_with_session(self, mock_get_prs):
         """Test issue with active session."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=True)
-
-        mock_is_claimed.return_value = False
 
         result = analyze_issue(issue, "owner/repo", {}, check_session)
 
         assert result.has_session is True
 
     @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    @patch("issue_orchestrator.analysis.is_claim_stale")
-    @patch("issue_orchestrator.analysis.get_claim_age")
-    @patch("issue_orchestrator.analysis.is_claimed")
-    def test_analyze_issue_with_branch_and_pr(
-        self, mock_is_claimed, mock_get_claim_age, mock_is_claim_stale, mock_get_prs
-    ):
+    def test_analyze_issue_with_branch_and_pr(self, mock_get_prs):
         """Test issue with branch and open PR."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
 
-        mock_is_claimed.return_value = False
         mock_get_prs.return_value = [
             {"number": 10, "url": "https://github.com/owner/repo/pull/10"}
         ]
@@ -423,17 +402,11 @@ class TestAnalyzeIssue:
         mock_get_prs.assert_called_once_with("owner/repo", "5-test-issue")
 
     @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    @patch("issue_orchestrator.analysis.is_claim_stale")
-    @patch("issue_orchestrator.analysis.get_claim_age")
-    @patch("issue_orchestrator.analysis.is_claimed")
-    def test_analyze_issue_with_branch_no_pr(
-        self, mock_is_claimed, mock_get_claim_age, mock_is_claim_stale, mock_get_prs
-    ):
+    def test_analyze_issue_with_branch_no_pr(self, mock_get_prs):
         """Test issue with branch but no open PR."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
 
-        mock_is_claimed.return_value = False
         mock_get_prs.return_value = []
 
         result = analyze_issue(
@@ -445,17 +418,10 @@ class TestAnalyzeIssue:
         assert result.pr_url is None
 
     @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    @patch("issue_orchestrator.analysis.is_claim_stale")
-    @patch("issue_orchestrator.analysis.get_claim_age")
-    @patch("issue_orchestrator.analysis.is_claimed")
-    def test_analyze_issue_no_repo_skips_pr_check(
-        self, mock_is_claimed, mock_get_claim_age, mock_is_claim_stale, mock_get_prs
-    ):
+    def test_analyze_issue_no_repo_skips_pr_check(self, mock_get_prs):
         """Test that PR check is skipped when no repo provided."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
-
-        mock_is_claimed.return_value = False
 
         result = analyze_issue(issue, None, {5: "5-test-issue"}, check_session)
 
@@ -464,17 +430,11 @@ class TestAnalyzeIssue:
         mock_get_prs.assert_not_called()
 
     @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    @patch("issue_orchestrator.analysis.is_claim_stale")
-    @patch("issue_orchestrator.analysis.get_claim_age")
-    @patch("issue_orchestrator.analysis.is_claimed")
-    def test_analyze_issue_pr_check_exception_ignored(
-        self, mock_is_claimed, mock_get_claim_age, mock_is_claim_stale, mock_get_prs
-    ):
+    def test_analyze_issue_pr_check_exception_ignored(self, mock_get_prs):
         """Test that exceptions in PR check are caught and ignored."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
 
-        mock_is_claimed.return_value = False
         mock_get_prs.side_effect = Exception("API error")
 
         result = analyze_issue(
@@ -483,72 +443,6 @@ class TestAnalyzeIssue:
 
         assert result.has_open_pr is False
         assert result.pr_url is None
-
-    @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    @patch("issue_orchestrator.analysis.is_claim_stale")
-    @patch("issue_orchestrator.analysis.get_claim_age")
-    @patch("issue_orchestrator.analysis.is_claimed")
-    def test_analyze_issue_with_claim(
-        self, mock_is_claimed, mock_get_claim_age, mock_is_claim_stale, mock_get_prs
-    ):
-        """Test issue with active claim."""
-        issue = Issue(number=5, title="Test Issue", labels=[])
-        check_session = Mock(return_value=False)
-
-        mock_is_claimed.return_value = True
-        mock_get_claim_age.return_value = 1800  # 30 minutes in seconds
-        mock_is_claim_stale.return_value = False
-
-        result = analyze_issue(issue, "owner/repo", {}, check_session)
-
-        assert result.is_claimed is True
-        assert result.claim_age_minutes == 30
-        assert result.claim_is_stale is False
-        mock_is_claimed.assert_called_once_with(5)
-        mock_get_claim_age.assert_called_once_with(5)
-        mock_is_claim_stale.assert_called_once_with(5)
-
-    @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    @patch("issue_orchestrator.analysis.is_claim_stale")
-    @patch("issue_orchestrator.analysis.get_claim_age")
-    @patch("issue_orchestrator.analysis.is_claimed")
-    def test_analyze_issue_with_stale_claim(
-        self, mock_is_claimed, mock_get_claim_age, mock_is_claim_stale, mock_get_prs
-    ):
-        """Test issue with stale claim."""
-        issue = Issue(number=5, title="Test Issue", labels=[])
-        check_session = Mock(return_value=False)
-
-        mock_is_claimed.return_value = True
-        mock_get_claim_age.return_value = 7200  # 2 hours
-        mock_is_claim_stale.return_value = True
-
-        result = analyze_issue(issue, "owner/repo", {}, check_session)
-
-        assert result.is_claimed is True
-        assert result.claim_age_minutes == 120
-        assert result.claim_is_stale is True
-
-    @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    @patch("issue_orchestrator.analysis.is_claim_stale")
-    @patch("issue_orchestrator.analysis.get_claim_age")
-    @patch("issue_orchestrator.analysis.is_claimed")
-    def test_analyze_issue_claim_age_none(
-        self, mock_is_claimed, mock_get_claim_age, mock_is_claim_stale, mock_get_prs
-    ):
-        """Test issue when claim age cannot be determined."""
-        issue = Issue(number=5, title="Test Issue", labels=[])
-        check_session = Mock(return_value=False)
-
-        mock_is_claimed.return_value = True
-        mock_get_claim_age.return_value = None
-        mock_is_claim_stale.return_value = False
-
-        result = analyze_issue(issue, "owner/repo", {}, check_session)
-
-        assert result.is_claimed is True
-        assert result.claim_age_minutes is None
-        assert result.claim_is_stale is False
 
 
 class TestAnalyzeAllIssues:

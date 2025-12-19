@@ -603,3 +603,163 @@ review:
 
         # Threshold of 0 means auto-trigger is disabled
         assert config.cto_review_threshold == 0
+
+
+class TestCleanupConfig:
+    """Tests for cleanup configuration."""
+
+    def test_cleanup_config_defaults(self):
+        """Test that cleanup config has sensible defaults."""
+        config = Config()
+
+        # with_cto defaults
+        assert config.cleanup.with_cto.close_ai_session_tabs is True
+        assert config.cleanup.with_cto.remove_worktrees is False
+
+        # without_cto defaults
+        assert config.cleanup.without_cto.wait_for_code_review is True
+        assert config.cleanup.without_cto.close_ai_session_tabs is True
+        assert config.cleanup.without_cto.remove_worktrees is False
+
+    def test_cleanup_config_from_yaml_with_cto(self, tmp_path):
+        """Test loading cleanup config for CTO workflow."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+
+cleanup:
+  with_cto:
+    close_ai_session_tabs: false
+    remove_worktrees: true
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.cleanup.with_cto.close_ai_session_tabs is False
+        assert config.cleanup.with_cto.remove_worktrees is True
+        # without_cto should have defaults
+        assert config.cleanup.without_cto.wait_for_code_review is True
+        assert config.cleanup.without_cto.close_ai_session_tabs is True
+
+    def test_cleanup_config_from_yaml_without_cto(self, tmp_path):
+        """Test loading cleanup config for non-CTO workflow."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+
+cleanup:
+  without_cto:
+    wait_for_code_review: false
+    close_ai_session_tabs: true
+    remove_worktrees: true
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.cleanup.without_cto.wait_for_code_review is False
+        assert config.cleanup.without_cto.close_ai_session_tabs is True
+        assert config.cleanup.without_cto.remove_worktrees is True
+        # with_cto should have defaults
+        assert config.cleanup.with_cto.close_ai_session_tabs is True
+        assert config.cleanup.with_cto.remove_worktrees is False
+
+    def test_cleanup_config_from_yaml_both_sections(self, tmp_path):
+        """Test loading cleanup config with both sections specified."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+
+cleanup:
+  with_cto:
+    close_ai_session_tabs: true
+    remove_worktrees: true
+  without_cto:
+    wait_for_code_review: false
+    close_ai_session_tabs: false
+    remove_worktrees: false
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # with_cto
+        assert config.cleanup.with_cto.close_ai_session_tabs is True
+        assert config.cleanup.with_cto.remove_worktrees is True
+
+        # without_cto
+        assert config.cleanup.without_cto.wait_for_code_review is False
+        assert config.cleanup.without_cto.close_ai_session_tabs is False
+        assert config.cleanup.without_cto.remove_worktrees is False
+
+    def test_cleanup_config_partial_fields_use_defaults(self, tmp_path):
+        """Test that unspecified cleanup fields use defaults."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+
+cleanup:
+  with_cto:
+    remove_worktrees: true
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # Specified field
+        assert config.cleanup.with_cto.remove_worktrees is True
+        # Unspecified field should use default
+        assert config.cleanup.with_cto.close_ai_session_tabs is True
+
+    def test_cleanup_config_empty_section_uses_defaults(self, tmp_path):
+        """Test that empty cleanup section uses all defaults."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+
+cleanup: {}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # All defaults
+        assert config.cleanup.with_cto.close_ai_session_tabs is True
+        assert config.cleanup.with_cto.remove_worktrees is False
+        assert config.cleanup.without_cto.wait_for_code_review is True
+        assert config.cleanup.without_cto.close_ai_session_tabs is True
+        assert config.cleanup.without_cto.remove_worktrees is False
+
+    def test_cleanup_config_missing_section_uses_defaults(self, tmp_path):
+        """Test that missing cleanup section uses all defaults."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # All defaults when section is missing
+        assert config.cleanup.with_cto.close_ai_session_tabs is True
+        assert config.cleanup.with_cto.remove_worktrees is False
+        assert config.cleanup.without_cto.wait_for_code_review is True

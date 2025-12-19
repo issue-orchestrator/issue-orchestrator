@@ -496,11 +496,11 @@ class TestHandleCompletion:
         # Should kill session
         mock_kill.assert_called_once_with("issue-123")
 
-        # Should add timed-out label
+        # Should add blocked-failed label (covers timed-out)
         mock_add_label.assert_called_once_with(
             repo="owner/repo",
             issue_number=123,
-            label="timed-out",
+            label="blocked-failed",
         )
 
         # Should remove in-progress label
@@ -518,11 +518,11 @@ class TestHandleCompletion:
         """Test handling FAILED status."""
         monitor.handle_completion(sample_session, SessionStatus.FAILED)
 
-        # Should add failed label
+        # Should add blocked-failed label
         mock_add_label.assert_called_once_with(
             repo="owner/repo",
             issue_number=123,
-            label="failed",
+            label="blocked-failed",
         )
 
         # Should remove in-progress label
@@ -818,7 +818,7 @@ class TestSessionMonitorIntegration:
         mock_add_label.assert_called_once_with(
             repo="owner/repo",
             issue_number=123,
-            label="timed-out",
+            label="blocked-failed",
         )
         mock_remove_label.assert_called_once_with(
             repo="owner/repo",

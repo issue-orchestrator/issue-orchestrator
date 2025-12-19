@@ -10,6 +10,28 @@ from .models import AgentConfig, CommentHeadings
 
 
 @dataclass
+class CleanupWithCTO:
+    """Cleanup settings when CTO review is enabled."""
+    close_ai_session_tabs: bool = True
+    remove_worktrees: bool = False
+
+
+@dataclass
+class CleanupWithoutCTO:
+    """Cleanup settings when CTO review is NOT enabled."""
+    wait_for_code_review: bool = True  # True = after code review, False = on completion
+    close_ai_session_tabs: bool = True
+    remove_worktrees: bool = False
+
+
+@dataclass
+class CleanupConfig:
+    """Cleanup configuration - when to close tabs and remove worktrees."""
+    with_cto: CleanupWithCTO = field(default_factory=CleanupWithCTO)
+    without_cto: CleanupWithoutCTO = field(default_factory=CleanupWithoutCTO)
+
+
+@dataclass
 class Config:
     """Orchestrator configuration."""
 
@@ -46,6 +68,10 @@ class Config:
     web_port: int = 8080  # Port for web dashboard
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
 
+    # Terminal adapter (optional - overrides ui_mode if set)
+    # Can be "builtin:tmux", "builtin:iterm2", or a full class path
+    terminal_adapter: Optional[str] = None
+
     # Session limits
     max_issues_to_start: int = 0  # Max issues to start processing (0 = unlimited)
 
@@ -55,7 +81,10 @@ class Config:
     # Config passed to strategy via **kwargs (e.g., pattern="M(\\d+)" for PatternStrategy)
     milestone_sort_config: dict = field(default_factory=dict)
 
-    # Tab cleanup behavior
+    # Cleanup configuration - when to close AI session tabs and remove worktrees
+    cleanup: CleanupConfig = field(default_factory=CleanupConfig)
+
+    # Legacy tab cleanup behavior (deprecated - use cleanup section instead)
     close_completed_tabs: bool = True   # Auto-close tabs for successful completions (has PR)
     close_failed_tabs: bool = False     # Auto-close tabs for failed sessions (leave open to investigate)
 
@@ -76,6 +105,7 @@ class Config:
     cto_review_label: Optional[str] = None  # Label for PRs awaiting CTO review (uses code_reviewed_label if not set)
     cto_reviewed_label: Optional[str] = None  # Label after CTO review (e.g., "cto-reviewed")
     cto_review_threshold: int = 0  # Trigger CTO review after N PRs (0 = manual only)
+    cto_review_on_failure: bool = True  # Trigger CTO to investigate when sessions fail
 
     # Rework cycle limit (when reviewer requests changes)
     max_rework_cycles: int = 2  # Max times to re-queue work agent before escalating to needs-human
@@ -172,6 +202,9 @@ class Config:
         config.web_port = data.get("web_port", 8080)
         config.queue_refresh_seconds = data.get("queue_refresh_seconds", 600)
 
+        # Terminal adapter (overrides ui_mode if set)
+        config.terminal_adapter = data.get("terminal_adapter")
+
         # Session limits
         config.max_issues_to_start = data.get("max_issues_to_start", 0)
 
@@ -204,6 +237,7 @@ class Config:
         config.cto_review_label = review_config.get("cto_review_label")  # defaults to code_reviewed_label
         config.cto_reviewed_label = review_config.get("cto_reviewed_label", "cto-reviewed")
         config.cto_review_threshold = review_config.get("cto_review_threshold", 0)
+        config.cto_review_on_failure = review_config.get("cto_review_on_failure", True)
 
         # Rework cycle limit
         config.max_rework_cycles = review_config.get("max_rework_cycles", 2)
@@ -215,6 +249,24 @@ class Config:
             config.code_review_label = review_config["label"]
         if "threshold" in review_config and config.cto_review_threshold == 0:
             config.cto_review_threshold = review_config["threshold"]
+
+        # Parse cleanup config
+        cleanup_data = data.get("cleanup", {})
+        if cleanup_data:
+            with_cto_data = cleanup_data.get("with_cto", {})
+            without_cto_data = cleanup_data.get("without_cto", {})
+
+            config.cleanup = CleanupConfig(
+                with_cto=CleanupWithCTO(
+                    close_ai_session_tabs=with_cto_data.get("close_ai_session_tabs", True),
+                    remove_worktrees=with_cto_data.get("remove_worktrees", False),
+                ),
+                without_cto=CleanupWithoutCTO(
+                    wait_for_code_review=without_cto_data.get("wait_for_code_review", True),
+                    close_ai_session_tabs=without_cto_data.get("close_ai_session_tabs", True),
+                    remove_worktrees=without_cto_data.get("remove_worktrees", False),
+                ),
+            )
 
         # Parse comment headings
         headings_data = data.get("comment_headings", {})
