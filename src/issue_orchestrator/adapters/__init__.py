@@ -33,6 +33,7 @@ from .terminal_tmux import TmuxPlugin
 from .terminal_iterm import ITermPlugin
 from .github_adapter import GitHubAdapter
 from .json_store import JsonSessionStore
+from .lifecycle_ipc import LifecycleIPCPlugin
 
 __all__ = [
     # Main interface
@@ -42,6 +43,8 @@ __all__ = [
     # Built-in plugins (for direct import if needed)
     "TmuxPlugin",
     "ITermPlugin",
+    # Lifecycle plugins
+    "LifecycleIPCPlugin",
     # Repository adapters
     "GitHubAdapter",
     # Session stores

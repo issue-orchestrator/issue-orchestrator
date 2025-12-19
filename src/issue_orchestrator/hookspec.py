@@ -109,6 +109,173 @@ class TerminalSpec:
         """
 
 
+class LifecycleSpec:
+    """Hook specifications for orchestrator lifecycle events.
+
+    Lifecycle hooks enable plugins to react to state changes in the orchestrator.
+    Unlike TerminalSpec (firstresult=True), these hooks broadcast to ALL plugins
+    so any UI (web, CLI, desktop, Slack) can receive notifications.
+
+    All hooks are fire-and-forget - return values are ignored.
+    """
+
+    @hookspec
+    def on_issue_claimed(
+        self,
+        issue_number: int,
+        title: str,
+        agent_type: str,
+    ) -> None:
+        """Called when an issue is claimed by an agent.
+
+        Args:
+            issue_number: The GitHub issue number
+            title: Issue title
+            agent_type: The agent type handling this issue (e.g., "agent:web")
+        """
+
+    @hookspec
+    def on_session_started(
+        self,
+        issue_number: int,
+        session_id: str,
+        worktree_path: str,
+        branch_name: str,
+    ) -> None:
+        """Called when an agent session starts running.
+
+        Args:
+            issue_number: The GitHub issue number
+            session_id: Unique session identifier
+            worktree_path: Path to the git worktree
+            branch_name: Git branch name for this work
+        """
+
+    @hookspec
+    def on_session_completed(
+        self,
+        issue_number: int,
+        session_id: str,
+        pr_url: str | None,
+        runtime_minutes: float | None,
+    ) -> None:
+        """Called when an agent session completes successfully.
+
+        Args:
+            issue_number: The GitHub issue number
+            session_id: Unique session identifier
+            pr_url: URL of the created PR, if any
+            runtime_minutes: How long the session ran
+        """
+
+    @hookspec
+    def on_session_failed(
+        self,
+        issue_number: int,
+        session_id: str,
+        error: str | None,
+        runtime_minutes: float | None,
+    ) -> None:
+        """Called when an agent session fails or times out.
+
+        Args:
+            issue_number: The GitHub issue number
+            session_id: Unique session identifier
+            error: Error message or reason for failure
+            runtime_minutes: How long the session ran before failing
+        """
+
+    @hookspec
+    def on_issue_blocked(
+        self,
+        issue_number: int,
+        reason: str | None,
+    ) -> None:
+        """Called when an issue becomes blocked.
+
+        Args:
+            issue_number: The GitHub issue number
+            reason: Why the issue is blocked
+        """
+
+    @hookspec
+    def on_issue_needs_human(
+        self,
+        issue_number: int,
+        reason: str | None,
+    ) -> None:
+        """Called when an issue needs human intervention.
+
+        Args:
+            issue_number: The GitHub issue number
+            reason: What human help is needed
+        """
+
+    @hookspec
+    def on_pr_created(
+        self,
+        issue_number: int,
+        pr_number: int,
+        pr_url: str,
+        title: str,
+    ) -> None:
+        """Called when a pull request is created.
+
+        Args:
+            issue_number: The associated issue number
+            pr_number: The PR number
+            pr_url: URL to the PR
+            title: PR title
+        """
+
+    @hookspec
+    def on_review_requested(
+        self,
+        pr_number: int,
+        issue_number: int,
+        review_type: str,
+    ) -> None:
+        """Called when a review is requested for a PR.
+
+        Args:
+            pr_number: The PR number
+            issue_number: The associated issue number
+            review_type: Type of review ("code_review", "cto_review")
+        """
+
+    @hookspec
+    def on_review_completed(
+        self,
+        pr_number: int,
+        issue_number: int,
+        result: str,
+        rework_count: int,
+    ) -> None:
+        """Called when a review is completed.
+
+        Args:
+            pr_number: The PR number
+            issue_number: The associated issue number
+            result: Review result ("approved", "changes_requested", "merged")
+            rework_count: Number of rework cycles so far
+        """
+
+    @hookspec
+    def on_orchestrator_state_changed(
+        self,
+        active_count: int,
+        paused: bool,
+        completed_today: int,
+    ) -> None:
+        """Called when orchestrator state changes significantly.
+
+        Args:
+            active_count: Number of active sessions
+            paused: Whether orchestrator is paused
+            completed_today: Number of completions today
+        """
+
+
 # Future hook specs can be added here:
 #
 # class AISpec:

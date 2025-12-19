@@ -9,7 +9,7 @@ from typing import Optional
 
 import pluggy
 
-from ..hookspec import PROJECT_NAME, TerminalSpec
+from ..hookspec import PROJECT_NAME, TerminalSpec, LifecycleSpec
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ def create_plugin_manager(
 
     # Register hook specifications
     pm.add_hookspecs(TerminalSpec)
+    pm.add_hookspecs(LifecycleSpec)
 
     # Determine which terminal plugin to load
     if terminal_plugin:
@@ -168,3 +169,151 @@ class PluginManager:
     def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
         """Get session output."""
         return self._pm.hook.get_session_output(session_id=session_id, lines=lines)
+
+    def register_plugin(self, plugin: object, name: str | None = None) -> None:
+        """Register an additional plugin.
+
+        Args:
+            plugin: Plugin instance implementing hook methods
+            name: Optional name for the plugin
+        """
+        self._pm.register(plugin, name=name)
+        logger.info("Registered plugin: %s", name or type(plugin).__name__)
+
+    # Lifecycle hook convenience methods
+
+    def notify_issue_claimed(
+        self,
+        issue_number: int,
+        title: str,
+        agent_type: str,
+    ) -> None:
+        """Notify all plugins that an issue was claimed."""
+        self._pm.hook.on_issue_claimed(
+            issue_number=issue_number,
+            title=title,
+            agent_type=agent_type,
+        )
+
+    def notify_session_started(
+        self,
+        issue_number: int,
+        session_id: str,
+        worktree_path: str,
+        branch_name: str,
+    ) -> None:
+        """Notify all plugins that a session started."""
+        self._pm.hook.on_session_started(
+            issue_number=issue_number,
+            session_id=session_id,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+        )
+
+    def notify_session_completed(
+        self,
+        issue_number: int,
+        session_id: str,
+        pr_url: str | None,
+        runtime_minutes: float | None,
+    ) -> None:
+        """Notify all plugins that a session completed."""
+        self._pm.hook.on_session_completed(
+            issue_number=issue_number,
+            session_id=session_id,
+            pr_url=pr_url,
+            runtime_minutes=runtime_minutes,
+        )
+
+    def notify_session_failed(
+        self,
+        issue_number: int,
+        session_id: str,
+        error: str | None,
+        runtime_minutes: float | None,
+    ) -> None:
+        """Notify all plugins that a session failed."""
+        self._pm.hook.on_session_failed(
+            issue_number=issue_number,
+            session_id=session_id,
+            error=error,
+            runtime_minutes=runtime_minutes,
+        )
+
+    def notify_issue_blocked(
+        self,
+        issue_number: int,
+        reason: str | None,
+    ) -> None:
+        """Notify all plugins that an issue is blocked."""
+        self._pm.hook.on_issue_blocked(
+            issue_number=issue_number,
+            reason=reason,
+        )
+
+    def notify_issue_needs_human(
+        self,
+        issue_number: int,
+        reason: str | None,
+    ) -> None:
+        """Notify all plugins that an issue needs human help."""
+        self._pm.hook.on_issue_needs_human(
+            issue_number=issue_number,
+            reason=reason,
+        )
+
+    def notify_pr_created(
+        self,
+        issue_number: int,
+        pr_number: int,
+        pr_url: str,
+        title: str,
+    ) -> None:
+        """Notify all plugins that a PR was created."""
+        self._pm.hook.on_pr_created(
+            issue_number=issue_number,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            title=title,
+        )
+
+    def notify_review_requested(
+        self,
+        pr_number: int,
+        issue_number: int,
+        review_type: str,
+    ) -> None:
+        """Notify all plugins that a review was requested."""
+        self._pm.hook.on_review_requested(
+            pr_number=pr_number,
+            issue_number=issue_number,
+            review_type=review_type,
+        )
+
+    def notify_review_completed(
+        self,
+        pr_number: int,
+        issue_number: int,
+        result: str,
+        rework_count: int,
+    ) -> None:
+        """Notify all plugins that a review was completed."""
+        self._pm.hook.on_review_completed(
+            pr_number=pr_number,
+            issue_number=issue_number,
+            result=result,
+            rework_count=rework_count,
+        )
+
+    def notify_state_changed(
+        self,
+        active_count: int,
+        paused: bool,
+        completed_today: int,
+    ) -> None:
+        """Notify all plugins of orchestrator state change."""
+        self._pm.hook.on_orchestrator_state_changed(
+            active_count=active_count,
+            paused=paused,
+            completed_today=completed_today,
+        )
