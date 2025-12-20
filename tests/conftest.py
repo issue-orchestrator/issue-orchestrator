@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, PropertyMock, patch
 from issue_orchestrator.models import AgentConfig, Issue
-from issue_orchestrator.config import Config
+from issue_orchestrator.config import Config, DangerousConfig
 from issue_orchestrator.hookspec import hookimpl
 from issue_orchestrator.ports.pr_repository import PRInfo
 
@@ -305,6 +305,8 @@ def sample_config(sample_agent_config, tmp_path):
     config.ui_mode = "tmux"  # Avoid iTerm2 detection during tests
     # Use temp directory for state file to isolate tests
     config.state_file = tmp_path / ".issue-orchestrator" / "state.json"
+    # Skip hook verification in tests (tests are not testing hook enforcement)
+    config.dangerous = DangerousConfig(skip_verification=True, allow_unsupported_agents=True)
     return config
 
 

@@ -1,0 +1,8 @@
+{
+  "beforeShellExecution": [
+    {
+      "command": ".cursor/hooks/block-no-verify.sh",
+      "output": "json"
+    }
+  ]
+}

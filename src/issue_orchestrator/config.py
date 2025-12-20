@@ -32,6 +32,17 @@ class CleanupConfig:
 
 
 @dataclass
+class DangerousConfig:
+    """Dangerous configuration options that bypass safety guardrails.
+
+    These options should only be used for testing or in environments
+    where you understand the risks.
+    """
+    skip_verification: bool = False  # Skip hook verification on startup
+    allow_unsupported_agents: bool = False  # Allow agents without hook support
+
+
+@dataclass
 class Config:
     """Orchestrator configuration."""
 
@@ -109,6 +120,9 @@ class Config:
 
     # Rework cycle limit (when reviewer requests changes)
     max_rework_cycles: int = 2  # Max times to re-queue work agent before escalating to needs-human
+
+    # Dangerous options (use with caution)
+    dangerous: DangerousConfig = field(default_factory=DangerousConfig)
 
     # Path to the config file (set during load)
     config_path: Optional[Path] = None
@@ -277,6 +291,14 @@ class Config:
                 pr_link=headings_data.get("pr_link", "## Pull Request"),
                 blocked=headings_data.get("blocked", "## Blocked"),
                 needs_human=headings_data.get("needs_human", "## Needs Human Input"),
+            )
+
+        # Parse dangerous config
+        dangerous_data = data.get("dangerous", {})
+        if dangerous_data:
+            config.dangerous = DangerousConfig(
+                skip_verification=dangerous_data.get("skip_verification", False),
+                allow_unsupported_agents=dangerous_data.get("allow_unsupported_agents", False),
             )
 
         return config

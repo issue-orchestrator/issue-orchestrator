@@ -235,6 +235,98 @@ class Orchestrator:
                 logger.warning("Error stopping IPC server: %s", e)
             self._ipc_server = None
 
+    async def _verify_hooks_on_startup(self) -> None:
+        """Verify AI meta-agent hooks are installed and effective.
+
+        This check ensures that agents cannot bypass safety guardrails
+        like --no-verify. If verification fails and skip_verification
+        is not enabled, startup will be blocked.
+        """
+        from .hooks import (
+            detect_agents_from_config,
+            get_adapter,
+            check_verification_status,
+            UnsupportedMetaAgentError,
+            MetaAgentType,
+        )
+
+        # Check if verification should be skipped
+        if self.config.dangerous.skip_verification:
+            logger.warning(
+                "[DANGEROUS] Hook verification skipped - safety guardrails may not be effective!"
+            )
+            print("[WARNING] Hook verification skipped (dangerous.skip_verification=true)")
+            print("[WARNING] Agents may be able to bypass --no-verify protection!")
+            return
+
+        # Detect which meta-agents are configured
+        agent_types = detect_agents_from_config(self.config)
+        unique_types = set(agent_types.values())
+
+        logger.info("Verifying hooks for meta-agents: %s", [t.value for t in unique_types])
+
+        all_verified = True
+        unsupported = []
+
+        for agent_type in unique_types:
+            try:
+                adapter = get_adapter(agent_type)
+
+                # Check if hooks are installed
+                if not adapter.is_installed(self.config.repo_root):
+                    logger.error(
+                        "Hooks not installed for %s. Run 'issue-orchestrator setup-hooks'",
+                        agent_type.value
+                    )
+                    print(f"[ERROR] Hooks not installed for {agent_type.value}")
+                    print("        Run 'issue-orchestrator setup-hooks' to install them")
+                    all_verified = False
+                    continue
+
+                # Verify hooks are working
+                result = adapter.verify_hooks(self.config.repo_root)
+                if result.success:
+                    logger.info("Hooks verified for %s (%d checks)", agent_type.value, len(result.checks_passed))
+                    print(f"[OK] Hooks verified for {agent_type.value}")
+                else:
+                    logger.error("Hook verification failed for %s: %s", agent_type.value, result.checks_failed)
+                    print(f"[ERROR] Hook verification failed for {agent_type.value}")
+                    for failure in result.checks_failed:
+                        print(f"        - {failure}")
+                    all_verified = False
+
+            except UnsupportedMetaAgentError as e:
+                unsupported.append((agent_type, str(e)))
+                if not self.config.dangerous.allow_unsupported_agents:
+                    logger.error("Unsupported meta-agent: %s", e)
+                    all_verified = False
+
+        # Handle unsupported agents
+        if unsupported:
+            if self.config.dangerous.allow_unsupported_agents:
+                for agent_type, reason in unsupported:
+                    logger.warning("[DANGEROUS] Allowing unsupported agent %s: %s", agent_type.value, reason)
+                    print(f"[WARNING] Unsupported agent {agent_type.value} allowed (dangerous mode)")
+            else:
+                for agent_type, reason in unsupported:
+                    print(f"[ERROR] Unsupported meta-agent: {agent_type.value}")
+                    print(f"        {reason}")
+                print("\nTo allow unsupported agents, set dangerous.allow_unsupported_agents: true")
+
+        # Block startup if verification failed
+        if not all_verified:
+            print("\n" + "=" * 60)
+            print("STARTUP BLOCKED: Hook verification failed")
+            print("=" * 60)
+            print("\nWithout verified hooks, agents can bypass --no-verify")
+            print("and push code without running pre-push tests/checks.")
+            print("\nOptions:")
+            print("  1. Run 'issue-orchestrator setup-hooks' to install hooks")
+            print("  2. Run 'issue-orchestrator verify' to diagnose issues")
+            print("  3. Set 'dangerous.skip_verification: true' in config (NOT RECOMMENDED)")
+            print()
+            raise RuntimeError("Hook verification failed - cannot start orchestrator safely")
+
     # ==================== Naming Conventions ====================
     # Centralized methods for deriving session names and paths.
     # These ensure consistency across launch, recovery, and cleanup.
@@ -771,6 +863,10 @@ class Orchestrator:
         # Start IPC server for external UI processes
         self.state.startup_message = "Starting IPC server..."
         await self._start_ipc_server()
+
+        # Verify AI meta-agent hooks are installed and working
+        self.state.startup_message = "Verifying hook enforcement..."
+        await self._verify_hooks_on_startup()
 
         self.state.startup_message = "Cleaning up stale claims..."
         logger.info("Starting up - checking for stale in-progress issues...")

@@ -1069,6 +1069,52 @@ def cmd_verify(args: argparse.Namespace) -> int:
             console.print(f"  [yellow]![/yellow] tmux not found (ok if using web/none mode)")
             warnings.append("tmux not installed")
 
+    # 7. Verify AI meta-agent hooks
+    console.print("\n[bold]7. AI Meta-Agent Hooks[/bold]")
+    from .hooks import (
+        detect_agents_from_config,
+        get_adapter,
+        UnsupportedMetaAgentError,
+        MetaAgentType,
+    )
+
+    agent_types = detect_agents_from_config(config)
+    unique_types = set(agent_types.values())
+
+    console.print(f"  [cyan]ℹ[/cyan] Detected meta-agents: {[t.value for t in unique_types]}")
+
+    for agent_label, agent_type in agent_types.items():
+        console.print(f"    {agent_label} → {agent_type.value}")
+
+    for agent_type in unique_types:
+        try:
+            adapter = get_adapter(agent_type)
+
+            if adapter.is_installed(config.repo_root):
+                console.print(f"  [green]✓[/green] {agent_type.value}: hooks installed")
+
+                # Run thorough verification
+                result = adapter.verify_hooks(config.repo_root)
+
+                if result.success:
+                    console.print(f"  [green]✓[/green] {agent_type.value}: {len(result.checks_passed)} checks passed")
+                    # Show some details on verbose
+                    block_checks = [c for c in result.checks_passed if c.startswith("blocks:")]
+                    if block_checks:
+                        console.print(f"    [dim]Verified blocking: {len(block_checks)} patterns[/dim]")
+                else:
+                    console.print(f"  [red]✗[/red] {agent_type.value}: verification failed")
+                    for failure in result.checks_failed:
+                        console.print(f"    [red]✗[/red] {failure}")
+                        errors.append(f"{agent_type.value}: {failure}")
+            else:
+                console.print(f"  [yellow]![/yellow] {agent_type.value}: hooks not installed")
+                warnings.append(f"{agent_type.value} hooks not installed - run 'issue-orchestrator setup-hooks'")
+
+        except UnsupportedMetaAgentError as e:
+            console.print(f"  [red]✗[/red] {agent_type.value}: {e.reason}")
+            errors.append(f"Unsupported meta-agent: {e.reason}")
+
     # Summary
     console.print("\n" + "=" * 50)
     if errors:
@@ -1086,6 +1132,78 @@ def cmd_verify(args: argparse.Namespace) -> int:
     else:
         console.print(f"\n[bold green]Verification PASSED - all checks OK[/bold green]")
         return 0
+
+
+def cmd_setup_hooks(args: argparse.Namespace) -> int:
+    """Install AI meta-agent hooks for the target project."""
+    from .hooks import (
+        detect_agents_from_config,
+        get_adapter,
+        UnsupportedMetaAgentError,
+    )
+
+    console.print("[bold cyan]Installing AI Meta-Agent Hooks[/bold cyan]\n")
+
+    # Load config
+    try:
+        config = _load_config(args)
+    except FileNotFoundError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        console.print("Create a .issue-orchestrator.yaml config file first.")
+        return 1
+
+    # Detect meta-agents from config
+    agent_types = detect_agents_from_config(config)
+    unique_types = set(agent_types.values())
+
+    console.print(f"[bold]Detected Meta-Agents:[/bold]")
+    for agent_label, agent_type in agent_types.items():
+        console.print(f"  {agent_label} → {agent_type.value}")
+
+    console.print()
+
+    # Determine target directory
+    target_root = Path(args.target).resolve() if hasattr(args, 'target') and args.target else config.repo_root
+
+    console.print(f"[bold]Target Project:[/bold] {target_root}\n")
+
+    errors = []
+    installed = []
+
+    for agent_type in unique_types:
+        try:
+            adapter = get_adapter(agent_type)
+
+            console.print(f"[cyan]Installing hooks for {agent_type.value}...[/cyan]")
+            files = adapter.install_hooks(target_root)
+
+            for f in files:
+                console.print(f"  [green]✓[/green] {f.relative_to(target_root)}")
+                installed.append(f)
+
+            # Verify installation
+            result = adapter.verify_hooks(target_root)
+            if result.success:
+                console.print(f"  [green]✓[/green] Verification passed ({len(result.checks_passed)} checks)")
+            else:
+                console.print(f"  [yellow]![/yellow] Verification had issues:")
+                for failure in result.checks_failed:
+                    console.print(f"    [red]✗[/red] {failure}")
+
+        except UnsupportedMetaAgentError as e:
+            console.print(f"  [red]✗[/red] {agent_type.value}: {e.reason}")
+            errors.append(str(e))
+
+    console.print()
+
+    if errors:
+        console.print(f"[bold red]Setup completed with {len(errors)} error(s)[/bold red]")
+        console.print("\n[yellow]Some meta-agents are not supported. Consider using Claude Code.[/yellow]")
+        return 1
+
+    console.print(f"[bold green]✓ Hooks installed successfully ({len(installed)} files)[/bold green]")
+    console.print("\n[dim]Run 'issue-orchestrator verify' to confirm everything is working.[/dim]")
+    return 0
 
 
 def main() -> int:
@@ -1328,6 +1446,21 @@ def main() -> int:
         "--config", type=Path, help="Path to config file (default: auto-detect)"
     )
     verify_parser.set_defaults(func=cmd_verify)
+
+    # setup-hooks command
+    setup_hooks_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "setup-hooks", help="Install AI meta-agent hooks in target project"
+    )
+    setup_hooks_parser.add_argument(
+        "--target",
+        type=str,
+        default=None,
+        help="Target project directory (default: repo_root from config)"
+    )
+    setup_hooks_parser.add_argument(
+        "--config", type=Path, help="Path to config file (default: auto-detect)"
+    )
+    setup_hooks_parser.set_defaults(func=cmd_setup_hooks)
 
     args: argparse.Namespace = parser.parse_args()
     return args.func(args)
