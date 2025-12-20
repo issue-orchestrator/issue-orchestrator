@@ -1102,6 +1102,19 @@ def cmd_verify(args: argparse.Namespace) -> int:
                     block_checks = [c for c in result.checks_passed if c.startswith("blocks:")]
                     if block_checks:
                         console.print(f"    [dim]Verified blocking: {len(block_checks)} patterns[/dim]")
+
+                    # Live verification if requested
+                    if getattr(args, 'live', False):
+                        console.print(f"\n  [cyan]🔄[/cyan] Running live verification (spawning Claude)...")
+                        timeout = getattr(args, 'live_timeout', 60)
+                        live_success, live_msg = adapter.live_verify(config.repo_root, timeout=timeout)
+                        if live_success:
+                            console.print(f"  [green]✓[/green] Live verification passed")
+                            console.print(f"    [dim]{live_msg.split(chr(10))[0]}[/dim]")
+                        else:
+                            console.print(f"  [red]✗[/red] Live verification failed")
+                            console.print(f"    {live_msg}")
+                            errors.append(f"{agent_type.value}: live verification failed")
                 else:
                     console.print(f"  [red]✗[/red] {agent_type.value}: verification failed")
                     for failure in result.checks_failed:
@@ -1444,6 +1457,17 @@ def main() -> int:
     )
     verify_parser.add_argument(
         "--config", type=Path, help="Path to config file (default: auto-detect)"
+    )
+    verify_parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Perform live verification by spawning Claude and testing hook blocking"
+    )
+    verify_parser.add_argument(
+        "--live-timeout",
+        type=int,
+        default=60,
+        help="Timeout in seconds for live verification (default: 60)"
     )
     verify_parser.set_defaults(func=cmd_verify)
 

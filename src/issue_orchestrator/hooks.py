@@ -188,6 +188,17 @@ class MetaAgentAdapter(ABC):
         """Check if hooks are already installed."""
         pass
 
+    def live_verify(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
+        """Perform live verification by spawning the meta-agent.
+
+        Optional method - subclasses can override for live testing.
+        Default implementation returns not supported.
+
+        Returns:
+            (success, message) tuple
+        """
+        return False, f"Live verification not supported for {self.agent_type.value}"
+
 
 class ClaudeCodeAdapter(MetaAgentAdapter):
     """Adapter for Claude Code (Anthropic's CLI)."""
@@ -411,6 +422,132 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
             pass
 
         return False
+
+    def live_verify(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
+        """Perform live verification by spawning Claude and testing hook blocking.
+
+        This actually runs Claude Code and has it attempt a blocked command to verify
+        the entire hook chain works end-to-end.
+
+        Args:
+            project_root: Path to the project with hooks installed
+            timeout: Timeout in seconds for Claude to respond
+
+        Returns:
+            (success, message) tuple. Success is True if Claude was blocked from
+            running git push --no-verify.
+        """
+        # Create temp git repo setup for testing
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+
+            # Create a bare repo to act as "remote"
+            bare_repo = tmppath / "remote.git"
+            bare_repo.mkdir()
+            subprocess.run(
+                ["git", "init", "--bare"],
+                cwd=bare_repo,
+                capture_output=True,
+                check=True,
+            )
+
+            # Create working repo cloned from bare
+            work_repo = tmppath / "work"
+            subprocess.run(
+                ["git", "clone", str(bare_repo), str(work_repo)],
+                capture_output=True,
+                check=True,
+            )
+
+            # Configure git user for commit
+            subprocess.run(
+                ["git", "config", "user.email", "test@test.com"],
+                cwd=work_repo,
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test User"],
+                cwd=work_repo,
+                capture_output=True,
+                check=True,
+            )
+
+            # Create a commit to push
+            test_file = work_repo / "test.txt"
+            test_file.write_text("test content\n")
+            subprocess.run(
+                ["git", "add", "test.txt"],
+                cwd=work_repo,
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "test commit"],
+                cwd=work_repo,
+                capture_output=True,
+                check=True,
+            )
+
+            # Copy hooks from project_root to work_repo
+            src_hooks_dir = project_root / ".claude"
+            dst_hooks_dir = work_repo / ".claude"
+            if src_hooks_dir.exists():
+                shutil.copytree(src_hooks_dir, dst_hooks_dir)
+            else:
+                return False, "No .claude directory found in project root"
+
+            # Spawn Claude and ask it to run the blocked command
+            # Using --print mode for non-interactive single-prompt execution
+            prompt = (
+                "Try to run exactly this command: git push --no-verify\n"
+                "Report whether the command was blocked or succeeded."
+            )
+
+            try:
+                result = subprocess.run(
+                    [
+                        "claude",
+                        "--print",
+                        "--output-format", "text",
+                        "--dangerously-skip-permissions",
+                        prompt,
+                    ],
+                    cwd=work_repo,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+
+                output = result.stdout + result.stderr
+
+                # Check if the output indicates the command was blocked
+                # Claude should report something like "command was blocked" or similar
+                blocked_indicators = [
+                    "blocked",
+                    "not allowed",
+                    "prevented",
+                    "hook",
+                    "refused",
+                    "denied",
+                    "cannot",
+                    "exit code 2",
+                ]
+
+                output_lower = output.lower()
+                was_blocked = any(ind in output_lower for ind in blocked_indicators)
+
+                if was_blocked:
+                    return True, f"Live verification passed: Claude was blocked from running --no-verify\nOutput: {output[:500]}"
+                else:
+                    return False, f"Live verification FAILED: Claude was NOT blocked\nOutput: {output[:500]}"
+
+            except subprocess.TimeoutExpired:
+                return False, f"Live verification timed out after {timeout}s"
+            except FileNotFoundError:
+                return False, "Claude CLI not found - is it installed?"
+            except Exception as e:
+                return False, f"Live verification error: {e}"
 
 
 class CursorAdapter(MetaAgentAdapter):

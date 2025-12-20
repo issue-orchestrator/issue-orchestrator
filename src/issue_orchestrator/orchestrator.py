@@ -238,6 +238,9 @@ class Orchestrator:
         This check ensures that agents cannot bypass safety guardrails
         like --no-verify. If verification fails and skip_verification
         is not enabled, startup will be blocked.
+
+        Optimization: First checks for a valid verification marker from a
+        previous run. Only runs full verification if marker is missing/invalid.
         """
         from .hooks import (
             detect_agents_from_config,
@@ -255,6 +258,16 @@ class Orchestrator:
             print("[WARNING] Hook verification skipped (dangerous.skip_verification=true)")
             print("[WARNING] Agents may be able to bypass --no-verify protection!")
             return
+
+        # First check if we have a valid verification marker
+        is_valid, status_msg = check_verification_status(self.config.repo_root, self.config)
+        if is_valid:
+            logger.info("Using cached verification: %s", status_msg)
+            print(f"[OK] Hooks verified (cached): {status_msg}")
+            return
+
+        # No valid marker - need to run full verification
+        logger.info("No valid verification marker found - running full verification")
 
         # Detect which meta-agents are configured
         agent_types = detect_agents_from_config(self.config)
