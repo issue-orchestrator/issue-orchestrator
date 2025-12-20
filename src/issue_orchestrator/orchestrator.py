@@ -162,20 +162,11 @@ class Orchestrator:
         if self._github_adapter is None:
             self._github_adapter = GitHubAdapter(self.config.repo)
 
-        # State persistence
-        from .adapters.json_store import JsonSessionStore
-        # Use the state_file directory for state machine persistence
-        store_path = self.config.state_file.parent / "state_machines.json"
-        self.state_store = JsonSessionStore(store_path)
-
         # IPC server for external UI processes (lazy init, started in startup())
         self._ipc_server = None
 
         # Set up event handlers
         self._setup_event_handlers()
-
-        # Recover state machines from persisted state
-        self._recover_state_machines()
 
         # Update monitor's reference to session machines
         self.monitor.session_machines = self.session_machines
@@ -454,30 +445,6 @@ class Orchestrator:
         self.event_bus.subscribe(IssueEvent.COMPLETED, self._sync_label_completed)
         self.event_bus.subscribe(IssueEvent.RELEASED, self._sync_label_released)
 
-        # State persistence on significant state changes
-        # Subscribe to all state transitions to ensure state is persisted
-        self.event_bus.subscribe(SessionEvent.STARTED, self._on_state_change_persist)
-        self.event_bus.subscribe(SessionEvent.COMPLETED, self._on_state_change_persist)
-        self.event_bus.subscribe(SessionEvent.FAILED, self._on_state_change_persist)
-        self.event_bus.subscribe(SessionEvent.TIMED_OUT, self._on_state_change_persist)
-        self.event_bus.subscribe(SessionEvent.BLOCKED, self._on_state_change_persist)
-        self.event_bus.subscribe(SessionEvent.NEEDS_HUMAN, self._on_state_change_persist)
-        self.event_bus.subscribe(IssueEvent.CLAIMED, self._on_state_change_persist)
-        self.event_bus.subscribe(IssueEvent.SESSION_STARTED, self._on_state_change_persist)
-        self.event_bus.subscribe(IssueEvent.BLOCKED, self._on_state_change_persist)
-        self.event_bus.subscribe(IssueEvent.NEEDS_HUMAN, self._on_state_change_persist)
-        self.event_bus.subscribe(IssueEvent.UNBLOCKED, self._on_state_change_persist)
-        self.event_bus.subscribe(IssueEvent.PR_CREATED, self._on_state_change_persist)
-        self.event_bus.subscribe(IssueEvent.COMPLETED, self._on_state_change_persist)
-        self.event_bus.subscribe(IssueEvent.RELEASED, self._on_state_change_persist)
-        self.event_bus.subscribe(ReviewEvent.REVIEW_STARTED, self._on_state_change_persist)
-        self.event_bus.subscribe(ReviewEvent.APPROVED, self._on_state_change_persist)
-        self.event_bus.subscribe(ReviewEvent.CHANGES_REQUESTED, self._on_state_change_persist)
-        self.event_bus.subscribe(ReviewEvent.REWORK_STARTED, self._on_state_change_persist)
-        self.event_bus.subscribe(ReviewEvent.REWORK_COMPLETED, self._on_state_change_persist)
-        self.event_bus.subscribe(ReviewEvent.MERGED, self._on_state_change_persist)
-        self.event_bus.subscribe(ReviewEvent.CLOSED, self._on_state_change_persist)
-
         logger.info("Event handlers configured for state machine integration")
 
     def _on_issue_claimed(self, event) -> None:
@@ -587,135 +554,6 @@ class Orchestrator:
             logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
 
     # ==================== End State Machine Helpers ====================
-
-    # ==================== State Persistence ====================
-
-    def _persist_state_machines(self) -> None:
-        """Persist current state machine states to disk.
-
-        This method saves the state of all active state machines to enable
-        recovery after orchestrator restarts.
-        """
-        try:
-            # Persist session machines
-            for session_id, machine in self.session_machines.items():
-                self.state_store.save_session_state(
-                    session_id=session_id,
-                    issue_number=machine.issue_number,
-                    state=machine.state.value,  # Convert enum to string
-                    started_at=machine.started_at,
-                    metadata={'timeout_minutes': machine.timeout_minutes}
-                )
-
-            # Persist issue machines
-            for issue_number, machine in self.issue_machines.items():
-                self.state_store.save_issue_state(
-                    issue_number=issue_number,
-                    state=machine.state.value  # Convert enum to string
-                )
-
-            # Persist review machines
-            for pr_number, machine in self.review_machines.items():
-                self.state_store.save_review_state(
-                    pr_number=pr_number,
-                    state=machine.state.value,  # Convert enum to string
-                    rework_count=machine.rework_count,
-                    metadata={'issue_number': machine.issue_number}
-                )
-
-            logger.debug("[PERSISTENCE] State machines persisted successfully")
-        except Exception as e:
-            logger.error(f"[PERSISTENCE] Failed to persist state machines: {e}")
-
-    def _recover_state_machines(self) -> None:
-        """Recover state machines from persisted state after restart.
-
-        This method restores state machines from the persisted state store,
-        allowing the orchestrator to resume where it left off after a crash
-        or restart.
-        """
-        try:
-            # Recover session machines
-            for session_id, data in self.state_store.get_all_sessions().items():
-                if session_id not in self.session_machines:
-                    try:
-                        initial_state = SessionState(data["state"])
-                        timeout_minutes = data.get("metadata", {}).get("timeout_minutes") or self.config.session_timeout_minutes
-
-                        machine = SessionStateMachine(
-                            session_id=session_id,
-                            issue_number=data["issue_number"],
-                            event_bus=self.event_bus,
-                            initial_state=initial_state,
-                            timeout_minutes=timeout_minutes
-                        )
-
-                        # Restore started_at if available
-                        if data.get("started_at"):
-                            machine.started_at = datetime.fromisoformat(data["started_at"])
-
-                        self.session_machines[session_id] = machine
-                        logger.info(f"[RECOVERY] Restored SessionStateMachine for {session_id} in state {data['state']}")
-                    except Exception as e:
-                        logger.warning(f"[RECOVERY] Failed to restore session {session_id}: {e}")
-
-            # Recover issue machines
-            for issue_number_str, data in self.state_store._cache.get("issue_machines", {}).items():
-                issue_number = int(issue_number_str)
-                if issue_number not in self.issue_machines:
-                    try:
-                        initial_state = IssueState(data["state"])
-                        machine = IssueStateMachine(
-                            issue_number=issue_number,
-                            event_bus=self.event_bus,
-                            initial_state=initial_state
-                        )
-                        self.issue_machines[issue_number] = machine
-                        logger.info(f"[RECOVERY] Restored IssueStateMachine for issue #{issue_number} in state {data['state']}")
-                    except Exception as e:
-                        logger.warning(f"[RECOVERY] Failed to restore issue #{issue_number}: {e}")
-
-            # Recover review machines
-            for pr_number_str, data in self.state_store._cache.get("review_machines", {}).items():
-                pr_number = int(pr_number_str)
-                if pr_number not in self.review_machines:
-                    try:
-                        initial_state = ReviewState(data["state"])
-                        # We need the issue number - try to get it from metadata or skip
-                        issue_number = data.get("metadata", {}).get("issue_number")
-                        if not issue_number:
-                            logger.warning(f"[RECOVERY] Skipping PR #{pr_number} - no issue_number in metadata")
-                            continue
-
-                        machine = ReviewStateMachine(
-                            pr_number=pr_number,
-                            issue_number=issue_number,
-                            event_bus=self.event_bus,
-                            initial_state=initial_state,
-                            max_rework_cycles=self.config.max_rework_cycles
-                        )
-                        machine.rework_count = data.get("rework_count", 0)
-                        self.review_machines[pr_number] = machine
-                        logger.info(f"[RECOVERY] Restored ReviewStateMachine for PR #{pr_number} in state {data['state']}")
-                    except Exception as e:
-                        logger.warning(f"[RECOVERY] Failed to restore review PR #{pr_number}: {e}")
-
-            logger.info("[RECOVERY] State machine recovery completed")
-        except Exception as e:
-            logger.error(f"[RECOVERY] Failed to recover state machines: {e}")
-
-    def _on_state_change_persist(self, event) -> None:
-        """Persist state after significant state changes.
-
-        This handler is triggered on terminal state transitions to ensure
-        state is saved to disk.
-
-        Args:
-            event: The state change event
-        """
-        self._persist_state_machines()
-
-    # ==================== End State Persistence ====================
 
     async def _restore_running_sessions(self, running: list[dict]) -> None:
         """Restore tracking for sessions that are still running after orchestrator restart.

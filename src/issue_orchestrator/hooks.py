@@ -79,7 +79,9 @@ class VerificationMarker:
     hooks_hash: str
     signature: str
 
-    MARKER_FILE = ".issue-orchestrator-verified"
+    # Marker lives in .issue-orchestrator/ directory
+    MARKER_DIR = ".issue-orchestrator"
+    MARKER_FILE = "verified"
 
     @classmethod
     def compute_hooks_hash(cls, project_root: Path, meta_agent: MetaAgentType) -> str:
@@ -107,8 +109,10 @@ class VerificationMarker:
         return hashlib.sha256(data.encode()).hexdigest()[:16]
 
     def save(self, project_root: Path) -> None:
-        """Save marker to project root."""
-        marker_path = project_root / self.MARKER_FILE
+        """Save marker to .issue-orchestrator/ directory."""
+        marker_dir = project_root / self.MARKER_DIR
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker_path = marker_dir / self.MARKER_FILE
         data = {
             "verified_at": self.verified_at.isoformat(),
             "meta_agent": self.meta_agent.value,
@@ -119,8 +123,8 @@ class VerificationMarker:
 
     @classmethod
     def load(cls, project_root: Path) -> Optional["VerificationMarker"]:
-        """Load marker from project root, returns None if missing/invalid."""
-        marker_path = project_root / cls.MARKER_FILE
+        """Load marker from .issue-orchestrator/ directory."""
+        marker_path = project_root / cls.MARKER_DIR / cls.MARKER_FILE
         if not marker_path.exists():
             return None
 

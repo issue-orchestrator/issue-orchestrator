@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 from tempfile import TemporaryDirectory
 
-from issue_orchestrator.config import Config
+from issue_orchestrator.config import Config, DangerousConfig
 from issue_orchestrator.models import (
     Issue, AgentConfig, Session, OrchestratorState, SessionStatus,
     CommentHeadings
@@ -48,6 +48,8 @@ class TestOrchestratorWiring:
         config.max_concurrent_sessions = 2
         # Use temp directory for state file to isolate tests
         config.state_file = temp_repo / ".issue-orchestrator" / "state.json"
+        # Skip hook verification in tests
+        config.dangerous = DangerousConfig(skip_verification=True, allow_unsupported_agents=True)
         return config
 
     @pytest.mark.asyncio
@@ -55,7 +57,7 @@ class TestOrchestratorWiring:
         """Verify startup() queries for in-progress issues."""
         from issue_orchestrator.orchestrator import Orchestrator
 
-        orchestrator = Orchestrator(config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config, _github_adapter=mock_github_adapter)
 
         with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
             await orchestrator.startup()
@@ -70,7 +72,7 @@ class TestOrchestratorWiring:
         # Configure mock plugin to allow session creation
         patch_plugin_manager.plugin.session_exists_override = False
 
-        orchestrator = Orchestrator(config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config, _github_adapter=mock_github_adapter)
         test_issue = Issue(
             number=456,
             title="Test Feature",
