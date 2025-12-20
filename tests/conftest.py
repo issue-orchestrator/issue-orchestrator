@@ -315,7 +315,7 @@ def sample_orchestrator(sample_config, mock_github_adapter, patch_plugin_manager
     """Create an Orchestrator with mock adapter injected (proper DI for testing)."""
     from issue_orchestrator.orchestrator import Orchestrator
     patch_plugin_manager.plugin.session_exists_override = False
-    return Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+    return Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
 
 @pytest.fixture

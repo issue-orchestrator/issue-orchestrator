@@ -1,7 +1,10 @@
 """Session monitoring and completion handling."""
 
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .domain.state_machines.session_machine import SessionStateMachine
 
 from .config import Config
 from .github import add_label, get_issue_labels, get_open_prs_for_branch, remove_label

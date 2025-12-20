@@ -481,7 +481,7 @@ def parse_verdict_block(comment_body: str) -> ParsedVerdict | None:
 
 def format_verdict_block(
     verdict: str,
-    risk: RiskLevel,
+    risk: RiskLevel | None,
     checks: list[str] | None = None,
     checks_needed: list[str] | None = None,
 ) -> str:
@@ -492,6 +492,8 @@ def format_verdict_block(
     - Batch processing of review outcomes
     - Quick human scanning for trust assessment
     """
+    if risk is None:
+        raise ValueError("Risk level is required for verdict block")
     risk_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴"}[risk.value]
 
     lines = [
@@ -590,12 +592,14 @@ def add_trailers_to_commit(data: CompletionData) -> None:
             trailers.append(f"Agent-Context: {data.context}")
     elif data.status == Status.APPROVED:
         trailers.append(f"Agent-Summary: {data.summary}")
-        trailers.append(f"Agent-Risk: {data.risk.value}")
+        if data.risk:
+            trailers.append(f"Agent-Risk: {data.risk.value}")
         if data.checks:
             trailers.append(f"Agent-Checks: {','.join(data.checks)}")
     elif data.status == Status.CHANGES_REQUESTED:
         trailers.append(f"Agent-Issues: {data.issues}")
-        trailers.append(f"Agent-Risk: {data.risk.value}")
+        if data.risk:
+            trailers.append(f"Agent-Risk: {data.risk.value}")
         if data.checks_needed:
             trailers.append(f"Agent-Checks-Needed: {','.join(data.checks_needed)}")
 

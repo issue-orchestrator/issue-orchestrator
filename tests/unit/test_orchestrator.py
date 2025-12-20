@@ -163,7 +163,7 @@ class TestStartup:
         mock_get_branches.return_value = {}
         mock_github_adapter.issues = []
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         await orchestrator.startup()
 
         # Should query for in-progress issues for each agent type
@@ -196,7 +196,7 @@ class TestStartup:
         mock_state.is_orphaned_label = True
         mock_analyze.return_value = mock_state
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         await orchestrator.startup()
 
         # Should remove the in-progress label
@@ -225,7 +225,7 @@ class TestStartup:
         mock_state.pr_url = "https://github.com/owner/repo/pull/123"
         mock_analyze.return_value = mock_state
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         await orchestrator.startup()
 
         # Should NOT remove the label
@@ -257,7 +257,7 @@ class TestStartup:
         mock_state.branch = "feature/issue-1"
         mock_analyze.return_value = mock_state
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         await orchestrator.startup()
 
         # Should NOT remove the label - we keep in-progress and resume work
@@ -291,7 +291,7 @@ class TestStartup:
         mock_state.branch = "feature/issue-1"
         mock_analyze.return_value = mock_state
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         await orchestrator.startup()
 
         # Should NOT remove any labels
@@ -316,7 +316,7 @@ class TestLaunchSession:
         mock_create_worktree.return_value = (Path("/tmp/worktree"), "feature/issue-1")
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         session = orchestrator.launch_session(issue)
 
@@ -337,7 +337,7 @@ class TestLaunchSession:
 
         issue = create_issue(1, labels=["agent:web"])
         # Proper DI: inject mock adapter instead of patching functions
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         session = orchestrator.launch_session(issue)
 
@@ -358,7 +358,7 @@ class TestLaunchSession:
 
         issue = create_issue(1, title="Test Issue", labels=["agent:web"])
         sample_config.ui_mode = "tmux"  # Explicitly test tmux mode
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         session = orchestrator.launch_session(issue)
 
@@ -382,7 +382,7 @@ class TestLaunchSession:
         mock_create_worktree.return_value = (Path("/tmp/worktree"), "feature/issue-1")
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         assert len(orchestrator.state.active_sessions) == 0
 
@@ -404,7 +404,7 @@ class TestLaunchSession:
         mock_create_worktree.return_value = (Path("/tmp/worktree"), "feature/issue-1")
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         session = orchestrator.launch_session(issue)
 
@@ -456,7 +456,7 @@ class TestLaunchSession:
         sample_config.agents["agent:web"].repo_root = Path("/custom/repo/path")
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         session = orchestrator.launch_session(issue)
 
@@ -480,7 +480,7 @@ class TestLaunchSession:
         sample_config.repo_root = Path("/default/repo/path")
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         session = orchestrator.launch_session(issue)
 
@@ -713,7 +713,7 @@ class TestRunLoop:
         """Test that run_loop exits when shutdown is requested."""
         mock_github_adapter.issues = []
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.request_shutdown()  # Request shutdown immediately
 
         # Should exit quickly without running loop
@@ -733,7 +733,7 @@ class TestRunLoop:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         with patch.object(orchestrator.monitor, "check_session") as mock_check:
@@ -763,7 +763,7 @@ class TestRunLoop:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         with patch.object(orchestrator.monitor, "check_session") as mock_check:
@@ -792,7 +792,7 @@ class TestRunLoop:
         """Test that run_loop fetches available issues when not paused."""
         mock_github_adapter.issues = []
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         # Run one iteration
         async def run_one_iteration():
@@ -815,7 +815,7 @@ class TestRunLoop:
         """Test that run_loop doesn't fetch new issues when paused."""
         mock_github_adapter.issues = []
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.paused = True
 
         # Run one iteration
@@ -846,7 +846,7 @@ class TestRunLoop:
 
         mock_github_adapter.issues = [issue1, issue2, issue3]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         # Already have 2 active sessions
         orchestrator.state.active_sessions.append(create_session(issue1))
@@ -883,7 +883,7 @@ class TestRunLoop:
 
         mock_github_adapter.issues = [issue1]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
             mock_launch.return_value = create_session(issue1)
@@ -912,7 +912,7 @@ class TestRunLoop:
 
         mock_github_adapter.issues = [issue1]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
             mock_launch.side_effect = Exception("Launch failed")
@@ -942,7 +942,7 @@ class TestRunLoop:
 
         mock_github_adapter.issues = [issue1, issue2]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
             # First issue already claimed, second succeeds
@@ -992,7 +992,7 @@ class TestMaxIssuesToStart:
 
         mock_github_adapter.issues = [issue1, issue2, issue3]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
             # Simulate successful launches
@@ -1032,7 +1032,7 @@ class TestMaxIssuesToStart:
 
         mock_github_adapter.issues = [issue1, issue2, issue3]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
             mock_launch.side_effect = [
@@ -1068,7 +1068,7 @@ class TestMaxIssuesToStart:
 
         mock_github_adapter.issues = [issue1]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         # Simulate that we already started 2 issues in previous iterations
         orchestrator.state.issues_started_count = 2
 
@@ -1098,7 +1098,7 @@ class TestMaxIssuesToStart:
         mock_create_worktree.return_value = (Path("/tmp/worktree"), "feature/issue-1")
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         assert orchestrator.state.issues_started_count == 0
 
@@ -1122,7 +1122,7 @@ class TestMaxIssuesToStart:
 
         mock_github_adapter.issues = [issue1, issue2]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
             mock_launch.return_value = create_session(issue1)
@@ -1156,7 +1156,7 @@ class TestMaxIssuesToStart:
 
         mock_github_adapter.issues = [issue1, issue2, issue3]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
             # First issue already claimed (returns None), second and third succeed
@@ -1434,7 +1434,7 @@ class TestCheckCTOReviewTrigger:
         mock_github_adapter.issues = []  # No existing review issues
         mock_create.return_value = 42
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.check_cto_review_trigger()
 
         mock_create.assert_called_once()
@@ -1462,7 +1462,7 @@ class TestCheckCTOReviewTrigger:
         existing_issue = create_issue(100, title="CTO Batch Review: 3 PRs pending", labels=["agent:cto"])
         mock_github_adapter.issues = [existing_issue]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.check_cto_review_trigger()
 
         # Should not create a new issue
@@ -1486,7 +1486,7 @@ class TestCheckCTOReviewTrigger:
         mock_github_adapter.issues = []
         mock_create.return_value = 42
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.check_cto_review_trigger()
 
         call_args = mock_create.call_args
@@ -1967,7 +1967,7 @@ class TestHandleSessionCompletionWithCodeReview:
         issue = create_issue(1)
         session = create_session(issue, branch_name="feature/issue-1")
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         with patch.object(orchestrator, "queue_code_review") as mock_queue:
@@ -2006,7 +2006,7 @@ class TestHandleSessionCompletionWithCodeReview:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         with patch.object(orchestrator, "queue_code_review") as mock_queue:
@@ -2027,7 +2027,7 @@ class TestHandleSessionCompletionWithCodeReview:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         with patch.object(orchestrator, "queue_code_review") as mock_queue:
@@ -2051,7 +2051,7 @@ class TestHandleSessionCompletionWithCodeReview:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         with patch.object(orchestrator, "queue_code_review") as mock_queue:
@@ -2087,7 +2087,7 @@ class TestStartupPendingReviews:
             {"number": 456, "url": "https://github.com/owner/repo/pull/456"},
         ]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         await orchestrator.startup()
 
         # Should have queued both PRs for review
@@ -2117,7 +2117,7 @@ class TestStartupPendingReviews:
             {"number": 456, "url": "https://github.com/owner/repo/pull/456"},
         ]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         # Session exists for PR 123 but not 456
         def session_exists_side_effect(name):
@@ -2147,7 +2147,7 @@ class TestStartupPendingReviews:
         sample_config.code_review_agent = None
         sample_config.code_review_label = None
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         await orchestrator.startup()
 
         # Should not call list_prs_with_label
@@ -2233,7 +2233,7 @@ class TestPauseBehavior:
 
         mock_github_adapter.issues = [issue1, issue2, issue3]
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
 
         launch_count = 0
 
@@ -2268,7 +2268,7 @@ class TestReconcileOrphanedPrLabels:
         """Test that reconciliation is skipped when code review is not configured."""
         sample_config.code_review_label = None
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         fixed_count = orchestrator.reconcile_orphaned_pr_labels()
 
         assert fixed_count == 0
@@ -2447,7 +2447,7 @@ class TestSessionExistsDetection:
             rework_cycle=1,
         )
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.pending_reworks.append(rework)
 
         result = orchestrator.launch_rework_session(rework)
@@ -2664,7 +2664,7 @@ class TestDeferredCleanup:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
@@ -2709,7 +2709,7 @@ class TestDeferredCleanup:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
@@ -2750,7 +2750,7 @@ class TestDeferredCleanup:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
@@ -2775,7 +2775,7 @@ class TestDeferredCleanup:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = Orchestrator(config=sample_config, github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
         orchestrator.handle_session_completion(session, SessionStatus.FAILED)

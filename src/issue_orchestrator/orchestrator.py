@@ -140,7 +140,7 @@ class Orchestrator:
     config: Config
     state: OrchestratorState = field(default_factory=OrchestratorState)
     # Dependency injection: adapter can be provided for testing
-    github_adapter: Optional[GitHubAdapter] = None
+    _github_adapter: Optional[GitHubAdapter] = field(default=None, repr=False)
     scheduler: Scheduler = field(init=False)
     monitor: SessionMonitor = field(init=False)
     _shutdown_requested: bool = field(default=False, init=False)
@@ -159,8 +159,8 @@ class Orchestrator:
         self.review_machines: dict[int, ReviewStateMachine] = {}  # keyed by PR number
 
         # GitHub adapter - use injected adapter or create real one
-        if self.github_adapter is None:
-            self.github_adapter = GitHubAdapter(self.config.repo)
+        if self._github_adapter is None:
+            self._github_adapter = GitHubAdapter(self.config.repo)
 
         # State persistence
         from .adapters.json_store import JsonSessionStore
@@ -179,6 +179,12 @@ class Orchestrator:
 
         # Update monitor's reference to session machines
         self.monitor.session_machines = self.session_machines
+
+    @property
+    def github_adapter(self) -> GitHubAdapter:
+        """Get the GitHub adapter (always initialized after __post_init__)."""
+        assert self._github_adapter is not None, "GitHub adapter not initialized"
+        return self._github_adapter
 
     @property
     def _using_iterm2(self) -> bool:
@@ -596,7 +602,7 @@ class Orchestrator:
                 self.state_store.save_session_state(
                     session_id=session_id,
                     issue_number=machine.issue_number,
-                    state=machine.state,
+                    state=machine.state.value,  # Convert enum to string
                     started_at=machine.started_at,
                     metadata={'timeout_minutes': machine.timeout_minutes}
                 )
@@ -605,14 +611,14 @@ class Orchestrator:
             for issue_number, machine in self.issue_machines.items():
                 self.state_store.save_issue_state(
                     issue_number=issue_number,
-                    state=machine.state
+                    state=machine.state.value  # Convert enum to string
                 )
 
             # Persist review machines
             for pr_number, machine in self.review_machines.items():
                 self.state_store.save_review_state(
                     pr_number=pr_number,
-                    state=machine.state,
+                    state=machine.state.value,  # Convert enum to string
                     rework_count=machine.rework_count,
                     metadata={'issue_number': machine.issue_number}
                 )
@@ -634,7 +640,7 @@ class Orchestrator:
                 if session_id not in self.session_machines:
                     try:
                         initial_state = SessionState(data["state"])
-                        timeout_minutes = data.get("metadata", {}).get("timeout_minutes") or self.config.default_timeout
+                        timeout_minutes = data.get("metadata", {}).get("timeout_minutes") or self.config.session_timeout_minutes
 
                         machine = SessionStateMachine(
                             session_id=session_id,
