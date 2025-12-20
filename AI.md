@@ -239,88 +239,29 @@ agent-done changes_requested --issues "Missing tests for X, error handling in Y"
    - `blocked`, `needs-human` (work agent issues)
    - `code-reviewed` (reviewer approved), `needs-rework` (reviewer requests changes)
 
-## Pre-push Hook Enforcement
+## Agent Guardrails
 
-**Location**: `hooks/pre-push`
+The orchestrator enforces safety through a multi-layer hook system. Without hooks, agents will find ways around policy documents - hooks are **enforcement**, not suggestions.
 
-When `enforce_hooks: true` in config, the orchestrator installs a pre-push hook that:
-- Checks for `Agent-Status:` trailer in latest commit
-- Validates required fields based on status type
-- Blocks push if validation fails
+**What's blocked:**
+- `git push --no-verify` - blocked at AI meta-agent level (PreToolUse/beforeShellExecution)
+- Direct `git push` without `agent-done` - blocked by pre-push hook (validates Agent-Status trailers)
+- Direct `gh pr create` - blocked by gh wrapper (requires auth token only `agent-done` knows)
 
-This forces agents to use `agent-done` instead of pushing directly.
+**Supported meta-agents** (must have command interception hooks):
+- Claude Code (PreToolUse)
+- Cursor 1.7+ (beforeShellExecution)
+- GitHub Copilot CLI (--deny-tool)
+- OpenAI Codex CLI (Execpolicy)
 
-## Agent Guardrails (Defense in Depth)
+**Verification requirement:**
+- `issue-orchestrator verify` must pass before orchestrator will start
+- Verification actually tests that hooks block forbidden commands
+- A tamper-proof marker proves verification ran
 
-The orchestrator uses multiple layers to ensure agents use `agent-done` instead of directly creating PRs:
+For complete hook documentation including setup, verification flow, troubleshooting, and per-meta-agent configuration:
 
-### Layer 1: `gh pr create` Interception
-
-**Location**: `scripts/gh`
-
-A wrapper script intercepts all `gh` commands in agent sessions:
-- If `gh pr create` is called without `ORCHESTRATOR_GH_AUTH=agent-done-authorized`, it blocks with an error
-- All other `gh` commands pass through normally
-- `agent-done` sets the auth env var, so it can still create PRs
-
-**How it works:**
-- Session launchers (iTerm2, tmux) prepend `scripts/` to PATH
-- The wrapper shadows the real `gh` command
-- Only `agent-done` knows the auth token
-
-**Error shown to agents:**
-```
-╔════════════════════════════════════════════════════════════════╗
-║  ❌ ERROR: Direct 'gh pr create' is BLOCKED                    ║
-╠════════════════════════════════════════════════════════════════╣
-║  You MUST use 'agent-done' to create PRs.                      ║
-║  ✅ Correct usage:                                             ║
-║     agent-done completed \                                     ║
-║       --implementation "What you implemented" \                ║
-║       --problems "None"                                        ║
-╚════════════════════════════════════════════════════════════════╝
-```
-
-### Layer 2: PR Verification Tokens
-
-**Location**: `agent_done.py`
-
-PRs created via `agent-done` include a hidden verification marker:
-```html
-<!-- orchestrator-verified:a1b2c3d4e5f6g7h8 -->
-```
-
-The token is a truncated SHA-256 hash of `issue_number + secret`. The secret is configurable via `ORCHESTRATOR_PR_SECRET` env var.
-
-**What the orchestrator checks:**
-- At startup and when PRs are queued, checks for the marker
-- PRs without markers are logged as warnings
-- Helps detect any PRs that slipped through the wrapper
-
-### Layer 3: Orchestrator Logging
-
-PRs without verification tokens are logged:
-```
-PR #123: ⚠️  No verification token - created outside agent-done
-```
-
-This creates an audit trail for PRs created incorrectly.
-
-### Testing the Wrapper
-
-```bash
-# Test blocking (should fail with error box)
-export PATH="/path/to/issue-orchestrator/src/issue_orchestrator/scripts:$PATH"
-gh pr create --title "test" --body "test"
-
-# Test authorized (should pass through)
-export ORCHESTRATOR_GH_AUTH="agent-done-authorized"
-gh pr create --title "test" --body "test"
-
-# Other commands work normally
-unset ORCHESTRATOR_GH_AUTH
-gh pr list
-```
+→ **See [HOOKS.md](./HOOKS.md)**
 
 ## Configuration (.issue-orchestrator.yaml)
 
