@@ -111,7 +111,7 @@ class ReworkWorkflow:
 
     def get_max_rework_cycles(self) -> int:
         """Get the maximum number of rework cycles before escalation."""
-        return self.config.review.get("max_rework_cycles", 3)
+        return self.config.max_rework_cycles
 
     def should_launch_reworks(
         self,

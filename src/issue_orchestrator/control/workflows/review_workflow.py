@@ -194,9 +194,9 @@ class ReviewWorkflow:
         Returns:
             True if should escalate to human review
         """
-        max_cycles = self.config.review.get("max_rework_cycles", 3)
+        max_cycles = self.config.max_rework_cycles
         return rework_cycles >= max_cycles
 
     def get_max_rework_cycles(self) -> int:
         """Get the maximum number of rework cycles before escalation."""
-        return self.config.review.get("max_rework_cycles", 3)
+        return self.config.max_rework_cycles

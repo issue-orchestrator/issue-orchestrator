@@ -196,14 +196,12 @@ class TriageWorkflow:
 
     def get_batch_threshold(self) -> int:
         """Get the failure count threshold for batch triage."""
-        triage_config = self.config.triage_review_agent or {}
-        return triage_config.get("batch_failure_threshold", 3)
+        return self.config.triage_review_threshold or 3
 
     def get_batch_cooldown(self) -> timedelta:
         """Get the cooldown period between batch triage reviews."""
-        triage_config = self.config.triage_review_agent or {}
-        minutes = triage_config.get("batch_cooldown_minutes", 30)
-        return timedelta(minutes=minutes)
+        # Default to 30 minutes cooldown between batch triage reviews
+        return timedelta(minutes=30)
 
     def should_trigger_batch_triage(
         self,

@@ -67,9 +67,9 @@ class TestReviewWorkflow:
     @pytest.fixture
     def mock_config(self):
         config = MagicMock()
-        config.code_review_agent = {"enabled": True}
+        config.code_review_agent = "agent:reviewer"
         config.max_concurrent_sessions = 3
-        config.review = {"max_rework_cycles": 3}
+        config.max_rework_cycles = 3
         return config
 
     @pytest.fixture
@@ -173,7 +173,7 @@ class TestReworkWorkflow:
     def mock_config(self):
         config = MagicMock()
         config.max_concurrent_sessions = 3
-        config.review = {"max_rework_cycles": 3}
+        config.max_rework_cycles = 3
         return config
 
     @pytest.fixture
@@ -273,11 +273,8 @@ class TestTriageWorkflow:
     @pytest.fixture
     def mock_config(self):
         config = MagicMock()
-        config.triage_review_agent = {
-            "enabled": True,
-            "batch_failure_threshold": 3,
-            "batch_cooldown_minutes": 30,
-        }
+        config.triage_review_agent = "agent:triage"
+        config.triage_review_threshold = 3
         config.max_concurrent_sessions = 3
         return config
 
