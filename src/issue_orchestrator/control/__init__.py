@@ -27,6 +27,13 @@ from .session_manager import (
     review_session_context,
     rework_session_context,
 )
+from .label_projection import (
+    LabelProjection,
+    DesiredLabels,
+    LabelCategory,
+    compute_label_changes,
+)
+from .label_sync import LabelSync, LabelSyncResult
 
 __all__ = [
     "Scheduler",
@@ -42,4 +49,10 @@ __all__ = [
     "issue_session_context",
     "review_session_context",
     "rework_session_context",
+    "LabelProjection",
+    "DesiredLabels",
+    "LabelCategory",
+    "compute_label_changes",
+    "LabelSync",
+    "LabelSyncResult",
 ]
