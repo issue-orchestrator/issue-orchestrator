@@ -1,19 +1,25 @@
-"""Label manager port for label operations.
+"""Label set port for label operations.
 
 This module defines the protocol (interface) for managing labels on issues.
-Implementations can interact with different systems (GitHub API, database, etc.)
+Implementations can interact with different platforms (GitHub, GitLab, etc.)
 while maintaining the same interface.
+
+Naming: "LabelSet" is a neutral noun implying CRUD operations on a set of labels,
+without policy implication. This is an execution-layer interface.
 """
 
 from typing import Protocol
 
 
-class LabelManager(Protocol):
-    """Protocol for label management operations.
+class LabelSet(Protocol):
+    """Protocol for label operations.
 
     This protocol defines the interface for adding, removing, and checking
     labels on issues. Implementations handle the actual interaction with
-    the underlying system (e.g., GitHub API).
+    the underlying platform (e.g., GitHub API).
+
+    Naming: "LabelSet" (not "LabelManager") because "Manager" implies policy
+    decisions. This is just CRUD on a set of labels.
     """
 
     def add_label(self, issue_number: int, label: str) -> None:
@@ -62,3 +68,7 @@ class LabelManager(Protocol):
             LabelError: If there's an error checking the label.
         """
         ...
+
+
+# Backwards compatibility alias
+LabelManager = LabelSet

@@ -14,7 +14,7 @@ from .analysis import analyze_issue, get_issue_branches
 from .config import Config
 from .github import list_issues
 from .models import Issue, OrchestratorState
-from .scheduler import Scheduler
+from .control.scheduler import Scheduler
 
 
 class SkipReason(Enum):

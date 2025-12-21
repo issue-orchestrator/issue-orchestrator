@@ -879,7 +879,7 @@ class TestReviewStateMachine:
         assert machine.rework_count == 3
 
     def test_cto_review_flow(self, event_bus):
-        """Test CTO review flow."""
+        """Test triage review flow."""
         machine = ReviewStateMachine(
             pr_number=123,
             issue_number=456,
@@ -890,17 +890,17 @@ class TestReviewStateMachine:
         machine.approve()
         assert machine.get_state() == ReviewState.APPROVED
 
-        machine.request_cto_review()
-        assert machine.get_state() == ReviewState.CTO_PENDING
+        machine.request_triage_review()
+        assert machine.get_state() == ReviewState.TRIAGE_PENDING
 
-        machine.cto_reviewed()
-        assert machine.get_state() == ReviewState.CTO_REVIEWED
+        machine.triage_reviewed()
+        assert machine.get_state() == ReviewState.TRIAGE_REVIEWED
 
         machine.merge()
         assert machine.get_state() == ReviewState.MERGED
 
     def test_cto_review_followed_by_changes_requested(self, event_bus):
-        """Test changes requested after CTO review."""
+        """Test changes requested after triage review."""
         machine = ReviewStateMachine(
             pr_number=123,
             issue_number=456,
@@ -909,12 +909,12 @@ class TestReviewStateMachine:
 
         machine.start_review()
         machine.approve()
-        machine.request_cto_review()
-        machine.cto_reviewed()
-        assert machine.get_state() == ReviewState.CTO_REVIEWED
+        machine.request_triage_review()
+        machine.triage_reviewed()
+        assert machine.get_state() == ReviewState.TRIAGE_REVIEWED
 
         # CTO can request changes
-        machine.request_changes_after_cto()
+        machine.request_changes_after_triage()
         assert machine.get_state() == ReviewState.CHANGES_REQUESTED
         assert machine.rework_count == 1
 
@@ -1129,8 +1129,8 @@ class TestReviewStateMachine:
         events = event_bus.get_history(event_type=ReviewEvent.REWORK_COMPLETED)
         assert len(events) == 1
 
-    def test_events_emitted_on_cto_review_started(self, event_bus):
-        """Test that CTO_REVIEW_STARTED event is emitted."""
+    def test_events_emitted_on_triage_review_started(self, event_bus):
+        """Test that TRIAGE_REVIEW_STARTED event is emitted."""
         machine = ReviewStateMachine(
             pr_number=123,
             issue_number=456,
@@ -1139,13 +1139,13 @@ class TestReviewStateMachine:
 
         machine.start_review()
         machine.approve()
-        machine.request_cto_review()
+        machine.request_triage_review()
 
-        events = event_bus.get_history(event_type=ReviewEvent.CTO_REVIEW_STARTED)
+        events = event_bus.get_history(event_type=ReviewEvent.TRIAGE_REVIEW_STARTED)
         assert len(events) == 1
 
-    def test_events_emitted_on_cto_approved(self, event_bus):
-        """Test that CTO_APPROVED event is emitted."""
+    def test_events_emitted_on_triage_approved(self, event_bus):
+        """Test that TRIAGE_APPROVED event is emitted."""
         machine = ReviewStateMachine(
             pr_number=123,
             issue_number=456,
@@ -1154,10 +1154,10 @@ class TestReviewStateMachine:
 
         machine.start_review()
         machine.approve()
-        machine.request_cto_review()
-        machine.cto_reviewed()
+        machine.request_triage_review()
+        machine.triage_reviewed()
 
-        events = event_bus.get_history(event_type=ReviewEvent.CTO_APPROVED)
+        events = event_bus.get_history(event_type=ReviewEvent.TRIAGE_APPROVED)
         assert len(events) == 1
 
     def test_events_emitted_on_merged(self, event_bus):

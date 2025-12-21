@@ -263,12 +263,12 @@ class TestDashboardWiring:
         assert mock_orch.state.paused is False
 
 
-class TestMonitorWiring:
-    """Test that monitor correctly detects session states."""
+class TestObserverWiring:
+    """Test that observer correctly detects session states."""
 
-    def test_monitor_detects_completed_session(self):
-        """Verify monitor detects when a session has completed."""
-        from issue_orchestrator.monitor import SessionMonitor
+    def test_observer_detects_completed_session(self):
+        """Verify observer detects when a session has completed."""
+        from issue_orchestrator.observation import SessionObserver
         from issue_orchestrator.models import Session, Issue, AgentConfig, SessionStatus
         from datetime import datetime
 
@@ -276,7 +276,7 @@ class TestMonitorWiring:
         config.get_label_blocked.return_value = "blocked"
         config.get_label_needs_human.return_value = "needs-human"
 
-        monitor = SessionMonitor(config)
+        observer = SessionObserver(config)
 
         session = Session(
             issue=Issue(number=789, title="Test", labels=["agent:test"]),
@@ -291,23 +291,23 @@ class TestMonitorWiring:
             started_at=datetime.now(),
         )
 
-        with patch('issue_orchestrator.monitor.session_exists', return_value=False):
-            with patch('issue_orchestrator.monitor.get_open_prs_for_branch') as mock_prs:
+        with patch('issue_orchestrator.observation.observer.session_exists', return_value=False):
+            with patch('issue_orchestrator.observation.observer.get_open_prs_for_branch') as mock_prs:
                 mock_prs.return_value = [{"url": "https://github.com/test/pull/1"}]
 
                 # check_session is NOT async - it's a regular method
-                status = monitor.check_session(session)
+                status = observer.check_session(session)
 
                 assert status == SessionStatus.COMPLETED
 
-    def test_monitor_detects_running_session(self):
-        """Verify monitor detects when a session is still running."""
-        from issue_orchestrator.monitor import SessionMonitor
+    def test_observer_detects_running_session(self):
+        """Verify observer detects when a session is still running."""
+        from issue_orchestrator.observation import SessionObserver
         from issue_orchestrator.models import Session, Issue, AgentConfig, SessionStatus
         from datetime import datetime
 
         config = MagicMock()
-        monitor = SessionMonitor(config)
+        observer = SessionObserver(config)
 
         session = Session(
             issue=Issue(number=101, title="Test", labels=["agent:test"]),
@@ -322,8 +322,8 @@ class TestMonitorWiring:
             started_at=datetime.now(),
         )
 
-        with patch('issue_orchestrator.monitor.session_exists', return_value=True):
-            status = monitor.check_session(session)
+        with patch('issue_orchestrator.observation.observer.session_exists', return_value=True):
+            status = observer.check_session(session)
             assert status == SessionStatus.RUNNING
 
 
@@ -337,11 +337,12 @@ class TestSmoke:
         from issue_orchestrator import dashboard
         from issue_orchestrator import github
         from issue_orchestrator import models
-        from issue_orchestrator import monitor
+        from issue_orchestrator.observation import observer
         from issue_orchestrator import orchestrator
-        from issue_orchestrator import scheduler
+        from issue_orchestrator.control import scheduler
         from issue_orchestrator import tmux
         from issue_orchestrator import worktree
+        from issue_orchestrator import execution
 
         # If we get here, all imports succeeded
         assert True

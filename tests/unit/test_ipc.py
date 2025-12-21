@@ -267,8 +267,8 @@ class TestLifecycleIPCPlugin:
 
     @pytest.mark.asyncio
     async def test_plugin_broadcasts_events(self, socket_path):
-        """Test that plugin forwards lifecycle events to IPC."""
-        from issue_orchestrator.adapters import LifecycleIPCPlugin
+        """Test that plugin forwards trace events to IPC."""
+        from issue_orchestrator.execution import LifecycleIPCPlugin
 
         server = EventServer(socket_path)
         await server.start()
@@ -279,19 +279,22 @@ class TestLifecycleIPCPlugin:
         reader, writer = await asyncio.open_unix_connection(path=str(socket_path))
         await reader.readline()  # welcome
 
-        # Call a lifecycle hook
-        plugin.on_session_started(
-            issue_number=123,
-            session_id="test-session",
-            worktree_path="/tmp/worktree",
-            branch_name="123-test-branch",
+        # Call the trace event hook
+        plugin.on_trace_event(
+            event="session.started",
+            data={
+                "issue_number": 123,
+                "session_id": "test-session",
+                "worktree_path": "/tmp/worktree",
+                "branch_name": "123-test-branch",
+            },
         )
 
         # Client should receive the event
         line = await asyncio.wait_for(reader.readline(), timeout=2.0)
         event = json.loads(line)
 
-        assert event["type"] == "session_started"
+        assert event["type"] == "session.started"
         assert event["issue_number"] == 123
         assert event["session_id"] == "test-session"
 
@@ -300,9 +303,9 @@ class TestLifecycleIPCPlugin:
         await server.stop()
 
     @pytest.mark.asyncio
-    async def test_plugin_handles_all_lifecycle_hooks(self, socket_path):
-        """Test that plugin handles all lifecycle hook types."""
-        from issue_orchestrator.adapters import LifecycleIPCPlugin
+    async def test_plugin_handles_all_trace_events(self, socket_path):
+        """Test that plugin handles various trace event types."""
+        from issue_orchestrator.execution import LifecycleIPCPlugin
 
         server = EventServer(socket_path)
         await server.start()
@@ -313,28 +316,28 @@ class TestLifecycleIPCPlugin:
         reader, writer = await asyncio.open_unix_connection(path=str(socket_path))
         await reader.readline()  # welcome
 
-        # Test each hook type
-        hooks = [
-            ("on_issue_claimed", {"issue_number": 1, "title": "Test", "agent_type": "test"}),
-            ("on_session_completed", {"issue_number": 1, "session_id": "s1", "pr_url": None, "runtime_minutes": 5.0}),
-            ("on_session_failed", {"issue_number": 1, "session_id": "s1", "error": "fail", "runtime_minutes": 1.0}),
-            ("on_issue_blocked", {"issue_number": 1, "reason": "blocked"}),
-            ("on_issue_needs_human", {"issue_number": 1, "reason": "help"}),
-            ("on_pr_created", {"issue_number": 1, "pr_number": 10, "pr_url": "http://...", "title": "PR"}),
-            ("on_review_requested", {"pr_number": 10, "issue_number": 1, "review_type": "code"}),
-            ("on_review_completed", {"pr_number": 10, "issue_number": 1, "result": "approved", "rework_count": 0}),
-            ("on_review_escalated", {"pr_number": 10, "issue_number": 1, "rework_count": 4, "max_rework_cycles": 3}),
-            ("on_orchestrator_state_changed", {"active_count": 2, "paused": False, "completed_today": 5}),
+        # Test various event types (using new naming convention)
+        events = [
+            ("issue.claimed", {"issue_number": 1, "title": "Test", "agent_type": "test"}),
+            ("session.started", {"issue_number": 1, "session_id": "s1", "worktree_path": "/tmp", "branch_name": "1-test"}),
+            ("session.completed", {"issue_number": 1, "session_id": "s1", "pr_url": None, "runtime_minutes": 5.0}),
+            ("session.failed", {"issue_number": 1, "session_id": "s1", "error": "fail", "runtime_minutes": 1.0}),
+            ("issue.blocked", {"issue_number": 1, "reason": "blocked"}),
+            ("issue.needs_human", {"issue_number": 1, "reason": "help"}),
+            ("pr.created", {"issue_number": 1, "pr_number": 10, "pr_url": "http://...", "title": "PR"}),
+            ("review.requested", {"pr_number": 10, "issue_number": 1, "review_type": "code"}),
+            ("review.completed", {"pr_number": 10, "issue_number": 1, "result": "approved", "rework_count": 0}),
+            ("review.escalated", {"pr_number": 10, "issue_number": 1, "rework_count": 4, "max_rework_cycles": 3}),
+            ("orchestrator.state_changed", {"active_count": 2, "paused": False, "completed_today": 5}),
         ]
 
-        for hook_name, kwargs in hooks:
-            hook = getattr(plugin, hook_name)
-            hook(**kwargs)
+        for event_name, data in events:
+            plugin.on_trace_event(event=event_name, data=data)
 
             line = await asyncio.wait_for(reader.readline(), timeout=2.0)
-            event = json.loads(line)
-            # Just verify it was received
-            assert "type" in event
+            received = json.loads(line)
+            # Verify event type is included
+            assert received["type"] == event_name
 
         writer.close()
         await writer.wait_closed()

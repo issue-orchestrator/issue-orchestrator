@@ -10,15 +10,15 @@ from .models import AgentConfig, CommentHeadings
 
 
 @dataclass
-class CleanupWithCTO:
-    """Cleanup settings when CTO review is enabled."""
+class CleanupWithTriage:
+    """Cleanup settings when triage review is enabled."""
     close_ai_session_tabs: bool = True
     remove_worktrees: bool = False
 
 
 @dataclass
-class CleanupWithoutCTO:
-    """Cleanup settings when CTO review is NOT enabled."""
+class CleanupWithoutTriage:
+    """Cleanup settings when triage review is NOT enabled."""
     wait_for_code_review: bool = True  # True = after code review, False = on completion
     close_ai_session_tabs: bool = True
     remove_worktrees: bool = False
@@ -27,8 +27,8 @@ class CleanupWithoutCTO:
 @dataclass
 class CleanupConfig:
     """Cleanup configuration - when to close tabs and remove worktrees."""
-    with_cto: CleanupWithCTO = field(default_factory=CleanupWithCTO)
-    without_cto: CleanupWithoutCTO = field(default_factory=CleanupWithoutCTO)
+    with_triage: CleanupWithTriage = field(default_factory=CleanupWithTriage)
+    without_triage: CleanupWithoutTriage = field(default_factory=CleanupWithoutTriage)
 
 
 @dataclass
@@ -111,12 +111,12 @@ class Config:
     code_review_label: Optional[str] = None  # Label on PRs needing review (e.g., "needs-code-review")
     code_reviewed_label: Optional[str] = None  # Label after review passes (e.g., "code-reviewed")
 
-    # CTO/batch review workflow (optional) - pattern review across multiple PRs
-    cto_review_agent: Optional[str] = None  # Agent that does batch reviews (e.g., "agent:cto")
-    cto_review_label: Optional[str] = None  # Label for PRs awaiting CTO review (uses code_reviewed_label if not set)
-    cto_reviewed_label: Optional[str] = None  # Label after CTO review (e.g., "cto-reviewed")
-    cto_review_threshold: int = 0  # Trigger CTO review after N PRs (0 = manual only)
-    cto_review_on_failure: bool = True  # Trigger CTO to investigate when sessions fail
+    # Triage/batch review workflow (optional) - pattern review across multiple PRs
+    triage_review_agent: Optional[str] = None  # Agent that does batch reviews (e.g., "agent:triage")
+    triage_review_label: Optional[str] = None  # Label for PRs awaiting triage review (uses code_reviewed_label if not set)
+    triage_reviewed_label: Optional[str] = None  # Label after triage review (e.g., "triage-reviewed")
+    triage_review_threshold: int = 0  # Trigger triage review after N PRs (0 = manual only)
+    triage_review_on_failure: bool = True  # Trigger triage to investigate when sessions fail
 
     # Rework cycle limit (when reviewer requests changes)
     max_rework_cycles: int = 2  # Max times to re-queue work agent before escalating to needs-human
@@ -167,6 +167,9 @@ class Config:
 
         config = cls()
         config.config_path = config_path.resolve()
+        # Default repo_root to config file's parent directory
+        # (can be overridden in find_and_load or by YAML settings)
+        config.repo_root = config_path.parent.resolve()
 
         # Parse agents
         for label, agent_data in data.get("agents", {}).items():
@@ -175,12 +178,38 @@ class Config:
             prompt_path = Path(agent_data["prompt"])
             if not prompt_path.is_absolute():
                 # Get repo_root for this agent (or use config.repo_root which we set below)
-                agent_repo_root = Path(agent_data["repo_root"]) if "repo_root" in agent_data else config_path.parent
+                # If repo_root is relative, resolve it relative to config file location
+                if "repo_root" in agent_data:
+                    agent_repo_root = Path(agent_data["repo_root"])
+                    if not agent_repo_root.is_absolute():
+                        agent_repo_root = (config_path.parent / agent_repo_root).resolve()
+                else:
+                    agent_repo_root = config_path.parent
                 prompt_path = (agent_repo_root / prompt_path).resolve()
+
+            # Resolve worktree_base - MUST be absolute for reliable operation
+            # Relative paths are resolved relative to config file location
+            worktree_base_raw = agent_data.get("worktree_base")
+            if worktree_base_raw is None:
+                # Default to sibling directory of repo
+                worktree_base = (config_path.parent.parent / "worktrees").resolve()
+            else:
+                worktree_base = Path(worktree_base_raw)
+                if not worktree_base.is_absolute():
+                    worktree_base = (config_path.parent / worktree_base).resolve()
+
+            # Validate worktree_base is usable (create if needed, fail fast if not)
+            try:
+                worktree_base.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise ValueError(
+                    f"Agent '{label}': worktree_base '{worktree_base}' cannot be created: {e}. "
+                    f"Specify an absolute path in your config under agents.{label}.worktree_base"
+                )
 
             agent_kwargs = {
                 "prompt_path": prompt_path,
-                "worktree_base": Path(agent_data.get("worktree_base", "../")),
+                "worktree_base": worktree_base,
                 "model": agent_data.get("model", "sonnet"),
                 "timeout_minutes": agent_data.get("timeout_minutes", 45),
                 "permission_mode": agent_data.get("permission_mode", "default"),
@@ -189,7 +218,11 @@ class Config:
             if "command" in agent_data:
                 agent_kwargs["command"] = agent_data["command"]
             if "repo_root" in agent_data:
-                agent_kwargs["repo_root"] = Path(agent_data["repo_root"])
+                # Resolve repo_root relative to config file if not absolute
+                repo_root_path = Path(agent_data["repo_root"])
+                if not repo_root_path.is_absolute():
+                    repo_root_path = (config_path.parent / repo_root_path).resolve()
+                agent_kwargs["repo_root"] = repo_root_path
             config.agents[label] = AgentConfig(**agent_kwargs)
 
         # Parse concurrency
@@ -246,39 +279,39 @@ class Config:
         config.code_review_label = review_config.get("code_review_label", "needs-code-review")
         config.code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
 
-        # CTO review (batch)
-        config.cto_review_agent = review_config.get("cto_review_agent")
-        config.cto_review_label = review_config.get("cto_review_label")  # defaults to code_reviewed_label
-        config.cto_reviewed_label = review_config.get("cto_reviewed_label", "cto-reviewed")
-        config.cto_review_threshold = review_config.get("cto_review_threshold", 0)
-        config.cto_review_on_failure = review_config.get("cto_review_on_failure", True)
+        # Triage review (batch) - supports both triage_* and cto_* keys for backwards compat
+        config.triage_review_agent = review_config.get("triage_review_agent") or review_config.get("cto_review_agent")
+        config.triage_review_label = review_config.get("triage_review_label") or review_config.get("cto_review_label")
+        config.triage_reviewed_label = review_config.get("triage_reviewed_label") or review_config.get("cto_reviewed_label", "triage-reviewed")
+        config.triage_review_threshold = review_config.get("triage_review_threshold") or review_config.get("cto_review_threshold", 0)
+        config.triage_review_on_failure = review_config.get("triage_review_on_failure", review_config.get("cto_review_on_failure", True))
 
         # Rework cycle limit
         config.max_rework_cycles = review_config.get("max_rework_cycles", 2)
 
         # Backwards compatibility: map old fields to new
-        if "agent" in review_config and not config.cto_review_agent:
-            config.cto_review_agent = review_config["agent"]
+        if "agent" in review_config and not config.triage_review_agent:
+            config.triage_review_agent = review_config["agent"]
         if "label" in review_config and not config.code_review_label:
             config.code_review_label = review_config["label"]
-        if "threshold" in review_config and config.cto_review_threshold == 0:
-            config.cto_review_threshold = review_config["threshold"]
+        if "threshold" in review_config and config.triage_review_threshold == 0:
+            config.triage_review_threshold = review_config["threshold"]
 
-        # Parse cleanup config
+        # Parse cleanup config - supports both triage and cto keys for backwards compat
         cleanup_data = data.get("cleanup", {})
         if cleanup_data:
-            with_cto_data = cleanup_data.get("with_cto", {})
-            without_cto_data = cleanup_data.get("without_cto", {})
+            with_triage_data = cleanup_data.get("with_triage", {}) or cleanup_data.get("with_cto", {})
+            without_triage_data = cleanup_data.get("without_triage", {}) or cleanup_data.get("without_cto", {})
 
             config.cleanup = CleanupConfig(
-                with_cto=CleanupWithCTO(
-                    close_ai_session_tabs=with_cto_data.get("close_ai_session_tabs", True),
-                    remove_worktrees=with_cto_data.get("remove_worktrees", False),
+                with_triage=CleanupWithTriage(
+                    close_ai_session_tabs=with_triage_data.get("close_ai_session_tabs", True),
+                    remove_worktrees=with_triage_data.get("remove_worktrees", False),
                 ),
-                without_cto=CleanupWithoutCTO(
-                    wait_for_code_review=without_cto_data.get("wait_for_code_review", True),
-                    close_ai_session_tabs=without_cto_data.get("close_ai_session_tabs", True),
-                    remove_worktrees=without_cto_data.get("remove_worktrees", False),
+                without_triage=CleanupWithoutTriage(
+                    wait_for_code_review=without_triage_data.get("wait_for_code_review", True),
+                    close_ai_session_tabs=without_triage_data.get("close_ai_session_tabs", True),
+                    remove_worktrees=without_triage_data.get("remove_worktrees", False),
                 ),
             )
 
@@ -325,3 +358,68 @@ class Config:
         raise FileNotFoundError(
             "No .issue-orchestrator.yaml found in current or parent directories"
         )
+
+    def validate(self) -> list[str]:
+        """Validate configuration and return list of errors.
+
+        Call this at startup to catch configuration problems early.
+        Returns empty list if valid, list of error messages otherwise.
+        """
+        errors = []
+
+        # Validate agents
+        if not self.agents:
+            errors.append("No agents configured. Add at least one agent under 'agents:' in config.")
+
+        for label, agent in self.agents.items():
+            # Validate prompt file exists
+            if not agent.prompt_path.exists():
+                errors.append(
+                    f"Agent '{label}': prompt file not found: {agent.prompt_path}"
+                )
+
+            # Validate worktree_base is absolute (should be resolved by load())
+            if not agent.worktree_base.is_absolute():
+                errors.append(
+                    f"Agent '{label}': worktree_base must be absolute path, got: {agent.worktree_base}"
+                )
+
+            # Validate worktree_base exists and is writable
+            if not agent.worktree_base.exists():
+                errors.append(
+                    f"Agent '{label}': worktree_base does not exist: {agent.worktree_base}"
+                )
+            elif not agent.worktree_base.is_dir():
+                errors.append(
+                    f"Agent '{label}': worktree_base is not a directory: {agent.worktree_base}"
+                )
+
+            # Validate model is known
+            known_models = {"haiku", "sonnet", "opus"}
+            if agent.model not in known_models:
+                errors.append(
+                    f"Agent '{label}': unknown model '{agent.model}'. Known: {known_models}"
+                )
+
+        # Validate review workflow references valid agents
+        if self.code_review_agent and self.code_review_agent not in self.agents:
+            errors.append(
+                f"code_review_agent '{self.code_review_agent}' not found in agents. "
+                f"Available: {list(self.agents.keys())}"
+            )
+
+        if self.triage_review_agent and self.triage_review_agent not in self.agents:
+            errors.append(
+                f"triage_review_agent '{self.triage_review_agent}' not found in agents. "
+                f"Available: {list(self.agents.keys())}"
+            )
+
+        return errors
+
+    def validate_or_raise(self) -> None:
+        """Validate configuration, raising ValueError if invalid."""
+        errors = self.validate()
+        if errors:
+            raise ValueError(
+                "Configuration errors:\n  - " + "\n  - ".join(errors)
+            )

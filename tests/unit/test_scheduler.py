@@ -2,7 +2,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from issue_orchestrator.scheduler import (
+from issue_orchestrator.control.scheduler import (
     Scheduler, SchedulerResult, DueDateStrategy, NumberStrategy,
     PatternStrategy, NameStrategy, get_milestone_strategy, load_strategy_class,
     BUILTIN_STRATEGIES
@@ -619,7 +619,7 @@ class TestMilestoneSortStrategies:
 
     def test_load_strategy_class_builtin(self):
         """Test load_strategy_class can load built-in strategies."""
-        cls = load_strategy_class("issue_orchestrator.scheduler.DueDateStrategy")
+        cls = load_strategy_class("issue_orchestrator.control.scheduler.DueDateStrategy")
         assert cls is DueDateStrategy
 
     def test_load_strategy_class_invalid_module(self):
@@ -630,13 +630,13 @@ class TestMilestoneSortStrategies:
     def test_load_strategy_class_invalid_class(self):
         """Test load_strategy_class raises for invalid class name."""
         with pytest.raises(ValueError, match="Cannot load strategy class"):
-            load_strategy_class("issue_orchestrator.scheduler.NonexistentStrategy")
+            load_strategy_class("issue_orchestrator.control.scheduler.NonexistentStrategy")
 
     def test_get_milestone_strategy_full_module_path(self):
         """Test factory accepts full module path (same mechanism as user plugins)."""
         config = Config()
         # Use full module path instead of alias - proves dynamic import works
-        config.milestone_sort = "issue_orchestrator.scheduler.NumberStrategy"
+        config.milestone_sort = "issue_orchestrator.control.scheduler.NumberStrategy"
 
         strategy = get_milestone_strategy(config)
         assert isinstance(strategy, NumberStrategy)
@@ -664,7 +664,7 @@ class TestMilestoneSortStrategies:
         config = Config()
 
         # Using full module path (as a plugin would be specified)
-        config.milestone_sort = "issue_orchestrator.scheduler.PatternStrategy"
+        config.milestone_sort = "issue_orchestrator.control.scheduler.PatternStrategy"
         config.milestone_sort_config = {"pattern": r"v(\d+)"}
 
         strategy = get_milestone_strategy(config)

@@ -1,25 +1,43 @@
-"""Session monitoring and completion handling."""
+"""Session observation and completion handling.
+
+Naming convention (from architecture review):
+- "Observer" implies non-authoritative fact-gathering
+- Observers observe, they don't decide
+- Decisions belong in Controllers (LifecycleController)
+
+Components that observe are named Observers;
+Components that decide are named Controllers;
+Components that act are named Adapters.
+"""
 
 import logging
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .domain.state_machines.session_machine import SessionStateMachine
+    from ..domain.state_machines.session_machine import SessionStateMachine
 
-from .config import Config
-from .github import add_label, get_issue_labels, get_open_prs_for_branch, remove_label
-from .models import Session, SessionStatus
-from .tmux import kill_session, session_exists
-from . import labels
+from ..config import Config
+from ..github import add_label, get_issue_labels, get_open_prs_for_branch, remove_label
+from ..models import Session, SessionStatus
+from ..tmux import kill_session, session_exists
+from .. import labels
 
 logger = logging.getLogger(__name__)
 
 
-class SessionMonitor:
-    """Monitor running sessions and handle their completion."""
+class SessionObserver:
+    """Observe running sessions and gather facts about their state.
+
+    This class observes sessions and returns facts (SessionStatus).
+    It does NOT make policy decisions - that's the controller's job.
+
+    Note: handle_completion() currently contains some policy (which labels
+    to add/remove). This should eventually move to LifecycleController,
+    with this class only doing observation.
+    """
 
     def __init__(self, config: Config, session_machines: dict[str, "SessionStateMachine"] | None = None) -> None:
-        """Initialize the monitor with configuration.
+        """Initialize the observer with configuration.
 
         Args:
             config: Orchestrator configuration
@@ -37,7 +55,7 @@ class SessionMonitor:
     def _get_iterm_manager(self):
         """Get the iTerm2 session manager (lazy init)."""
         if self._iterm_manager is None:
-            from .iterm2 import get_iterm_manager
+            from ..iterm2 import get_iterm_manager
             self._iterm_manager = get_iterm_manager()
         return self._iterm_manager
 
@@ -317,3 +335,8 @@ class SessionMonitor:
             logger.error(
                 f"Unexpected error handling completion for issue #{issue_number}: {e}"
             )
+
+
+# Backwards compatibility alias (deprecated)
+# TODO: Remove after all imports are updated
+SessionMonitor = SessionObserver

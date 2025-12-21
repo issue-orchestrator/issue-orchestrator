@@ -539,11 +539,11 @@ agents:
         assert config.code_review_agent is None
         assert config.code_review_label is None
         assert config.code_reviewed_label is None
-        # CTO review defaults (all None when not configured)
-        assert config.cto_review_agent is None
-        assert config.cto_review_label is None
-        assert config.cto_reviewed_label is None
-        assert config.cto_review_threshold == 0
+        # triage review defaults (all None when not configured)
+        assert config.triage_review_agent is None
+        assert config.triage_review_label is None
+        assert config.triage_reviewed_label is None
+        assert config.triage_review_threshold == 0
 
     def test_review_workflow_from_yaml(self, tmp_path):
         """Test loading review workflow config from YAML."""
@@ -557,9 +557,9 @@ review:
   code_review_agent: agent:reviewer
   code_review_label: needs-code-review
   code_reviewed_label: code-reviewed
-  cto_review_agent: agent:cto
-  cto_reviewed_label: cto-reviewed
-  cto_review_threshold: 5
+  triage_review_agent: agent:triage
+  triage_reviewed_label: triage-reviewed
+  triage_review_threshold: 5
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -569,9 +569,9 @@ review:
         assert config.code_review_agent == "agent:reviewer"
         assert config.code_review_label == "needs-code-review"
         assert config.code_reviewed_label == "code-reviewed"
-        assert config.cto_review_agent == "agent:cto"
-        assert config.cto_reviewed_label == "cto-reviewed"
-        assert config.cto_review_threshold == 5
+        assert config.triage_review_agent == "agent:triage"
+        assert config.triage_reviewed_label == "triage-reviewed"
+        assert config.triage_review_threshold == 5
 
     def test_review_workflow_partial_config(self, tmp_path):
         """Test loading review workflow with partial config (code review only)."""
@@ -592,17 +592,17 @@ review:
         assert config.code_review_agent == "agent:reviewer"
         assert config.code_review_label == "needs-code-review"  # default
         assert config.code_reviewed_label == "code-reviewed"  # default
-        assert config.cto_review_agent is None  # not configured
-        assert config.cto_review_threshold == 0  # default
+        assert config.triage_review_agent is None  # not configured
+        assert config.triage_review_threshold == 0  # default
 
     def test_review_threshold_zero_means_manual_only(self):
-        """Test that cto_review_threshold=0 means manual CTO review only."""
+        """Test that triage_review_threshold=0 means manual triage review only."""
         config = Config()
-        config.cto_review_agent = "agent:cto"
-        config.cto_review_threshold = 0
+        config.triage_review_agent = "agent:triage"
+        config.triage_review_threshold = 0
 
         # Threshold of 0 means auto-trigger is disabled
-        assert config.cto_review_threshold == 0
+        assert config.triage_review_threshold == 0
 
 
 class TestCleanupConfig:
@@ -612,16 +612,16 @@ class TestCleanupConfig:
         """Test that cleanup config has sensible defaults."""
         config = Config()
 
-        # with_cto defaults
-        assert config.cleanup.with_cto.close_ai_session_tabs is True
-        assert config.cleanup.with_cto.remove_worktrees is False
+        # with_triage defaults
+        assert config.cleanup.with_triage.close_ai_session_tabs is True
+        assert config.cleanup.with_triage.remove_worktrees is False
 
-        # without_cto defaults
-        assert config.cleanup.without_cto.wait_for_code_review is True
-        assert config.cleanup.without_cto.close_ai_session_tabs is True
-        assert config.cleanup.without_cto.remove_worktrees is False
+        # without_triage defaults
+        assert config.cleanup.without_triage.wait_for_code_review is True
+        assert config.cleanup.without_triage.close_ai_session_tabs is True
+        assert config.cleanup.without_triage.remove_worktrees is False
 
-    def test_cleanup_config_from_yaml_with_cto(self, tmp_path):
+    def test_cleanup_config_from_yaml_with_triage(self, tmp_path):
         """Test loading cleanup config for CTO workflow."""
         config_content = """
 agents:
@@ -630,7 +630,7 @@ agents:
     worktree_base: /tmp
 
 cleanup:
-  with_cto:
+  with_triage:
     close_ai_session_tabs: false
     remove_worktrees: true
 """
@@ -639,13 +639,13 @@ cleanup:
 
         config = Config.load(config_file)
 
-        assert config.cleanup.with_cto.close_ai_session_tabs is False
-        assert config.cleanup.with_cto.remove_worktrees is True
-        # without_cto should have defaults
-        assert config.cleanup.without_cto.wait_for_code_review is True
-        assert config.cleanup.without_cto.close_ai_session_tabs is True
+        assert config.cleanup.with_triage.close_ai_session_tabs is False
+        assert config.cleanup.with_triage.remove_worktrees is True
+        # without_triage should have defaults
+        assert config.cleanup.without_triage.wait_for_code_review is True
+        assert config.cleanup.without_triage.close_ai_session_tabs is True
 
-    def test_cleanup_config_from_yaml_without_cto(self, tmp_path):
+    def test_cleanup_config_from_yaml_without_triage(self, tmp_path):
         """Test loading cleanup config for non-CTO workflow."""
         config_content = """
 agents:
@@ -654,7 +654,7 @@ agents:
     worktree_base: /tmp
 
 cleanup:
-  without_cto:
+  without_triage:
     wait_for_code_review: false
     close_ai_session_tabs: true
     remove_worktrees: true
@@ -664,12 +664,12 @@ cleanup:
 
         config = Config.load(config_file)
 
-        assert config.cleanup.without_cto.wait_for_code_review is False
-        assert config.cleanup.without_cto.close_ai_session_tabs is True
-        assert config.cleanup.without_cto.remove_worktrees is True
-        # with_cto should have defaults
-        assert config.cleanup.with_cto.close_ai_session_tabs is True
-        assert config.cleanup.with_cto.remove_worktrees is False
+        assert config.cleanup.without_triage.wait_for_code_review is False
+        assert config.cleanup.without_triage.close_ai_session_tabs is True
+        assert config.cleanup.without_triage.remove_worktrees is True
+        # with_triage should have defaults
+        assert config.cleanup.with_triage.close_ai_session_tabs is True
+        assert config.cleanup.with_triage.remove_worktrees is False
 
     def test_cleanup_config_from_yaml_both_sections(self, tmp_path):
         """Test loading cleanup config with both sections specified."""
@@ -680,10 +680,10 @@ agents:
     worktree_base: /tmp
 
 cleanup:
-  with_cto:
+  with_triage:
     close_ai_session_tabs: true
     remove_worktrees: true
-  without_cto:
+  without_triage:
     wait_for_code_review: false
     close_ai_session_tabs: false
     remove_worktrees: false
@@ -693,14 +693,14 @@ cleanup:
 
         config = Config.load(config_file)
 
-        # with_cto
-        assert config.cleanup.with_cto.close_ai_session_tabs is True
-        assert config.cleanup.with_cto.remove_worktrees is True
+        # with_triage
+        assert config.cleanup.with_triage.close_ai_session_tabs is True
+        assert config.cleanup.with_triage.remove_worktrees is True
 
-        # without_cto
-        assert config.cleanup.without_cto.wait_for_code_review is False
-        assert config.cleanup.without_cto.close_ai_session_tabs is False
-        assert config.cleanup.without_cto.remove_worktrees is False
+        # without_triage
+        assert config.cleanup.without_triage.wait_for_code_review is False
+        assert config.cleanup.without_triage.close_ai_session_tabs is False
+        assert config.cleanup.without_triage.remove_worktrees is False
 
     def test_cleanup_config_partial_fields_use_defaults(self, tmp_path):
         """Test that unspecified cleanup fields use defaults."""
@@ -711,7 +711,7 @@ agents:
     worktree_base: /tmp
 
 cleanup:
-  with_cto:
+  with_triage:
     remove_worktrees: true
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
@@ -720,9 +720,9 @@ cleanup:
         config = Config.load(config_file)
 
         # Specified field
-        assert config.cleanup.with_cto.remove_worktrees is True
+        assert config.cleanup.with_triage.remove_worktrees is True
         # Unspecified field should use default
-        assert config.cleanup.with_cto.close_ai_session_tabs is True
+        assert config.cleanup.with_triage.close_ai_session_tabs is True
 
     def test_cleanup_config_empty_section_uses_defaults(self, tmp_path):
         """Test that empty cleanup section uses all defaults."""
@@ -740,11 +740,11 @@ cleanup: {}
         config = Config.load(config_file)
 
         # All defaults
-        assert config.cleanup.with_cto.close_ai_session_tabs is True
-        assert config.cleanup.with_cto.remove_worktrees is False
-        assert config.cleanup.without_cto.wait_for_code_review is True
-        assert config.cleanup.without_cto.close_ai_session_tabs is True
-        assert config.cleanup.without_cto.remove_worktrees is False
+        assert config.cleanup.with_triage.close_ai_session_tabs is True
+        assert config.cleanup.with_triage.remove_worktrees is False
+        assert config.cleanup.without_triage.wait_for_code_review is True
+        assert config.cleanup.without_triage.close_ai_session_tabs is True
+        assert config.cleanup.without_triage.remove_worktrees is False
 
     def test_cleanup_config_missing_section_uses_defaults(self, tmp_path):
         """Test that missing cleanup section uses all defaults."""
@@ -760,6 +760,137 @@ agents:
         config = Config.load(config_file)
 
         # All defaults when section is missing
-        assert config.cleanup.with_cto.close_ai_session_tabs is True
-        assert config.cleanup.with_cto.remove_worktrees is False
-        assert config.cleanup.without_cto.wait_for_code_review is True
+        assert config.cleanup.with_triage.close_ai_session_tabs is True
+        assert config.cleanup.with_triage.remove_worktrees is False
+        assert config.cleanup.without_triage.wait_for_code_review is True
+
+
+class TestConfigValidation:
+    """Tests for config validation at startup."""
+
+    def test_validate_missing_prompt_file(self, tmp_path):
+        """Test validation catches missing prompt files."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /nonexistent/path/prompt.md
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+
+        assert any("prompt file not found" in e for e in errors)
+
+    def test_validate_worktree_base_resolved_to_absolute(self, tmp_path):
+        """Test that relative worktree_base is resolved to absolute path."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("# Test prompt")
+
+        config_content = f"""
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    worktree_base: ./worktrees
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # Relative path should be resolved to absolute
+        agent = config.agents["agent:test"]
+        assert agent.worktree_base.is_absolute()
+        assert str(agent.worktree_base).startswith(str(tmp_path))
+
+    def test_validate_worktree_base_created_if_missing(self, tmp_path):
+        """Test that worktree_base directory is created during load."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("# Test prompt")
+        worktree_dir = tmp_path / "new-worktrees"
+
+        config_content = f"""
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    worktree_base: {worktree_dir}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        # Directory doesn't exist yet
+        assert not worktree_dir.exists()
+
+        config = Config.load(config_file)
+
+        # Directory should be created
+        assert worktree_dir.exists()
+        assert worktree_dir.is_dir()
+
+    def test_validate_invalid_review_agent_reference(self, tmp_path):
+        """Test validation catches invalid code_review_agent reference."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("# Test prompt")
+        worktree_dir = tmp_path / "worktrees"
+        worktree_dir.mkdir()
+
+        config_content = f"""
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    worktree_base: {worktree_dir}
+
+review:
+  code_review_agent: agent:nonexistent
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+
+        assert any("code_review_agent 'agent:nonexistent' not found" in e for e in errors)
+
+    def test_validate_valid_config_returns_empty(self, tmp_path):
+        """Test that valid config returns no errors."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("# Test prompt")
+        worktree_dir = tmp_path / "worktrees"
+        worktree_dir.mkdir()
+
+        config_content = f"""
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    worktree_base: {worktree_dir}
+    model: haiku
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+
+        assert errors == []
+
+    def test_validate_or_raise_raises_on_errors(self, tmp_path):
+        """Test validate_or_raise raises ValueError with all errors."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /nonexistent/prompt.md
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        import pytest
+        with pytest.raises(ValueError) as exc_info:
+            config.validate_or_raise()
+
+        assert "Configuration errors" in str(exc_info.value)
+        assert "prompt file not found" in str(exc_info.value)

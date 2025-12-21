@@ -32,9 +32,9 @@ agents:
     model: "sonnet"
     timeout_minutes: 10
 
-  # CTO agent for Stage 2 (batch review)
-  "agent:cto":
-    prompt: ".issue-orchestrator/prompts/cto-review.md"
+  # Triage agent for Stage 2 (batch review)
+  "agent:triage":
+    prompt: ".issue-orchestrator/prompts/triage-review.md"
     worktree_base: "../"
     model: "sonnet"
     timeout_minutes: 30
@@ -51,9 +51,9 @@ labels:
   needs_human: "needs-human"       # Applied when agent needs input
   prefix: ""                       # Optional: prefix all labels (e.g., "bot" -> "bot:in-progress")
 
-# CTO advisory labels (create these in your repo):
-# - cto-fix: Issues created by CTO agent recommending fixes
-# CTO creates issues with "blocked" + "cto-fix" labels.
+# Triage advisory labels (create these in your repo):
+# - triage-fix: Issues created by CTO agent recommending fixes
+# Triage creates issues with "blocked" + "triage-fix" labels.
 # Human reviews, then removes "blocked" to approve the fix.
 
 # UI mode: "tmux" (default), "iterm2" (Mac), or "web" (browser dashboard)
@@ -98,7 +98,7 @@ code_reviewed_label: "code-reviewed"    # Label after review passes
 # Rework iteration (when reviewer requests changes)
 # max_rework_cycles: 2                  # Max rework attempts before escalating to needs-human (default: 2)
 
-# Stage 2: CTO batch review (triggered when N reviewed PRs accumulate)
-# cto_review_agent: "agent:cto"         # Uncomment to enable batch review
-# cto_reviewed_label: "cto-reviewed"    # Label after CTO review
-# cto_review_threshold: 5               # Trigger after N reviewed PRs
+# Stage 2: Triage batch review (triggered when N reviewed PRs accumulate)
+# triage_review_agent: "agent:triage"         # Uncomment to enable batch review
+# triage_reviewed_label: "triage-reviewed"    # Label after triage review
+# triage_review_threshold: 5               # Trigger after N reviewed PRs

@@ -1066,29 +1066,49 @@ class TestSSEFunctionality:
 
 
 class TestEmitEventHelper:
-    """Test the _emit_event helper function in orchestrator."""
+    """Test the trace event emission via PluginManager.emit()."""
 
-    def test_emit_event_does_nothing_without_subscribers(self):
-        """Test that _emit_event silently does nothing when no subscribers."""
-        from issue_orchestrator.orchestrator import _emit_event
-        from issue_orchestrator.web import _event_subscribers
+    def test_plugin_manager_emit_broadcasts_to_hooks(self):
+        """Test that PluginManager.emit() broadcasts to on_trace_event hooks."""
+        from issue_orchestrator.execution.manager import PluginManager
+        from issue_orchestrator.hookspec import hookimpl
 
-        # Ensure no subscribers
-        original_subscribers = _event_subscribers.copy()
-        _event_subscribers.clear()
+        # Create a test plugin that captures events
+        events_received = []
 
-        try:
-            # Should not raise any errors
-            _emit_event("test_event", {"data": "test"})
-        finally:
-            _event_subscribers.update(original_subscribers)
+        class TestPlugin:
+            @hookimpl
+            def on_trace_event(self, event: str, data: dict) -> None:
+                events_received.append((event, data))
 
-    def test_emit_event_handles_import_error(self):
-        """Test that _emit_event handles errors gracefully."""
-        from issue_orchestrator.orchestrator import _emit_event
+        # Create plugin manager and register test plugin
+        pm = PluginManager(terminal_plugin="tmux")
+        pm.register_plugin(TestPlugin(), name="test_plugin")
 
-        # This should not raise, even if something goes wrong
-        with patch("issue_orchestrator.orchestrator.asyncio.get_event_loop") as mock_loop:
-            mock_loop.side_effect = RuntimeError("No event loop")
-            # Should not raise
-            _emit_event("test_event")
+        # Emit an event
+        pm.emit("test.event", {"key": "value"})
+
+        # Verify event was received
+        assert len(events_received) == 1
+        assert events_received[0] == ("test.event", {"key": "value"})
+
+    def test_plugin_manager_emit_with_empty_data(self):
+        """Test that emit() works with no data argument."""
+        from issue_orchestrator.execution.manager import PluginManager
+        from issue_orchestrator.hookspec import hookimpl
+
+        events_received = []
+
+        class TestPlugin:
+            @hookimpl
+            def on_trace_event(self, event: str, data: dict) -> None:
+                events_received.append((event, data))
+
+        pm = PluginManager(terminal_plugin="tmux")
+        pm.register_plugin(TestPlugin(), name="test_plugin")
+
+        # Emit without data
+        pm.emit("test.event")
+
+        assert len(events_received) == 1
+        assert events_received[0] == ("test.event", {})

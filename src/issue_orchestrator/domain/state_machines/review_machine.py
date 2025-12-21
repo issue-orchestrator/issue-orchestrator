@@ -24,8 +24,8 @@ class ReviewState(Enum):
     CHANGES_REQUESTED = "changes_requested"
     REWORK_PENDING = "rework_pending"
     REWORK_IN_PROGRESS = "rework_in_progress"
-    CTO_PENDING = "cto_pending"
-    CTO_REVIEWED = "cto_reviewed"
+    TRIAGE_PENDING = "triage_pending"
+    TRIAGE_REVIEWED = "triage_reviewed"
     MERGED = "merged"
     CLOSED = "closed"
     ESCALATED = "escalated"  # Rework limit exceeded, needs human intervention
@@ -41,8 +41,8 @@ class ReviewStateMachine:
     - CHANGES_REQUESTED: Reviewer requested changes
     - REWORK_PENDING: Changes requested, rework not yet started
     - REWORK_IN_PROGRESS: Agent is addressing requested changes
-    - CTO_PENDING: Awaiting CTO review (for complex changes)
-    - CTO_REVIEWED: CTO has reviewed the changes
+    - TRIAGE_PENDING: Awaiting triage review (for complex changes)
+    - TRIAGE_REVIEWED: triage has reviewed the changes
     - MERGED: PR has been merged
     - CLOSED: PR closed without merging
     - ESCALATED: Rework limit exceeded, requires human intervention
@@ -142,24 +142,24 @@ class ReviewStateMachine:
                 'dest': ReviewState.IN_REVIEW.value,
                 'after': '_on_rework_completed'
             },
-            # Send approved PR to CTO review
+            # Send approved PR to triage review
             {
-                'trigger': 'request_cto_review',
+                'trigger': 'request_triage_review',
                 'source': ReviewState.APPROVED.value,
-                'dest': ReviewState.CTO_PENDING.value,
-                'after': '_on_cto_review_started'
+                'dest': ReviewState.TRIAGE_PENDING.value,
+                'after': '_on_triage_review_started'
             },
-            # CTO review completed
+            # triage review completed
             {
-                'trigger': 'cto_reviewed',
-                'source': ReviewState.CTO_PENDING.value,
-                'dest': ReviewState.CTO_REVIEWED.value,
-                'after': '_on_cto_reviewed'
+                'trigger': 'triage_reviewed',
+                'source': ReviewState.TRIAGE_PENDING.value,
+                'dest': ReviewState.TRIAGE_REVIEWED.value,
+                'after': '_on_triage_reviewed'
             },
-            # Merge from approved or cto_reviewed state
+            # Merge from approved or triage_reviewed state
             {
                 'trigger': 'merge',
-                'source': [ReviewState.APPROVED.value, ReviewState.CTO_REVIEWED.value],
+                'source': [ReviewState.APPROVED.value, ReviewState.TRIAGE_REVIEWED.value],
                 'dest': ReviewState.MERGED.value,
                 'after': '_on_merged'
             },
@@ -173,16 +173,16 @@ class ReviewStateMachine:
                     ReviewState.CHANGES_REQUESTED.value,
                     ReviewState.REWORK_PENDING.value,
                     ReviewState.REWORK_IN_PROGRESS.value,
-                    ReviewState.CTO_PENDING.value,
-                    ReviewState.CTO_REVIEWED.value
+                    ReviewState.TRIAGE_PENDING.value,
+                    ReviewState.TRIAGE_REVIEWED.value
                 ],
                 'dest': ReviewState.CLOSED.value,
                 'after': '_on_closed'
             },
-            # Reopen from in_review (if more changes requested after CTO review)
+            # Reopen from in_review (if more changes requested after triage review)
             {
-                'trigger': 'request_changes_after_cto',
-                'source': ReviewState.CTO_REVIEWED.value,
+                'trigger': 'request_changes_after_triage',
+                'source': ReviewState.TRIAGE_REVIEWED.value,
                 'dest': ReviewState.CHANGES_REQUESTED.value,
                 'after': '_on_changes_requested',
                 'before': '_increment_rework_count'
@@ -305,35 +305,35 @@ class ReviewStateMachine:
         )
         logger.info(f"Rework completed for PR {self.pr_number}")
 
-    def _on_cto_review_started(self, event):
-        """Callback for request_cto_review transition.
+    def _on_triage_review_started(self, event):
+        """Callback for request_triage_review transition.
 
         Args:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
         self.event_bus.publish(
-            ReviewEvent.CTO_REVIEW_STARTED,
+            ReviewEvent.TRIAGE_REVIEW_STARTED,
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number},
             source="ReviewStateMachine"
         )
-        logger.info(f"CTO review requested for PR {self.pr_number}")
+        logger.info(f"triage review requested for PR {self.pr_number}")
 
-    def _on_cto_reviewed(self, event):
-        """Callback for cto_reviewed transition.
+    def _on_triage_reviewed(self, event):
+        """Callback for triage_reviewed transition.
 
         Args:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
         self.event_bus.publish(
-            ReviewEvent.CTO_APPROVED,
+            ReviewEvent.TRIAGE_APPROVED,
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number},
             source="ReviewStateMachine"
         )
-        logger.info(f"CTO review completed for PR {self.pr_number}")
+        logger.info(f"triage review completed for PR {self.pr_number}")
 
     def _on_merged(self, event):
         """Callback for merge transition.

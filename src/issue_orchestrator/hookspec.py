@@ -109,192 +109,76 @@ class TerminalSpec:
         """
 
 
-class LifecycleSpec:
-    """Hook specifications for orchestrator lifecycle events.
+class TraceEventSpec:
+    """Hook specification for trace event broadcasting.
 
-    Lifecycle hooks enable plugins to react to state changes in the orchestrator.
-    Unlike TerminalSpec (firstresult=True), these hooks broadcast to ALL plugins
-    so any UI (web, CLI, desktop, Slack) can receive notifications.
+    This is the ONLY lifecycle hook. All orchestrator events are broadcast
+    through this single hook, keeping the plugin API stable.
 
-    All hooks are fire-and-forget - return values are ignored.
+    Event naming convention:
+        {domain}.{action}
+
+    Domains:
+        - orchestrator: orchestrator.ready, orchestrator.paused, orchestrator.resumed
+        - session: session.started, session.completed, session.failed
+        - issue: issue.claimed, issue.blocked, issue.needs_human
+        - pr: pr.created
+        - review: review.requested, review.completed, review.escalated
+
+    Plugins (SSE, IPC, logging, metrics) implement this one hook and
+    filter/react to events by name. New events can be added without
+    changing the hookspec.
+
+    This is for NOTIFICATIONS only. For extension points where plugins
+    can contribute/veto/alter behavior, use dedicated hooks.
     """
 
     @hookspec
-    def on_issue_claimed(
+    def on_trace_event(
         self,
-        issue_number: int,
-        title: str,
-        agent_type: str,
+        event: str,
+        data: dict,
     ) -> None:
-        """Called when an issue is claimed by an agent.
+        """Broadcast a trace event to all registered sinks.
 
         Args:
-            issue_number: The GitHub issue number
-            title: Issue title
-            agent_type: The agent type handling this issue (e.g., "agent:web")
+            event: Event name (e.g., "session.started", "review.escalated")
+            data: Event-specific data dictionary
+
+        Common data fields by event type:
+            session.started:
+                issue_number, session_id, worktree_path, branch_name
+            session.completed:
+                issue_number, session_id, pr_url, runtime_minutes
+            session.failed:
+                issue_number, session_id, error, runtime_minutes
+            issue.claimed:
+                issue_number, title, agent_type
+            issue.blocked:
+                issue_number, reason
+            issue.needs_human:
+                issue_number, reason
+            pr.created:
+                issue_number, pr_number, pr_url, title
+            review.requested:
+                pr_number, issue_number, review_type
+            review.completed:
+                pr_number, issue_number, result, rework_count
+            review.escalated:
+                pr_number, issue_number, rework_count, max_rework_cycles
+            orchestrator.ready:
+                {}
+            orchestrator.paused:
+                {}
+            orchestrator.resumed:
+                {}
+            orchestrator.state_changed:
+                active_count, paused, completed_today
         """
 
-    @hookspec
-    def on_session_started(
-        self,
-        issue_number: int,
-        session_id: str,
-        worktree_path: str,
-        branch_name: str,
-    ) -> None:
-        """Called when an agent session starts running.
 
-        Args:
-            issue_number: The GitHub issue number
-            session_id: Unique session identifier
-            worktree_path: Path to the git worktree
-            branch_name: Git branch name for this work
-        """
-
-    @hookspec
-    def on_session_completed(
-        self,
-        issue_number: int,
-        session_id: str,
-        pr_url: str | None,
-        runtime_minutes: float | None,
-    ) -> None:
-        """Called when an agent session completes successfully.
-
-        Args:
-            issue_number: The GitHub issue number
-            session_id: Unique session identifier
-            pr_url: URL of the created PR, if any
-            runtime_minutes: How long the session ran
-        """
-
-    @hookspec
-    def on_session_failed(
-        self,
-        issue_number: int,
-        session_id: str,
-        error: str | None,
-        runtime_minutes: float | None,
-    ) -> None:
-        """Called when an agent session fails or times out.
-
-        Args:
-            issue_number: The GitHub issue number
-            session_id: Unique session identifier
-            error: Error message or reason for failure
-            runtime_minutes: How long the session ran before failing
-        """
-
-    @hookspec
-    def on_issue_blocked(
-        self,
-        issue_number: int,
-        reason: str | None,
-    ) -> None:
-        """Called when an issue becomes blocked.
-
-        Args:
-            issue_number: The GitHub issue number
-            reason: Why the issue is blocked
-        """
-
-    @hookspec
-    def on_issue_needs_human(
-        self,
-        issue_number: int,
-        reason: str | None,
-    ) -> None:
-        """Called when an issue needs human intervention.
-
-        Args:
-            issue_number: The GitHub issue number
-            reason: What human help is needed
-        """
-
-    @hookspec
-    def on_pr_created(
-        self,
-        issue_number: int,
-        pr_number: int,
-        pr_url: str,
-        title: str,
-    ) -> None:
-        """Called when a pull request is created.
-
-        Args:
-            issue_number: The associated issue number
-            pr_number: The PR number
-            pr_url: URL to the PR
-            title: PR title
-        """
-
-    @hookspec
-    def on_review_requested(
-        self,
-        pr_number: int,
-        issue_number: int,
-        review_type: str,
-    ) -> None:
-        """Called when a review is requested for a PR.
-
-        Args:
-            pr_number: The PR number
-            issue_number: The associated issue number
-            review_type: Type of review ("code_review", "cto_review")
-        """
-
-    @hookspec
-    def on_review_completed(
-        self,
-        pr_number: int,
-        issue_number: int,
-        result: str,
-        rework_count: int,
-    ) -> None:
-        """Called when a review is completed.
-
-        Args:
-            pr_number: The PR number
-            issue_number: The associated issue number
-            result: Review result ("approved", "changes_requested", "merged")
-            rework_count: Number of rework cycles so far
-        """
-
-    @hookspec
-    def on_review_escalated(
-        self,
-        pr_number: int,
-        issue_number: int,
-        rework_count: int,
-        max_rework_cycles: int,
-    ) -> None:
-        """Called when a review is escalated due to exceeding rework limits.
-
-        This is a critical event indicating that the bounded review loop has
-        failed and human intervention is required. The PR cannot proceed through
-        the normal automation path.
-
-        Args:
-            pr_number: The PR number
-            issue_number: The associated issue number
-            rework_count: Number of rework cycles attempted
-            max_rework_cycles: The configured maximum allowed
-        """
-
-    @hookspec
-    def on_orchestrator_state_changed(
-        self,
-        active_count: int,
-        paused: bool,
-        completed_today: int,
-    ) -> None:
-        """Called when orchestrator state changes significantly.
-
-        Args:
-            active_count: Number of active sessions
-            paused: Whether orchestrator is paused
-            completed_today: Number of completions today
-        """
+# Keep LifecycleSpec as alias for backwards compatibility during transition
+LifecycleSpec = TraceEventSpec
 
 
 # Future hook specs can be added here:

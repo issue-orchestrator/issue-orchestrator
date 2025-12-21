@@ -283,6 +283,54 @@ def get_open_prs_for_branch(
         raise GitHubError(f"Failed to get open PRs: {e}") from e
 
 
+def get_prs_for_issue(
+    repo: str | None = None,
+    issue_number: int | None = None,
+) -> list[dict]:
+    """Find PRs associated with a GitHub issue.
+
+    Searches for PRs where:
+    - Branch starts with the issue number (e.g., "328-feature-name")
+    - OR title contains "#issue_number" (e.g., "#328: Feature")
+
+    This is the canonical way to find PRs for an issue. Both the orchestrator
+    and tests should use this function.
+
+    Args:
+        repo: Optional repository in owner/repo format. If None, uses current repo.
+        issue_number: The issue number to find PRs for
+
+    Returns:
+        List of PR objects (dicts with number, title, state, labels, headRefName)
+
+    Raises:
+        GitHubError: If GitHub operation fails
+        ValueError: If issue_number is missing
+    """
+    if issue_number is None:
+        raise ValueError("issue_number is required")
+
+    # Search for PRs where branch starts with issue number OR title contains #issue_number
+    # The branch pattern is: {issue_number}-{title-slug}
+    args = [
+        "pr", "list",
+        "--search", f"head:{issue_number} OR #{issue_number}",
+        "--state", "open",
+        "--json", "number,title,state,labels,headRefName,url",
+    ]
+
+    try:
+        output = _run_gh_json(args, repo)
+
+        if isinstance(output, list):
+            return output
+        return []
+    except GitHubError:
+        raise
+    except Exception as e:
+        raise GitHubError(f"Failed to get PRs for issue #{issue_number}: {e}") from e
+
+
 def get_issue_labels(repo: str | None, issue_number: int) -> list[str]:
     """Get current labels on an issue.
 

@@ -12,7 +12,29 @@ agents:
   "agent:mobile":
     prompt: "examples/prompts/simple-fix.md"
     model: haiku
+  "agent:e2e-test":
+    prompt: "examples/prompts/e2e-test.md"
+    model: haiku
+    timeout_minutes: 3  # Short timeout for e2e tests
+
+  "agent:e2e-test-timeout":
+    prompt: "examples/prompts/e2e-test-timeout.md"
+    model: haiku
+    timeout_minutes: 1  # Very short - designed to timeout
+
+  "agent:e2e-test-rejects":
+    prompt: "examples/prompts/e2e-test-rejects.md"
+    model: haiku
+    timeout_minutes: 3
+    skip_review: true  # This IS a code reviewer, don't review it
 
 concurrency:
   max_concurrent_sessions: 2
   session_timeout_minutes: 10
+
+# For e2e testing of rework cycles - uncomment to test rejection flow
+# review:
+#   code_review_agent: "agent:e2e-test-rejects"
+#   code_review_label: "needs-code-review"
+#   code_reviewed_label: "code-reviewed"
+#   max_rework_cycles: 2  # Low for faster testing

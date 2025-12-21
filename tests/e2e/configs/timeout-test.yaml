@@ -1,0 +1,31 @@
+# E2E Test Config: Session Timeout Testing
+#
+# This config uses an agent that does nothing, triggering a timeout.
+# Tests the failure handling and triage review triggering.
+
+repo: BruceBGordon/issue-orchestrator
+
+filter_label: test-data
+
+# Skip hook verification for e2e tests
+dangerous:
+  skip_verification: true
+
+agents:
+  # Agent that does nothing - will timeout
+  "agent:e2e-test-timeout":
+    prompt: "examples/prompts/e2e-test-timeout.md"
+    model: haiku
+    timeout_minutes: 1  # Very short - will timeout quickly
+    worktree_base: "/tmp/e2e-worktrees"
+    repo_root: "../../../"  # Prompt paths resolved relative to repo root
+    permission_mode: bypassPermissions  # Required for non-interactive e2e tests
+
+concurrency:
+  max_concurrent_sessions: 1
+  session_timeout_minutes: 2  # Fallback timeout
+
+# Triage review on failure (to verify it gets triggered)
+triage:
+  triage_review_agent: "agent:triage-investigator"
+  triage_review_on_failure: true

@@ -1,10 +1,10 @@
-"""Unit tests for the monitor module."""
+"""Unit tests for the observer module."""
 
 import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
-from issue_orchestrator.monitor import SessionMonitor
+from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.models import (
     Session,
     SessionStatus,
@@ -32,14 +32,14 @@ def mock_config():
 
 @pytest.fixture
 def monitor(mock_config):
-    """Create a SessionMonitor instance for testing."""
-    return SessionMonitor(mock_config)
+    """Create a SessionObserver instance for testing."""
+    return SessionObserver(mock_config)
 
 
 @pytest.fixture
 def monitor_with_machines(mock_config):
-    """Create a SessionMonitor instance with mock session machines for testing."""
-    return SessionMonitor(mock_config, session_machines={})
+    """Create a SessionObserver instance with mock session machines for testing."""
+    return SessionObserver(mock_config, session_machines={})
 
 
 @pytest.fixture
@@ -60,61 +60,61 @@ def sample_session(sample_agent_config, tmp_path):
     )
 
 
-class TestSessionMonitorInit:
-    """Test SessionMonitor initialization."""
+class TestSessionObserverInit:
+    """Test SessionObserver initialization."""
 
     def test_init_with_config(self, mock_config):
         """Test initializing monitor with config."""
-        monitor = SessionMonitor(mock_config)
+        monitor = SessionObserver(mock_config)
         assert monitor.config == mock_config
         assert monitor._iterm_manager is None
         assert monitor.session_machines == {}
 
     def test_init_stores_config(self, mock_config):
         """Test that config is properly stored."""
-        monitor = SessionMonitor(mock_config)
+        monitor = SessionObserver(mock_config)
         assert monitor.config.repo == "owner/repo"
         assert monitor.config.max_concurrent_sessions == 3
 
     def test_init_with_session_machines(self, mock_config):
         """Test initializing monitor with session machines."""
         machines = {"issue-1": MagicMock(), "issue-2": MagicMock()}
-        monitor = SessionMonitor(mock_config, session_machines=machines)
+        monitor = SessionObserver(mock_config, session_machines=machines)
         assert monitor.config == mock_config
         assert monitor.session_machines == machines
 
     def test_init_session_machines_defaults_to_empty_dict(self, mock_config):
         """Test that session_machines defaults to empty dict when None."""
-        monitor = SessionMonitor(mock_config, session_machines=None)
+        monitor = SessionObserver(mock_config, session_machines=None)
         assert monitor.session_machines == {}
 
 
-class TestSessionMonitorProperties:
-    """Test SessionMonitor property methods."""
+class TestSessionObserverProperties:
+    """Test SessionObserver property methods."""
 
     def test_using_iterm2_tmux_mode(self, mock_config):
         """Test _using_iterm2 returns False for tmux mode."""
         mock_config.ui_mode = "tmux"
-        monitor = SessionMonitor(mock_config)
+        monitor = SessionObserver(mock_config)
         assert monitor._using_iterm2 is False
 
     def test_using_iterm2_iterm2_mode(self, mock_config):
         """Test _using_iterm2 returns True for iterm2 mode."""
         mock_config.ui_mode = "iterm2"
-        monitor = SessionMonitor(mock_config)
+        monitor = SessionObserver(mock_config)
         assert monitor._using_iterm2 is True
 
     def test_using_iterm2_web_mode(self, mock_config):
         """Test _using_iterm2 returns True for web mode."""
         mock_config.ui_mode = "web"
-        monitor = SessionMonitor(mock_config)
+        monitor = SessionObserver(mock_config)
         assert monitor._using_iterm2 is True
 
     @patch('issue_orchestrator.iterm2.get_iterm_manager')
     def test_get_iterm_manager_lazy_init(self, mock_get_manager, mock_config):
         """Test that iTerm manager is lazily initialized."""
         mock_config.ui_mode = "iterm2"
-        monitor = SessionMonitor(mock_config)
+        monitor = SessionObserver(mock_config)
 
         # Should be None initially
         assert monitor._iterm_manager is None
@@ -133,7 +133,7 @@ class TestSessionMonitorProperties:
     def test_get_iterm_manager_caching(self, mock_get_manager, mock_config):
         """Test that iTerm manager is cached after first call."""
         mock_config.ui_mode = "iterm2"
-        monitor = SessionMonitor(mock_config)
+        monitor = SessionObserver(mock_config)
 
         mock_manager = MagicMock()
         mock_get_manager.return_value = mock_manager
@@ -147,10 +147,10 @@ class TestSessionMonitorProperties:
         mock_get_manager.assert_called_once()
 
 
-class TestSessionMonitorBackends:
+class TestSessionObserverBackends:
     """Test backend selection methods."""
 
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_session_exists_tmux_mode(self, mock_session_exists, monitor):
         """Test _session_exists uses tmux backend in tmux mode."""
         monitor.config.ui_mode = "tmux"
@@ -174,7 +174,7 @@ class TestSessionMonitorBackends:
         assert result is True
         mock_manager.session_exists.assert_called_once_with(123)
 
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_kill_session_tmux_mode(self, mock_kill_session, monitor):
         """Test _kill_session uses tmux backend in tmux mode."""
         monitor.config.ui_mode = "tmux"
@@ -219,7 +219,7 @@ class TestSessionMonitorBackends:
 class TestCheckSession:
     """Test check_session method."""
 
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_timed_out(self, mock_session_exists, monitor, sample_session):
         """Test check_session returns TIMED_OUT when session times out."""
         # Set up session that has timed out
@@ -279,7 +279,7 @@ class TestCheckSession:
 
         assert status == SessionStatus.TIMED_OUT
 
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_still_running(self, mock_session_exists, monitor, sample_session):
         """Test check_session returns RUNNING when session is active."""
         mock_session_exists.return_value = True
@@ -289,8 +289,8 @@ class TestCheckSession:
         assert status == SessionStatus.RUNNING
         mock_session_exists.assert_called_once_with("issue-123")
 
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_running_with_pr_sends_exit(
         self, mock_session_exists, mock_get_prs, monitor, sample_session
     ):
@@ -307,8 +307,8 @@ class TestCheckSession:
         assert sample_session.exit_sent is True
         mock_send.assert_called_once_with(123)
 
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_running_exit_sent_only_once(
         self, mock_session_exists, mock_get_prs, monitor, sample_session
     ):
@@ -326,8 +326,8 @@ class TestCheckSession:
         # Should not send again
         mock_send.assert_not_called()
 
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_running_pr_check_exception(
         self, mock_session_exists, mock_get_prs, monitor, sample_session
     ):
@@ -340,8 +340,8 @@ class TestCheckSession:
         assert status == SessionStatus.RUNNING
         assert sample_session.exit_sent is False
 
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_completed_with_pr(
         self, mock_session_exists, mock_get_prs, monitor, sample_session
     ):
@@ -354,9 +354,9 @@ class TestCheckSession:
 
         assert status == SessionStatus.COMPLETED
 
-    @patch('issue_orchestrator.monitor.get_issue_labels')
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_issue_labels')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_blocked_label(
         self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
@@ -369,9 +369,9 @@ class TestCheckSession:
 
         assert status == SessionStatus.BLOCKED
 
-    @patch('issue_orchestrator.monitor.get_issue_labels')
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_issue_labels')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_needs_human_label(
         self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
@@ -384,9 +384,9 @@ class TestCheckSession:
 
         assert status == SessionStatus.NEEDS_HUMAN
 
-    @patch('issue_orchestrator.monitor.get_issue_labels')
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_issue_labels')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_failed_no_markers(
         self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
@@ -399,9 +399,9 @@ class TestCheckSession:
 
         assert status == SessionStatus.FAILED
 
-    @patch('issue_orchestrator.monitor.get_issue_labels')
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_issue_labels')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_pr_check_exception_still_checks_labels(
         self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
@@ -414,9 +414,9 @@ class TestCheckSession:
 
         assert status == SessionStatus.BLOCKED
 
-    @patch('issue_orchestrator.monitor.get_issue_labels')
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_issue_labels')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_session_with_custom_labels(
         self, mock_session_exists, mock_get_prs, mock_get_labels, monitor, sample_session
     ):
@@ -435,7 +435,7 @@ class TestCheckSession:
 class TestCheckAllSessions:
     """Test check_all_sessions method."""
 
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_all_sessions_empty_list(self, mock_session_exists, monitor):
         """Test checking empty list of sessions."""
         statuses = monitor.check_all_sessions([])
@@ -443,7 +443,7 @@ class TestCheckAllSessions:
         assert statuses == {}
         mock_session_exists.assert_not_called()
 
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_all_sessions_multiple(
         self, mock_session_exists, monitor, sample_agent_config
     ):
@@ -474,7 +474,7 @@ class TestCheckAllSessions:
         assert statuses[1] == SessionStatus.RUNNING
         assert statuses[2] == SessionStatus.RUNNING
 
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_all_sessions_with_exception(
         self, mock_session_exists, monitor, sample_session
     ):
@@ -485,9 +485,9 @@ class TestCheckAllSessions:
 
         assert statuses[123] == SessionStatus.FAILED
 
-    @patch('issue_orchestrator.monitor.get_issue_labels')
-    @patch('issue_orchestrator.monitor.session_exists')
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.get_issue_labels')
+    @patch('issue_orchestrator.observation.observer.session_exists')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
     def test_check_all_sessions_mixed_statuses(
         self, mock_get_prs, mock_session_exists, mock_get_labels, monitor, sample_agent_config
     ):
@@ -549,9 +549,9 @@ class TestCheckAllSessions:
 class TestHandleCompletion:
     """Test handle_completion method."""
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.add_label')
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.add_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_timed_out(
         self, mock_kill, mock_add_label, mock_remove_label, monitor, sample_session
     ):
@@ -575,8 +575,8 @@ class TestHandleCompletion:
             label="in-progress",
         )
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.add_label')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.add_label')
     def test_handle_completion_failed(
         self, mock_add_label, mock_remove_label, monitor, sample_session
     ):
@@ -597,7 +597,7 @@ class TestHandleCompletion:
             label="in-progress",
         )
 
-    @patch('issue_orchestrator.monitor.remove_label')
+    @patch('issue_orchestrator.observation.observer.remove_label')
     def test_handle_completion_completed(
         self, mock_remove_label, monitor, sample_session
     ):
@@ -611,7 +611,7 @@ class TestHandleCompletion:
             label="in-progress",
         )
 
-    @patch('issue_orchestrator.monitor.remove_label')
+    @patch('issue_orchestrator.observation.observer.remove_label')
     def test_handle_completion_blocked_keeps_in_progress(
         self, mock_remove_label, monitor, sample_session
     ):
@@ -625,7 +625,7 @@ class TestHandleCompletion:
         # Should NOT remove in-progress label - blocked coexists with in-progress
         mock_remove_label.assert_not_called()
 
-    @patch('issue_orchestrator.monitor.remove_label')
+    @patch('issue_orchestrator.observation.observer.remove_label')
     def test_handle_completion_needs_human_keeps_in_progress(
         self, mock_remove_label, monitor, sample_session
     ):
@@ -639,9 +639,9 @@ class TestHandleCompletion:
         # Should NOT remove in-progress label - needs-human coexists with in-progress
         mock_remove_label.assert_not_called()
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.add_label')
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.add_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_timed_out_kill_fails(
         self, mock_kill, mock_add_label, mock_remove_label, monitor, sample_session
     ):
@@ -654,8 +654,8 @@ class TestHandleCompletion:
         mock_add_label.assert_called_once()
         mock_remove_label.assert_called_once()
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.add_label')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.add_label')
     def test_handle_completion_add_label_fails(
         self, mock_add_label, mock_remove_label, monitor, sample_session
     ):
@@ -667,7 +667,7 @@ class TestHandleCompletion:
         # Should still remove in-progress label
         mock_remove_label.assert_called_once()
 
-    @patch('issue_orchestrator.monitor.remove_label')
+    @patch('issue_orchestrator.observation.observer.remove_label')
     def test_handle_completion_remove_label_exception(
         self, mock_remove_label, monitor, sample_session
     ):
@@ -679,12 +679,12 @@ class TestHandleCompletion:
 
     def test_handle_completion_running_does_nothing(self, monitor, sample_session):
         """Test that RUNNING status does nothing."""
-        with patch('issue_orchestrator.monitor.remove_label') as mock_remove:
+        with patch('issue_orchestrator.observation.observer.remove_label') as mock_remove:
             monitor.handle_completion(sample_session, SessionStatus.RUNNING)
             mock_remove.assert_not_called()
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_close_completed_tabs(
         self, mock_kill, mock_remove_label, monitor, sample_session
     ):
@@ -696,8 +696,8 @@ class TestHandleCompletion:
         # Should close the tab
         mock_kill.assert_called_once_with("issue-123")
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_dont_close_completed_tabs(
         self, mock_kill, mock_remove_label, monitor, sample_session
     ):
@@ -709,9 +709,9 @@ class TestHandleCompletion:
         # Should not close the tab (only remove label)
         mock_kill.assert_not_called()
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.add_label')
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.add_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_close_failed_tabs(
         self, mock_kill, mock_add_label, mock_remove_label, monitor, sample_session
     ):
@@ -723,9 +723,9 @@ class TestHandleCompletion:
         # Should close the tab (kill called twice: once for tab close)
         assert mock_kill.call_count == 1
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.add_label')
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.add_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_dont_close_failed_tabs(
         self, mock_kill, mock_add_label, mock_remove_label, monitor, sample_session
     ):
@@ -737,7 +737,7 @@ class TestHandleCompletion:
         # Should not close the tab
         mock_kill.assert_not_called()
 
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_close_blocked_tabs(
         self, mock_kill, monitor, sample_session
     ):
@@ -752,7 +752,7 @@ class TestHandleCompletion:
         # Should close the tab (but NOT remove in-progress label)
         mock_kill.assert_called_once_with("issue-123")
 
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_close_needs_human_tabs(
         self, mock_kill, monitor, sample_session
     ):
@@ -767,9 +767,9 @@ class TestHandleCompletion:
         # Should close the tab (but NOT remove in-progress label)
         mock_kill.assert_called_once_with("issue-123")
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.add_label')
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.add_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_timed_out_always_kills(
         self, mock_kill, mock_add_label, mock_remove_label, monitor, sample_session
     ):
@@ -782,8 +782,8 @@ class TestHandleCompletion:
         # Should still kill the session for TIMED_OUT (kill called once for timeout)
         mock_kill.assert_called_once_with("issue-123")
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_tab_close_exception(
         self, mock_kill, mock_remove_label, monitor, sample_session
     ):
@@ -794,7 +794,7 @@ class TestHandleCompletion:
         # Should not raise
         monitor.handle_completion(sample_session, SessionStatus.COMPLETED)
 
-    @patch('issue_orchestrator.monitor.remove_label')
+    @patch('issue_orchestrator.observation.observer.remove_label')
     def test_handle_completion_with_custom_in_progress_label(
         self, mock_remove_label, monitor, sample_session
     ):
@@ -809,7 +809,7 @@ class TestHandleCompletion:
             label="custom-in-progress",
         )
 
-    @patch('issue_orchestrator.monitor.remove_label')
+    @patch('issue_orchestrator.observation.observer.remove_label')
     def test_handle_completion_unexpected_exception(
         self, mock_remove_label, monitor, sample_session
     ):
@@ -819,9 +819,9 @@ class TestHandleCompletion:
         # Should not raise
         monitor.handle_completion(sample_session, SessionStatus.COMPLETED)
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.add_label')
-    @patch('issue_orchestrator.monitor.kill_session')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.add_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
     def test_handle_completion_timed_out_add_label_error(
         self, mock_kill, mock_add_label, mock_remove_label, monitor, sample_session
     ):
@@ -847,14 +847,14 @@ class TestHandleCompletion:
         monitor.handle_completion(broken_session, SessionStatus.COMPLETED)
 
 
-class TestSessionMonitorIntegration:
+class TestSessionObserverIntegration:
     """Integration tests combining multiple methods."""
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.add_label')
-    @patch('issue_orchestrator.monitor.kill_session')
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.add_label')
+    @patch('issue_orchestrator.observation.observer.kill_session')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_full_workflow_timed_out(
         self,
         mock_exists,
@@ -891,9 +891,9 @@ class TestSessionMonitorIntegration:
             label="in-progress",
         )
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_full_workflow_completed(
         self,
         mock_exists,
@@ -921,9 +921,9 @@ class TestSessionMonitorIntegration:
             label="in-progress",
         )
 
-    @patch('issue_orchestrator.monitor.remove_label')
-    @patch('issue_orchestrator.monitor.get_open_prs_for_branch')
-    @patch('issue_orchestrator.monitor.session_exists')
+    @patch('issue_orchestrator.observation.observer.remove_label')
+    @patch('issue_orchestrator.observation.observer.get_open_prs_for_branch')
+    @patch('issue_orchestrator.observation.observer.session_exists')
     def test_check_and_handle_multiple_sessions(
         self,
         mock_exists,

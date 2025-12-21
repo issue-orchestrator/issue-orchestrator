@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 
 # Built-in plugin mapping
 BUILTIN_PLUGINS = {
-    "tmux": "issue_orchestrator.adapters.terminal_tmux:TmuxPlugin",
-    "iterm2": "issue_orchestrator.adapters.terminal_iterm:ITermPlugin",
-    "iterm": "issue_orchestrator.adapters.terminal_iterm:ITermPlugin",  # alias
+    "tmux": "issue_orchestrator.execution.terminal_tmux:TmuxPlugin",
+    "iterm2": "issue_orchestrator.execution.terminal_iterm:ITermPlugin",
+    "iterm": "issue_orchestrator.execution.terminal_iterm:ITermPlugin",  # alias
 }
 
 # UI mode to plugin mapping (backwards compatibility)
@@ -180,159 +180,24 @@ class PluginManager:
         self._pm.register(plugin, name=name)
         logger.info("Registered plugin: %s", name or type(plugin).__name__)
 
-    # Lifecycle hook convenience methods
+    # Trace event emission
 
-    def notify_issue_claimed(
-        self,
-        issue_number: int,
-        title: str,
-        agent_type: str,
-    ) -> None:
-        """Notify all plugins that an issue was claimed."""
-        self._pm.hook.on_issue_claimed(
-            issue_number=issue_number,
-            title=title,
-            agent_type=agent_type,
-        )
+    def emit(self, event: str, data: dict | None = None) -> None:
+        """Emit a trace event to all registered plugins.
 
-    def notify_session_started(
-        self,
-        issue_number: int,
-        session_id: str,
-        worktree_path: str,
-        branch_name: str,
-    ) -> None:
-        """Notify all plugins that a session started."""
-        self._pm.hook.on_session_started(
-            issue_number=issue_number,
-            session_id=session_id,
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-        )
+        This is the single entry point for all lifecycle notifications.
+        Events are broadcast to all plugins implementing on_trace_event
+        (SSE, IPC, logging, metrics, etc.).
 
-    def notify_session_completed(
-        self,
-        issue_number: int,
-        session_id: str,
-        pr_url: str | None,
-        runtime_minutes: float | None,
-    ) -> None:
-        """Notify all plugins that a session completed."""
-        self._pm.hook.on_session_completed(
-            issue_number=issue_number,
-            session_id=session_id,
-            pr_url=pr_url,
-            runtime_minutes=runtime_minutes,
-        )
+        Event naming convention: {domain}.{action}
+            - session.started, session.completed, session.failed
+            - issue.claimed, issue.blocked, issue.needs_human
+            - pr.created
+            - review.requested, review.completed, review.escalated
+            - orchestrator.ready, orchestrator.paused, orchestrator.resumed
 
-    def notify_session_failed(
-        self,
-        issue_number: int,
-        session_id: str,
-        error: str | None,
-        runtime_minutes: float | None,
-    ) -> None:
-        """Notify all plugins that a session failed."""
-        self._pm.hook.on_session_failed(
-            issue_number=issue_number,
-            session_id=session_id,
-            error=error,
-            runtime_minutes=runtime_minutes,
-        )
-
-    def notify_issue_blocked(
-        self,
-        issue_number: int,
-        reason: str | None,
-    ) -> None:
-        """Notify all plugins that an issue is blocked."""
-        self._pm.hook.on_issue_blocked(
-            issue_number=issue_number,
-            reason=reason,
-        )
-
-    def notify_issue_needs_human(
-        self,
-        issue_number: int,
-        reason: str | None,
-    ) -> None:
-        """Notify all plugins that an issue needs human help."""
-        self._pm.hook.on_issue_needs_human(
-            issue_number=issue_number,
-            reason=reason,
-        )
-
-    def notify_pr_created(
-        self,
-        issue_number: int,
-        pr_number: int,
-        pr_url: str,
-        title: str,
-    ) -> None:
-        """Notify all plugins that a PR was created."""
-        self._pm.hook.on_pr_created(
-            issue_number=issue_number,
-            pr_number=pr_number,
-            pr_url=pr_url,
-            title=title,
-        )
-
-    def notify_review_requested(
-        self,
-        pr_number: int,
-        issue_number: int,
-        review_type: str,
-    ) -> None:
-        """Notify all plugins that a review was requested."""
-        self._pm.hook.on_review_requested(
-            pr_number=pr_number,
-            issue_number=issue_number,
-            review_type=review_type,
-        )
-
-    def notify_review_completed(
-        self,
-        pr_number: int,
-        issue_number: int,
-        result: str,
-        rework_count: int,
-    ) -> None:
-        """Notify all plugins that a review was completed."""
-        self._pm.hook.on_review_completed(
-            pr_number=pr_number,
-            issue_number=issue_number,
-            result=result,
-            rework_count=rework_count,
-        )
-
-    def notify_review_escalated(
-        self,
-        pr_number: int,
-        issue_number: int,
-        rework_count: int,
-        max_rework_cycles: int,
-    ) -> None:
-        """Notify all plugins that a review was escalated.
-
-        This is a critical event - the bounded review loop has failed
-        and human intervention is required.
+        Args:
+            event: Event name (e.g., "session.started")
+            data: Event-specific data dictionary
         """
-        self._pm.hook.on_review_escalated(
-            pr_number=pr_number,
-            issue_number=issue_number,
-            rework_count=rework_count,
-            max_rework_cycles=max_rework_cycles,
-        )
-
-    def notify_state_changed(
-        self,
-        active_count: int,
-        paused: bool,
-        completed_today: int,
-    ) -> None:
-        """Notify all plugins of orchestrator state change."""
-        self._pm.hook.on_orchestrator_state_changed(
-            active_count=active_count,
-            paused=paused,
-            completed_today=completed_today,
-        )
+        self._pm.hook.on_trace_event(event=event, data=data or {})

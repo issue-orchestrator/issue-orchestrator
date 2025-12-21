@@ -14,8 +14,8 @@ from issue_orchestrator.models import (
     OrchestratorState,
 )
 from issue_orchestrator.config import Config
-from issue_orchestrator.scheduler import Scheduler
-from issue_orchestrator.monitor import SessionMonitor
+from issue_orchestrator.control.scheduler import Scheduler
+from issue_orchestrator.observation.observer import SessionObserver
 
 
 # Helper functions
@@ -58,14 +58,14 @@ class TestOrchestratorInit:
         assert isinstance(orchestrator.scheduler, Scheduler)
         assert orchestrator.scheduler.config == sample_config
 
-    def test_post_init_creates_monitor(self, sample_config):
-        """Test that __post_init__ creates a SessionMonitor."""
+    def test_post_init_creates_observer(self, sample_config):
+        """Test that __post_init__ creates a SessionObserver."""
         orchestrator = Orchestrator(config=sample_config)
 
-        assert isinstance(orchestrator.monitor, SessionMonitor)
-        assert orchestrator.monitor.config == sample_config
-        # Verify monitor has reference to session_machines
-        assert orchestrator.monitor.session_machines is orchestrator.session_machines
+        assert isinstance(orchestrator.observer, SessionObserver)
+        assert orchestrator.observer.config == sample_config
+        # Verify observer has reference to session_machines
+        assert orchestrator.observer.session_machines is orchestrator.session_machines
 
     def test_post_init_initializes_state(self, sample_config):
         """Test that state is initialized to default OrchestratorState."""
@@ -523,7 +523,7 @@ class TestHandleSessionCompletion:
         orchestrator = Orchestrator(config=sample_config)
         orchestrator.state.active_sessions.append(session)
 
-        with patch.object(orchestrator.monitor, "handle_completion") as mock_monitor:
+        with patch.object(orchestrator.observer, "handle_completion") as mock_monitor:
             orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
             mock_monitor.assert_called_once_with(session, SessionStatus.COMPLETED)
@@ -736,7 +736,7 @@ class TestRunLoop:
         orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
-        with patch.object(orchestrator.monitor, "check_session") as mock_check:
+        with patch.object(orchestrator.observer, "check_session") as mock_check:
             mock_check.return_value = SessionStatus.COMPLETED
 
             # Run one iteration
@@ -766,7 +766,7 @@ class TestRunLoop:
         orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
-        with patch.object(orchestrator.monitor, "check_session") as mock_check:
+        with patch.object(orchestrator.observer, "check_session") as mock_check:
             with patch.object(orchestrator, "handle_session_completion") as mock_handle:
                 mock_check.return_value = SessionStatus.COMPLETED
 
@@ -852,7 +852,7 @@ class TestRunLoop:
         orchestrator.state.active_sessions.append(create_session(issue1))
         orchestrator.state.active_sessions.append(create_session(issue2))
 
-        with patch.object(orchestrator.monitor, "check_session") as mock_check:
+        with patch.object(orchestrator.observer, "check_session") as mock_check:
             # Mock check_session to return RUNNING (sessions still active)
             mock_check.return_value = SessionStatus.RUNNING
 
@@ -1371,39 +1371,39 @@ class TestRunOrchestrator:
 
 
 class TestCheckCTOReviewTrigger:
-    """Test the check_cto_review_trigger method for CTO batch review workflow."""
+    """Test the check_triage_review_trigger method for triage batch review workflow."""
 
-    def test_check_cto_review_trigger_disabled_without_agent(self, sample_config):
-        """Test that check_cto_review_trigger does nothing without cto_review_agent configured."""
-        sample_config.cto_review_agent = None
+    def test_check_triage_review_trigger_disabled_without_agent(self, sample_config):
+        """Test that check_triage_review_trigger does nothing without triage_review_agent configured."""
+        sample_config.triage_review_agent = None
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.cto_review_threshold = 5
+        sample_config.triage_review_threshold = 5
 
         orchestrator = Orchestrator(config=sample_config)
 
         # Should not raise and should not call any GitHub functions
         with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
-            orchestrator.check_cto_review_trigger()
+            orchestrator.check_triage_review_trigger()
             mock_prs.assert_not_called()
 
-    def test_check_cto_review_trigger_disabled_with_zero_threshold(self, sample_config):
-        """Test that check_cto_review_trigger does nothing with threshold=0."""
-        sample_config.cto_review_agent = "agent:cto"
+    def test_check_triage_review_trigger_disabled_with_zero_threshold(self, sample_config):
+        """Test that check_triage_review_trigger does nothing with threshold=0."""
+        sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.cto_review_threshold = 0
+        sample_config.triage_review_threshold = 0
 
         orchestrator = Orchestrator(config=sample_config)
 
         with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
-            orchestrator.check_cto_review_trigger()
+            orchestrator.check_triage_review_trigger()
             mock_prs.assert_not_called()
 
     @patch("issue_orchestrator.orchestrator.list_prs_with_label")
-    def test_check_cto_review_trigger_below_threshold(self, mock_prs, sample_config):
+    def test_check_triage_review_trigger_below_threshold(self, mock_prs, sample_config):
         """Test that no review issue is created when below threshold."""
-        sample_config.cto_review_agent = "agent:cto"
+        sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.cto_review_threshold = 5
+        sample_config.triage_review_threshold = 5
 
         mock_prs.return_value = [
             {"number": 1, "title": "PR 1"},
@@ -1413,18 +1413,18 @@ class TestCheckCTOReviewTrigger:
         orchestrator = Orchestrator(config=sample_config)
 
         with patch("issue_orchestrator.orchestrator.create_issue") as mock_create:
-            orchestrator.check_cto_review_trigger()
+            orchestrator.check_triage_review_trigger()
             mock_create.assert_not_called()
 
     @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.create_issue")
-    def test_check_cto_review_trigger_creates_review_issue(
+    def test_check_triage_review_trigger_creates_review_issue(
         self, mock_create, mock_prs, sample_config, mock_github_adapter
     ):
         """Test that review issue is created when threshold is reached."""
-        sample_config.cto_review_agent = "agent:cto"
+        sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.cto_review_threshold = 3
+        sample_config.triage_review_threshold = 3
 
         mock_prs.return_value = [
             {"number": 1, "title": "PR 1"},
@@ -1435,22 +1435,22 @@ class TestCheckCTOReviewTrigger:
         mock_create.return_value = 42
 
         orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
-        orchestrator.check_cto_review_trigger()
+        orchestrator.check_triage_review_trigger()
 
         mock_create.assert_called_once()
         call_args = mock_create.call_args
-        assert "CTO Batch Review" in call_args[1]["title"]
-        assert sample_config.cto_review_agent in call_args[1]["labels"]
+        assert "Triage Batch Review" in call_args[1]["title"]
+        assert sample_config.triage_review_agent in call_args[1]["labels"]
 
     @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.create_issue")
-    def test_check_cto_review_trigger_skips_if_review_issue_exists(
+    def test_check_triage_review_trigger_skips_if_review_issue_exists(
         self, mock_create, mock_prs, sample_config, mock_github_adapter
     ):
         """Test that no duplicate review issue is created."""
-        sample_config.cto_review_agent = "agent:cto"
+        sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.cto_review_threshold = 3
+        sample_config.triage_review_threshold = 3
 
         mock_prs.return_value = [
             {"number": 1, "title": "PR 1"},
@@ -1459,25 +1459,25 @@ class TestCheckCTOReviewTrigger:
         ]
 
         # Existing review issue (must have the CTO agent label to be found)
-        existing_issue = create_issue(100, title="CTO Batch Review: 3 PRs pending", labels=["agent:cto"])
+        existing_issue = create_issue(100, title="Triage Batch Review: 3 PRs pending", labels=["agent:triage"])
         mock_github_adapter.issues = [existing_issue]
 
         orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
-        orchestrator.check_cto_review_trigger()
+        orchestrator.check_triage_review_trigger()
 
         # Should not create a new issue
         mock_create.assert_not_called()
 
     @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.create_issue")
-    def test_check_cto_review_trigger_review_body_includes_pr_list(
+    def test_check_triage_review_trigger_review_body_includes_pr_list(
         self, mock_create, mock_prs, sample_config, mock_github_adapter
     ):
         """Test that review issue body includes list of PRs."""
-        sample_config.cto_review_agent = "agent:cto"
+        sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.cto_reviewed_label = "cto-reviewed"
-        sample_config.cto_review_threshold = 2
+        sample_config.triage_reviewed_label = "triage-reviewed"
+        sample_config.triage_review_threshold = 2
 
         mock_prs.return_value = [
             {"number": 10, "title": "Fix bug A"},
@@ -1487,7 +1487,7 @@ class TestCheckCTOReviewTrigger:
         mock_create.return_value = 42
 
         orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
-        orchestrator.check_cto_review_trigger()
+        orchestrator.check_triage_review_trigger()
 
         call_args = mock_create.call_args
         body = call_args[1]["body"]
@@ -1496,7 +1496,7 @@ class TestCheckCTOReviewTrigger:
         assert "PR #20" in body
         assert "Add feature B" in body
         assert "code-reviewed" in body
-        assert "cto-reviewed" in body
+        assert "triage-reviewed" in body
 
 
 class TestQueueCodeReview:
@@ -1949,7 +1949,7 @@ class TestHandleSessionCompletionWithCodeReview:
         mock_github_adapter,
     ):
         """Test that handle_session_completion queues code review for completed sessions."""
-        from issue_orchestrator.ports.pr_repository import PRInfo
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
         sample_config.code_review_agent = "agent:reviewer"
         mock_github_adapter.prs["feature/issue-1"] = [
@@ -1987,7 +1987,7 @@ class TestHandleSessionCompletionWithCodeReview:
         mock_github_adapter,
     ):
         """Test that handle_session_completion doesn't queue review without code_review_agent."""
-        from issue_orchestrator.ports.pr_repository import PRInfo
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
         sample_config.code_review_agent = None
 
@@ -2184,13 +2184,13 @@ class TestPauseBehavior:
         assert len(orchestrator.state.pending_reviews) == 1
 
     @patch("issue_orchestrator.orchestrator.list_prs_with_label")
-    def test_check_cto_review_trigger_does_nothing_when_paused(
+    def test_check_triage_review_trigger_does_nothing_when_paused(
         self, mock_prs, sample_config
     ):
-        """Test that check_cto_review_trigger does nothing when paused."""
-        sample_config.cto_review_agent = "agent:cto"
+        """Test that check_triage_review_trigger does nothing when paused."""
+        sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.cto_review_threshold = 3
+        sample_config.triage_review_threshold = 3
 
         mock_prs.return_value = [
             {"number": 1, "title": "PR 1"},
@@ -2202,7 +2202,7 @@ class TestPauseBehavior:
         orchestrator.state.paused = True  # PAUSED
 
         with patch("issue_orchestrator.orchestrator.create_issue") as mock_create:
-            orchestrator.check_cto_review_trigger()
+            orchestrator.check_triage_review_trigger()
             # Should not even check PRs when paused
             mock_prs.assert_not_called()
             mock_create.assert_not_called()
@@ -2635,18 +2635,18 @@ class TestDeferredCleanup:
     """Tests for deferred cleanup functionality."""
 
     @patch("issue_orchestrator.orchestrator.remove_worktree")
-    def test_handle_completion_defers_cleanup_with_cto(
+    def test_handle_completion_defers_cleanup_with_triage(
         self,
         mock_remove_worktree,
         sample_config,
         mock_github_adapter,
     ):
-        """Test that cleanup is deferred when CTO review is enabled."""
-        from issue_orchestrator.ports.pr_repository import PRInfo
+        """Test that cleanup is deferred when triage review is enabled."""
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
-        # Enable CTO review
-        sample_config.cto_review_agent = "agent:cto"
-        sample_config.cto_reviewed_label = "cto-reviewed"
+        # Enable triage review
+        sample_config.triage_review_agent = "agent:triage"
+        sample_config.triage_reviewed_label = "triage-reviewed"
 
         # Mock PR response
         mock_github_adapter.prs["feature/test"] = [
@@ -2686,12 +2686,12 @@ class TestDeferredCleanup:
         mock_github_adapter,
     ):
         """Test that cleanup is deferred when code review is enabled and wait_for_code_review is true."""
-        from issue_orchestrator.ports.pr_repository import PRInfo
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
         # Enable code review only (no CTO)
         sample_config.code_review_agent = "agent:reviewer"
         sample_config.code_reviewed_label = "code-reviewed"
-        sample_config.cleanup.without_cto.wait_for_code_review = True
+        sample_config.cleanup.without_triage.wait_for_code_review = True
 
         # Mock PR response
         mock_github_adapter.prs["feature/test"] = [
@@ -2728,10 +2728,10 @@ class TestDeferredCleanup:
         mock_github_adapter,
     ):
         """Test that cleanup happens immediately when no review workflow is configured."""
-        from issue_orchestrator.ports.pr_repository import PRInfo
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
         # No review workflow
-        sample_config.cto_review_agent = None
+        sample_config.triage_review_agent = None
         sample_config.code_review_agent = None
 
         # Mock PR response
@@ -2769,8 +2769,8 @@ class TestDeferredCleanup:
         mock_github_adapter,
     ):
         """Test that failed sessions are not deferred (left for investigation)."""
-        # Enable CTO review
-        sample_config.cto_review_agent = "agent:cto"
+        # Enable triage review
+        sample_config.triage_review_agent = "agent:triage"
 
         issue = create_issue(1)
         session = create_session(issue)
@@ -2801,10 +2801,10 @@ class TestProcessDeferredCleanups:
         """Test that cleanups are processed when PR has reviewed label."""
         from issue_orchestrator.models import PendingCleanup
 
-        # Enable CTO review
-        sample_config.cto_review_agent = "agent:cto"
-        sample_config.cto_reviewed_label = "cto-reviewed"
-        sample_config.cleanup.with_cto.remove_worktrees = True
+        # Enable triage review
+        sample_config.triage_review_agent = "agent:triage"
+        sample_config.triage_reviewed_label = "triage-reviewed"
+        sample_config.cleanup.with_triage.remove_worktrees = True
 
         # Mock PRs with reviewed label
         mock_list_prs.return_value = [{"number": 100}]
@@ -2842,9 +2842,9 @@ class TestProcessDeferredCleanups:
         """Test that cleanups are not processed if PR doesn't have reviewed label."""
         from issue_orchestrator.models import PendingCleanup
 
-        # Enable CTO review
-        sample_config.cto_review_agent = "agent:cto"
-        sample_config.cto_reviewed_label = "cto-reviewed"
+        # Enable triage review
+        sample_config.triage_review_agent = "agent:triage"
+        sample_config.triage_reviewed_label = "triage-reviewed"
 
         # No PRs with reviewed label
         mock_list_prs.return_value = []
@@ -2872,7 +2872,7 @@ class TestProcessDeferredCleanups:
 
     def test_process_cleanups_noop_when_empty(self, sample_config):
         """Test that process_deferred_cleanups does nothing when queue is empty."""
-        sample_config.cto_review_agent = "agent:cto"
+        sample_config.triage_review_agent = "agent:triage"
 
         orchestrator = Orchestrator(config=sample_config)
         # No pending cleanups
@@ -2885,7 +2885,7 @@ class TestProcessDeferredCleanups:
         from issue_orchestrator.models import PendingCleanup
 
         # No review workflow
-        sample_config.cto_review_agent = None
+        sample_config.triage_review_agent = None
         sample_config.code_review_agent = None
 
         orchestrator = Orchestrator(config=sample_config)
@@ -2922,9 +2922,9 @@ class TestRecoverOrphanedCleanups:
         repo_root = tmp_path / "my-repo"
         repo_root.mkdir()
         sample_config.repo_root = repo_root
-        sample_config.cto_review_agent = "agent:cto"
-        sample_config.cto_reviewed_label = "cto-reviewed"
-        sample_config.cleanup.with_cto.remove_worktrees = True
+        sample_config.triage_review_agent = "agent:triage"
+        sample_config.triage_reviewed_label = "triage-reviewed"
+        sample_config.cleanup.with_triage.remove_worktrees = True
 
         # Create agent config with worktree base
         worktree_base = tmp_path / "worktrees"
@@ -2937,8 +2937,9 @@ class TestRecoverOrphanedCleanups:
         orphaned_worktree.mkdir()
 
         # Mock PRs with reviewed label - includes our orphan
+        # Branch naming convention is {issue_number}-{slug}, not issue-{number}
         mock_list_prs.return_value = [
-            {"number": 100, "headRefName": "issue-123-test-feature"}
+            {"number": 100, "headRefName": "123-test-feature"}
         ]
 
         orchestrator = Orchestrator(config=sample_config)
@@ -2965,8 +2966,8 @@ class TestRecoverOrphanedCleanups:
         repo_root = tmp_path / "my-repo"
         repo_root.mkdir()
         sample_config.repo_root = repo_root
-        sample_config.cto_review_agent = "agent:cto"
-        sample_config.cto_reviewed_label = "cto-reviewed"
+        sample_config.triage_review_agent = "agent:triage"
+        sample_config.triage_reviewed_label = "triage-reviewed"
 
         # Create agent config with worktree base
         worktree_base = tmp_path / "worktrees"
@@ -3001,7 +3002,7 @@ class TestRecoverOrphanedCleanups:
     ):
         """Test that recovery does nothing without review workflow."""
         # No review workflow
-        sample_config.cto_review_agent = None
+        sample_config.triage_review_agent = None
         sample_config.code_review_agent = None
 
         orchestrator = Orchestrator(config=sample_config)
@@ -3018,8 +3019,8 @@ class TestRecoverOrphanedCleanups:
         sample_config,
     ):
         """Test that recovery handles case with no reviewed PRs."""
-        sample_config.cto_review_agent = "agent:cto"
-        sample_config.cto_reviewed_label = "cto-reviewed"
+        sample_config.triage_review_agent = "agent:triage"
+        sample_config.triage_reviewed_label = "triage-reviewed"
 
         # No reviewed PRs
         mock_list_prs.return_value = []
@@ -3028,3 +3029,139 @@ class TestRecoverOrphanedCleanups:
 
         # Should not raise
         orchestrator._recover_orphaned_cleanups()
+
+
+class TestReworkEscalation:
+    """Test rework escalation to needs-human after max cycles."""
+
+    @patch("issue_orchestrator.orchestrator.subprocess.run")
+    def test_escalate_to_needs_human_adds_label_and_comment(
+        self,
+        mock_subprocess_run,
+        sample_config,
+    ):
+        """Test that escalation adds needs-human label and posts comment."""
+        sample_config.max_rework_cycles = 2
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        orchestrator = Orchestrator(config=sample_config)
+
+        # Clear any calls from initialization
+        mock_subprocess_run.reset_mock()
+
+        orchestrator._escalate_to_needs_human(
+            pr_number=123,
+            issue_number=456,
+            rework_cycle=3,
+        )
+
+        # Should have called subprocess.run twice (label edit + comment)
+        assert mock_subprocess_run.call_count == 2
+
+        # First call: edit labels
+        first_call = mock_subprocess_run.call_args_list[0]
+        cmd = first_call[0][0]
+        assert "gh" in cmd
+        assert "pr" in cmd
+        assert "edit" in cmd
+        assert "123" in cmd
+        assert "--add-label" in cmd
+        assert "needs-human" in cmd
+        assert "--remove-label" in cmd
+        assert "needs-rework" in cmd
+
+        # Second call: post comment
+        second_call = mock_subprocess_run.call_args_list[1]
+        cmd = second_call[0][0]
+        assert "gh" in cmd
+        assert "pr" in cmd
+        assert "comment" in cmd
+        assert "123" in cmd
+
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    @patch("issue_orchestrator.orchestrator.subprocess.run")
+    def test_scan_needs_rework_escalates_at_max_cycles(
+        self,
+        mock_subprocess_run,
+        mock_list_prs,
+        sample_config,
+    ):
+        """Test that scan_needs_rework_prs escalates when max cycles exceeded."""
+        sample_config.max_rework_cycles = 2
+        sample_config.code_review_agent = "agent:code-reviewer"
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        # Simulate a PR that has gone through 2 rework cycles (labels show rework-2)
+        mock_list_prs.return_value = [
+            {
+                "number": 123,
+                "url": "https://github.com/test/repo/pull/123",
+                "headRefName": "issue-456-feature",
+                "labels": [{"name": "needs-rework"}, {"name": "rework-2"}],
+            }
+        ]
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.scan_needs_rework_prs()
+
+        # Should have escalated (rework-2 means next cycle is 3, which exceeds max of 2)
+        # Verify subprocess was called to add needs-human label
+        calls = [str(call) for call in mock_subprocess_run.call_args_list]
+        assert any("needs-human" in call for call in calls), "Should escalate to needs-human"
+
+        # Should NOT have added to pending_reworks queue
+        assert len(orchestrator.state.pending_reworks) == 0
+
+    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
+    @patch("issue_orchestrator.orchestrator.subprocess.run")
+    def test_scan_needs_rework_queues_within_limit(
+        self,
+        mock_subprocess_run,
+        mock_list_prs,
+        sample_config,
+    ):
+        """Test that scan_needs_rework_prs queues rework when within limit."""
+        sample_config.max_rework_cycles = 3
+        sample_config.code_review_agent = "agent:code-reviewer"
+        mock_subprocess_run.return_value = MagicMock(returncode=0)
+
+        # Simulate a PR on first rework cycle (no rework label)
+        mock_list_prs.return_value = [
+            {
+                "number": 123,
+                "url": "https://github.com/test/repo/pull/123",
+                "headRefName": "issue-456-feature",
+                "labels": [{"name": "needs-rework"}],
+            }
+        ]
+
+        orchestrator = Orchestrator(config=sample_config)
+        orchestrator.scan_needs_rework_prs()
+
+        # Should have queued for rework (cycle 1 is within limit of 3)
+        assert len(orchestrator.state.pending_reworks) == 1
+        assert orchestrator.state.pending_reworks[0].pr_number == 123
+        assert orchestrator.state.pending_reworks[0].rework_cycle == 1
+
+    def test_get_rework_cycle_from_labels_extracts_cycle(
+        self,
+        sample_config,
+    ):
+        """Test that rework cycle is correctly extracted from labels."""
+        orchestrator = Orchestrator(config=sample_config)
+
+        # No rework label - first cycle
+        labels = [{"name": "needs-rework"}, {"name": "test-data"}]
+        assert orchestrator._get_rework_cycle_from_labels(labels) == 1
+
+        # rework-1 label - next is cycle 2
+        labels = [{"name": "needs-rework"}, {"name": "rework-1"}]
+        assert orchestrator._get_rework_cycle_from_labels(labels) == 2
+
+        # rework-2 label - next is cycle 3
+        labels = [{"name": "rework-2"}, {"name": "needs-rework"}]
+        assert orchestrator._get_rework_cycle_from_labels(labels) == 3
+
+        # rework-5 label - next is cycle 6
+        labels = [{"name": "rework-5"}]
+        assert orchestrator._get_rework_cycle_from_labels(labels) == 6

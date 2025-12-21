@@ -1,4 +1,8 @@
-"""Issue scheduling and dependency analysis module."""
+"""Issue scheduling and dependency analysis module.
+
+Part of the control plane - makes scheduling decisions about which issues
+to work on next based on priorities, dependencies, and capacity.
+"""
 
 import importlib
 import re
@@ -6,18 +10,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Protocol
 
-from .models import Issue, AgentConfig
-from .config import Config
-from . import labels
+from ..models import Issue, AgentConfig
+from ..config import Config
+from .. import labels
 
 
 # Built-in strategy aliases map to full module paths
 # Users can use these short names or provide their own "module.path.ClassName"
 BUILTIN_STRATEGIES = {
-    "due_date": "issue_orchestrator.scheduler.DueDateStrategy",
-    "number": "issue_orchestrator.scheduler.NumberStrategy",
-    "pattern": "issue_orchestrator.scheduler.PatternStrategy",
-    "name": "issue_orchestrator.scheduler.NameStrategy",
+    "due_date": "issue_orchestrator.control.scheduler.DueDateStrategy",
+    "number": "issue_orchestrator.control.scheduler.NumberStrategy",
+    "pattern": "issue_orchestrator.control.scheduler.PatternStrategy",
+    "name": "issue_orchestrator.control.scheduler.NameStrategy",
 }
 
 

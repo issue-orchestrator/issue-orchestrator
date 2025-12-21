@@ -1,7 +1,10 @@
-"""Pull request repository port for PR operations.
+"""Pull request tracker port for PR operations.
 
-This module defines the protocol (interface) for pull request operations and
-the PRInfo data class for representing pull request data.
+This module defines the protocol (interface) for pull request tracking operations
+and the PRInfo data class for representing pull request data.
+
+Naming: "Tracker" implies external system CRUD operations, not internal storage.
+This is an execution-layer interface.
 """
 
 from dataclasses import dataclass
@@ -34,12 +37,15 @@ class PRInfo:
     labels: list[str]
 
 
-class PRRepository(Protocol):
-    """Protocol for pull request repository operations.
+class PullRequestTracker(Protocol):
+    """Protocol for pull request tracking operations.
 
     This protocol defines the interface for creating, retrieving, and managing
-    pull requests. Implementations can use different backends (GitHub API,
+    pull requests. Implementations can use different platforms (GitHub API,
     GitLab API, etc.) while maintaining the same interface.
+
+    Naming: "Tracker" (not "Repository") because this represents an external
+    platform's API, not internal persistence.
     """
 
     def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
@@ -127,3 +133,7 @@ class PRRepository(Protocol):
             ValidationError: If the comment body is empty or invalid.
         """
         ...
+
+
+# Backwards compatibility alias
+PRRepository = PullRequestTracker

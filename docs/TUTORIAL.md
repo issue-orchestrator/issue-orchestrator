@@ -354,7 +354,7 @@ agent-done blocked \
 agent-done needs_human --question "Should we use OAuth or API keys?"
 ```
 
-**Important**: Report ALL problems honestly. The CTO review agent will catch unreported issues.
+**Important**: Report ALL problems honestly. The triage review agent will catch unreported issues.
 ```
 
 ### Example: Frontend Agent
@@ -1017,16 +1017,16 @@ Tailor prompts to your project's conventions, testing framework, and style guide
 
 ### 2. Set Up Code Review
 
-Add a CTO review agent that audits completed work:
+Add a triage review agent that audits completed work:
 
 ```yaml
 agents:
-  "agent:cto-review":
-    prompt: "prompts/cto-review.md"
+  "agent:triage-review":
+    prompt: "prompts/triage-review.md"
     skip_review: true  # Don't review the reviewer
 ```
 
-See `examples/prompts/cto-review.md` for a sample.
+See `examples/prompts/triage-review.md` for a sample.
 
 ### 3. Add CI Integration
 

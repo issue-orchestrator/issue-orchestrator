@@ -1,19 +1,21 @@
-"""GitHub adapter implementing repository port interfaces.
+"""GitHub adapter implementing platform port interfaces.
 
-This module provides a GitHubAdapter class that implements the IssueRepository,
-LabelManager, and PRRepository protocols using the GitHub CLI (gh).
+This module provides a GitHubAdapter class that implements the IssueTracker,
+LabelSet, and PullRequestTracker protocols using the GitHub CLI (gh).
 
 The adapter wraps existing github.py functions and provides a unified interface
 for all GitHub operations required by the application.
+
+Naming: This is an execution-layer adapter that talks to an external platform.
 """
 
 import logging
 import re
 from typing import TYPE_CHECKING
 
-from ..ports.issue_repository import IssueRepository
-from ..ports.label_manager import LabelManager
-from ..ports.pr_repository import PRInfo, PRRepository
+from ..ports.issue_tracker import IssueTracker
+from ..ports.label_set import LabelSet
+from ..ports.pull_request_tracker import PRInfo, PullRequestTracker
 from .. import github
 from ..models import Issue
 
@@ -26,7 +28,7 @@ logger = logging.getLogger(__name__)
 class GitHubAdapter:
     """Adapter for GitHub operations via gh CLI.
 
-    This adapter implements the IssueRepository, LabelManager, and PRRepository
+    This adapter implements the IssueTracker, LabelSet, and PullRequestTracker
     protocols, providing a unified interface for GitHub operations.
 
     The adapter uses the existing github.py module functions and handles errors

@@ -120,10 +120,20 @@ def cmd_start(args: argparse.Namespace) -> int:
         console.print(f"[dim]Debug logging enabled (tail -f {LOG_FILE})[/dim]")
 
     try:
-        from .orchestrator import Orchestrator
+        from .bootstrap import build_orchestrator
         from .dashboard import run_with_dashboard
 
         config = _load_config(args)
+
+        # Validate configuration early - fail fast with clear errors
+        validation_errors = config.validate()
+        if validation_errors:
+            console.print("[red]Configuration errors:[/red]")
+            for error in validation_errors:
+                console.print(f"  [red]• {error}[/red]")
+                logging.error(f"Config validation: {error}")
+            return 1
+
     except FileNotFoundError as e:
         logging.error(f"Config not found: {e}")
         console.print(f"[red]Error: {e}[/red]")
@@ -175,12 +185,12 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     # Handle review workflow overrides
     if hasattr(args, 'review_label') and args.review_label is not None:
-        config.cto_review_label = args.review_label
-        console.print(f"[dim]Review label: {config.cto_review_label}[/dim]")
+        config.triage_review_label = args.review_label
+        console.print(f"[dim]Review label: {config.triage_review_label}[/dim]")
     if hasattr(args, 'review_threshold') and args.review_threshold is not None:
-        config.cto_review_threshold = args.review_threshold
-        if config.cto_review_threshold > 0:
-            console.print(f"[dim]Review threshold: {config.cto_review_threshold} PRs[/dim]")
+        config.triage_review_threshold = args.review_threshold
+        if config.triage_review_threshold > 0:
+            console.print(f"[dim]Review threshold: {config.triage_review_threshold} PRs[/dim]")
 
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
     console.print(f"[dim]Max concurrent sessions: {config.max_concurrent_sessions}[/dim]")
@@ -188,7 +198,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     # Handle dry-run mode
     if hasattr(args, 'dry_run') and args.dry_run:
         from .github import list_issues
-        from .scheduler import Scheduler
+        from .control.scheduler import Scheduler
         from .tmux import get_manager
         from .analysis import analyze_all_issues, get_issue_branches
 
@@ -389,7 +399,7 @@ end tell'''
         # We're in iTerm2 - just continue and run dashboard directly
         console.print("[dim]Running in iTerm2 native mode (no tmux)[/dim]")
 
-    orchestrator = Orchestrator(config=config)
+    orchestrator = build_orchestrator(config=config)
 
     # Adopt existing sessions if requested (for restart)
     if getattr(args, 'adopt_sessions', False) and config.ui_mode == "iterm2":
@@ -1304,13 +1314,13 @@ def main() -> int:
         "--review-label",
         type=str,
         default=None,
-        help="Label to add to PRs for review (e.g., 'needs-cto-review')"
+        help="Label to add to PRs for review (e.g., 'needs-triage-review')"
     )
     start_parser.add_argument(
         "--review-threshold",
         type=int,
         default=None,
-        help="Auto-trigger CTO review after N PRs with review label (default: 0=manual only)"
+        help="Auto-trigger triage review after N PRs with review label (default: 0=manual only)"
     )
     start_parser.add_argument(
         "--adopt-sessions",

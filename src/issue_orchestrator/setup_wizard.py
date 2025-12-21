@@ -470,7 +470,7 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     prompter.print("\n--- Review Workflow ---")
     prompter.print("Code review is RECOMMENDED to catch issues before merging:")
     prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
-    prompter.print("  Stage 2: CTO batch review (when N reviewed PRs accumulate)\n")
+    prompter.print("  Stage 2: Triage batch review (when N reviewed PRs accumulate)\n")
 
     # Stage 1: Per-PR Code Review (default enabled)
     if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=True):
@@ -485,24 +485,24 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
         prompter.print(f"  ✓ PRs will be reviewed by {code_review_agent}")
         prompter.print(f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}")
 
-        # Stage 2: CTO Batch Review (only if Stage 1 enabled)
+        # Stage 2: Triage Batch Review (only if Stage 1 enabled)
         prompter.print("")
-        if prompter.yes_no("Enable Stage 2: CTO batch review?", default=False):
-            prompter.print("\n  --- Stage 2: CTO Batch Review ---")
-            cto_review_agent = prompter.input("  CTO review agent label", "agent:cto")
-            cto_reviewed_label = prompter.input("  Label after CTO review", "cto-reviewed")
+        if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
+            prompter.print("\n  --- Stage 2: Triage Batch Review ---")
+            triage_review_agent = prompter.input("  triage review agent label", "agent:triage")
+            triage_reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
             threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
 
-            config["cto_review_agent"] = cto_review_agent
-            config["cto_reviewed_label"] = cto_reviewed_label
+            config["triage_review_agent"] = triage_review_agent
+            config["triage_reviewed_label"] = triage_reviewed_label
             try:
                 threshold_int = int(threshold)
                 if threshold_int > 0:
-                    config["cto_review_threshold"] = threshold_int
-                    prompter.print(f"  ✓ CTO review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
+                    config["triage_review_threshold"] = threshold_int
+                    prompter.print(f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
             except ValueError:
                 pass
-            prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {cto_reviewed_label}")
+            prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}")
 
     return config
 
@@ -754,7 +754,7 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
         prompter.print("\n--- Review Workflow ---")
         prompter.print("Code review is RECOMMENDED to catch issues before merging:")
         prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
-        prompter.print("  Stage 2: CTO batch review (when N reviewed PRs accumulate)\n")
+        prompter.print("  Stage 2: Triage batch review (when N reviewed PRs accumulate)\n")
 
         # Stage 1: Per-PR Code Review (default enabled)
         if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=True):
@@ -769,24 +769,24 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
             prompter.print(f"  ✓ PRs will be reviewed by {code_review_agent}")
             prompter.print(f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}")
 
-            # Stage 2: CTO Batch Review (only if Stage 1 enabled)
+            # Stage 2: Triage Batch Review (only if Stage 1 enabled)
             prompter.print("")
-            if prompter.yes_no("Enable Stage 2: CTO batch review?", default=False):
-                prompter.print("\n  --- Stage 2: CTO Batch Review ---")
-                cto_review_agent = prompter.input("  CTO review agent label", "agent:cto")
-                cto_reviewed_label = prompter.input("  Label after CTO review", "cto-reviewed")
+            if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
+                prompter.print("\n  --- Stage 2: Triage Batch Review ---")
+                triage_review_agent = prompter.input("  triage review agent label", "agent:triage")
+                triage_reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
                 threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
 
-                config["cto_review_agent"] = cto_review_agent
-                config["cto_reviewed_label"] = cto_reviewed_label
+                config["triage_review_agent"] = triage_review_agent
+                config["triage_reviewed_label"] = triage_reviewed_label
                 try:
                     threshold_int = int(threshold)
                     if threshold_int > 0:
-                        config["cto_review_threshold"] = threshold_int
-                        prompter.print(f"  ✓ CTO review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
+                        config["triage_review_threshold"] = threshold_int
+                        prompter.print(f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
                 except ValueError:
                     pass
-                prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {cto_reviewed_label}")
+                prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}")
 
     return config, updating_existing_path
 
@@ -928,11 +928,11 @@ agent-done completed \\
     path.write_text(content)
 
 
-def create_cto_review_prompt(path: Path, review_label: str, reviewed_label: str) -> None:
-    """Create a CTO review prompt with actual label values substituted."""
-    content = f"""# CTO Review Agent
+def create_triage_review_prompt(path: Path, review_label: str, reviewed_label: str) -> None:
+    """Create a triage review prompt with actual label values substituted."""
+    content = f"""# Triage Review Agent
 
-You are a CTO/technical advisor **auditing** work done by AI agents.
+You are a Triage/technical advisor **auditing** work done by AI agents.
 
 **Important:** You do NOT approve PRs - that's for humans. Your job is to:
 - Identify patterns across PRs (good and bad)
@@ -944,7 +944,7 @@ You are a CTO/technical advisor **auditing** work done by AI agents.
 
 This prompt supports two modes based on the issue:
 
-1. **Batch Review** (issue title contains "Batch Review" or "CTO Review"): Audit all PRs with `{review_label}` label
+1. **Batch Review** (issue title contains "Batch Review" or "Triage Review"): Audit all PRs with `{review_label}` label
 2. **Single Issue Review**: Audit the specific issue #{{issue_number}}
 
 ## Batch Review Process
@@ -979,7 +979,7 @@ Evaluate:
 ### 3. Comment on Each PR
 
 ```bash
-gh pr comment <number> --body "## CTO Audit
+gh pr comment <number> --body "## Triage Audit
 
 ### Assessment
 {{status: Reviewed - no concerns / Flagged - minor concerns / Escalate - significant concerns}}
@@ -1010,7 +1010,7 @@ gh pr edit <number> --remove-label "{review_label}" --add-label "{reviewed_label
 Create a summary report as a comment on THIS issue. **Always document what you checked, even if nothing was found:**
 
 ```markdown
-## CTO Audit Report
+## Triage Audit Report
 
 ### Investigation Summary
 - PRs checked: {{N}} (or "0 - no PRs with '{review_label}' label found")
@@ -1068,7 +1068,7 @@ gh pr diff <number>
 Comment on the issue with your analysis:
 
 ```markdown
-## CTO Audit
+## Triage Audit
 
 ### What I Checked
 - [ ] Issue requirements
@@ -1223,8 +1223,8 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
     # Add cleanup config with defaults (don't prompt - users can edit later)
     if "cleanup" not in config:
         # Include section based on their review workflow
-        if config.get("cto_review_agent"):
-            # CTO workflow - cleanup happens after CTO review
+        if config.get("triage_review_agent"):
+            # Triage workflow - cleanup happens after triage review
             config["cleanup"] = {
                 "with_cto": {
                     "close_ai_session_tabs": True,
@@ -1287,8 +1287,8 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
     code_review_agent = config.get("code_review_agent")
     code_review_label = config.get("code_review_label", "needs-code-review")
     code_reviewed_label = config.get("code_reviewed_label", "code-reviewed")
-    cto_review_agent = config.get("cto_review_agent")
-    cto_reviewed_label = config.get("cto_reviewed_label", "cto-reviewed")
+    triage_review_agent = config.get("triage_review_agent")
+    triage_reviewed_label = config.get("triage_reviewed_label", "triage-reviewed")
 
     # Track all prompt files for the next steps summary
     all_prompt_paths: list[Path] = []
@@ -1303,21 +1303,21 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
                 code_review_agent and agent_name == code_review_agent
             ) or (agent_name.lower() == "agent:reviewer")
 
-            # Check if this is the CTO review agent
-            is_cto_review_agent = (
-                cto_review_agent and agent_name == cto_review_agent
-            ) or "cto" in agent_name.lower()
+            # Check if this is the triage review agent
+            is_triage_review_agent = (
+                triage_review_agent and agent_name == triage_review_agent
+            ) or "triage" in agent_name.lower()
 
             if is_code_review_agent and code_review_agent:
                 prompter.print(f"\n  Code review agent reviews each PR for quality, tests, and issues.")
                 if prompter.yes_no(f"  Create code review prompt at {prompt_path}?"):
                     create_code_review_prompt(prompt_path, code_review_label, code_reviewed_label)
                     prompter.print(f"    ✓ Created - labels: {code_review_label} → {code_reviewed_label}")
-            elif is_cto_review_agent and cto_review_agent:
-                prompter.print(f"\n  CTO agent audits PRs in batch, identifies patterns, flags concerns for humans.")
-                if prompter.yes_no(f"  Create CTO audit prompt at {prompt_path}?"):
-                    create_cto_review_prompt(prompt_path, code_reviewed_label, cto_reviewed_label)
-                    prompter.print(f"    ✓ Created - labels: {code_reviewed_label} → {cto_reviewed_label}")
+            elif is_triage_review_agent and triage_review_agent:
+                prompter.print(f"\n  Triage agent audits PRs in batch, identifies patterns, flags concerns for humans.")
+                if prompter.yes_no(f"  Create triage audit prompt at {prompt_path}?"):
+                    create_triage_review_prompt(prompt_path, code_reviewed_label, triage_reviewed_label)
+                    prompter.print(f"    ✓ Created - labels: {code_reviewed_label} → {triage_reviewed_label}")
             else:
                 prompter.print(f"\n  Work agent implements issues and creates PRs.")
                 if prompter.yes_no(f"  Create starter prompt at {prompt_path}?"):
@@ -1353,9 +1353,9 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
                 (code_review_label, "7057FF", "PR needs code review"),
                 (code_reviewed_label, "0E8A16", "PR has been code reviewed"),
             ])
-        if cto_review_agent:
+        if triage_review_agent:
             all_labels.append(
-                (cto_reviewed_label, "1D76DB", "PR has been CTO reviewed")
+                (triage_reviewed_label, "1D76DB", "PR has been triage reviewed")
             )
 
         # Check which labels already exist
@@ -1397,7 +1397,7 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
     # Exclude review agents from the list (they work on PRs, not issues)
     work_agent_labels = [
         label for label in agent_labels
-        if label != code_review_agent and label != cto_review_agent
+        if label != code_review_agent and label != triage_review_agent
     ]
     prompter.print("\n  2. Add agent labels to your GitHub issues:")
     for label in work_agent_labels:

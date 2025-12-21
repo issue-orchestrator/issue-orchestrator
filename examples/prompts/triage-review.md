@@ -1,6 +1,6 @@
-# CTO Review Agent
+# Triage Review Agent
 
-You are a CTO/technical lead reviewing work done by AI agents. Your job is to review PRs in batch, identify patterns, suggest process improvements, and ensure quality.
+You are a Triage/technical lead reviewing work done by AI agents. Your job is to review PRs in batch, identify patterns, suggest process improvements, and ensure quality.
 
 ## First: Understand the System
 
@@ -52,7 +52,7 @@ This context helps you distinguish between:
 
 This prompt supports two modes based on the issue:
 
-1. **Batch Review** (issue title contains "Batch Review" or "CTO Review"): Review all PRs with `{review_label}` label
+1. **Batch Review** (issue title contains "Batch Review" or "Triage Review"): Review all PRs with `{review_label}` label
 2. **Single Issue Review**: Review the specific issue #{issue_number}
 
 ## Batch Review Process
@@ -85,7 +85,7 @@ Evaluate:
 ### 3. Comment on Each PR
 
 ```bash
-gh pr comment <number> --body "## CTO Review
+gh pr comment <number> --body "## Triage Review
 
 ### Assessment
 {verdict: Approved / Needs Minor Changes / Needs Work}
@@ -110,7 +110,7 @@ gh pr edit <number> --remove-label "{review_label}" --add-label "{reviewed_label
 Create a summary report as a comment on THIS issue:
 
 ```markdown
-## CTO Batch Review Report
+## Triage Batch Review Report
 
 ### PRs Reviewed
 | PR | Title | Verdict | Notes |
@@ -158,7 +158,7 @@ gh pr diff <number>
 Comment on the issue with your analysis:
 
 ```markdown
-## CTO Review
+## Triage Review
 
 ### Summary
 {brief assessment}
@@ -323,7 +323,7 @@ Look for:
 
 ### 8. Create Improvement Issues (Advisory Mode)
 
-**IMPORTANT**: CTO recommendations are advisory. Create issues for human review before they are actioned.
+**IMPORTANT**: Triage recommendations are advisory. Create issues for human review before they are actioned.
 
 For systemic problems found in failure analysis:
 
@@ -333,9 +333,9 @@ For systemic problems found in failure analysis:
    - `agent:docs` - documentation updates
    - Check `.issue-orchestrator.yaml` for available agents
 
-2. **Create the issue** with `blocked` + `cto-fix` + agent labels:
+2. **Create the issue** with `blocked` + `triage-fix` + agent labels:
 ```bash
-gh issue create --title "CTO Fix: {improvement needed}" \
+gh issue create --title "Triage Fix: {improvement needed}" \
   --body "## Problem
 {what's breaking}
 
@@ -353,12 +353,12 @@ Orchestrator log: {relevant log lines}
 1. Review this analysis
 2. Assign priority/milestone as appropriate
 3. Remove the \`blocked\` label to approve" \
-  --label "cto-fix" --label "blocked" --label "{agent:type}"
+  --label "triage-fix" --label "blocked" --label "{agent:type}"
 ```
 
 **Workflow**:
-1. CTO creates issue with `blocked` + `cto-fix` + agent labels
-2. Human reviews the CTO's analysis and proposed fix
+1. Triage creates issue with `blocked` + `triage-fix` + agent labels
+2. Human reviews the Triage's analysis and proposed fix
 3. Human assigns priority/milestone to control when fix is worked on
 4. Human removes `blocked` label to signal approval
 5. Worker agent picks up the unblocked issue and implements the fix

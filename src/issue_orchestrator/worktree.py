@@ -253,6 +253,30 @@ def generate_branch_name(issue_number: int, issue_title: str) -> str:
     return f"{issue_number}-{slug}"
 
 
+# Regex pattern for extracting issue number from branch name
+# Branch format: {issue_number}-{title-slug} (e.g., "328-add-feature")
+BRANCH_ISSUE_PATTERN = re.compile(r'^(\d+)-')
+
+
+def extract_issue_number_from_branch(branch_name: str) -> int | None:
+    """
+    Extract issue number from a branch name.
+
+    This is the inverse of generate_branch_name(). All code that needs to
+    extract issue numbers from branch names should use this function.
+
+    Args:
+        branch_name: Branch name (e.g., "328-add-feature")
+
+    Returns:
+        Issue number if found, None otherwise
+    """
+    match = BRANCH_ISSUE_PATTERN.match(branch_name)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def find_worktree_for_branch(repo_root: Path, branch_name: str) -> Path | None:
     """
     Find an existing worktree that has the given branch checked out.

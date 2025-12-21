@@ -34,7 +34,7 @@ class TestCmdStart:
     def test_cmd_start_calls_startup_and_run_loop(self):
         """Verify that startup() is called before run_loop()."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         # Setup config
@@ -42,13 +42,14 @@ class TestCmdStart:
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
+                        mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
                         # Setup orchestrator
                         mock_orchestrator = Mock()
                         mock_orchestrator.startup = AsyncMock()
                         mock_orchestrator.run_loop = AsyncMock()
-                        mock_orch_class.return_value = mock_orchestrator
+                        mock_build.return_value = mock_orchestrator
 
                         # Mock asyncio.run to return None immediately without executing
                         mock_asyncio.run.return_value = None
@@ -58,7 +59,7 @@ class TestCmdStart:
                             milestone=None,
                             dry_run=False,
                             no_dashboard=False,
-                debug=False,
+                            debug=False,
                         )
 
                         result = cmd_start(args)
@@ -70,18 +71,19 @@ class TestCmdStart:
     def test_cmd_start_no_dashboard_calls_run_loop(self):
         """Verify run_loop() is called when --no-dashboard is set."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                     mock_config = Mock()
                     mock_config.agents = {'agent:test': Mock()}
                     mock_config.max_concurrent_sessions = 2
                     mock_config.ui_mode = 'tmux'
+                    mock_config.validate.return_value = []  # Pass validation
                     mock_find.return_value = mock_config
 
                     mock_orchestrator = Mock()
                     mock_orchestrator.startup = AsyncMock()
                     mock_orchestrator.run_loop = AsyncMock()
-                    mock_orch_class.return_value = mock_orchestrator
+                    mock_build.return_value = mock_orchestrator
 
                     # Mock asyncio.run to return None immediately without executing
                     mock_asyncio.run.return_value = None
@@ -102,9 +104,9 @@ class TestCmdStart:
     def test_cmd_start_dry_run_does_not_create_orchestrator(self):
         """Verify dry-run mode doesn't create orchestrator."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.github.list_issues', return_value=[]):
-                    with patch('issue_orchestrator.scheduler.Scheduler'):
+                    with patch('issue_orchestrator.control.scheduler.Scheduler'):
                         with patch('issue_orchestrator.tmux.get_manager') as mock_get_mgr:
                             with patch('issue_orchestrator.analysis.analyze_all_issues', return_value=[]):
                                 with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
@@ -117,6 +119,7 @@ class TestCmdStart:
                                         mock_config.filter_milestone = None
                                         mock_config.repo_root = '/tmp'
                                         mock_config.get_label_in_progress.return_value = 'in-progress'
+                                        mock_config.validate.return_value = []  # Pass validation
                                         mock_find.return_value = mock_config
 
                                         mock_mgr = Mock()
@@ -128,14 +131,14 @@ class TestCmdStart:
                                             milestone=None,
                                             dry_run=True,
                                             no_dashboard=False,
-                debug=False,
+                                            debug=False,
                                         )
 
                                         result = cmd_start(args)
 
                                         assert result == 0
                                         # Orchestrator should NOT be instantiated for dry-run
-                                        mock_orch_class.assert_not_called()
+                                        mock_build.assert_not_called()
 
 
 class TestCmdStatus:
@@ -704,7 +707,7 @@ class TestCmdStartAdvanced:
         """Verify test mode sets filter_label to test-data."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.cli._run_test_setup') as mock_test_setup:
-                with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+                with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                     with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
                         with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                             mock_config = Mock()
@@ -712,17 +715,19 @@ class TestCmdStartAdvanced:
                             mock_config.agents = {'agent:test': Mock()}
                             mock_config.max_concurrent_sessions = 2
                             mock_config.ui_mode = 'tmux'
+                            mock_config.validate.return_value = []  # Pass validation
                             mock_find.return_value = mock_config
 
                             mock_test_setup.return_value = True
                             mock_asyncio.run.return_value = None
+                            mock_build.return_value = Mock()
 
                             args = argparse.Namespace(
                                 test_mode=True,
                                 milestone=None,
                                 dry_run=False,
                                 no_dashboard=False,
-                debug=False,
+                                debug=False,
                             )
 
                             result = cmd_start(args)
@@ -735,7 +740,7 @@ class TestCmdStartAdvanced:
     def test_cmd_start_milestone_override(self):
         """Verify milestone argument overrides config."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
@@ -743,16 +748,18 @@ class TestCmdStartAdvanced:
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_config.filter_milestone = None
+                        mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.return_value = None
+                        mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
                             test_mode=False,
                             milestone='v2.0',
                             dry_run=False,
                             no_dashboard=False,
-                debug=False,
+                            debug=False,
                         )
 
                         result = cmd_start(args)
@@ -762,7 +769,7 @@ class TestCmdStartAdvanced:
     def test_cmd_start_ui_mode_override(self):
         """Verify ui_mode argument overrides config."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         with patch('issue_orchestrator.iterm2.is_running_in_iterm2') as mock_is_iterm2:
@@ -770,9 +777,11 @@ class TestCmdStartAdvanced:
                             mock_config.agents = {'agent:test': Mock()}
                             mock_config.max_concurrent_sessions = 2
                             mock_config.ui_mode = 'tmux'
+                            mock_config.validate.return_value = []  # Pass validation
                             mock_find.return_value = mock_config
 
                             mock_asyncio.run.return_value = None
+                            mock_build.return_value = Mock()
                             # Simulate running in iTerm2 to avoid launching it
                             mock_is_iterm2.return_value = True
 
@@ -781,7 +790,7 @@ class TestCmdStartAdvanced:
                                 milestone=None,
                                 dry_run=False,
                                 no_dashboard=False,
-                debug=False,
+                                debug=False,
                                 ui_mode='iterm2',
                             )
 
@@ -792,7 +801,7 @@ class TestCmdStartAdvanced:
     def test_cmd_start_queue_refresh_override(self):
         """Verify queue_refresh argument overrides config."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
@@ -800,16 +809,18 @@ class TestCmdStartAdvanced:
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_config.queue_refresh_seconds = 600
+                        mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.return_value = None
+                        mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
                             test_mode=False,
                             milestone=None,
                             dry_run=False,
                             no_dashboard=False,
-                debug=False,
+                            debug=False,
                             queue_refresh=300,
                         )
 
@@ -820,7 +831,7 @@ class TestCmdStartAdvanced:
     def test_cmd_start_max_issues_override(self):
         """Verify max_issues argument overrides config."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
@@ -828,16 +839,18 @@ class TestCmdStartAdvanced:
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_config.max_issues_to_start = 0
+                        mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.return_value = None
+                        mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
                             test_mode=False,
                             milestone=None,
                             dry_run=False,
                             no_dashboard=False,
-                debug=False,
+                            debug=False,
                             max_issues=5,
                         )
 
@@ -848,7 +861,7 @@ class TestCmdStartAdvanced:
     def test_cmd_start_web_mode(self):
         """Verify web mode launches web dashboard."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.web.run_with_web_dashboard') as mock_web:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
@@ -856,16 +869,18 @@ class TestCmdStartAdvanced:
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'web'
                         mock_config.web_port = 8080
+                        mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.return_value = None
+                        mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
                             test_mode=False,
                             milestone=None,
                             dry_run=False,
                             no_dashboard=False,
-                debug=False,
+                            debug=False,
                             port=8080,
                         )
 
@@ -877,7 +892,7 @@ class TestCmdStartAdvanced:
     def test_cmd_start_web_mode_custom_port(self):
         """Verify web mode respects custom port."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.web.run_with_web_dashboard') as mock_web:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
@@ -885,16 +900,18 @@ class TestCmdStartAdvanced:
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'web'
                         mock_config.web_port = 8080
+                        mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.return_value = None
+                        mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
                             test_mode=False,
                             milestone=None,
                             dry_run=False,
                             no_dashboard=False,
-                debug=False,
+                            debug=False,
                             port=9000,
                         )
 
@@ -906,15 +923,17 @@ class TestCmdStartAdvanced:
     def test_cmd_start_keyboard_interrupt(self):
         """Verify keyboard interrupt is handled gracefully."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
+                        mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
+                        mock_build.return_value = Mock()
                         # First call succeeds (startup), second raises KeyboardInterrupt
                         mock_asyncio.run.side_effect = [None, KeyboardInterrupt()]
 
@@ -923,7 +942,7 @@ class TestCmdStartAdvanced:
                             milestone=None,
                             dry_run=False,
                             no_dashboard=False,
-                debug=False,
+                            debug=False,
                         )
 
                         result = cmd_start(args)

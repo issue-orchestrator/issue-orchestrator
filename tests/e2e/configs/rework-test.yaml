@@ -1,0 +1,41 @@
+# E2E Test Config: Rework Cycle Testing
+#
+# Uses script-based agents for fast, deterministic testing.
+# Tests the rework cycle and escalation flow.
+
+repo: BruceBGordon/issue-orchestrator
+
+filter_label: test-data
+
+dangerous:
+  skip_verification: true
+
+# Don't install pre-push hooks for script agents (they don't have pyright in PATH)
+enforce_hooks: false
+
+agents:
+  # Script that completes immediately (creates file, commits, calls agent-done)
+  "agent:script-completes":
+    command: "exec bash {prompt}"
+    prompt: "examples/scripts/complete-immediately.sh"
+    timeout_minutes: 1
+    worktree_base: "/tmp/e2e-worktrees"
+    repo_root: "../../../"
+
+  # Script that always requests changes (for testing rework cycles)
+  "agent:script-rejects":
+    command: "exec bash {prompt}"
+    prompt: "examples/scripts/always-reject.sh"
+    timeout_minutes: 1
+    worktree_base: "/tmp/e2e-worktrees"
+    repo_root: "../../../"
+
+concurrency:
+  max_concurrent_sessions: 1
+  session_timeout_minutes: 5
+
+review:
+  code_review_agent: "agent:script-rejects"
+  code_review_label: "needs-code-review"
+  code_reviewed_label: "code-reviewed"
+  max_rework_cycles: 2

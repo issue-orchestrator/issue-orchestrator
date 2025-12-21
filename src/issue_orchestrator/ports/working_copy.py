@@ -1,0 +1,192 @@
+"""Working copy port for local VCS operations.
+
+This module defines the protocol (interface) for local working copy operations.
+Unlike PRRepository (which handles remote GitHub operations), this handles
+local worktree/working copy operations: push, rebase, commit info, etc.
+
+Naming convention (from architecture review):
+- "WorkingCopy" conveys local filesystem + branch + HEAD
+- No implication of authority (just execution)
+- Common in SCM theory
+
+Separation of concerns:
+- WorkingCopy: Local VCS operations (in worktree context) - EXECUTION
+- RepoHost (PRRepository, etc.): Remote platform operations - EXECUTION
+- LifecycleController: State transitions and decisions - AUTHORITY
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+
+@dataclass
+class CommitInfo:
+    """Information about a git commit."""
+    sha: str
+    message: str
+    author: str
+    # Short SHA for display
+    short_sha: str
+
+
+@dataclass
+class BranchStatus:
+    """Status of the current branch relative to remote."""
+    branch: str
+    ahead: int  # Commits ahead of remote
+    behind: int  # Commits behind remote
+    has_remote: bool  # Whether branch exists on remote
+    clean: bool  # No uncommitted changes
+
+
+@dataclass
+class PushResult:
+    """Result of a git push operation."""
+    success: bool
+    branch: str
+    remote: str
+    message: str  # Success message or error description
+    # If failed, whether it can be retried (e.g., network issue vs. force needed)
+    retryable: bool = True
+
+
+@dataclass
+class RebaseResult:
+    """Result of a git rebase operation."""
+    success: bool
+    message: str
+    # If conflicts occurred
+    conflicts: list[str] | None = None
+    # Whether rebase was aborted automatically after failure
+    aborted: bool = False
+
+
+class WorkingCopy(Protocol):
+    """Protocol for local VCS operations in a worktree.
+
+    This protocol defines the interface for git operations that the orchestrator
+    needs to perform in worktree directories. It separates local VCS operations
+    from remote platform operations.
+
+    Naming: "WorkingCopy" is neutral, implies local filesystem state,
+    no authority/policy implication. Implementations handle execution only.
+
+    All methods are expected to operate in the context of a specific worktree,
+    passed per-method (stateless adapter pattern).
+    """
+
+    def get_current_branch(self, worktree: Path) -> str | None:
+        """Get the current branch name in the worktree.
+
+        Args:
+            worktree: Path to the worktree directory.
+
+        Returns:
+            The branch name, or None if detached HEAD or error.
+        """
+        ...
+
+    def get_head_sha(self, worktree: Path) -> str | None:
+        """Get the HEAD commit SHA in the worktree.
+
+        Args:
+            worktree: Path to the worktree directory.
+
+        Returns:
+            The full SHA, or None on error.
+        """
+        ...
+
+    def get_branch_status(self, worktree: Path) -> BranchStatus | None:
+        """Get the status of the current branch.
+
+        Args:
+            worktree: Path to the worktree directory.
+
+        Returns:
+            BranchStatus with ahead/behind counts, or None on error.
+        """
+        ...
+
+    def has_uncommitted_changes(self, worktree: Path) -> bool:
+        """Check if there are uncommitted changes in the worktree.
+
+        Args:
+            worktree: Path to the worktree directory.
+
+        Returns:
+            True if there are uncommitted changes (staged or unstaged).
+        """
+        ...
+
+    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
+        """Get commits that are ahead of main branch.
+
+        Args:
+            worktree: Path to the worktree directory.
+
+        Returns:
+            List of CommitInfo for commits in HEAD but not in main.
+            Empty list if none or on error.
+        """
+        ...
+
+    def fetch(self, worktree: Path, remote: str = "origin") -> bool:
+        """Fetch from remote.
+
+        Args:
+            worktree: Path to the worktree directory.
+            remote: Remote name to fetch from.
+
+        Returns:
+            True if fetch succeeded, False otherwise.
+        """
+        ...
+
+    def rebase_on_branch(
+        self, worktree: Path, target: str = "origin/main"
+    ) -> RebaseResult:
+        """Rebase current branch onto target.
+
+        Args:
+            worktree: Path to the worktree directory.
+            target: Branch/ref to rebase onto.
+
+        Returns:
+            RebaseResult indicating success or failure with details.
+        """
+        ...
+
+    def push(
+        self,
+        worktree: Path,
+        remote: str = "origin",
+        force_with_lease: bool = True,
+        set_upstream: bool = True,
+    ) -> PushResult:
+        """Push current branch to remote.
+
+        Args:
+            worktree: Path to the worktree directory.
+            remote: Remote to push to.
+            force_with_lease: Use --force-with-lease for safety after rebase.
+            set_upstream: Use -u to set upstream tracking.
+
+        Returns:
+            PushResult indicating success or failure.
+        """
+        ...
+
+    def get_issue_number_from_branch(self, worktree: Path) -> int | None:
+        """Extract issue number from branch name.
+
+        Expects branch format like "123-fix-bug" where 123 is the issue number.
+
+        Args:
+            worktree: Path to the worktree directory.
+
+        Returns:
+            The issue number, or None if branch doesn't match pattern.
+        """
+        ...

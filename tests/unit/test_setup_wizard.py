@@ -6,7 +6,7 @@ from unittest.mock import patch, Mock
 
 from issue_orchestrator.setup_wizard import (
     create_starter_prompt,
-    create_cto_review_prompt,
+    create_triage_review_prompt,
     detect_repo,
     check_prerequisites,
     fetch_github_labels,
@@ -100,29 +100,29 @@ class TestCreateStarterPrompt:
         assert "Frontend-Ui Agent Prompt" in content
 
 
-class TestCreateCtoReviewPrompt:
-    """Test the create_cto_review_prompt function."""
+class TestCreateTriageReviewPrompt:
+    """Test the create_triage_review_prompt function."""
 
-    def test_creates_cto_prompt_with_labels(self, tmp_path):
-        """Test that CTO prompt is created with label values substituted."""
-        prompt_path = tmp_path / "cto.md"
+    def test_creates_triage_prompt_with_labels(self, tmp_path):
+        """Test that triage prompt is created with label values substituted."""
+        prompt_path = tmp_path / "triage.md"
 
-        create_cto_review_prompt(prompt_path, "needs-cto-review", "cto-reviewed")
+        create_triage_review_prompt(prompt_path, "needs-triage-review", "triage-reviewed")
 
         assert prompt_path.exists()
         content = prompt_path.read_text()
 
         # Check labels are substituted (not placeholders)
-        assert "needs-cto-review" in content
-        assert "cto-reviewed" in content
+        assert "needs-triage-review" in content
+        assert "triage-reviewed" in content
         assert "{review_label}" not in content
         assert "{reviewed_label}" not in content
 
     def test_includes_gh_commands_with_labels(self, tmp_path):
         """Test that gh commands include the actual labels."""
-        prompt_path = tmp_path / "cto.md"
+        prompt_path = tmp_path / "triage.md"
 
-        create_cto_review_prompt(prompt_path, "my-review-label", "my-reviewed-label")
+        create_triage_review_prompt(prompt_path, "my-review-label", "my-reviewed-label")
 
         content = prompt_path.read_text()
 
@@ -133,9 +133,9 @@ class TestCreateCtoReviewPrompt:
 
     def test_preserves_template_variables(self, tmp_path):
         """Test that issue_number and issue_title placeholders are preserved."""
-        prompt_path = tmp_path / "cto.md"
+        prompt_path = tmp_path / "triage.md"
 
-        create_cto_review_prompt(prompt_path, "review", "reviewed")
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
@@ -145,14 +145,14 @@ class TestCreateCtoReviewPrompt:
 
     def test_includes_batch_review_workflow(self, tmp_path):
         """Test that batch review workflow is included."""
-        prompt_path = tmp_path / "cto.md"
+        prompt_path = tmp_path / "triage.md"
 
-        create_cto_review_prompt(prompt_path, "review", "reviewed")
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
         assert "Batch Review" in content
-        assert "CTO Audit Report" in content
+        assert "Triage Audit Report" in content
         assert "PRs Audited" in content
         assert "Patterns Observed" in content
 
@@ -160,7 +160,7 @@ class TestCreateCtoReviewPrompt:
         """Test that single issue review workflow is included."""
         prompt_path = tmp_path / "cto.md"
 
-        create_cto_review_prompt(prompt_path, "review", "reviewed")
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
@@ -170,7 +170,7 @@ class TestCreateCtoReviewPrompt:
         """Test that agent-done completion instructions are included."""
         prompt_path = tmp_path / "cto.md"
 
-        create_cto_review_prompt(prompt_path, "review", "reviewed")
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
@@ -182,7 +182,7 @@ class TestCreateCtoReviewPrompt:
         """Test that parent directories are created."""
         prompt_path = tmp_path / "deep" / "nested" / "cto.md"
 
-        create_cto_review_prompt(prompt_path, "review", "reviewed")
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         assert prompt_path.exists()
 
@@ -574,9 +574,9 @@ class TestWizardNewProject:
             "agent:reviewer",       # code review agent
             "needs-code-review",    # code review label
             "code-reviewed",        # code reviewed label
-            True,                   # enable Stage 2: CTO batch review
-            "agent:cto",            # CTO review agent
-            "cto-reviewed",         # CTO reviewed label
+            True,                   # enable Stage 2: triage batch review
+            "agent:triage",            # triage review agent
+            "triage-reviewed",         # triage reviewed label
             "5",                    # threshold
         ])
 
@@ -587,10 +587,10 @@ class TestWizardNewProject:
         assert config["code_review_label"] == "needs-code-review"
         assert config["code_reviewed_label"] == "code-reviewed"
 
-        # Stage 2: CTO Batch Review
-        assert config["cto_review_agent"] == "agent:cto"
-        assert config["cto_reviewed_label"] == "cto-reviewed"
-        assert config["cto_review_threshold"] == 5
+        # Stage 2: Triage Batch Review
+        assert config["triage_review_agent"] == "agent:triage"
+        assert config["triage_reviewed_label"] == "triage-reviewed"
+        assert config["triage_review_threshold"] == 5
 
     @patch("issue_orchestrator.setup_wizard.detect_repo")
     @patch("issue_orchestrator.setup_wizard.run_gh")

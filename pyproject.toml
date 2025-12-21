@@ -37,6 +37,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.12",
     "pytest-cov>=4.0",
+    "pytest-timeout>=2.0",  # For e2e test timeouts
     "pyright>=1.1",
 ]
 
@@ -60,6 +61,10 @@ packages = ["src/issue_orchestrator"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "e2e: End-to-end tests with real GitHub (requires gh auth and E2E_TEST_REPO)",
+    "live: Tests that require network access and external services",
+]
 
 [tool.pyright]
 include = ["src"]

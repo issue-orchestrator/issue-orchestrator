@@ -1,8 +1,11 @@
-"""Issue repository port for accessing issue data.
+"""Issue tracker port for accessing issue data.
 
-This module defines the protocol (interface) for issue data access operations.
-Implementations of this protocol can use different data sources (GitHub API,
-database, mock data, etc.) while maintaining the same interface.
+This module defines the protocol (interface) for issue tracking operations.
+Implementations of this protocol can use different platforms (GitHub, GitLab,
+Jira, etc.) while maintaining the same interface.
+
+Naming: "Tracker" implies external system CRUD operations, not internal storage.
+This is an execution-layer interface.
 """
 
 from typing import TYPE_CHECKING, Protocol
@@ -11,12 +14,14 @@ if TYPE_CHECKING:
     from issue_orchestrator.models import Issue
 
 
-class IssueRepository(Protocol):
-    """Protocol for issue data access operations.
+class IssueTracker(Protocol):
+    """Protocol for issue tracking operations.
 
-    This protocol defines the interface that any issue repository implementation
-    must satisfy. It provides methods for retrieving and querying issues from
-    the underlying data source.
+    This protocol defines the interface for accessing issues from an external
+    tracking system. It provides methods for retrieving and querying issues.
+
+    Naming: "Tracker" (not "Repository") because this represents an external
+    system's API, not internal persistence.
     """
 
     def list_issues(
@@ -73,3 +78,7 @@ class IssueRepository(Protocol):
             RepositoryError: If there's an error accessing the data source.
         """
         ...
+
+
+# Backwards compatibility alias
+IssueRepository = IssueTracker

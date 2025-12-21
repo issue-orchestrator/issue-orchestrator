@@ -49,8 +49,8 @@ class ReviewEvent(Enum):
     CHANGES_REQUESTED = "changes_requested"
     REWORK_STARTED = "rework_started"
     REWORK_COMPLETED = "rework_completed"
-    CTO_REVIEW_STARTED = "cto_review_started"
-    CTO_APPROVED = "cto_approved"
+    TRIAGE_REVIEW_STARTED = "triage_review_started"
+    TRIAGE_APPROVED = "triage_approved"
     MERGED = "merged"
     CLOSED = "closed"
     ESCALATED = "escalated"  # Rework limit exceeded, requires human intervention

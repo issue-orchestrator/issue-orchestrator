@@ -89,7 +89,7 @@ async def dashboard(
     request_start = time.time()
 
     from .github import list_issues
-    from .scheduler import Scheduler
+    from .control.scheduler import Scheduler
 
     # Get query params
     queue_page = int(request.query_params.get("page", 1))
