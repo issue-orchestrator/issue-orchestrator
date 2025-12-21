@@ -27,6 +27,7 @@ from .execution import (
 
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
+    from .ipc.server import EventServer
 
 logger = logging.getLogger(__name__)
 

@@ -87,6 +87,31 @@ STATUS_TO_ACTIONS = {
 }
 
 
+def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
+    """Extract verification status from PR body.
+
+    Looks for the agent-done verification marker that proves the PR
+    was created through the proper agent-done workflow.
+
+    Args:
+        pr_body: The PR description body text
+
+    Returns:
+        Tuple of (has_marker, token) where:
+        - has_marker: True if verification marker is present
+        - token: The verification token if present, None otherwise
+    """
+    import re
+
+    # Look for verification marker pattern: <!-- agent-done-verified: <token> -->
+    pattern = r'<!--\s*agent-done-verified:\s*([a-zA-Z0-9-]+)\s*-->'
+    match = re.search(pattern, pr_body)
+
+    if match:
+        return (True, match.group(1))
+    return (False, None)
+
+
 def die(message: str) -> NoReturn:
     """Print error and exit with failure."""
     print(f"ERROR: {message}", file=sys.stderr)
