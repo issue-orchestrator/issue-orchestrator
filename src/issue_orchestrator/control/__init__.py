@@ -17,9 +17,13 @@ The control plane:
 
 from .scheduler import Scheduler
 from .completion_processor import CompletionProcessor, ProcessingResult
+from .transition_guard import TransitionGuard, TransitionResult, TransitionResultType
 
 __all__ = [
     "Scheduler",
     "CompletionProcessor",
     "ProcessingResult",
+    "TransitionGuard",
+    "TransitionResult",
+    "TransitionResultType",
 ]
