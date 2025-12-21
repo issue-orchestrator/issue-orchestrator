@@ -214,3 +214,121 @@ To minimize churn, backwards compatibility modules exist:
 - `issue_orchestrator.adapters` → re-exports from `execution/`
 
 New code should import from the canonical locations.
+
+## Control Plane Modules
+
+The control plane (`control/`) contains several specialized modules:
+
+### TransitionGuard
+
+Centralizes state machine transition handling with "fail loud but caught" semantics:
+
+```python
+guard = TransitionGuard(events=event_sink)
+result = guard.try_trigger(issue_machine, "claim", entity_type="issue", entity_id=123)
+if not result.applied:
+    logger.warning(f"Invalid transition: {result.error}")
+```
+
+- Wraps state machine triggers
+- Emits `transition.applied` and `transition.rejected` trace events
+- Returns typed `TransitionResult` instead of raising exceptions
+
+### SessionManager
+
+Owns terminal session lifecycle and naming conventions:
+
+```python
+manager = SessionManager(runner=session_runner, events=event_sink, config=config)
+ctx = issue_session_context(issue_number=123, command="claude", working_dir=path)
+manager.start(ctx)
+```
+
+- `SessionRef`: Type-safe session reference (issue/review/rework/triage)
+- `SessionContext`: Launch parameters for sessions
+- Delegates to `SessionRunner` port for actual terminal operations
+
+### LabelProjection + LabelSync
+
+Separates label POLICY from label MECHANICS:
+
+```python
+# LabelProjection: Pure logic - state → desired labels
+projection = LabelProjection(config)
+desired = projection.for_issue_state(IssueState.IN_PROGRESS)
+
+# LabelSync: IO - applies label changes idempotently
+sync = LabelSync(labels=label_set, events=event_sink)
+result = sync.sync(issue_number=123, current=current_labels, desired=desired)
+```
+
+- `LabelProjection`: Single source of truth for label policy
+- `DesiredLabels`: Immutable representation of intended label state
+- `LabelSync`: Idempotent label synchronization via `LabelSet` port
+
+### Workflows
+
+Encapsulate domain-specific decision logic:
+
+```python
+# ReviewWorkflow: Code review lifecycle
+workflow = ReviewWorkflow(config=config, events=event_sink)
+decision = workflow.should_launch_reviews(pending_reviews, active_count, paused)
+if decision.should_launch:
+    for review in decision.reviews_to_launch:
+        # Launch review session
+
+# ReworkWorkflow: Rework cycle management
+decision = rework_workflow.should_escalate(rework_cycle=3)
+if decision.should_escalate:
+    # Add needs-human label
+
+# TriageWorkflow: Failure investigation
+decision = triage_workflow.should_trigger_batch_triage(failure_count=5)
+```
+
+Each workflow:
+- Contains POLICY (what should happen), not MECHANICS
+- Returns Decision objects describing intended actions
+- Can be unit tested with fake ports
+
+### Actions + ActionApplier
+
+The Plan/Apply boundary for orchestrator operations:
+
+```python
+# Actions describe WHAT should happen (the plan)
+actions = [
+    AddLabelAction(issue_number=123, label="in-progress"),
+    LaunchSessionAction(session_type="issue", number=123, command="claude", ...),
+]
+
+# ActionApplier handles HOW (execution via ports)
+applier = ActionApplier(labels=label_set, sessions=session_manager, events=event_sink)
+results = applier.apply_all(actions)
+```
+
+This separation enables:
+- Planning code tested without IO (pure logic)
+- Applier tested with fake ports
+- Clear audit trail via trace events
+
+## Control Plane Structure
+
+```
+control/
+├── __init__.py              # Public exports
+├── scheduler.py             # Issue prioritization
+├── completion_processor.py  # Handle agent completion records
+├── transition_guard.py      # State machine transition wrapper
+├── session_manager.py       # Terminal session lifecycle
+├── label_projection.py      # State → labels policy
+├── label_sync.py            # Label synchronization IO
+├── actions.py               # Action dataclasses
+├── action_applier.py        # Execute actions via ports
+└── workflows/
+    ├── __init__.py
+    ├── review_workflow.py   # Code review decisions
+    ├── rework_workflow.py   # Rework cycle decisions
+    └── triage_workflow.py   # Triage decisions
+```
