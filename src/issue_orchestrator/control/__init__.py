@@ -18,6 +18,15 @@ The control plane:
 from .scheduler import Scheduler
 from .completion_processor import CompletionProcessor, ProcessingResult
 from .transition_guard import TransitionGuard, TransitionResult, TransitionResultType
+from .session_manager import (
+    SessionManager,
+    SessionRef,
+    SessionType,
+    SessionContext,
+    issue_session_context,
+    review_session_context,
+    rework_session_context,
+)
 
 __all__ = [
     "Scheduler",
@@ -26,4 +35,11 @@ __all__ = [
     "TransitionGuard",
     "TransitionResult",
     "TransitionResultType",
+    "SessionManager",
+    "SessionRef",
+    "SessionType",
+    "SessionContext",
+    "issue_session_context",
+    "review_session_context",
+    "rework_session_context",
 ]
