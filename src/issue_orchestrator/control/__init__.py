@@ -34,6 +34,14 @@ from .label_projection import (
     compute_label_changes,
 )
 from .label_sync import LabelSync, LabelSyncResult
+from .workflows import (
+    ReviewWorkflow,
+    ReviewDecision,
+    ReworkWorkflow,
+    ReworkDecision,
+    TriageWorkflow,
+    TriageDecision,
+)
 
 __all__ = [
     "Scheduler",
@@ -55,4 +63,10 @@ __all__ = [
     "compute_label_changes",
     "LabelSync",
     "LabelSyncResult",
+    "ReviewWorkflow",
+    "ReviewDecision",
+    "ReworkWorkflow",
+    "ReworkDecision",
+    "TriageWorkflow",
+    "TriageDecision",
 ]

@@ -1,0 +1,385 @@
+"""Unit tests for the workflow modules."""
+
+import pytest
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock
+
+from issue_orchestrator.control.workflows.review_workflow import (
+    ReviewWorkflow,
+    ReviewDecision,
+)
+from issue_orchestrator.control.workflows.rework_workflow import (
+    ReworkWorkflow,
+    ReworkDecision,
+    EscalationDecision,
+)
+from issue_orchestrator.control.workflows.triage_workflow import (
+    TriageWorkflow,
+    TriageDecision,
+    BatchTriageDecision,
+)
+from issue_orchestrator.models import PendingReview, PendingRework, PendingTriageReview
+from issue_orchestrator.ports import NullEventSink, TraceEvent
+
+
+class CollectingEventSink:
+    """Event sink that collects events for test assertions."""
+
+    def __init__(self):
+        self.events: list[TraceEvent] = []
+
+    def publish(self, event: TraceEvent) -> None:
+        self.events.append(event)
+
+
+def make_pending_review(pr_number: int, issue_number: int) -> PendingReview:
+    """Create a PendingReview for testing."""
+    return PendingReview(
+        pr_number=pr_number,
+        issue_number=issue_number,
+        pr_url=f"https://github.com/test/repo/pull/{pr_number}",
+        branch_name=f"issue-{issue_number}",
+    )
+
+
+def make_pending_rework(issue_number: int, pr_number: int) -> PendingRework:
+    """Create a PendingRework for testing."""
+    return PendingRework(
+        issue_number=issue_number,
+        pr_number=pr_number,
+        pr_url=f"https://github.com/test/repo/pull/{pr_number}",
+        branch_name=f"issue-{issue_number}",
+        rework_cycle=1,
+    )
+
+
+def make_pending_triage(issue_number: int, title: str = "Test") -> PendingTriageReview:
+    """Create a PendingTriageReview for testing."""
+    return PendingTriageReview(
+        issue_number=issue_number,
+        title=title,
+    )
+
+
+class TestReviewWorkflow:
+    """Test the ReviewWorkflow class."""
+
+    @pytest.fixture
+    def mock_config(self):
+        config = MagicMock()
+        config.code_review_agent = {"enabled": True}
+        config.max_concurrent_sessions = 3
+        config.review = {"max_rework_cycles": 3}
+        return config
+
+    @pytest.fixture
+    def collecting_sink(self):
+        return CollectingEventSink()
+
+    @pytest.fixture
+    def workflow(self, mock_config, collecting_sink):
+        return ReviewWorkflow(config=mock_config, events=collecting_sink)
+
+    def test_is_configured_returns_true_when_configured(self, workflow):
+        """Test is_configured returns True when code_review_agent is set."""
+        assert workflow.is_configured() is True
+
+    def test_is_configured_returns_false_when_not_configured(self, collecting_sink):
+        """Test is_configured returns False when not configured."""
+        config = MagicMock()
+        config.code_review_agent = None
+        workflow = ReviewWorkflow(config=config, events=collecting_sink)
+        assert workflow.is_configured() is False
+
+    def test_should_launch_skips_when_not_configured(self, collecting_sink):
+        """Test skips when not configured."""
+        config = MagicMock()
+        config.code_review_agent = None
+        workflow = ReviewWorkflow(config=config, events=collecting_sink)
+
+        decision = workflow.should_launch_reviews(
+            pending_reviews=[make_pending_review(1, 100)],
+            active_session_count=0,
+            paused=False,
+        )
+
+        assert not decision.should_launch
+        assert "configured" in decision.skip_reason
+
+    def test_should_launch_skips_when_queue_empty(self, workflow):
+        """Test skips when queue is empty."""
+        decision = workflow.should_launch_reviews(
+            pending_reviews=[],
+            active_session_count=0,
+            paused=False,
+        )
+
+        assert not decision.should_launch
+        assert "No pending" in decision.skip_reason
+
+    def test_should_launch_skips_when_paused(self, workflow, collecting_sink):
+        """Test skips when paused."""
+        decision = workflow.should_launch_reviews(
+            pending_reviews=[make_pending_review(1, 100)],
+            active_session_count=0,
+            paused=True,
+        )
+
+        assert not decision.should_launch
+        assert "paused" in decision.skip_reason
+        # Event emitted
+        assert any(e.name == "review.skipped" for e in collecting_sink.events)
+
+    def test_should_launch_skips_when_no_capacity(self, workflow, mock_config):
+        """Test skips when no capacity."""
+        decision = workflow.should_launch_reviews(
+            pending_reviews=[make_pending_review(1, 100)],
+            active_session_count=3,  # Full capacity
+            paused=False,
+        )
+
+        assert not decision.should_launch
+        assert "capacity" in decision.skip_reason
+
+    def test_should_launch_returns_reviews_up_to_capacity(self, workflow):
+        """Test returns reviews up to capacity."""
+        pending = [
+            make_pending_review(1, 100),
+            make_pending_review(2, 101),
+            make_pending_review(3, 102),
+            make_pending_review(4, 103),
+        ]
+
+        decision = workflow.should_launch_reviews(
+            pending_reviews=pending,
+            active_session_count=1,  # 2 slots available
+            paused=False,
+        )
+
+        assert decision.should_launch
+        assert len(decision.reviews_to_launch) == 2
+        assert decision.available_capacity == 2
+
+    def test_should_escalate(self, workflow):
+        """Test escalation decision."""
+        assert workflow.should_escalate(pr_number=1, rework_cycles=3) is True
+        assert workflow.should_escalate(pr_number=1, rework_cycles=2) is False
+
+
+class TestReworkWorkflow:
+    """Test the ReworkWorkflow class."""
+
+    @pytest.fixture
+    def mock_config(self):
+        config = MagicMock()
+        config.max_concurrent_sessions = 3
+        config.review = {"max_rework_cycles": 3}
+        return config
+
+    @pytest.fixture
+    def collecting_sink(self):
+        return CollectingEventSink()
+
+    @pytest.fixture
+    def workflow(self, mock_config, collecting_sink):
+        return ReworkWorkflow(config=mock_config, events=collecting_sink)
+
+    def test_should_launch_skips_when_queue_empty(self, workflow):
+        """Test skips when queue is empty."""
+        decision = workflow.should_launch_reworks(
+            pending_reworks=[],
+            active_session_count=0,
+            paused=False,
+        )
+
+        assert not decision.should_launch
+        assert "No pending" in decision.skip_reason
+
+    def test_should_launch_skips_when_paused(self, workflow):
+        """Test skips when paused."""
+        decision = workflow.should_launch_reworks(
+            pending_reworks=[make_pending_rework(100, 1)],
+            active_session_count=0,
+            paused=True,
+        )
+
+        assert not decision.should_launch
+        assert "paused" in decision.skip_reason
+
+    def test_should_launch_skips_when_no_capacity(self, workflow):
+        """Test skips when no capacity."""
+        decision = workflow.should_launch_reworks(
+            pending_reworks=[make_pending_rework(100, 1)],
+            active_session_count=3,
+            paused=False,
+        )
+
+        assert not decision.should_launch
+        assert "capacity" in decision.skip_reason
+
+    def test_should_launch_returns_reworks_up_to_capacity(self, workflow):
+        """Test returns reworks up to capacity."""
+        pending = [
+            make_pending_rework(100, 1),
+            make_pending_rework(101, 2),
+            make_pending_rework(102, 3),
+        ]
+
+        decision = workflow.should_launch_reworks(
+            pending_reworks=pending,
+            active_session_count=1,
+            paused=False,
+        )
+
+        assert decision.should_launch
+        assert len(decision.reworks_to_launch) == 2
+
+    def test_should_escalate_at_max_cycles(self, workflow):
+        """Test escalation at max cycles."""
+        decision = workflow.should_escalate(rework_cycle=3)
+
+        assert decision.should_escalate
+        assert decision.rework_cycle == 3
+        assert decision.max_cycles == 3
+
+    def test_should_not_escalate_below_max(self, workflow):
+        """Test no escalation below max cycles."""
+        decision = workflow.should_escalate(rework_cycle=2)
+
+        assert not decision.should_escalate
+        assert decision.rework_cycle == 2
+
+    def test_extract_cycle_from_labels(self, workflow):
+        """Test extracting cycle number from labels."""
+        labels = ["bug", "rework-cycle-2", "in-progress"]
+        cycle = workflow.extract_cycle_from_labels(labels)
+        assert cycle == 2
+
+    def test_extract_cycle_returns_zero_when_not_found(self, workflow):
+        """Test returns 0 when no cycle label found."""
+        labels = ["bug", "in-progress"]
+        cycle = workflow.extract_cycle_from_labels(labels)
+        assert cycle == 0
+
+    def test_get_next_cycle_label(self, workflow):
+        """Test getting next cycle label."""
+        assert workflow.get_next_cycle_label(1) == "rework-cycle-2"
+        assert workflow.get_next_cycle_label(0) == "rework-cycle-1"
+
+
+class TestTriageWorkflow:
+    """Test the TriageWorkflow class."""
+
+    @pytest.fixture
+    def mock_config(self):
+        config = MagicMock()
+        config.triage_review_agent = {
+            "enabled": True,
+            "batch_failure_threshold": 3,
+            "batch_cooldown_minutes": 30,
+        }
+        config.max_concurrent_sessions = 3
+        return config
+
+    @pytest.fixture
+    def collecting_sink(self):
+        return CollectingEventSink()
+
+    @pytest.fixture
+    def workflow(self, mock_config, collecting_sink):
+        return TriageWorkflow(config=mock_config, events=collecting_sink)
+
+    def test_is_configured_returns_true_when_configured(self, workflow):
+        """Test is_configured returns True when triage_review_agent is set."""
+        assert workflow.is_configured() is True
+
+    def test_is_configured_returns_false_when_not_configured(self, collecting_sink):
+        """Test is_configured returns False when not configured."""
+        config = MagicMock()
+        config.triage_review_agent = None
+        workflow = TriageWorkflow(config=config, events=collecting_sink)
+        assert workflow.is_configured() is False
+
+    def test_should_launch_skips_when_not_configured(self, collecting_sink):
+        """Test skips when not configured."""
+        config = MagicMock()
+        config.triage_review_agent = None
+        workflow = TriageWorkflow(config=config, events=collecting_sink)
+
+        decision = workflow.should_launch_triage(
+            pending_triage=[make_pending_triage(100)],
+            active_session_count=0,
+            paused=False,
+        )
+
+        assert not decision.should_launch
+
+    def test_should_launch_skips_when_queue_empty(self, workflow):
+        """Test skips when queue is empty."""
+        decision = workflow.should_launch_triage(
+            pending_triage=[],
+            active_session_count=0,
+            paused=False,
+        )
+
+        assert not decision.should_launch
+        assert "No pending" in decision.skip_reason
+
+    def test_should_launch_returns_triage_up_to_capacity(self, workflow):
+        """Test returns triage reviews up to capacity."""
+        pending = [
+            make_pending_triage(100, "Test 1"),
+            make_pending_triage(101, "Test 2"),
+            make_pending_triage(102, "Test 3"),
+        ]
+
+        decision = workflow.should_launch_triage(
+            pending_triage=pending,
+            active_session_count=1,
+            paused=False,
+        )
+
+        assert decision.should_launch
+        assert len(decision.triage_to_launch) == 2
+
+    def test_should_trigger_batch_when_threshold_met(self, workflow):
+        """Test batch triage triggers when threshold met."""
+        decision = workflow.should_trigger_batch_triage(failure_count=3)
+
+        assert decision.should_trigger
+        assert decision.failure_count == 3
+        assert decision.threshold == 3
+
+    def test_should_not_trigger_batch_below_threshold(self, workflow):
+        """Test batch triage doesn't trigger below threshold."""
+        decision = workflow.should_trigger_batch_triage(failure_count=2)
+
+        assert not decision.should_trigger
+        assert decision.failure_count == 2
+
+    def test_should_not_trigger_during_cooldown(self, workflow):
+        """Test batch triage respects cooldown."""
+        now = datetime.now()
+        workflow._last_batch_triage = now - timedelta(minutes=15)  # 15 mins ago
+
+        decision = workflow.should_trigger_batch_triage(failure_count=5, now=now)
+
+        assert not decision.should_trigger
+        assert decision.cooldown_remaining is not None
+        assert decision.cooldown_remaining.total_seconds() > 0
+
+    def test_should_trigger_after_cooldown(self, workflow):
+        """Test batch triage triggers after cooldown."""
+        now = datetime.now()
+        workflow._last_batch_triage = now - timedelta(minutes=60)  # 60 mins ago
+
+        decision = workflow.should_trigger_batch_triage(failure_count=5, now=now)
+
+        assert decision.should_trigger
+
+    def test_record_batch_triage_started(self, workflow):
+        """Test recording batch triage start time."""
+        now = datetime(2024, 1, 1, 12, 0, 0)
+        workflow.record_batch_triage_started(now)
+
+        assert workflow._last_batch_triage == now
