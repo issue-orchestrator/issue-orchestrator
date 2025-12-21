@@ -42,6 +42,24 @@ from .workflows import (
     TriageWorkflow,
     TriageDecision,
 )
+from .actions import (
+    Action,
+    ActionType,
+    ActionResult,
+    ActionResultType,
+    AddLabelAction,
+    RemoveLabelAction,
+    SyncLabelsAction,
+    LaunchSessionAction,
+    StopSessionAction,
+    TransitionAction,
+    QueueReviewAction,
+    QueueReworkAction,
+    QueueTriageAction,
+    EscalateToHumanAction,
+    AddCommentAction,
+)
+from .action_applier import ActionApplier
 
 __all__ = [
     "Scheduler",
@@ -69,4 +87,21 @@ __all__ = [
     "ReworkDecision",
     "TriageWorkflow",
     "TriageDecision",
+    # Actions and applier
+    "Action",
+    "ActionType",
+    "ActionResult",
+    "ActionResultType",
+    "AddLabelAction",
+    "RemoveLabelAction",
+    "SyncLabelsAction",
+    "LaunchSessionAction",
+    "StopSessionAction",
+    "TransitionAction",
+    "QueueReviewAction",
+    "QueueReworkAction",
+    "QueueTriageAction",
+    "EscalateToHumanAction",
+    "AddCommentAction",
+    "ActionApplier",
 ]
