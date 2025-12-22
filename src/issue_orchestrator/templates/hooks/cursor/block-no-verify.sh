@@ -47,6 +47,18 @@ if echo "$command" | grep -qE "git\s+-c\s+core\.hooksPath=/dev/null"; then
     exit 0
 fi
 
+# Block gh pr merge - agents cannot merge PRs
+if echo "$command" | grep -qE "gh\s+pr\s+merge"; then
+    echo '{"permission": "deny", "userMessage": "BLOCKED: Agents cannot merge PRs. Only humans can merge."}'
+    exit 0
+fi
+
+# Block gh api calls to merge endpoint
+if echo "$command" | grep -qE "gh\s+api\s+.*pulls/[0-9]+/merge"; then
+    echo '{"permission": "deny", "userMessage": "BLOCKED: Agents cannot merge PRs via API. Only humans can merge."}'
+    exit 0
+fi
+
 # Allow the command
 echo '{"permission": "allow"}'
 exit 0
