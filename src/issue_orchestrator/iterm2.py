@@ -215,10 +215,19 @@ class ITermSessionManager:
         # Prepend gh-wrapper directory to PATH to intercept unauthorized gh pr create
         # This blocks agents from bypassing agent-done
         from pathlib import Path
+        from .control.isolation import build_isolation_prefix
         wrapper_dir = Path(__file__).parent / "scripts"
         path_prefix = f'export PATH="{wrapper_dir}:$PATH" && '
 
-        zsh_wrapped_cmd = f"zsh -l -c '{path_prefix}cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
+        # Add isolation: scrub credentials, isolate HOME to worktree
+        isolation_prefix = build_isolation_prefix(
+            worktree=Path(working_dir),
+            isolation_mode="standard",
+            scrub_env=True,
+            isolate_home=True,
+        )
+
+        zsh_wrapped_cmd = f"zsh -l -c '{path_prefix}{isolation_prefix}cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
         escaped_zsh_cmd = zsh_wrapped_cmd.replace('\\', '\\\\').replace('"', '\\"')
         # AppleScript that creates a window if none exists, then creates a tab
         script = f'''tell application "iTerm"

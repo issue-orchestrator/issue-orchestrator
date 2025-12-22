@@ -71,6 +71,15 @@ from .validation import (
     AgentGateResult,
     VALIDATION_SCHEMA_VERSION,
 )
+from .isolation import (
+    FORBIDDEN_ENV_VARS,
+    get_forbidden_env_vars,
+    build_env_unset_commands,
+    build_home_isolation_command,
+    build_isolation_prefix,
+    verify_env_scrubbed,
+    all_env_scrubbed,
+)
 
 __all__ = [
     "Scheduler",
@@ -125,4 +134,12 @@ __all__ = [
     "AgentGate",
     "AgentGateResult",
     "VALIDATION_SCHEMA_VERSION",
+    # Isolation
+    "FORBIDDEN_ENV_VARS",
+    "get_forbidden_env_vars",
+    "build_env_unset_commands",
+    "build_home_isolation_command",
+    "build_isolation_prefix",
+    "verify_env_scrubbed",
+    "all_env_scrubbed",
 ]
