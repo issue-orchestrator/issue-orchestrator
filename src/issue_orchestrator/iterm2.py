@@ -227,7 +227,17 @@ class ITermSessionManager:
             isolate_home=True,
         )
 
-        zsh_wrapped_cmd = f"zsh -l -c '{path_prefix}{isolation_prefix}cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
+        # Add sandbox verification before running agent command
+        # This confirms isolation is working (gh auth fails, git push fails, etc.)
+        # Use verify-agent-sandbox if available, otherwise fall back to Python module
+        sandbox_check = (
+            "if command -v verify-agent-sandbox &> /dev/null; then "
+            "verify-agent-sandbox || { echo 'Sandbox verification failed - aborting'; exit 1; }; "
+            "elif python3 -m issue_orchestrator.control.sandbox_verify 2>/dev/null; then :; "
+            "elif [ $? -eq 1 ]; then echo 'Sandbox verification failed - aborting'; exit 1; fi && "
+        )
+
+        zsh_wrapped_cmd = f"zsh -l -c '{path_prefix}{isolation_prefix}{sandbox_check}cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
         escaped_zsh_cmd = zsh_wrapped_cmd.replace('\\', '\\\\').replace('"', '\\"')
         # AppleScript that creates a window if none exists, then creates a tab
         script = f'''tell application "iTerm"
