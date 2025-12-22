@@ -3,14 +3,35 @@
 # Installed by issue-orchestrator alongside the wrapper
 #
 # This hook:
-# 1. Validates Agent-Status trailer in latest commit (if agent work)
-# 2. Blocks test-skipping patterns (@Disabled, @Ignore, etc.)
+# 1. Runs publish gate validation (with cache lookup)
+# 2. Validates Agent-Status trailer in latest commit (if agent work)
+# 3. Blocks test-skipping patterns (@Disabled, @Ignore, etc.)
 #
 # Exit codes:
 #   0 = ALLOW the push
 #   1 = BLOCK the push
 
 set -euo pipefail
+
+# Run publish gate validation if configured
+# Uses cache to avoid redundant validation runs
+if command -v prepush-check &> /dev/null; then
+    echo "Running publish gate validation..."
+    if ! prepush-check -v; then
+        echo "ERROR: Publish gate validation failed." >&2
+        echo "Fix the issues and try again." >&2
+        exit 1
+    fi
+elif command -v python3 &> /dev/null; then
+    # Fallback: try running as Python module
+    if python3 -m issue_orchestrator.control.prepush_check -v 2>/dev/null; then
+        : # Validation passed or not configured
+    elif [ $? -eq 1 ]; then
+        echo "ERROR: Publish gate validation failed." >&2
+        exit 1
+    fi
+    # Exit code 2 means error/not available - continue with other checks
+fi
 
 # Get the latest commit message
 COMMIT_MSG=$(git log -1 --format=%B HEAD 2>/dev/null || echo "")

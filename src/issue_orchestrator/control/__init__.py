@@ -90,6 +90,10 @@ from .sandbox_verify import (
     verify_sandbox,
     run_verification_cli,
 )
+from .prepush_check import (
+    run_prepush_check,
+    load_publish_gate_config,
+)
 
 __all__ = [
     "Scheduler",
@@ -161,4 +165,7 @@ __all__ = [
     "verify_home_isolated",
     "verify_sandbox",
     "run_verification_cli",
+    # Pre-push check
+    "run_prepush_check",
+    "load_publish_gate_config",
 ]
