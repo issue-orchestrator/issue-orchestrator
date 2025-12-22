@@ -80,6 +80,16 @@ from .isolation import (
     verify_env_scrubbed,
     all_env_scrubbed,
 )
+from .sandbox_verify import (
+    VerificationResult,
+    SandboxVerificationResult,
+    verify_gh_auth_unavailable,
+    verify_git_push_fails,
+    verify_env_vars_absent,
+    verify_home_isolated,
+    verify_sandbox,
+    run_verification_cli,
+)
 
 __all__ = [
     "Scheduler",
@@ -142,4 +152,13 @@ __all__ = [
     "build_isolation_prefix",
     "verify_env_scrubbed",
     "all_env_scrubbed",
+    # Sandbox verification
+    "VerificationResult",
+    "SandboxVerificationResult",
+    "verify_gh_auth_unavailable",
+    "verify_git_push_fails",
+    "verify_env_vars_absent",
+    "verify_home_isolated",
+    "verify_sandbox",
+    "run_verification_cli",
 ]
