@@ -67,6 +67,8 @@ from .validation import (
     ValidationCache,
     PublishGate,
     PublishGateResult,
+    AgentGate,
+    AgentGateResult,
     VALIDATION_SCHEMA_VERSION,
 )
 
@@ -120,5 +122,7 @@ __all__ = [
     "ValidationCache",
     "PublishGate",
     "PublishGateResult",
+    "AgentGate",
+    "AgentGateResult",
     "VALIDATION_SCHEMA_VERSION",
 ]

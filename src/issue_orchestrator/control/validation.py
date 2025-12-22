@@ -437,3 +437,107 @@ class PublishGate:
                 record=record,
                 cache_hit=False,
             )
+
+
+@dataclass
+class AgentGateResult:
+    """Result of an agent gate check."""
+
+    passed: bool
+    reason: str
+    record: Optional[ValidationRecord] = None
+
+
+class AgentGate:
+    """Validation gate for agent completion.
+
+    Unlike PublishGate, this runs unconditionally (no cache) and
+    records the result for informational purposes.
+    """
+
+    SUITE_NAME = "agent_gate"
+
+    def __init__(
+        self,
+        worktree: Path,
+        command: Optional[str] = None,
+        timeout_seconds: int = 1800,
+    ):
+        """Initialize agent gate for a worktree.
+
+        Args:
+            worktree: Path to the git worktree
+            command: Validation command to run (None = gate disabled)
+            timeout_seconds: Timeout for validation command
+        """
+        self.worktree = worktree
+        self.command = command
+        self.timeout_seconds = timeout_seconds
+        self.store = ValidationRecordStore(worktree)
+        self.runner = ValidationRunner(self.store)
+
+    def _get_head_sha(self) -> Optional[str]:
+        """Get the current HEAD SHA."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.worktree,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception as e:
+            logger.warning("Failed to get HEAD SHA: %s", e)
+        return None
+
+    def run(self) -> AgentGateResult:
+        """Run the agent gate validation.
+
+        Unlike PublishGate.check(), this always runs the validation
+        (no cache lookup) because we want to capture the result at
+        the specific point in time when agent_done is called.
+
+        Returns:
+            AgentGateResult with validation status
+        """
+        # Gate disabled if no command
+        if not self.command:
+            logger.debug("Agent gate disabled (no command configured)")
+            return AgentGateResult(
+                passed=True,
+                reason="Agent gate disabled (no command configured)",
+            )
+
+        # Get HEAD SHA
+        head_sha = self._get_head_sha()
+        if not head_sha:
+            return AgentGateResult(
+                passed=False,
+                reason="Cannot determine HEAD SHA",
+            )
+
+        # Run validation
+        logger.info("Agent gate: running validation for %s", head_sha[:8])
+        record = self.runner.run(
+            suite=self.SUITE_NAME,
+            head_sha=head_sha,
+            command=self.command,
+            timeout_seconds=self.timeout_seconds,
+        )
+
+        if record.passed:
+            return AgentGateResult(
+                passed=True,
+                reason=f"Validation passed for {head_sha[:8]}",
+                record=record,
+            )
+        else:
+            reason = f"Validation failed for {head_sha[:8]} (exit_code={record.exit_code})"
+            if record.timed_out:
+                reason = f"Validation timed out for {head_sha[:8]}"
+            return AgentGateResult(
+                passed=False,
+                reason=reason,
+                record=record,
+            )

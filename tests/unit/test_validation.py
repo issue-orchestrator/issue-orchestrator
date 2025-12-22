@@ -15,6 +15,8 @@ from issue_orchestrator.control.validation import (
     ValidationCache,
     PublishGate,
     PublishGateResult,
+    AgentGate,
+    AgentGateResult,
     VALIDATION_SCHEMA_VERSION,
 )
 
@@ -484,3 +486,108 @@ class TestPublishGate:
         result2 = gate.check()
         assert result2.allowed is False
         assert result2.cache_hit is True
+
+
+class TestAgentGate:
+    """Tests for AgentGate facade."""
+
+    @pytest.fixture
+    def temp_worktree(self):
+        """Create a temporary worktree directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            worktree = Path(tmpdir)
+            # Initialize a git repo so we can get HEAD SHA
+            subprocess.run(
+                ["git", "init"],
+                cwd=worktree,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "test@test.com"],
+                cwd=worktree,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test"],
+                cwd=worktree,
+                capture_output=True,
+            )
+            # Create initial commit
+            (worktree / "README.md").write_text("test")
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=worktree,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "Initial"],
+                cwd=worktree,
+                capture_output=True,
+            )
+            yield worktree
+
+    def test_gate_disabled_when_no_command(self, temp_worktree):
+        """Test gate is disabled when no command is configured."""
+        gate = AgentGate(temp_worktree, command=None)
+        result = gate.run()
+
+        assert result.passed is True
+        assert "disabled" in result.reason.lower()
+        assert result.record is None
+
+    def test_gate_passes_when_command_succeeds(self, temp_worktree):
+        """Test gate passes when validation command succeeds."""
+        gate = AgentGate(temp_worktree, command="echo 'ok'", timeout_seconds=10)
+        result = gate.run()
+
+        assert result.passed is True
+        assert result.record is not None
+        assert result.record.passed is True
+        assert result.record.suite == "agent_gate"
+
+    def test_gate_fails_when_command_fails(self, temp_worktree):
+        """Test gate fails when validation command fails."""
+        gate = AgentGate(temp_worktree, command="exit 1", timeout_seconds=10)
+        result = gate.run()
+
+        assert result.passed is False
+        assert result.record is not None
+        assert result.record.passed is False
+        assert "failed" in result.reason.lower()
+
+    def test_gate_always_runs_no_cache(self, temp_worktree):
+        """Test gate always runs validation (no caching)."""
+        gate = AgentGate(temp_worktree, command="echo 'ok'", timeout_seconds=10)
+
+        # First call runs validation
+        result1 = gate.run()
+        assert result1.passed is True
+        assert result1.record is not None
+
+        # Second call runs validation again (not cached)
+        result2 = gate.run()
+        assert result2.passed is True
+        assert result2.record is not None
+        # Records should have different timestamps
+        assert result2.record.started_at != result1.record.started_at
+
+    def test_gate_fails_when_timeout(self, temp_worktree):
+        """Test gate fails when command times out."""
+        gate = AgentGate(temp_worktree, command="sleep 10", timeout_seconds=1)
+        result = gate.run()
+
+        assert result.passed is False
+        assert result.record is not None
+        assert result.record.timed_out is True
+        assert "timed out" in result.reason.lower()
+
+    def test_gate_writes_record_to_store(self, temp_worktree):
+        """Test gate writes validation record to store."""
+        gate = AgentGate(temp_worktree, command="echo 'ok'", timeout_seconds=10)
+        result = gate.run()
+
+        # Verify record was written
+        store = ValidationRecordStore(temp_worktree)
+        stored = store.read("agent_gate", result.record.head_sha)
+        assert stored is not None
+        assert stored.passed is True

@@ -20,7 +20,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, Optional
 
 from .models import (
     CompletionRecord,
@@ -28,6 +28,7 @@ from .models import (
     RequestedAction,
     COMPLETION_RECORD_PATH,
 )
+from .control.validation import AgentGate, AgentGateResult
 
 
 class AgentStatus:
@@ -304,6 +305,83 @@ def write_marker_file(status: str) -> None:
     )
 
 
+def find_worktree_root() -> Path:
+    """Find the worktree root by looking for .git."""
+    cwd = Path.cwd()
+    for path in [cwd, *cwd.parents]:
+        if (path / ".git").exists():
+            return path
+    return cwd
+
+
+def load_agent_gate_config(worktree: Path) -> tuple[Optional[str], int]:
+    """Load agent gate configuration from the worktree.
+
+    Looks for .issue-orchestrator/config.yaml and extracts the agent_gate config.
+
+    Args:
+        worktree: Path to the worktree root
+
+    Returns:
+        Tuple of (command, timeout_seconds) or (None, 0) if not configured
+    """
+    config_path = worktree / ".issue-orchestrator" / "config.yaml"
+    if not config_path.exists():
+        return None, 0
+
+    try:
+        import yaml
+
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+
+        validation = config.get("validation", {})
+        agent_gate = validation.get("agent_gate", {})
+        cmd = agent_gate.get("cmd")
+        timeout = agent_gate.get("timeout_seconds", 1800)
+
+        # Also check validation_policy to see if agent_runs is enabled
+        policy = config.get("validation_policy", {})
+        agent_runs = policy.get("agent_runs")
+
+        # Only return command if policy enables it
+        if agent_runs == "agent_gate" and cmd:
+            return cmd, timeout
+
+        return None, 0
+    except Exception:
+        return None, 0
+
+
+def run_agent_gate(worktree: Path, verbose: bool = False) -> Optional[AgentGateResult]:
+    """Run the agent gate validation if configured.
+
+    Args:
+        worktree: Path to the worktree root
+        verbose: Whether to print validation output
+
+    Returns:
+        AgentGateResult if validation was run, None if not configured
+    """
+    cmd, timeout = load_agent_gate_config(worktree)
+    if not cmd:
+        return None
+
+    if verbose:
+        print(f"Running agent gate validation: {cmd}")
+
+    gate = AgentGate(worktree, command=cmd, timeout_seconds=timeout)
+    result = gate.run()
+
+    if verbose:
+        if result.passed:
+            print(f"✓ Agent gate passed: {result.reason}")
+        else:
+            print(f"✗ Agent gate failed: {result.reason}")
+
+    return result
+
+
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -370,6 +448,16 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
 
     # Meta options
     parser.add_argument("--dry-run", action="store_true", help="Show what would be written")
+    parser.add_argument(
+        "--skip-validation",
+        action="store_true",
+        help="Skip agent gate validation even if configured",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Show detailed output",
+    )
 
     args = parser.parse_args()
     status = args.status
@@ -386,6 +474,18 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
         print("--- END ---")
         return
 
+    # Find worktree root
+    worktree_root = find_worktree_root()
+
+    # Run agent gate validation if configured (and not skipped)
+    validation_result = None
+    if not args.skip_validation:
+        validation_result = run_agent_gate(worktree_root, verbose=args.verbose)
+        if validation_result and not validation_result.passed:
+            print(f"\n⚠️  Agent gate validation failed: {validation_result.reason}")
+            print("The completion record will still be written, but the orchestrator")
+            print("may reject publish actions based on the validation failure.")
+
     # Write marker file first (indicates agent-done was called)
     write_marker_file(status)
 
@@ -395,6 +495,9 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     print(f"Completion record written to: {output_path}")
     print(f"Status: {status}")
     print(f"Session: {record.session_id}")
+    if validation_result:
+        validation_status = "passed" if validation_result.passed else "failed"
+        print(f"Validation: {validation_status}")
     print("\nThe orchestrator will process this record and perform the necessary actions.")
 
 
