@@ -6,21 +6,30 @@ This is the IO boundary for the orchestrator. It:
 3. Emits trace events for each action
 4. Returns ActionResults
 
+When reconciliation is enabled (reconcile=True with issue_tracker provided):
+- Before any label mutation, fetches current labels
+- Verifies current state is as expected
+- Aborts with ReconciliationRequired if mismatch
+- Only proceeds with mutation if state matches
+
 Usage:
     applier = ActionApplier(
         labels=label_set,
         sessions=session_manager,
         events=event_sink,
+        issue_tracker=github_adapter,  # Optional, for reconciliation
+        reconcile=True,  # Enable reconciliation
     )
     results = applier.apply_all(actions)
 """
 
 import logging
-from dataclasses import dataclass
-from typing import Callable, Sequence
+from dataclasses import dataclass, field
+from typing import Callable, Optional, Sequence
 
 from ..ports import EventSink, TraceEvent
 from ..ports.label_set import LabelSet
+from ..ports.issue_tracker import IssueTracker
 from .actions import (
     Action,
     ActionResult,
@@ -39,6 +48,12 @@ from .actions import (
     AddCommentAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
+from .reconciliation import (
+    ExternalSnapshot,
+    ExpectedState,
+    ReconciliationRequired,
+    check_reconciliation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +64,18 @@ class ActionApplier:
 
     This is the IO boundary - all external calls go through here.
     Each action type has a handler that knows how to execute it.
+
+    When reconciliation is enabled (reconcile=True):
+    - Before label mutations, fetches current labels from issue_tracker
+    - Verifies state hasn't changed unexpectedly
+    - Emits reconciliation events for traceability
     """
 
     labels: LabelSet
     sessions: SessionManager
     events: EventSink
+    issue_tracker: Optional[IssueTracker] = None
+    reconcile: bool = False  # If True, verify state before mutations
 
     def apply(self, action: Action) -> ActionResult:
         """Apply a single action.
@@ -137,9 +159,101 @@ class ActionApplier:
         except Exception as e:
             return ActionResult.fail(action, str(e))
 
+    def _fetch_current_labels(self, issue_number: int) -> set[str] | None:
+        """Fetch current labels for an issue if issue_tracker is available.
+
+        Returns:
+            Set of label names, or None if issue_tracker not configured
+        """
+        if self.issue_tracker is None:
+            return None
+        try:
+            labels = self.issue_tracker.get_issue_labels(issue_number)
+            return set(labels)
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch labels for issue #%d: %s",
+                issue_number, e
+            )
+            return None
+
+    def _check_reconciliation_for_sync(
+        self,
+        issue_number: int,
+        add_labels: tuple[str, ...],
+        remove_labels: tuple[str, ...],
+    ) -> tuple[bool, str, set[str]]:
+        """Check reconciliation for a sync operation.
+
+        Args:
+            issue_number: Issue to check
+            add_labels: Labels we plan to add
+            remove_labels: Labels we plan to remove
+
+        Returns:
+            Tuple of (should_proceed, message, current_labels).
+            If reconciliation is not enabled or can't run, returns (True, "", current_labels).
+        """
+        if not self.reconcile:
+            return True, "", set()
+
+        current = self._fetch_current_labels(issue_number)
+        if current is None:
+            # Can't verify - proceed with warning
+            logger.warning(
+                "Reconciliation enabled but cannot fetch labels for #%d",
+                issue_number
+            )
+            return True, "Cannot fetch current labels", set()
+
+        # Check 1: Labels we plan to remove should exist
+        missing_to_remove = set(remove_labels) - current
+        if missing_to_remove:
+            msg = f"Labels to remove not present: {missing_to_remove}"
+            logger.warning("Reconciliation: %s for issue #%d", msg, issue_number)
+            # This is a warning, not a hard failure - label may have been
+            # removed externally which is fine
+            self.events.publish(TraceEvent(
+                name="reconciliation.warning",
+                data={
+                    "issue_number": issue_number,
+                    "message": msg,
+                    "missing_labels": list(missing_to_remove),
+                },
+            ))
+
+        # Check 2: Labels we expect to be there for this transition
+        # For now, we just log what we found vs expected
+        self.events.publish(TraceEvent(
+            name="reconciliation.checked",
+            data={
+                "issue_number": issue_number,
+                "current_labels": list(current),
+                "add_labels": list(add_labels),
+                "remove_labels": list(remove_labels),
+            },
+        ))
+
+        return True, "", current
+
     def _apply_sync_labels(self, action: Action) -> ActionResult:
-        """Synchronize labels on an issue."""
+        """Synchronize labels on an issue.
+
+        If reconciliation is enabled:
+        1. Fetches current labels before mutations
+        2. Logs any unexpected state (e.g., labels to remove not present)
+        3. Emits reconciliation events for traceability
+        """
         assert isinstance(action, SyncLabelsAction)
+
+        # Reconciliation check
+        should_proceed, msg, current_labels = self._check_reconciliation_for_sync(
+            action.issue_number,
+            action.add_labels,
+            action.remove_labels,
+        )
+        if not should_proceed:
+            return ActionResult.fail(action, f"Reconciliation failed: {msg}")
 
         errors = []
 

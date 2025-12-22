@@ -96,6 +96,14 @@ from .prepush_check import (
     run_prepush_check,
     load_publish_gate_config,
 )
+from .reconciliation import (
+    ReconciliationRequired,
+    ExternalSnapshot,
+    ExpectedState,
+    ReconciliationResult,
+    check_reconciliation,
+    require_reconciliation,
+)
 
 __all__ = [
     "Scheduler",
@@ -172,4 +180,11 @@ __all__ = [
     # Pre-push check
     "run_prepush_check",
     "load_publish_gate_config",
+    # Reconciliation
+    "ReconciliationRequired",
+    "ExternalSnapshot",
+    "ExpectedState",
+    "ReconciliationResult",
+    "check_reconciliation",
+    "require_reconciliation",
 ]
