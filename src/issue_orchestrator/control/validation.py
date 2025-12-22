@@ -446,6 +446,7 @@ class AgentGateResult:
     passed: bool
     reason: str
     record: Optional[ValidationRecord] = None
+    record_path: Optional[str] = None  # Path where validation record was written
 
 
 class AgentGate:
@@ -526,11 +527,15 @@ class AgentGate:
             timeout_seconds=self.timeout_seconds,
         )
 
+        # Get the path where the record was written
+        record_path = str(self.store._get_record_path(self.SUITE_NAME, head_sha))
+
         if record.passed:
             return AgentGateResult(
                 passed=True,
                 reason=f"Validation passed for {head_sha[:8]}",
                 record=record,
+                record_path=record_path,
             )
         else:
             reason = f"Validation failed for {head_sha[:8]} (exit_code={record.exit_code})"
@@ -540,4 +545,5 @@ class AgentGate:
                 passed=False,
                 reason=reason,
                 record=record,
+                record_path=record_path,
             )

@@ -206,8 +206,11 @@ class OrchestratorProcess:
 
     def start(self, max_issues: int = 1, extra_args: list[str] | None = None) -> None:
         """Start the orchestrator process."""
+        # Use sys.executable to find the venv's issue-orchestrator
+        import sys
+        venv_bin = Path(sys.executable).parent / "issue-orchestrator"
         cmd = [
-            "issue-orchestrator", "start",
+            str(venv_bin), "start",
             "--label", "test-data",
             "--max-issues", str(max_issues),
             "--ui-mode", "tmux",

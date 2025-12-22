@@ -52,6 +52,7 @@ class TestLiveOrchestratorLifecycle:
         orchestrator_process.start(max_issues=1)
         assert orchestrator_process.is_running(), "Orchestrator should be running"
 
+        pr = None  # Initialize for cleanup in finally block
         try:
             # Wait for in-progress label (indicates session started)
             in_progress = wait_for_issue_label(

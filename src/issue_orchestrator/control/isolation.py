@@ -35,7 +35,15 @@ FORBIDDEN_ENV_VARS = [
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
+    # SSH agent - can forward credentials
+    "SSH_AUTH_SOCK",
 ]
+
+# Environment variables to set for safe git behavior
+GIT_SAFE_ENV = {
+    "GIT_TERMINAL_PROMPT": "0",  # Disable interactive prompts
+    "GIT_ASKPASS": "/usr/bin/false",  # Fail any credential requests
+}
 
 
 def get_forbidden_env_vars() -> list[str]:
@@ -54,6 +62,17 @@ def build_env_unset_commands() -> list[str]:
         List of shell 'unset' commands
     """
     return [f"unset {var}" for var in FORBIDDEN_ENV_VARS]
+
+
+def build_git_safe_commands() -> list[str]:
+    """Build shell commands to set git-safe environment variables.
+
+    These prevent git from prompting for credentials interactively.
+
+    Returns:
+        List of shell 'export' commands
+    """
+    return [f'export {var}="{val}"' for var, val in GIT_SAFE_ENV.items()]
 
 
 def build_home_isolation_command(worktree: Path) -> str:
@@ -76,18 +95,21 @@ def build_isolation_prefix(
     isolation_mode: str = "standard",
     scrub_env: bool = True,
     isolate_home: bool = True,
+    git_safe: bool = True,
 ) -> str:
     """Build a shell command prefix that applies isolation.
 
     This returns a string of shell commands (separated by &&) that:
     1. Unset forbidden environment variables
     2. Set HOME to the worktree (if standard mode)
+    3. Set GIT_TERMINAL_PROMPT=0 and GIT_ASKPASS to prevent prompts
 
     Args:
         worktree: Path to the worktree directory
         isolation_mode: "standard" or "hardened"
         scrub_env: Whether to scrub environment variables
         isolate_home: Whether to isolate HOME directory
+        git_safe: Whether to set git-safe environment variables
 
     Returns:
         Shell command prefix string
@@ -101,6 +123,10 @@ def build_isolation_prefix(
     if isolate_home and isolation_mode == "standard":
         commands.append(build_home_isolation_command(worktree))
         logger.debug("Added HOME isolation to %s", worktree)
+
+    if git_safe:
+        commands.extend(build_git_safe_commands())
+        logger.debug("Added git-safe environment variables")
 
     if commands:
         return " && ".join(commands) + " && "

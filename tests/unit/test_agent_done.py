@@ -890,3 +890,153 @@ class TestCompletionRecordSerialization:
         assert restored.blocked_reason == record.blocked_reason
         assert restored.blocked_by == record.blocked_by
         assert restored.when_unblocked == record.when_unblocked
+
+
+class TestAgentGateIntegration:
+    """Test agent gate validation integration in the main function."""
+
+    def test_agent_gate_runs_when_configured(self, tmp_path, capsys):
+        """Test that agent gate validation runs when configured."""
+        # Create fake git repo
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Create config with passing agent gate
+        config_dir = tmp_path / ".issue-orchestrator"
+        config_dir.mkdir()
+        config_path = config_dir / "config.yaml"
+        config_path.write_text("""
+validation:
+  agent_gate:
+    cmd: "echo 'ok'"
+    timeout_seconds: 10
+validation_policy:
+  agent_runs: agent_gate
+""")
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch('sys.argv', [
+                'agent-done', 'completed',
+                '--implementation', 'Added feature',
+                '--problems', 'None',
+                '--verbose'
+            ]):
+                with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+                    main()
+
+            captured = capsys.readouterr()
+            assert "Validation: passed" in captured.out
+        finally:
+            os.chdir(original_cwd)
+
+    def test_agent_gate_failure_exits_with_error(self, tmp_path, capsys):
+        """Test that agent gate failure exits with error and does not write record."""
+        # Create fake git repo
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Create config with failing agent gate
+        config_dir = tmp_path / ".issue-orchestrator"
+        config_dir.mkdir()
+        config_path = config_dir / "config.yaml"
+        config_path.write_text("""
+validation:
+  agent_gate:
+    cmd: "exit 1"
+    timeout_seconds: 10
+validation_policy:
+  agent_runs: agent_gate
+""")
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch('sys.argv', [
+                'agent-done', 'completed',
+                '--implementation', 'Added feature',
+                '--problems', 'None',
+                '--verbose'
+            ]):
+                with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    # Should exit with error code 1
+                    assert exc_info.value.code == 1
+
+            captured = capsys.readouterr()
+            # Should print error about failure
+            assert "Agent gate validation failed" in captured.out
+            # Should NOT write completion record (exited before that)
+            assert "Completion record written to" not in captured.out
+        finally:
+            os.chdir(original_cwd)
+
+    def test_agent_gate_skipped_with_flag(self, tmp_path, capsys):
+        """Test that agent gate validation can be skipped with --skip-validation."""
+        # Create fake git repo
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Create config with agent gate that would fail
+        config_dir = tmp_path / ".issue-orchestrator"
+        config_dir.mkdir()
+        config_path = config_dir / "config.yaml"
+        config_path.write_text("""
+validation:
+  agent_gate:
+    cmd: "exit 1"
+    timeout_seconds: 10
+validation_policy:
+  agent_runs: agent_gate
+""")
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch('sys.argv', [
+                'agent-done', 'completed',
+                '--implementation', 'Added feature',
+                '--problems', 'None',
+                '--skip-validation'
+            ]):
+                with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+                    main()
+
+            captured = capsys.readouterr()
+            # Should NOT print validation failure (skipped)
+            assert "Agent gate validation failed" not in captured.out
+            # Should still write completion record
+            assert "Completion record written to" in captured.out
+            # Should not show validation status
+            assert "Validation:" not in captured.out
+        finally:
+            os.chdir(original_cwd)

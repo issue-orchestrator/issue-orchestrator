@@ -8,8 +8,10 @@ from unittest.mock import patch
 
 from issue_orchestrator.control.isolation import (
     FORBIDDEN_ENV_VARS,
+    GIT_SAFE_ENV,
     get_forbidden_env_vars,
     build_env_unset_commands,
+    build_git_safe_commands,
     build_home_isolation_command,
     build_isolation_prefix,
     verify_env_scrubbed,
@@ -29,6 +31,10 @@ class TestForbiddenEnvVars:
         """Test that AWS credentials are in the forbidden list."""
         assert "AWS_ACCESS_KEY_ID" in FORBIDDEN_ENV_VARS
         assert "AWS_SECRET_ACCESS_KEY" in FORBIDDEN_ENV_VARS
+
+    def test_forbidden_vars_includes_ssh_auth_sock(self):
+        """Test that SSH_AUTH_SOCK is in the forbidden list."""
+        assert "SSH_AUTH_SOCK" in FORBIDDEN_ENV_VARS
 
     def test_get_forbidden_env_vars_returns_copy(self):
         """Test that get_forbidden_env_vars returns a copy."""
@@ -51,6 +57,45 @@ class TestBuildEnvUnsetCommands:
         """Test that GH_TOKEN unset is included."""
         commands = build_env_unset_commands()
         assert "unset GH_TOKEN" in commands
+
+    def test_includes_ssh_auth_sock(self):
+        """Test that SSH_AUTH_SOCK unset is included."""
+        commands = build_env_unset_commands()
+        assert "unset SSH_AUTH_SOCK" in commands
+
+
+class TestGitSafeEnv:
+    """Tests for git-safe environment variables."""
+
+    def test_git_terminal_prompt_set(self):
+        """Test that GIT_TERMINAL_PROMPT is set to 0."""
+        assert GIT_SAFE_ENV["GIT_TERMINAL_PROMPT"] == "0"
+
+    def test_git_askpass_set(self):
+        """Test that GIT_ASKPASS is set to /usr/bin/false."""
+        assert GIT_SAFE_ENV["GIT_ASKPASS"] == "/usr/bin/false"
+
+
+class TestBuildGitSafeCommands:
+    """Tests for building git-safe export commands."""
+
+    def test_builds_export_for_each_var(self):
+        """Test that export command is built for each git-safe var."""
+        commands = build_git_safe_commands()
+        assert len(commands) == len(GIT_SAFE_ENV)
+        assert all(cmd.startswith("export ") for cmd in commands)
+
+    def test_includes_git_terminal_prompt(self):
+        """Test that GIT_TERMINAL_PROMPT export is included."""
+        commands = build_git_safe_commands()
+        assert any("GIT_TERMINAL_PROMPT" in cmd for cmd in commands)
+        assert any('"0"' in cmd for cmd in commands)
+
+    def test_includes_git_askpass(self):
+        """Test that GIT_ASKPASS export is included."""
+        commands = build_git_safe_commands()
+        assert any("GIT_ASKPASS" in cmd for cmd in commands)
+        assert any("/usr/bin/false" in cmd for cmd in commands)
 
 
 class TestBuildHomeIsolationCommand:
@@ -111,15 +156,18 @@ class TestBuildIsolationPrefix:
         assert "unset GITHUB_TOKEN" in prefix
 
     def test_full_prefix_combines_all(self, temp_worktree):
-        """Test that full prefix combines scrubbing and HOME isolation."""
+        """Test that full prefix combines scrubbing, HOME isolation, and git-safe."""
         prefix = build_isolation_prefix(
             worktree=temp_worktree,
             isolation_mode="standard",
             scrub_env=True,
             isolate_home=True,
+            git_safe=True,
         )
         assert "unset GH_TOKEN" in prefix
         assert f'export HOME="{temp_worktree}"' in prefix
+        assert "GIT_TERMINAL_PROMPT" in prefix
+        assert "GIT_ASKPASS" in prefix
         # Should be joined with &&
         assert " && " in prefix
         # Should end with && for command chaining
@@ -132,8 +180,32 @@ class TestBuildIsolationPrefix:
             isolation_mode="standard",
             scrub_env=False,
             isolate_home=False,
+            git_safe=False,
         )
         assert prefix == ""
+
+    def test_git_safe_included_by_default(self, temp_worktree):
+        """Test that git-safe commands are included by default."""
+        prefix = build_isolation_prefix(
+            worktree=temp_worktree,
+            isolation_mode="standard",
+            scrub_env=False,
+            isolate_home=False,
+        )
+        assert "GIT_TERMINAL_PROMPT" in prefix
+        assert "GIT_ASKPASS" in prefix
+
+    def test_git_safe_can_be_disabled(self, temp_worktree):
+        """Test that git-safe commands can be disabled."""
+        prefix = build_isolation_prefix(
+            worktree=temp_worktree,
+            isolation_mode="standard",
+            scrub_env=False,
+            isolate_home=False,
+            git_safe=False,
+        )
+        assert "GIT_TERMINAL_PROMPT" not in prefix
+        assert "GIT_ASKPASS" not in prefix
 
 
 class TestVerifyEnvScrubbed:

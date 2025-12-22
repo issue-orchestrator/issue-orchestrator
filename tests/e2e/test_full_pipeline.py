@@ -231,6 +231,7 @@ class TestFullOrchestrationPipeline:
         orchestrator_process.start(max_issues=1)
         assert orchestrator_process.is_running(), "Orchestrator should start"
 
+        pr = None  # Initialize for cleanup in finally block
         try:
             # Phase 1: Issue claimed and session started
             print("Phase 1: Waiting for session to start...")
@@ -342,6 +343,7 @@ class TestLabelManagement:
         # Start orchestrator
         orchestrator_process.start(max_issues=1)
 
+        pr = None  # Initialize for cleanup in finally block
         try:
             # Wait for in-progress
             for _ in range(30):
@@ -399,6 +401,7 @@ class TestCodeReviewPipeline:
 
         orchestrator_process.start(max_issues=1)
 
+        pr = None  # Initialize for cleanup in finally block
         try:
             # Wait for PR
             pr = wait_for_pr_created(repo_name, issue_number, timeout=180)
@@ -512,6 +515,7 @@ class TestVerificationSummary:
 
         orchestrator_process.start(max_issues=1)
 
+        pr = None  # Initialize for cleanup in finally block
         try:
             # Check 1: GitHub label management
             if wait_for_issue_label(repo_name, issue_number, "in-progress", timeout=60):

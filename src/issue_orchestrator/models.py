@@ -92,6 +92,9 @@ class CompletionRecord:
     # Comment body to post (if POST_COMMENT in requested_actions)
     comment_body: Optional[str] = None
 
+    # Validation reference (if agent_gate was run)
+    validation_record_path: Optional[str] = None  # Path to validation record JSON
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -116,6 +119,7 @@ class CompletionRecord:
             "checks_passed": self.checks_passed,
             "checks_needed": self.checks_needed,
             "comment_body": self.comment_body,
+            "validation_record_path": self.validation_record_path,
         }
 
     @classmethod
@@ -165,6 +169,7 @@ class CompletionRecord:
             checks_passed=data.get("checks_passed"),
             checks_needed=data.get("checks_needed"),
             comment_body=data.get("comment_body"),
+            validation_record_path=data.get("validation_record_path"),
         )
 
 

@@ -73,8 +73,10 @@ from .validation import (
 )
 from .isolation import (
     FORBIDDEN_ENV_VARS,
+    GIT_SAFE_ENV,
     get_forbidden_env_vars,
     build_env_unset_commands,
+    build_git_safe_commands,
     build_home_isolation_command,
     build_isolation_prefix,
     verify_env_scrubbed,
@@ -150,8 +152,10 @@ __all__ = [
     "VALIDATION_SCHEMA_VERSION",
     # Isolation
     "FORBIDDEN_ENV_VARS",
+    "GIT_SAFE_ENV",
     "get_forbidden_env_vars",
     "build_env_unset_commands",
+    "build_git_safe_commands",
     "build_home_isolation_command",
     "build_isolation_prefix",
     "verify_env_scrubbed",

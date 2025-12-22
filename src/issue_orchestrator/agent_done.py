@@ -482,9 +482,20 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     if not args.skip_validation:
         validation_result = run_agent_gate(worktree_root, verbose=args.verbose)
         if validation_result and not validation_result.passed:
-            print(f"\n⚠️  Agent gate validation failed: {validation_result.reason}")
-            print("The completion record will still be written, but the orchestrator")
-            print("may reject publish actions based on the validation failure.")
+            print(f"\n❌ Agent gate validation failed: {validation_result.reason}")
+            print("Cannot complete agent work until validation passes.")
+            if validation_result.record_path:
+                print(f"Validation record: {validation_result.record_path}")
+            if validation_result.record and validation_result.record.stdout_path:
+                print(f"Stdout: {validation_result.record.stdout_path}")
+            if validation_result.record and validation_result.record.stderr_path:
+                print(f"Stderr: {validation_result.record.stderr_path}")
+            print("Fix the issues and run agent-done again.")
+            sys.exit(1)
+
+    # If validation passed, include the record path in the completion record
+    if validation_result and validation_result.passed and validation_result.record_path:
+        record.validation_record_path = validation_result.record_path
 
     # Write marker file first (indicates agent-done was called)
     write_marker_file(status)
