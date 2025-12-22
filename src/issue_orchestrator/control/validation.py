@@ -306,3 +306,134 @@ class ValidationCache:
         """
         record = self.lookup(suite, sha)
         return record is not None and record.passed
+
+
+@dataclass
+class PublishGateResult:
+    """Result of a publish gate check."""
+
+    allowed: bool
+    reason: str
+    record: Optional[ValidationRecord] = None
+    cache_hit: bool = False
+
+
+class PublishGate:
+    """Facade for publish gate validation.
+
+    Combines cache lookup and runner to provide a single check method.
+    Use this before allowing publish actions (push, PR creation).
+    """
+
+    SUITE_NAME = "publish_gate"
+
+    def __init__(
+        self,
+        worktree: Path,
+        command: Optional[str] = None,
+        timeout_seconds: int = 1800,
+    ):
+        """Initialize publish gate for a worktree.
+
+        Args:
+            worktree: Path to the git worktree
+            command: Validation command to run (None = gate disabled)
+            timeout_seconds: Timeout for validation command
+        """
+        self.worktree = worktree
+        self.command = command
+        self.timeout_seconds = timeout_seconds
+        self.store = ValidationRecordStore(worktree)
+        self.cache = ValidationCache(self.store)
+        self.runner = ValidationRunner(self.store)
+
+    def _get_head_sha(self) -> Optional[str]:
+        """Get the current HEAD SHA."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.worktree,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception as e:
+            logger.warning("Failed to get HEAD SHA: %s", e)
+        return None
+
+    def check(self) -> PublishGateResult:
+        """Check if publishing is allowed.
+
+        This method:
+        1. Returns allowed=True if no command is configured (gate disabled)
+        2. Gets the current HEAD SHA
+        3. Checks cache for existing passing result
+        4. Runs validation if no cache hit
+        5. Returns the result
+
+        Returns:
+            PublishGateResult with allowed status and reason
+        """
+        # Gate disabled if no command
+        if not self.command:
+            logger.debug("Publish gate disabled (no command configured)")
+            return PublishGateResult(
+                allowed=True,
+                reason="Publish gate disabled (no command configured)",
+            )
+
+        # Get HEAD SHA
+        head_sha = self._get_head_sha()
+        if not head_sha:
+            return PublishGateResult(
+                allowed=False,
+                reason="Cannot determine HEAD SHA",
+            )
+
+        # Check cache
+        cached = self.cache.lookup(self.SUITE_NAME, head_sha)
+        if cached is not None:
+            if cached.passed:
+                logger.info("Publish gate: cache hit (passed) for %s", head_sha[:8])
+                return PublishGateResult(
+                    allowed=True,
+                    reason=f"Cached validation passed for {head_sha[:8]}",
+                    record=cached,
+                    cache_hit=True,
+                )
+            else:
+                logger.info("Publish gate: cache hit (failed) for %s", head_sha[:8])
+                return PublishGateResult(
+                    allowed=False,
+                    reason=f"Cached validation failed for {head_sha[:8]}",
+                    record=cached,
+                    cache_hit=True,
+                )
+
+        # Run validation
+        logger.info("Publish gate: running validation for %s", head_sha[:8])
+        record = self.runner.run(
+            suite=self.SUITE_NAME,
+            head_sha=head_sha,
+            command=self.command,
+            timeout_seconds=self.timeout_seconds,
+        )
+
+        if record.passed:
+            return PublishGateResult(
+                allowed=True,
+                reason=f"Validation passed for {head_sha[:8]}",
+                record=record,
+                cache_hit=False,
+            )
+        else:
+            reason = f"Validation failed for {head_sha[:8]} (exit_code={record.exit_code})"
+            if record.timed_out:
+                reason = f"Validation timed out for {head_sha[:8]}"
+            return PublishGateResult(
+                allowed=False,
+                reason=reason,
+                record=record,
+                cache_hit=False,
+            )

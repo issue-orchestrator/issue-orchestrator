@@ -13,6 +13,8 @@ from issue_orchestrator.control.validation import (
     ValidationRecordStore,
     ValidationRunner,
     ValidationCache,
+    PublishGate,
+    PublishGateResult,
     VALIDATION_SCHEMA_VERSION,
 )
 
@@ -376,3 +378,109 @@ class TestValidationCache:
     def test_is_valid_hit_nonexistent(self, cache):
         """Test is_valid_hit returns False when no record."""
         assert cache.is_valid_hit("publish_gate", "nonexistent") is False
+
+
+class TestPublishGate:
+    """Tests for PublishGate facade."""
+
+    @pytest.fixture
+    def temp_worktree(self):
+        """Create a temporary worktree directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            worktree = Path(tmpdir)
+            # Initialize a git repo so we can get HEAD SHA
+            subprocess.run(
+                ["git", "init"],
+                cwd=worktree,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "test@test.com"],
+                cwd=worktree,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test"],
+                cwd=worktree,
+                capture_output=True,
+            )
+            # Create initial commit
+            (worktree / "README.md").write_text("test")
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=worktree,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "Initial"],
+                cwd=worktree,
+                capture_output=True,
+            )
+            yield worktree
+
+    def test_gate_disabled_when_no_command(self, temp_worktree):
+        """Test gate is disabled when no command is configured."""
+        gate = PublishGate(temp_worktree, command=None)
+        result = gate.check()
+
+        assert result.allowed is True
+        assert "disabled" in result.reason.lower()
+        assert result.record is None
+
+    def test_gate_passes_when_command_succeeds(self, temp_worktree):
+        """Test gate passes when validation command succeeds."""
+        gate = PublishGate(temp_worktree, command="echo 'ok'", timeout_seconds=10)
+        result = gate.check()
+
+        assert result.allowed is True
+        assert result.record is not None
+        assert result.record.passed is True
+        assert result.cache_hit is False
+
+    def test_gate_fails_when_command_fails(self, temp_worktree):
+        """Test gate fails when validation command fails."""
+        gate = PublishGate(temp_worktree, command="exit 1", timeout_seconds=10)
+        result = gate.check()
+
+        assert result.allowed is False
+        assert result.record is not None
+        assert result.record.passed is False
+        assert "failed" in result.reason.lower()
+
+    def test_gate_uses_cache_on_second_call(self, temp_worktree):
+        """Test gate uses cache on subsequent calls."""
+        gate = PublishGate(temp_worktree, command="echo 'ok'", timeout_seconds=10)
+
+        # First call runs validation
+        result1 = gate.check()
+        assert result1.allowed is True
+        assert result1.cache_hit is False
+
+        # Second call should hit cache
+        result2 = gate.check()
+        assert result2.allowed is True
+        assert result2.cache_hit is True
+
+    def test_gate_fails_when_timeout(self, temp_worktree):
+        """Test gate fails when command times out."""
+        gate = PublishGate(temp_worktree, command="sleep 10", timeout_seconds=1)
+        result = gate.check()
+
+        assert result.allowed is False
+        assert result.record is not None
+        assert result.record.timed_out is True
+        assert "timed out" in result.reason.lower()
+
+    def test_gate_caches_failure(self, temp_worktree):
+        """Test gate caches failed validation results."""
+        gate = PublishGate(temp_worktree, command="exit 1", timeout_seconds=10)
+
+        # First call fails
+        result1 = gate.check()
+        assert result1.allowed is False
+        assert result1.cache_hit is False
+
+        # Second call should hit cache with failure
+        result2 = gate.check()
+        assert result2.allowed is False
+        assert result2.cache_hit is True

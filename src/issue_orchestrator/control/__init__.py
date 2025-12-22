@@ -60,6 +60,15 @@ from .actions import (
     AddCommentAction,
 )
 from .action_applier import ActionApplier
+from .validation import (
+    ValidationRecord,
+    ValidationRecordStore,
+    ValidationRunner,
+    ValidationCache,
+    PublishGate,
+    PublishGateResult,
+    VALIDATION_SCHEMA_VERSION,
+)
 
 __all__ = [
     "Scheduler",
@@ -104,4 +113,12 @@ __all__ = [
     "EscalateToHumanAction",
     "AddCommentAction",
     "ActionApplier",
+    # Validation
+    "ValidationRecord",
+    "ValidationRecordStore",
+    "ValidationRunner",
+    "ValidationCache",
+    "PublishGate",
+    "PublishGateResult",
+    "VALIDATION_SCHEMA_VERSION",
 ]

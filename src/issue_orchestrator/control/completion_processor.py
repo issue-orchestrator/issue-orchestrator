@@ -19,7 +19,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Optional, Protocol, runtime_checkable
 
 from ..models import (
     CompletionRecord,
@@ -28,6 +28,7 @@ from ..models import (
     COMPLETION_RECORD_PATH,
 )
 from ..domain.events import EventBus, SessionEvent
+from .validation import PublishGate, PublishGateResult
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ class CompletionProcessor:
         git_adapter: GitAdapter,
         event_bus: EventBus | None = None,
         label_config: dict[str, str] | None = None,
+        publish_gate: PublishGate | None = None,
     ):
         """Initialize the processor with required adapters.
 
@@ -121,12 +123,14 @@ class CompletionProcessor:
             git_adapter: Adapter for git operations (push).
             event_bus: Optional EventBus for emitting processing events.
             label_config: Optional mapping of label names (e.g., {"blocked": "blocked"}).
+            publish_gate: Optional PublishGate for validating before publish actions.
         """
         self.label_adapter = label_adapter
         self.pr_adapter = pr_adapter
         self.git_adapter = git_adapter
         self.event_bus = event_bus
         self.label_config = label_config or {}
+        self.publish_gate = publish_gate
 
     def _emit(
         self,
@@ -221,6 +225,40 @@ class CompletionProcessor:
 
         return True, ""
 
+    def _requires_publish_gate(self, record: CompletionRecord) -> bool:
+        """Check if the completion record requests actions that require publish gate.
+
+        Args:
+            record: The completion record to check.
+
+        Returns:
+            True if any requested action requires publish gate validation.
+        """
+        publish_actions = {RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR}
+        return bool(set(record.requested_actions) & publish_actions)
+
+    def _check_publish_gate(self, worktree: Path) -> tuple[bool, str]:
+        """Check if publishing is allowed by the publish gate.
+
+        Args:
+            worktree: Path to the worktree.
+
+        Returns:
+            Tuple of (allowed, reason).
+        """
+        if self.publish_gate is None:
+            # No gate configured = allowed
+            return True, ""
+
+        result = self.publish_gate.check()
+        if result.allowed:
+            cache_note = " (cached)" if result.cache_hit else ""
+            logger.info("Publish gate passed%s: %s", cache_note, result.reason)
+            return True, result.reason
+        else:
+            logger.warning("Publish gate failed: %s", result.reason)
+            return False, result.reason
+
     def process(
         self, worktree: Path, issue_number: int, issue_title: str
     ) -> ProcessingResult:
@@ -255,6 +293,24 @@ class CompletionProcessor:
                 message=f"Validation failed: {reason}",
                 errors=[reason],
             )
+
+        # Check publish gate if actions require it
+        if self._requires_publish_gate(record):
+            gate_passed, gate_reason = self._check_publish_gate(worktree)
+            if not gate_passed:
+                self._emit(
+                    SessionEvent.FAILED,
+                    issue_number,
+                    {
+                        "outcome": record.outcome.value,
+                        "gate_failure": gate_reason,
+                    },
+                )
+                return ProcessingResult(
+                    success=False,
+                    message=f"Publish gate failed: {gate_reason}",
+                    errors=[f"Publish gate: {gate_reason}"],
+                )
 
         # Get branch name for PR operations
         branch = self.git_adapter.get_current_branch(worktree)
