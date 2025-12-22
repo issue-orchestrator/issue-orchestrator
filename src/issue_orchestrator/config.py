@@ -43,6 +43,33 @@ class DangerousConfig:
 
 
 @dataclass
+class ValidationGateConfig:
+    """Configuration for a validation gate (command to run)."""
+    cmd: Optional[str] = None  # Command to run (e.g., "make validate")
+    timeout_seconds: int = 1800  # Default 30 minutes
+
+
+@dataclass
+class ValidationConfig:
+    """Validation gate configuration."""
+    publish_gate: ValidationGateConfig = field(default_factory=ValidationGateConfig)
+    agent_gate: ValidationGateConfig = field(default_factory=ValidationGateConfig)
+
+
+@dataclass
+class ValidationPolicyConfig:
+    """Policy for when validation runs."""
+    publish_requires: Optional[str] = None  # Suite required before publish (None = no gate)
+    agent_runs: Optional[str] = None  # Suite agent runs on completion (optional)
+
+
+@dataclass
+class IsolationConfig:
+    """Agent isolation configuration."""
+    mode: str = "standard"  # "standard" or "hardened"
+
+
+@dataclass
 class Config:
     """Orchestrator configuration."""
 
@@ -124,6 +151,13 @@ class Config:
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
 
+    # Validation configuration - gates for publish and agent completion
+    validation: ValidationConfig = field(default_factory=ValidationConfig)
+    validation_policy: ValidationPolicyConfig = field(default_factory=ValidationPolicyConfig)
+
+    # Isolation configuration - how agents are sandboxed
+    isolation: IsolationConfig = field(default_factory=IsolationConfig)
+
     # Path to the config file (set during load)
     config_path: Optional[Path] = None
 
@@ -155,6 +189,28 @@ class Config:
     def get_label_needs_rework(self) -> str:
         """Get the needs-rework label with prefix if configured."""
         return self.prefixed_label(self.label_needs_rework)
+
+    def is_publish_gate_enabled(self) -> bool:
+        """Check if publish gate validation is enabled."""
+        return (
+            self.validation_policy.publish_requires is not None
+            and self.validation.publish_gate.cmd is not None
+        )
+
+    def is_agent_gate_enabled(self) -> bool:
+        """Check if agent gate validation is enabled."""
+        return (
+            self.validation_policy.agent_runs is not None
+            and self.validation.agent_gate.cmd is not None
+        )
+
+    def get_validation_gate(self, suite: str) -> Optional[ValidationGateConfig]:
+        """Get validation gate config by suite name."""
+        if suite == "publish_gate":
+            return self.validation.publish_gate
+        elif suite == "agent_gate":
+            return self.validation.agent_gate
+        return None
 
     @classmethod
     def load(cls, config_path: Path) -> "Config":
@@ -334,6 +390,37 @@ class Config:
                 allow_unsupported_agents=dangerous_data.get("allow_unsupported_agents", False),
             )
 
+        # Parse validation config
+        validation_data = data.get("validation", {})
+        if validation_data:
+            publish_gate_data = validation_data.get("publish_gate", {})
+            agent_gate_data = validation_data.get("agent_gate", {})
+            config.validation = ValidationConfig(
+                publish_gate=ValidationGateConfig(
+                    cmd=publish_gate_data.get("cmd"),
+                    timeout_seconds=publish_gate_data.get("timeout_seconds", 1800),
+                ),
+                agent_gate=ValidationGateConfig(
+                    cmd=agent_gate_data.get("cmd"),
+                    timeout_seconds=agent_gate_data.get("timeout_seconds", 600),
+                ),
+            )
+
+        # Parse validation policy config
+        validation_policy_data = data.get("validation_policy", {})
+        if validation_policy_data:
+            config.validation_policy = ValidationPolicyConfig(
+                publish_requires=validation_policy_data.get("publish_requires"),
+                agent_runs=validation_policy_data.get("agent_runs"),
+            )
+
+        # Parse isolation config
+        isolation_data = data.get("isolation", {})
+        if isolation_data:
+            config.isolation = IsolationConfig(
+                mode=isolation_data.get("mode", "standard"),
+            )
+
         return config
 
     @classmethod
@@ -413,6 +500,35 @@ class Config:
                 f"triage_review_agent '{self.triage_review_agent}' not found in agents. "
                 f"Available: {list(self.agents.keys())}"
             )
+
+        # Validate isolation mode
+        valid_isolation_modes = {"standard", "hardened"}
+        if self.isolation.mode not in valid_isolation_modes:
+            errors.append(
+                f"isolation.mode must be one of {valid_isolation_modes}, got: '{self.isolation.mode}'"
+            )
+
+        # Validate validation_policy references valid suites
+        if self.validation_policy.publish_requires:
+            if self.validation_policy.publish_requires not in {"publish_gate", "agent_gate"}:
+                errors.append(
+                    f"validation_policy.publish_requires must be 'publish_gate' or 'agent_gate', "
+                    f"got: '{self.validation_policy.publish_requires}'"
+                )
+            # Check that the referenced gate has a command
+            gate = self.get_validation_gate(self.validation_policy.publish_requires)
+            if gate and not gate.cmd:
+                errors.append(
+                    f"validation_policy.publish_requires='{self.validation_policy.publish_requires}' "
+                    f"but validation.{self.validation_policy.publish_requires}.cmd is not set"
+                )
+
+        if self.validation_policy.agent_runs:
+            if self.validation_policy.agent_runs not in {"publish_gate", "agent_gate"}:
+                errors.append(
+                    f"validation_policy.agent_runs must be 'publish_gate' or 'agent_gate', "
+                    f"got: '{self.validation_policy.agent_runs}'"
+                )
 
         return errors
 
