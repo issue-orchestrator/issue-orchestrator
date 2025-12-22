@@ -242,6 +242,46 @@ class TestClaudeCodeAdapter:
         blocked = adapter._test_hook_blocks(hook_script, "git -c core.hooksPath=/dev/null push")
         assert blocked
 
+    def test_hook_blocks_gh_pr_merge(self, adapter, temp_project):
+        """Agents cannot merge PRs via gh pr merge."""
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        blocked = adapter._test_hook_blocks(hook_script, "gh pr merge 123")
+        assert blocked
+
+    def test_hook_blocks_gh_pr_merge_with_flags(self, adapter, temp_project):
+        """Agents cannot merge PRs via gh pr merge with flags."""
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        blocked = adapter._test_hook_blocks(hook_script, "gh pr merge 123 --squash")
+        assert blocked
+
+    def test_hook_blocks_gh_api_merge(self, adapter, temp_project):
+        """Agents cannot merge PRs via gh api."""
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        blocked = adapter._test_hook_blocks(hook_script, "gh api repos/owner/repo/pulls/123/merge -X PUT")
+        assert blocked
+
+    def test_hook_allows_gh_pr_create(self, adapter, temp_project):
+        """Agents can create PRs."""
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        blocked = adapter._test_hook_blocks(hook_script, "gh pr create --title 'test'")
+        assert not blocked
+
+    def test_hook_allows_gh_pr_view(self, adapter, temp_project):
+        """Agents can view PRs."""
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        blocked = adapter._test_hook_blocks(hook_script, "gh pr view 123")
+        assert not blocked
+
 
 class TestCursorAdapter:
     """Tests for CursorAdapter."""

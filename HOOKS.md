@@ -81,10 +81,15 @@ Intercepts commands before the AI can execute them:
 git push --no-verify
 git commit --no-verify -m "message"
 git -c core.hooksPath=/dev/null push
+gh pr merge 123                          # Agents cannot merge PRs
+gh pr merge 123 --squash
+gh api repos/owner/repo/pulls/123/merge  # API merge also blocked
 
 # ALLOWED - passes through
 git push
 git commit -m "message"
+gh pr create --title "..."               # Creating PRs is fine
+gh pr view 123                           # Viewing PRs is fine
 ```
 
 ### Pre-push Wrapper (Git Level)
@@ -251,14 +256,27 @@ $ issue-orchestrator setup
 
 ```bash
 #!/bin/bash
-# Block git commit/push --no-verify for all agents
+# Block dangerous commands for Claude Code agents
 # Exit 2 = BLOCK, Exit 0 = ALLOW
 
 input=$(cat)
 command=$(echo "$input" | jq -r '.tool_input.command // ""')
 
+# Block --no-verify bypass attempts
 if echo "$command" | grep -qE "git\s+(commit|push).*--no-verify"; then
   echo "BLOCKED: --no-verify is forbidden. Pre-commit hooks must run." >&2
+  exit 2
+fi
+
+# Block gh pr merge - agents cannot merge PRs
+if echo "$command" | grep -qE "gh\s+pr\s+merge"; then
+  echo "BLOCKED: Agents cannot merge PRs. Only humans can merge." >&2
+  exit 2
+fi
+
+# Block gh api merge endpoint
+if echo "$command" | grep -qE "gh\s+api\s+.*pulls/[0-9]+/merge"; then
+  echo "BLOCKED: Agents cannot merge PRs via API." >&2
   exit 2
 fi
 

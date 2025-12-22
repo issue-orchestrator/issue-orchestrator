@@ -347,8 +347,13 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
             ("git --no-verify push", True),
             ("git commit -n -m 'test'", True),  # -n is shorthand for --no-verify
             ("git -c core.hooksPath=/dev/null push", True),
+            ("gh pr merge 123", True),  # Agents cannot merge PRs
+            ("gh pr merge 123 --squash", True),
+            ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
             ("git push origin main", False),  # Normal push should be allowed
             ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False),  # Creating PRs is allowed
+            ("gh pr view 123", False),  # Viewing PRs is allowed
             ("ls -la", False),
         ]
 
