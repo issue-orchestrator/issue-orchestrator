@@ -39,6 +39,7 @@ dev = [
     "pytest-cov>=4.0",
     "pytest-timeout>=2.0",  # For e2e test timeouts
     "pyright>=1.1",
+    "import-linter>=2.0",  # Architecture boundary enforcement
 ]
 
 [project.scripts]
@@ -72,3 +73,42 @@ pythonVersion = "3.11"
 typeCheckingMode = "basic"
 reportMissingImports = true
 reportMissingTypeStubs = false
+
+# Architecture boundary enforcement
+[tool.importlinter]
+root_package = "issue_orchestrator"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Core must not import pluggy or outer layers"
+type = "forbidden"
+source_modules = [
+  "issue_orchestrator.domain",
+  "issue_orchestrator.ports",
+]
+forbidden_modules = [
+  "pluggy",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.hooks",
+  "issue_orchestrator.ipc",
+  "issue_orchestrator.scripts",
+  "issue_orchestrator.templates",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain must not import control (keeps invariants pure)"
+type = "forbidden"
+source_modules = ["issue_orchestrator.domain"]
+forbidden_modules = ["issue_orchestrator.control"]
+
+[[tool.importlinter.contracts]]
+name = "Ports must not import outer layers"
+type = "forbidden"
+source_modules = ["issue_orchestrator.ports"]
+forbidden_modules = [
+  "issue_orchestrator.execution",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.hooks",
+  "issue_orchestrator.ipc",
+]
