@@ -6,7 +6,7 @@ validation:
   # If this fails, agent must fix issues before completing
   agent_gate:
     cmd: "make validate"
-    timeout_seconds: 300  # 5 minutes
+    timeout_seconds: 600  # 10 minutes (unit tests take ~5 mins, longer when concurrent)
 
   # Publish gate: runs in pre-push hook (with caching by commit SHA)
   # NOTE: Excluding e2e tests and claude execution tests (external service dependencies)
