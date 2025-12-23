@@ -85,13 +85,12 @@ def orchestrator(test_config, mock_github_adapter):
     Note: The conftest.py autouse fixture will inject MockEventSink automatically.
     Access it via orchestrator._mock_event_sink.
     """
-    with patch('issue_orchestrator.orchestrator.GitHubAdapter', return_value=mock_github_adapter):
-        with patch('issue_orchestrator.orchestrator.SessionObserver'):
-            orch = Orchestrator(
-                config=test_config,
-                _github_adapter=mock_github_adapter,
-            )
-            return orch
+    with patch('issue_orchestrator.orchestrator.SessionObserver'):
+        orch = Orchestrator(
+            config=test_config,
+            _github_adapter=mock_github_adapter,
+        )
+        return orch
 
 
 @pytest.fixture
