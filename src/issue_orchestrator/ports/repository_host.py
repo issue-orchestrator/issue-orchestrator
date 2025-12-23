@@ -9,11 +9,14 @@ issues, PRs, and labels. It combines IssueTracker, LabelSet, and
 PullRequestTracker into a single interface.
 """
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .issue_tracker import IssueTracker
 from .label_set import LabelSet
 from .pull_request_tracker import PullRequestTracker
+
+if TYPE_CHECKING:
+    from ..domain.issue_key import IssueKey
 
 
 class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
@@ -42,5 +45,19 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
 
         Returns:
             'open', 'closed', or None if the issue doesn't exist.
+        """
+        ...
+
+    def create_issue_key(self, issue_number: int) -> "IssueKey":
+        """Create an IssueKey for the given issue number.
+
+        The adapter creates the appropriate IssueKey implementation
+        for its backing store (e.g., GitHubIssueKey for GitHub).
+
+        Args:
+            issue_number: The issue number to create a key for.
+
+        Returns:
+            An IssueKey implementation appropriate for this repository host.
         """
         ...

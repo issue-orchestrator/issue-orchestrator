@@ -2548,10 +2548,8 @@ Flip labels from `{watch_label}` to `{self.config.triage_reviewed_label}` after 
                 logger.warning("[REWORK] PR #%d has no agent label, skipping", pr_number)
                 continue
 
-            # Create store-agnostic IssueKey
-            from .domain.issue_key import GitHubIssueKey
-            repo = self.config.repo or ""
-            issue_key = GitHubIssueKey(repo=repo, external_id=str(issue_number))
+            # Create store-agnostic IssueKey via adapter
+            issue_key = self.repository_host.create_issue_key(issue_number)
 
             # Queue for rework
             rework = PendingRework(

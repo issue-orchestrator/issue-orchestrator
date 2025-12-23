@@ -8,6 +8,7 @@ from issue_orchestrator.models import AgentConfig, Issue
 from issue_orchestrator.config import Config, DangerousConfig
 from issue_orchestrator.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
 
 
 class MockGitHubAdapter:
@@ -58,6 +59,10 @@ class MockGitHubAdapter:
         """Get the state of an issue."""
         issue = self.get_issue(issue_number)
         return issue.state if issue else None
+
+    def create_issue_key(self, issue_number: int) -> IssueKey:
+        """Create an IssueKey for testing."""
+        return FakeIssueKey(name=str(issue_number))
 
     def get_issue_labels(self, issue_number: int) -> list[str]:
         """Get labels for an issue."""
