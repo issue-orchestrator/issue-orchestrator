@@ -21,27 +21,30 @@ help:
 install:
 	pip install -e ".[dev]"
 
+PYRIGHT ?= .venv/bin/pyright --pythonpath .venv/bin/python
+PYTEST ?= .venv/bin/pytest
+
 typecheck:
-	pyright src/
+	$(PYRIGHT) src/
 
 test-unit:
-	pytest tests/unit -x -q --tb=short
+	$(PYTEST) tests/unit -x -q --tb=short
 
 test-integration:
-	pytest tests/integration -x -q --tb=short
+	$(PYTEST) tests/integration -x -q --tb=short
 
 test-e2e:
-	pytest tests/e2e -x -q --tb=short
+	$(PYTEST) tests/e2e -x -q --tb=short
 
 test:
-	pytest tests/ -x -q --tb=short
+	$(PYTEST) tests/ -x -q --tb=short
 
 # Quick validation for agent_gate (~45s)
 validate: typecheck test-unit
 
 # Full validation for pre-push (~2-3 min) - THE publish gate
 validate-before-push: typecheck
-	pytest tests/unit tests/integration tests/e2e -x -q --tb=short
+	$(PYTEST) tests/unit tests/integration tests/e2e -x -q --tb=short
 
 # Demo - show orchestrator features with mock data
 demo:
