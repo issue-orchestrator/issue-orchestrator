@@ -1,0 +1,19 @@
+# Issue orchestrator configuration for this repository
+
+# Validation gates - ensure code quality before publishing
+validation:
+  # Agent gate: runs when agent-done is called
+  # If this fails, agent must fix issues before completing
+  agent_gate:
+    cmd: "pyright src/"
+    timeout_seconds: 300  # 5 minutes
+
+  # Publish gate: runs in pre-push hook (with caching by commit SHA)
+  publish_gate:
+    cmd: "pyright src/"
+    timeout_seconds: 300
+
+# Validation policy
+validation_policy:
+  agent_runs: "agent_gate"
+  publish_requires: "publish_gate"

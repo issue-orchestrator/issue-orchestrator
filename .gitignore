@@ -41,5 +41,9 @@ htmlcov/
 Thumbs.db
 
 # Project specific - local state files
-.issue-orchestrator/
+.issue-orchestrator/validation/
+.issue-orchestrator/completion.json
+.issue-orchestrator/state_machines.json
 .agent-done-marker
+
+# Keep .issue-orchestrator/config.yaml tracked - it's project configuration

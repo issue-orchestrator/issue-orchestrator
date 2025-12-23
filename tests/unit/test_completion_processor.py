@@ -50,7 +50,15 @@ def mock_label_adapter():
 def mock_pr_adapter():
     """Mock adapter for PR operations."""
     adapter = Mock(spec=PRAdapter)
-    adapter.create_pr = Mock(return_value=PRInfo(number=42, url="https://github.com/owner/repo/pull/42"))
+    adapter.create_pr = Mock(return_value=PRInfo(
+        number=42,
+        title="Test PR",
+        url="https://github.com/owner/repo/pull/42",
+        branch="issue-123",
+        body="Test body",
+        state="open",
+        labels=[],
+    ))
     adapter.add_comment = Mock(return_value="comment-id")
     return adapter
 
@@ -59,7 +67,12 @@ def mock_pr_adapter():
 def mock_git_adapter():
     """Mock adapter for git operations."""
     adapter = Mock(spec=GitAdapter)
-    adapter.push = Mock(return_value=PushResult(success=True, message="Pushed"))
+    adapter.push = Mock(return_value=PushResult(
+        success=True,
+        branch="issue-123",
+        remote="origin",
+        message="Pushed",
+    ))
     adapter.get_current_branch = Mock(return_value="issue-123")
     adapter.has_uncommitted_changes = Mock(return_value=False)
     return adapter
@@ -308,7 +321,10 @@ class TestCompletionProcessorGitActions:
     ):
         """Failed push should be recorded in result."""
         mock_git_adapter.push.return_value = PushResult(
-            success=False, message="Remote rejected"
+            success=False,
+            branch="issue-123",
+            remote="origin",
+            message="Remote rejected",
         )
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
@@ -398,7 +414,10 @@ class TestCompletionProcessorEvents:
     ):
         """Failed processing should emit failed event."""
         mock_git_adapter.push.return_value = PushResult(
-            success=False, message="Rejected"
+            success=False,
+            branch="issue-123",
+            remote="origin",
+            message="Rejected",
         )
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,

@@ -102,3 +102,30 @@ code_reviewed_label: "code-reviewed"    # Label after review passes
 # triage_review_agent: "agent:triage"         # Uncomment to enable batch review
 # triage_reviewed_label: "triage-reviewed"    # Label after triage review
 # triage_review_threshold: 5               # Trigger after N reviewed PRs
+
+# Validation gates - run checks before publishing work
+# This ensures agents catch errors BEFORE calling agent-done
+validation:
+  # Agent gate - runs when agent-done is called
+  # If this fails, agent-done rejects and agent must fix issues
+  agent_gate:
+    cmd: "pyright src/ && pytest tests/unit -x --tb=short"  # Type check + unit tests
+    timeout_seconds: 1800  # 30 minutes max
+
+  # Publish gate - runs in pre-push hook (with caching)
+  # Caches result by commit SHA to avoid redundant runs
+  publish_gate:
+    cmd: "pyright src/ && pytest tests/unit -x --tb=short"
+    timeout_seconds: 1800
+
+# Validation policy - which gates are enforced
+validation_policy:
+  # agent_runs: none | agent_gate
+  # - none: Skip validation in agent-done (not recommended)
+  # - agent_gate: Run agent_gate before writing completion.json
+  agent_runs: "agent_gate"
+
+  # publish_requires: none | publish_gate
+  # - none: Allow push without validation
+  # - publish_gate: Run publish_gate in pre-push (uses cache)
+  publish_requires: "publish_gate"
