@@ -1,4 +1,4 @@
-.PHONY: help install typecheck test test-unit test-integration test-e2e validate validate-before-push clean demo
+.PHONY: help install typecheck test test-unit test-integration test-e2e validate validate-before-push clean demo audit-issues create-issue
 
 # Default target
 help:
@@ -12,6 +12,8 @@ help:
 	@echo "  validate            Quick validation (typecheck + unit tests)"
 	@echo "  validate-before-push Full validation (typecheck + all tests) - publish gate"
 	@echo "  demo                Run demo showing orchestrator features"
+	@echo "  audit-issues        Validate issue naming conventions"
+	@echo "  create-issue        Create issue with naming convention (use ARGS=...)"
 	@echo "  clean               Remove build artifacts"
 
 install:
@@ -42,3 +44,12 @@ validate-before-push: typecheck
 # Demo - show orchestrator features with mock data
 demo:
 	issue-orchestrator demo
+
+# Audit issue naming conventions
+audit-issues:
+	python scripts/create_issue.py --validate
+
+# Create issue with naming convention
+# Usage: make create-issue ARGS="--agent backend --milestone 2 --title 'My issue'"
+create-issue:
+	python scripts/create_issue.py $(ARGS)
