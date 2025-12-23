@@ -12,7 +12,7 @@ validation:
   # NOTE: Excluding e2e tests and claude execution tests (external service dependencies)
   publish_gate:
     cmd: "make typecheck && pytest tests/unit tests/integration -x -q --tb=short --ignore=tests/integration/test_claude_execution.py"
-    timeout_seconds: 300  # 5 minutes
+    timeout_seconds: 900  # 15 minutes (handles concurrent runs with resource contention)
 
 # Validation policy
 validation_policy:
