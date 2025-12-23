@@ -1,7 +1,12 @@
-"""Cached issue resolver - translates IssueKeys to GitHub issue numbers.
+"""GitHub issue resolver - translates IssueKeys to GitHub issue numbers.
 
-This resolver maintains an in-memory cache of external_id -> issue_number
+This is the GitHub-specific implementation of IssueResolver.
+It maintains an in-memory cache of external_id -> issue_number
 mappings, built by scanning issues from the IssueTracker.
+
+For other backing stores:
+- DBIssueResolver would resolve to row IDs
+- FileIssueResolver would resolve to file paths
 
 Architecture:
 - Parsing is domain (parse_external_id)
@@ -13,7 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
+from ..domain.issue_key import IssueKey, IssueHandle, GitHubIssueKey, parse_external_id
 from ..ports import IssueTracker, EventSink, TraceEvent
 
 if TYPE_CHECKING:
@@ -23,8 +28,11 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class CachedIssueResolver:
+class GitHubIssueResolver:
     """Resolves IssueKeys to GitHub issue numbers via cached lookup.
+
+    This is the GitHub-specific IssueResolver implementation.
+    The IssueHandle returned is always int (GitHub issue number).
 
     The cache is built by scanning issues and extracting external_ids
     from their titles. This is done once at startup and can be rebuilt
@@ -46,7 +54,7 @@ class CachedIssueResolver:
     # Track duplicates for warnings
     _duplicates: dict[str, list[int]] = field(default_factory=dict, init=False)
 
-    def resolve(self, key: IssueKey) -> int | None:
+    def resolve(self, key: IssueKey) -> IssueHandle:
         """Resolve an IssueKey to its GitHub issue number.
 
         Uses the cache first, rebuilds if not found.
@@ -55,7 +63,7 @@ class CachedIssueResolver:
             key: The IssueKey to resolve
 
         Returns:
-            The GitHub issue number, or None if not found
+            The GitHub issue number (int), or None if not found
         """
         external_id = key.stable_id()
 

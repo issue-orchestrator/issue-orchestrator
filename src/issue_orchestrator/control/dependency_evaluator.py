@@ -161,14 +161,27 @@ class DependencyEvaluator:
 
             # Resolve via IssueResolver
             key = GitHubIssueKey(repo=self.repo, external_id=external_id)
-            issue_number = self.issue_resolver.resolve(key)
+            handle = self.issue_resolver.resolve(key)
 
-            if issue_number is None:
+            # For GitHub, handle is always int or None
+            if handle is None:
                 return Dependency(
                     issue_number=None,
                     external_id=external_id,
                     state=DependencyState.MISSING,
                     error=f"Could not resolve external ID {external_id} to issue number",
+                )
+
+            # GitHub resolver returns int handles
+            if isinstance(handle, int):
+                issue_number = handle
+            else:
+                # Non-int handle from non-GitHub resolver - not supported here
+                return Dependency(
+                    issue_number=None,
+                    external_id=external_id,
+                    state=DependencyState.UNKNOWN,
+                    error=f"Resolver returned non-int handle: {type(handle).__name__}",
                 )
 
         # Now check the state (issue_number should be set)

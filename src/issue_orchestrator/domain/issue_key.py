@@ -59,7 +59,7 @@ class IssueKey(Protocol):
         ...
 
 
-@dataclass(frozen=True, eq=True)
+@dataclass(frozen=True)
 class GitHubIssueKey:
     """IssueKey implementation for GitHub-backed issues.
 
@@ -81,7 +81,7 @@ class GitHubIssueKey:
         return f"{self.repo}:{self.external_id}"
 
 
-@dataclass(frozen=True, eq=True)
+@dataclass(frozen=True)
 class FakeIssueKey:
     """IssueKey implementation for testing.
 
@@ -114,7 +114,7 @@ IssueHandle = int | str | None
 EXTERNAL_ID_PATTERN = re.compile(r"^\[(M\d+-\d{3})\]")
 
 
-@dataclass(frozen=True, eq=True)
+@dataclass(frozen=True)
 class ParsedTitle:
     """Result of parsing an issue title.
 

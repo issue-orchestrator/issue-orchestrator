@@ -29,7 +29,7 @@ class DependencyState(Enum):
     UNKNOWN = "unknown"  # Transient error (network, rate limit)
 
 
-@dataclass(frozen=True, eq=True)
+@dataclass(frozen=True)
 class Dependency:
     """A single dependency reference."""
 
@@ -146,7 +146,7 @@ DEPENDS_ON_PATTERN = re.compile(
 )
 
 
-@dataclass(frozen=True, eq=True)
+@dataclass(frozen=True)
 class ParsedDependencyRef:
     """A parsed dependency reference before resolution.
 

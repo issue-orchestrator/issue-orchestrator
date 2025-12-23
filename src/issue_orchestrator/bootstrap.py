@@ -29,6 +29,7 @@ from .control import (
     Scheduler,
     SessionManager,
 )
+from .execution import GitHubIssueResolver
 from .control.dependency_evaluator import DependencyEvaluator
 from .control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 
@@ -104,9 +105,21 @@ def build_orchestrator(
 
     # Create control plane components
     scheduler = Scheduler(config=config)
+
+    # Create issue resolver for external ID dependencies (M1-010 style)
+    issue_resolver = None
+    if github and config.repo:
+        issue_resolver = GitHubIssueResolver(
+            repo=config.repo,
+            issue_tracker=github,
+            events=events,
+        )
+
     dependency_evaluator = DependencyEvaluator(
         issue_checker=github,
         events=events,
+        issue_resolver=issue_resolver,
+        repo=config.repo,
     ) if github else None
     session_manager = SessionManager(runner=runner, events=events, config=config)
 
@@ -238,9 +251,21 @@ async def build_orchestrator_with_ipc(
 
     # Create control plane components
     scheduler = Scheduler(config=config)
+
+    # Create issue resolver for external ID dependencies (M1-010 style)
+    issue_resolver = None
+    if github and config.repo:
+        issue_resolver = GitHubIssueResolver(
+            repo=config.repo,
+            issue_tracker=github,
+            events=events,
+        )
+
     dependency_evaluator = DependencyEvaluator(
         issue_checker=github,
         events=events,
+        issue_resolver=issue_resolver,
+        repo=config.repo,
     ) if github else None
     session_manager = SessionManager(runner=runner, events=events, config=config)
 

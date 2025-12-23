@@ -41,6 +41,7 @@ from .lifecycle_ipc import LifecycleIPCPlugin
 from .lifecycle_sse import LifecycleSSEPlugin
 from .event_sink_adapter import PluggyEventSink, CompositeEventSink, LoggingEventSink
 from .session_runner_adapter import PluggySessionRunner
+from .github_issue_resolver import GitHubIssueResolver
 
 __all__ = [
     # Main interface (internal, used by composition root)
@@ -60,6 +61,8 @@ __all__ = [
     "LifecycleSSEPlugin",
     # Platform adapters
     "GitHubAdapter",
+    # Issue resolvers (IssueKey -> backing-store handle)
+    "GitHubIssueResolver",
     # Local VCS adapters
     "GitWorkingCopy",
     # Session stores
