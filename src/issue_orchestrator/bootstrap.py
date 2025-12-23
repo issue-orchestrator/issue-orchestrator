@@ -143,7 +143,7 @@ def build_orchestrator(
         config=config,
         events=events,
         runner=runner,
-        _github_adapter=github,
+        _repository_host=github,
         planner=planner,
         session_manager=session_manager,
     )
@@ -191,7 +191,7 @@ def build_orchestrator_for_testing(
         config=config,
         events=events,
         runner=runner,
-        _github_adapter=github,
+        _repository_host=github,
         planner=planner,
         session_manager=session_manager,
     )
@@ -289,7 +289,7 @@ async def build_orchestrator_with_ipc(
         config=config,
         events=events,
         runner=runner,
-        _github_adapter=github,
+        _repository_host=github,
         planner=planner,
         session_manager=session_manager,
     )

@@ -578,6 +578,34 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_refresh(args: argparse.Namespace) -> int:
+    """Request immediate refresh of issues from GitHub.
+
+    This triggers the orchestrator to fetch issues on the next loop iteration,
+    bypassing the queue_refresh_seconds interval. Useful after creating new
+    issues or changing labels.
+    """
+    import httpx
+
+    port = args.port or 8080
+    base_url = f"http://localhost:{port}"
+
+    try:
+        response = httpx.post(f"{base_url}/api/refresh", timeout=5.0)
+        if response.status_code == 200:
+            console.print("[green]Refresh requested - issues will be fetched on next loop iteration[/green]")
+            return 0
+        else:
+            console.print(f"[red]Failed to request refresh: {response.text}[/red]")
+            return 1
+    except httpx.ConnectError:
+        console.print("[red]Could not connect to orchestrator. Is it running?[/red]")
+        return 1
+    except Exception as e:
+        console.print(f"[red]Error requesting refresh: {e}[/red]")
+        return 1
+
+
 def cmd_restart(args: argparse.Namespace) -> int:
     """Restart the orchestrator, preserving existing iTerm2 sessions.
 
@@ -1578,6 +1606,18 @@ def main() -> int:
         "resume", help="Resume the orchestrator"
     )
     resume_parser.set_defaults(func=cmd_resume)
+
+    # refresh command
+    refresh_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "refresh", help="Request immediate refresh of issues from GitHub"
+    )
+    refresh_parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port of running orchestrator (default: 8080)"
+    )
+    refresh_parser.set_defaults(func=cmd_refresh)
 
     # restart command
     restart_parser: argparse.ArgumentParser = subparsers.add_parser(

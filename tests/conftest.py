@@ -122,7 +122,7 @@ class MockGitHubAdapter:
 
 
 @pytest.fixture
-def mock_github_adapter():
+def mock_repository_host():
     """Create a mock GitHub adapter for testing."""
     return MockGitHubAdapter()
 
@@ -350,8 +350,8 @@ def patch_orchestrator_dependencies(monkeypatch, request):
     else:
         plugin = MockTerminalPlugin()
 
-    if 'mock_github_adapter' in request.fixturenames:
-        github_adapter = request.getfixturevalue('mock_github_adapter')
+    if 'mock_repository_host' in request.fixturenames:
+        github_adapter = request.getfixturevalue('mock_repository_host')
     else:
         github_adapter = MockGitHubAdapter()
 
@@ -365,8 +365,8 @@ def patch_orchestrator_dependencies(monkeypatch, request):
 
     def patched_post_init(self):
         # Inject GitHub adapter if not already set
-        if self._github_adapter is None:
-            self._github_adapter = github_adapter
+        if self._repository_host is None:
+            self._repository_host = github_adapter
         # Call original (which now won't raise since adapter is set)
         original_post_init(self)
         # Then inject our other mocks
@@ -375,7 +375,7 @@ def patch_orchestrator_dependencies(monkeypatch, request):
         # Store references for test assertions
         self._mock_event_sink = mock_events
         self._mock_session_runner = mock_runner
-        self._mock_github_adapter = self._github_adapter
+        self._mock_repository_host = self._repository_host
 
     # Patch __post_init__
     monkeypatch.setattr(Orchestrator, '__post_init__', patched_post_init)
@@ -429,11 +429,11 @@ def sample_config(sample_agent_config, tmp_path):
 
 
 @pytest.fixture
-def sample_orchestrator(sample_config, mock_github_adapter, patch_plugin_manager):
+def sample_orchestrator(sample_config, mock_repository_host, patch_plugin_manager):
     """Create an Orchestrator with mock adapter injected (proper DI for testing)."""
     from issue_orchestrator.orchestrator import Orchestrator
     patch_plugin_manager.plugin.session_exists_override = False
-    return Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
+    return Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
 
 @pytest.fixture
