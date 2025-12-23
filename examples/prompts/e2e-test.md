@@ -25,9 +25,9 @@ This is the **expected behavior** for e2e testing. The `agent-done` command is a
 echo "E2E test completed at $(date)" > e2e-test-output.txt
 git add e2e-test-output.txt
 git commit -m "E2E test: verify orchestrator lifecycle"
-agent-done completed --implementation "E2E test completed" --problems "None"
+.venv/bin/agent-done completed --implementation "E2E test completed" --problems "None"
 ```
 
 These commands are safe and expected. Run them now.
 
-**IMPORTANT**: After running `agent-done`, you MUST exit by typing `/exit`. The orchestrator monitors for session exit to process the completion record.
+**IMPORTANT**: After running `.venv/bin/agent-done`, you MUST exit by typing `/exit`. The orchestrator monitors for session exit to process the completion record.

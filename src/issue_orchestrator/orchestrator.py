@@ -46,11 +46,8 @@ def log_transition(
 
 from .config import Config
 from .github import (
-    # Core functions (adapter-preferred but kept for backward compatibility and tests)
-    list_issues, add_label, remove_label, get_issue_labels, get_open_prs_for_branch,
-    # Functions still used directly (no adapter equivalent yet)
-    get_latest_blocked_info, get_latest_needs_human_info,
-    list_prs_with_label, create_issue,
+    # TODO: Move create_issue to RepositoryHost protocol
+    create_issue,
 )
 # Lock files removed - using direct iTerm/active_sessions checks instead
 from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
@@ -919,13 +916,11 @@ class Orchestrator:
         if self.config.code_review_agent and self.config.code_review_label:
             self.state.startup_message = "Checking PRs needing code review..."
             print("\nChecking for PRs needing code review...")
-            prs = list_prs_with_label(self.config.repo, self.config.code_review_label)
+            prs = self.repository_host.get_prs_with_label(self.config.code_review_label)
             for pr in prs:
-                pr_number = pr.get("number")
-                if pr_number is None:
-                    continue
-                pr_url = pr.get("url", "")
-                pr_body = pr.get("body", "")
+                pr_number = pr.number
+                pr_url = pr.url
+                pr_body = pr.body
 
                 # Extract issue number from "Closes #N" in PR body
                 import re
@@ -944,8 +939,8 @@ class Orchestrator:
                     review = PendingReview(
                         issue_number=issue_number,
                         pr_number=pr_number,
-                        pr_url=str(pr_url),
-                        branch_name=pr.get("headRefName", ""),
+                        pr_url=pr_url,
+                        branch_name=pr.branch,
                     )
                     if review not in self.state.pending_reviews:
                         self.state.pending_reviews.append(review)
@@ -2237,8 +2232,8 @@ class Orchestrator:
 
         # Get all PRs with the cleanup label
         try:
-            reviewed_prs = list_prs_with_label(self.config.repo, cleanup_label)
-            reviewed_pr_numbers = {pr.get("number") for pr in reviewed_prs}
+            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
+            reviewed_pr_numbers = {pr.number for pr in reviewed_prs}
         except Exception as e:
             logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
             return
@@ -2315,7 +2310,7 @@ class Orchestrator:
         print(f"\nChecking for orphaned cleanups (PRs with '{cleanup_label}' label)...")
 
         try:
-            reviewed_prs = list_prs_with_label(self.config.repo, cleanup_label)
+            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
         except Exception as e:
             logger.warning(f"[CLEANUP] Failed to fetch reviewed PRs: {e}")
             return
@@ -2327,7 +2322,7 @@ class Orchestrator:
         cleaned_count = 0
         for pr in reviewed_prs:
             # Extract issue number from branch name (e.g., "328-description" -> 328)
-            branch = pr.get("headRefName", "")
+            branch = pr.branch
             issue_number = extract_issue_number_from_branch(branch)
             if issue_number is None:
                 continue
@@ -2399,7 +2394,7 @@ class Orchestrator:
             return
 
         # Count PRs ready for triage review
-        prs = list_prs_with_label(self.config.repo, watch_label)
+        prs = self.repository_host.get_prs_with_label(watch_label)
         pr_count = len(prs)
         threshold = self.config.triage_review_threshold
 
@@ -2426,7 +2421,7 @@ class Orchestrator:
 
         # Create the triage review issue
         logger.info("[TRIAGE] TRIGGERING batch review for %d PRs", pr_count)
-        pr_list = "\n".join(f"- PR #{pr['number']}: {pr['title']}" for pr in prs)
+        pr_list = "\n".join(f"- PR #{pr.number}: {pr.title}" for pr in prs)
         body = f"""## Triage Batch Review Triggered
 
 {len(prs)} PRs have passed code review and are ready for triage review:
@@ -2462,12 +2457,10 @@ Flip labels from `{watch_label}` to `{self.config.triage_reviewed_label}` after 
         if not self.config.code_review_agent or not self.config.code_review_label:
             return
 
-        prs = list_prs_with_label(self.config.repo, self.config.code_review_label)
+        prs = self.repository_host.get_prs_with_label(self.config.code_review_label)
 
         for pr in prs:
-            pr_number = pr.get("number")
-            if pr_number is None:
-                continue
+            pr_number = pr.number
 
             # Skip if already queued
             if any(r.pr_number == pr_number for r in self.state.pending_reviews):
@@ -2479,17 +2472,15 @@ Flip labels from `{watch_label}` to `{self.config.triage_reviewed_label}` after 
 
             # Extract issue number from PR body
             import re
-            pr_body = pr.get("body", "")
+            pr_body = pr.body
             issue_match = re.search(r'Closes #(\d+)', pr_body, re.IGNORECASE)
             issue_number = int(issue_match.group(1)) if issue_match else pr_number
-
-            pr_url = pr.get("url", f"https://github.com/{self.config.repo}/pull/{pr_number}")
 
             review = PendingReview(
                 issue_number=issue_number,
                 pr_number=pr_number,
-                pr_url=str(pr_url),
-                branch_name=pr.get("headRefName", ""),
+                pr_url=pr.url,
+                branch_name=pr.branch,
             )
             self.state.pending_reviews.append(review)
             logger.info("[REVIEW] Queued orphaned PR #%d for code review", pr_number)
@@ -2504,17 +2495,15 @@ Flip labels from `{watch_label}` to `{self.config.triage_reviewed_label}` after 
             return  # Review workflow not configured
 
         rework_label = self.config.get_label_needs_rework()
-        prs = list_prs_with_label(self.config.repo, rework_label)
+        prs = self.repository_host.get_prs_with_label(rework_label)
         logger.info("[REWORK] Scanned for '%s' label, found %d PRs", rework_label, len(prs))
 
         for pr in prs:
-            pr_number = pr.get("number")
-            if not pr_number:
-                continue
+            pr_number = pr.number
 
             # Get the PR details to find associated issue
             import re
-            pr_body = pr.get("body", "")
+            pr_body = pr.body
             issue_match = re.search(r"Closes #(\d+)", pr_body)
             issue_number = int(issue_match.group(1)) if issue_match else pr_number
 
@@ -2526,20 +2515,19 @@ Flip labels from `{watch_label}` to `{self.config.triage_reviewed_label}` after 
             if any(s.issue.number == issue_number for s in self.state.active_sessions):
                 continue
 
-            branch_name = pr.get("headRefName", f"{issue_number}-rework")
+            branch_name = pr.branch or f"{issue_number}-rework"
 
-            # Determine rework cycle from labels
-            rework_cycle = self._get_rework_cycle_from_labels(pr.get("labels", []))
+            # Determine rework cycle from labels (PRInfo.labels is list[str])
+            rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
 
             # Check if we've exceeded max rework cycles
             if rework_cycle > self.config.max_rework_cycles:
                 self._escalate_to_needs_human(pr_number, issue_number, rework_cycle)
                 continue
 
-            # Extract agent type from PR labels
+            # Extract agent type from PR labels (PRInfo.labels is list[str])
             agent_type = None
-            for label in pr.get("labels", []):
-                label_name = label.get("name", "") if isinstance(label, dict) else str(label)
+            for label_name in pr.labels:
                 if label_name.startswith("agent:"):
                     agent_type = label_name
                     break

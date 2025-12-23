@@ -424,11 +424,25 @@ class GitHubAdapter:
         This allows the orchestrator to get IssueKeys without knowing about
         GitHub-specific implementations.
 
+        The method fetches the issue to extract the stable external_id from the
+        title (e.g., "[M1-011] Fix login bug" -> external_id="M1-011").
+        Falls back to using the issue number as external_id if the issue can't
+        be fetched or has no external_id prefix in its title.
+
         Args:
             issue_number: The issue number to create a key for.
 
         Returns:
-            A GitHubIssueKey with this adapter's repo and the issue number as external_id.
+            A GitHubIssueKey with this adapter's repo and the parsed external_id.
         """
-        from ..domain.issue_key import GitHubIssueKey
+        from ..domain.issue_key import GitHubIssueKey, parse_external_id
+
+        # Try to fetch the issue to get the stable external_id from title
+        issue = self.get_issue(issue_number)
+        if issue:
+            parsed = parse_external_id(issue.title)
+            if parsed.external_id:
+                return GitHubIssueKey(repo=self.repo, external_id=parsed.external_id)
+
+        # Fall back to issue number if no external_id found
         return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))

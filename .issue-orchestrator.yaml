@@ -33,7 +33,7 @@ agents:
     worktree_base: /tmp/e2e-worktrees
 
 concurrency:
-  max_concurrent_sessions: 2
+  max_concurrent_sessions: 6
   session_timeout_minutes: 10
 
 # For e2e testing of rework cycles - uncomment to test rejection flow
