@@ -484,3 +484,113 @@ class TestCompletionProcessorAuditLogging:
 
         assert result.actions_taken is not None
         assert any("blocked" in action.lower() for action in result.actions_taken)
+
+
+class TestCompletionProcessorPublishGate:
+    """Tests for publish gate validation before publishing.
+
+    Key invariant: Cannot publish (push/PR) without validation passing.
+    """
+
+    @pytest.fixture
+    def mock_publish_gate(self):
+        """Mock PublishGate for testing."""
+        from unittest.mock import Mock
+        from issue_orchestrator.control.validation import PublishGateResult
+
+        gate = Mock()
+        gate.check = Mock(return_value=PublishGateResult(
+            allowed=True,
+            reason="Validation passed",
+        ))
+        return gate
+
+    @pytest.fixture
+    def processor_with_gate(
+        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, mock_publish_gate
+    ):
+        """Processor with publish gate configured."""
+        return CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+        )
+
+    def test_cannot_publish_without_validation_passing(
+        self, processor_with_gate, mock_publish_gate, mock_git_adapter, worktree_with_completion
+    ):
+        """CRITICAL: Publish actions must be blocked when validation fails.
+
+        This test proves the invariant: cannot publish without tests_passed.
+        """
+        from issue_orchestrator.control.validation import PublishGateResult
+
+        # Configure gate to fail
+        mock_publish_gate.check.return_value = PublishGateResult(
+            allowed=False,
+            reason="Validation failed: pyright found 3 errors",
+        )
+
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor_with_gate.process(worktree, issue_number=123, issue_title="Test")
+
+        # Processing must fail
+        assert not result.success
+        assert "publish gate failed" in result.message.lower()
+        # Push must NOT have been called
+        mock_git_adapter.push.assert_not_called()
+
+    def test_publish_allowed_when_validation_passes(
+        self, processor_with_gate, mock_publish_gate, mock_git_adapter, worktree_with_completion
+    ):
+        """Publish actions proceed when validation passes."""
+        from issue_orchestrator.control.validation import PublishGateResult
+
+        mock_publish_gate.check.return_value = PublishGateResult(
+            allowed=True,
+            reason="Validation passed",
+        )
+
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor_with_gate.process(worktree, issue_number=123, issue_title="Test")
+
+        assert result.success
+        mock_git_adapter.push.assert_called_once()
+
+    def test_non_publish_actions_bypass_gate(
+        self, processor_with_gate, mock_publish_gate, mock_label_adapter, worktree_with_completion
+    ):
+        """Non-publish actions (labels, comments) don't require validation."""
+        from issue_orchestrator.control.validation import PublishGateResult
+
+        # Gate would fail if checked, but shouldn't be checked for label-only actions
+        mock_publish_gate.check.return_value = PublishGateResult(
+            allowed=False,
+            reason="Would fail",
+        )
+
+        record = make_record(
+            outcome=CompletionOutcome.BLOCKED,
+            requested_actions=[RequestedAction.ADD_BLOCKED_LABEL],
+            summary="Blocked",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor_with_gate.process(worktree, issue_number=123, issue_title="Test")
+
+        # Label actions should succeed without gate check
+        assert result.success
+        mock_label_adapter.add_label.assert_called_once()

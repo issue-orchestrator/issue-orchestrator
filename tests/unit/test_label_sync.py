@@ -253,3 +253,85 @@ class TestLabelSync:
 
         assert not result.changed
         assert result.removed == frozenset()
+
+
+class TestLabelSyncIdempotency:
+    """Tests proving label sync is idempotent.
+
+    Key invariant: Calling sync multiple times produces the same result
+    as calling it once. No duplicate API calls for already-applied changes.
+    """
+
+    @pytest.fixture
+    def mock_labels(self):
+        return MockLabelSet()
+
+    @pytest.fixture
+    def sync(self, mock_labels):
+        return LabelSync(labels=mock_labels, events=NullEventSink())
+
+    def test_sync_twice_same_result_as_once(self, sync, mock_labels):
+        """Calling sync twice with same desired state = same as once.
+
+        This proves idempotency: repeated operations have no additional effect.
+        """
+        desired = DesiredLabels.add("in-progress", "bug")
+
+        # First sync
+        result1 = sync.sync(
+            issue_number=123,
+            current=set(),
+            desired=desired,
+        )
+
+        # Second sync (current now reflects first sync's result)
+        result2 = sync.sync(
+            issue_number=123,
+            current={"in-progress", "bug"},
+            desired=desired,
+        )
+
+        # First should have made changes
+        assert result1.changed
+        assert result1.added == frozenset({"in-progress", "bug"})
+
+        # Second should be a no-op
+        assert not result2.changed
+        assert result2.added == frozenset()
+        assert result2.removed == frozenset()
+
+        # Only 2 add calls total (from first sync), not 4
+        assert len(mock_labels.add_calls) == 2
+
+    def test_add_existing_label_no_api_call(self, sync, mock_labels):
+        """Adding label that already exists makes no API call.
+
+        This is the core idempotency guarantee for add operations.
+        """
+        # Set up: label already exists
+        mock_labels.labels[123] = {"in-progress"}
+
+        result = sync.sync(
+            issue_number=123,
+            current={"in-progress"},
+            desired=DesiredLabels.add("in-progress"),
+        )
+
+        # No API call should have been made
+        assert len(mock_labels.add_calls) == 0
+        assert not result.changed
+
+    def test_remove_missing_label_no_api_call(self, sync, mock_labels):
+        """Removing label that doesn't exist makes no API call.
+
+        This is the core idempotency guarantee for remove operations.
+        """
+        result = sync.sync(
+            issue_number=123,
+            current=set(),  # No labels
+            desired=DesiredLabels.remove("blocked"),
+        )
+
+        # No API call should have been made
+        assert len(mock_labels.remove_calls) == 0
+        assert not result.changed

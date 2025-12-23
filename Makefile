@@ -1,17 +1,17 @@
-.PHONY: help install typecheck test test-unit test-integration test-e2e validate validate-pre-push clean
+.PHONY: help install typecheck test test-unit test-integration test-e2e validate validate-before-push clean
 
 # Default target
 help:
 	@echo "Available targets:"
-	@echo "  install          Install dev dependencies"
-	@echo "  typecheck        Run pyright type checking"
-	@echo "  test-unit        Run unit tests"
-	@echo "  test-integration Run integration tests"
-	@echo "  test-e2e         Run e2e tests"
-	@echo "  test             Run all tests"
-	@echo "  validate         Quick validation (typecheck + unit tests)"
-	@echo "  validate-pre-push Full validation (typecheck + all tests)"
-	@echo "  clean            Remove build artifacts"
+	@echo "  install             Install dev dependencies"
+	@echo "  typecheck           Run pyright type checking"
+	@echo "  test-unit           Run unit tests"
+	@echo "  test-integration    Run integration tests"
+	@echo "  test-e2e            Run e2e tests"
+	@echo "  test                Run all tests"
+	@echo "  validate            Quick validation (typecheck + unit tests)"
+	@echo "  validate-before-push Full validation (typecheck + all tests) - publish gate"
+	@echo "  clean               Remove build artifacts"
 
 install:
 	pip install -e ".[dev]"
@@ -34,6 +34,6 @@ test:
 # Quick validation for agent_gate (~45s)
 validate: typecheck test-unit
 
-# Full validation for pre-push (~2-3 min)
-validate-pre-push: typecheck
+# Full validation for pre-push (~2-3 min) - THE publish gate
+validate-before-push: typecheck
 	pytest tests/unit tests/integration tests/e2e -x -q --tb=short

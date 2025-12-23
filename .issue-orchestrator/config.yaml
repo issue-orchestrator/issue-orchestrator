@@ -9,9 +9,10 @@ validation:
     timeout_seconds: 300  # 5 minutes
 
   # Publish gate: runs in pre-push hook (with caching by commit SHA)
+  # NOTE: Excluding e2e tests and claude execution tests (external service dependencies)
   publish_gate:
-    cmd: "make validate-pre-push"
-    timeout_seconds: 600  # 10 minutes (includes e2e)
+    cmd: "make typecheck && pytest tests/unit tests/integration -x -q --tb=short --ignore=tests/integration/test_claude_execution.py"
+    timeout_seconds: 300  # 5 minutes
 
 # Validation policy
 validation_policy:

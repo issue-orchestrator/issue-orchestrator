@@ -267,6 +267,74 @@ class TestReworkWorkflow:
         assert workflow.get_next_cycle_label(0) == "rework-cycle-1"
 
 
+class TestBoundedReworkEscalation:
+    """Tests proving rework loops are bounded and escalate.
+
+    Key invariant: After N failed review cycles, the issue must escalate
+    to human intervention rather than looping forever.
+    """
+
+    @pytest.fixture
+    def config(self):
+        config = MagicMock()
+        config.max_concurrent_sessions = 3
+        config.max_rework_cycles = 2  # Escalate after 2 failed cycles
+        return config
+
+    @pytest.fixture
+    def events(self):
+        return CollectingEventSink()
+
+    @pytest.fixture
+    def workflow(self, config, events):
+        return ReworkWorkflow(config=config, events=events)
+
+    def test_bounded_rework_escalates_after_max_cycles(self, workflow):
+        """CRITICAL: Rework loops must escalate after max_rework_cycles.
+
+        This test proves the invariant that prevents infinite rework loops.
+        Given max_rework_cycles=2:
+        - cycle 0: work → review → changes_requested → rework (continues)
+        - cycle 1: rework → review → changes_requested → rework (continues)
+        - cycle 2: rework → review → changes_requested → ESCALATE (stops)
+        """
+        # Cycle 0 and 1: should NOT escalate
+        for cycle in [0, 1]:
+            decision = workflow.should_escalate(rework_cycle=cycle)
+            assert not decision.should_escalate, f"Cycle {cycle} should not escalate"
+
+        # Cycle 2: MUST escalate
+        decision = workflow.should_escalate(rework_cycle=2)
+        assert decision.should_escalate, "Cycle 2 must escalate to prevent infinite loop"
+        assert decision.reason is not None
+        assert "exceeded" in decision.reason.lower() or "max" in decision.reason.lower()
+
+    def test_escalation_emits_event_for_observability(self, workflow, events):
+        """Escalation must be observable via events."""
+        workflow.should_escalate(rework_cycle=2)
+
+        # Should have emitted an escalation event
+        escalation_events = [e for e in events.events if "escalat" in e.name.lower()]
+        assert len(escalation_events) == 1
+        assert escalation_events[0].data["rework_cycle"] == 2
+
+    def test_different_max_cycles_respected(self):
+        """Different max_rework_cycles configurations are respected."""
+        for max_cycles in [1, 3, 5]:
+            config = MagicMock()
+            config.max_concurrent_sessions = 3
+            config.max_rework_cycles = max_cycles
+            workflow = ReworkWorkflow(config=config, events=CollectingEventSink())
+
+            # Just below max: should not escalate
+            decision = workflow.should_escalate(rework_cycle=max_cycles - 1)
+            assert not decision.should_escalate
+
+            # At max: must escalate
+            decision = workflow.should_escalate(rework_cycle=max_cycles)
+            assert decision.should_escalate
+
+
 class TestTriageWorkflow:
     """Test the TriageWorkflow class."""
 
