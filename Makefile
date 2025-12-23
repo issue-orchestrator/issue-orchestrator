@@ -48,14 +48,16 @@ demo:
 	issue-orchestrator demo
 
 # Issue management
+PYTHON ?= .venv/bin/python
+
 issues-validate:
-	python scripts/issues.py validate $(ARGS)
+	$(PYTHON) scripts/issues.py validate $(ARGS)
 
 issues-fix:
-	python scripts/issues.py fix --apply $(ARGS)
+	$(PYTHON) scripts/issues.py fix --apply $(ARGS)
 
 issues-fix-dry-run:
-	python scripts/issues.py fix $(ARGS)
+	$(PYTHON) scripts/issues.py fix $(ARGS)
 
 issues-create:
-	python scripts/issues.py create $(ARGS)
+	$(PYTHON) scripts/issues.py create $(ARGS)
