@@ -20,7 +20,9 @@ from ..config import Config
 from ..github import add_label, get_issue_labels, get_open_prs_for_branch, remove_label
 from ..models import Session, SessionStatus
 from ..tmux import kill_session, session_exists
+from ..ports import EventSink, TraceEvent, NullEventSink
 from .. import labels
+from .observation import SessionObservation, SessionObservationResult
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +38,22 @@ class SessionObserver:
     with this class only doing observation.
     """
 
-    def __init__(self, config: Config, session_machines: dict[str, "SessionStateMachine"] | None = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        session_machines: dict[str, "SessionStateMachine"] | None = None,
+        events: EventSink | None = None,
+    ) -> None:
         """Initialize the observer with configuration.
 
         Args:
             config: Orchestrator configuration
             session_machines: Optional dict mapping session names to state machines
+            events: Optional EventSink for emitting trace events
         """
         self.config = config
         self.session_machines = session_machines or {}
+        self.events = events or NullEventSink()
         self._iterm_manager = None  # Lazy init
 
     @property
@@ -89,6 +98,101 @@ class SessionObserver:
         if self._using_iterm2:
             return self._get_iterm_manager().send_to_session(issue_number, "/exit")
         return False
+
+    def observe_session(self, session: Session) -> SessionObservationResult:
+        """Observe a session and return facts about its state.
+
+        This method only gathers facts. It does NOT decide outcomes.
+        The controller uses these observations + completion.json to decide.
+
+        Returns:
+            SessionObservationResult with observed facts:
+            - RUNNING: Session exists and not timed out
+            - TERMINATED: Session no longer exists
+            - TIMED_OUT: Session exceeded timeout (may or may not exist)
+        """
+        # Get runtime info
+        machine = self.session_machines.get(session.tmux_session_name)
+        if machine:
+            runtime = machine._get_runtime_minutes()
+            timeout = machine.timeout_minutes
+        else:
+            runtime = session.runtime_minutes
+            timeout = session.agent_config.timeout_minutes
+
+        # Check timeout first
+        timeout_exceeded = False
+        if machine and machine.timeout_minutes:
+            if runtime and runtime > machine.timeout_minutes:
+                timeout_exceeded = True
+        elif session.is_timed_out:
+            timeout_exceeded = True
+
+        # Check if session exists
+        exists = self._session_exists(session.tmux_session_name)
+
+        # Check for completion.json - this is the source of truth for agent completion
+        # If it exists AND is valid JSON, the agent called agent-done and work is done
+        completion_path = session.worktree_path / ".issue-orchestrator" / "completion.json"
+        if completion_path.exists():
+            # Validate the JSON is complete (not partially written)
+            try:
+                import json
+                with open(completion_path) as f:
+                    data = json.load(f)
+                # Check for required terminator fields
+                if all(k in data for k in ["session_id", "timestamp", "outcome", "summary"]):
+                    logger.info(
+                        f"Session #{session.issue.number} has valid completion.json - agent work is done"
+                    )
+                    # Emit event for observability
+                    self.events.publish(TraceEvent(
+                        name="observation.completion_detected",
+                        data={
+                            "issue_number": session.issue.number,
+                            "session_name": session.tmux_session_name,
+                            "outcome": data.get("outcome"),
+                            "session_exists": exists,
+                        },
+                    ))
+                    # Don't kill session yet - let controller handle cleanup after processing
+                    # This allows inspection of what happened in the terminal
+                    # Return TERMINATED so controller processes completion.json
+                    return SessionObservationResult.terminated(runtime_minutes=runtime)
+                else:
+                    logger.debug(f"completion.json missing required fields, treating as incomplete")
+            except (json.JSONDecodeError, OSError) as e:
+                logger.debug(f"completion.json not yet valid (partial write?): {e}")
+
+        # If session is running and has PR, try to send /exit (side effect)
+        # This helps sessions that completed but forgot to exit
+        if exists and not session.exit_sent:
+            try:
+                prs = get_open_prs_for_branch(
+                    repo=self.config.repo,
+                    branch=session.branch_name,
+                )
+                if prs:
+                    logger.info(
+                        f"Session #{session.issue.number} has PR but still running - sending /exit"
+                    )
+                    if self._send_exit_to_session(session.issue.number):
+                        session.exit_sent = True
+            except Exception as e:
+                logger.debug(f"Could not check for PRs: {e}")
+
+        # Build observation result
+        if timeout_exceeded:
+            # Timeout takes priority as it requires action (kill session)
+            return SessionObservationResult.timed_out(
+                runtime_minutes=runtime,
+                timeout_minutes=timeout,
+                session_exists=exists,
+            )
+        elif exists:
+            return SessionObservationResult.running(runtime_minutes=runtime)
+        else:
+            return SessionObservationResult.terminated(runtime_minutes=runtime)
 
     def check_session(self, session: Session) -> SessionStatus:
         """Check the status of a session.

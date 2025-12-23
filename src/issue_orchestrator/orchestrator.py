@@ -59,6 +59,11 @@ from .domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from .domain.state_machines.session_machine import SessionStateMachine, SessionState
 from .domain.state_machines.review_machine import ReviewStateMachine, ReviewState
 from .execution.github_adapter import GitHubAdapter
+from .execution.git_working_copy import GitWorkingCopy
+from .control.completion_processor import CompletionProcessor, ProcessingResult
+from .control.session_controller import SessionController, SessionDecision
+from .models import CompletionOutcome
+from .observation.observation import SessionObservation, SessionObservationResult
 # Port imports (protocols only - no concrete implementations in core)
 from .ports import EventSink, SessionRunner, TraceEvent, NullEventSink, NullSessionRunner
 
@@ -141,7 +146,8 @@ class Orchestrator:
         self.scheduler = Scheduler(self.config)
         # Note: Observer is initialized without session_machines initially
         # We'll update the reference after session_machines is created
-        self.observer = SessionObserver(self.config)
+        # Pass events for observability (tests can subscribe to observe behavior)
+        self.observer = SessionObserver(self.config, events=self.events)
 
         # State machine infrastructure
         self.event_bus = EventBus()
@@ -172,6 +178,114 @@ class Orchestrator:
         if self.config.terminal_adapter:
             return "iterm" in self.config.terminal_adapter.lower()
         return self.config.ui_mode in ("iterm2", "web")
+
+    @property
+    def _completion_processor(self) -> CompletionProcessor:
+        """Get the completion processor with proper adapters.
+
+        Creates a CompletionProcessor with:
+        - GitHubAdapter for labels and PR operations
+        - GitWorkingCopy for git push operations
+        - EventBus for event emission
+        - Config-based label mapping
+        """
+        return CompletionProcessor(
+            label_adapter=self.github_adapter,
+            pr_adapter=self.github_adapter,
+            git_adapter=GitWorkingCopy(),
+            event_bus=self.event_bus,
+            label_config={
+                "blocked": self.config.get_label_blocked(),
+                "needs_human": self.config.get_label_needs_human(),
+                "code_reviewed": self.config.code_reviewed_label or "code-reviewed",
+                "needs_rework": self.config.get_label_needs_rework(),
+                "code_review": self.config.code_review_label or "needs-code-review",
+                "in_progress": self.config.get_label_in_progress(),
+            },
+        )
+
+    @property
+    def _session_controller(self) -> SessionController:
+        """Get the session controller for deciding session outcomes.
+
+        The controller uses observations + completion.json to decide outcomes.
+        This is the proper separation: observer observes, controller decides.
+        """
+        return SessionController(
+            completion_processor=self._completion_processor,
+            events=self.events,
+        )
+
+    def _process_session_exit(self, session: Session) -> tuple[SessionStatus, ProcessingResult | None]:
+        """Process completion.json when a session exits.
+
+        This is the key integration point between agents and orchestrator.
+        When an agent calls agent-done, it writes completion.json with
+        requested_actions. This method reads that file and executes the
+        actions (push, create PR, add labels, etc.).
+
+        Args:
+            session: The session that has exited.
+
+        Returns:
+            Tuple of (SessionStatus, ProcessingResult or None if no completion record).
+        """
+        worktree = session.worktree_path
+        issue_number = session.issue.number
+
+        # Read and process completion record
+        processor = self._completion_processor
+        record = processor.read_completion_record(worktree)
+
+        if record is None:
+            # No completion record - session died without calling agent-done
+            self.events.publish(TraceEvent("completion.missing", {
+                "issue_number": issue_number,
+                "session_id": session.tmux_session_name,
+                "worktree": str(worktree),
+            }))
+            return SessionStatus.FAILED, None
+
+        # Emit event for completion processing start
+        self.events.publish(TraceEvent("completion.processing", {
+            "issue_number": issue_number,
+            "outcome": record.outcome.value,
+            "requested_actions": [a.value for a in record.requested_actions],
+        }))
+
+        # Process the completion record (executes push, PR, labels, etc.)
+        result = processor.process(worktree, issue_number, session.issue.title)
+
+        # Map outcome to SessionStatus
+        outcome_to_status = {
+            CompletionOutcome.COMPLETED: SessionStatus.COMPLETED,
+            CompletionOutcome.BLOCKED: SessionStatus.BLOCKED,
+            CompletionOutcome.NEEDS_HUMAN: SessionStatus.NEEDS_HUMAN,
+            # Review outcomes map to COMPLETED (review session completed its job)
+            CompletionOutcome.REVIEW_APPROVED: SessionStatus.COMPLETED,
+            CompletionOutcome.REVIEW_CHANGES_REQUESTED: SessionStatus.COMPLETED,
+        }
+        status = outcome_to_status.get(record.outcome, SessionStatus.FAILED)
+
+        # Emit event for processing result
+        if result.success:
+            self.events.publish(TraceEvent("completion.succeeded", {
+                "issue_number": issue_number,
+                "outcome": record.outcome.value,
+                "status": status.value,
+                "pr_url": result.pr_url,
+                "actions_taken": result.actions_taken,
+            }))
+        else:
+            self.events.publish(TraceEvent("completion.failed", {
+                "issue_number": issue_number,
+                "outcome": record.outcome.value,
+                "status": status.value,
+                "errors": result.errors,
+                "actions_taken": result.actions_taken,
+            }))
+
+        return status, result
 
     # NOTE: Plugin management (pluggy) has been moved to bootstrap.py
     # The orchestrator receives EventSink and SessionRunner via constructor injection.
@@ -562,7 +676,14 @@ class Orchestrator:
                         break
 
                 if not worktree_path:
-                    logger.warning("Could not find worktree for session %s - skipping", session_name)
+                    logger.warning("Could not find worktree for session %s - cleaning up orphaned issue", session_name)
+                    # Clean up the orphaned in-progress label so this issue can be re-processed
+                    try:
+                        self.github_adapter.remove_label(issue_number, "in-progress")
+                        logger.info("Removed in-progress label from orphaned issue #%d", issue_number)
+                        print(f"  Cleaned up orphaned issue #{issue_number} (removed in-progress label)")
+                    except Exception as e:
+                        logger.warning("Failed to cleanup orphaned issue #%d: %s", issue_number, e)
                     continue
 
                 # Fetch issue details from GitHub to get agent type
@@ -1303,12 +1424,34 @@ class Orchestrator:
                        len(self.state.pending_reviews), self.state.paused)
 
             try:
-                # Check status of all active sessions
+                # Check status of all active sessions using proper observer/controller separation
+                controller = self._session_controller
                 for session in list(self.state.active_sessions):
-                    status = self.observer.check_session(session)
+                    # Step 1: Observer gathers facts (does not decide outcome)
+                    observation = self.observer.observe_session(session)
 
-                    if status != SessionStatus.RUNNING:
-                        self.handle_session_completion(session, status)
+                    if observation.observation == SessionObservation.RUNNING:
+                        continue  # Still running, nothing to do
+
+                    # Step 2: Controller decides outcome based on observation + completion.json
+                    # This is the key architectural change: completion.json is the source of truth
+                    # for agent intent, regardless of whether session timed out or exited cleanly
+                    decision = controller.decide_outcome(
+                        observation=observation,
+                        worktree_path=session.worktree_path,
+                        issue_number=session.issue.number,
+                        issue_title=session.issue.title,
+                        session_name=session.tmux_session_name,
+                    )
+
+                    if decision.recovered_from_timeout:
+                        logger.info(
+                            "Session %s: timeout recovered - agent completed work",
+                            session.tmux_session_name,
+                        )
+
+                    # Step 3: Handle the decided outcome
+                    self.handle_session_completion(session, decision.status)
 
                 # Scan for PRs needing code review and process them
                 self.scan_needs_code_review_prs()

@@ -4,7 +4,7 @@ import asyncio
 import pytest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call, AsyncMock
+from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
 from issue_orchestrator.orchestrator import Orchestrator, run_orchestrator
 from issue_orchestrator.models import (
     Issue,
@@ -733,23 +733,41 @@ class TestRunLoop:
         issue = create_issue(1)
         session = create_session(issue)
 
+        from issue_orchestrator.observation.observation import SessionObservationResult
+        from issue_orchestrator.control.session_controller import SessionDecision
+
         orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
-        with patch.object(orchestrator.observer, "check_session") as mock_check:
-            mock_check.return_value = SessionStatus.COMPLETED
+        with patch.object(orchestrator.observer, "observe_session") as mock_observe:
+            # Mock observe to return TERMINATED (session exited)
+            mock_observe.return_value = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-            # Run one iteration
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)  # Let loop run once
-                orchestrator.request_shutdown()
-
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
+            # Mock the controller to return COMPLETED
+            mock_decision = SessionDecision(
+                status=SessionStatus.COMPLETED,
+                recovered_from_timeout=False,
+                reason="Test",
             )
+            mock_controller = MagicMock()
+            mock_controller.decide_outcome.return_value = mock_decision
 
-            mock_check.assert_called()
+            with patch.object(
+                Orchestrator, "_session_controller",
+                new_callable=PropertyMock,
+                return_value=mock_controller,
+            ):
+                # Run one iteration
+                async def run_one_iteration():
+                    await asyncio.sleep(0.01)  # Let loop run once
+                    orchestrator.request_shutdown()
+
+                await asyncio.gather(
+                    orchestrator.run_loop(),
+                    run_one_iteration(),
+                )
+
+                mock_observe.assert_called()
 
     @pytest.mark.asyncio
     async def test_run_loop_handles_completed_sessions(
@@ -758,6 +776,9 @@ class TestRunLoop:
         mock_github_adapter,
     ):
         """Test that run_loop handles completed sessions."""
+        from issue_orchestrator.observation.observation import SessionObservationResult
+        from issue_orchestrator.control.session_controller import SessionDecision
+
         mock_github_adapter.issues = []
 
         issue = create_issue(1)
@@ -766,22 +787,37 @@ class TestRunLoop:
         orchestrator = Orchestrator(config=sample_config, _github_adapter=mock_github_adapter)
         orchestrator.state.active_sessions.append(session)
 
-        with patch.object(orchestrator.observer, "check_session") as mock_check:
+        with patch.object(orchestrator.observer, "observe_session") as mock_observe:
             with patch.object(orchestrator, "handle_session_completion") as mock_handle:
-                mock_check.return_value = SessionStatus.COMPLETED
+                # Mock observe to return TERMINATED (session exited)
+                mock_observe.return_value = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-                # Run one iteration
-                async def run_one_iteration():
-                    await asyncio.sleep(0.01)
-                    orchestrator.request_shutdown()
-
-                await asyncio.gather(
-                    orchestrator.run_loop(),
-                    run_one_iteration(),
+                # Mock the controller to return COMPLETED
+                mock_decision = SessionDecision(
+                    status=SessionStatus.COMPLETED,
+                    recovered_from_timeout=False,
+                    reason="Test",
                 )
+                mock_controller = MagicMock()
+                mock_controller.decide_outcome.return_value = mock_decision
 
-                # Loop may run multiple iterations before shutdown; just verify it was called
-                mock_handle.assert_called_with(session, SessionStatus.COMPLETED)
+                with patch.object(
+                    Orchestrator, "_session_controller",
+                    new_callable=PropertyMock,
+                    return_value=mock_controller,
+                ):
+                    # Run one iteration
+                    async def run_one_iteration():
+                        await asyncio.sleep(0.01)
+                        orchestrator.request_shutdown()
+
+                    await asyncio.gather(
+                        orchestrator.run_loop(),
+                        run_one_iteration(),
+                    )
+
+                    # Loop may run multiple iterations before shutdown; just verify it was called
+                    mock_handle.assert_called_with(session, SessionStatus.COMPLETED)
 
     @pytest.mark.asyncio
     async def test_run_loop_fetches_available_issues_when_not_paused(
@@ -838,6 +874,8 @@ class TestRunLoop:
         mock_github_adapter,
     ):
         """Test that run_loop respects max_sessions limit."""
+        from issue_orchestrator.observation.observation import SessionObservationResult
+
         sample_config.max_concurrent_sessions = 2
 
         issue1 = create_issue(1)
@@ -852,9 +890,9 @@ class TestRunLoop:
         orchestrator.state.active_sessions.append(create_session(issue1))
         orchestrator.state.active_sessions.append(create_session(issue2))
 
-        with patch.object(orchestrator.observer, "check_session") as mock_check:
-            # Mock check_session to return RUNNING (sessions still active)
-            mock_check.return_value = SessionStatus.RUNNING
+        with patch.object(orchestrator.observer, "observe_session") as mock_observe:
+            # Mock observe_session to return RUNNING (sessions still active)
+            mock_observe.return_value = SessionObservationResult.running(runtime_minutes=5.0)
 
             with patch.object(orchestrator, "launch_session") as mock_launch:
                 # Run one iteration

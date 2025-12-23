@@ -41,13 +41,17 @@ class LabelAdapter(Protocol):
     def remove_label(self, issue_number: int, label: str) -> None: ...
 
 
+from ..ports.pull_request_tracker import PRInfo
+from ..ports.working_copy import PushResult
+
+
 @runtime_checkable
 class PRAdapter(Protocol):
     """Protocol for PR operations."""
 
     def create_pr(
         self, title: str, body: str, head: str, base: str = "main"
-    ) -> "PRInfo": ...
+    ) -> PRInfo: ...
     def add_comment(self, issue_or_pr_number: int, body: str) -> str: ...
 
 
@@ -61,26 +65,11 @@ class GitAdapter(Protocol):
         remote: str = "origin",
         force_with_lease: bool = True,
         set_upstream: bool = True,
-    ) -> "PushResult": ...
+        skip_hooks: bool = False,
+    ) -> PushResult: ...
 
     def get_current_branch(self, worktree: Path) -> str | None: ...
     def has_uncommitted_changes(self, worktree: Path) -> bool: ...
-
-
-@dataclass
-class PRInfo:
-    """Minimal PR info for return type."""
-
-    number: int
-    url: str
-
-
-@dataclass
-class PushResult:
-    """Minimal push result for return type."""
-
-    success: bool
-    message: str
 
 
 @dataclass
@@ -328,6 +317,7 @@ class CompletionProcessor:
             logger.info("Executing action: %s for issue #%d", action.value, issue_number)
             try:
                 if action == RequestedAction.PUSH_BRANCH:
+                    # Worktrees have .venv symlinked from main repo, so dev tools are available
                     result = self.git_adapter.push(worktree)
                     if result.success:
                         actions_taken.append(f"Pushed branch to remote")

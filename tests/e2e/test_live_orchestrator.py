@@ -54,14 +54,18 @@ class TestLiveOrchestratorLifecycle:
 
         pr = None  # Initialize for cleanup in finally block
         try:
-            # Wait for in-progress label (indicates session started)
+            # Wait for in-progress label (indicates session started, with fast failure detection)
             in_progress = wait_for_issue_label(
-                repo_name, issue_number, "in-progress", timeout=60
+                repo_name, issue_number, "in-progress", timeout=60,
+                orchestrator=orchestrator_process,
             )
             assert in_progress, f"Issue {issue_number} should have 'in-progress' label"
 
-            # Wait for PR to be created (indicates agent completed)
-            pr = wait_for_pr_created(repo_name, issue_number, timeout=120)
+            # Wait for PR to be created (indicates agent completed, with fast failure detection)
+            pr = wait_for_pr_created(
+                repo_name, issue_number, timeout=120,
+                orchestrator=orchestrator_process,
+            )
             assert pr is not None, f"PR should be created for issue {issue_number}"
 
             # Verify PR details
@@ -189,9 +193,10 @@ class TestLabelDetection:
         orchestrator_process.start(max_issues=1)
 
         try:
-            # Wait for in-progress label
+            # Wait for in-progress label (with fast failure detection)
             in_progress = wait_for_issue_label(
-                repo_name, issue_number, "in-progress", timeout=60
+                repo_name, issue_number, "in-progress", timeout=60,
+                orchestrator=orchestrator_process,
             )
             if not in_progress:
                 pytest.skip("Session didn't start in time")

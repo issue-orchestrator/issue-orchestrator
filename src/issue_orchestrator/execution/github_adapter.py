@@ -315,10 +315,23 @@ class GitHubAdapter:
             github.GitHubError: If there's an error creating the PR.
         """
         try:
+            # Create the PR (gh pr create doesn't support --json)
             args = ["pr", "create", "--title", title, "--body", body,
-                   "--head", head, "--base", base,
-                   "--json", "number,title,url,headRefName,body,state,labels"]
-            output = github._run_gh_json(args, self.repo)
+                   "--head", head, "--base", base]
+            result = github._run_gh(args, self.repo)
+
+            # Parse the URL from the output (gh pr create prints the PR URL)
+            pr_url = result.strip()
+            if not pr_url.startswith("https://"):
+                raise github.GitHubError(f"Unexpected output from gh pr create: {result}")
+
+            # Extract PR number from URL (https://github.com/owner/repo/pull/123)
+            pr_number = int(pr_url.split("/")[-1])
+
+            # Fetch full PR info using gh pr view
+            view_args = ["pr", "view", str(pr_number),
+                        "--json", "number,title,url,headRefName,body,state,labels"]
+            output = github._run_gh_json(view_args, self.repo)
 
             if isinstance(output, dict):
                 pr_info = PRInfo(
@@ -333,7 +346,7 @@ class GitHubAdapter:
                 logger.info(f"Created PR #{pr_info.number}: {pr_info.title}")
                 return pr_info
             else:
-                raise github.GitHubError("Failed to parse PR creation response")
+                raise github.GitHubError("Failed to parse PR view response")
         except github.GitHubError:
             logger.error(f"Failed to create PR: {title}")
             raise

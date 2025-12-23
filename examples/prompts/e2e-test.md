@@ -29,3 +29,5 @@ agent-done completed --implementation "E2E test completed" --problems "None"
 ```
 
 These commands are safe and expected. Run them now.
+
+**IMPORTANT**: After running `agent-done`, you MUST exit by typing `/exit`. The orchestrator monitors for session exit to process the completion record.

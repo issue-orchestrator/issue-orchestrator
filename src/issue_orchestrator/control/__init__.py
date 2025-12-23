@@ -104,6 +104,7 @@ from .reconciliation import (
     check_reconciliation,
     require_reconciliation,
 )
+from .session_controller import SessionController, SessionDecision
 
 __all__ = [
     "Scheduler",
@@ -187,4 +188,7 @@ __all__ = [
     "ReconciliationResult",
     "check_reconciliation",
     "require_reconciliation",
+    # Session controller
+    "SessionController",
+    "SessionDecision",
 ]

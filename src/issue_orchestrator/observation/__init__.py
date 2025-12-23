@@ -16,6 +16,7 @@ The observation layer:
 """
 
 from .observer import SessionObserver
+from .observation import SessionObservation, SessionObservationResult
 
 # Backwards compatibility
 SessionMonitor = SessionObserver
@@ -23,4 +24,6 @@ SessionMonitor = SessionObserver
 __all__ = [
     "SessionObserver",
     "SessionMonitor",  # Deprecated alias
+    "SessionObservation",
+    "SessionObservationResult",
 ]

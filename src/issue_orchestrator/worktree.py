@@ -38,6 +38,41 @@ class WorktreeError(Exception):
     pass
 
 
+def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
+    """
+    Symlink .venv from main repo into worktree.
+
+    This gives the worktree access to dev tools (pyright, pytest, etc.)
+    so the agent can run validation during their work and catch issues early.
+
+    Args:
+        worktree_path: Path to the worktree
+        repo_root: Path to the main repository
+
+    Returns:
+        True if symlink was created, False if .venv doesn't exist in main repo
+    """
+    main_venv = repo_root / ".venv"
+    worktree_venv = worktree_path / ".venv"
+
+    if not main_venv.exists():
+        logger.debug("No .venv in main repo at %s, skipping symlink", main_venv)
+        return False
+
+    if worktree_venv.exists() or worktree_venv.is_symlink():
+        # Already exists (symlink or real) - don't overwrite
+        logger.debug(".venv already exists in worktree at %s", worktree_venv)
+        return True
+
+    try:
+        worktree_venv.symlink_to(main_venv)
+        logger.info("Symlinked .venv: %s -> %s", worktree_venv, main_venv)
+        return True
+    except OSError as e:
+        logger.warning("Failed to symlink .venv: %s", e)
+        return False
+
+
 def install_claude_settings(worktree_path: Path) -> None:
     """
     Install Claude Code settings to enforce agent-done on exit.
@@ -441,6 +476,9 @@ def create_worktree(
 
         # Install Claude Code settings with exit hook to enforce agent-done
         install_claude_settings(worktree_path)
+
+        # Symlink .venv so agent has access to dev tools for validation
+        install_venv_symlink(worktree_path, repo_root)
 
         return worktree_path, branch_name
 

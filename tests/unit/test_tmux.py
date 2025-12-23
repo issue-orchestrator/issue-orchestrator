@@ -298,9 +298,12 @@ class TestTmuxManager:
         issues = manager.list_issue_windows()
         assert issues == []
 
-    def test_list_issue_windows_no_session(self):
+    def test_list_issue_windows_no_session(self, mock_server):
         """Test list_issue_windows returns empty list when no session."""
         manager = tmux.TmuxManager()
+        manager._server = mock_server
+        # Mock server.sessions.get to return None (no session found)
+        mock_server.sessions.get.return_value = None
         manager._session = None
         assert manager.list_issue_windows() == []
 

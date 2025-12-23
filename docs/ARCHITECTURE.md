@@ -332,3 +332,83 @@ control/
     ├── rework_workflow.py   # Rework cycle decisions
     └── triage_workflow.py   # Triage decisions
 ```
+
+## Observability Pattern
+
+**Events are the source of truth for observability. Never use `print()` or direct `logger` calls in business logic.**
+
+### Why Events Over Logging
+
+Direct logging couples presentation to logic:
+```python
+# BAD - presentation mixed with business logic
+logger.info(f"Processing completion for #{issue_number}")
+print(f"  PR created: {pr_url}")
+```
+
+Events decouple observation from consumption:
+```python
+# GOOD - emit structured event, let consumers decide presentation
+self.events.publish(TraceEvent("completion.succeeded", {
+    "issue_number": issue_number,
+    "pr_url": pr_url,
+    "actions_taken": actions_taken,
+}))
+```
+
+### Benefits
+
+| Concern | Events | Direct Logging |
+|---------|--------|----------------|
+| **Testability** | Assert event emitted | Parse log strings |
+| **Multi-consumer** | IPC, dashboard, audit, metrics | Log file only |
+| **Structure** | Typed data dict | Unstructured string |
+| **Decoupling** | Core doesn't know about logging | Tight coupling |
+
+### Event Consumers (Pluggy Plugins)
+
+The `EventSink` port receives `TraceEvent` and can have multiple implementations:
+
+- **LoggingPlugin** - writes events to log files
+- **IPCPlugin** - broadcasts to dashboard/CLI via Unix socket
+- **SSEPlugin** - pushes to web dashboard via Server-Sent Events
+- **AuditPlugin** - persists to audit trail
+- **MetricsPlugin** - updates counters/timers
+
+### Event Naming Convention
+
+Use hierarchical names with `.` separator:
+```
+completion.processing    # Starting to process completion
+completion.succeeded     # Completion processing succeeded
+completion.failed        # Completion processing failed
+completion.missing       # No completion.json found
+
+session.started         # Agent session started
+session.completed       # Agent session completed
+session.failed          # Agent session failed
+
+transition.applied      # State machine transition succeeded
+transition.rejected     # State machine transition rejected
+```
+
+### Implementation
+
+```python
+# In orchestrator code - emit events
+self.events.publish(TraceEvent("completion.succeeded", {
+    "issue_number": issue_number,
+    "outcome": outcome,
+    "pr_url": pr_url,
+}))
+
+# In plugin - consume events
+class LoggingPlugin:
+    @hookimpl
+    def on_trace_event(self, event: TraceEvent):
+        logger.info("[%s] %s", event.name, event.data)
+```
+
+### Rule
+
+**If you need to observe something, emit an event. If you need to log, subscribe to events.**
