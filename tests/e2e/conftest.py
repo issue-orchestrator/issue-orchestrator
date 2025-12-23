@@ -417,12 +417,19 @@ class OrchestratorProcess:
         self.process.send_signal(signal.SIGTERM)
 
         try:
-            stdout, stderr = self.process.communicate(timeout=10)
+            stdout, stderr = self.process.communicate(timeout=5)
             return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
         except subprocess.TimeoutExpired:
-            self.process.kill()
-            stdout, stderr = self.process.communicate()
-            return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
+            # Send second SIGTERM to trigger force-kill of child sessions
+            self.process.send_signal(signal.SIGTERM)
+            try:
+                stdout, stderr = self.process.communicate(timeout=5)
+                return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
+            except subprocess.TimeoutExpired:
+                # Last resort - kill the process
+                self.process.kill()
+                stdout, stderr = self.process.communicate()
+                return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
 
     def is_running(self) -> bool:
         """Check if process is still running."""
