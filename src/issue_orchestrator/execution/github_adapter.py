@@ -20,7 +20,7 @@ from .. import github
 from ..models import Issue
 
 if TYPE_CHECKING:
-    pass
+    from ..domain.issue_key import GitHubIssueKey
 
 logger = logging.getLogger(__name__)
 
@@ -417,3 +417,18 @@ class GitHubAdapter:
             # Re-raise unexpected errors for UNKNOWN state handling
             logger.debug(f"Error checking issue {issue_number} in {target_repo}: {e}")
             raise
+
+    def create_issue_key(self, issue_number: int) -> "GitHubIssueKey":
+        """Create a GitHubIssueKey for the given issue number.
+
+        This allows the orchestrator to get IssueKeys without knowing about
+        GitHub-specific implementations.
+
+        Args:
+            issue_number: The issue number to create a key for.
+
+        Returns:
+            A GitHubIssueKey with this adapter's repo and the issue number as external_id.
+        """
+        from ..domain.issue_key import GitHubIssueKey
+        return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))
