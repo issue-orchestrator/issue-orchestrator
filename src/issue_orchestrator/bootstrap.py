@@ -24,6 +24,13 @@ from .execution import (
     LifecycleSSEPlugin,
     GitHubAdapter,
 )
+from .control import (
+    Planner,
+    Scheduler,
+    SessionManager,
+)
+from .control.dependency_evaluator import DependencyEvaluator
+from .control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
@@ -95,12 +102,37 @@ def build_orchestrator(
     if config.repo:
         github = GitHubAdapter(config.repo)
 
+    # Create control plane components
+    scheduler = Scheduler(config=config)
+    dependency_evaluator = DependencyEvaluator(
+        issue_checker=github,
+        events=events,
+    ) if github else None
+    session_manager = SessionManager(runner=runner, events=events, config=config)
+
+    # Create workflow instances
+    review_workflow = ReviewWorkflow(config=config, events=events)
+    rework_workflow = ReworkWorkflow(config=config, events=events)
+    triage_workflow = TriageWorkflow(config=config, events=events)
+
+    # Create the planner with all dependencies
+    planner = Planner(
+        config=config,
+        scheduler=scheduler,
+        dependency_evaluator=dependency_evaluator,
+        review_workflow=review_workflow,
+        rework_workflow=rework_workflow,
+        triage_workflow=triage_workflow,
+    )
+
     # Build the orchestrator with injected dependencies
     return Orchestrator(
         config=config,
         events=events,
         runner=runner,
         _github_adapter=github,
+        planner=planner,
+        session_manager=session_manager,
     )
 
 
@@ -109,6 +141,8 @@ def build_orchestrator_for_testing(
     events: EventSink | None = None,
     runner: SessionRunner | None = None,
     github: GitHubAdapter | None = None,
+    planner: Planner | None = None,
+    session_manager: SessionManager | None = None,
 ) -> "Orchestrator":
     """Build an orchestrator for testing with mock dependencies.
 
@@ -117,17 +151,36 @@ def build_orchestrator_for_testing(
         events: Optional mock EventSink (defaults to NullEventSink)
         runner: Optional mock SessionRunner (defaults to NullSessionRunner)
         github: Optional mock GitHubAdapter
+        planner: Optional mock Planner (defaults to creating one)
+        session_manager: Optional mock SessionManager (defaults to creating one)
 
     Returns:
         Orchestrator configured with test dependencies
     """
     from .orchestrator import Orchestrator
 
+    events = events or NullEventSink()
+    runner = runner or NullSessionRunner()
+
+    # Create default planner if not provided
+    if planner is None:
+        scheduler = Scheduler(config=config)
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+        )
+
+    # Create default session manager if not provided
+    if session_manager is None:
+        session_manager = SessionManager(runner=runner, events=events, config=config)
+
     return Orchestrator(
         config=config,
-        events=events or NullEventSink(),
-        runner=runner or NullSessionRunner(),
+        events=events,
+        runner=runner,
         _github_adapter=github,
+        planner=planner,
+        session_manager=session_manager,
     )
 
 
@@ -183,12 +236,37 @@ async def build_orchestrator_with_ipc(
     if config.repo:
         github = GitHubAdapter(config.repo)
 
+    # Create control plane components
+    scheduler = Scheduler(config=config)
+    dependency_evaluator = DependencyEvaluator(
+        issue_checker=github,
+        events=events,
+    ) if github else None
+    session_manager = SessionManager(runner=runner, events=events, config=config)
+
+    # Create workflow instances
+    review_workflow = ReviewWorkflow(config=config, events=events)
+    rework_workflow = ReworkWorkflow(config=config, events=events)
+    triage_workflow = TriageWorkflow(config=config, events=events)
+
+    # Create the planner with all dependencies
+    planner = Planner(
+        config=config,
+        scheduler=scheduler,
+        dependency_evaluator=dependency_evaluator,
+        review_workflow=review_workflow,
+        rework_workflow=rework_workflow,
+        triage_workflow=triage_workflow,
+    )
+
     # Build the orchestrator
     orchestrator = Orchestrator(
         config=config,
         events=events,
         runner=runner,
         _github_adapter=github,
+        planner=planner,
+        session_manager=session_manager,
     )
 
     return orchestrator, ipc_server

@@ -105,6 +105,7 @@ from .reconciliation import (
     require_reconciliation,
 )
 from .session_controller import SessionController, SessionDecision
+from .planner import Planner, Plan, OrchestratorSnapshot, SkippedItem
 
 __all__ = [
     "Scheduler",
@@ -191,4 +192,9 @@ __all__ = [
     # Session controller
     "SessionController",
     "SessionDecision",
+    # Planner
+    "Planner",
+    "Plan",
+    "OrchestratorSnapshot",
+    "SkippedItem",
 ]

@@ -8,7 +8,12 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .control.planner import Planner, Plan, OrchestratorSnapshot
+    from .control.session_manager import SessionManager
+    from .control.actions import LaunchSessionAction, EscalateToHumanAction
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +142,10 @@ class Orchestrator:
     runner: SessionRunner = field(default_factory=NullSessionRunner)
     # Optional GitHub adapter (can be injected for testing)
     _github_adapter: Optional[GitHubAdapter] = field(default=None, repr=False)
+    # Optional planner (can be injected for testing, otherwise created in __post_init__)
+    planner: Optional["Planner"] = field(default=None, repr=False)
+    # Optional session manager (can be injected, otherwise created in __post_init__)
+    session_manager: Optional["SessionManager"] = field(default=None, repr=False)
     # Internal state
     state: OrchestratorState = field(default_factory=OrchestratorState)
     scheduler: Scheduler = field(init=False)
@@ -154,10 +163,33 @@ class Orchestrator:
             issue_checker=self._github_adapter,
             events=self.events,
         )
-        self.scheduler = Scheduler(
-            self.config,
-            dependency_evaluator=dependency_evaluator,
-        )
+
+        # Use injected planner or create default
+        if self.planner is not None:
+            # Use the injected planner's scheduler
+            self.scheduler = self.planner.scheduler
+        else:
+            # Create scheduler and planner
+            self.scheduler = Scheduler(
+                self.config,
+                dependency_evaluator=dependency_evaluator,
+            )
+            # Import here to avoid circular imports
+            from .control.planner import Planner as PlannerClass
+            self.planner = PlannerClass(
+                config=self.config,
+                scheduler=self.scheduler,
+                dependency_evaluator=dependency_evaluator,
+            )
+
+        # Use injected session manager or create default
+        if self.session_manager is None:
+            from .control.session_manager import SessionManager as SessionManagerClass
+            self.session_manager = SessionManagerClass(
+                runner=self.runner,
+                events=self.events,
+                config=self.config,
+            )
 
         # Note: Observer is initialized without session_machines initially
         # We'll update the reference after session_machines is created
@@ -1501,96 +1533,70 @@ class Orchestrator:
                     # Step 3: Handle the decided outcome
                     self.handle_session_completion(session, decision.status)
 
-                # Scan for PRs needing code review and process them
+                # Scan for PRs needing code review (populates pending_reviews queue)
                 self.scan_needs_code_review_prs()
-                self.process_pending_reviews()
 
-                # Scan for PRs needing rework and process them
+                # Scan for PRs needing rework (populates pending_reworks queue)
                 self.scan_needs_rework_prs()
-                self.process_pending_reworks()
 
-                # Process pending triage reviews (from failures or batch trigger)
-                self.process_pending_triage_reviews()
-
-                # Check if triage review should be triggered (batch threshold)
+                # Check if triage review should be triggered (may add to pending_triage_reviews)
                 self.check_triage_review_trigger()
 
                 # Process deferred cleanups (sessions waiting for review to complete)
                 self.process_deferred_cleanups()
 
-                # Check if we've hit the max issues limit for this session
-                max_issues = self.config.max_issues_to_start
-                hit_max_issues = max_issues > 0 and self.state.issues_started_count >= max_issues
+                # NOTE: process_pending_reviews, process_pending_reworks, process_pending_triage_reviews
+                # are now handled by the planner below
 
-                # PRIORITY: Reviews before new issues
-                # Only launch new issues if there are no pending reviews
-                # This ensures completed work (PRs) gets reviewed before starting new work
-                has_pending_reviews = bool(self.state.pending_reviews)
-                has_pending_reworks = bool(self.state.pending_reworks)
-                has_pending_triage = bool(self.state.pending_triage_reviews)
+                # === PLANNER-BASED DECISION MAKING ===
+                # The planner decides WHAT to do, the orchestrator does HOW
+                #
+                # Priority order (handled by planner):
+                # 1. Reviews (highest priority - complete existing work)
+                # 2. Reworks (fix rejected PRs)
+                # 3. Triage (investigate failures)
+                # 4. New issues (only if no pending work above)
 
-                if has_pending_reviews or has_pending_reworks or has_pending_triage:
-                    logger.info("[PRIORITY] Skipping new issues - %d reviews, %d reworks, %d triage pending",
-                               len(self.state.pending_reviews), len(self.state.pending_reworks),
-                               len(self.state.pending_triage_reviews))
+                # Skip fetching and planning if paused or at capacity
+                if self.state.paused:
+                    logger.debug("[PLAN] Skipping - orchestrator paused")
+                elif len(self.state.active_sessions) >= self.config.max_concurrent_sessions:
+                    logger.debug("[PLAN] Skipping - at capacity")
+                else:
+                    # Fetch issues for planning
+                    all_issues = self._fetch_all_issues()
 
-                # If not paused, not at max issues limit, no pending reviews, and have capacity, launch more sessions
-                if not self.state.paused and not hit_max_issues and not has_pending_reviews and not has_pending_reworks and not has_pending_triage:
-                    available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
+                    # Update dependency problems state
+                    _, dep_blocked = self.scheduler.get_available_issues(all_issues)
+                    self._update_dependency_problems(dep_blocked)
 
-                    if available_slots > 0:
-                        # Get available issues
-                        all_issues = []
-                        for agent_label in self.config.agents.keys():
-                            logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-                            issues = self.github_adapter.list_issues(
-                                labels=self._build_labels(agent_label),
-                                milestone=self._get_milestone_filter(),
-                                limit=self.config.issue_fetch_limit,
-                            )
-                            all_issues.extend(issues)
+                    # Filter issues for planning
+                    history_numbers = {e.issue_number for e in self.state.session_history}
+                    active_numbers = {s.issue.number for s in self.state.active_sessions}
+                    exclude_numbers = history_numbers | active_numbers
+                    filtered_issues = [i for i in all_issues if i.number not in exclude_numbers]
 
-                        available, dep_blocked = self.scheduler.get_available_issues(all_issues)
+                    # Filter to single issue if specified
+                    if self.config.filter_issue:
+                        filtered_issues = [i for i in filtered_issues if i.number == self.config.filter_issue]
 
-                        # Update dependency problems state and emit events for changes
-                        self._update_dependency_problems(dep_blocked)
+                    # Update cached queue for dashboard and plan execution
+                    self.state.cached_queue_issues = filtered_issues
 
-                        # Filter out issues already in session history (already processed today)
-                        history_numbers = {e.issue_number for e in self.state.session_history}
-                        active_numbers = {s.issue.number for s in self.state.active_sessions}
-                        exclude_numbers = history_numbers | active_numbers
-                        available = [i for i in available if i.number not in exclude_numbers]
+                    # Create snapshot and plan
+                    snapshot = self._create_snapshot(filtered_issues)
+                    assert self.planner is not None, "Planner not initialized"
+                    plan = self.planner.plan(snapshot)
 
-                        # Filter to single issue if specified
-                        if self.config.filter_issue:
-                            available = [i for i in available if i.number == self.config.filter_issue]
+                    # Log plan summary
+                    if plan.action_count > 0:
+                        logger.info("[PLAN] Planning %d action(s): %s",
+                                   plan.action_count,
+                                   ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}"
+                                            for a in plan.actions))
 
-                        sorted_issues = self.scheduler.sort_by_priority(available)
-
-                        # Pick next batch
-                        to_launch = self.scheduler.pick_next_batch(
-                            sorted_issues,
-                            len(self.state.active_sessions),
-                            self.state.priority_queue,
-                        )
-
-                        for issue in to_launch:
-                            # Check pause and limit before each launch (might change mid-batch)
-                            if self.state.paused:
-                                print("Paused - stopping batch launch")
-                                break
-                            if max_issues > 0 and self.state.issues_started_count >= max_issues:
-                                break
-                            try:
-                                session = self.launch_session(issue)
-                                if session is None:
-                                    # Issue was already claimed by another instance
-                                    continue
-                                # Successfully launched - increment counter
-                                self.state.issues_started_count += 1
-                            except Exception as e:
-                                logger.exception("Failed to launch session for #%d: %s", issue.number, e)
-                                print(f"Failed to launch session for #{issue.number}: {e}")
+                    # Apply the plan
+                    self._apply_plan(plan)
 
                 # Periodically refresh the queue cache for the dashboard
                 cache_age = time.time() - last_cache_update
@@ -1655,6 +1661,149 @@ class Orchestrator:
         self.state.paused = False
         print("Orchestrator resumed")
         self.events.publish(TraceEvent("orchestrator.resumed"))
+
+    def _create_snapshot(self, issues: list[Issue]) -> "OrchestratorSnapshot":
+        """Create an immutable snapshot for planning.
+
+        Args:
+            issues: Current list of issues from GitHub
+
+        Returns:
+            Immutable snapshot of orchestrator state
+        """
+        from .control.planner import OrchestratorSnapshot
+
+        return OrchestratorSnapshot(
+            issues=tuple(issues),
+            active_sessions=tuple(self.state.active_sessions),
+            pending_reviews=tuple(self.state.pending_reviews),
+            pending_reworks=tuple(self.state.pending_reworks),
+            pending_triage=tuple(self.state.pending_triage_reviews),
+            paused=self.state.paused,
+            priority_queue=tuple(self.state.priority_queue),
+            issues_started_count=self.state.issues_started_count,
+            max_issues_to_start=self.config.max_issues_to_start if self.config.max_issues_to_start > 0 else None,
+        )
+
+    def _apply_plan(self, plan: "Plan") -> None:
+        """Apply the actions from a plan.
+
+        The planner decides WHAT should happen.
+        This method makes it happen.
+
+        Args:
+            plan: Plan with actions to execute
+        """
+        from .control.planner import Plan
+        from .control.actions import ActionType, LaunchSessionAction, EscalateToHumanAction
+
+        for action in plan.actions:
+            # Respect pause mid-batch: stop applying actions if paused
+            if self.state.paused:
+                logger.debug("[PLAN] Stopping plan application - orchestrator paused")
+                break
+
+            try:
+                if action.action_type == ActionType.LAUNCH_SESSION:
+                    assert isinstance(action, LaunchSessionAction)
+                    self._execute_launch_action(action)
+                elif action.action_type == ActionType.ESCALATE_TO_HUMAN:
+                    assert isinstance(action, EscalateToHumanAction)
+                    self._execute_escalate_action(action)
+                # Add more action types as needed
+            except Exception as e:
+                logger.exception("Failed to apply action %s: %s", action, e)
+
+    def _execute_launch_action(self, action: "LaunchSessionAction") -> None:
+        """Execute a launch session action.
+
+        Args:
+            action: The launch action to execute
+        """
+        from .control.actions import LaunchSessionAction
+
+        if action.session_type == "issue":
+            # Find the issue and launch
+            issue = next(
+                (i for i in self.state.cached_queue_issues if i.number == action.number),
+                None
+            )
+            if issue:
+                session = self.launch_session(issue)
+                if session:
+                    self.state.issues_started_count += 1
+                    logger.info("[PLAN] Launched issue session for #%d", action.number)
+            else:
+                logger.warning("[PLAN] Issue #%d not found in cache", action.number)
+
+        elif action.session_type == "review":
+            # Find the pending review and launch
+            review = next(
+                (r for r in self.state.pending_reviews if r.pr_number == action.number),
+                None
+            )
+            if review:
+                self.launch_review_session(review)
+                logger.info("[PLAN] Launched review session for PR #%d", action.number)
+            else:
+                logger.warning("[PLAN] Review for PR #%d not found", action.number)
+
+        elif action.session_type == "rework":
+            # Find the pending rework and launch
+            rework = next(
+                (r for r in self.state.pending_reworks if r.pr_number == action.number),
+                None
+            )
+            if rework:
+                self.launch_rework_session(rework)
+                logger.info("[PLAN] Launched rework session for PR #%d", action.number)
+            else:
+                logger.warning("[PLAN] Rework for PR #%d not found", action.number)
+
+        elif action.session_type == "triage":
+            # Find the pending triage and launch
+            triage = next(
+                (t for t in self.state.pending_triage_reviews if t.issue_number == action.number),
+                None
+            )
+            if triage:
+                self._launch_triage_session(triage)
+                logger.info("[PLAN] Launched triage session for #%d", action.number)
+            else:
+                logger.warning("[PLAN] Triage for #%d not found", action.number)
+
+    def _execute_escalate_action(self, action: "EscalateToHumanAction") -> None:
+        """Execute an escalation action.
+
+        Args:
+            action: The escalation action to execute
+        """
+        from .control.actions import EscalateToHumanAction
+
+        self._escalate_to_needs_human(
+            pr_number=action.pr_number,
+            issue_number=action.issue_number,
+            rework_cycle=action.rework_cycles,
+        )
+        logger.info("[PLAN] Escalated PR #%d to needs-human (cycle %d)",
+                   action.pr_number, action.rework_cycles)
+
+    def _fetch_all_issues(self) -> list[Issue]:
+        """Fetch all issues from GitHub for configured agents.
+
+        Returns:
+            List of issues across all agent types
+        """
+        all_issues: list[Issue] = []
+        for agent_label in self.config.agents.keys():
+            logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
+            issues = self.github_adapter.list_issues(
+                labels=self._build_labels(agent_label),
+                milestone=self._get_milestone_filter(),
+                limit=self.config.issue_fetch_limit,
+            )
+            all_issues.extend(issues)
+        return all_issues
 
     def update_queue_cache(self) -> None:
         """Update the cached queue issues for instant dashboard pagination.
