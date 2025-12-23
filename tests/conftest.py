@@ -54,6 +54,11 @@ class MockGitHubAdapter:
                 return issue
         return None
 
+    def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+        """Get the state of an issue."""
+        issue = self.get_issue(issue_number)
+        return issue.state if issue else None
+
     def get_issue_labels(self, issue_number: int) -> list[str]:
         """Get labels for an issue."""
         return list(self.labels.get(issue_number, set()))
@@ -333,17 +338,22 @@ def mock_session_runner(mock_terminal_plugin):
 def patch_orchestrator_dependencies(monkeypatch, request):
     """Auto-patch orchestrator dependencies for all tests.
 
-    This injects MockEventSink and MockSessionRunner into Orchestrator instances
-    so tests don't need actual terminal backends or event infrastructure.
+    This injects MockEventSink, MockSessionRunner, and MockGitHubAdapter into
+    Orchestrator instances so tests don't need actual backends or infrastructure.
 
-    The mocks are injected after __post_init__ runs, ensuring all Orchestrator
-    instances get test-friendly dependencies.
+    The mocks are injected before __post_init__ runs (via __init__ wrapper),
+    ensuring all Orchestrator instances get test-friendly dependencies.
     """
     # Use provided mocks if test requests them, otherwise create new ones
     if 'mock_terminal_plugin' in request.fixturenames:
         plugin = request.getfixturevalue('mock_terminal_plugin')
     else:
         plugin = MockTerminalPlugin()
+
+    if 'mock_github_adapter' in request.fixturenames:
+        github_adapter = request.getfixturevalue('mock_github_adapter')
+    else:
+        github_adapter = MockGitHubAdapter()
 
     # Create shared mocks for this test
     mock_events = MockEventSink()
@@ -354,20 +364,24 @@ def patch_orchestrator_dependencies(monkeypatch, request):
     original_post_init = Orchestrator.__post_init__
 
     def patched_post_init(self):
-        # Call original first
+        # Inject GitHub adapter if not already set
+        if self._github_adapter is None:
+            self._github_adapter = github_adapter
+        # Call original (which now won't raise since adapter is set)
         original_post_init(self)
-        # Then inject our mocks
+        # Then inject our other mocks
         self.events = mock_events
         self.runner = mock_runner
         # Store references for test assertions
         self._mock_event_sink = mock_events
         self._mock_session_runner = mock_runner
+        self._mock_github_adapter = self._github_adapter
 
     # Patch __post_init__
     monkeypatch.setattr(Orchestrator, '__post_init__', patched_post_init)
 
     # Return the mocks so tests can access them
-    return {'events': mock_events, 'runner': mock_runner}
+    return {'events': mock_events, 'runner': mock_runner, 'github': github_adapter}
 
 
 @pytest.fixture

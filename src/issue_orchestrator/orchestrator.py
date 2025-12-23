@@ -64,14 +64,14 @@ from .domain.events import EventBus, IssueEvent, SessionEvent, ReviewEvent
 from .domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from .domain.state_machines.session_machine import SessionStateMachine, SessionState
 from .domain.state_machines.review_machine import ReviewStateMachine, ReviewState
-from .execution.github_adapter import GitHubAdapter
-from .execution.git_working_copy import GitWorkingCopy
 from .control.completion_processor import CompletionProcessor, ProcessingResult
 from .control.session_controller import SessionController, SessionDecision
 from .models import CompletionOutcome
 from .observation.observation import SessionObservation, SessionObservationResult
 # Port imports (protocols only - no concrete implementations in core)
-from .ports import EventSink, SessionRunner, TraceEvent, NullEventSink, NullSessionRunner
+from .ports import EventSink, SessionRunner, TraceEvent, NullEventSink, NullSessionRunner, RepositoryHost
+# TODO: Inject WorkingCopy via bootstrap instead of importing concrete adapter
+from .execution.git_working_copy import GitWorkingCopy
 
 
 def detect_existing_work(worktree_path: Path) -> Optional[str]:
@@ -130,7 +130,7 @@ class Orchestrator:
     Dependencies are injected via constructor following hexagonal architecture:
     - events: EventSink for trace event emission (SSE, IPC, logging)
     - runner: SessionRunner for terminal session management (tmux, iTerm2)
-    - _github_adapter: GitHubAdapter for GitHub API operations
+    - _github_adapter: RepositoryHost for GitHub API operations (issues, labels, PRs)
 
     The orchestrator core only knows about port interfaces (Protocols),
     never concrete implementations. Wiring happens in bootstrap.py.
@@ -140,8 +140,8 @@ class Orchestrator:
     # Injected dependencies (ports)
     events: EventSink = field(default_factory=NullEventSink)
     runner: SessionRunner = field(default_factory=NullSessionRunner)
-    # Optional GitHub adapter (can be injected for testing)
-    _github_adapter: Optional[GitHubAdapter] = field(default=None, repr=False)
+    # Repository host (issues, labels, PRs) - required, injected from bootstrap
+    _github_adapter: Optional[RepositoryHost] = field(default=None, repr=False)
     # Optional planner (can be injected for testing, otherwise created in __post_init__)
     planner: Optional["Planner"] = field(default=None, repr=False)
     # Optional session manager (can be injected, otherwise created in __post_init__)
@@ -153,10 +153,13 @@ class Orchestrator:
     _shutdown_requested: bool = field(default=False, init=False)
 
     def __post_init__(self):
-        # GitHub adapter - use injected adapter or create real one
-        # Created first since other components may depend on it
+        # GitHub adapter must be injected via bootstrap.py
+        # This enforces the hexagonal architecture boundary
         if self._github_adapter is None:
-            self._github_adapter = GitHubAdapter(self.config.repo)
+            raise ValueError(
+                "RepositoryHost (_github_adapter) must be injected. "
+                "Use bootstrap.build_orchestrator() or bootstrap.build_orchestrator_for_testing()."
+            )
 
         # Create dependency evaluator for issue dependency gating
         dependency_evaluator = DependencyEvaluator(
@@ -209,9 +212,9 @@ class Orchestrator:
         self.observer.session_machines = self.session_machines
 
     @property
-    def github_adapter(self) -> GitHubAdapter:
-        """Get the GitHub adapter (always initialized after __post_init__)."""
-        assert self._github_adapter is not None, "GitHub adapter not initialized"
+    def github_adapter(self) -> RepositoryHost:
+        """Get the repository host (always initialized after __post_init__)."""
+        assert self._github_adapter is not None, "RepositoryHost not initialized"
         return self._github_adapter
 
     @property
@@ -227,8 +230,8 @@ class Orchestrator:
         """Get the completion processor with proper adapters.
 
         Creates a CompletionProcessor with:
-        - GitHubAdapter for labels and PR operations
-        - GitWorkingCopy for git push operations
+        - RepositoryHost for labels and PR operations
+        - WorkingCopy for git push operations
         - EventBus for event emission
         - Config-based label mapping
         """
