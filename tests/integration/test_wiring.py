@@ -53,26 +53,26 @@ class TestOrchestratorWiring:
         return config
 
     @pytest.mark.asyncio
-    async def test_startup_queries_in_progress_issues(self, config, mock_github_adapter):
+    async def test_startup_queries_in_progress_issues(self, config, mock_repository_host):
         """Verify startup() queries for in-progress issues."""
         from issue_orchestrator.orchestrator import Orchestrator
 
-        orchestrator = Orchestrator(config, _github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config, _repository_host=mock_repository_host)
 
         with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
             await orchestrator.startup()
 
             # Verify list_issues was called via the adapter
-            assert len(mock_github_adapter.list_issues_calls) > 0
+            assert len(mock_repository_host.list_issues_calls) > 0
 
-    def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager, mock_github_adapter):
+    def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager, mock_repository_host):
         """Verify launch_session actually creates worktree and tmux window."""
         from issue_orchestrator.orchestrator import Orchestrator
 
         # Configure mock plugin to allow session creation
         patch_plugin_manager.plugin.session_exists_override = False
 
-        orchestrator = Orchestrator(config, _github_adapter=mock_github_adapter)
+        orchestrator = Orchestrator(config, _repository_host=mock_repository_host)
         test_issue = Issue(
             number=456,
             title="Test Feature",
@@ -97,7 +97,7 @@ class TestOrchestratorWiring:
             # Verify window created via plugin manager
             assert len(patch_plugin_manager.plugin.create_session_calls) == 1, "Tmux window should be created"
             # Verify label added via the mock adapter
-            assert (456, "in-progress") in mock_github_adapter.add_label_calls, "In-progress label should be added"
+            assert (456, "in-progress") in mock_repository_host.add_label_calls, "In-progress label should be added"
             assert session is not None
             assert session.issue.number == 456
 

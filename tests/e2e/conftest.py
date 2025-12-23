@@ -71,6 +71,68 @@ def is_gh_authenticated() -> bool:
     return result.returncode == 0
 
 
+class GitHubRateLimitError(Exception):
+    """Raised when GitHub API rate limit is exceeded."""
+    pass
+
+
+def check_github_rate_limit() -> dict:
+    """Check GitHub API rate limit status.
+
+    Returns:
+        Dict with 'remaining', 'limit', 'reset_at' keys
+
+    Raises:
+        GitHubRateLimitError: If rate limit is exceeded
+    """
+    result = subprocess.run(
+        ["gh", "api", "rate_limit"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        # If we can't check rate limit, assume it's ok
+        return {"remaining": -1, "limit": -1, "reset_at": "unknown"}
+
+    try:
+        data = json.loads(result.stdout)
+        core = data.get("resources", {}).get("core", {})
+        remaining = core.get("remaining", 0)
+        limit = core.get("limit", 5000)
+        reset_timestamp = core.get("reset", 0)
+
+        # Convert unix timestamp to readable time
+        import datetime
+        reset_at = datetime.datetime.fromtimestamp(reset_timestamp).strftime("%H:%M:%S") if reset_timestamp else "unknown"
+
+        if remaining == 0:
+            raise GitHubRateLimitError(
+                f"GitHub API rate limit EXCEEDED!\n"
+                f"  Limit: {limit}\n"
+                f"  Remaining: {remaining}\n"
+                f"  Resets at: {reset_at}\n"
+                f"  \n"
+                f"  Wait for rate limit to reset or use a different token."
+            )
+
+        return {"remaining": remaining, "limit": limit, "reset_at": reset_at}
+    except json.JSONDecodeError:
+        return {"remaining": -1, "limit": -1, "reset_at": "unknown"}
+
+
+def is_rate_limit_error(error_message: str) -> bool:
+    """Check if an error message indicates a rate limit issue."""
+    rate_limit_indicators = [
+        "rate limit",
+        "API rate limit",
+        "rate_limit",
+        "secondary rate limit",
+        "abuse detection",
+    ]
+    error_lower = error_message.lower()
+    return any(indicator.lower() in error_lower for indicator in rate_limit_indicators)
+
+
 def is_claude_available() -> bool:
     """Check if claude CLI is available."""
     import shutil

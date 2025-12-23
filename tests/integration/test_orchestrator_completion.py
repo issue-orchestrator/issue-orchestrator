@@ -68,7 +68,7 @@ def test_config(tmp_path):
 
 
 @pytest.fixture
-def mock_github_adapter():
+def mock_repository_host():
     """Mock GitHub adapter."""
     adapter = MagicMock()
     adapter.add_label = Mock()
@@ -79,7 +79,7 @@ def mock_github_adapter():
 
 
 @pytest.fixture
-def orchestrator(test_config, mock_github_adapter):
+def orchestrator(test_config, mock_repository_host):
     """Create an Orchestrator with mocked dependencies.
 
     Note: The conftest.py autouse fixture will inject MockEventSink automatically.
@@ -88,7 +88,7 @@ def orchestrator(test_config, mock_github_adapter):
     with patch('issue_orchestrator.orchestrator.SessionObserver'):
         orch = Orchestrator(
             config=test_config,
-            _github_adapter=mock_github_adapter,
+            _repository_host=mock_repository_host,
         )
         return orch
 
@@ -169,7 +169,7 @@ class TestProcessSessionExit:
         assert "completion.processing" in event_names
 
     def test_blocked_outcome_returns_blocked_status(
-        self, orchestrator, session_with_worktree, mock_github_adapter
+        self, orchestrator, session_with_worktree, mock_repository_host
     ):
         """BLOCKED outcome should return BLOCKED status and add label."""
         session = session_with_worktree()
@@ -184,10 +184,10 @@ class TestProcessSessionExit:
 
         assert status == SessionStatus.BLOCKED
         # Should have called add_label with blocked
-        mock_github_adapter.add_label.assert_called_once_with(session.issue.number, "blocked")
+        mock_repository_host.add_label.assert_called_once_with(session.issue.number, "blocked")
 
     def test_needs_human_outcome_returns_needs_human_status(
-        self, orchestrator, session_with_worktree, mock_github_adapter
+        self, orchestrator, session_with_worktree, mock_repository_host
     ):
         """NEEDS_HUMAN outcome should return NEEDS_HUMAN status and add label."""
         session = session_with_worktree()
@@ -201,10 +201,10 @@ class TestProcessSessionExit:
         status, result = orchestrator._process_session_exit(session)
 
         assert status == SessionStatus.NEEDS_HUMAN
-        mock_github_adapter.add_label.assert_called_once_with(session.issue.number, "needs-human")
+        mock_repository_host.add_label.assert_called_once_with(session.issue.number, "needs-human")
 
     def test_review_approved_returns_completed_status(
-        self, orchestrator, session_with_worktree, mock_github_adapter
+        self, orchestrator, session_with_worktree, mock_repository_host
     ):
         """REVIEW_APPROVED outcome should return COMPLETED status and update labels."""
         session = session_with_worktree()
@@ -221,11 +221,11 @@ class TestProcessSessionExit:
         status, result = orchestrator._process_session_exit(session)
 
         assert status == SessionStatus.COMPLETED
-        mock_github_adapter.add_label.assert_called_once_with(session.issue.number, "code-reviewed")
-        mock_github_adapter.remove_label.assert_called_once_with(session.issue.number, "needs-code-review")
+        mock_repository_host.add_label.assert_called_once_with(session.issue.number, "code-reviewed")
+        mock_repository_host.remove_label.assert_called_once_with(session.issue.number, "needs-code-review")
 
     def test_review_changes_requested_returns_completed_and_adds_rework_label(
-        self, orchestrator, session_with_worktree, mock_github_adapter
+        self, orchestrator, session_with_worktree, mock_repository_host
     ):
         """REVIEW_CHANGES_REQUESTED should return COMPLETED and add needs-rework label."""
         session = session_with_worktree()
@@ -242,8 +242,8 @@ class TestProcessSessionExit:
         status, result = orchestrator._process_session_exit(session)
 
         assert status == SessionStatus.COMPLETED  # Review session completed its job
-        mock_github_adapter.add_label.assert_called_once_with(session.issue.number, "needs-rework")
-        mock_github_adapter.remove_label.assert_called_once_with(session.issue.number, "needs-code-review")
+        mock_repository_host.add_label.assert_called_once_with(session.issue.number, "needs-rework")
+        mock_repository_host.remove_label.assert_called_once_with(session.issue.number, "needs-code-review")
 
 
 class TestEventEmission:

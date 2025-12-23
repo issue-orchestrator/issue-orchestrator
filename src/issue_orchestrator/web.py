@@ -350,6 +350,20 @@ async def resume() -> JSONResponse:
     return JSONResponse({"status": "resumed"})
 
 
+@app.post("/api/refresh")
+async def refresh() -> JSONResponse:
+    """Request an immediate refresh of issues from GitHub.
+
+    This triggers the orchestrator to fetch issues on the next loop iteration,
+    bypassing the queue_refresh_seconds interval. Also resets the timer for
+    the next scheduled refresh.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    _orchestrator.request_refresh()
+    return JSONResponse({"status": "refresh_requested"})
+
+
 @app.post("/api/kill/{issue_number}")
 async def kill_session(issue_number: int) -> JSONResponse:
     """Force kill a specific session."""

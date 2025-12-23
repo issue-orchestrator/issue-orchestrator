@@ -130,7 +130,7 @@ class Orchestrator:
     Dependencies are injected via constructor following hexagonal architecture:
     - events: EventSink for trace event emission (SSE, IPC, logging)
     - runner: SessionRunner for terminal session management (tmux, iTerm2)
-    - _github_adapter: RepositoryHost for GitHub API operations (issues, labels, PRs)
+    - _repository_host: RepositoryHost for issue/label/PR operations (protocol, not implementation)
 
     The orchestrator core only knows about port interfaces (Protocols),
     never concrete implementations. Wiring happens in bootstrap.py.
@@ -141,7 +141,7 @@ class Orchestrator:
     events: EventSink = field(default_factory=NullEventSink)
     runner: SessionRunner = field(default_factory=NullSessionRunner)
     # Repository host (issues, labels, PRs) - required, injected from bootstrap
-    _github_adapter: Optional[RepositoryHost] = field(default=None, repr=False)
+    _repository_host: Optional[RepositoryHost] = field(default=None, repr=False)
     # Optional planner (can be injected for testing, otherwise created in __post_init__)
     planner: Optional["Planner"] = field(default=None, repr=False)
     # Optional session manager (can be injected, otherwise created in __post_init__)
@@ -151,19 +151,20 @@ class Orchestrator:
     scheduler: Scheduler = field(init=False)
     observer: SessionObserver = field(init=False)
     _shutdown_requested: bool = field(default=False, init=False)
+    _refresh_requested: bool = field(default=False, init=False)
 
     def __post_init__(self):
         # GitHub adapter must be injected via bootstrap.py
         # This enforces the hexagonal architecture boundary
-        if self._github_adapter is None:
+        if self._repository_host is None:
             raise ValueError(
-                "RepositoryHost (_github_adapter) must be injected. "
+                "RepositoryHost (_repository_host) must be injected. "
                 "Use bootstrap.build_orchestrator() or bootstrap.build_orchestrator_for_testing()."
             )
 
         # Create dependency evaluator for issue dependency gating
         dependency_evaluator = DependencyEvaluator(
-            issue_checker=self._github_adapter,
+            issue_checker=self._repository_host,
             events=self.events,
         )
 
@@ -212,10 +213,10 @@ class Orchestrator:
         self.observer.session_machines = self.session_machines
 
     @property
-    def github_adapter(self) -> RepositoryHost:
+    def repository_host(self) -> RepositoryHost:
         """Get the repository host (always initialized after __post_init__)."""
-        assert self._github_adapter is not None, "RepositoryHost not initialized"
-        return self._github_adapter
+        assert self._repository_host is not None, "RepositoryHost not initialized"
+        return self._repository_host
 
     @property
     def _using_iterm2(self) -> bool:
@@ -236,8 +237,8 @@ class Orchestrator:
         - Config-based label mapping
         """
         return CompletionProcessor(
-            label_adapter=self.github_adapter,
-            pr_adapter=self.github_adapter,
+            label_adapter=self.repository_host,
+            pr_adapter=self.repository_host,
             git_adapter=GitWorkingCopy(),
             event_bus=self.event_bus,
             label_config={
@@ -616,7 +617,7 @@ class Orchestrator:
         """Add in-progress label when issue is claimed."""
         try:
             logger.debug("[ADAPTER] Using GitHubAdapter for add_label")
-            self.github_adapter.add_label(event.entity_id, "in-progress")
+            self.repository_host.add_label(event.entity_id, "in-progress")
             logger.debug(f"[LABEL_SYNC] Added 'in-progress' to #{event.entity_id}")
         except Exception as e:
             logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
@@ -627,7 +628,7 @@ class Orchestrator:
         label = f"blocked-{reason}" if reason else "blocked"
         try:
             logger.debug("[ADAPTER] Using GitHubAdapter for add_label")
-            self.github_adapter.add_label(event.entity_id, label)
+            self.repository_host.add_label(event.entity_id, label)
             logger.debug(f"[LABEL_SYNC] Added '{label}' to #{event.entity_id}")
         except Exception as e:
             logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
@@ -636,7 +637,7 @@ class Orchestrator:
         """Add needs-human label."""
         try:
             logger.debug("[ADAPTER] Using GitHubAdapter for add_label")
-            self.github_adapter.add_label(event.entity_id, "blocked-needs-human")
+            self.repository_host.add_label(event.entity_id, "blocked-needs-human")
             logger.debug(f"[LABEL_SYNC] Added 'blocked-needs-human' to #{event.entity_id}")
         except Exception as e:
             logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
@@ -645,10 +646,10 @@ class Orchestrator:
         """Remove blocking labels when unblocked."""
         try:
             logger.debug("[ADAPTER] Using GitHubAdapter for get_issue_labels and remove_label")
-            labels = self.github_adapter.get_issue_labels(event.entity_id)
+            labels = self.repository_host.get_issue_labels(event.entity_id)
             for label in labels:
                 if label.startswith("blocked"):
-                    self.github_adapter.remove_label(event.entity_id, label)
+                    self.repository_host.remove_label(event.entity_id, label)
                     logger.debug(f"[LABEL_SYNC] Removed '{label}' from #{event.entity_id}")
         except Exception as e:
             logger.warning(f"[LABEL_SYNC] Failed to remove labels: {e}")
@@ -657,7 +658,7 @@ class Orchestrator:
         """Remove in-progress label when completed."""
         try:
             logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
-            self.github_adapter.remove_label(event.entity_id, "in-progress")
+            self.repository_host.remove_label(event.entity_id, "in-progress")
             logger.debug(f"[LABEL_SYNC] Removed 'in-progress' from #{event.entity_id}")
         except Exception as e:
             logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
@@ -666,7 +667,7 @@ class Orchestrator:
         """Remove in-progress label when released."""
         try:
             logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
-            self.github_adapter.remove_label(event.entity_id, "in-progress")
+            self.repository_host.remove_label(event.entity_id, "in-progress")
             logger.debug(f"[LABEL_SYNC] Removed 'in-progress' from #{event.entity_id}")
         except Exception as e:
             logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
@@ -725,25 +726,19 @@ class Orchestrator:
                     logger.warning("Could not find worktree for session %s - cleaning up orphaned issue", session_name)
                     # Clean up the orphaned in-progress label so this issue can be re-processed
                     try:
-                        self.github_adapter.remove_label(issue_number, "in-progress")
+                        self.repository_host.remove_label(issue_number, "in-progress")
                         logger.info("Removed in-progress label from orphaned issue #%d", issue_number)
                         print(f"  Cleaned up orphaned issue #{issue_number} (removed in-progress label)")
                     except Exception as e:
                         logger.warning("Failed to cleanup orphaned issue #%d: %s", issue_number, e)
                     continue
 
-                # Fetch issue details from GitHub to get agent type
-                logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-                issues = self.github_adapter.list_issues(limit=200)
-                issue_obj = None
+                # Fetch single issue details to get agent type
+                issue_obj = self.repository_host.get_issue(issue_number)
                 agent_config = None
 
-                for issue in issues:
-                    if issue.number == issue_number:
-                        issue_obj = issue
-                        if issue.agent_type:
-                            agent_config = self.config.agents.get(issue.agent_type)
-                        break
+                if issue_obj and issue_obj.agent_type:
+                    agent_config = self.config.agents.get(issue_obj.agent_type)
 
                 if not issue_obj:
                     # Create minimal issue object for reviews or if issue not found
@@ -818,7 +813,7 @@ class Orchestrator:
         where the issue body may have been modified (adding dependencies).
         """
         try:
-            return self.github_adapter.get_issue(issue_number)
+            return self.repository_host.get_issue(issue_number)
         except Exception as e:
             logger.warning("Failed to refresh issue #%d: %s", issue_number, e)
             return None
@@ -878,7 +873,7 @@ class Orchestrator:
         for agent_label in self.config.agents.keys():
             api_start = time.time()
             logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-            issues = self.github_adapter.list_issues(
+            issues = self.repository_host.list_issues(
                 labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
                 milestone=self._get_milestone_filter(),
                 limit=self.config.issue_fetch_limit,
@@ -918,7 +913,7 @@ class Orchestrator:
                     # Clear label so issue becomes available again
                     print(f"  #{issue.number}: No session or branch - clearing stale label")
                     logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
-                    self.github_adapter.remove_label(issue.number, self.config.get_label_in_progress())
+                    self.repository_host.remove_label(issue.number, self.config.get_label_in_progress())
 
         # Check for PRs needing code review (recovery after crash/restart)
         if self.config.code_review_agent and self.config.code_review_label:
@@ -963,7 +958,7 @@ class Orchestrator:
             self.state.startup_message = "Checking for pending triage review issues..."
             print("\nChecking for pending triage review issues...")
             logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-            triage_issues = self.github_adapter.list_issues(
+            triage_issues = self.repository_host.list_issues(
                 labels=[self.config.triage_review_agent],
                 limit=20,
             )
@@ -1123,7 +1118,7 @@ class Orchestrator:
 
         # Mark issue as in-progress
         step_start = time.time()
-        self.github_adapter.add_label(issue.number, self.config.get_label_in_progress())
+        self.repository_host.add_label(issue.number, self.config.get_label_in_progress())
         label_time = time.time() - step_start
         logger.debug("Label added in %.1fs", label_time)
         print(f"[launch] Label added in {label_time:.1f}s")
@@ -1155,7 +1150,7 @@ class Orchestrator:
             print("[launch] Is iTerm2 running with a window open?")
             # Remove the in-progress label (no lock to release)
             logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
-            self.github_adapter.remove_label(issue.number, self.config.get_label_in_progress())
+            self.repository_host.remove_label(issue.number, self.config.get_label_in_progress())
             return None
 
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
@@ -1245,7 +1240,7 @@ class Orchestrator:
         prs = None
         if status == SessionStatus.COMPLETED:
             logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
-            pr_infos = self.github_adapter.get_prs_for_branch(session.branch_name)
+            pr_infos = self.repository_host.get_prs_for_branch(session.branch_name)
             if pr_infos:
                 pr_url = pr_infos[0].url
                 # Convert PRInfo to dict for backward compatibility
@@ -1495,7 +1490,7 @@ class Orchestrator:
         # Reconcile any orphaned PR labels on startup
         self.reconcile_orphaned_pr_labels()
 
-        last_cache_update = time.time()
+        last_issue_fetch = 0.0  # Force immediate fetch on first iteration
         last_ui_update = time.time()
         ui_update_interval = 30  # Emit state_changed every 30 seconds for UI refresh
 
@@ -1566,27 +1561,47 @@ class Orchestrator:
                 elif len(self.state.active_sessions) >= self.config.max_concurrent_sessions:
                     logger.debug("[PLAN] Skipping - at capacity")
                 else:
-                    # Fetch issues for planning
-                    all_issues = self._fetch_all_issues()
+                    # Only fetch issues from GitHub when refresh interval has passed
+                    # or manual refresh was requested (reduces API calls significantly)
+                    issue_fetch_age = time.time() - last_issue_fetch
+                    should_fetch = (
+                        issue_fetch_age >= self.config.queue_refresh_seconds
+                        or self._refresh_requested
+                    )
 
-                    # Update dependency problems state
-                    _, dep_blocked = self.scheduler.get_available_issues(all_issues)
-                    self._update_dependency_problems(dep_blocked)
+                    if should_fetch:
+                        if self._refresh_requested:
+                            logger.info("[FETCH] Manual refresh triggered")
+                            self._refresh_requested = False
+                        else:
+                            logger.info("[FETCH] Scheduled refresh (every %ds)",
+                                       self.config.queue_refresh_seconds)
 
-                    # Filter issues for planning
-                    history_numbers = {e.issue_number for e in self.state.session_history}
-                    active_numbers = {s.issue.number for s in self.state.active_sessions}
-                    exclude_numbers = history_numbers | active_numbers
-                    filtered_issues = [i for i in all_issues if i.number not in exclude_numbers]
+                        # Fetch issues for planning
+                        all_issues = self._fetch_all_issues()
+                        last_issue_fetch = time.time()
 
-                    # Filter to single issue if specified
-                    if self.config.filter_issue:
-                        filtered_issues = [i for i in filtered_issues if i.number == self.config.filter_issue]
+                        # Update dependency problems state
+                        _, dep_blocked = self.scheduler.get_available_issues(all_issues)
+                        self._update_dependency_problems(dep_blocked)
 
-                    # Update cached queue for dashboard and plan execution
-                    self.state.cached_queue_issues = filtered_issues
+                        # Filter issues for planning
+                        history_numbers = {e.issue_number for e in self.state.session_history}
+                        active_numbers = {s.issue.number for s in self.state.active_sessions}
+                        exclude_numbers = history_numbers | active_numbers
+                        filtered_issues = [i for i in all_issues if i.number not in exclude_numbers]
 
-                    # Create snapshot and plan
+                        # Filter to single issue if specified
+                        if self.config.filter_issue:
+                            filtered_issues = [i for i in filtered_issues if i.number == self.config.filter_issue]
+
+                        # Update cached queue for dashboard and plan execution
+                        self.state.cached_queue_issues = filtered_issues
+                    else:
+                        # Use cached issues for planning
+                        filtered_issues = self.state.cached_queue_issues
+
+                    # Create snapshot and plan (uses cached or fresh issues)
                     snapshot = self._create_snapshot(filtered_issues)
                     assert self.planner is not None, "Planner not initialized"
                     plan = self.planner.plan(snapshot)
@@ -1600,12 +1615,6 @@ class Orchestrator:
 
                     # Apply the plan
                     self._apply_plan(plan)
-
-                # Periodically refresh the queue cache for the dashboard
-                cache_age = time.time() - last_cache_update
-                if cache_age >= self.config.queue_refresh_seconds:
-                    self.update_queue_cache()
-                    last_cache_update = time.time()
 
                 # Periodically emit state_changed for UI to update runtimes
                 # This ensures "Starting" transitions to "Active" as time passes
@@ -1651,7 +1660,16 @@ class Orchestrator:
             print("Shutdown requested - no active sessions, exiting...")
 
         # NOTE: IPC server shutdown is handled by the caller (CLI/bootstrap)
-        self._shutdown_requested = True
+
+    def request_refresh(self) -> None:
+        """Request an immediate refresh of issues from GitHub.
+
+        This triggers the orchestrator to fetch issues on the next loop iteration,
+        bypassing the queue_refresh_seconds interval. Can be called from web UI
+        or IPC to manually trigger a refresh.
+        """
+        self._refresh_requested = True
+        logger.info("[REFRESH] Manual refresh requested")
 
     def pause(self) -> None:
         """Pause - don't start new sessions."""
@@ -1800,7 +1818,7 @@ class Orchestrator:
         all_issues: list[Issue] = []
         for agent_label in self.config.agents.keys():
             logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-            issues = self.github_adapter.list_issues(
+            issues = self.repository_host.list_issues(
                 labels=self._build_labels(agent_label),
                 milestone=self._get_milestone_filter(),
                 limit=self.config.issue_fetch_limit,
@@ -2396,7 +2414,7 @@ class Orchestrator:
 
         # Check if a triage review issue already exists (avoid duplicates)
         logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-        existing = self.github_adapter.list_issues(
+        existing = self.repository_host.list_issues(
             labels=[self.config.triage_review_agent],
             limit=10,
         )
@@ -2657,13 +2675,7 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         Similar to launch_session but for fixing an existing PR.
         """
         # Find the original issue to get the agent type
-        logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-        issues = self.github_adapter.list_issues(limit=200)
-        original_issue = None
-        for issue in issues:
-            if issue.number == rework.issue_number:
-                original_issue = issue
-                break
+        original_issue = self.repository_host.get_issue(rework.issue_number)
 
         if not original_issue:
             print(f"Warning: Could not find issue #{rework.issue_number} for rework")
