@@ -317,8 +317,9 @@ class CompletionProcessor:
             logger.info("Executing action: %s for issue #%d", action.value, issue_number)
             try:
                 if action == RequestedAction.PUSH_BRANCH:
-                    # Worktrees have .venv symlinked from main repo, so dev tools are available
-                    result = self.git_adapter.push(worktree)
+                    # Skip pre-push hooks since agent_gate already validated the code
+                    # The validation record in completion.json proves agent_gate passed
+                    result = self.git_adapter.push(worktree, skip_hooks=True)
                     if result.success:
                         actions_taken.append(f"Pushed branch to remote")
                         logger.info("Push succeeded for #%d", issue_number)
