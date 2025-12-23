@@ -15,7 +15,7 @@ agents:
   "agent:e2e-test":
     prompt: "examples/prompts/e2e-test.md"
     model: haiku
-    timeout_minutes: 1  # Very short - agent completes in ~30s, timeout recovers if no /exit
+    timeout_minutes: 3  # Give agent more time to complete
     worktree_base: /tmp/e2e-worktrees
     permission_mode: bypassPermissions
 
