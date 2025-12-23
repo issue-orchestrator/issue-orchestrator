@@ -9,6 +9,14 @@ from .state_machines import (
     SessionState,
     SessionStateMachine,
 )
+from .issue_key import (
+    IssueKey,
+    GitHubIssueKey,
+    FakeIssueKey,
+    IssueHandle,
+    ParsedTitle,
+    parse_external_id,
+)
 
 __all__ = [
     # Events
@@ -25,4 +33,11 @@ __all__ = [
     "SessionStateMachine",
     "ReviewState",
     "ReviewStateMachine",
+    # Issue identity
+    "IssueKey",
+    "GitHubIssueKey",
+    "FakeIssueKey",
+    "IssueHandle",
+    "ParsedTitle",
+    "parse_external_id",
 ]

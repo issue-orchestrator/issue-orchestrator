@@ -42,6 +42,7 @@ from issue_orchestrator.ports.working_copy import (
 from issue_orchestrator.ports.event_sink import EventSink, TraceEvent, NullEventSink
 from issue_orchestrator.ports.session_runner import SessionRunner, NullSessionRunner
 from issue_orchestrator.ports.repository_host import RepositoryHost
+from issue_orchestrator.ports.issue_resolver import IssueResolver
 
 __all__ = [
     # Remote platform operations (new names)
@@ -51,6 +52,8 @@ __all__ = [
     "PullRequestTracker",
     # Combined interface
     "RepositoryHost",
+    # Identity resolution
+    "IssueResolver",
     # Backwards compatibility aliases
     "IssueRepository",
     "LabelManager",

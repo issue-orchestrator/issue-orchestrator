@@ -29,15 +29,18 @@ class DependencyState(Enum):
     UNKNOWN = "unknown"  # Transient error (network, rate limit)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=True)
 class Dependency:
     """A single dependency reference."""
 
-    # The issue number being depended on
-    issue_number: int
+    # The issue number being depended on (after resolution)
+    issue_number: int | None
 
     # Optional: repository in owner/repo format (for cross-repo deps)
     repository: str | None = None
+
+    # Original external_id if referenced via M1-010 style
+    external_id: str | None = None
 
     # Resolved state
     state: DependencyState = DependencyState.UNKNOWN
@@ -53,6 +56,17 @@ class Dependency:
     def blocks_running(self) -> bool:
         """Check if this dependency blocks the issue from running."""
         return self.state != DependencyState.SATISFIED
+
+    @property
+    def display_ref(self) -> str:
+        """Human-readable reference for logging/display."""
+        if self.external_id:
+            return self.external_id
+        if self.issue_number:
+            if self.repository:
+                return f"{self.repository}#{self.issue_number}"
+            return f"#{self.issue_number}"
+        return "(unknown)"
 
 
 @dataclass(frozen=True)
@@ -104,14 +118,14 @@ class DependencyReport:
 
         parts = []
         if self.unsatisfied:
-            nums = ", ".join(f"#{d.issue_number}" for d in self.unsatisfied)
-            parts.append(f"waiting on: {nums}")
+            refs = ", ".join(d.display_ref for d in self.unsatisfied)
+            parts.append(f"waiting on: {refs}")
         if self.missing:
-            nums = ", ".join(f"#{d.issue_number}" for d in self.missing)
-            parts.append(f"missing: {nums}")
+            refs = ", ".join(d.display_ref for d in self.missing)
+            parts.append(f"missing: {refs}")
         if self.unknown:
-            nums = ", ".join(f"#{d.issue_number}" for d in self.unknown)
-            parts.append(f"unknown: {nums}")
+            refs = ", ".join(d.display_ref for d in self.unknown)
+            parts.append(f"unknown: {refs}")
 
         return "Blocked - " + "; ".join(parts)
 
@@ -126,10 +140,27 @@ DEPENDS_ON_PATTERN = re.compile(
     r"(?:"
     r"(?P<repo>[\w.-]+/[\w.-]+)?#(?P<issue>\d+)"  # owner/repo#123 or #123
     r"|"
-    r"(?P<external_id>M\d+-\d+)"  # M1-010 style external ID
+    r"(?P<external_id>M\d+-\d{3})"  # M1-010 style external ID (3 digits)
     r")",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+@dataclass(frozen=True, eq=True)
+class ParsedDependencyRef:
+    """A parsed dependency reference before resolution.
+
+    Either issue_number or external_id will be set, not both.
+    """
+
+    # Issue number if referenced via #123 or owner/repo#123
+    issue_number: int | None = None
+
+    # External ID if referenced via M1-010 style
+    external_id: str | None = None
+
+    # Repository for cross-repo dependencies (owner/repo format)
+    repository: str | None = None
 
 
 def parse_dependencies(issue_body: str) -> list[tuple[int, str | None]]:
@@ -137,6 +168,9 @@ def parse_dependencies(issue_body: str) -> list[tuple[int, str | None]]:
 
     Returns list of (issue_number, repository) tuples.
     Repository is None for same-repo dependencies.
+
+    Note: This is the legacy interface that only returns issue number refs.
+    Use parse_dependency_refs() for the full interface including external IDs.
     """
     dependencies = []
 
@@ -146,11 +180,39 @@ def parse_dependencies(issue_body: str) -> list[tuple[int, str | None]]:
             repo = match.group("repo")
             dependencies.append((issue_num, repo))
         elif match.group("external_id"):
-            # External ID references need to be resolved via lookup
-            # For now, we skip these - they require a separate lookup mechanism
+            # External ID references need resolution - use parse_dependency_refs()
             logger.debug(
-                "External ID dependency %s found but not yet supported",
+                "External ID dependency %s found - use parse_dependency_refs() for full support",
                 match.group("external_id"),
             )
 
     return dependencies
+
+
+def parse_dependency_refs(issue_body: str) -> list[ParsedDependencyRef]:
+    """Parse all dependency references from issue body.
+
+    Returns ParsedDependencyRef objects that can reference issues by:
+    - Issue number (#123, owner/repo#123)
+    - External ID (M1-010)
+
+    External IDs require resolution via IssueResolver before state checking.
+    """
+    refs: list[ParsedDependencyRef] = []
+
+    for match in DEPENDS_ON_PATTERN.finditer(issue_body):
+        if match.group("issue"):
+            refs.append(
+                ParsedDependencyRef(
+                    issue_number=int(match.group("issue")),
+                    repository=match.group("repo"),
+                )
+            )
+        elif match.group("external_id"):
+            refs.append(
+                ParsedDependencyRef(
+                    external_id=match.group("external_id").upper(),
+                )
+            )
+
+    return refs

@@ -106,6 +106,7 @@ from .reconciliation import (
 )
 from .session_controller import SessionController, SessionDecision
 from .planner import Planner, Plan, OrchestratorSnapshot, SkippedItem
+from .cached_issue_resolver import CachedIssueResolver
 
 __all__ = [
     "Scheduler",
@@ -197,4 +198,6 @@ __all__ = [
     "Plan",
     "OrchestratorSnapshot",
     "SkippedItem",
+    # Issue resolution
+    "CachedIssueResolver",
 ]
