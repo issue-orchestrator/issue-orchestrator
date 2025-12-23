@@ -1770,16 +1770,16 @@ class Orchestrator:
                 logger.warning("[PLAN] Review for PR #%d not found", action.number)
 
         elif action.session_type == "rework":
-            # Find the pending rework and launch
+            # Find the pending rework by issue number (from issue_key.stable_id())
             rework = next(
-                (r for r in self.state.pending_reworks if r.pr_number == action.number),
+                (r for r in self.state.pending_reworks if int(r.issue_key.stable_id()) == action.number),
                 None
             )
             if rework:
                 self.launch_rework_session(rework)
-                logger.info("[PLAN] Launched rework session for PR #%d", action.number)
+                logger.info("[PLAN] Launched rework session for issue #%d", action.number)
             else:
-                logger.warning("[PLAN] Rework for PR #%d not found", action.number)
+                logger.warning("[PLAN] Rework for issue #%d not found", action.number)
 
         elif action.session_type == "triage":
             # Find the pending triage and launch
@@ -2512,19 +2512,19 @@ Flip labels from `{watch_label}` to `{self.config.triage_reviewed_label}` after 
             if not pr_number:
                 continue
 
-            # Check if already queued or being processed
-            if any(r.pr_number == pr_number for r in self.state.pending_reworks):
-                continue
-
-            # Check if already being worked on
-            if any(s.issue.number == pr_number for s in self.state.active_sessions):
-                continue
-
-            # Get the PR details to find associated issue and branch
+            # Get the PR details to find associated issue
             import re
             pr_body = pr.get("body", "")
             issue_match = re.search(r"Closes #(\d+)", pr_body)
             issue_number = int(issue_match.group(1)) if issue_match else pr_number
+
+            # Check if already queued (by issue_key)
+            if any(int(r.issue_key.stable_id()) == issue_number for r in self.state.pending_reworks):
+                continue
+
+            # Check if already being worked on
+            if any(s.issue.number == issue_number for s in self.state.active_sessions):
+                continue
 
             branch_name = pr.get("headRefName", f"{issue_number}-rework")
 
@@ -2536,16 +2536,31 @@ Flip labels from `{watch_label}` to `{self.config.triage_reviewed_label}` after 
                 self._escalate_to_needs_human(pr_number, issue_number, rework_cycle)
                 continue
 
+            # Extract agent type from PR labels
+            agent_type = None
+            for label in pr.get("labels", []):
+                label_name = label.get("name", "") if isinstance(label, dict) else str(label)
+                if label_name.startswith("agent:"):
+                    agent_type = label_name
+                    break
+
+            if not agent_type:
+                logger.warning("[REWORK] PR #%d has no agent label, skipping", pr_number)
+                continue
+
+            # Create store-agnostic IssueKey
+            from .domain.issue_key import GitHubIssueKey
+            repo = self.config.repo or ""
+            issue_key = GitHubIssueKey(repo=repo, external_id=str(issue_number))
+
             # Queue for rework
             rework = PendingRework(
-                issue_number=issue_number,
-                pr_number=pr_number,
-                pr_url=pr.get("url", f"https://github.com/{self.config.repo}/pull/{pr_number}"),
-                branch_name=branch_name,
+                issue_key=issue_key,
+                agent_type=agent_type,
                 rework_cycle=rework_cycle,
             )
             self.state.pending_reworks.append(rework)
-            print(f"🔄 Queued PR #{pr_number} for rework (cycle {rework_cycle})")
+            print(f"🔄 Queued issue {issue_key} for rework (cycle {rework_cycle})")
 
     def _get_rework_cycle_from_labels(self, labels: list) -> int:
         """Extract rework cycle number from PR labels.
@@ -2673,37 +2688,45 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         """Launch a rework session to fix issues found in review.
 
         Similar to launch_session but for fixing an existing PR.
+        Uses IssueKey for store-agnostic identity, resolves PR details via adapter.
         """
-        # Find the original issue to get the agent type
-        original_issue = self.repository_host.get_issue(rework.issue_number)
-
-        if not original_issue:
-            print(f"Warning: Could not find issue #{rework.issue_number} for rework")
-            return None
-
-        agent_label = original_issue.agent_type
-        if not agent_label:
-            print(f"Warning: Issue #{rework.issue_number} has no agent label")
-            return None
-
-        agent_config = self.config.agents.get(agent_label)
+        # Use cached agent_type from PendingRework (no fetch needed)
+        agent_config = self.config.agents.get(rework.agent_type)
         if not agent_config:
-            print(f"Warning: No agent config for {agent_label}")
+            print(f"Warning: No agent config for {rework.agent_type}")
             return None
+
+        # Resolve issue number from IssueKey (adapter translates key → handle)
+        # For GitHub, external_id is the issue number as string
+        issue_number = int(rework.issue_key.stable_id())
+
+        # Resolve PR details from issue number via adapter
+        # The adapter knows how to find the PR associated with an issue
+        prs = self.repository_host.get_prs_for_branch(f"{issue_number}-")  # Branch pattern
+        if not prs:
+            # Try fetching by issue reference in PR body
+            logger.warning("[REWORK] Could not find PR for issue %s", rework.issue_key)
+            # Fall back to constructing branch name
+            branch_name = f"{issue_number}-rework"
+            pr_number = issue_number  # Use issue number as fallback
+        else:
+            pr = prs[0]  # Take first matching PR
+            branch_name = pr.branch
+            pr_number = pr.number
 
         # Check if already being worked on (no lock files - direct reality check)
-        session_name = f"rework-{rework.issue_number}"
+        session_name = f"rework-{issue_number}"
         if any(s.tmux_session_name == session_name for s in self.state.active_sessions):
-            log_transition("rework", rework.issue_number, "QUEUED", "SKIP", "already in active_sessions")
-            self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_number != rework.issue_number]
+            log_transition("rework", issue_number, "QUEUED", "SKIP", "already in active_sessions")
+            self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
             return None
 
         if self._session_exists(session_name):
-            log_transition("rework", rework.issue_number, "QUEUED", "SKIP", "iTerm tab already running")
-            self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_number != rework.issue_number]
+            log_transition("rework", issue_number, "QUEUED", "SKIP", "iTerm tab already running")
+            self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
             return None
 
-        log_transition("rework", rework.issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")
+        log_transition("rework", issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")
 
         # Use agent's repo_root if set, otherwise fall back to config.repo_root
         repo_root = agent_config.repo_root or self.config.repo_root
@@ -2711,45 +2734,52 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         # Create worktree for rework (checks out the existing PR branch)
         worktree_path, _ = create_worktree(
             repo_root=repo_root,
-            issue_number=rework.issue_number,
-            issue_title=f"Rework #{rework.pr_number}",
-            branch_name=rework.branch_name,  # Use existing PR branch
+            issue_number=issue_number,
+            issue_title=f"Rework #{pr_number}",
+            branch_name=branch_name,  # Use existing PR branch
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
         )
 
         # Build command - include rework context
         command = agent_config.get_command(
-            issue_number=rework.issue_number,
-            issue_title=f"Rework PR #{rework.pr_number} (cycle {rework.rework_cycle})",
+            issue_number=issue_number,
+            issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
             worktree=worktree_path,
-            pr_number=rework.pr_number,
+            pr_number=pr_number,
         )
 
         # Create session
-        session_name = f"rework-{rework.issue_number}"
-        self._create_session(session_name, command, worktree_path, title=f"Rework #{rework.issue_number}")
+        self._create_session(session_name, command, worktree_path, title=f"Rework #{issue_number}")
+
+        # Create minimal Issue object for session tracking
+        # (We have the key identity, agent type is cached in rework)
+        rework_issue = Issue(
+            number=issue_number,
+            title=f"Rework #{pr_number}",
+            labels=[rework.agent_type],
+        )
 
         session = Session(
-            issue=original_issue,
+            issue=rework_issue,
             agent_config=agent_config,
             tmux_session_name=session_name,
             worktree_path=worktree_path,
-            branch_name=rework.branch_name,
+            branch_name=branch_name,
         )
 
         self.state.active_sessions.append(session)
-        log_transition("rework", rework.issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
-        print(f"🔧 Launched rework session for issue #{rework.issue_number} (cycle {rework.rework_cycle})")
+        log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
+        print(f"🔧 Launched rework session for issue #{issue_number} (cycle {rework.rework_cycle})")
 
         # Update rework cycle label on PR
-        self._update_rework_cycle_label(rework.pr_number, rework.rework_cycle)
+        self._update_rework_cycle_label(pr_number, rework.rework_cycle)
 
         # Remove from pending queue and remove needs-rework label
-        self.state.pending_reworks = [r for r in self.state.pending_reworks if r.pr_number != rework.pr_number]
+        self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
         rework_label = self.config.get_label_needs_rework()
         try:
-            subprocess.run(["gh", "pr", "edit", str(rework.pr_number), "--remove-label", rework_label],
+            subprocess.run(["gh", "pr", "edit", str(pr_number), "--remove-label", rework_label],
                           capture_output=True, text=True)
         except Exception:
             pass

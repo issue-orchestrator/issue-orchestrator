@@ -393,21 +393,24 @@ class Planner:
 
         if decision.skip_reason:
             for rework in snapshot.pending_reworks:
+                # Use issue_key's stable_id for identification
+                issue_num = int(rework.issue_key.stable_id())
                 skipped.append(SkippedItem(
                     item_type="rework",
-                    number=rework.pr_number,
+                    number=issue_num,
                     reason=decision.skip_reason,
                 ))
             return actions, skipped
 
         if decision.should_launch:
             for rework in decision.reworks_to_launch[:capacity]:
+                issue_num = int(rework.issue_key.stable_id())
                 # Check for escalation
                 escalation = self.rework_workflow.should_escalate(rework.rework_cycle)
                 if escalation.should_escalate:
                     actions.append(EscalateToHumanAction(
-                        issue_number=rework.issue_number,
-                        pr_number=rework.pr_number,
+                        issue_number=issue_num,
+                        pr_number=issue_num,  # PR resolved by adapter at execution time
                         escalation_reason=escalation.reason or "max rework cycles reached",
                         rework_cycles=rework.rework_cycle,
                         reason=f"escalating: cycle {rework.rework_cycle} >= max {escalation.max_cycles}",
@@ -415,10 +418,10 @@ class Planner:
                 else:
                     actions.append(LaunchSessionAction(
                         session_type="rework",
-                        number=rework.pr_number,
+                        number=issue_num,
                         command="",  # Orchestrator will fill in
                         working_dir="",  # Orchestrator will fill in
-                        reason=f"rework cycle {rework.rework_cycle} for PR #{rework.pr_number}",
+                        reason=f"rework cycle {rework.rework_cycle} for issue #{issue_num}",
                     ))
 
         return actions, skipped

@@ -2471,6 +2471,7 @@ class TestSessionExistsDetection:
     ):
         """Test that reworks with active sessions are removed from pending queue."""
         from issue_orchestrator.models import PendingRework
+        from issue_orchestrator.domain.issue_key import FakeIssueKey
 
         patch_plugin_manager.plugin.session_exists_override = True  # Session already running
         mock_repository_host.issues = [create_issue(42)]
@@ -2478,10 +2479,8 @@ class TestSessionExistsDetection:
         sample_config.code_review_agent = "agent:web"
 
         rework = PendingRework(
-            issue_number=42,
-            pr_number=123,
-            pr_url="https://github.com/owner/repo/pull/123",
-            branch_name="feature/issue-42",
+            issue_key=FakeIssueKey(name="42"),
+            agent_type="agent:web",
             rework_cycle=1,
         )
 

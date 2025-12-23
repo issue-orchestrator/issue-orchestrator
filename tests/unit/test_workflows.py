@@ -19,6 +19,7 @@ from issue_orchestrator.control.workflows.triage_workflow import (
     BatchTriageDecision,
 )
 from issue_orchestrator.models import PendingReview, PendingRework, PendingTriageReview
+from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.ports import NullEventSink, TraceEvent
 
 
@@ -42,14 +43,18 @@ def make_pending_review(pr_number: int, issue_number: int) -> PendingReview:
     )
 
 
-def make_pending_rework(issue_number: int, pr_number: int) -> PendingRework:
-    """Create a PendingRework for testing."""
+def make_pending_rework(issue_number: int, pr_number: int = None, rework_cycle: int = 1) -> PendingRework:
+    """Create a PendingRework for testing.
+
+    Args:
+        issue_number: The issue number (used as stable_id)
+        pr_number: Deprecated, ignored (kept for API compat)
+        rework_cycle: Which rework iteration this is
+    """
     return PendingRework(
-        issue_number=issue_number,
-        pr_number=pr_number,
-        pr_url=f"https://github.com/test/repo/pull/{pr_number}",
-        branch_name=f"issue-{issue_number}",
-        rework_cycle=1,
+        issue_key=FakeIssueKey(name=str(issue_number)),
+        agent_type="agent:test",
+        rework_cycle=rework_cycle,
     )
 
 
