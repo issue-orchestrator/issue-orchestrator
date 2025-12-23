@@ -1,4 +1,4 @@
-.PHONY: help install typecheck test test-unit test-integration test-e2e validate validate-before-push clean demo issues-validate issues-fix issues-fix-apply issues-create
+.PHONY: help install typecheck test test-unit test-integration test-e2e validate validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # Default target
 help:
@@ -13,8 +13,8 @@ help:
 	@echo "  validate-before-push Full validation (typecheck + all tests) - publish gate"
 	@echo "  demo                Run demo showing orchestrator features"
 	@echo "  issues-validate     Check issue naming conventions"
-	@echo "  issues-fix          Preview issue name fixes (dry run)"
-	@echo "  issues-fix-apply    Apply issue name fixes"
+	@echo "  issues-fix          Apply issue name fixes"
+	@echo "  issues-fix-dry-run  Preview issue name fixes (no changes)"
 	@echo "  issues-create       Create issue (use ARGS='--agent x --milestone n --title y')"
 	@echo "  clean               Remove build artifacts"
 
@@ -52,10 +52,10 @@ issues-validate:
 	python scripts/issues.py validate $(ARGS)
 
 issues-fix:
-	python scripts/issues.py fix $(ARGS)
-
-issues-fix-apply:
 	python scripts/issues.py fix --apply $(ARGS)
+
+issues-fix-dry-run:
+	python scripts/issues.py fix $(ARGS)
 
 issues-create:
 	python scripts/issues.py create $(ARGS)
