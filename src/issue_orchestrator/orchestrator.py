@@ -51,6 +51,7 @@ from .github import (
 from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
 from .observation.observer import SessionObserver
 from .control.scheduler import Scheduler
+from .control.dependency_evaluator import DependencyEvaluator
 # Terminal backend handled via adapters (see _terminal_adapter property)
 from .worktree import create_worktree, remove_worktree, has_uncommitted_changes, extract_issue_number_from_branch
 # State machine infrastructure
@@ -143,7 +144,21 @@ class Orchestrator:
     _shutdown_requested: bool = field(default=False, init=False)
 
     def __post_init__(self):
-        self.scheduler = Scheduler(self.config)
+        # GitHub adapter - use injected adapter or create real one
+        # Created first since other components may depend on it
+        if self._github_adapter is None:
+            self._github_adapter = GitHubAdapter(self.config.repo)
+
+        # Create dependency evaluator for issue dependency gating
+        dependency_evaluator = DependencyEvaluator(
+            issue_checker=self._github_adapter,
+            events=self.events,
+        )
+        self.scheduler = Scheduler(
+            self.config,
+            dependency_evaluator=dependency_evaluator,
+        )
+
         # Note: Observer is initialized without session_machines initially
         # We'll update the reference after session_machines is created
         # Pass events for observability (tests can subscribe to observe behavior)
@@ -154,10 +169,6 @@ class Orchestrator:
         self.issue_machines: dict[int, IssueStateMachine] = {}
         self.session_machines: dict[str, SessionStateMachine] = {}
         self.review_machines: dict[int, ReviewStateMachine] = {}  # keyed by PR number
-
-        # GitHub adapter - use injected adapter or create real one
-        if self._github_adapter is None:
-            self._github_adapter = GitHubAdapter(self.config.repo)
 
         # Set up event handlers
         self._setup_event_handlers()
@@ -765,6 +776,18 @@ class Orchestrator:
         session_id = self._extract_session_number(session_name)
         self.runner.kill_session(session_id)
 
+    def _refresh_issue(self, issue_number: int) -> Optional[Issue]:
+        """Fetch fresh issue data from GitHub.
+
+        Used for CAS checks before launching to detect race conditions
+        where the issue body may have been modified (adding dependencies).
+        """
+        try:
+            return self.github_adapter.get_issue(issue_number)
+        except Exception as e:
+            logger.warning("Failed to refresh issue #%d: %s", issue_number, e)
+            return None
+
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filter_label if configured."""
         result = list(labels)
@@ -995,6 +1018,31 @@ class Orchestrator:
             log_transition("issue", issue.number, "AVAILABLE", "SKIP", "iTerm tab already running")
             print(f"Issue #{issue.number} already has running iTerm tab - skipping")
             return None
+
+        # CAS check: Re-verify dependencies before launching (issue body may have changed)
+        dep_eval = getattr(self.scheduler, 'dependency_evaluator', None)
+        if dep_eval:
+            fresh_issue = self._refresh_issue(issue.number)
+            if fresh_issue and fresh_issue.body:
+                report = dep_eval.evaluate(
+                    issue_number=issue.number,
+                    issue_body=fresh_issue.body,
+                )
+                if not report.runnable:
+                    log_transition(
+                        "issue", issue.number, "AVAILABLE", "SKIP",
+                        f"dependencies changed: {report.summary()}"
+                    )
+                    print(f"Issue #{issue.number} now has unsatisfied dependencies - skipping")
+                    self.events.publish(TraceEvent(
+                        name="issue.dependency_blocked",
+                        data={
+                            "issue_number": issue.number,
+                            "issue_title": issue.title,
+                            "reason": report.summary(),
+                        },
+                    ))
+                    return None
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
 
@@ -1502,7 +1550,10 @@ class Orchestrator:
                             )
                             all_issues.extend(issues)
 
-                        available = self.scheduler.get_available_issues(all_issues)
+                        available, dep_blocked = self.scheduler.get_available_issues(all_issues)
+
+                        # Update dependency problems state and emit events for changes
+                        self._update_dependency_problems(dep_blocked)
 
                         # Filter out issues already in session history (already processed today)
                         history_numbers = {e.issue_number for e in self.state.session_history}
@@ -1609,14 +1660,114 @@ class Orchestrator:
         """Update the cached queue issues for instant dashboard pagination.
 
         This should be called after startup and periodically in run_loop.
+        Emits queue.changed event when the queue composition changes.
         """
         from .audit import get_queue_issues
         try:
             queue_issues = get_queue_issues(self.config, self.state)
+
+            # Track changes for events
+            old_numbers = {i.number for i in self.state.cached_queue_issues}
+            new_numbers = {i.number for i in queue_issues}
+
+            added = new_numbers - old_numbers
+            removed = old_numbers - new_numbers
+
             self.state.cached_queue_issues = queue_issues
-            logger.debug("Updated queue cache with %d issues", len(queue_issues))
+
+            # Emit event if queue changed
+            if added or removed:
+                # Build issue info for added issues
+                added_info = [
+                    {"number": i.number, "title": i.title}
+                    for i in queue_issues if i.number in added
+                ]
+                removed_info = [
+                    {"number": num}
+                    for num in removed
+                ]
+
+                self.events.publish(TraceEvent(
+                    name="queue.changed",
+                    data={
+                        "added": added_info,
+                        "removed": removed_info,
+                        "total": len(queue_issues),
+                    },
+                ))
+                logger.info(
+                    "Queue changed: %d added, %d removed, %d total",
+                    len(added), len(removed), len(queue_issues),
+                )
+            else:
+                logger.debug("Updated queue cache with %d issues (no changes)", len(queue_issues))
         except Exception as e:
             logger.warning("Failed to update queue cache: %s", e)
+
+    def _update_dependency_problems(
+        self,
+        dep_blocked: list[tuple["Issue", str]],
+    ) -> None:
+        """Update dependency problems state and emit events for changes.
+
+        Compares current state with new blocked issues and emits events for:
+        - dependency.blocked: when an issue becomes blocked
+        - dependency.unblocked: when a blocked issue is no longer blocked
+
+        Args:
+            dep_blocked: List of (issue, reason) tuples from scheduler.
+        """
+        from .models import DependencyProblem
+
+        # Build new problems dict
+        new_problems: dict[int, DependencyProblem] = {}
+        for issue, reason in dep_blocked:
+            new_problems[issue.number] = DependencyProblem(
+                issue_number=issue.number,
+                issue_title=issue.title,
+                blocked_by=[],  # We'll parse from reason if needed
+                summary=reason,
+            )
+
+        # Find newly blocked issues (in new but not in current)
+        current_blocked = set(self.state.dependency_problems.keys())
+        new_blocked = set(new_problems.keys())
+
+        newly_blocked = new_blocked - current_blocked
+        newly_unblocked = current_blocked - new_blocked
+
+        # Emit events for newly blocked
+        for issue_num in newly_blocked:
+            problem = new_problems[issue_num]
+            self.events.publish(TraceEvent(
+                name="dependency.blocked",
+                data={
+                    "issue_number": problem.issue_number,
+                    "issue_title": problem.issue_title,
+                    "summary": problem.summary,
+                },
+            ))
+
+        # Emit events for newly unblocked
+        for issue_num in newly_unblocked:
+            problem = self.state.dependency_problems[issue_num]
+            self.events.publish(TraceEvent(
+                name="dependency.unblocked",
+                data={
+                    "issue_number": problem.issue_number,
+                    "issue_title": problem.issue_title,
+                },
+            ))
+
+        # Update state
+        self.state.dependency_problems = new_problems
+
+        if newly_blocked or newly_unblocked:
+            logger.info(
+                "Dependency status changed: %d newly blocked, %d unblocked",
+                len(newly_blocked),
+                len(newly_unblocked),
+            )
 
     def queue_code_review(self, issue_number: int, pr_url: str, branch_name: str) -> None:
         """Queue a PR for code review.

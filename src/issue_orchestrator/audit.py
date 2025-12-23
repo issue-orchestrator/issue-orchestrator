@@ -5,13 +5,14 @@ issues are queued or skipped. Both the web UI and CLI audit command
 should use this module.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
 from .analysis import analyze_issue, get_issue_branches
 from .config import Config
+from .domain.dependencies import DependencyReport, parse_dependencies
 from .github import list_issues
 from .models import Issue, OrchestratorState
 from .control.scheduler import Scheduler
@@ -111,8 +112,9 @@ def get_queue_issues(
         active_numbers = {s.issue.number for s in state.active_sessions}
 
     # Use scheduler's filtering (same as run_loop uses)
+    # Note: dependency checking is disabled here since we're just auditing
     scheduler = Scheduler(config)
-    available = scheduler.get_available_issues(all_issues)
+    available, _ = scheduler.get_available_issues(all_issues, check_dependencies=False)
 
     # Filter out active and history items (same as web UI)
     queue_issues = [
@@ -248,3 +250,74 @@ def print_audit(entries: list[IssueAuditEntry], verbose: bool = False) -> None:
         for entry in skipped:
             print(str(entry))
         print()
+
+
+@dataclass
+class IssueDependencyInfo:
+    """Dependency information for a single issue (for web UI)."""
+
+    issue_number: int
+    has_dependencies: bool = False
+    dependencies: list[tuple[int, str]] = field(default_factory=list)  # List of (issue_number, title)
+    summary: str = ""  # Summary message for tooltip
+
+
+def get_issue_dependencies(
+    issues: list[Issue],
+    config: Config,
+) -> dict[int, IssueDependencyInfo]:
+    """Get dependency info for a list of issues (for web UI display).
+
+    This function parses dependencies from issue bodies and returns
+    a mapping that can be used by the web UI to show warning icons
+    and dependency lists.
+
+    Note: This does NOT check if dependencies are satisfied - that
+    would require GitHub API calls. It just extracts the declared
+    dependencies for display purposes.
+
+    Args:
+        issues: List of issues to analyze.
+        config: Configuration object.
+
+    Returns:
+        Dictionary mapping issue number to IssueDependencyInfo.
+    """
+    # Build a lookup of issue number -> title for dependencies
+    issue_titles: dict[int, str] = {i.number: i.title for i in issues}
+
+    result: dict[int, IssueDependencyInfo] = {}
+
+    for issue in issues:
+        if not issue.body:
+            result[issue.number] = IssueDependencyInfo(issue_number=issue.number)
+            continue
+
+        # Parse dependencies from body
+        deps = parse_dependencies(issue.body)
+
+        if not deps:
+            result[issue.number] = IssueDependencyInfo(issue_number=issue.number)
+            continue
+
+        # Build dependency list with titles
+        dep_list = []
+        for dep_num, dep_repo in deps:
+            if dep_repo:
+                # Cross-repo dependency
+                title = f"{dep_repo}#{dep_num}"
+            else:
+                # Same-repo dependency - use title if available
+                title = issue_titles.get(dep_num, f"Issue #{dep_num}")
+            dep_list.append((dep_num, title))
+
+        summary = f"Depends on: {', '.join(f'#{d[0]}' for d in dep_list)}"
+
+        result[issue.number] = IssueDependencyInfo(
+            issue_number=issue.number,
+            has_dependencies=True,
+            dependencies=dep_list,
+            summary=summary,
+        )
+
+    return result

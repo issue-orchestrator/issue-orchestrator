@@ -1,5 +1,6 @@
 """Unit tests for the scheduler module."""
 
+from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
 from issue_orchestrator.control.scheduler import (
@@ -7,14 +8,16 @@ from issue_orchestrator.control.scheduler import (
     PatternStrategy, NameStrategy, get_milestone_strategy, load_strategy_class,
     BUILTIN_STRATEGIES
 )
-from issue_orchestrator.models import Issue
+from issue_orchestrator.models import Issue, AgentConfig
 from issue_orchestrator.config import Config
 
 
-def create_mock_issue(number, priority=None, milestone=None, state="open", milestone_number=None, milestone_due_on=None):
+def create_mock_issue(number, priority=None, milestone=None, state="open", milestone_number=None, milestone_due_on=None, title=None):
     """Helper to create mock GitHub issue objects."""
     mock_issue = MagicMock()
     mock_issue.number = number
+    # Title must be a string for regex matching
+    mock_issue.title = title or f"Issue #{number}"
     # Milestone must be a string or None, not MagicMock
     mock_issue.milestone = milestone
     mock_issue.state = state
@@ -39,37 +42,38 @@ class TestScheduler:
         assert scheduler.config == sample_config
 
     def test_sort_by_priority_high_to_low(self, sample_config):
-        """Test sorting issues by priority from high to low."""
+        """Test sorting issues by priority tier P0-P3."""
         scheduler = Scheduler(config=sample_config)
 
         issues = [
-            create_mock_issue(1, priority="low"),
-            create_mock_issue(2, priority="high"),
-            create_mock_issue(3, priority="medium"),
-            create_mock_issue(4),  # No priority
+            Issue(number=1, title="[M1-001][P2-001] Low priority", labels=[]),
+            Issue(number=2, title="[M1-002][P0-001] Highest priority", labels=[]),
+            Issue(number=3, title="[M1-003][P1-001] Medium priority", labels=[]),
+            Issue(number=4, title="Old style no priority", labels=[]),
         ]
 
         sorted_issues = scheduler.sort_by_priority(issues)
 
-        # Priority order: high (0), medium (1), low (2), none (3)
-        assert sorted_issues[0].number == 2  # High priority
-        assert sorted_issues[1].number == 3  # Medium priority
-        assert sorted_issues[2].number == 1  # Low priority
+        # Priority order: P0 (0), P1 (1), P2 (2), none (9)
+        assert sorted_issues[0].number == 2  # P0
+        assert sorted_issues[1].number == 3  # P1
+        assert sorted_issues[2].number == 1  # P2
         assert sorted_issues[3].number == 4  # No priority
 
-    def test_sort_by_priority_same_priority_by_number(self, sample_config):
-        """Test that issues with same priority are sorted by issue number."""
+    def test_sort_by_priority_same_priority_by_sequence(self, sample_config):
+        """Test that issues with same priority are sorted by sequence then number."""
         scheduler = Scheduler(config=sample_config)
 
         issues = [
-            create_mock_issue(10, priority="high"),
-            create_mock_issue(5, priority="high"),
-            create_mock_issue(15, priority="high"),
+            Issue(number=10, title="[M1-001][P0-020] Third", labels=[]),
+            Issue(number=5, title="[M1-002][P0-005] First", labels=[]),
+            Issue(number=15, title="[M1-003][P0-010] Second", labels=[]),
         ]
 
         sorted_issues = scheduler.sort_by_priority(issues)
 
-        assert [i.number for i in sorted_issues] == [5, 10, 15]
+        # Same priority P0, sorted by sequence: 005, 010, 020
+        assert [i.number for i in sorted_issues] == [5, 15, 10]
 
     def test_sort_by_priority_with_milestones(self, sample_config):
         """Test sorting with milestone priority using pattern strategy."""
@@ -77,34 +81,102 @@ class TestScheduler:
         sample_config.milestone_sort_config = {"pattern": r"M(\d+)"}
         scheduler = Scheduler(config=sample_config)
 
-        # Create mock issues with milestone
-        # Milestones and labels are plain strings, not MagicMock objects
-        issue_m6 = create_mock_issue(1, priority="high", milestone="M6")
-        issue_m7 = create_mock_issue(2, priority="high", milestone="M7")
-        issue_no_m = create_mock_issue(3, priority="high", milestone=None)
+        issues = [
+            Issue(number=1, title="[M6-001][P0-001] M6 issue", labels=[], milestone="M6"),
+            Issue(number=2, title="[M7-001][P0-001] M7 issue", labels=[], milestone="M7"),
+            Issue(number=3, title="[P0-001] No milestone", labels=[], milestone=None),
+        ]
 
-        sorted_issues = scheduler.sort_by_priority([issue_no_m, issue_m7, issue_m6])
+        sorted_issues = scheduler.sort_by_priority(issues)
 
         # M6 should come before M7, both before no milestone
         assert sorted_issues[0].number == 1  # M6
         assert sorted_issues[1].number == 2  # M7
         assert sorted_issues[2].number == 3  # No milestone
 
-    def test_get_priority_value(self, sample_config):
-        """Test getting numeric priority value from labels."""
+    def test_get_priority_value_from_title(self, sample_config):
+        """Test getting priority value from title [Px-nnn] pattern."""
         scheduler = Scheduler(config=sample_config)
 
-        high_issue = create_mock_issue(1, priority="high")
-        assert scheduler._get_priority_value(high_issue) == 0
+        # P0 = highest priority
+        p0_issue = Issue(number=1, title="[M1-001][P0-001] Critical task", labels=[])
+        assert scheduler._get_priority_value(p0_issue) == 0
 
-        medium_issue = create_mock_issue(2, priority="medium")
-        assert scheduler._get_priority_value(medium_issue) == 1
+        # P1
+        p1_issue = Issue(number=2, title="[M1-002][P1-010] Important task", labels=[])
+        assert scheduler._get_priority_value(p1_issue) == 1
 
-        low_issue = create_mock_issue(3, priority="low")
-        assert scheduler._get_priority_value(low_issue) == 2
+        # P2
+        p2_issue = Issue(number=3, title="[M1-003][P2-020] Normal task", labels=[])
+        assert scheduler._get_priority_value(p2_issue) == 2
 
-        no_priority = create_mock_issue(4)
-        assert scheduler._get_priority_value(no_priority) == 3
+        # P3 = lowest priority
+        p3_issue = Issue(number=4, title="[M1-004][P3-030] Low priority task", labels=[])
+        assert scheduler._get_priority_value(p3_issue) == 3
+
+        # No priority pattern = 9 (sorts last)
+        no_priority = Issue(number=5, title="Old style issue without priority", labels=[])
+        assert scheduler._get_priority_value(no_priority) == 9
+
+    def test_get_priority_value_malformed_titles(self, sample_config):
+        """Malformed priority patterns sort last (return 9)."""
+        scheduler = Scheduler(config=sample_config)
+
+        # Missing sequence number
+        assert scheduler._get_priority_value(
+            Issue(number=1, title="[M1-001][P0] Missing sequence", labels=[])
+        ) == 9
+
+        # Wrong bracket style
+        assert scheduler._get_priority_value(
+            Issue(number=2, title="[M1-001](P0-001) Wrong brackets", labels=[])
+        ) == 9
+
+        # Priority out of single digit
+        assert scheduler._get_priority_value(
+            Issue(number=3, title="[M1-001][P10-001] Double digit tier", labels=[])
+        ) == 9
+
+        # Just milestone, no priority
+        assert scheduler._get_priority_value(
+            Issue(number=4, title="[M1-001] Only milestone", labels=[])
+        ) == 9
+
+    def test_get_sequence_value(self, sample_config):
+        """Test extracting sequence number from title."""
+        scheduler = Scheduler(config=sample_config)
+
+        issue1 = Issue(number=1, title="[M1-001][P0-001] First", labels=[])
+        assert scheduler._get_sequence_value(issue1) == 1
+
+        issue2 = Issue(number=2, title="[M1-002][P0-010] Tenth", labels=[])
+        assert scheduler._get_sequence_value(issue2) == 10
+
+        issue3 = Issue(number=3, title="[M1-003][P1-100] Hundredth", labels=[])
+        assert scheduler._get_sequence_value(issue3) == 100
+
+        # No pattern = infinity (sorts last)
+        issue4 = Issue(number=4, title="Old style issue", labels=[])
+        assert scheduler._get_sequence_value(issue4) == float("inf")
+
+    def test_sort_by_priority_with_title_format(self, sample_config):
+        """Test sorting with new [Mx-nnn][Px-nnn] title format."""
+        scheduler = Scheduler(config=sample_config)
+
+        issues = [
+            Issue(number=1, title="[M1-003][P1-020] Third", labels=[]),
+            Issue(number=2, title="[M1-001][P0-001] First", labels=[]),
+            Issue(number=3, title="[M1-002][P0-010] Second", labels=[]),
+            Issue(number=4, title="[M1-004][P2-001] Fourth", labels=[]),
+        ]
+
+        sorted_issues = scheduler.sort_by_priority(issues)
+
+        # Order: P0-001, P0-010, P1-020, P2-001
+        assert sorted_issues[0].number == 2  # P0-001
+        assert sorted_issues[1].number == 3  # P0-010
+        assert sorted_issues[2].number == 1  # P1-020
+        assert sorted_issues[3].number == 4  # P2-001
 
     def test_pick_next_batch_respects_max_sessions(self, sample_config):
         """Test that pick_next_batch respects max_sessions limit."""
@@ -788,3 +860,430 @@ class TestSchedulerWithStrategies:
         assert sorted_issues[0].number == 2  # M5 high
         assert sorted_issues[1].number == 3  # M5 low
         assert sorted_issues[2].number == 1  # M7 low
+
+
+class MockIssueChecker:
+    """Mock issue checker for testing dependency gating."""
+
+    def __init__(self):
+        self.issues: dict[int, str] = {}  # issue_number -> state
+
+    def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+        return self.issues.get(issue_number)
+
+
+class CollectingEventSink:
+    """Event sink that collects events for testing."""
+
+    def __init__(self):
+        self.events = []
+
+    def publish(self, event):
+        self.events.append(event)
+
+
+class TestSchedulerDependencyGating:
+    """Tests for scheduler's dependency gating integration.
+
+    Key invariant: Issues with unsatisfied dependencies are not available.
+    """
+
+    @pytest.fixture
+    def checker(self):
+        return MockIssueChecker()
+
+    @pytest.fixture
+    def events(self):
+        return CollectingEventSink()
+
+    @pytest.fixture
+    def sample_config(self):
+        return Config(
+            repo="test/repo",
+            repo_root=Path("/tmp/test"),
+            agents={
+                "claude": AgentConfig(
+                    prompt_path=Path("/tmp/prompt.txt"),
+                    worktree_base=Path("/tmp"),
+                ),
+            },
+            max_concurrent_sessions=3,
+        )
+
+    def test_get_available_filters_unsatisfied_dependencies(
+        self, sample_config, checker, events
+    ):
+        """Issues with unsatisfied dependencies are filtered out."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        checker.issues[100] = "open"  # Dependency is open (unsatisfied)
+
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+        scheduler = Scheduler(config=sample_config, dependency_evaluator=evaluator)
+
+        issues = [
+            Issue(
+                number=1,
+                title="Independent issue",
+                labels=[],
+                body="No dependencies",
+            ),
+            Issue(
+                number=2,
+                title="Blocked issue",
+                labels=[],
+                body="Depends-on: #100",  # Depends on open issue
+            ),
+        ]
+
+        available, dep_blocked = scheduler.get_available_issues(issues)
+
+        # Only issue 1 should be available
+        assert len(available) == 1
+        assert available[0].number == 1
+
+        # Issue 2 should be in dependency_blocked
+        assert len(dep_blocked) == 1
+        blocked_issue, reason = dep_blocked[0]
+        assert blocked_issue.number == 2
+        assert "waiting on: #100" in reason
+
+    def test_get_available_allows_satisfied_dependencies(
+        self, sample_config, checker, events
+    ):
+        """Issues with satisfied (closed) dependencies are available."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        checker.issues[100] = "closed"  # Dependency is satisfied
+
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+        scheduler = Scheduler(config=sample_config, dependency_evaluator=evaluator)
+
+        issues = [
+            Issue(
+                number=1,
+                title="Issue with satisfied dep",
+                labels=[],
+                body="Depends-on: #100",
+            ),
+        ]
+
+        available, dep_blocked = scheduler.get_available_issues(issues)
+
+        # Issue should be available since dependency is satisfied
+        assert len(available) == 1
+        assert available[0].number == 1
+        assert len(dep_blocked) == 0
+
+    def test_get_available_no_dependency_check_when_disabled(
+        self, sample_config, checker, events
+    ):
+        """When check_dependencies=False, dependencies are not checked."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        checker.issues[100] = "open"  # Would block if checked
+
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+        scheduler = Scheduler(config=sample_config, dependency_evaluator=evaluator)
+
+        issues = [
+            Issue(
+                number=1,
+                title="Would be blocked",
+                labels=[],
+                body="Depends-on: #100",
+            ),
+        ]
+
+        available, dep_blocked = scheduler.get_available_issues(
+            issues, check_dependencies=False
+        )
+
+        # Issue should be available since dependency check is disabled
+        assert len(available) == 1
+        assert len(dep_blocked) == 0
+
+    def test_get_available_no_evaluator_skips_dependency_check(self, sample_config):
+        """When no evaluator is provided, dependencies are not checked."""
+        scheduler = Scheduler(config=sample_config)  # No dependency_evaluator
+
+        issues = [
+            Issue(
+                number=1,
+                title="Has dependency but no evaluator",
+                labels=[],
+                body="Depends-on: #100",
+            ),
+        ]
+
+        available, dep_blocked = scheduler.get_available_issues(issues)
+
+        # Issue should be available since no evaluator
+        assert len(available) == 1
+        assert len(dep_blocked) == 0
+
+    def test_dependency_evaluator_emits_event(self, sample_config, checker, events):
+        """Dependency evaluator emits events for observability."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        checker.issues[100] = "open"
+
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+        scheduler = Scheduler(config=sample_config, dependency_evaluator=evaluator)
+
+        issues = [
+            Issue(
+                number=1,
+                title="Blocked",
+                labels=[],
+                body="Depends-on: #100",
+            ),
+        ]
+
+        scheduler.get_available_issues(issues)
+
+        # Evaluator should have emitted an event
+        assert len(events.events) == 1
+        event = events.events[0]
+        assert event.name == "dependencies.evaluated"
+        assert event.data["issue_number"] == 1
+        assert event.data["runnable"] is False
+
+    def test_multiple_dependencies_all_must_be_closed(
+        self, sample_config, checker, events
+    ):
+        """Issue with multiple dependencies only runs when ALL are closed."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        # Initially both dependencies are open
+        checker.issues[100] = "open"
+        checker.issues[200] = "open"
+
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+        scheduler = Scheduler(config=sample_config, dependency_evaluator=evaluator)
+
+        issues = [
+            Issue(
+                number=1,
+                title="Multi-dep issue",
+                labels=[],
+                body="Depends-on: #100\nDepends-on: #200",
+            ),
+        ]
+
+        # Both open -> blocked
+        available, dep_blocked = scheduler.get_available_issues(issues)
+        assert len(available) == 0
+        assert len(dep_blocked) == 1
+        assert "waiting on" in dep_blocked[0][1]
+
+        # Close one, still blocked
+        checker.issues[100] = "closed"
+        events.events.clear()
+
+        available, dep_blocked = scheduler.get_available_issues(issues)
+        assert len(available) == 0, "Should still be blocked - only one dep closed"
+        assert len(dep_blocked) == 1
+        assert "#200" in dep_blocked[0][1], "Should show #200 as blocking"
+
+        # Close both, now runnable
+        checker.issues[200] = "closed"
+        events.events.clear()
+
+        available, dep_blocked = scheduler.get_available_issues(issues)
+        assert len(available) == 1, "Should be available when all deps closed"
+        assert len(dep_blocked) == 0
+
+    def test_dependency_closes_issue_becomes_available(
+        self, sample_config, checker, events
+    ):
+        """When a dependency closes, previously blocked issue becomes available."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        # Dependency starts open
+        checker.issues[100] = "open"
+
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+        scheduler = Scheduler(config=sample_config, dependency_evaluator=evaluator)
+
+        issues = [
+            Issue(
+                number=1,
+                title="Waiting on #100",
+                labels=[],
+                body="Depends-on: #100",
+            ),
+        ]
+
+        # First check: blocked
+        available, dep_blocked = scheduler.get_available_issues(issues)
+        assert len(available) == 0
+        assert len(dep_blocked) == 1
+        assert dep_blocked[0][0].number == 1
+
+        # Simulate dependency being closed
+        checker.issues[100] = "closed"
+
+        # Second check: now available
+        available, dep_blocked = scheduler.get_available_issues(issues)
+        assert len(available) == 1
+        assert available[0].number == 1
+        assert len(dep_blocked) == 0
+
+    def test_mixed_dependencies_satisfied_unsatisfied_missing(
+        self, sample_config, checker, events
+    ):
+        """Issue with mixed dependency states is blocked."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        checker.issues[100] = "closed"  # satisfied
+        checker.issues[200] = "open"    # unsatisfied
+        # 300 not in checker -> missing
+
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+        scheduler = Scheduler(config=sample_config, dependency_evaluator=evaluator)
+
+        issues = [
+            Issue(
+                number=1,
+                title="Complex deps",
+                labels=[],
+                body="Depends-on: #100\nDepends-on: #200\nDepends-on: #300",
+            ),
+        ]
+
+        available, dep_blocked = scheduler.get_available_issues(issues)
+
+        assert len(available) == 0, "Should be blocked with any unsatisfied deps"
+        assert len(dep_blocked) == 1
+        reason = dep_blocked[0][1]
+        # Should mention both blocking deps
+        assert "#200" in reason or "#300" in reason
+
+
+class TestLaunchSessionDependencyCAS:
+    """Tests for CAS (Compare-And-Swap) dependency check at launch time.
+
+    These tests verify that launch_session re-checks dependencies to handle
+    the race condition where an issue's dependencies may have changed
+    between scheduling and launching.
+    """
+
+    @pytest.fixture
+    def checker(self):
+        return MockIssueChecker()
+
+    @pytest.fixture
+    def events(self):
+        return CollectingEventSink()
+
+    def test_launch_skips_if_dependencies_added(self, checker, events):
+        """launch_session skips if issue gained new unsatisfied dependencies."""
+        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+        from issue_orchestrator.config import Config
+        from unittest.mock import patch, MagicMock
+
+        # Dependency is open
+        checker.issues[100] = "open"
+
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+
+        # Create orchestrator with mocked dependencies
+        config = MagicMock(spec=Config)
+        config.repo = "test/repo"
+        config.agents = {"agent:backend": MagicMock(repo_root="/tmp", worktree_base=None)}
+
+        with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
+            orch = Orchestrator.__new__(Orchestrator)
+            orch.config = config
+            orch.state = MagicMock()
+            orch.state.active_sessions = []
+            orch.events = events
+            orch.runner = MagicMock()
+            orch.runner.session_exists.return_value = False
+            orch.scheduler = MagicMock()
+            orch.scheduler.dependency_evaluator = evaluator
+
+        # Original issue had no dependencies
+        issue = Issue(
+            number=1,
+            title="Test",
+            labels=["agent:backend"],
+            body="No deps originally",
+        )
+
+        # But when refreshed, it now has a dependency
+        fresh_issue = Issue(
+            number=1,
+            title="Test",
+            labels=["agent:backend"],
+            body="Depends-on: #100",  # New dependency added!
+        )
+
+        with patch.object(orch, '_refresh_issue', return_value=fresh_issue):
+            with patch.object(orch, '_session_exists', return_value=False):
+                result = orch.launch_session(issue)
+
+        # Should have skipped due to new unsatisfied dependency
+        assert result is None
+
+    def test_launch_does_not_block_if_dependencies_satisfied(self, checker, events):
+        """launch_session does not emit block event if dependencies are satisfied."""
+        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+        from issue_orchestrator.config import Config
+        from unittest.mock import patch, MagicMock
+
+        # Dependency is closed (satisfied)
+        checker.issues[100] = "closed"
+
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+
+        config = MagicMock(spec=Config)
+        config.repo = "test/repo"
+        config.repo_root = "/tmp/repo"
+        config.agents = {"agent:backend": MagicMock(repo_root="/tmp", worktree_base=None)}
+
+        with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
+            orch = Orchestrator.__new__(Orchestrator)
+            orch.config = config
+            orch.state = MagicMock()
+            orch.state.active_sessions = []
+            orch.events = events
+            orch.runner = MagicMock()
+            orch.runner.session_exists.return_value = False
+            orch.scheduler = MagicMock()
+            orch.scheduler.dependency_evaluator = evaluator
+
+        issue = Issue(
+            number=1,
+            title="Test",
+            labels=["agent:backend"],
+            body="Depends-on: #100",
+        )
+
+        # Fresh issue still has same dependency (which is satisfied)
+        fresh_issue = Issue(
+            number=1,
+            title="Test",
+            labels=["agent:backend"],
+            body="Depends-on: #100",
+        )
+
+        # We only test up to the dependency check - if it passes, launch continues
+        # The rest of the launch will fail due to incomplete mocking, but that's OK
+        with patch.object(orch, '_refresh_issue', return_value=fresh_issue):
+            with patch.object(orch, '_session_exists', return_value=False):
+                with patch('issue_orchestrator.orchestrator.create_worktree') as mock_worktree:
+                    # If we get to create_worktree, the dependency check passed
+                    mock_worktree.side_effect = Exception("Stop here - deps check passed")
+                    try:
+                        orch.launch_session(issue)
+                    except Exception as e:
+                        if "Stop here" not in str(e):
+                            raise  # Re-raise unexpected errors
+
+        # The key assertion: no dependency_blocked event was emitted
+        dep_blocked_events = [e for e in events.events if e.name == "issue.dependency_blocked"]
+        assert len(dep_blocked_events) == 0, "Should not have blocked - deps are satisfied"

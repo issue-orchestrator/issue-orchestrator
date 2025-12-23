@@ -386,3 +386,34 @@ class GitHubAdapter:
         except github.GitHubError:
             logger.error(f"Failed to add comment to issue/PR {issue_or_pr_number}")
             raise
+
+    def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+        """Get the state of an issue ('open', 'closed', or None if not found).
+
+        This method implements the IssueStateChecker protocol for dependency evaluation.
+
+        Args:
+            issue_number: The issue number to check.
+            repo: Optional repository in owner/repo format for cross-repo dependencies.
+                  If None, uses this adapter's configured repo.
+
+        Returns:
+            The issue state ('open' or 'closed'), or None if the issue cannot be found.
+        """
+        target_repo = repo or self.repo
+        try:
+            # Use gh issue view to get the issue state
+            args = ["issue", "view", str(issue_number), "--json", "state"]
+            output = github._run_gh_json(args, target_repo)
+
+            if isinstance(output, dict):
+                return output.get("state")
+            return None
+        except github.GitHubError as e:
+            # 404 or permission error - issue is missing
+            logger.debug(f"Issue {issue_number} in {target_repo} not found: {e}")
+            return None
+        except Exception as e:
+            # Re-raise unexpected errors for UNKNOWN state handling
+            logger.debug(f"Error checking issue {issue_number} in {target_repo}: {e}")
+            raise

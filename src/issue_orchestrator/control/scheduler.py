@@ -5,14 +5,18 @@ to work on next based on priorities, dependencies, and capacity.
 """
 
 import importlib
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Protocol
 
 from ..models import Issue, AgentConfig
 from ..config import Config
 from .. import labels
+from .dependency_evaluator import DependencyEvaluator
+
+logger = logging.getLogger(__name__)
 
 
 # Built-in strategy aliases map to full module paths
@@ -159,31 +163,48 @@ class SchedulerResult:
 
     issues_to_launch: list[Issue]
     blocked_issues: list[tuple[Issue, str]]  # issue and reason
+    dependency_blocked: list[tuple[Issue, str]] = field(default_factory=list)  # issues blocked by unsatisfied dependencies
 
 
 class Scheduler:
     """Handles issue scheduling, prioritization, and dependency analysis."""
 
-    def __init__(self, config: Config, milestone_strategy: Optional[MilestoneSortStrategy] = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        milestone_strategy: Optional[MilestoneSortStrategy] = None,
+        dependency_evaluator: Optional[DependencyEvaluator] = None,
+    ) -> None:
         """Initialize scheduler with configuration.
 
         Args:
             config: Configuration object containing max_sessions and other settings.
             milestone_strategy: Optional milestone sorting strategy. If None, uses config to create one.
+            dependency_evaluator: Optional evaluator to gate issues on dependencies.
         """
         self.config = config
         self.milestone_strategy = milestone_strategy or get_milestone_strategy(config)
+        self.dependency_evaluator = dependency_evaluator
 
-    def get_available_issues(self, all_issues: list[Issue]) -> list[Issue]:
+    def get_available_issues(
+        self,
+        all_issues: list[Issue],
+        check_dependencies: bool = True,
+    ) -> tuple[list[Issue], list[tuple[Issue, str]]]:
         """Filter to issues that can be worked on (not blocked, not in-progress).
 
         Args:
             all_issues: List of all issues to filter.
+            check_dependencies: Whether to check issue dependencies.
 
         Returns:
-            List of issues that are not blocked or in-progress.
+            Tuple of (available_issues, dependency_blocked) where:
+            - available_issues: List of runnable issues
+            - dependency_blocked: List of (issue, reason) for dependency-blocked issues
         """
         available = []
+        dependency_blocked: list[tuple[Issue, str]] = []
+
         for issue in all_issues:
             if issue.state == "closed":
                 continue
@@ -191,11 +212,34 @@ class Scheduler:
                 continue
             if labels.is_blocking_any(issue.labels):
                 continue
+
+            # Check dependencies if evaluator is available
+            if check_dependencies and self.dependency_evaluator and issue.body:
+                report = self.dependency_evaluator.evaluate(
+                    issue_number=issue.number,
+                    issue_body=issue.body,
+                )
+                if not report.runnable:
+                    dependency_blocked.append((issue, report.summary()))
+                    logger.debug(
+                        "Issue #%d blocked by dependencies: %s",
+                        issue.number,
+                        report.summary(),
+                    )
+                    continue
+
             available.append(issue)
-        return available
+
+        return available, dependency_blocked
 
     def sort_by_priority(self, issues: list[Issue]) -> list[Issue]:
-        """Sort issues by milestone, then priority label, then number.
+        """Sort issues by milestone, priority tier, sequence, then issue number.
+
+        Sort order (from naming standard):
+        1. Milestone order: M0, M1, M2...
+        2. Priority tier: P0 < P1 < P2 < P3
+        3. Sequence: numeric part after dash in [Px-nnn]
+        4. Tie-breaker: GitHub issue number ascending
 
         Args:
             issues: List of issues to sort.
@@ -207,13 +251,29 @@ class Scheduler:
             # Get milestone sort key from strategy
             milestone_key = self.milestone_strategy.get_sort_key(issue)
 
-            # Extract priority from labels
+            # Extract priority tier and sequence from title [Px-nnn]
             priority_value = self._get_priority_value(issue)
+            sequence_value = self._get_sequence_value(issue)
 
-            # Combine: milestone first, then priority, then issue number
-            return milestone_key + (priority_value, issue.number)
+            # Combine: milestone, priority tier, sequence, issue number
+            return milestone_key + (priority_value, sequence_value, issue.number)
 
         return sorted(issues, key=sort_key)
+
+    def _get_sequence_value(self, issue: Issue) -> int | float:
+        """Get sequence number from issue title [Px-nnn] pattern.
+
+        Args:
+            issue: Issue to extract sequence from.
+
+        Returns:
+            Sequence number, or infinity if not found (sorts last).
+        """
+        # Match [Px-nnn] pattern and extract nnn
+        match = re.search(r"\[P\d-(\d+)\]", issue.title)
+        if match:
+            return int(match.group(1))
+        return float("inf")  # No sequence = sort last
 
     def pick_next_batch(
         self,
@@ -300,18 +360,17 @@ class Scheduler:
         return dependencies
 
     def _get_priority_value(self, issue: Issue) -> int:
-        """Get numeric priority value from issue labels.
+        """Get numeric priority value from issue title [Px-nnn] pattern.
+
+        Sort order: P0 < P1 < P2 < P3 (lower value = higher priority)
 
         Args:
             issue: Issue to extract priority from.
 
         Returns:
-            Priority value (0=high, 1=medium, 2=low, 3=none).
+            Priority tier (0-3), or 9 if no priority in title.
         """
-        if "priority:high" in issue.labels:
-            return 0
-        if "priority:medium" in issue.labels:
-            return 1
-        if "priority:low" in issue.labels:
-            return 2
-        return 3
+        match = re.search(r"\[P(\d)-\d+\]", issue.title)
+        if match:
+            return int(match.group(1))
+        return 9  # No priority = sort last

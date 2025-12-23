@@ -1,4 +1,4 @@
-.PHONY: help install typecheck test test-unit test-integration test-e2e validate validate-before-push clean
+.PHONY: help install typecheck test test-unit test-integration test-e2e validate validate-before-push clean demo
 
 # Default target
 help:
@@ -11,6 +11,7 @@ help:
 	@echo "  test                Run all tests"
 	@echo "  validate            Quick validation (typecheck + unit tests)"
 	@echo "  validate-before-push Full validation (typecheck + all tests) - publish gate"
+	@echo "  demo                Run demo showing orchestrator features"
 	@echo "  clean               Remove build artifacts"
 
 install:
@@ -37,3 +38,7 @@ validate: typecheck test-unit
 # Full validation for pre-push (~2-3 min) - THE publish gate
 validate-before-push: typecheck
 	pytest tests/unit tests/integration tests/e2e -x -q --tb=short
+
+# Demo - show orchestrator features with mock data
+demo:
+	issue-orchestrator demo

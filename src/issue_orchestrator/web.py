@@ -165,10 +165,15 @@ async def dashboard(
 
         # 2. Queue (use cached issues for instant pagination)
         queue_total = 0
+        dependency_info = {}
         if state.startup_status == "complete":
             queue_issues = state.cached_queue_issues
             queue_total = len(queue_issues)
             logger.info("[dashboard] Using %d cached queue issues", queue_total)
+
+            # Get dependency info for queue issues
+            from .audit import get_issue_dependencies
+            dependency_info = get_issue_dependencies(queue_issues, config)
 
             start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
             end_idx = start_idx + QUEUE_PAGE_SIZE
@@ -176,13 +181,23 @@ async def dashboard(
                 if issue.number in seen_issues:
                     continue
                 seen_issues.add(issue.number)
+
+                # Get dependency info for this issue
+                dep_info = dependency_info.get(issue.number)
+                has_deps = dep_info.has_dependencies if dep_info else False
+                deps_json = json.dumps([
+                    {"number": d[0], "title": d[1]}
+                    for d in (dep_info.dependencies if dep_info else [])
+                ])
+                dep_summary = dep_info.summary if dep_info else ""
+
                 item = {
                     "issue_number": issue.number,
                     "title": issue.title,
                     "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
                     "status": "queue",
                     "status_label": "Queue",
-                    "status_reason": "",
+                    "status_reason": dep_summary,  # Show dependency info in tooltip
                     "time": "",
                     "action": "open",
                     "action_icon": "↗",
@@ -193,6 +208,10 @@ async def dashboard(
                     "pr_url": "",
                     "has_terminal": False,
                     "worktree_path": "",
+                    # Dependency info
+                    "has_dependencies": has_deps,
+                    "dependencies": deps_json,
+                    "dependency_summary": dep_summary,
                 }
                 work_items.append(item)
 
@@ -558,6 +577,36 @@ async def shutdown(force: bool = False) -> JSONResponse:
         "status": "force_shutdown" if force else "shutdown_requested",
         "active_sessions": active_count,
     })
+
+
+@app.get("/api/dependency-problems")
+async def get_dependency_problems() -> JSONResponse:
+    """Get current dependency problems for issues.
+
+    Returns a dict mapping issue number to problem details.
+    The web UI fetches this on load and then listens for
+    dependency.blocked/dependency.unblocked events to stay updated.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    state = _orchestrator.state
+    config = _orchestrator.config
+
+    # Build URL helper
+    def make_issue_url(issue_number: int) -> str:
+        return f"https://github.com/{config.repo}/issues/{issue_number}" if config.repo else ""
+
+    problems = {}
+    for issue_num, problem in state.dependency_problems.items():
+        problems[issue_num] = {
+            "issue_number": problem.issue_number,
+            "issue_title": problem.issue_title,
+            "summary": problem.summary,
+            "issue_url": make_issue_url(problem.issue_number),
+        }
+
+    return JSONResponse({"problems": problems})
 
 
 @app.get("/api/info")

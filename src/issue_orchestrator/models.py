@@ -400,6 +400,15 @@ PendingCTOReview = PendingTriageReview
 
 
 @dataclass
+class DependencyProblem:
+    """A dependency problem for an issue (for web UI display)."""
+    issue_number: int
+    issue_title: str
+    blocked_by: list[tuple[int, str, str]]  # [(dep_number, dep_title, state)]
+    summary: str  # Human-readable summary
+
+
+@dataclass
 class OrchestratorState:
     """Persisted state of the orchestrator."""
     active_sessions: list[Session] = field(default_factory=list)
@@ -415,6 +424,7 @@ class OrchestratorState:
     startup_status: str = "pending"  # "pending", "running", "complete"
     startup_message: str = ""  # Current startup task description
     cached_queue_issues: list["Issue"] = field(default_factory=list)  # Cached queue for instant pagination
+    dependency_problems: dict[int, "DependencyProblem"] = field(default_factory=dict)  # Issues blocked by dependencies
 
 
 @dataclass

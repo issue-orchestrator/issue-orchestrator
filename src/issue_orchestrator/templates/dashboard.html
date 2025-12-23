@@ -125,7 +125,24 @@
         .issue-row.slow-row { background: #1c1710; }
         .issue-row.slow-row:hover { background: #2a2010; }
 
-        .issue-num { font-weight: 600; color: #58a6ff; font-size: 13px; }
+        .issue-num { font-weight: 600; color: #58a6ff; font-size: 13px; display: flex; align-items: center; gap: 4px; }
+        .dep-icon {
+            color: #8b949e;
+            font-size: 11px;
+            cursor: help;
+            opacity: 0.8;
+        }
+        .dep-icon:hover {
+            opacity: 1;
+        }
+        .dep-warning-icon {
+            color: #d29922;
+            font-size: 12px;
+            cursor: help;
+        }
+        .dep-warning-icon:hover {
+            color: #f0b030;
+        }
         .issue-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
         .status-dot {
             width: 8px; height: 8px; border-radius: 50%;
@@ -226,6 +243,33 @@
         .context-menu-item.disabled { color: #484f58; cursor: default; }
         .context-menu-item.disabled:hover { background: transparent; }
         .context-menu-divider { height: 1px; background: #30363d; margin: 4px 0; }
+        .context-menu-label {
+            padding: 6px 16px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .context-menu-item.dep-item {
+            padding-left: 24px;
+            font-size: 12px;
+        }
+        .context-menu-item.dep-item .dep-num {
+            color: #58a6ff;
+            font-weight: 600;
+            min-width: 45px;
+        }
+        .context-menu-item.dep-item .dep-title {
+            color: #8b949e;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 200px;
+        }
 
         /* Settings Menu */
         .settings-btn {
@@ -401,10 +445,13 @@
                  data-pr-url="{{ issue.pr_url if issue.pr_url else '' }}"
                  data-has-terminal="{{ 'true' if issue.has_terminal else 'false' }}"
                  data-worktree-path="{{ issue.worktree_path if issue.worktree_path else '' }}"
+                 data-has-dependencies="{{ 'true' if issue.has_dependencies else 'false' }}"
+                 data-dependencies="{{ issue.dependencies if issue.dependencies else '[]' }}"
+                 data-dependency-summary="{{ issue.dependency_summary if issue.dependency_summary else '' }}"
                  title="{{ issue.action_hint }}"
                  onclick="handleClick(this)"
                  oncontextmenu="showContextMenu(event, this)">
-                <span class="issue-num">#{{ issue.issue_number }}</span>
+                <span class="issue-num">#{{ issue.issue_number }}{% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}">⛓</span>{% endif %}<span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="">⚠</span></span>
                 <span class="issue-status status-{{ issue.status }}" title="{{ issue.status_reason if issue.status_reason else '' }}">
                     <span class="status-dot"></span>
                     {{ issue.status_label }}
@@ -469,6 +516,13 @@
         </div>
         <div class="context-menu-item" id="menuPR">
             <span>🔀</span> Open PR on GitHub
+        </div>
+        <div class="context-menu-divider" id="menuDepsDivider" style="display:none;"></div>
+        <div class="context-menu-label" id="menuDepsLabel" style="display:none;">
+            <span>⛓</span> Dependencies
+        </div>
+        <div id="menuDepsContainer">
+            <!-- Dependency items will be dynamically inserted here -->
         </div>
         <div class="context-menu-divider" id="menuHistoryDivider" style="display:none;"></div>
         <div class="context-menu-item" id="menuRetry" style="display:none;">
@@ -633,8 +687,43 @@
             window.location.reload();
         }
 
+        // Dependency problems tracking
+        let dependencyProblems = {};  // issue_number -> problem info
+
+        function updateDependencyWarning(issueNumber, problem) {
+            const warningIcon = document.getElementById('dep-warning-' + issueNumber);
+            if (warningIcon) {
+                if (problem) {
+                    warningIcon.style.display = 'inline';
+                    warningIcon.title = problem.summary || 'Dependency problem';
+                    // Store for context menu
+                    warningIcon.dataset.problemSummary = problem.summary;
+                } else {
+                    warningIcon.style.display = 'none';
+                    warningIcon.title = '';
+                }
+            }
+        }
+
+        function loadDependencyProblems() {
+            fetch('/api/dependency-problems')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.problems) {
+                        dependencyProblems = data.problems;
+                        console.log('[deps] Loaded', Object.keys(dependencyProblems).length, 'dependency problems');
+                        // Update warning icons for all problems
+                        for (const [issueNum, problem] of Object.entries(dependencyProblems)) {
+                            updateDependencyWarning(issueNum, problem);
+                        }
+                    }
+                })
+                .catch(err => console.error('[deps] Failed to load dependency problems:', err));
+        }
+
         // Server-Sent Events for real-time updates
         // Always connect - even during startup - so we can receive startup_complete
+        // IMPORTANT: Connect first, then fetch initial state on open to avoid race conditions
         (function() {
             const startupComplete = {{ 'true' if startup_status == 'complete' else 'false' }};
             const evtSource = new EventSource('/api/events');
@@ -644,6 +733,8 @@
             evtSource.onopen = function() {
                 console.log('[SSE] Connected to event stream (startup_complete=' + startupComplete + ')');
                 reconnectAttempts = 0;
+                // Fetch initial state AFTER SSE connected - events arriving after this fetch will layer on top
+                loadDependencyProblems();
             };
 
             // Listen for specific events that should trigger refresh
@@ -655,6 +746,41 @@
                     // Slight delay to let server state settle
                     setTimeout(() => window.location.reload(), 200);
                 });
+            });
+
+            // Listen for queue changes (reload to update issue list)
+            evtSource.addEventListener('queue.changed', function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+                    console.log('[SSE] Queue changed:', data.added.length, 'added,', data.removed.length, 'removed');
+                    // Reload to show updated queue
+                    setTimeout(() => window.location.reload(), 200);
+                } catch (err) {
+                    console.error('[SSE] Failed to parse queue.changed:', err);
+                }
+            });
+
+            // Listen for dependency events (update in-place, no reload)
+            evtSource.addEventListener('dependency.blocked', function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+                    console.log('[SSE] Dependency blocked:', data);
+                    dependencyProblems[data.issue_number] = data;
+                    updateDependencyWarning(data.issue_number, data);
+                } catch (err) {
+                    console.error('[SSE] Failed to parse dependency.blocked:', err);
+                }
+            });
+
+            evtSource.addEventListener('dependency.unblocked', function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+                    console.log('[SSE] Dependency unblocked:', data);
+                    delete dependencyProblems[data.issue_number];
+                    updateDependencyWarning(data.issue_number, null);
+                } catch (err) {
+                    console.error('[SSE] Failed to parse dependency.unblocked:', err);
+                }
             });
 
             evtSource.onerror = function(e) {
@@ -679,6 +805,9 @@
         const menuRetry = document.getElementById('menuRetry');
         const menuDismiss = document.getElementById('menuDismiss');
         const menuHistoryDivider = document.getElementById('menuHistoryDivider');
+        const menuDepsDivider = document.getElementById('menuDepsDivider');
+        const menuDepsLabel = document.getElementById('menuDepsLabel');
+        const menuDepsContainer = document.getElementById('menuDepsContainer');
         let currentRow = null;
 
         function showContextMenu(e, row) {
@@ -689,6 +818,7 @@
             const action = row.dataset.action;
             const prUrl = row.dataset.prUrl;
             const status = row.dataset.status;
+            const hasDeps = row.dataset.hasDependencies === 'true';
 
             // Enable/disable menu items based on context
             // Active sessions (action === 'focus') have iTerm tab and worktree
@@ -719,6 +849,39 @@
                 menuKill.style.display = 'flex';
             } else {
                 menuKill.style.display = 'none';
+            }
+
+            // Show dependencies section if this issue has dependencies
+            menuDepsContainer.innerHTML = '';  // Clear previous
+            if (hasDeps) {
+                try {
+                    const deps = JSON.parse(row.dataset.dependencies || '[]');
+                    if (deps.length > 0) {
+                        menuDepsDivider.style.display = 'block';
+                        menuDepsLabel.style.display = 'flex';
+                        deps.forEach(dep => {
+                            const item = document.createElement('div');
+                            item.className = 'context-menu-item dep-item';
+                            item.innerHTML = `<span class="dep-num">#${dep.number}</span><span class="dep-title" title="${dep.title}">${dep.title}</span>`;
+                            item.onclick = (e) => {
+                                e.stopPropagation();
+                                contextMenu.classList.remove('visible');
+                                window.open(`https://github.com/{{ repo }}/issues/${dep.number}`, '_blank');
+                            };
+                            menuDepsContainer.appendChild(item);
+                        });
+                    } else {
+                        menuDepsDivider.style.display = 'none';
+                        menuDepsLabel.style.display = 'none';
+                    }
+                } catch (err) {
+                    console.error('Failed to parse dependencies:', err);
+                    menuDepsDivider.style.display = 'none';
+                    menuDepsLabel.style.display = 'none';
+                }
+            } else {
+                menuDepsDivider.style.display = 'none';
+                menuDepsLabel.style.display = 'none';
             }
 
             // Show Retry/Dismiss for history items (failed, blocked, completed, timed_out)
