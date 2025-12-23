@@ -5,8 +5,8 @@ validation:
   # Agent gate: runs when agent-done is called
   # If this fails, agent must fix issues before completing
   agent_gate:
-    cmd: "make validate"
-    timeout_seconds: 600  # 10 minutes (unit tests take ~5 mins, longer when concurrent)
+    cmd: "make typecheck"  # Fast check - full validation happens at publish gate
+    timeout_seconds: 120  # 2 minutes for typecheck only
 
   # Publish gate: runs in pre-push hook (with caching by commit SHA)
   # NOTE: Excluding e2e tests and claude execution tests (external service dependencies)

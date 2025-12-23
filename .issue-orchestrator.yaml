@@ -15,7 +15,7 @@ agents:
   "agent:e2e-test":
     prompt: "examples/prompts/e2e-test.md"
     model: haiku
-    timeout_minutes: 12  # Agent work (~1 min) + validation (~10 min)
+    timeout_minutes: 5  # Agent work (~1 min) + typecheck validation (~2 min)
     worktree_base: /tmp/e2e-worktrees
     permission_mode: bypassPermissions
 
