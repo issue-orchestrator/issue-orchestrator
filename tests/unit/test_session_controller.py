@@ -55,7 +55,7 @@ class MockCompletionProcessor:
         self.process_result.success = True
         self.process_result.pr_url = "https://github.com/test/repo/pull/1"
 
-    def read_completion_record(self, worktree_path: Path) -> CompletionRecord | None:
+    def read_completion_record(self, worktree_path: Path, completion_path: str | None = None) -> CompletionRecord | None:
         return self.completion_record
 
     def process(self, worktree_path: Path, issue_number: int, issue_title: str, pr_number: int | None = None):

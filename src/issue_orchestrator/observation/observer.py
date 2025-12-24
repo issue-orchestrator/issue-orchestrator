@@ -133,7 +133,8 @@ class SessionObserver:
 
         # Check for completion.json - this is the source of truth for agent completion
         # If it exists AND is valid JSON, the agent called agent-done and work is done
-        completion_path = session.worktree_path / ".issue-orchestrator" / "completion.json"
+        # Use session.completion_path which is agent-specific (e.g., completion-agent_e2e-test.json)
+        completion_path = session.worktree_path / session.completion_path
         if completion_path.exists():
             # Validate the JSON is complete (not partially written)
             try:

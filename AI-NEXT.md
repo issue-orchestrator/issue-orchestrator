@@ -1,14 +1,11 @@
 # AI Next Steps
 
-## Session 2025-12-24: Agent-Specific Completion Files
-
-### Debugging Guide
-See `docs/DEBUGGING.md` for event system architecture and debugging commands.
+## Session 2025-12-24: Agent-Specific Completion Files (FIXED)
 
 ### Root Cause (Fixed)
 Race condition: Review session and issue session shared the same `completion.json` file.
 
-### Fix Implemented (PARTIAL - has bug)
+### Fix Implemented (COMPLETE)
 Each agent writes to its own completion file based on agent name:
 - Issue agent: `.issue-orchestrator/completion-agent_e2e-test.json`
 - Review agent: `.issue-orchestrator/completion-agent_e2e-test-approves.json`
@@ -21,40 +18,15 @@ Each agent writes to its own completion file based on agent name:
 4. `Session` dataclass - Added `completion_path` field
 5. `session_controller.py` - Passes `completion_path` to completion_processor
 6. `completion_processor.py` - Accepts optional `completion_path` parameter
+7. **`observation/observer.py`** - Fixed to use `session.completion_path` instead of hardcoded path (2025-12-24)
 
-### CURRENT BUG: Session completion not detected
+### ~~CURRENT BUG: Session completion not detected~~ FIXED
 
-**Symptom:** Agent writes completion file correctly, but orchestrator never processes it.
+**Root cause:** `observer.py` line 136 was hardcoded to look for `.issue-orchestrator/completion.json` instead of using `session.completion_path`.
 
-**Evidence from issue #902:**
-- Completion file exists: `/tmp/e2e-worktrees/issue-orchestrator-902/.issue-orchestrator/completion-agent_e2e-test.json`
-- File contents are correct (outcome=completed, requested_actions=[push_branch, create_pr, post_comment])
-- But NO `session.completed` event in logs
-- Orchestrator log shows `orchestrator.state_changed: active_count=1, sessions=[902]` repeatedly - never transitions
+**Fix:** Changed to `session.worktree_path / session.completion_path`
 
-**Likely cause:** The `Session.completion_path` field is set AFTER the session is created, but the observer/controller might be reading from the default path or not finding the file.
-
-**Debug steps:**
-1. Check if env var `ORCHESTRATOR_COMPLETION_PATH` is actually passed through the shell command
-2. Add logging in `session_controller.decide_outcome()` to show which path it's reading
-3. Add logging in `completion_processor.read_completion_record()` to show path and result
-
-### Debug Commands
-```bash
-# Check completion files in worktree
-ls -la /tmp/e2e-worktrees/issue-orchestrator-*/.issue-orchestrator/
-
-# Check for completion events
-grep -E "\[EVENT\].*completion|session\.completed" ~/.issue-orchestrator.log | tail -30
-
-# Check for errors
-grep -i -E "error|exception|traceback" ~/.issue-orchestrator.log | tail -30
-```
-
-### Pending Work
-- [ ] Debug why session completion isn't detected
-- [ ] Verify env var propagation through shell command
-- [ ] Run and monitor e2e test with more logging
+### Remaining Work
 - [ ] **DRY: Create shared Python utility for issue creation in tests** - currently duplicated across test files
 - [ ] Reduce test timeouts from 30min to 10min
 
@@ -144,38 +116,14 @@ The validation cache is now **command-aware**:
 
 ---
 
-## CRITICAL: Start Here (Session 2025-12-23 Findings)
+## Session 2025-12-23 Findings (FIXED)
 
-### IMMEDIATE FIX REQUIRED: GitHubAdapter.create_issue_key() is BROKEN
+### ~~IMMEDIATE FIX REQUIRED: GitHubAdapter.create_issue_key() is BROKEN~~
 
-**Location**: `execution/github_adapter.py`
-
-**Current (WRONG):**
-```python
-def create_issue_key(self, issue_number: int) -> "GitHubIssueKey":
-    return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))
-```
-
-**Problem**: Creates a key with `external_id="123"` (the issue number as string) instead of extracting the actual stable ID from the issue title (e.g., "M1-011"). This **breaks the entire identity system** because:
-- The resolver cache never gets proper M1-011 entries
-- Reverse lookup (issue_number → external_id) doesn't work
-- PendingRework stores wrong keys
-
-**CORRECT Implementation:**
-```python
-def create_issue_key(self, issue_number: int) -> "GitHubIssueKey" | None:
-    issue = self.get_issue(issue_number)  # Fetch issue details
-    if not issue:
-        return None
-    from ..domain.issue_key import parse_external_id
-    parsed = parse_external_id(issue.title)
-    if not parsed.external_id:
-        # Issue doesn't have [M1-011] prefix - fall back to number-based key
-        return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))
-    return GitHubIssueKey(repo=self.repo, external_id=parsed.external_id)
-```
-
-**Call site**: `orchestrator.py:2552` in `scan_needs_rework_prs()` - needs to handle None case.
+**FIXED** in commit `223facf` (2025-12-23). The method now correctly:
+1. Fetches the issue via `get_issue(issue_number)`
+2. Parses external_id from title using `parse_external_id()`
+3. Falls back to issue number only if no external_id found
 
 ---
 
@@ -358,16 +306,17 @@ class IssueKey:
 - [x] `IssueResolver` wired into `DependencyEvaluator` via bootstrap.py
 - [x] `parse_dependency_refs()` supports M1-011 syntax
 
-### BROKEN (Fix First):
-- [ ] **FIX GitHubAdapter.create_issue_key()** - creates wrong keys (see "Start Here" section)
+### Recently Fixed:
+- [x] **GitHubAdapter.create_issue_key()** - Fixed in commit 223facf (2025-12-23)
+- [x] **Session completion not detected** - Observer was hardcoding path, now uses `session.completion_path` (2025-12-24)
 
 ### NOT Done (Critical - De-Godding):
-- [ ] Wire Planner into `run_loop()` - orchestrator still has inline decision logic
-- [ ] Wire SessionManager (replace `_create_session`, `_session_exists`, `_kill_session`)
-- [ ] Wire LabelSync (replace `_sync_label_*` methods)
-- [ ] Wire ActionApplier to execute Plan actions
+- [x] Wire Planner into `run_loop()` - DONE, uses snapshot + plan + _apply_plan()
+- [ ] Wire SessionManager (replace `_create_session`, `_session_exists`, `_kill_session` in orchestrator.py lines 782-806)
+- [ ] Wire LabelSync (replace `_sync_label_*` methods in orchestrator.py lines 613-672)
+- [x] Wire ActionApplier - DONE as `_apply_plan()` + `_execute_launch_action()` etc
 - [ ] Move GitHub-specific code from orchestrator to adapter (e.g., `scan_needs_rework_prs()`)
-- [ ] Remove dead code (~400-500 lines expected reduction)
+- [ ] Remove dead code - orchestrator still ~2900 lines
 - [ ] Consolidate event systems (EventSink as canonical)
 
 ---
