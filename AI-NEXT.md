@@ -20,11 +20,24 @@ Each agent writes to its own completion file based on agent name:
 6. `completion_processor.py` - Accepts optional `completion_path` parameter
 7. **`observation/observer.py`** - Fixed to use `session.completion_path` instead of hardcoded path (2025-12-24)
 
-### ~~CURRENT BUG: Session completion not detected~~ FIXED
+### ~~CURRENT BUG: Session completion not detected~~ FIXED (2025-12-24)
 
-**Root cause:** `observer.py` line 136 was hardcoded to look for `.issue-orchestrator/completion.json` instead of using `session.completion_path`.
+Two issues were fixed:
 
-**Fix:** Changed to `session.worktree_path / session.completion_path`
+1. **Observer hardcoded path:** `observer.py` line 136 was hardcoded to look for `.issue-orchestrator/completion.json` instead of using `session.completion_path`.
+   - **Fix:** Changed to `session.worktree_path / session.completion_path`
+
+2. **CompletionProcessor.process() not receiving path:** `session_controller.py` was calling `completion_processor.process()` without passing `completion_path`, so it fell back to the legacy path.
+   - **Fix:** Added `completion_path` parameter to `process()` and passed it from session_controller
+
+### Debugging Events Added (2025-12-24)
+
+New events for tracing completion file flow:
+- `session.started` - Now includes `completion_path` and `completion_path_absolute`
+- `review.started` - Now includes `completion_path` and `completion_path_absolute`
+- `rework.started` - New event with `completion_path` and `completion_path_absolute`
+- `completion.lookup` - Shows where we're looking for completion and if file exists
+- `completion.written` - Emitted by agent-done when writing (via IPC if available)
 
 ### Remaining Work
 - [ ] **DRY: Create shared Python utility for issue creation in tests** - currently duplicated across test files

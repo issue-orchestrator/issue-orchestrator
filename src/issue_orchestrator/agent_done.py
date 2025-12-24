@@ -307,6 +307,14 @@ def write_completion_record(record: CompletionRecord) -> Path:
     with open(output_path, "w") as f:
         json.dump(record.to_dict(), f, indent=2)
 
+    # Emit event for debugging - shows where completion was written
+    from .emit import emit_event
+    emit_event("completion.written", {
+        "outcome": record.outcome.value,
+        "path": str(output_path.resolve()),
+        "env_path": base_path,
+    })
+
     return output_path
 
 

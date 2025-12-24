@@ -115,6 +115,15 @@ class SessionController:
         # Session is not running - check completion.json
         # This is the source of truth for agent intent
         # Each agent writes to its own file (based on completion_path)
+        full_path = (worktree_path / completion_path).resolve() if completion_path else (worktree_path / ".issue-orchestrator/completion.json").resolve()
+        self._emit_event("completion.lookup", {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "worktree_path": str(worktree_path.resolve()),
+            "completion_path": completion_path,
+            "full_path": str(full_path),
+            "file_exists": full_path.exists(),
+        })
         record = self.completion_processor.read_completion_record(worktree_path, completion_path)
 
         if record is None:
@@ -184,6 +193,7 @@ class SessionController:
             issue_number,
             issue_title,
             pr_number=pr_number,
+            completion_path=completion_path,
         )
 
         # Emit event for observability (tests can subscribe to see what happened)

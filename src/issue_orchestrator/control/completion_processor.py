@@ -254,6 +254,7 @@ class CompletionProcessor:
     def process(
         self, worktree: Path, issue_number: int, issue_title: str,
         pr_number: int | None = None,
+        completion_path: str | None = None,
     ) -> ProcessingResult:
         """Process a completion record and execute actions.
 
@@ -263,6 +264,7 @@ class CompletionProcessor:
             issue_title: The issue title (for PR creation).
             pr_number: Optional PR number for review sessions. When provided,
                 label operations will target the PR instead of the issue.
+            completion_path: Relative path to completion file. If None, uses legacy path.
 
         Returns:
             ProcessingResult with success status and details.
@@ -274,7 +276,7 @@ class CompletionProcessor:
         pr_url: str | None = None
 
         # Read the completion record
-        record = self.read_completion_record(worktree)
+        record = self.read_completion_record(worktree, completion_path)
         if not record:
             return ProcessingResult(
                 success=False,

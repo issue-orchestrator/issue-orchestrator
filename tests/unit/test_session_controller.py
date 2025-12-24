@@ -58,7 +58,7 @@ class MockCompletionProcessor:
     def read_completion_record(self, worktree_path: Path, completion_path: str | None = None) -> CompletionRecord | None:
         return self.completion_record
 
-    def process(self, worktree_path: Path, issue_number: int, issue_title: str, pr_number: int | None = None):
+    def process(self, worktree_path: Path, issue_number: int, issue_title: str, pr_number: int | None = None, completion_path: str | None = None):
         return self.process_result
 
 

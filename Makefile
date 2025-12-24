@@ -1,4 +1,4 @@
-.PHONY: help install typecheck test test-unit test-integration test-e2e validate validate-quick validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help install typecheck test test-unit test-integration test-e2e test-e2e-one validate validate-quick validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # Default target
 help:
@@ -8,6 +8,7 @@ help:
 	@echo "  test-unit           Run unit tests"
 	@echo "  test-integration    Run integration tests"
 	@echo "  test-e2e            Run e2e tests"
+	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test                Run all tests"
 	@echo "  validate            Full validation (parallel: pyright + unit + integration + e2e)"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"

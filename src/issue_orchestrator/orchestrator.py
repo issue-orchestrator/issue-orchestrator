@@ -1183,11 +1183,14 @@ class Orchestrator:
         print(f"Launched session for issue #{issue.number}: {issue.title}")
 
         # Emit trace event via EventSink (SSE, IPC, etc.)
+        full_completion_path = (worktree_path / completion_path).resolve()
         self.events.publish(TraceEvent("session.started", {
             "issue_number": issue.number,
             "session_id": session_name,
             "worktree_path": str(worktree_path),
             "branch_name": branch_name,
+            "completion_path": completion_path,
+            "completion_path_absolute": str(full_completion_path),
         }))
 
         # Trigger state machine transitions
@@ -2117,10 +2120,13 @@ class Orchestrator:
         log_transition("review", review.pr_number, "LAUNCHING", "ACTIVE", "session launched")
 
         # Emit event for visibility
+        full_completion_path = (worktree_path / completion_path).resolve()
         self.events.publish(TraceEvent("review.started", {
             "pr_number": review.pr_number,
             "issue_number": review.issue_number,
             "session_name": session_name,
+            "completion_path": completion_path,
+            "completion_path_absolute": str(full_completion_path),
         }))
 
         # Trigger state machine transition
@@ -2806,6 +2812,17 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         self.state.active_sessions.append(session)
         log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
         print(f"🔧 Launched rework session for issue #{issue_number} (cycle {rework.rework_cycle})")
+
+        # Emit event for visibility
+        full_completion_path = (worktree_path / completion_path).resolve()
+        self.events.publish(TraceEvent("rework.started", {
+            "issue_number": issue_number,
+            "pr_number": pr_number,
+            "session_name": session_name,
+            "rework_cycle": rework.rework_cycle,
+            "completion_path": completion_path,
+            "completion_path_absolute": str(full_completion_path),
+        }))
 
         # Update rework cycle label on PR
         self._update_rework_cycle_label(pr_number, rework.rework_cycle)
