@@ -372,18 +372,6 @@ class IssueKey:
 
 ---
 
-## Commits Not Pushed
-
-4 local commits ahead of origin:
-1. `refactor: Reduce GitHub API polling, add refresh command, rename to repository_host`
-2. `refactor: Make PendingRework store-agnostic with IssueKey`
-3. `refactor: Add create_issue_key to RepositoryHost protocol`
-4. `docs: Add AI-NEXT.md with pending architectural work`
-
-Pre-push hook requires typecheck. Missing optional dependencies cause false positives.
-
----
-
 ## Other Items
 
 ### E2E Test Cleanup
