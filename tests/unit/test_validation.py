@@ -128,11 +128,11 @@ class TestValidationRecordStore:
         # Write
         path = store.write(record)
         assert path.exists()
-        assert "publish_gate" in str(path)
+        # New path format: .issue-orchestrator/validation/{sha}.json (no suite subdir)
         assert "abc123def456.json" in str(path)
 
-        # Read
-        read_record = store.read("publish_gate", "abc123def456")
+        # Read - new API uses just sha (not suite + sha)
+        read_record = store.read("abc123def456")
         assert read_record is not None
         assert read_record.suite == record.suite
         assert read_record.head_sha == record.head_sha
@@ -140,23 +140,23 @@ class TestValidationRecordStore:
 
     def test_read_nonexistent_returns_none(self, store):
         """Test reading a non-existent record returns None."""
-        record = store.read("publish_gate", "nonexistent")
+        record = store.read("nonexistent")
         assert record is None
 
     def test_read_corrupted_json_returns_none(self, store, temp_worktree):
         """Test reading corrupted JSON returns None."""
-        # Create a corrupted file
-        path = temp_worktree / ".issue-orchestrator" / "validation" / "publish_gate"
+        # Create a corrupted file in the new path format (no suite subdir)
+        path = temp_worktree / ".issue-orchestrator" / "validation"
         path.mkdir(parents=True)
         (path / "corrupted.json").write_text("not valid json {{{")
 
-        record = store.read("publish_gate", "corrupted")
+        record = store.read("corrupted")
         assert record is None
 
     def test_write_output_files(self, store):
         """Test writing stdout/stderr files."""
+        # New API uses just sha (not suite + sha)
         stdout_path, stderr_path = store.write_output(
-            "publish_gate",
             "abc123",
             "stdout content",
             "stderr content",
@@ -237,8 +237,8 @@ class TestValidationRunner:
             timeout_seconds=10,
         )
 
-        # Read back from store
-        stored = store.read("agent_gate", "def456")
+        # Read back from store (new API uses just sha)
+        stored = store.read("def456")
         assert stored is not None
         assert stored.head_sha == record.head_sha
         assert stored.passed == record.passed
@@ -265,7 +265,8 @@ class TestValidationCache:
 
     def test_cache_miss_when_not_exists(self, cache):
         """Test cache miss when record doesn't exist."""
-        result = cache.lookup("publish_gate", "nonexistent")
+        # New API: lookup(sha, command=None)
+        result = cache.lookup("nonexistent")
         assert result is None
 
     def test_cache_hit_when_exists(self, cache, store):
@@ -282,7 +283,8 @@ class TestValidationCache:
         )
         store.write(record)
 
-        result = cache.lookup("publish_gate", "abc123")
+        # New API: lookup(sha)
+        result = cache.lookup("abc123")
         assert result is not None
         assert result.passed is True
 
@@ -301,11 +303,11 @@ class TestValidationCache:
         store.write(record)
 
         # Different SHA should miss
-        result = cache.lookup("publish_gate", "different_sha")
+        result = cache.lookup("different_sha")
         assert result is None
 
-    def test_cache_miss_when_suite_differs(self, cache, store):
-        """Test cache miss when suite differs."""
+    def test_cache_miss_when_command_differs(self, cache, store):
+        """Test cache miss when command filter doesn't match."""
         record = ValidationRecord(
             schema_version=VALIDATION_SCHEMA_VERSION,
             suite="publish_gate",
@@ -318,14 +320,18 @@ class TestValidationCache:
         )
         store.write(record)
 
-        # Different suite should miss
-        result = cache.lookup("agent_gate", "abc123")
+        # Same SHA but different command filter should miss
+        result = cache.lookup("abc123", command="make build")
         assert result is None
+
+        # Same command should hit
+        result = cache.lookup("abc123", command="make test")
+        assert result is not None
 
     def test_cache_miss_when_schema_version_differs(self, cache, store, temp_worktree):
         """Test cache miss when schema version differs."""
-        # Write a record with old schema version
-        path = temp_worktree / ".issue-orchestrator" / "validation" / "publish_gate"
+        # Write a record with old schema version (in new path format)
+        path = temp_worktree / ".issue-orchestrator" / "validation"
         path.mkdir(parents=True)
         old_record = {
             "schema_version": 0,  # Old version
@@ -342,7 +348,8 @@ class TestValidationCache:
         }
         (path / "abc123.json").write_text(json.dumps(old_record))
 
-        result = cache.lookup("publish_gate", "abc123")
+        # New API uses just sha (optional command for filtering)
+        result = cache.lookup("abc123")
         assert result is None
 
     def test_is_valid_hit_passing(self, cache, store):
@@ -359,7 +366,8 @@ class TestValidationCache:
         )
         store.write(record)
 
-        assert cache.is_valid_hit("publish_gate", "abc123") is True
+        # New API uses just sha (optional command for filtering)
+        assert cache.is_valid_hit("abc123") is True
 
     def test_is_valid_hit_failing(self, cache, store):
         """Test is_valid_hit returns False for failing record."""
@@ -375,11 +383,12 @@ class TestValidationCache:
         )
         store.write(record)
 
-        assert cache.is_valid_hit("publish_gate", "abc123") is False
+        # New API uses just sha
+        assert cache.is_valid_hit("abc123") is False
 
     def test_is_valid_hit_nonexistent(self, cache):
         """Test is_valid_hit returns False when no record."""
-        assert cache.is_valid_hit("publish_gate", "nonexistent") is False
+        assert cache.is_valid_hit("nonexistent") is False
 
 
 class TestPublishGate:
@@ -586,8 +595,8 @@ class TestAgentGate:
         gate = AgentGate(temp_worktree, command="echo 'ok'", timeout_seconds=10)
         result = gate.run()
 
-        # Verify record was written
+        # Verify record was written (new API uses just sha)
         store = ValidationRecordStore(temp_worktree)
-        stored = store.read("agent_gate", result.record.head_sha)
+        stored = store.read(result.record.head_sha)
         assert stored is not None
         assert stored.passed is True

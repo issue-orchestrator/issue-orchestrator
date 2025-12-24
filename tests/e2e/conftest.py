@@ -192,6 +192,18 @@ pytestmark = [
 ]
 
 
+@pytest.fixture(scope="session", autouse=True)
+def kill_stale_orchestrators():
+    """Kill any stale orchestrator processes before running e2e tests."""
+    import subprocess
+    # Kill any orchestrator processes from previous interrupted runs
+    subprocess.run(
+        ["pkill", "-f", "issue-orchestrator.*start"],
+        capture_output=True
+    )
+    yield
+
+
 @pytest.fixture(scope="session")
 def repo_name() -> str:
     """Get the repo name for e2e tests.
@@ -211,6 +223,8 @@ def e2e_project_root() -> Path:
 @pytest.fixture
 def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config:
     """Create e2e test config with e2e-test agent."""
+    from issue_orchestrator.config import ValidationConfig, ValidationGateConfig
+
     config = Config()
     config.repo = repo_name
     config.repo_root = e2e_project_root
@@ -231,6 +245,19 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config
     # Short timeouts for tests
     config.session_timeout_minutes = 3
 
+    # Lightweight validation for e2e tests - typecheck only (not full test suite)
+    # This prevents the 10+ minute publish_gate from blocking e2e tests
+    config.validation = ValidationConfig(
+        agent_gate=ValidationGateConfig(
+            cmd="make typecheck",
+            timeout_seconds=120,
+        ),
+        publish_gate=ValidationGateConfig(
+            cmd="make typecheck",  # Fast - just typecheck, not full tests
+            timeout_seconds=120,
+        ),
+    )
+
     return config
 
 
@@ -239,7 +266,11 @@ def test_issues(repo_name: str) -> Generator[list[str], None, None]:
     """Create test issues, yield URLs, then cleanup.
 
     Creates issues with 'agent:e2e-test' and 'test-data' labels.
+    Cleans up any stale test issues first to avoid interference.
     """
+    # Clean up stale test issues before creating new ones
+    cleanup_test_issues(repo_name)
+
     # Create just one test issue for e2e
     urls = create_test_issues(repo_name, ["agent:e2e-test"])
 
@@ -301,8 +332,13 @@ def _cleanup_test_issue(repo_name: str, issue_number: int) -> None:
 
 @pytest.fixture
 def single_test_issue(repo_name: str) -> Generator[dict, None, None]:
-    """Create a single test issue and return its details."""
+    """Create a single test issue and return its details.
+
+    Cleans up any stale test issues first to avoid interference.
+    """
     _ensure_test_labels(repo_name)
+    # Clean up stale test issues before creating new one
+    cleanup_test_issues(repo_name)
     issue_data = _create_test_issue(repo_name, index=0)
     yield issue_data
     _cleanup_test_issue(repo_name, issue_data["number"])
@@ -382,11 +418,37 @@ class OrchestratorProcess:
         self.project_root = project_root
         self.process: subprocess.Popen | None = None
         self.ipc_socket_path: Path | None = None
+        self._output_lines: list[str] = []
+        self._log_thread: "threading.Thread | None" = None
+        self._stop_logging = False
+
+    def _log_reader(self) -> None:
+        """Background thread to read and print orchestrator output."""
+        import select
+        import sys
+
+        if self.process is None:
+            return
+
+        while not self._stop_logging and self.process.poll() is None:
+            # Use select to check for available output
+            if self.process.stderr:
+                readable, _, _ = select.select([self.process.stderr], [], [], 0.5)
+                if readable:
+                    line = self.process.stderr.readline()
+                    if line:
+                        text = line.decode('utf-8', errors='replace').rstrip()
+                        self._output_lines.append(text)
+                        # Print orchestrator events with prefix
+                        if any(kw in text for kw in ['[EVENT]', 'Session', 'Issue', 'PR', 'Review', 'launch', 'complet', 'start', 'ERROR', 'WARN']):
+                            print(f"  [ORCH] {text}", file=sys.stderr, flush=True)
 
     def start(self, max_issues: int = 1, extra_args: list[str] | None = None) -> None:
         """Start the orchestrator process."""
-        # Use sys.executable to find the venv's issue-orchestrator
         import sys
+        import threading
+
+        # Use sys.executable to find the venv's issue-orchestrator
         venv_bin = Path(sys.executable).parent / "issue-orchestrator"
         cmd = [
             str(venv_bin), "start",
@@ -398,38 +460,102 @@ class OrchestratorProcess:
         if extra_args:
             cmd.extend(extra_args)
 
+        # Set up environment with fast publish_gate for e2e tests
+        # agent_gate is already fast (just typecheck) so no override needed
+        # publish_gate normally runs full test suite (10+ min) - override to fast echo
+        # This makes validation actually RUN (creates records) but fast
+        env = os.environ.copy()
+        env["ORCHESTRATOR_PUBLISH_GATE_CMD"] = "echo 'e2e publish gate validation'"
+        env["ORCHESTRATOR_PUBLISH_GATE_TIMEOUT"] = "30"
+        # Enable verbose logging and ensure unbuffered output
+        env["ORCHESTRATOR_LOG_LEVEL"] = "INFO"
+        env["PYTHONUNBUFFERED"] = "1"
+        # Enable event logging to stderr (works with --no-dashboard)
+        env["ORCHESTRATOR_LOG_TO_STDERR"] = "1"
+
+        print(f"  [E2E] Starting orchestrator: {' '.join(cmd)}", flush=True)
+
         self.process = subprocess.Popen(
             cmd,
             cwd=self.project_root,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=env,
         )
+
+        # Start background log reader
+        self._stop_logging = False
+        self._log_thread = threading.Thread(target=self._log_reader, daemon=True)
+        self._log_thread.start()
 
         # Give it time to start
         time.sleep(3)
+        print(f"  [E2E] Orchestrator started (pid={self.process.pid})", flush=True)
 
     def stop(self) -> tuple[str, str]:
         """Stop the orchestrator and return stdout/stderr."""
         if self.process is None:
             return "", ""
 
+        print(f"  [E2E] Stopping orchestrator (pid={self.process.pid})...", flush=True)
+
+        # Stop the log reader thread
+        self._stop_logging = True
+
         # Send SIGTERM for graceful shutdown
         self.process.send_signal(signal.SIGTERM)
 
         try:
             stdout, stderr = self.process.communicate(timeout=5)
+            self._cleanup_tmux_sessions()
+            print(f"  [E2E] Orchestrator stopped gracefully", flush=True)
             return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
         except subprocess.TimeoutExpired:
+            print(f"  [E2E] Sending second SIGTERM...", flush=True)
             # Send second SIGTERM to trigger force-kill of child sessions
             self.process.send_signal(signal.SIGTERM)
             try:
                 stdout, stderr = self.process.communicate(timeout=5)
+                self._cleanup_tmux_sessions()
+                print(f"  [E2E] Orchestrator stopped after second SIGTERM", flush=True)
                 return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
             except subprocess.TimeoutExpired:
                 # Last resort - kill the process
+                print(f"  [E2E] Force killing orchestrator...", flush=True)
                 self.process.kill()
                 stdout, stderr = self.process.communicate()
+                self._cleanup_tmux_sessions()
+                print(f"  [E2E] Orchestrator killed", flush=True)
                 return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
+
+    def _cleanup_tmux_sessions(self) -> None:
+        """Clean up any tmux windows created by e2e tests.
+
+        E2E test windows have names like '#123 [E2E-TEST]...'
+        We kill these to prevent zombie accumulation.
+        """
+        try:
+            # Get list of windows in orchestrator session
+            result = subprocess.run(
+                ["tmux", "list-windows", "-t", "orchestrator", "-F", "#{window_index}:#{window_name}"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                return  # No session or error
+
+            # Kill windows that look like e2e test windows (contain E2E-TEST)
+            for line in result.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                if "E2E-TEST" in line or "E2E-" in line:
+                    window_index = line.split(":")[0]
+                    subprocess.run(
+                        ["tmux", "kill-window", "-t", f"orchestrator:{window_index}"],
+                        capture_output=True,
+                    )
+        except Exception:
+            pass  # Best effort cleanup
 
     def is_running(self) -> bool:
         """Check if process is still running."""

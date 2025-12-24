@@ -46,6 +46,18 @@ GIT_SAFE_ENV = {
 }
 
 
+def get_orchestrator_socket_path() -> str:
+    """Get the orchestrator IPC socket path.
+
+    This uses the same default as the EventServer and emit module.
+
+    Returns:
+        Path to the orchestrator IPC socket
+    """
+    import os
+    return f"/tmp/issue-orchestrator-{os.getuid()}.sock"
+
+
 def get_forbidden_env_vars() -> list[str]:
     """Get the list of environment variables that should be scrubbed.
 
@@ -96,6 +108,7 @@ def build_isolation_prefix(
     scrub_env: bool = True,
     isolate_home: bool = True,
     git_safe: bool = True,
+    set_ipc_socket: bool = True,
 ) -> str:
     """Build a shell command prefix that applies isolation.
 
@@ -103,6 +116,7 @@ def build_isolation_prefix(
     1. Unset forbidden environment variables
     2. Set HOME to the worktree (if standard mode)
     3. Set GIT_TERMINAL_PROMPT=0 and GIT_ASKPASS to prevent prompts
+    4. Set ORCHESTRATOR_IPC_SOCKET for subprocess event emission
 
     Args:
         worktree: Path to the worktree directory
@@ -110,6 +124,7 @@ def build_isolation_prefix(
         scrub_env: Whether to scrub environment variables
         isolate_home: Whether to isolate HOME directory
         git_safe: Whether to set git-safe environment variables
+        set_ipc_socket: Whether to set ORCHESTRATOR_IPC_SOCKET
 
     Returns:
         Shell command prefix string
@@ -127,6 +142,11 @@ def build_isolation_prefix(
     if git_safe:
         commands.extend(build_git_safe_commands())
         logger.debug("Added git-safe environment variables")
+
+    if set_ipc_socket:
+        socket_path = get_orchestrator_socket_path()
+        commands.append(f'export ORCHESTRATOR_IPC_SOCKET="{socket_path}"')
+        logger.debug("Added ORCHESTRATOR_IPC_SOCKET=%s", socket_path)
 
     if commands:
         return " && ".join(commands) + " && "

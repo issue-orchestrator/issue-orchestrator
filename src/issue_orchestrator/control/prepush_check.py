@@ -19,8 +19,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
 from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
@@ -38,36 +36,39 @@ def find_worktree_root() -> Path:
 def load_publish_gate_config(worktree: Path) -> tuple[Optional[str], int]:
     """Load publish gate configuration from the worktree.
 
+    Uses the shared config lookup to find configuration and extract publish_gate config.
+
+    Environment variable overrides (for testing):
+    - ORCHESTRATOR_PUBLISH_GATE_CMD: Override the validation command
+    - ORCHESTRATOR_PUBLISH_GATE_TIMEOUT: Override the timeout in seconds
+
     Args:
         worktree: Path to the worktree root
 
     Returns:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
-    config_path = worktree / ".issue-orchestrator" / "config.yaml"
-    if not config_path.exists():
-        return None, 0
+    import os
+    from ..config import load_validation_config
 
-    try:
-        with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
+    # Check for environment variable override (useful for e2e tests)
+    env_cmd = os.environ.get("ORCHESTRATOR_PUBLISH_GATE_CMD")
+    env_timeout = os.environ.get("ORCHESTRATOR_PUBLISH_GATE_TIMEOUT")
+    if env_cmd:
+        timeout = int(env_timeout) if env_timeout else 120
+        return env_cmd, timeout
 
-        validation = config.get("validation", {})
-        publish_gate = validation.get("publish_gate", {})
-        cmd = publish_gate.get("cmd")
-        timeout = publish_gate.get("timeout_seconds", 1800)
+    # Use shared config lookup (checks both .issue-orchestrator.yaml and .issue-orchestrator/config.yaml)
+    validation_config = load_validation_config(worktree)
 
-        # Check if publish_requires is set
-        policy = config.get("validation_policy", {})
-        publish_requires = policy.get("publish_requires")
+    publish_gate = validation_config["publish_gate"]
+    policy = validation_config["policy"]
 
-        if publish_requires == "publish_gate" and cmd:
-            return cmd, timeout
+    # Only return command if policy enables it
+    if policy["publish_requires"] == "publish_gate" and publish_gate["cmd"]:
+        return publish_gate["cmd"], publish_gate["timeout_seconds"]
 
-        return None, 0
-    except Exception as e:
-        logger.warning("Failed to load config: %s", e)
-        return None, 0
+    return None, 0
 
 
 def run_prepush_check(verbose: bool = False) -> int:

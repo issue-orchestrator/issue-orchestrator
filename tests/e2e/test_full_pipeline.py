@@ -75,7 +75,7 @@ def close_pr(repo: str, pr_number: int) -> None:
 
 @pytest.mark.e2e
 @pytest.mark.live
-@pytest.mark.timeout(300)  # 5 minute timeout (typecheck validation is fast)
+@pytest.mark.timeout(900)  # 15 min timeout (publish_gate runs full tests, takes 10+ min)
 @pytest.mark.parametrize("concurrent_test_run", [3], indirect=True)
 class TestConcurrentPipeline:
     """Test the orchestrator processing multiple issues concurrently.

@@ -1,5 +1,7 @@
 # E2E Test Agent for issue-orchestrator
 
+**IMPORTANT: This is a speed test. Do NOT use TodoWrite. Just run the commands directly.**
+
 You are running as part of the automated e2e test suite for the issue-orchestrator project.
 
 ## Context

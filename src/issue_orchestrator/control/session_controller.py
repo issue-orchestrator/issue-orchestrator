@@ -117,10 +117,27 @@ class SessionController:
 
         if record is None:
             # No completion record - agent died without calling agent-done
+            # Try to capture session log for diagnostics
+            session_log = ""
+            log_path = worktree_path / ".issue-orchestrator" / "session.log"
+            if log_path.exists():
+                try:
+                    # Get last 50 lines of session log
+                    content = log_path.read_text()
+                    lines = content.strip().split("\n")
+                    session_log = "\n".join(lines[-50:])
+                    logger.warning(
+                        "Session %s failed. Last output:\n%s",
+                        session_name, session_log
+                    )
+                except Exception as e:
+                    logger.debug("Could not read session log: %s", e)
+
             self._emit_event("session.no_completion_record", {
                 "issue_number": issue_number,
                 "session_name": session_name,
                 "observation": observation.observation.value,
+                "last_output": session_log[-500:] if session_log else "",
             })
 
             if observation.observation == SessionObservation.TIMED_OUT:

@@ -16,7 +16,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -28,22 +28,33 @@ class EventServer:
     all events to each one. Clients that disconnect are automatically
     removed.
 
+    The server also receives events from clients (e.g., from validation
+    subprocesses via emit.py) and forwards them via the on_event callback.
+
     Attributes:
         socket_path: Path to the Unix socket file
         clients: Set of connected client writers
+        on_event: Callback for events received from clients
     """
 
-    def __init__(self, socket_path: str | Path | None = None):
+    def __init__(
+        self,
+        socket_path: str | Path | None = None,
+        on_event: "Callable[[str, dict], None] | None" = None,
+    ):
         """Initialize the event server.
 
         Args:
             socket_path: Path to Unix socket. Defaults to
                          /tmp/issue-orchestrator-{uid}.sock
+            on_event: Callback when event received from client.
+                      Signature: on_event(event_name, event_data)
         """
         if socket_path is None:
             socket_path = Path(f"/tmp/issue-orchestrator-{os.getuid()}.sock")
         self.socket_path = Path(socket_path)
         self.clients: set[asyncio.StreamWriter] = set()
+        self._on_event = on_event
         self._server: asyncio.Server | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._running = False
@@ -152,8 +163,12 @@ class EventServer:
     ) -> None:
         """Handle a new client connection.
 
+        Clients can:
+        - Receive events (broadcast from server)
+        - Send events (forwarded to on_event callback)
+
         Args:
-            reader: Client stream reader (unused - clients don't send)
+            reader: Client stream reader for receiving events
             writer: Client stream writer for sending events
         """
         peer = writer.get_extra_info("peername") or "unknown"
@@ -171,16 +186,24 @@ class EventServer:
             self.clients.discard(writer)
             return
 
-        # Keep connection open until client disconnects or server stops
+        # Read events from client
+        buffer = ""
         try:
             while self._running:
-                # Check if client is still connected by trying to read
-                # (clients don't send data, so this just detects disconnect)
                 try:
-                    data = await asyncio.wait_for(reader.read(1), timeout=60.0)
+                    data = await asyncio.wait_for(reader.read(4096), timeout=60.0)
                     if not data:
                         # Client closed connection
                         break
+
+                    buffer += data.decode("utf-8")
+
+                    # Process complete lines (newline-delimited JSON)
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        if line.strip():
+                            self._process_incoming(line)
+
                 except asyncio.TimeoutError:
                     # No data, but connection still alive
                     continue
@@ -194,6 +217,41 @@ class EventServer:
             except Exception:
                 pass
             logger.info(f"EventServer: Client disconnected from {peer}")
+
+    def _process_incoming(self, line: str) -> None:
+        """Process an incoming event from a client.
+
+        Args:
+            line: JSON-encoded event string
+        """
+        try:
+            message = json.loads(line)
+
+            # Events from emit.py have type="event"
+            if message.get("type") == "event":
+                event_name = message.get("name", "unknown")
+                event_data = message.get("data", {})
+
+                logger.debug(f"EventServer: Received event '{event_name}' from client")
+
+                # Forward to callback if registered
+                if self._on_event:
+                    try:
+                        self._on_event(event_name, event_data)
+                    except Exception as e:
+                        logger.error(f"EventServer: on_event callback failed: {e}")
+
+                # Also broadcast to all clients (so dashboards see it too)
+                asyncio.create_task(self.broadcast({
+                    "type": "trace",
+                    "name": event_name,
+                    "data": event_data,
+                }))
+            else:
+                logger.debug(f"EventServer: Ignoring message type '{message.get('type')}'")
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"EventServer: Invalid JSON from client: {e}")
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats to keep connections alive."""
@@ -216,3 +274,18 @@ class EventServer:
     def is_running(self) -> bool:
         """Return whether the server is running."""
         return self._running
+
+    def set_event_handler(
+        self,
+        handler: "Callable[[str, dict], None]",
+    ) -> None:
+        """Set the event handler for subprocess events.
+
+        This allows setting the handler after construction, which is useful
+        when dependencies aren't available at construction time.
+
+        Args:
+            handler: Callback when event received from client.
+                     Signature: handler(event_name, event_data)
+        """
+        self._on_event = handler

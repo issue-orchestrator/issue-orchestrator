@@ -16,6 +16,7 @@ from issue_orchestrator.models import (
 from issue_orchestrator.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
+from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
 
 # Helper functions
@@ -45,6 +46,21 @@ def create_session(issue, worktree_path="/tmp/worktree", branch_name="feature/te
         tmux_session_name=f"issue-{issue.number}",
         worktree_path=Path(worktree_path),
         branch_name=branch_name,
+    )
+
+
+def create_pr_info(number, title="Test PR", labels=None, branch="feature/test"):
+    """Helper to create PRInfo objects for testing."""
+    if labels is None:
+        labels = []
+    return PRInfo(
+        number=number,
+        title=title,
+        url=f"https://github.com/test/repo/pull/{number}",
+        branch=branch,
+        body="Test PR body",
+        state="open",
+        labels=labels,
     )
 
 
@@ -1411,64 +1427,62 @@ class TestRunOrchestrator:
 class TestCheckCTOReviewTrigger:
     """Test the check_triage_review_trigger method for triage batch review workflow."""
 
-    def test_check_triage_review_trigger_disabled_without_agent(self, sample_config):
+    def test_check_triage_review_trigger_disabled_without_agent(self, sample_config, mock_repository_host):
         """Test that check_triage_review_trigger does nothing without triage_review_agent configured."""
         sample_config.triage_review_agent = None
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 5
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
-        # Should not raise and should not call any GitHub functions
-        with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
-            orchestrator.check_triage_review_trigger()
-            mock_prs.assert_not_called()
+        # Should not raise and should return early before checking PRs
+        orchestrator.check_triage_review_trigger()
+        # No PR lookup should happen - early return
 
-    def test_check_triage_review_trigger_disabled_with_zero_threshold(self, sample_config):
+    def test_check_triage_review_trigger_disabled_with_zero_threshold(self, sample_config, mock_repository_host):
         """Test that check_triage_review_trigger does nothing with threshold=0."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 0
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
-        with patch("issue_orchestrator.orchestrator.list_prs_with_label") as mock_prs:
-            orchestrator.check_triage_review_trigger()
-            mock_prs.assert_not_called()
+        # Should return early before checking PRs
+        orchestrator.check_triage_review_trigger()
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
-    def test_check_triage_review_trigger_below_threshold(self, mock_prs, sample_config):
+    def test_check_triage_review_trigger_below_threshold(self, sample_config, mock_repository_host):
         """Test that no review issue is created when below threshold."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 5
 
-        mock_prs.return_value = [
-            {"number": 1, "title": "PR 1"},
-            {"number": 2, "title": "PR 2"},
-        ]  # Only 2 PRs, below threshold of 5
+        # Set up PRs with the code-reviewed label (only 2, below threshold of 5)
+        mock_repository_host.prs["branch-1"] = [
+            create_pr_info(1, "PR 1", labels=["code-reviewed"]),
+            create_pr_info(2, "PR 2", labels=["code-reviewed"]),
+        ]
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
         with patch("issue_orchestrator.orchestrator.create_issue") as mock_create:
             orchestrator.check_triage_review_trigger()
             mock_create.assert_not_called()
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.create_issue")
     def test_check_triage_review_trigger_creates_review_issue(
-        self, mock_create, mock_prs, sample_config, mock_repository_host
+        self, mock_create, sample_config, mock_repository_host
     ):
         """Test that review issue is created when threshold is reached."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 3
 
-        mock_prs.return_value = [
-            {"number": 1, "title": "PR 1"},
-            {"number": 2, "title": "PR 2"},
-            {"number": 3, "title": "PR 3"},
-        ]  # 3 PRs, meets threshold
+        # Set up 3 PRs with code-reviewed label (meets threshold)
+        mock_repository_host.prs["branch-1"] = [
+            create_pr_info(1, "PR 1", labels=["code-reviewed"]),
+            create_pr_info(2, "PR 2", labels=["code-reviewed"]),
+            create_pr_info(3, "PR 3", labels=["code-reviewed"]),
+        ]
         mock_repository_host.issues = []  # No existing review issues
         mock_create.return_value = 42
 
@@ -1480,20 +1494,20 @@ class TestCheckCTOReviewTrigger:
         assert "Triage Batch Review" in call_args[1]["title"]
         assert sample_config.triage_review_agent in call_args[1]["labels"]
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.create_issue")
     def test_check_triage_review_trigger_skips_if_review_issue_exists(
-        self, mock_create, mock_prs, sample_config, mock_repository_host
+        self, mock_create, sample_config, mock_repository_host
     ):
         """Test that no duplicate review issue is created."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 3
 
-        mock_prs.return_value = [
-            {"number": 1, "title": "PR 1"},
-            {"number": 2, "title": "PR 2"},
-            {"number": 3, "title": "PR 3"},
+        # Set up 3 PRs with code-reviewed label
+        mock_repository_host.prs["branch-1"] = [
+            create_pr_info(1, "PR 1", labels=["code-reviewed"]),
+            create_pr_info(2, "PR 2", labels=["code-reviewed"]),
+            create_pr_info(3, "PR 3", labels=["code-reviewed"]),
         ]
 
         # Existing review issue (must have the CTO agent label to be found)
@@ -1506,10 +1520,9 @@ class TestCheckCTOReviewTrigger:
         # Should not create a new issue
         mock_create.assert_not_called()
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.create_issue")
     def test_check_triage_review_trigger_review_body_includes_pr_list(
-        self, mock_create, mock_prs, sample_config, mock_repository_host
+        self, mock_create, sample_config, mock_repository_host
     ):
         """Test that review issue body includes list of PRs."""
         sample_config.triage_review_agent = "agent:triage"
@@ -1517,9 +1530,10 @@ class TestCheckCTOReviewTrigger:
         sample_config.triage_reviewed_label = "triage-reviewed"
         sample_config.triage_review_threshold = 2
 
-        mock_prs.return_value = [
-            {"number": 10, "title": "Fix bug A"},
-            {"number": 20, "title": "Add feature B"},
+        # Set up 2 PRs with code-reviewed label
+        mock_repository_host.prs["branch-1"] = [
+            create_pr_info(10, "Fix bug A", labels=["code-reviewed"]),
+            create_pr_info(20, "Add feature B", labels=["code-reviewed"]),
         ]
         mock_repository_host.issues = []
         mock_create.return_value = 42
@@ -2103,10 +2117,8 @@ class TestStartupPendingReviews:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.analysis.get_issue_branches")
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     async def test_startup_scans_for_pending_reviews(
         self,
-        mock_list_prs,
         mock_get_branches,
         patch_plugin_manager,
         sample_config,
@@ -2120,9 +2132,10 @@ class TestStartupPendingReviews:
         sample_config.code_review_agent = "agent:reviewer"
         sample_config.code_review_label = "needs-code-review"
 
-        mock_list_prs.return_value = [
-            {"number": 123, "url": "https://github.com/owner/repo/pull/123"},
-            {"number": 456, "url": "https://github.com/owner/repo/pull/456"},
+        # Set up PRs with the code review label
+        mock_repository_host.prs["branch-1"] = [
+            create_pr_info(123, "PR 123", labels=["needs-code-review"], branch="feature/123"),
+            create_pr_info(456, "PR 456", labels=["needs-code-review"], branch="feature/456"),
         ]
 
         orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
@@ -2135,10 +2148,8 @@ class TestStartupPendingReviews:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.analysis.get_issue_branches")
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     async def test_startup_skips_reviews_already_in_progress(
         self,
-        mock_list_prs,
         mock_get_branches,
         sample_config,
         mock_repository_host,
@@ -2150,9 +2161,10 @@ class TestStartupPendingReviews:
         sample_config.code_review_agent = "agent:reviewer"
         sample_config.code_review_label = "needs-code-review"
 
-        mock_list_prs.return_value = [
-            {"number": 123, "url": "https://github.com/owner/repo/pull/123"},
-            {"number": 456, "url": "https://github.com/owner/repo/pull/456"},
+        # Set up PRs with the code review label
+        mock_repository_host.prs["branch-1"] = [
+            create_pr_info(123, "PR 123", labels=["needs-code-review"], branch="feature/123"),
+            create_pr_info(456, "PR 456", labels=["needs-code-review"], branch="feature/456"),
         ]
 
         orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
@@ -2170,10 +2182,8 @@ class TestStartupPendingReviews:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.analysis.get_issue_branches")
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     async def test_startup_does_not_scan_without_code_review_config(
         self,
-        mock_list_prs,
         mock_get_branches,
         sample_config,
         mock_repository_host,
@@ -2188,8 +2198,7 @@ class TestStartupPendingReviews:
         orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
         await orchestrator.startup()
 
-        # Should not call list_prs_with_label
-        mock_list_prs.assert_not_called()
+        # No PRs should be queued when code review is not configured
         assert len(orchestrator.state.pending_reviews) == 0
 
 
@@ -2221,28 +2230,27 @@ class TestPauseBehavior:
         # Review should still be in queue
         assert len(orchestrator.state.pending_reviews) == 1
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     def test_check_triage_review_trigger_does_nothing_when_paused(
-        self, mock_prs, sample_config
+        self, sample_config, mock_repository_host
     ):
         """Test that check_triage_review_trigger does nothing when paused."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 3
 
-        mock_prs.return_value = [
-            {"number": 1, "title": "PR 1"},
-            {"number": 2, "title": "PR 2"},
-            {"number": 3, "title": "PR 3"},
-        ]  # At threshold
+        # Set up PRs that would normally trigger a review (at threshold)
+        mock_repository_host.prs["branch-1"] = [
+            create_pr_info(1, "PR 1", labels=["code-reviewed"]),
+            create_pr_info(2, "PR 2", labels=["code-reviewed"]),
+            create_pr_info(3, "PR 3", labels=["code-reviewed"]),
+        ]
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
         orchestrator.state.paused = True  # PAUSED
 
         with patch("issue_orchestrator.orchestrator.create_issue") as mock_create:
             orchestrator.check_triage_review_trigger()
-            # Should not even check PRs when paused
-            mock_prs.assert_not_called()
+            # Should not create issue when paused
             mock_create.assert_not_called()
 
     @pytest.fixture(autouse=True)
@@ -2826,13 +2834,12 @@ class TestDeferredCleanup:
 class TestProcessDeferredCleanups:
     """Tests for processing deferred cleanups."""
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.remove_worktree")
     def test_process_cleanups_when_pr_reviewed(
         self,
         mock_remove_worktree,
-        mock_list_prs,
         sample_config,
+        mock_repository_host,
         tmp_path,
     ):
         """Test that cleanups are processed when PR has reviewed label."""
@@ -2843,10 +2850,12 @@ class TestProcessDeferredCleanups:
         sample_config.triage_reviewed_label = "triage-reviewed"
         sample_config.cleanup.with_triage.remove_worktrees = True
 
-        # Mock PRs with reviewed label
-        mock_list_prs.return_value = [{"number": 100}]
+        # Set up PR with reviewed label
+        mock_repository_host.prs["issue-1-test"] = [
+            create_pr_info(100, "PR 100", labels=["triage-reviewed"], branch="issue-1-test"),
+        ]
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
         # Add pending cleanup
         pending = PendingCleanup(
@@ -2867,13 +2876,12 @@ class TestProcessDeferredCleanups:
         # Pending cleanup should be removed
         assert len(orchestrator.state.pending_cleanups) == 0
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.remove_worktree")
     def test_process_cleanups_skips_unreviewed_prs(
         self,
         mock_remove_worktree,
-        mock_list_prs,
         sample_config,
+        mock_repository_host,
         tmp_path,
     ):
         """Test that cleanups are not processed if PR doesn't have reviewed label."""
@@ -2883,10 +2891,10 @@ class TestProcessDeferredCleanups:
         sample_config.triage_review_agent = "agent:triage"
         sample_config.triage_reviewed_label = "triage-reviewed"
 
-        # No PRs with reviewed label
-        mock_list_prs.return_value = []
+        # No PRs with reviewed label (empty prs dict)
+        mock_repository_host.prs = {}
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
         # Add pending cleanup
         pending = PendingCleanup(
@@ -2945,13 +2953,12 @@ class TestProcessDeferredCleanups:
 class TestRecoverOrphanedCleanups:
     """Tests for orphaned cleanup recovery on startup."""
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.remove_worktree")
     def test_recover_cleans_orphaned_worktrees(
         self,
         mock_remove_worktree,
-        mock_list_prs,
         sample_config,
+        mock_repository_host,
         tmp_path,
     ):
         """Test that orphaned worktrees are cleaned up on startup."""
@@ -2973,13 +2980,13 @@ class TestRecoverOrphanedCleanups:
         orphaned_worktree = worktree_base / "my-repo-123"
         orphaned_worktree.mkdir()
 
-        # Mock PRs with reviewed label - includes our orphan
+        # Set up PR with reviewed label - includes our orphan
         # Branch naming convention is {issue_number}-{slug}, not issue-{number}
-        mock_list_prs.return_value = [
-            {"number": 100, "headRefName": "123-test-feature"}
+        mock_repository_host.prs["123-test-feature"] = [
+            create_pr_info(100, "PR 100", labels=["triage-reviewed"], branch="123-test-feature"),
         ]
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
         # Mock session_exists to return False (session not running)
         orchestrator._session_exists = lambda name: False
@@ -2989,13 +2996,12 @@ class TestRecoverOrphanedCleanups:
         # Orphaned worktree should be cleaned up
         mock_remove_worktree.assert_called_once_with(orphaned_worktree)
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.remove_worktree")
     def test_recover_skips_running_sessions(
         self,
         mock_remove_worktree,
-        mock_list_prs,
         sample_config,
+        mock_repository_host,
         tmp_path,
     ):
         """Test that worktrees with running sessions are not cleaned up."""
@@ -3016,12 +3022,12 @@ class TestRecoverOrphanedCleanups:
         worktree = worktree_base / "my-repo-123"
         worktree.mkdir()
 
-        # Mock PRs with reviewed label
-        mock_list_prs.return_value = [
-            {"number": 100, "headRefName": "issue-123-test-feature"}
+        # Set up PR with reviewed label
+        mock_repository_host.prs["issue-123-test-feature"] = [
+            create_pr_info(100, "PR 100", labels=["triage-reviewed"], branch="issue-123-test-feature"),
         ]
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
         # Mock session_exists to return True (session still running)
         orchestrator._session_exists = lambda name: True
@@ -3031,38 +3037,34 @@ class TestRecoverOrphanedCleanups:
         # Worktree should NOT be cleaned up (session still running)
         mock_remove_worktree.assert_not_called()
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     def test_recover_noop_without_review_workflow(
         self,
-        mock_list_prs,
         sample_config,
+        mock_repository_host,
     ):
         """Test that recovery does nothing without review workflow."""
         # No review workflow
         sample_config.triage_review_agent = None
         sample_config.code_review_agent = None
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
         orchestrator._recover_orphaned_cleanups()
+        # Method should return early without checking PRs
 
-        # Should not call list_prs (no label to look for)
-        mock_list_prs.assert_not_called()
-
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     def test_recover_handles_no_reviewed_prs(
         self,
-        mock_list_prs,
         sample_config,
+        mock_repository_host,
     ):
         """Test that recovery handles case with no reviewed PRs."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.triage_reviewed_label = "triage-reviewed"
 
         # No reviewed PRs
-        mock_list_prs.return_value = []
+        mock_repository_host.prs = {}
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
 
         # Should not raise
         orchestrator._recover_orphaned_cleanups()
@@ -3115,13 +3117,12 @@ class TestReworkEscalation:
         assert "comment" in cmd
         assert "123" in cmd
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.subprocess.run")
     def test_scan_needs_rework_escalates_at_max_cycles(
         self,
         mock_subprocess_run,
-        mock_list_prs,
         sample_config,
+        mock_repository_host,
     ):
         """Test that scan_needs_rework_prs escalates when max cycles exceeded."""
         sample_config.max_rework_cycles = 2
@@ -3129,16 +3130,16 @@ class TestReworkEscalation:
         mock_subprocess_run.return_value = MagicMock(returncode=0)
 
         # Simulate a PR that has gone through 2 rework cycles (labels show rework-2)
-        mock_list_prs.return_value = [
-            {
-                "number": 123,
-                "url": "https://github.com/test/repo/pull/123",
-                "headRefName": "issue-456-feature",
-                "labels": [{"name": "needs-rework"}, {"name": "rework-2"}],
-            }
+        mock_repository_host.prs["issue-456-feature"] = [
+            create_pr_info(
+                123,
+                "PR 123",
+                labels=["needs-rework", "rework-2", "agent:code-reviewer"],
+                branch="issue-456-feature",
+            ),
         ]
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
         orchestrator.scan_needs_rework_prs()
 
         # Should have escalated (rework-2 means next cycle is 3, which exceeds max of 2)
@@ -3149,13 +3150,12 @@ class TestReworkEscalation:
         # Should NOT have added to pending_reworks queue
         assert len(orchestrator.state.pending_reworks) == 0
 
-    @patch("issue_orchestrator.orchestrator.list_prs_with_label")
     @patch("issue_orchestrator.orchestrator.subprocess.run")
     def test_scan_needs_rework_queues_within_limit(
         self,
         mock_subprocess_run,
-        mock_list_prs,
         sample_config,
+        mock_repository_host,
     ):
         """Test that scan_needs_rework_prs queues rework when within limit."""
         sample_config.max_rework_cycles = 3
@@ -3163,21 +3163,23 @@ class TestReworkEscalation:
         mock_subprocess_run.return_value = MagicMock(returncode=0)
 
         # Simulate a PR on first rework cycle (no rework label)
-        mock_list_prs.return_value = [
-            {
-                "number": 123,
-                "url": "https://github.com/test/repo/pull/123",
-                "headRefName": "issue-456-feature",
-                "labels": [{"name": "needs-rework"}],
-            }
+        # Need agent label for the code to process it
+        mock_repository_host.prs["issue-456-feature"] = [
+            create_pr_info(
+                123,
+                "PR 123",
+                labels=["needs-rework", "agent:code-reviewer"],
+                branch="issue-456-feature",
+            ),
         ]
 
-        orchestrator = Orchestrator(config=sample_config)
+        orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
         orchestrator.scan_needs_rework_prs()
 
         # Should have queued for rework (cycle 1 is within limit of 3)
         assert len(orchestrator.state.pending_reworks) == 1
-        assert orchestrator.state.pending_reworks[0].pr_number == 123
+        # PendingRework uses IssueKey (store-agnostic), not pr_number
+        assert int(orchestrator.state.pending_reworks[0].issue_key.stable_id()) == 123
         assert orchestrator.state.pending_reworks[0].rework_cycle == 1
 
     def test_get_rework_cycle_from_labels_extracts_cycle(

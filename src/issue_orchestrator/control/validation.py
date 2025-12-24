@@ -18,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from ..emit import emit_event
+
 logger = logging.getLogger(__name__)
 
 # Schema version for validation records
@@ -70,8 +72,11 @@ class ValidationResult:
 class ValidationRecordStore:
     """Reads and writes validation records to disk.
 
-    Storage layout:
-        <worktree>/.issue-orchestrator/validation/<suite>/<sha>.json
+    Storage layout (simplified - one location per SHA):
+        <worktree>/.issue-orchestrator/validation/<sha>.json
+
+    This allows validation caching across gates - if agent_gate and publish_gate
+    use the same command, the result can be shared.
     """
 
     VALIDATION_DIR = ".issue-orchestrator/validation"
@@ -85,13 +90,13 @@ class ValidationRecordStore:
         self.worktree = worktree
         self.base_dir = worktree / self.VALIDATION_DIR
 
-    def _get_record_path(self, suite: str, sha: str) -> Path:
-        """Get the path for a validation record."""
-        return self.base_dir / suite / f"{sha}.json"
+    def _get_record_path(self, sha: str) -> Path:
+        """Get the path for a validation record (one per SHA)."""
+        return self.base_dir / f"{sha}.json"
 
-    def _get_output_dir(self, suite: str, sha: str) -> Path:
+    def _get_output_dir(self) -> Path:
         """Get the directory for stdout/stderr files."""
-        return self.base_dir / suite / "output"
+        return self.base_dir / "output"
 
     def write(self, record: ValidationRecord) -> Path:
         """Write a validation record to disk.
@@ -102,7 +107,7 @@ class ValidationRecordStore:
         Returns:
             Path to the written file
         """
-        path = self._get_record_path(record.suite, record.head_sha)
+        path = self._get_record_path(record.head_sha)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(path, "w") as f:
@@ -111,17 +116,16 @@ class ValidationRecordStore:
         logger.debug("Wrote validation record to %s", path)
         return path
 
-    def read(self, suite: str, sha: str) -> Optional[ValidationRecord]:
+    def read(self, sha: str) -> Optional[ValidationRecord]:
         """Read a validation record from disk.
 
         Args:
-            suite: The validation suite name
             sha: The HEAD SHA
 
         Returns:
             ValidationRecord if found, None otherwise
         """
-        path = self._get_record_path(suite, sha)
+        path = self._get_record_path(sha)
 
         if not path.exists():
             return None
@@ -135,12 +139,11 @@ class ValidationRecordStore:
             return None
 
     def write_output(
-        self, suite: str, sha: str, stdout: str, stderr: str
+        self, sha: str, stdout: str, stderr: str
     ) -> tuple[Path, Path]:
         """Write stdout/stderr to files.
 
         Args:
-            suite: The validation suite name
             sha: The HEAD SHA
             stdout: Standard output content
             stderr: Standard error content
@@ -148,7 +151,7 @@ class ValidationRecordStore:
         Returns:
             Tuple of (stdout_path, stderr_path)
         """
-        output_dir = self._get_output_dir(suite, sha)
+        output_dir = self._get_output_dir()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         stdout_path = output_dir / f"{sha}.stdout"
@@ -158,6 +161,26 @@ class ValidationRecordStore:
         stderr_path.write_text(stderr)
 
         return stdout_path, stderr_path
+
+    # Legacy methods for backwards compatibility with old suite-based paths
+    def _get_legacy_record_path(self, suite: str, sha: str) -> Path:
+        """Get the legacy path for a validation record (per-suite)."""
+        return self.base_dir / suite / f"{sha}.json"
+
+    def read_legacy(self, suite: str, sha: str) -> Optional[ValidationRecord]:
+        """Read from legacy per-suite location for backwards compatibility."""
+        path = self._get_legacy_record_path(suite, sha)
+
+        if not path.exists():
+            return None
+
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            return ValidationRecord.from_dict(data)
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning("Failed to read legacy validation record at %s: %s", path, e)
+            return None
 
 
 class ValidationRunner:
@@ -196,6 +219,14 @@ class ValidationRunner:
 
         logger.info("Running validation suite '%s': %s", suite, command)
 
+        # Emit validation started event
+        emit_event("validation.started", {
+            "suite": suite,
+            "sha": head_sha,
+            "command": command,
+            "timeout_seconds": timeout_seconds,
+        })
+
         try:
             result = subprocess.run(
                 command,
@@ -222,7 +253,7 @@ class ValidationRunner:
 
         # Write stdout/stderr files
         stdout_path, stderr_path = self.store.write_output(
-            suite, head_sha, stdout, stderr
+            head_sha, stdout, stderr
         )
 
         # Create record
@@ -250,11 +281,27 @@ class ValidationRunner:
             exit_code,
         )
 
+        # Emit validation completed event
+        duration_seconds = (ended_at - started_at).total_seconds()
+        emit_event("validation.completed", {
+            "suite": suite,
+            "sha": head_sha,
+            "passed": passed,
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "duration_seconds": duration_seconds,
+        })
+
         return record
 
 
 class ValidationCache:
-    """Cache lookup for validation results."""
+    """Cache lookup for validation results.
+
+    The cache is now command-aware: a cached result is valid if it's for
+    the same SHA AND the same command. This allows agent_gate and publish_gate
+    to share validation results when they use the same command.
+    """
 
     def __init__(self, store: ValidationRecordStore):
         """Initialize cache with a record store.
@@ -264,47 +311,72 @@ class ValidationCache:
         """
         self.store = store
 
-    def lookup(self, suite: str, sha: str) -> Optional[ValidationRecord]:
+    def lookup(self, sha: str, command: Optional[str] = None) -> Optional[ValidationRecord]:
         """Look up a cached validation record.
 
         Args:
-            suite: The validation suite name
             sha: The HEAD SHA
+            command: If provided, only return record if command matches
 
         Returns:
             ValidationRecord if found and valid, None otherwise
         """
-        record = self.store.read(suite, sha)
+        record = self.store.read(sha)
 
         if record is None:
-            logger.debug("Cache miss for %s/%s", suite, sha)
+            logger.debug("Cache miss for %s", sha)
+            emit_event("validation.cache_miss", {
+                "sha": sha,
+            })
             return None
 
         # Validate schema version
         if record.schema_version != VALIDATION_SCHEMA_VERSION:
             logger.debug(
-                "Cache miss for %s/%s: schema version mismatch (%d != %d)",
-                suite,
+                "Cache miss for %s: schema version mismatch (%d != %d)",
                 sha,
                 record.schema_version,
                 VALIDATION_SCHEMA_VERSION,
             )
+            emit_event("validation.cache_miss", {
+                "sha": sha,
+                "reason": "schema_version_mismatch",
+            })
             return None
 
-        logger.debug("Cache hit for %s/%s (passed=%s)", suite, sha, record.passed)
+        # If command specified, check it matches
+        if command and record.command != command:
+            logger.debug(
+                "Cache miss for %s: command mismatch (cached='%s', requested='%s')",
+                sha,
+                record.command,
+                command,
+            )
+            emit_event("validation.cache_miss", {
+                "sha": sha,
+                "reason": "command_mismatch",
+            })
+            return None
+
+        logger.debug("Cache hit for %s (passed=%s)", sha, record.passed)
+        emit_event("validation.cache_hit", {
+            "sha": sha,
+            "passed": record.passed,
+            "command": record.command,
+        })
         return record
 
-    def is_valid_hit(self, suite: str, sha: str) -> bool:
+    def is_valid_hit(self, sha: str, command: Optional[str] = None) -> bool:
         """Check if there's a valid passing cache entry.
 
         Args:
-            suite: The validation suite name
             sha: The HEAD SHA
+            command: If provided, only match if command is the same
 
         Returns:
-            True if there's a passing cache entry for this suite+SHA
+            True if there's a passing cache entry for this SHA (and command)
         """
-        record = self.lookup(suite, sha)
+        record = self.lookup(sha, command)
         return record is not None and record.passed
 
 
@@ -391,8 +463,8 @@ class PublishGate:
                 reason="Cannot determine HEAD SHA",
             )
 
-        # Check cache
-        cached = self.cache.lookup(self.SUITE_NAME, head_sha)
+        # Check cache - command matching ensures we only reuse results from same command
+        cached = self.cache.lookup(head_sha, self.command)
         if cached is not None:
             if cached.passed:
                 logger.info("Publish gate: cache hit (passed) for %s", head_sha[:8])
@@ -528,7 +600,7 @@ class AgentGate:
         )
 
         # Get the path where the record was written
-        record_path = str(self.store._get_record_path(self.SUITE_NAME, head_sha))
+        record_path = str(self.store._get_record_path(head_sha))
 
         if record.passed:
             return AgentGateResult(

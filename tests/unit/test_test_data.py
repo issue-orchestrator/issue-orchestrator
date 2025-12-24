@@ -14,7 +14,7 @@ class TestCleanupTestIssues:
     @patch("issue_orchestrator.test_data.subprocess.run")
     def test_cleanup_no_issues(self, mock_run):
         """Test cleanup when no test issues exist."""
-        # Mock the issue list command to return empty list
+        # Mock the issue list command to return empty list for both labels
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout="[]",
@@ -24,8 +24,15 @@ class TestCleanupTestIssues:
         result = cleanup_test_issues("owner/repo")
 
         assert result == 0
-        mock_run.assert_called_once_with(
+        # Now queries both test-data and agent:e2e-test labels
+        assert mock_run.call_count == 2
+        mock_run.assert_any_call(
             ["gh", "issue", "list", "--repo", "owner/repo", "--label", "test-data",
+             "--state", "open", "--json", "number"],
+            capture_output=True, text=True
+        )
+        mock_run.assert_any_call(
+            ["gh", "issue", "list", "--repo", "owner/repo", "--label", "agent:e2e-test",
              "--state", "open", "--json", "number"],
             capture_output=True, text=True
         )
@@ -33,19 +40,25 @@ class TestCleanupTestIssues:
     @patch("issue_orchestrator.test_data.subprocess.run")
     def test_cleanup_single_issue(self, mock_run):
         """Test cleanup when one test issue exists."""
-        # Mock the issue list command
-        list_result = MagicMock(returncode=0, stdout='[{"number": 42}]', stderr="")
+        # Mock: first label finds issue 42, second label finds nothing
+        list_result_with_issue = MagicMock(returncode=0, stdout='[{"number": 42}]', stderr="")
+        list_result_empty = MagicMock(returncode=0, stdout='[]', stderr="")
         close_result = MagicMock(returncode=0, stdout="", stderr="")
-        mock_run.side_effect = [list_result, close_result]
+        mock_run.side_effect = [list_result_with_issue, close_result, list_result_empty]
 
         result = cleanup_test_issues("owner/repo")
 
         assert result == 1
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3  # 2 list calls + 1 close
 
-        # Verify list call
+        # Verify list calls for both labels
         mock_run.assert_any_call(
             ["gh", "issue", "list", "--repo", "owner/repo", "--label", "test-data",
+             "--state", "open", "--json", "number"],
+            capture_output=True, text=True
+        )
+        mock_run.assert_any_call(
+            ["gh", "issue", "list", "--repo", "owner/repo", "--label", "agent:e2e-test",
              "--state", "open", "--json", "number"],
             capture_output=True, text=True
         )
@@ -60,49 +73,42 @@ class TestCleanupTestIssues:
     @patch("issue_orchestrator.test_data.subprocess.run")
     def test_cleanup_multiple_issues(self, mock_run):
         """Test cleanup when multiple test issues exist."""
-        # Mock the issue list command to return 3 issues
+        # Mock: first label returns 3 issues, second label returns empty
         list_result = MagicMock(
             returncode=0,
             stdout='[{"number": 10}, {"number": 20}, {"number": 30}]',
             stderr=""
         )
+        list_result_empty = MagicMock(returncode=0, stdout='[]', stderr="")
         close_result = MagicMock(returncode=0, stdout="", stderr="")
-        mock_run.side_effect = [list_result, close_result, close_result, close_result]
+        mock_run.side_effect = [list_result, close_result, close_result, close_result, list_result_empty]
 
         result = cleanup_test_issues("owner/repo")
 
         assert result == 3
-        assert mock_run.call_count == 4
+        assert mock_run.call_count == 5  # 2 list calls + 3 close calls
 
-        # Verify all issues were closed
-        expected_calls = [
-            call(
-                ["gh", "issue", "list", "--repo", "owner/repo", "--label", "test-data",
-                 "--state", "open", "--json", "number"],
-                capture_output=True, text=True
-            ),
-            call(
-                ["gh", "issue", "close", "10", "--repo", "owner/repo",
-                 "--comment", "Closed by test cleanup."],
-                capture_output=True
-            ),
-            call(
-                ["gh", "issue", "close", "20", "--repo", "owner/repo",
-                 "--comment", "Closed by test cleanup."],
-                capture_output=True
-            ),
-            call(
-                ["gh", "issue", "close", "30", "--repo", "owner/repo",
-                 "--comment", "Closed by test cleanup."],
-                capture_output=True
-            ),
-        ]
-        mock_run.assert_has_calls(expected_calls)
+        # Verify close calls
+        mock_run.assert_any_call(
+            ["gh", "issue", "close", "10", "--repo", "owner/repo",
+             "--comment", "Closed by test cleanup."],
+            capture_output=True
+        )
+        mock_run.assert_any_call(
+            ["gh", "issue", "close", "20", "--repo", "owner/repo",
+             "--comment", "Closed by test cleanup."],
+            capture_output=True
+        )
+        mock_run.assert_any_call(
+            ["gh", "issue", "close", "30", "--repo", "owner/repo",
+             "--comment", "Closed by test cleanup."],
+            capture_output=True
+        )
 
     @patch("issue_orchestrator.test_data.subprocess.run")
     def test_cleanup_list_command_fails(self, mock_run):
         """Test cleanup when the list command fails."""
-        # Mock the issue list command to fail
+        # Mock both list commands to fail
         mock_run.return_value = MagicMock(
             returncode=1,
             stdout="",
@@ -112,7 +118,7 @@ class TestCleanupTestIssues:
         result = cleanup_test_issues("owner/repo")
 
         assert result == 0
-        mock_run.assert_called_once()
+        assert mock_run.call_count == 2  # Both label queries attempted
 
     @patch("issue_orchestrator.test_data.subprocess.run")
     def test_cleanup_with_different_repo(self, mock_run):
@@ -125,8 +131,14 @@ class TestCleanupTestIssues:
 
         cleanup_test_issues("myorg/myrepo")
 
-        mock_run.assert_called_once_with(
+        assert mock_run.call_count == 2
+        mock_run.assert_any_call(
             ["gh", "issue", "list", "--repo", "myorg/myrepo", "--label", "test-data",
+             "--state", "open", "--json", "number"],
+            capture_output=True, text=True
+        )
+        mock_run.assert_any_call(
+            ["gh", "issue", "list", "--repo", "myorg/myrepo", "--label", "agent:e2e-test",
              "--state", "open", "--json", "number"],
             capture_output=True, text=True
         )

@@ -181,6 +181,7 @@ class TestBuildIsolationPrefix:
             scrub_env=False,
             isolate_home=False,
             git_safe=False,
+            set_ipc_socket=False,
         )
         assert prefix == ""
 

@@ -212,6 +212,79 @@ class Config:
             return self.validation.agent_gate
         return None
 
+    def to_event_dict(self) -> dict:
+        """Convert config to a dict for event emission.
+
+        Returns a serializable dict with the merged configuration
+        (YAML + command line overrides) for debugging.
+        """
+        return {
+            "repo": self.repo,
+            "repo_root": str(self.repo_root),
+            "config_path": str(self.config_path) if self.config_path else None,
+            "filter_label": self.filter_label,
+            "filter_milestone": self.filter_milestone,
+            "filter_issue": self.filter_issue,
+            "max_concurrent_sessions": self.max_concurrent_sessions,
+            "session_timeout_minutes": self.session_timeout_minutes,
+            "max_issues_to_start": self.max_issues_to_start,
+            "ui_mode": self.ui_mode,
+            "terminal_adapter": self.terminal_adapter,
+            "agents": {
+                label: {
+                    "prompt_path": str(cfg.prompt_path),
+                    "worktree_base": str(cfg.worktree_base),
+                    "model": cfg.model,
+                    "timeout_minutes": cfg.timeout_minutes,
+                }
+                for label, cfg in self.agents.items()
+            },
+            "labels": {
+                "in_progress": self.get_label_in_progress(),
+                "blocked": self.get_label_blocked(),
+                "needs_human": self.get_label_needs_human(),
+                "needs_rework": self.get_label_needs_rework(),
+                "prefix": self.label_prefix,
+            },
+            "validation": {
+                "agent_gate": {
+                    "enabled": self.is_agent_gate_enabled(),
+                    "cmd": self.validation.agent_gate.cmd,
+                    "timeout_seconds": self.validation.agent_gate.timeout_seconds,
+                },
+                "publish_gate": {
+                    "enabled": self.is_publish_gate_enabled(),
+                    "cmd": self.validation.publish_gate.cmd,
+                    "timeout_seconds": self.validation.publish_gate.timeout_seconds,
+                },
+            },
+            "code_review": {
+                "agent": self.code_review_agent,
+                "label": self.code_review_label,
+                "reviewed_label": self.code_reviewed_label,
+            },
+            "triage_review": {
+                "agent": self.triage_review_agent,
+                "threshold": self.triage_review_threshold,
+                "on_failure": self.triage_review_on_failure,
+            },
+            "cleanup": {
+                "with_triage": {
+                    "close_ai_session_tabs": self.cleanup.with_triage.close_ai_session_tabs,
+                    "remove_worktrees": self.cleanup.with_triage.remove_worktrees,
+                },
+                "without_triage": {
+                    "wait_for_code_review": self.cleanup.without_triage.wait_for_code_review,
+                    "close_ai_session_tabs": self.cleanup.without_triage.close_ai_session_tabs,
+                    "remove_worktrees": self.cleanup.without_triage.remove_worktrees,
+                },
+            },
+            "dangerous": {
+                "allow_unsupported_agents": self.dangerous.allow_unsupported_agents,
+                "skip_verification": self.dangerous.skip_verification,
+            },
+        }
+
     @classmethod
     def load(cls, config_path: Path) -> "Config":
         """Load configuration from YAML file."""
@@ -426,25 +499,20 @@ class Config:
     @classmethod
     def find_and_load(cls, start_path: Optional[Path] = None) -> "Config":
         """Find config file in current or parent directories and load it."""
-        search_path = start_path or Path.cwd()
+        config_file = find_config_file(start_path)
+        if not config_file:
+            raise FileNotFoundError(
+                "No .issue-orchestrator.yaml found in current or parent directories"
+            )
 
-        for path in [search_path, *search_path.parents]:
-            config_file = path / ".issue-orchestrator.yaml"
-            if config_file.exists():
-                config = cls.load(config_file)
-                config.repo_root = path.resolve()
-                return config
-
-            # Also check .issue-orchestrator/config.yaml
-            config_file = path / ".issue-orchestrator" / "config.yaml"
-            if config_file.exists():
-                config = cls.load(config_file)
-                config.repo_root = path.resolve()
-                return config
-
-        raise FileNotFoundError(
-            "No .issue-orchestrator.yaml found in current or parent directories"
-        )
+        config = cls.load(config_file)
+        # Set repo_root to the directory containing the config file
+        # (or parent if config is in .issue-orchestrator/)
+        if config_file.parent.name == ".issue-orchestrator":
+            config.repo_root = config_file.parent.parent.resolve()
+        else:
+            config.repo_root = config_file.parent.resolve()
+        return config
 
     def validate(self) -> list[str]:
         """Validate configuration and return list of errors.
@@ -539,3 +607,87 @@ class Config:
             raise ValueError(
                 "Configuration errors:\n  - " + "\n  - ".join(errors)
             )
+
+
+def find_config_file(start_path: Optional[Path] = None) -> Optional[Path]:
+    """Find the config file by searching up the directory tree.
+
+    This is the single source of truth for config file lookup.
+    Checks both `.issue-orchestrator.yaml` and `.issue-orchestrator/config.yaml`.
+
+    Args:
+        start_path: Starting path for search (defaults to cwd)
+
+    Returns:
+        Path to config file, or None if not found
+    """
+    search_path = start_path or Path.cwd()
+
+    for path in [search_path, *search_path.parents]:
+        # Check .issue-orchestrator.yaml first
+        config_file = path / ".issue-orchestrator.yaml"
+        if config_file.exists():
+            return config_file
+
+        # Then check .issue-orchestrator/config.yaml
+        config_file = path / ".issue-orchestrator" / "config.yaml"
+        if config_file.exists():
+            return config_file
+
+    return None
+
+
+def load_validation_config(
+    start_path: Optional[Path] = None,
+) -> dict:
+    """Load validation configuration from the config file.
+
+    This is a lightweight function for use by validation hooks (agent_done,
+    prepush_check) that need only the validation config, not the full Config.
+
+    Args:
+        start_path: Starting path for config search (defaults to cwd)
+
+    Returns:
+        Dict with validation config:
+        {
+            "agent_gate": {"cmd": ..., "timeout_seconds": ...},
+            "publish_gate": {"cmd": ..., "timeout_seconds": ...},
+            "policy": {"publish_requires": ..., "agent_runs": ...},
+        }
+    """
+    config_path = find_config_file(start_path)
+    if not config_path:
+        return {
+            "agent_gate": {"cmd": None, "timeout_seconds": 600},
+            "publish_gate": {"cmd": None, "timeout_seconds": 1800},
+            "policy": {"publish_requires": None, "agent_runs": None},
+        }
+
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+
+        validation = config.get("validation", {})
+        policy = config.get("validation_policy", {})
+
+        return {
+            "agent_gate": {
+                "cmd": validation.get("agent_gate", {}).get("cmd"),
+                "timeout_seconds": validation.get("agent_gate", {}).get("timeout_seconds", 600),
+            },
+            "publish_gate": {
+                "cmd": validation.get("publish_gate", {}).get("cmd"),
+                "timeout_seconds": validation.get("publish_gate", {}).get("timeout_seconds", 1800),
+            },
+            "policy": {
+                "publish_requires": policy.get("publish_requires"),
+                "agent_runs": policy.get("agent_runs"),
+            },
+        }
+    except Exception:
+        return {
+            "agent_gate": {"cmd": None, "timeout_seconds": 600},
+            "publish_gate": {"cmd": None, "timeout_seconds": 1800},
+            "policy": {"publish_requires": None, "agent_runs": None},
+        }

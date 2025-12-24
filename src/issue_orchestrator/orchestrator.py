@@ -833,6 +833,9 @@ class Orchestrator:
         startup_start = time.time()
         self.state.startup_status = "running"
 
+        # Emit merged configuration for debugging (YAML + command line overrides)
+        self.events.publish(TraceEvent("config.merged", self.config.to_event_dict()))
+
         # NOTE: IPC/SSE plugins are now registered by bootstrap.py before calling startup()
 
         # Verify AI meta-agent hooks are installed and working
@@ -1019,7 +1022,13 @@ class Orchestrator:
         elapsed = time.time() - startup_start
         logger.info("Startup complete in %.1fs", elapsed)
         print(f"[startup] Total startup time: {elapsed:.1f}s")
-        self.events.publish(TraceEvent("orchestrator.ready"))
+        self.events.publish(TraceEvent("orchestrator.ready", {
+            "filter_label": self.config.filter_label,
+            "filter_milestone": self.config.filter_milestone,
+            "agents": list(self.config.agents.keys()),
+            "max_concurrent": self.config.max_concurrent_sessions,
+            "startup_seconds": round(elapsed, 1),
+        }))
 
     def launch_session(self, issue: Issue) -> Optional[Session]:
         """Launch a new session for an issue."""
@@ -1634,6 +1643,7 @@ class Orchestrator:
         Args:
             force: If True, kill active sessions immediately instead of waiting.
         """
+        self._shutdown_requested = True
         active = self.state.active_sessions
         if active:
             if force:
@@ -1812,13 +1822,22 @@ class Orchestrator:
         """
         all_issues: list[Issue] = []
         for agent_label in self.config.agents.keys():
+            labels = self._build_labels(agent_label)
             logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
             issues = self.repository_host.list_issues(
-                labels=self._build_labels(agent_label),
+                labels=labels,
                 milestone=self._get_milestone_filter(),
                 limit=self.config.issue_fetch_limit,
             )
             all_issues.extend(issues)
+            # Emit event for visibility
+            self.events.publish(TraceEvent("issues.fetched", {
+                "agent": agent_label,
+                "labels": labels,
+                "milestone": self._get_milestone_filter(),
+                "count": len(issues),
+                "issue_numbers": [i.number for i in issues],
+            }))
         return all_issues
 
     def update_queue_cache(self) -> None:

@@ -216,6 +216,7 @@ def cleanup_before_and_after(test_repo):
 
 @pytest.mark.e2e
 @pytest.mark.live
+@pytest.mark.quick  # Run this in make validate
 class TestHappyPath:
     """Test the most common scenario: issue → session → PR → review."""
 

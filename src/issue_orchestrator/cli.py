@@ -18,11 +18,15 @@ console = Console()
 LOG_FILE = Path.home() / ".issue-orchestrator.log"
 
 
-def setup_logging(debug: bool = False) -> None:
+def setup_logging(debug: bool = False, console_output: bool = False) -> None:
     """Configure logging for the application.
 
-    Logs always go to file only (not console) to avoid conflicts with TUI.
-    Use `tail -f ~/.issue-orchestrator.log` in another terminal to watch logs.
+    Logs always go to file. When console_output=True (e.g., --no-dashboard),
+    also log to stderr for visibility.
+
+    Args:
+        debug: If True, set log level to DEBUG
+        console_output: If True, also log to stderr (for non-TUI modes)
     """
     # Get root logger and configure it
     root_logger = logging.getLogger()
@@ -35,8 +39,18 @@ def setup_logging(debug: bool = False) -> None:
     # Add file handler
     file_handler = logging.FileHandler(LOG_FILE, mode='a')
     file_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-    file_handler.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s: %(message)s'))
+    file_handler.setFormatter(logging.Formatter('%(asctime)s [%(process)d] %(name)s %(levelname)s: %(message)s'))
     root_logger.addHandler(file_handler)
+
+    # Add stderr handler for console output (e.g., e2e tests, --no-dashboard)
+    if console_output or os.environ.get("ORCHESTRATOR_LOG_TO_STDERR") == "1":
+        stderr_handler = logging.StreamHandler()
+        stderr_handler.setLevel(logging.INFO)
+        # Include PID to distinguish multiple orchestrator instances
+        stderr_handler.setFormatter(logging.Formatter('[%(process)d] %(name)s: %(message)s'))
+        # Only log events to stderr (not all debug noise)
+        stderr_handler.addFilter(lambda record: "events" in record.name or record.levelno >= logging.WARNING)
+        root_logger.addHandler(stderr_handler)
 
     logging.info("=" * 50)
     logging.info("issue-orchestrator started (debug=%s)", debug)
@@ -113,7 +127,9 @@ def cmd_start(args: argparse.Namespace) -> int:
     """Start the orchestrator."""
     # Set up logging first
     debug = getattr(args, 'debug', False)
-    setup_logging(debug=debug)
+    no_dashboard = getattr(args, 'no_dashboard', False)
+    # Enable console output when not using dashboard (safe to log to stderr)
+    setup_logging(debug=debug, console_output=no_dashboard)
 
     console.print("[green]Starting issue-orchestrator...[/green]")
     if debug:

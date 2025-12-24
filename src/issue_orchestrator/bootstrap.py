@@ -22,6 +22,7 @@ from .execution import (
     PluggySessionRunner,
     LifecycleIPCPlugin,
     LifecycleSSEPlugin,
+    LifecycleLoggingPlugin,
     GitHubAdapter,
 )
 from .control import (
@@ -93,6 +94,10 @@ def build_orchestrator(
             logger.info("SSE lifecycle plugin registered")
         except Exception as e:
             logger.warning("Failed to register SSE plugin: %s", e)
+
+    # Always register logging plugin for visibility into orchestrator events
+    logging_plugin = LifecycleLoggingPlugin()
+    pm.register(logging_plugin, name="lifecycle_logging")
 
     # Create port adapters
     events = PluggyEventSink(pm)
@@ -240,9 +245,26 @@ async def build_orchestrator_with_ipc(
         except Exception as e:
             logger.warning("Failed to register SSE plugin: %s", e)
 
+    # Always register logging plugin for visibility into orchestrator events
+    logging_plugin = LifecycleLoggingPlugin()
+    pm.register(logging_plugin, name="lifecycle_logging")
+
     # Create port adapters
     events = PluggyEventSink(pm)
     runner = PluggySessionRunner(pm)
+
+    # Wire up subprocess events to flow through the main event system
+    from .ports.event_sink import TraceEvent
+
+    def handle_subprocess_event(event_name: str, event_data: dict) -> None:
+        """Forward subprocess events through the main event system."""
+        try:
+            trace_event = TraceEvent(name=event_name, data=event_data)
+            events.publish(trace_event)
+        except Exception as e:
+            logger.warning("Failed to forward subprocess event %s: %s", event_name, e)
+
+    ipc_server.set_event_handler(handle_subprocess_event)
 
     # Create GitHub adapter if repo is configured
     github = None

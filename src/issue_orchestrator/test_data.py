@@ -6,27 +6,37 @@ from typing import Optional
 
 
 def cleanup_test_issues(repo: str) -> int:
-    """Close all issues with 'test-data' label.
+    """Close all e2e test issues.
+
+    Closes issues with 'test-data' label OR 'agent:e2e-test' label
+    to ensure all test artifacts are cleaned up.
 
     Returns:
         Number of issues closed
     """
-    result = subprocess.run(
-        ["gh", "issue", "list", "--repo", repo, "--label", "test-data",
-         "--state", "open", "--json", "number"],
-        capture_output=True, text=True
-    )
-
     count = 0
-    if result.returncode == 0:
-        issues = json.loads(result.stdout)
-        for issue in issues:
-            subprocess.run(
-                ["gh", "issue", "close", str(issue["number"]), "--repo", repo,
-                 "--comment", "Closed by test cleanup."],
-                capture_output=True
-            )
-            count += 1
+    seen = set()
+
+    # Close issues with test-data label
+    for label in ["test-data", "agent:e2e-test"]:
+        result = subprocess.run(
+            ["gh", "issue", "list", "--repo", repo, "--label", label,
+             "--state", "open", "--json", "number"],
+            capture_output=True, text=True
+        )
+
+        if result.returncode == 0:
+            issues = json.loads(result.stdout)
+            for issue in issues:
+                num = issue["number"]
+                if num not in seen:
+                    seen.add(num)
+                    subprocess.run(
+                        ["gh", "issue", "close", str(num), "--repo", repo,
+                         "--comment", "Closed by test cleanup."],
+                        capture_output=True
+                    )
+                    count += 1
 
     return count
 

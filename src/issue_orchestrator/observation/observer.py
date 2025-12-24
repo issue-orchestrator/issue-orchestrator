@@ -184,15 +184,33 @@ class SessionObserver:
         # Build observation result
         if timeout_exceeded:
             # Timeout takes priority as it requires action (kill session)
-            return SessionObservationResult.timed_out(
+            result = SessionObservationResult.timed_out(
                 runtime_minutes=runtime,
                 timeout_minutes=timeout,
                 session_exists=exists,
             )
         elif exists:
-            return SessionObservationResult.running(runtime_minutes=runtime)
+            result = SessionObservationResult.running(runtime_minutes=runtime)
         else:
-            return SessionObservationResult.terminated(runtime_minutes=runtime)
+            result = SessionObservationResult.terminated(runtime_minutes=runtime)
+
+        # Emit observation result for debugging (only for non-running sessions)
+        if result.observation != SessionObservation.RUNNING:
+            self.events.publish(TraceEvent(
+                name="observation.result",
+                data={
+                    "issue_number": session.issue.number,
+                    "session_name": session.tmux_session_name,
+                    "observation": result.observation.value,
+                    "session_exists": result.session_exists,
+                    "runtime_minutes": result.runtime_minutes,
+                    "timeout_minutes": result.timeout_minutes,
+                    "worktree_path": str(session.worktree_path),
+                    "completion_json_exists": completion_path.exists(),
+                },
+            ))
+
+        return result
 
     def check_session(self, session: Session) -> SessionStatus:
         """Check the status of a session.

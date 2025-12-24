@@ -101,6 +101,16 @@ class TmuxManager:
         # Send the PATH setup and then the command
         pane = window.active_pane
         if pane is not None:
+            # Enable continuous logging to worktree (if directory exists)
+            try:
+                log_dir = working_dir / ".issue-orchestrator"
+                log_dir.mkdir(exist_ok=True)
+                log_file = log_dir / "session.log"
+                # Use tmux pipe-pane for continuous logging
+                pane.cmd("pipe-pane", f"cat >> '{log_file}'")
+            except OSError:
+                pass  # Skip logging if directory doesn't exist (e.g., in tests)
+
             pane.send_keys(path_cmd)
             pane.send_keys(command)
 

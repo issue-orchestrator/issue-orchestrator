@@ -39,6 +39,7 @@ from .git_working_copy import GitWorkingCopy
 from .json_store import JsonSessionStore
 from .lifecycle_ipc import LifecycleIPCPlugin
 from .lifecycle_sse import LifecycleSSEPlugin
+from .lifecycle_logging import LifecycleLoggingPlugin
 from .event_sink_adapter import PluggyEventSink, CompositeEventSink, LoggingEventSink
 from .session_runner_adapter import PluggySessionRunner
 from .github_issue_resolver import GitHubIssueResolver
@@ -59,6 +60,7 @@ __all__ = [
     # Lifecycle plugins
     "LifecycleIPCPlugin",
     "LifecycleSSEPlugin",
+    "LifecycleLoggingPlugin",
     # Platform adapters
     "GitHubAdapter",
     # Issue resolvers (IssueKey -> backing-store handle)

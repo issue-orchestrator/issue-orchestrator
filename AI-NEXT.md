@@ -1,5 +1,134 @@
 # AI Next Steps
 
+## Session 2025-12-23 Evening: Event Emission & Validation Cache
+
+### Completed Work
+
+1. **Subprocess Event Emission** (`emit.py` - NEW)
+   - Fire-and-forget event emission via IPC socket
+   - Subprocesses (validation hooks) can emit events to orchestrator
+   - Uses `ORCHESTRATOR_IPC_SOCKET` env var
+
+2. **IPC Server Enhanced** (`ipc/server.py`)
+   - Added `on_event` callback to receive events from clients
+   - Added `set_event_handler()` for deferred wiring
+   - Broadcasts received events to all connected clients
+
+3. **Event Wiring** (`bootstrap.py`)
+   - Subprocess events flow through PluggyEventSink
+   - Events visible to SSE clients and other listeners
+
+4. **Validation Events** (`control/validation.py`)
+   - `validation.started` - when validation begins
+   - `validation.completed` - when validation ends (with pass/fail/duration)
+   - `validation.cache_hit` / `validation.cache_miss` - cache lookup results
+
+5. **Simplified Validation Cache** (`control/validation.py`)
+   - **BREAKING**: Changed from per-suite paths to single path per SHA
+   - Old: `.issue-orchestrator/validation/{suite}/{sha}.json`
+   - New: `.issue-orchestrator/validation/{sha}.json`
+   - Cache now checks command match - agent_gate and publish_gate share cache if same command
+
+6. **Agent IPC Socket** (`control/isolation.py`)
+   - `ORCHESTRATOR_IPC_SOCKET` env var set for all agent sessions
+   - Agents can emit events back to orchestrator
+
+7. **DRY Config Lookup** (`config.py`)
+   - New `find_config_file()` - single source of truth for config lookup
+   - New `load_validation_config()` - lightweight loader for validation hooks
+   - Updated `agent_done.py` and `prepush_check.py` to use shared lookup
+
+8. **E2E Cleanup Fix** (`tests/e2e/conftest.py`)
+   - Added `_cleanup_tmux_sessions()` to kill zombie e2e test windows
+   - Prevents accumulation of orphan tmux windows
+
+### Created Issues
+
+- **#569 [M3-003]** - Add cleanup adapter for test session cleanup (tmux/iTerm2)
+
+### Status
+
+- `make typecheck` passes
+- Unit tests need verification (were interrupted)
+- E2E tests need verification
+
+### Key Design Decision: Unified Validation Cache
+
+The validation cache is now **command-aware**:
+- One file per SHA: `{worktree}/.issue-orchestrator/validation/{sha}.json`
+- Record includes the `command` field
+- Cache hit only if SHA matches AND command matches
+- This means: if agent_gate and publish_gate use the same command, validation runs ONCE
+
+---
+
+## CRITICAL: Start Here (Session 2025-12-23 Findings)
+
+### IMMEDIATE FIX REQUIRED: GitHubAdapter.create_issue_key() is BROKEN
+
+**Location**: `execution/github_adapter.py`
+
+**Current (WRONG):**
+```python
+def create_issue_key(self, issue_number: int) -> "GitHubIssueKey":
+    return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))
+```
+
+**Problem**: Creates a key with `external_id="123"` (the issue number as string) instead of extracting the actual stable ID from the issue title (e.g., "M1-011"). This **breaks the entire identity system** because:
+- The resolver cache never gets proper M1-011 entries
+- Reverse lookup (issue_number → external_id) doesn't work
+- PendingRework stores wrong keys
+
+**CORRECT Implementation:**
+```python
+def create_issue_key(self, issue_number: int) -> "GitHubIssueKey" | None:
+    issue = self.get_issue(issue_number)  # Fetch issue details
+    if not issue:
+        return None
+    from ..domain.issue_key import parse_external_id
+    parsed = parse_external_id(issue.title)
+    if not parsed.external_id:
+        # Issue doesn't have [M1-011] prefix - fall back to number-based key
+        return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))
+    return GitHubIssueKey(repo=self.repo, external_id=parsed.external_id)
+```
+
+**Call site**: `orchestrator.py:2552` in `scan_needs_rework_prs()` - needs to handle None case.
+
+---
+
+### What's Actually Working (verified by code review)
+
+1. **IssueKey protocol** (`domain/issue_key.py`) - Clean, well-designed
+2. **GitHubIssueResolver** (`execution/github_issue_resolver.py`) - Can cache M1-011 → issue_number
+3. **Dependency parsing** (`domain/dependencies.py`) - `parse_dependency_refs()` understands M1-011 syntax
+4. **DependencyEvaluator** (`control/dependency_evaluator.py`) - Full resolution pipeline using IssueResolver
+5. **Bootstrap wiring** - GitHubIssueResolver is created and passed to DependencyEvaluator
+6. **PendingRework** - Uses IssueKey (but gets broken keys due to bug above)
+
+### What's NOT Working
+
+1. **GitHubAdapter.create_issue_key()** - BROKEN (see above)
+2. **Orchestrator de-godding** - Previous session claimed to do this but didn't actually wire anything
+3. **control/planner.py** - EXISTS but run_loop() doesn't use it
+4. **control/session_manager.py** - EXISTS but orchestrator uses its own methods
+5. **control/label_sync.py** - EXISTS but not used
+6. **control/action_applier.py** - EXISTS but not called
+
+---
+
+### Execution Order for This Work
+
+1. **Fix GitHubAdapter.create_issue_key()** - 5 min fix, unblocks everything
+2. **Verify IssueResolver works end-to-end** - Write a test or manual check
+3. **Wire Planner into run_loop()** - The big de-godding step
+4. **Wire SessionManager** - Replace `_create_session`, `_session_exists`, `_kill_session`
+5. **Wire LabelSync** - Replace `_sync_label_*` methods
+6. **Remove dead code** - ~400-500 lines expected reduction
+7. **Run tests** - `pytest tests/unit/ -v`
+
+---
+
 ## Feedback 1: Top 3 Layer Disconnects to Fix
 
 ### 1. Orchestrator imports concrete adapters (violates own architecture claim)
@@ -22,7 +151,7 @@
 - `DependencyResolver.resolve_external_id("M1-011") -> issue_number | None`
 - Implement using IssueTracker port
 
-**Status**: `IssueKey` and `GitHubIssueResolver` were created but not fully wired.
+**Status**: Infrastructure exists (`IssueKey`, `GitHubIssueResolver`, `DependencyEvaluator`) and IS wired in bootstrap.py. BUT `GitHubAdapter.create_issue_key()` is broken - see "Start Here" section above.
 
 ### 3. Identity is implicit - model treats GH number as identity
 
@@ -37,7 +166,7 @@ class IssueKey:
     gh_number: int | None = None  # locator, not identity
 ```
 
-**Status**: `IssueKey` protocol created, `GitHubIssueKey` and `FakeIssueKey` implementations exist. `PendingRework` now uses `IssueKey`. Not fully propagated.
+**Status**: `IssueKey` protocol created and well-designed. `GitHubIssueKey` and `FakeIssueKey` implementations exist. `PendingRework` uses `IssueKey`. HOWEVER, keys are created with wrong data due to broken `create_issue_key()` - see "Start Here" section.
 
 ---
 
@@ -108,7 +237,7 @@ class IssueKey:
 | `label_sync.py` | Label reconciliation | NO - orchestrator does directly |
 | `label_projection.py` | Desired label state | NO - not used |
 | `scheduler.py` | Issue prioritization | YES - used by planner |
-| `dependency_evaluator.py` | Check issue dependencies | YES - partially |
+| `dependency_evaluator.py` | Check issue dependencies | YES - fully wired, uses IssueResolver |
 | `completion_processor.py` | Handle agent-done | YES |
 | `reconciliation.py` | State reconciliation | Unclear |
 | `session_controller.py` | Session state machine | Unclear |
@@ -120,7 +249,7 @@ class IssueKey:
 | Module | Purpose | Status |
 |--------|---------|--------|
 | `issue_key.py` | IssueKey protocol + implementations | DONE |
-| `dependencies.py` | Parse dependency refs | Partial - drops M1-011 refs |
+| `dependencies.py` | Parse dependency refs | DONE - `parse_dependency_refs()` supports M1-011 |
 | `state_machines/` | FSM definitions | Exist |
 
 ### execution/ adapters:
@@ -128,7 +257,7 @@ class IssueKey:
 | Module | Purpose | Status |
 |--------|---------|--------|
 | `github_adapter.py` | GitHub via gh CLI | Used |
-| `github_issue_resolver.py` | IssueKey resolution | Created, not wired into deps |
+| `github_issue_resolver.py` | IssueKey resolution | DONE - wired into DependencyEvaluator via bootstrap |
 | `session_runner_adapter.py` | Terminal sessions | Used |
 | `event_sink_adapter.py` | Event publishing | Used |
 
@@ -144,14 +273,20 @@ class IssueKey:
 - [x] `create_issue_key()` added to `RepositoryHost` protocol
 - [x] Polling improvements (queue_refresh_seconds, refresh endpoint)
 - [x] Planner module created with pure planning logic
+- [x] `IssueResolver` wired into `DependencyEvaluator` via bootstrap.py
+- [x] `parse_dependency_refs()` supports M1-011 syntax
 
-### NOT Done (Critical):
-- [ ] Wire Planner into `run_loop()`
+### BROKEN (Fix First):
+- [ ] **FIX GitHubAdapter.create_issue_key()** - creates wrong keys (see "Start Here" section)
+
+### NOT Done (Critical - De-Godding):
+- [ ] Wire Planner into `run_loop()` - orchestrator still has inline decision logic
 - [ ] Wire SessionManager (replace `_create_session`, `_session_exists`, `_kill_session`)
 - [ ] Wire LabelSync (replace `_sync_label_*` methods)
-- [ ] Move GitHub-specific code from orchestrator to adapter
-- [ ] Wire `IssueResolver` into dependency evaluation
+- [ ] Wire ActionApplier to execute Plan actions
+- [ ] Move GitHub-specific code from orchestrator to adapter (e.g., `scan_needs_rework_prs()`)
 - [ ] Remove dead code (~400-500 lines expected reduction)
+- [ ] Consolidate event systems (EventSink as canonical)
 
 ---
 

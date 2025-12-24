@@ -317,7 +317,11 @@ def find_worktree_root() -> Path:
 def load_agent_gate_config(worktree: Path) -> tuple[Optional[str], int]:
     """Load agent gate configuration from the worktree.
 
-    Looks for .issue-orchestrator/config.yaml and extracts the agent_gate config.
+    Uses the shared config lookup to find configuration and extract agent_gate config.
+
+    Environment variable overrides (for testing):
+    - ORCHESTRATOR_AGENT_GATE_CMD: Override the validation command
+    - ORCHESTRATOR_AGENT_GATE_TIMEOUT: Override the timeout in seconds
 
     Args:
         worktree: Path to the worktree root
@@ -325,32 +329,27 @@ def load_agent_gate_config(worktree: Path) -> tuple[Optional[str], int]:
     Returns:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
-    config_path = worktree / ".issue-orchestrator" / "config.yaml"
-    if not config_path.exists():
-        return None, 0
+    import os
+    from .config import load_validation_config
 
-    try:
-        import yaml
+    # Check for environment variable override (useful for e2e tests)
+    env_cmd = os.environ.get("ORCHESTRATOR_AGENT_GATE_CMD")
+    env_timeout = os.environ.get("ORCHESTRATOR_AGENT_GATE_TIMEOUT")
+    if env_cmd:
+        timeout = int(env_timeout) if env_timeout else 120
+        return env_cmd, timeout
 
-        with open(config_path) as f:
-            config = yaml.safe_load(f) or {}
+    # Use shared config lookup (checks both .issue-orchestrator.yaml and .issue-orchestrator/config.yaml)
+    validation_config = load_validation_config(worktree)
 
-        validation = config.get("validation", {})
-        agent_gate = validation.get("agent_gate", {})
-        cmd = agent_gate.get("cmd")
-        timeout = agent_gate.get("timeout_seconds", 1800)
+    agent_gate = validation_config["agent_gate"]
+    policy = validation_config["policy"]
 
-        # Also check validation_policy to see if agent_runs is enabled
-        policy = config.get("validation_policy", {})
-        agent_runs = policy.get("agent_runs")
+    # Only return command if policy enables it
+    if policy["agent_runs"] == "agent_gate" and agent_gate["cmd"]:
+        return agent_gate["cmd"], agent_gate["timeout_seconds"]
 
-        # Only return command if policy enables it
-        if agent_runs == "agent_gate" and cmd:
-            return cmd, timeout
-
-        return None, 0
-    except Exception:
-        return None, 0
+    return None, 0
 
 
 def run_agent_gate(worktree: Path, verbose: bool = False) -> Optional[AgentGateResult]:
