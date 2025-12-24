@@ -371,22 +371,51 @@ async def run_loop(self):
         await asyncio.sleep(self.config.poll_interval)
 ```
 
-### Wire SessionManager:
+### Wire SessionManager (READY - ~15 call sites)
 
-Replace in orchestrator:
-- `_create_session()` → `session_manager.start(ctx)`
-- `_session_exists()` → `session_manager.exists(ref)`
-- `_kill_session()` → `session_manager.stop(ref)`
+**Module:** `control/session_manager.py` - already complete, not wired
 
-### Wire LabelSync:
-
-Replace `_sync_label_*` methods with:
-```python
-def _handle_state_change(self, event) -> None:
-    desired = self.label_projection.for_issue_state(event.new_state)
-    current = self.repository_host.get_issue_labels(event.issue_number)
-    self.label_sync.sync(event.issue_number, current, desired)
+**Call sites in orchestrator.py that need migration:**
 ```
+Line 892:  check_session_fn=lambda n: self._session_exists(f"issue-{n}")
+Line 940:  if not self._session_exists(f"review-{pr_number}")
+Line 966:  if self._session_exists(session_name)
+Line 1051: if self._session_exists(session_name)
+Line 1152: self._create_session(session_name, command, worktree_path, title=issue.title)
+Line 1431: self._kill_session(session.tmux_session_name)
+Line 1661: self._kill_session(s.tmux_session_name)
+Line 2062: if self._session_exists(session_name)
+Line 2097: self._create_session(session_name, command, worktree_path, title=...)
+Line 2299: self._kill_session(pending.terminal_session_name)
+Line 2376: if self._session_exists(session_name)
+Line 2391: self._kill_session(session_name)
+Line 2514: if self._session_exists(f"review-{pr_number}")
+Line 2754: if self._session_exists(session_name)
+Line 2787: self._create_session(session_name, command, worktree_path, title=...)
+```
+
+**Migration steps:**
+1. Add `session_manager: SessionManager` to Orchestrator constructor
+2. Wire in bootstrap.py
+3. Change from string session names to SessionRef objects
+4. Replace each call site
+
+### Wire LabelSync (READY - 6 methods to replace)
+
+**Module:** `control/label_sync.py` - already complete, not wired
+
+**Methods to replace in orchestrator.py (lines 613-672):**
+- `_sync_label_in_progress` → `label_sync.sync_add(number, labels.IN_PROGRESS)`
+- `_sync_label_blocked` → `label_sync.sync_add(number, "blocked-*")`
+- `_sync_label_needs_human` → `label_sync.sync_add(number, labels.NEEDS_HUMAN)`
+- `_sync_label_unblocked` → `label_sync.remove_blocked_labels(number, current)`
+- `_sync_label_completed` → `label_sync.sync(number, current, desired)`
+- `_sync_label_released` → `label_sync.sync_remove(number, labels.IN_PROGRESS)`
+
+**Migration steps:**
+1. Add `label_sync: LabelSync` to Orchestrator constructor
+2. Wire in bootstrap.py
+3. Replace each `_sync_label_*` method call with LabelSync calls
 
 ---
 
