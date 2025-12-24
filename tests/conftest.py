@@ -372,11 +372,12 @@ def patch_orchestrator_dependencies(monkeypatch, request):
         # Inject GitHub adapter if not already set
         if self._repository_host is None:
             self._repository_host = github_adapter
-        # Call original (which now won't raise since adapter is set)
-        original_post_init(self)
-        # Then inject our other mocks
+        # Inject mocks BEFORE calling original __post_init__ so session_manager
+        # gets the mock runner (session_manager is created during __post_init__)
         self.events = mock_events
         self.runner = mock_runner
+        # Call original (which now creates session_manager with our mock runner)
+        original_post_init(self)
         # Store references for test assertions
         self._mock_event_sink = mock_events
         self._mock_session_runner = mock_runner

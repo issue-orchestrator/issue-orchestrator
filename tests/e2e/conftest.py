@@ -498,13 +498,24 @@ class OrchestratorProcess:
 
         # Use sys.executable to find the venv's issue-orchestrator
         venv_bin = Path(sys.executable).parent / "issue-orchestrator"
+
+        # Allow UI mode override via env var for interactive debugging
+        ui_mode = os.environ.get("E2E_UI_MODE", "tmux")
+
         cmd = [
             str(venv_bin), "start",
             "--label", "test-data",
             "--max-issues", str(max_issues),
-            "--ui-mode", "tmux",
-            "--no-dashboard",  # Don't start TUI in tests
+            "--ui-mode", ui_mode,
         ]
+
+        # Add dashboard flags based on UI mode
+        if ui_mode == "web":
+            cmd.extend(["--port", os.environ.get("E2E_WEB_PORT", "8080")])
+            print(f"  [E2E] Web UI available at http://localhost:{os.environ.get('E2E_WEB_PORT', '8080')}", flush=True)
+        else:
+            cmd.append("--no-dashboard")  # Don't start TUI in tests
+
         if extra_args:
             cmd.extend(extra_args)
 

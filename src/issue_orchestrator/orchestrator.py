@@ -780,28 +780,54 @@ class Orchestrator:
         raise ValueError(f"Could not extract number from session name: {session_name}")
 
     def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> bool:
-        """Create a session using the injected SessionRunner.
+        """Create a session using the SessionManager.
 
         Returns:
             True if session was created successfully, False otherwise.
         """
-        session_id = self._extract_session_number(session_name)
-        return self.runner.create_session(
-            session_id=session_id,
-            command=command,
-            working_dir=str(working_dir),
-            title=title,
-        )
+        from .control.session_manager import SessionRef, SessionContext
+        assert self.session_manager is not None  # Set in __post_init__
+        try:
+            ref = SessionRef.from_name(session_name)
+        except ValueError as e:
+            self.events.publish(TraceEvent("session.name_parse_error", {
+                "session_name": session_name,
+                "error": str(e),
+                "operation": "create",
+            }))
+            raise
+        ctx = SessionContext(ref=ref, command=command, working_dir=working_dir, title=title)
+        return self.session_manager.start(ctx)
 
     def _session_exists(self, session_name: str) -> bool:
-        """Check if a session exists using the injected SessionRunner."""
-        session_id = self._extract_session_number(session_name)
-        return self.runner.session_exists(session_id)
+        """Check if a session exists using the SessionManager."""
+        from .control.session_manager import SessionRef
+        assert self.session_manager is not None  # Set in __post_init__
+        try:
+            ref = SessionRef.from_name(session_name)
+        except ValueError as e:
+            self.events.publish(TraceEvent("session.name_parse_error", {
+                "session_name": session_name,
+                "error": str(e),
+                "operation": "exists",
+            }))
+            raise
+        return self.session_manager.exists(ref)
 
     def _kill_session(self, session_name: str) -> None:
-        """Kill a session using the injected SessionRunner."""
-        session_id = self._extract_session_number(session_name)
-        self.runner.kill_session(session_id)
+        """Kill a session using the SessionManager."""
+        from .control.session_manager import SessionRef
+        assert self.session_manager is not None  # Set in __post_init__
+        try:
+            ref = SessionRef.from_name(session_name)
+        except ValueError as e:
+            self.events.publish(TraceEvent("session.name_parse_error", {
+                "session_name": session_name,
+                "error": str(e),
+                "operation": "kill",
+            }))
+            raise
+        self.session_manager.stop(ref)
 
     def _refresh_issue(self, issue_number: int) -> Optional[Issue]:
         """Fetch fresh issue data from GitHub.
