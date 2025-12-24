@@ -39,9 +39,22 @@ New events for tracing completion file flow:
 - `completion.lookup` - Shows where we're looking for completion and if file exists
 - `completion.written` - Emitted by agent-done when writing (via IPC if available)
 
+### Session 2025-12-24: SessionManager & LabelSync Wiring (COMPLETE)
+
+**Completed:**
+- [x] Wired SessionManager into orchestrator - `_create_session`, `_session_exists`, `_kill_session` now delegate to SessionManager
+- [x] Wired LabelSync into orchestrator - `_sync_label_*` methods now use LabelSync when available
+- [x] Added `session.name_parse_error` event for debugging invalid session names
+- [x] Added `labels.sync_error` events for label operation failures
+- [x] Added `labels.synced` event emission through LabelSync
+- [x] Added `E2E_UI_MODE` env var for running e2e tests with web UI
+- [x] Added `test-e2e-one` to Makefile help
+
 ### Remaining Work
 - [ ] **DRY: Create shared Python utility for issue creation in tests** - currently duplicated across test files
-- [ ] Reduce test timeouts from 30min to 10min
+- [ ] Move GitHub-specific code from orchestrator to adapter (e.g., `scan_needs_rework_prs()`)
+- [ ] Remove dead code - orchestrator still ~2900 lines
+- [ ] Consolidate event systems (EventSink as canonical)
 
 ### BUG: Orchestrator loop showing impossibly high iteration counts
 
@@ -325,8 +338,8 @@ class IssueKey:
 
 ### NOT Done (Critical - De-Godding):
 - [x] Wire Planner into `run_loop()` - DONE, uses snapshot + plan + _apply_plan()
-- [ ] Wire SessionManager (replace `_create_session`, `_session_exists`, `_kill_session` in orchestrator.py lines 782-806)
-- [ ] Wire LabelSync (replace `_sync_label_*` methods in orchestrator.py lines 613-672)
+- [x] Wire SessionManager - DONE (2025-12-24), `_create_session`, `_session_exists`, `_kill_session` delegate to SessionManager
+- [x] Wire LabelSync - DONE (2025-12-24), `_sync_label_*` methods use LabelSync when available
 - [x] Wire ActionApplier - DONE as `_apply_plan()` + `_execute_launch_action()` etc
 - [ ] Move GitHub-specific code from orchestrator to adapter (e.g., `scan_needs_rework_prs()`)
 - [ ] Remove dead code - orchestrator still ~2900 lines
