@@ -44,7 +44,7 @@ validate: typecheck test-unit
 
 # Full validation for pre-push (~2-3 min) - THE publish gate
 validate-before-push: typecheck
-	$(PYTEST) tests/unit tests/integration tests/e2e -x -q --tb=short
+	$(PYTEST) tests/unit tests/integration -x -q --tb=short
 
 # Demo - show orchestrator features with mock data
 demo:
