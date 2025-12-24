@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from .control.planner import Planner, Plan, OrchestratorSnapshot
     from .control.session_manager import SessionManager
+    from .control.label_sync import LabelSync
     from .control.actions import LaunchSessionAction, EscalateToHumanAction
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,7 @@ class Orchestrator:
     planner: Optional["Planner"] = field(default=None, repr=False)
     # Optional session manager (can be injected, otherwise created in __post_init__)
     session_manager: Optional["SessionManager"] = field(default=None, repr=False)
+    label_sync: Optional["LabelSync"] = field(default=None, repr=False)
     # Internal state
     state: OrchestratorState = field(default_factory=OrchestratorState)
     scheduler: Scheduler = field(init=False)
@@ -612,62 +614,69 @@ class Orchestrator:
 
     def _sync_label_in_progress(self, event) -> None:
         """Add in-progress label when issue is claimed."""
-        try:
-            logger.debug("[ADAPTER] Using GitHubAdapter for add_label")
-            self.repository_host.add_label(event.entity_id, "in-progress")
-            logger.debug(f"[LABEL_SYNC] Added 'in-progress' to #{event.entity_id}")
-        except Exception as e:
-            logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
+        if self.label_sync:
+            self.label_sync.sync_add(event.entity_id, "in-progress")
+        else:
+            try:
+                self.repository_host.add_label(event.entity_id, "in-progress")
+            except Exception as e:
+                logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
 
     def _sync_label_blocked(self, event) -> None:
         """Add blocked label when issue is blocked."""
         reason = event.data.get('reason', '')
         label = f"blocked-{reason}" if reason else "blocked"
-        try:
-            logger.debug("[ADAPTER] Using GitHubAdapter for add_label")
-            self.repository_host.add_label(event.entity_id, label)
-            logger.debug(f"[LABEL_SYNC] Added '{label}' to #{event.entity_id}")
-        except Exception as e:
-            logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
+        if self.label_sync:
+            self.label_sync.sync_add(event.entity_id, label)
+        else:
+            try:
+                self.repository_host.add_label(event.entity_id, label)
+            except Exception as e:
+                logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
 
     def _sync_label_needs_human(self, event) -> None:
         """Add needs-human label."""
-        try:
-            logger.debug("[ADAPTER] Using GitHubAdapter for add_label")
-            self.repository_host.add_label(event.entity_id, "blocked-needs-human")
-            logger.debug(f"[LABEL_SYNC] Added 'blocked-needs-human' to #{event.entity_id}")
-        except Exception as e:
-            logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
+        if self.label_sync:
+            self.label_sync.sync_add(event.entity_id, "blocked-needs-human")
+        else:
+            try:
+                self.repository_host.add_label(event.entity_id, "blocked-needs-human")
+            except Exception as e:
+                logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
 
     def _sync_label_unblocked(self, event) -> None:
         """Remove blocking labels when unblocked."""
-        try:
-            logger.debug("[ADAPTER] Using GitHubAdapter for get_issue_labels and remove_label")
+        if self.label_sync:
             labels = self.repository_host.get_issue_labels(event.entity_id)
-            for label in labels:
-                if label.startswith("blocked"):
-                    self.repository_host.remove_label(event.entity_id, label)
-                    logger.debug(f"[LABEL_SYNC] Removed '{label}' from #{event.entity_id}")
-        except Exception as e:
-            logger.warning(f"[LABEL_SYNC] Failed to remove labels: {e}")
+            self.label_sync.remove_blocked_labels(event.entity_id, set(labels))
+        else:
+            try:
+                labels = self.repository_host.get_issue_labels(event.entity_id)
+                for label in labels:
+                    if label.startswith("blocked"):
+                        self.repository_host.remove_label(event.entity_id, label)
+            except Exception as e:
+                logger.warning(f"[LABEL_SYNC] Failed to remove labels: {e}")
 
     def _sync_label_completed(self, event) -> None:
         """Remove in-progress label when completed."""
-        try:
-            logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
-            self.repository_host.remove_label(event.entity_id, "in-progress")
-            logger.debug(f"[LABEL_SYNC] Removed 'in-progress' from #{event.entity_id}")
-        except Exception as e:
-            logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
+        if self.label_sync:
+            self.label_sync.sync_remove(event.entity_id, "in-progress")
+        else:
+            try:
+                self.repository_host.remove_label(event.entity_id, "in-progress")
+            except Exception as e:
+                logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
 
     def _sync_label_released(self, event) -> None:
         """Remove in-progress label when released."""
-        try:
-            logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
-            self.repository_host.remove_label(event.entity_id, "in-progress")
-            logger.debug(f"[LABEL_SYNC] Removed 'in-progress' from #{event.entity_id}")
-        except Exception as e:
-            logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
+        if self.label_sync:
+            self.label_sync.sync_remove(event.entity_id, "in-progress")
+        else:
+            try:
+                self.repository_host.remove_label(event.entity_id, "in-progress")
+            except Exception as e:
+                logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
 
     # ==================== End State Machine Helpers ====================
 

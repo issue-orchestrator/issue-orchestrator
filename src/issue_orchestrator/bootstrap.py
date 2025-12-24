@@ -29,6 +29,7 @@ from .control import (
     Planner,
     Scheduler,
     SessionManager,
+    LabelSync,
 )
 from .execution import GitHubIssueResolver
 from .control.dependency_evaluator import DependencyEvaluator
@@ -127,6 +128,7 @@ def build_orchestrator(
         repo=config.repo,
     ) if github else None
     session_manager = SessionManager(runner=runner, events=events, config=config)
+    label_sync = LabelSync(labels=github, events=events) if github else None
 
     # Create workflow instances
     review_workflow = ReviewWorkflow(config=config, events=events)
@@ -151,6 +153,7 @@ def build_orchestrator(
         _repository_host=github,
         planner=planner,
         session_manager=session_manager,
+        label_sync=label_sync,
     )
 
 
@@ -290,6 +293,7 @@ async def build_orchestrator_with_ipc(
         repo=config.repo,
     ) if github else None
     session_manager = SessionManager(runner=runner, events=events, config=config)
+    label_sync = LabelSync(labels=github, events=events) if github else None
 
     # Create workflow instances
     review_workflow = ReviewWorkflow(config=config, events=events)
@@ -314,6 +318,7 @@ async def build_orchestrator_with_ipc(
         _repository_host=github,
         planner=planner,
         session_manager=session_manager,
+        label_sync=label_sync,
     )
 
     return orchestrator, ipc_server
