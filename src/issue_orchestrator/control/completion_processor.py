@@ -148,16 +148,19 @@ class CompletionProcessor:
         }
         return self.label_config.get(key, defaults.get(key, key))
 
-    def read_completion_record(self, worktree: Path) -> CompletionRecord | None:
+    def read_completion_record(
+        self, worktree: Path, completion_path: str | None = None
+    ) -> CompletionRecord | None:
         """Read and validate a completion record from a worktree.
 
         Args:
             worktree: Path to the worktree directory.
+            completion_path: Relative path to completion file. If None, uses legacy path.
 
         Returns:
             The validated CompletionRecord, or None if not found/invalid.
         """
-        record_path = worktree / COMPLETION_RECORD_PATH
+        record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
 
         if not record_path.exists():
             logger.debug(f"No completion record found at {record_path}")
@@ -249,7 +252,8 @@ class CompletionProcessor:
             return False, result.reason
 
     def process(
-        self, worktree: Path, issue_number: int, issue_title: str
+        self, worktree: Path, issue_number: int, issue_title: str,
+        pr_number: int | None = None,
     ) -> ProcessingResult:
         """Process a completion record and execute actions.
 
@@ -257,10 +261,14 @@ class CompletionProcessor:
             worktree: Path to the worktree containing the completion record.
             issue_number: The GitHub issue number this work is for.
             issue_title: The issue title (for PR creation).
+            pr_number: Optional PR number for review sessions. When provided,
+                label operations will target the PR instead of the issue.
 
         Returns:
             ProcessingResult with success status and details.
         """
+        # For review sessions, label operations target the PR
+        label_target = pr_number if pr_number else issue_number
         actions_taken: list[str] = []
         errors: list[str] = []
         pr_url: str | None = None
@@ -348,8 +356,9 @@ class CompletionProcessor:
 
                 elif action == RequestedAction.POST_COMMENT:
                     if record.comment_body:
-                        self.pr_adapter.add_comment(issue_number, record.comment_body)
-                        actions_taken.append("Posted comment to issue")
+                        # Use label_target (PR for reviews, issue otherwise)
+                        self.pr_adapter.add_comment(label_target, record.comment_body)
+                        actions_taken.append(f"Posted comment to #{label_target}")
 
                 elif action == RequestedAction.ADD_BLOCKED_LABEL:
                     label = self._get_label("blocked")
@@ -363,18 +372,21 @@ class CompletionProcessor:
 
                 elif action == RequestedAction.ADD_CODE_REVIEWED_LABEL:
                     label = self._get_label("code_reviewed")
-                    self.label_adapter.add_label(issue_number, label)
-                    actions_taken.append(f"Added '{label}' label")
+                    # Use label_target (PR number for reviews, issue number otherwise)
+                    self.label_adapter.add_label(label_target, label)
+                    actions_taken.append(f"Added '{label}' label to #{label_target}")
 
                 elif action == RequestedAction.ADD_NEEDS_REWORK_LABEL:
                     label = self._get_label("needs_rework")
-                    self.label_adapter.add_label(issue_number, label)
-                    actions_taken.append(f"Added '{label}' label")
+                    # Use label_target (PR number for reviews, issue number otherwise)
+                    self.label_adapter.add_label(label_target, label)
+                    actions_taken.append(f"Added '{label}' label to #{label_target}")
 
                 elif action == RequestedAction.REMOVE_CODE_REVIEW_LABEL:
                     label = self._get_label("code_review")
-                    self.label_adapter.remove_label(issue_number, label)
-                    actions_taken.append(f"Removed '{label}' label")
+                    # Use label_target (PR number for reviews, issue number otherwise)
+                    self.label_adapter.remove_label(label_target, label)
+                    actions_taken.append(f"Removed '{label}' label from #{label_target}")
 
             except Exception as e:
                 logger.exception(

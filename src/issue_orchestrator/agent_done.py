@@ -22,11 +22,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import NoReturn, Optional
 
+import os
+
 from .models import (
     CompletionRecord,
     CompletionOutcome,
     RequestedAction,
     COMPLETION_RECORD_PATH,
+    get_completion_path,
 )
 from .control.validation import AgentGate, AgentGateResult
 
@@ -286,8 +289,21 @@ def write_completion_record(record: CompletionRecord) -> Path:
     output_dir = worktree_root / ".issue-orchestrator"
     output_dir.mkdir(exist_ok=True)
 
-    # Write completion record
-    output_path = worktree_root / COMPLETION_RECORD_PATH
+    # Orchestrator tells agent where to write via env var
+    # This ensures each session type writes to a distinct file
+    base_path = os.environ.get("ORCHESTRATOR_COMPLETION_PATH", COMPLETION_RECORD_PATH)
+    output_path = worktree_root / base_path
+
+    # If file exists (e.g., second review after rework), add numeric suffix
+    if output_path.exists():
+        stem = output_path.stem  # e.g., "completion-agent_review"
+        suffix = output_path.suffix  # e.g., ".json"
+        parent = output_path.parent
+        counter = 2
+        while output_path.exists():
+            output_path = parent / f"{stem}-{counter}{suffix}"
+            counter += 1
+
     with open(output_path, "w") as f:
         json.dump(record.to_dict(), f, indent=2)
 

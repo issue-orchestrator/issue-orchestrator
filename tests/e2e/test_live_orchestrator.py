@@ -243,22 +243,29 @@ class TestCleanup:
         assert count >= 0
 
     def test_cleanup_test_prs(self, repo_name: str):
-        """Clean up any test PRs left behind."""
-        # Find test PRs
-        result = subprocess.run(
-            ["gh", "pr", "list",
-             "--repo", repo_name,
-             "--label", "test-data",
-             "--json", "number"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            prs = json.loads(result.stdout)
-            for pr in prs:
-                subprocess.run(
-                    ["gh", "pr", "close", str(pr["number"]),
-                     "--repo", repo_name,
-                     "--delete-branch"],
-                    capture_output=True
-                )
+        """Clean up any test PRs left behind including review-labeled PRs."""
+        # Find and close PRs with test-related labels
+        labels_to_cleanup = ["test-data", "needs-code-review", "code-reviewed"]
+        closed_prs = set()
+
+        for label in labels_to_cleanup:
+            result = subprocess.run(
+                ["gh", "pr", "list",
+                 "--repo", repo_name,
+                 "--label", label,
+                 "--json", "number"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                prs = json.loads(result.stdout)
+                for pr in prs:
+                    pr_num = pr["number"]
+                    if pr_num not in closed_prs:
+                        subprocess.run(
+                            ["gh", "pr", "close", str(pr_num),
+                             "--repo", repo_name,
+                             "--delete-branch"],
+                            capture_output=True
+                        )
+                        closed_prs.add(pr_num)

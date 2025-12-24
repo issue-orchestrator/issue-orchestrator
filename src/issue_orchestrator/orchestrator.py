@@ -50,7 +50,7 @@ from .github import (
     create_issue,
 )
 # Lock files removed - using direct iTerm/active_sessions checks instead
-from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
+from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER, get_completion_path
 from .observation.observer import SessionObserver
 from .control.scheduler import Scheduler
 from .control.dependency_evaluator import DependencyEvaluator
@@ -1134,12 +1134,17 @@ class Orchestrator:
             print(f"[launch] Found existing work - agent will evaluate before starting fresh")
 
         # Build command
-        command = agent_config.get_command(
+        base_command = agent_config.get_command(
             issue_number=issue.number,
             issue_title=issue.title,
             worktree=worktree_path,
             existing_work=existing_work,
         )
+
+        # Set completion path env var so agent-done writes to agent-specific file
+        # This avoids race conditions when review sessions reuse the same worktree
+        completion_path = get_completion_path(issue.agent_type)
+        command = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}' {base_command}"
 
         # Create session (tmux or iTerm2 tab) - command includes the initial prompt as a CLI argument
         session_name = f"issue-{issue.number}"
@@ -1168,6 +1173,7 @@ class Orchestrator:
             tmux_session_name=session_name,
             worktree_path=worktree_path,
             branch_name=branch_name,
+            completion_path=completion_path,
         )
 
         self.state.active_sessions.append(session)
@@ -1524,6 +1530,7 @@ class Orchestrator:
                         issue_number=session.issue.number,
                         issue_title=session.issue.title,
                         session_name=session.tmux_session_name,
+                        completion_path=session.completion_path,
                     )
 
                     if decision.recovered_from_timeout:
@@ -2019,7 +2026,13 @@ class Orchestrator:
         )
         self.state.pending_reviews.append(review)
         log_transition("review", pr_number, "CREATED", "QUEUED", f"from issue #{issue_number}")
-        print(f"📝 Queued PR #{pr_number} for code review")
+
+        # Emit event for visibility
+        self.events.publish(TraceEvent("review.queued", {
+            "pr_number": pr_number,
+            "issue_number": issue_number,
+            "pr_url": pr_url,
+        }))
 
         # Create review state machine (starts in PENDING state)
         review_machine = self._get_review_machine(pr_number, issue_number)
@@ -2067,12 +2080,17 @@ class Orchestrator:
         )
 
         # Build command - review agent gets PR context
-        command = agent_config.get_command(
+        base_command = agent_config.get_command(
             issue_number=review.issue_number,
             issue_title=f"Review PR #{review.pr_number}",
             worktree=worktree_path,
             pr_number=review.pr_number,
         )
+
+        # Set completion path env var so agent-done writes to agent-specific file
+        # Each agent (issue agent, review agent) writes to its own file - no race conditions
+        completion_path = get_completion_path(agent_label)
+        command = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}' {base_command}"
 
         # Create session
         session_name = f"review-{review.pr_number}"
@@ -2092,11 +2110,18 @@ class Orchestrator:
             tmux_session_name=session_name,
             worktree_path=worktree_path,
             branch_name=review.branch_name,
+            completion_path=completion_path,
         )
 
         self.state.active_sessions.append(session)
         log_transition("review", review.pr_number, "LAUNCHING", "ACTIVE", "session launched")
-        print(f"🔍 Launched review session for PR #{review.pr_number}")
+
+        # Emit event for visibility
+        self.events.publish(TraceEvent("review.started", {
+            "pr_number": review.pr_number,
+            "issue_number": review.issue_number,
+            "session_name": session_name,
+        }))
 
         # Trigger state machine transition
         review_machine = self._get_review_machine(review.pr_number, review.issue_number)
@@ -2747,12 +2772,16 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         )
 
         # Build command - include rework context
-        command = agent_config.get_command(
+        base_command = agent_config.get_command(
             issue_number=issue_number,
             issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
             worktree=worktree_path,
             pr_number=pr_number,
         )
+
+        # Set completion path env var so agent-done writes to agent-specific file
+        completion_path = get_completion_path(rework.agent_type)
+        command = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}' {base_command}"
 
         # Create session
         self._create_session(session_name, command, worktree_path, title=f"Rework #{issue_number}")
@@ -2771,6 +2800,7 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
             tmux_session_name=session_name,
             worktree_path=worktree_path,
             branch_name=branch_name,
+            completion_path=completion_path,
         )
 
         self.state.active_sessions.append(session)

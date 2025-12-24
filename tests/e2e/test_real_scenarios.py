@@ -151,24 +151,37 @@ def stop_orchestrator(proc: subprocess.Popen) -> tuple[str, str]:
 
 
 def cleanup_test_prs(repo: str):
-    """Close all test PRs."""
-    result = subprocess.run(
-        ["gh", "pr", "list",
-         "--repo", repo,
-         "--label", "test-data",
-         "--json", "number"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        prs = json.loads(result.stdout)
-        for pr in prs:
-            subprocess.run(
-                ["gh", "pr", "close", str(pr["number"]),
-                 "--repo", repo,
-                 "--delete-branch"],
-                capture_output=True
-            )
+    """Close all test PRs including those with review labels.
+
+    Cleans up PRs with:
+    - test-data label (standard test PRs)
+    - needs-code-review label (PRs awaiting review from previous test runs)
+    - code-reviewed label (PRs that completed review but weren't cleaned up)
+    """
+    labels_to_cleanup = ["test-data", "needs-code-review", "code-reviewed"]
+    closed_prs = set()  # Track closed PRs to avoid duplicates
+
+    for label in labels_to_cleanup:
+        result = subprocess.run(
+            ["gh", "pr", "list",
+             "--repo", repo,
+             "--label", label,
+             "--json", "number"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            prs = json.loads(result.stdout)
+            for pr in prs:
+                pr_num = pr["number"]
+                if pr_num not in closed_prs:
+                    subprocess.run(
+                        ["gh", "pr", "close", str(pr_num),
+                         "--repo", repo,
+                         "--delete-branch"],
+                        capture_output=True
+                    )
+                    closed_prs.add(pr_num)
 
 
 # ---------------------------------------------------------------------------

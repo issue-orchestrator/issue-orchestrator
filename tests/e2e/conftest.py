@@ -204,6 +204,54 @@ def kill_stale_orchestrators():
     yield
 
 
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_stale_prs_at_session_start():
+    """Clean up stale PRs with review labels at session start.
+
+    This runs once at the beginning of the e2e test session to ensure
+    old PRs with needs-code-review or code-reviewed labels don't block
+    new test runs by consuming orchestrator capacity.
+    """
+    repo = get_test_repo()
+    labels_to_cleanup = ["test-data", "needs-code-review", "code-reviewed"]
+    closed_prs = []
+
+    print(f"\n[E2E SETUP] Checking for stale PRs in {repo}...")
+
+    for label in labels_to_cleanup:
+        result = subprocess.run(
+            ["gh", "pr", "list",
+             "--repo", repo,
+             "--label", label,
+             "--state", "open",
+             "--json", "number,title,createdAt,headRefName"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            prs = json.loads(result.stdout)
+            for pr in prs:
+                pr_num = pr["number"]
+                if pr_num not in [p["number"] for p in closed_prs]:
+                    print(f"[E2E SETUP] Closing stale PR #{pr_num}: {pr['title']}")
+                    print(f"[E2E SETUP]   Branch: {pr['headRefName']}, Created: {pr['createdAt']}")
+                    print(f"[E2E SETUP]   Matched label: {label}")
+                    subprocess.run(
+                        ["gh", "pr", "close", str(pr_num),
+                         "--repo", repo,
+                         "--delete-branch"],
+                        capture_output=True
+                    )
+                    closed_prs.append(pr)
+
+    if closed_prs:
+        print(f"[E2E SETUP] Cleaned up {len(closed_prs)} stale PRs total")
+    else:
+        print("[E2E SETUP] No stale PRs found")
+
+    yield
+
+
 @pytest.fixture(scope="session")
 def repo_name() -> str:
     """Get the repo name for e2e tests.

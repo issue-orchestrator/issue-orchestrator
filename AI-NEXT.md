@@ -1,6 +1,88 @@
 # AI Next Steps
 
-## Session 2025-12-23 Evening: Event Emission & Validation Cache
+## Session 2025-12-24: Agent-Specific Completion Files
+
+### Debugging Guide
+See `docs/DEBUGGING.md` for event system architecture and debugging commands.
+
+### Root Cause (Fixed)
+Race condition: Review session and issue session shared the same `completion.json` file.
+
+### Fix Implemented (PARTIAL - has bug)
+Each agent writes to its own completion file based on agent name:
+- Issue agent: `.issue-orchestrator/completion-agent_e2e-test.json`
+- Review agent: `.issue-orchestrator/completion-agent_e2e-test-approves.json`
+- Second review (after rework): `.issue-orchestrator/completion-agent_e2e-test-approves-2.json`
+
+**Files changed:**
+1. `models.py` - Added `get_completion_path(agent_name)` function
+2. `agent_done.py` - Reads `ORCHESTRATOR_COMPLETION_PATH` env var, adds numeric suffix if file exists
+3. `orchestrator.py` - Sets `ORCHESTRATOR_COMPLETION_PATH` env var and `Session.completion_path` field
+4. `Session` dataclass - Added `completion_path` field
+5. `session_controller.py` - Passes `completion_path` to completion_processor
+6. `completion_processor.py` - Accepts optional `completion_path` parameter
+
+### CURRENT BUG: Session completion not detected
+
+**Symptom:** Agent writes completion file correctly, but orchestrator never processes it.
+
+**Evidence from issue #902:**
+- Completion file exists: `/tmp/e2e-worktrees/issue-orchestrator-902/.issue-orchestrator/completion-agent_e2e-test.json`
+- File contents are correct (outcome=completed, requested_actions=[push_branch, create_pr, post_comment])
+- But NO `session.completed` event in logs
+- Orchestrator log shows `orchestrator.state_changed: active_count=1, sessions=[902]` repeatedly - never transitions
+
+**Likely cause:** The `Session.completion_path` field is set AFTER the session is created, but the observer/controller might be reading from the default path or not finding the file.
+
+**Debug steps:**
+1. Check if env var `ORCHESTRATOR_COMPLETION_PATH` is actually passed through the shell command
+2. Add logging in `session_controller.decide_outcome()` to show which path it's reading
+3. Add logging in `completion_processor.read_completion_record()` to show path and result
+
+### Debug Commands
+```bash
+# Check completion files in worktree
+ls -la /tmp/e2e-worktrees/issue-orchestrator-*/.issue-orchestrator/
+
+# Check for completion events
+grep -E "\[EVENT\].*completion|session\.completed" ~/.issue-orchestrator.log | tail -30
+
+# Check for errors
+grep -i -E "error|exception|traceback" ~/.issue-orchestrator.log | tail -30
+```
+
+### Pending Work
+- [ ] Debug why session completion isn't detected
+- [ ] Verify env var propagation through shell command
+- [ ] Run and monitor e2e test with more logging
+- [ ] **DRY: Create shared Python utility for issue creation in tests** - currently duplicated across test files
+- [ ] Reduce test timeouts from 30min to 10min
+
+### BUG: Orchestrator loop showing impossibly high iteration counts
+
+Logs show 14M+ iterations:
+```
+[LOOP] Iteration 14902829 - active=0, pending_reviews=0, paused=False
+```
+
+**Mystery:** There IS a hardcoded 10-second sleep at `orchestrator.py:1645`:
+```python
+await asyncio.sleep(10)
+```
+
+At 10 seconds/iteration, 14M iterations would take ~4.5 years. A 4-minute test should have ~27 iterations max.
+
+**Possible causes:**
+- Loop counter persisting across runs (but it's initialized to 0 in `run_loop()`)
+- Sleep not actually being awaited
+- Multiple loop instances running concurrently
+- Log from a different/old orchestrator process
+
+**Needs investigation** - not a sleep-missing bug, something else is wrong.
+
+---
+
+## Archived: Session 2025-12-23 Evening: Event Emission & Validation Cache
 
 ### Completed Work
 

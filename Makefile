@@ -37,6 +37,10 @@ test-integration:
 test-e2e:
 	$(PYTEST) tests/e2e -v -s --tb=short
 
+# Run a single e2e test by name. Usage: make test-e2e-one TEST=test_code_review_produces_review_comment
+test-e2e-one:
+	$(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)"
+
 test:
 	$(PYTEST) tests/ -x -q --tb=short
 

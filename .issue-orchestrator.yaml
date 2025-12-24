@@ -31,14 +31,23 @@ agents:
     timeout_minutes: 5
     skip_review: true  # This IS a code reviewer, don't review it
     worktree_base: /tmp/e2e-worktrees
+    permission_mode: bypassPermissions
+
+  "agent:e2e-test-approves":
+    prompt: "examples/prompts/e2e-test-approves.md"
+    model: haiku
+    timeout_minutes: 5
+    skip_review: true  # This IS a code reviewer, don't review it
+    worktree_base: /tmp/e2e-worktrees
+    permission_mode: bypassPermissions
 
 concurrency:
   max_concurrent_sessions: 6
   session_timeout_minutes: 10
 
-# For e2e testing of rework cycles - uncomment to test rejection flow
-# review:
-#   code_review_agent: "agent:e2e-test-rejects"
-#   code_review_label: "needs-code-review"
-#   code_reviewed_label: "code-reviewed"
-#   max_rework_cycles: 2  # Low for faster testing
+# Code review configuration
+review:
+  code_review_agent: "agent:e2e-test-approves"  # Default: approves for happy path
+  code_review_label: "needs-code-review"
+  code_reviewed_label: "code-reviewed"
+  max_rework_cycles: 2  # Low for faster testing
