@@ -620,7 +620,9 @@ class Orchestrator:
             try:
                 self.repository_host.add_label(event.entity_id, "in-progress")
             except Exception as e:
-                logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
+                self.events.publish(TraceEvent("labels.sync_error", {
+                    "issue_number": event.entity_id, "label": "in-progress", "operation": "add", "error": str(e)
+                }))
 
     def _sync_label_blocked(self, event) -> None:
         """Add blocked label when issue is blocked."""
@@ -632,7 +634,9 @@ class Orchestrator:
             try:
                 self.repository_host.add_label(event.entity_id, label)
             except Exception as e:
-                logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
+                self.events.publish(TraceEvent("labels.sync_error", {
+                    "issue_number": event.entity_id, "label": label, "operation": "add", "error": str(e)
+                }))
 
     def _sync_label_needs_human(self, event) -> None:
         """Add needs-human label."""
@@ -642,7 +646,9 @@ class Orchestrator:
             try:
                 self.repository_host.add_label(event.entity_id, "blocked-needs-human")
             except Exception as e:
-                logger.warning(f"[LABEL_SYNC] Failed to add label: {e}")
+                self.events.publish(TraceEvent("labels.sync_error", {
+                    "issue_number": event.entity_id, "label": "blocked-needs-human", "operation": "add", "error": str(e)
+                }))
 
     def _sync_label_unblocked(self, event) -> None:
         """Remove blocking labels when unblocked."""
@@ -656,7 +662,9 @@ class Orchestrator:
                     if label.startswith("blocked"):
                         self.repository_host.remove_label(event.entity_id, label)
             except Exception as e:
-                logger.warning(f"[LABEL_SYNC] Failed to remove labels: {e}")
+                self.events.publish(TraceEvent("labels.sync_error", {
+                    "issue_number": event.entity_id, "label": "blocked-*", "operation": "remove", "error": str(e)
+                }))
 
     def _sync_label_completed(self, event) -> None:
         """Remove in-progress label when completed."""
@@ -666,7 +674,9 @@ class Orchestrator:
             try:
                 self.repository_host.remove_label(event.entity_id, "in-progress")
             except Exception as e:
-                logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
+                self.events.publish(TraceEvent("labels.sync_error", {
+                    "issue_number": event.entity_id, "label": "in-progress", "operation": "remove", "error": str(e)
+                }))
 
     def _sync_label_released(self, event) -> None:
         """Remove in-progress label when released."""
@@ -676,7 +686,9 @@ class Orchestrator:
             try:
                 self.repository_host.remove_label(event.entity_id, "in-progress")
             except Exception as e:
-                logger.warning(f"[LABEL_SYNC] Failed to remove label: {e}")
+                self.events.publish(TraceEvent("labels.sync_error", {
+                    "issue_number": event.entity_id, "label": "in-progress", "operation": "remove", "error": str(e)
+                }))
 
     # ==================== End State Machine Helpers ====================
 
