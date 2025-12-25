@@ -31,7 +31,10 @@ from .control import (
     SessionManager,
     LabelSync,
 )
+from .control.action_applier import ActionApplier
+from .control.fact_gatherer import FactGatherer
 from .execution import GitHubIssueResolver
+from .execution.worktree_adapter import GitWorktreeManager
 from .control.dependency_evaluator import DependencyEvaluator
 from .control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 
@@ -145,6 +148,23 @@ def build_orchestrator(
         triage_workflow=triage_workflow,
     )
 
+    # Create ActionApplier (IO boundary)
+    action_applier = ActionApplier(
+        labels=github,
+        sessions=session_manager,
+        events=events,
+        repository_host=github,
+        worktree_manager=GitWorktreeManager(),
+        issue_tracker=github,
+        reconcile=True,
+    ) if github else None
+
+    # Create FactGatherer (read-only snapshot creation)
+    fact_gatherer = FactGatherer(
+        config=config,
+        repository_host=github,
+    ) if github else None
+
     # Build the orchestrator with injected dependencies
     return Orchestrator(
         config=config,
@@ -154,6 +174,8 @@ def build_orchestrator(
         planner=planner,
         session_manager=session_manager,
         label_sync=label_sync,
+        action_applier=action_applier,
+        fact_gatherer=fact_gatherer,
     )
 
 
@@ -164,6 +186,8 @@ def build_orchestrator_for_testing(
     github: GitHubAdapter | None = None,
     planner: Planner | None = None,
     session_manager: SessionManager | None = None,
+    action_applier: ActionApplier | None = None,
+    fact_gatherer: FactGatherer | None = None,
 ) -> "Orchestrator":
     """Build an orchestrator for testing with mock dependencies.
 
@@ -174,6 +198,8 @@ def build_orchestrator_for_testing(
         github: Optional mock GitHubAdapter
         planner: Optional mock Planner (defaults to creating one)
         session_manager: Optional mock SessionManager (defaults to creating one)
+        action_applier: Optional mock ActionApplier (created from github if available)
+        fact_gatherer: Optional mock FactGatherer (created from github if available)
 
     Returns:
         Orchestrator configured with test dependencies
@@ -195,6 +221,25 @@ def build_orchestrator_for_testing(
     if session_manager is None:
         session_manager = SessionManager(runner=runner, events=events, config=config)
 
+    # Create default action applier if github is available and none provided
+    if action_applier is None and github is not None:
+        action_applier = ActionApplier(
+            labels=github,
+            sessions=session_manager,
+            events=events,
+            repository_host=github,
+            worktree_manager=GitWorktreeManager(),
+            issue_tracker=github,
+            reconcile=False,  # Disable for testing by default
+        )
+
+    # Create default fact gatherer if github is available and none provided
+    if fact_gatherer is None and github is not None:
+        fact_gatherer = FactGatherer(
+            config=config,
+            repository_host=github,
+        )
+
     return Orchestrator(
         config=config,
         events=events,
@@ -202,6 +247,8 @@ def build_orchestrator_for_testing(
         _repository_host=github,
         planner=planner,
         session_manager=session_manager,
+        action_applier=action_applier,
+        fact_gatherer=fact_gatherer,
     )
 
 
@@ -310,6 +357,23 @@ async def build_orchestrator_with_ipc(
         triage_workflow=triage_workflow,
     )
 
+    # Create ActionApplier (IO boundary)
+    action_applier = ActionApplier(
+        labels=github,
+        sessions=session_manager,
+        events=events,
+        repository_host=github,
+        worktree_manager=GitWorktreeManager(),
+        issue_tracker=github,
+        reconcile=True,
+    ) if github else None
+
+    # Create FactGatherer (read-only snapshot creation)
+    fact_gatherer = FactGatherer(
+        config=config,
+        repository_host=github,
+    ) if github else None
+
     # Build the orchestrator
     orchestrator = Orchestrator(
         config=config,
@@ -319,6 +383,8 @@ async def build_orchestrator_with_ipc(
         planner=planner,
         session_manager=session_manager,
         label_sync=label_sync,
+        action_applier=action_applier,
+        fact_gatherer=fact_gatherer,
     )
 
     return orchestrator, ipc_server
