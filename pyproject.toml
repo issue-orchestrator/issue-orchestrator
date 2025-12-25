@@ -114,3 +114,21 @@ forbidden_modules = [
   "issue_orchestrator.hooks",
   "issue_orchestrator.ipc",
 ]
+
+[[tool.importlinter.contracts]]
+name = "Control must not import execution (use ports)"
+type = "forbidden"
+source_modules = ["issue_orchestrator.control"]
+forbidden_modules = ["issue_orchestrator.execution"]
+
+[[tool.importlinter.contracts]]
+name = "Orchestrator must not import execution directly"
+type = "forbidden"
+source_modules = ["issue_orchestrator.orchestrator"]
+forbidden_modules = [
+  "issue_orchestrator.execution",
+  "issue_orchestrator._worktree_impl",
+  "issue_orchestrator._github_impl",
+  "issue_orchestrator._tmux_impl",
+  "issue_orchestrator._iterm2_impl",
+]

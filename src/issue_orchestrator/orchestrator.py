@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from .control.planner import Planner, Plan, OrchestratorSnapshot
     from .control.session_manager import SessionManager
     from .control.label_sync import LabelSync
+    from .control.action_applier import ActionApplier
     from .control.actions import LaunchSessionAction, EscalateToHumanAction
     from .models import TriageFacts
 
@@ -96,6 +97,8 @@ class Orchestrator:
     # Optional session manager (can be injected, otherwise created in __post_init__)
     session_manager: Optional["SessionManager"] = field(default=None, repr=False)
     label_sync: Optional["LabelSync"] = field(default=None, repr=False)
+    # Action applier (IO boundary) - can be injected, otherwise created in __post_init__
+    action_applier: Optional["ActionApplier"] = field(default=None, repr=False)
     # Internal state
     state: OrchestratorState = field(default_factory=OrchestratorState)
     scheduler: Scheduler = field(init=False)
@@ -143,6 +146,20 @@ class Orchestrator:
                 runner=self.runner,
                 events=self.events,
                 config=self.config,
+            )
+
+        # Use injected action applier or create default
+        if self.action_applier is None:
+            from .control.action_applier import ActionApplier as ActionApplierClass
+            from .execution.worktree_adapter import GitWorktreeManager
+            self.action_applier = ActionApplierClass(
+                labels=self.repository_host,
+                sessions=self.session_manager,
+                events=self.events,
+                repository_host=self.repository_host,
+                worktree_manager=GitWorktreeManager(),
+                issue_tracker=self.repository_host,
+                reconcile=False,  # Can enable later
             )
 
         # Note: Observer is initialized without session_machines initially
@@ -1153,13 +1170,21 @@ class Orchestrator:
         """Apply the actions from a plan.
 
         The planner decides WHAT should happen.
-        This method makes it happen.
+        This method makes it happen via ActionApplier + state updates.
+
+        Flow:
+        1. ActionApplier handles IO (labels, sessions, worktrees, issues)
+        2. Orchestrator handles state updates based on results
 
         Args:
             plan: Plan with actions to execute
         """
         from .control.planner import Plan
-        from .control.actions import ActionType, LaunchSessionAction, EscalateToHumanAction
+        from .control.actions import (
+            ActionType, LaunchSessionAction, EscalateToHumanAction,
+            QueueReviewAction, QueueReworkAction, QueueTriageAction,
+            CreateTriageIssueAction, CleanupSessionAction,
+        )
 
         for action in plan.actions:
             # Respect pause mid-batch: stop applying actions if paused
@@ -1168,34 +1193,152 @@ class Orchestrator:
                 break
 
             try:
+                # Actions that need entity lookup before IO
                 if action.action_type == ActionType.LAUNCH_SESSION:
                     assert isinstance(action, LaunchSessionAction)
                     self._execute_launch_action(action)
+
+                # Actions that can delegate directly to ActionApplier
                 elif action.action_type == ActionType.ESCALATE_TO_HUMAN:
                     assert isinstance(action, EscalateToHumanAction)
-                    self._execute_escalate_action(action)
+                    result = self.action_applier.apply(action)
+                    if result.success:
+                        self._handle_escalation_state_update(action)
+
                 elif action.action_type == ActionType.QUEUE_REVIEW:
-                    from .control.actions import QueueReviewAction
                     assert isinstance(action, QueueReviewAction)
-                    self._execute_queue_review_action(action)
-                elif action.action_type == ActionType.CREATE_TRIAGE_ISSUE:
-                    from .control.actions import CreateTriageIssueAction
-                    assert isinstance(action, CreateTriageIssueAction)
-                    self._execute_create_triage_issue_action(action)
+                    result = self.action_applier.apply(action)
+                    if result.success:
+                        self._handle_queue_review_state_update(action)
+
                 elif action.action_type == ActionType.QUEUE_REWORK:
-                    from .control.actions import QueueReworkAction
                     assert isinstance(action, QueueReworkAction)
-                    self._execute_queue_rework_action(action)
+                    result = self.action_applier.apply(action)
+                    if result.success:
+                        self._handle_queue_rework_state_update(action)
+
                 elif action.action_type == ActionType.QUEUE_TRIAGE:
-                    from .control.actions import QueueTriageAction
                     assert isinstance(action, QueueTriageAction)
-                    self._execute_queue_triage_action(action)
+                    result = self.action_applier.apply(action)
+                    if result.success:
+                        self._handle_queue_triage_state_update(action)
+
+                elif action.action_type == ActionType.CREATE_TRIAGE_ISSUE:
+                    assert isinstance(action, CreateTriageIssueAction)
+                    result = self.action_applier.apply(action)
+                    if result.success:
+                        # Add to pending triage reviews
+                        issue_number = result.details.get("issue_number")
+                        if issue_number:
+                            self.state.pending_triage_reviews.append(
+                                PendingTriageReview(issue_number=issue_number, title=action.title)
+                            )
+                            print(f"📋 Created triage review issue #{issue_number} for {action.pr_count} PRs")
+
                 elif action.action_type == ActionType.CLEANUP_SESSION:
-                    from .control.actions import CleanupSessionAction
                     assert isinstance(action, CleanupSessionAction)
-                    self._execute_cleanup_action(action)
+                    result = self.action_applier.apply(action)
+                    if result.success:
+                        # Remove from pending_cleanups
+                        self.state.pending_cleanups = [
+                            c for c in self.state.pending_cleanups
+                            if c.pr_number != action.pr_number
+                        ]
             except Exception as e:
                 logger.exception("Failed to apply action %s: %s", action, e)
+
+    def _handle_escalation_state_update(self, action: "EscalateToHumanAction") -> None:
+        """Update state after escalation action succeeds."""
+        # Escalation state is handled by the label being added
+        # Any additional state tracking can go here
+        logger.info("[PLAN] Escalated PR #%d to needs-human (cycle %d)",
+                   action.pr_number, action.rework_cycles)
+
+    def _handle_queue_review_state_update(self, action: "QueueReviewAction") -> None:
+        """Update state after queue review action succeeds."""
+        from .control.actions import QueueReviewAction
+
+        # Check if already queued (defensive)
+        if any(r.pr_number == action.pr_number for r in self.state.pending_reviews):
+            logger.debug("[PLAN] PR #%d already queued, skipping state update", action.pr_number)
+            return
+
+        # Add needs-code-review label as backup
+        if self.config.code_review_label:
+            try:
+                self.repository_host.add_label(action.pr_number, self.config.code_review_label)
+                logger.info("Added '%s' label to PR #%d", self.config.code_review_label, action.pr_number)
+            except Exception as e:
+                logger.warning("Failed to add review label to PR #%d: %s", action.pr_number, e)
+
+        # Create pending review
+        review = PendingReview(
+            issue_number=action.issue_number,
+            pr_number=action.pr_number,
+            pr_url=action.pr_url,
+            branch_name=action.branch_name,
+        )
+        self.state.pending_reviews.append(review)
+        log_transition("review", action.pr_number, "CREATED", "QUEUED", f"from issue #{action.issue_number}")
+
+        # Create review state machine
+        review_machine = self._get_review_machine(action.pr_number, action.issue_number)
+        logger.debug("[STATE_MACHINE] ReviewStateMachine for PR #%d in %s", action.pr_number, review_machine.state)
+        logger.info("[PLAN] Queued review for PR #%d", action.pr_number)
+
+    def _handle_queue_rework_state_update(self, action: "QueueReworkAction") -> None:
+        """Update state after queue rework action succeeds."""
+        from .control.actions import QueueReworkAction
+
+        # Check if already queued (defensive)
+        queued_issue_ids = {int(r.issue_key.stable_id()) for r in self.state.pending_reworks}
+        if action.issue_number in queued_issue_ids:
+            logger.debug("[PLAN] Issue #%d already queued for rework, skipping state update", action.issue_number)
+            return
+
+        # Create IssueKey via repository
+        issue_key = self.repository_host.create_issue_key(action.issue_number)
+
+        # Need agent_type - try to find it from discovered reworks
+        agent_type = ""
+        for rework in self.state.discovered_reworks:
+            if rework.issue_number == action.issue_number:
+                agent_type = rework.agent_type
+                break
+        if not agent_type:
+            logger.warning("[PLAN] No agent_type found for rework issue #%d, using default", action.issue_number)
+            agent_type = "agent:developer"
+
+        # Create pending rework
+        rework = PendingRework(
+            issue_key=issue_key,
+            agent_type=agent_type,
+            rework_cycle=action.rework_cycle,
+        )
+        self.state.pending_reworks.append(rework)
+        log_transition("rework", action.issue_number, "CREATED", "QUEUED",
+                      f"cycle {action.rework_cycle}")
+        logger.info("[PLAN] Queued rework for issue #%d (cycle %d)", action.issue_number, action.rework_cycle)
+        print(f"🔄 Queued issue #{action.issue_number} for rework (cycle {action.rework_cycle})")
+
+    def _handle_queue_triage_state_update(self, action: "QueueTriageAction") -> None:
+        """Update state after queue triage action succeeds."""
+        from .control.actions import QueueTriageAction
+
+        # Check if already queued (defensive)
+        if any(t.issue_number == action.issue_number for t in self.state.pending_triage_reviews):
+            logger.debug("[PLAN] Issue #%d already queued for triage, skipping state update", action.issue_number)
+            return
+
+        # Add to pending triage reviews
+        self.state.pending_triage_reviews.append(
+            PendingTriageReview(
+                issue_number=action.issue_number,
+                title=action.title,
+            )
+        )
+        logger.info("[PLAN] Queued triage for issue #%d", action.issue_number)
+        print(f"[TRIAGE] Queued failure investigation for #{action.issue_number}")
 
     def _execute_launch_action(self, action: "LaunchSessionAction") -> None:
         """Execute a launch session action.

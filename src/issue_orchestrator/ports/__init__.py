@@ -43,6 +43,7 @@ from issue_orchestrator.ports.event_sink import EventSink, TraceEvent, NullEvent
 from issue_orchestrator.ports.session_runner import SessionRunner, NullSessionRunner
 from issue_orchestrator.ports.repository_host import RepositoryHost
 from issue_orchestrator.ports.issue_resolver import IssueResolver
+from issue_orchestrator.ports.worktree_manager import WorktreeManager, WorktreeInfo
 
 __all__ = [
     # Remote platform operations (new names)
@@ -73,4 +74,7 @@ __all__ = [
     # Terminal session management
     "SessionRunner",
     "NullSessionRunner",
+    # Worktree lifecycle management
+    "WorktreeManager",
+    "WorktreeInfo",
 ]

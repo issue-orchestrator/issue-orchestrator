@@ -1,0 +1,80 @@
+"""WorktreeManager port for worktree lifecycle operations.
+
+This module defines the protocol (interface) for worktree management:
+- Create worktrees for issues
+- Remove worktrees after completion
+- Extract issue numbers from branch names
+
+Distinct from WorkingCopy which handles operations *inside* a worktree.
+WorktreeManager handles the worktree lifecycle itself.
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+
+@dataclass
+class WorktreeInfo:
+    """Information about a created worktree."""
+    path: Path
+    branch_name: str
+
+
+class WorktreeManager(Protocol):
+    """Protocol for worktree lifecycle management.
+
+    This protocol defines the interface for creating and removing
+    git worktrees. Implementations handle the actual git operations.
+    """
+
+    def create(
+        self,
+        repo_root: Path,
+        issue_number: int,
+        issue_title: str,
+        worktree_base: Path | None = None,
+        enforce_hooks: bool = True,
+        pre_push_hook: Path | None = None,
+        branch_name: str | None = None,
+    ) -> WorktreeInfo:
+        """Create a new git worktree for an issue.
+
+        Args:
+            repo_root: Path to the main git repository
+            issue_number: GitHub issue number
+            issue_title: GitHub issue title
+            worktree_base: Base directory for worktrees
+            enforce_hooks: Whether to install pre-push hooks
+            pre_push_hook: Custom pre-push hook path
+            branch_name: Specific branch to checkout (for reviews)
+
+        Returns:
+            WorktreeInfo with path and branch name
+
+        Raises:
+            WorktreeError: If creation fails
+        """
+        ...
+
+    def remove(self, worktree_path: Path) -> None:
+        """Remove a git worktree.
+
+        Args:
+            worktree_path: Path to the worktree to remove
+
+        Raises:
+            WorktreeError: If removal fails
+        """
+        ...
+
+    def extract_issue_number(self, branch_name: str) -> int | None:
+        """Extract issue number from a branch name.
+
+        Args:
+            branch_name: Branch name (e.g., "328-add-feature")
+
+        Returns:
+            Issue number if found, None otherwise
+        """
+        ...

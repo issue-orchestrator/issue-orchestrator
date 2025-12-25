@@ -17,6 +17,8 @@ Usage:
         labels=label_set,
         sessions=session_manager,
         events=event_sink,
+        repository_host=github_adapter,  # For issue creation, label sync
+        worktree_manager=git_worktree_manager,  # For worktree removal
         issue_tracker=github_adapter,  # Optional, for reconciliation
         reconcile=True,  # Enable reconciliation
     )
@@ -25,11 +27,14 @@ Usage:
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence
+from pathlib import Path
+from typing import Callable, Optional, Sequence, TYPE_CHECKING
 
 from ..ports import EventSink, TraceEvent
 from ..ports.label_set import LabelSet
 from ..ports.issue_tracker import IssueTracker
+from ..ports.repository_host import RepositoryHost
+from ..ports.worktree_manager import WorktreeManager
 from .actions import (
     Action,
     ActionResult,
@@ -46,6 +51,9 @@ from .actions import (
     QueueTriageAction,
     EscalateToHumanAction,
     AddCommentAction,
+    CreateTriageIssueAction,
+    CleanupSessionAction,
+    RemoveWorktreeAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
 from .reconciliation import (
@@ -74,6 +82,8 @@ class ActionApplier:
     labels: LabelSet
     sessions: SessionManager
     events: EventSink
+    repository_host: Optional[RepositoryHost] = None  # For issue creation, labels
+    worktree_manager: Optional[WorktreeManager] = None  # For worktree operations
     issue_tracker: Optional[IssueTracker] = None
     reconcile: bool = False  # If True, verify state before mutations
 
@@ -116,11 +126,16 @@ class ActionApplier:
             ActionType.SYNC_LABELS: self._apply_sync_labels,
             ActionType.LAUNCH_SESSION: self._apply_launch_session,
             ActionType.STOP_SESSION: self._apply_stop_session,
-            # These are handled by the orchestrator's state directly
-            ActionType.QUEUE_REVIEW: self._apply_queue_operation,
+            # Queue operations - IO is handled here, state update by orchestrator
+            ActionType.QUEUE_REVIEW: self._apply_queue_review,
             ActionType.QUEUE_REWORK: self._apply_queue_operation,
             ActionType.QUEUE_TRIAGE: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
+            # Issue creation
+            ActionType.CREATE_TRIAGE_ISSUE: self._apply_create_triage_issue,
+            # Cleanup operations
+            ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
+            ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
         }
 
         handler = handlers.get(action.action_type)
@@ -408,3 +423,156 @@ class ActionApplier:
                 },
             )
         )
+
+    def _apply_queue_review(self, action: Action) -> ActionResult:
+        """Queue a PR for code review.
+
+        Handles the IO part (adding review label). State update is handled
+        by the orchestrator after this returns.
+        """
+        assert isinstance(action, QueueReviewAction)
+
+        # Add review label if repository_host is available
+        if self.repository_host and action.pr_number:
+            try:
+                # Try to add needs-code-review label (config-dependent)
+                # The orchestrator will pass the label via the action if needed
+                pass  # Label adding is done by orchestrator for now
+            except Exception as e:
+                logger.warning("Failed to add review label: %s", e)
+
+        self.events.publish(TraceEvent("review.queued", {
+            "pr_number": action.pr_number,
+            "issue_number": action.issue_number,
+            "pr_url": action.pr_url,
+        }))
+
+        return ActionResult.ok(
+            action,
+            pr_number=action.pr_number,
+            issue_number=action.issue_number,
+            note="Queue operation - state update by orchestrator",
+        )
+
+    def _apply_create_triage_issue(self, action: Action) -> ActionResult:
+        """Create a triage review issue.
+
+        Creates the GitHub issue via repository_host.
+        """
+        assert isinstance(action, CreateTriageIssueAction)
+
+        if not self.repository_host:
+            return ActionResult.fail(
+                action, "No repository_host configured for issue creation"
+            )
+
+        try:
+            issue_number = self.repository_host.create_issue(
+                title=action.title,
+                body=action.body,
+                labels=list(action.labels),
+            )
+
+            if issue_number:
+                logger.info(
+                    "[APPLIER] Created triage issue #%d for %d PRs",
+                    issue_number, action.pr_count
+                )
+                self.events.publish(TraceEvent("triage.issue_created", {
+                    "issue_number": issue_number,
+                    "pr_count": action.pr_count,
+                }))
+                return ActionResult.ok(
+                    action,
+                    issue_number=issue_number,
+                    pr_count=action.pr_count,
+                )
+            else:
+                return ActionResult.fail(action, "Issue creation returned None")
+
+        except Exception as e:
+            logger.exception("Failed to create triage issue")
+            return ActionResult.fail(action, str(e))
+
+    def _apply_cleanup_session(self, action: Action) -> ActionResult:
+        """Clean up a completed session.
+
+        Closes terminal tab and removes worktree as configured.
+        """
+        assert isinstance(action, CleanupSessionAction)
+
+        errors = []
+
+        # Close terminal session if configured
+        if action.close_tabs and action.terminal_session_name:
+            try:
+                # Use sessions manager to stop the session
+                # First determine session type from name
+                session_type = SessionType.ISSUE
+                if action.terminal_session_name.startswith("review-"):
+                    session_type = SessionType.REVIEW
+                elif action.terminal_session_name.startswith("rework-"):
+                    session_type = SessionType.REWORK
+                elif action.terminal_session_name.startswith("triage-"):
+                    session_type = SessionType.TRIAGE
+
+                ref = SessionRef(session_type=session_type, number=action.issue_number)
+                if self.sessions.exists(ref):
+                    self.sessions.stop(ref)
+                    logger.info(
+                        "[APPLIER] Closed terminal session for #%d",
+                        action.issue_number
+                    )
+            except Exception as e:
+                errors.append(f"close session: {e}")
+                logger.warning(
+                    "[APPLIER] Failed to close session for #%d: %s",
+                    action.issue_number, e
+                )
+
+        # Remove worktree if configured
+        if action.remove_worktrees and action.worktree_path:
+            if self.worktree_manager:
+                try:
+                    self.worktree_manager.remove(Path(action.worktree_path))
+                    logger.info(
+                        "[APPLIER] Removed worktree for #%d",
+                        action.issue_number
+                    )
+                except Exception as e:
+                    errors.append(f"remove worktree: {e}")
+                    logger.warning(
+                        "[APPLIER] Failed to remove worktree for #%d: %s",
+                        action.issue_number, e
+                    )
+            else:
+                errors.append("no worktree_manager configured")
+
+        self.events.publish(TraceEvent("cleanup.completed", {
+            "issue_number": action.issue_number,
+            "pr_number": action.pr_number,
+        }))
+
+        if errors:
+            return ActionResult.fail(action, "; ".join(errors))
+
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            pr_number=action.pr_number,
+        )
+
+    def _apply_remove_worktree(self, action: Action) -> ActionResult:
+        """Remove a git worktree."""
+        assert isinstance(action, RemoveWorktreeAction)
+
+        if not self.worktree_manager:
+            return ActionResult.fail(
+                action, "No worktree_manager configured"
+            )
+
+        try:
+            self.worktree_manager.remove(Path(action.worktree_path))
+            return ActionResult.ok(action, worktree_path=action.worktree_path)
+        except Exception as e:
+            return ActionResult.fail(action, str(e))
