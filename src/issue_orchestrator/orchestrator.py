@@ -162,7 +162,7 @@ class Orchestrator:
                 repository_host=self.repository_host,
                 worktree_manager=GitWorktreeManager(),
                 issue_tracker=self.repository_host,
-                reconcile=False,  # Can enable later
+                reconcile=True,  # Compare-before-mutate for label operations
             )
 
         # Use injected fact gatherer or create default
