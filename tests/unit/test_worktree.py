@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 import subprocess
 
-from issue_orchestrator.worktree import (
+from issue_orchestrator._worktree_impl import (
     slugify,
     generate_branch_name,
     create_worktree,
@@ -123,7 +123,7 @@ class TestGenerateBranchName:
 class TestCreateWorktree:
     """Test the create_worktree function."""
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_create_worktree_success(self, mock_run, tmp_path):
         """Test successful worktree creation."""
         # Setup
@@ -175,7 +175,7 @@ class TestCreateWorktree:
         assert "-b" in worktree_cmd  # New branch flag
         assert "123-add-user-auth" in worktree_cmd
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_create_worktree_default_base(self, mock_run, tmp_path):
         """Test worktree creation with default base directory."""
         # Setup
@@ -193,7 +193,7 @@ class TestCreateWorktree:
         expected_path = tmp_path / "repo-456"
         assert worktree_path == expected_path
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_create_worktree_not_a_git_repo(self, mock_run, tmp_path):
         """Test error when path is not a git repository."""
         # Setup - directory without .git
@@ -207,8 +207,8 @@ class TestCreateWorktree:
         # Git should not have been called
         mock_run.assert_not_called()
 
-    @patch("issue_orchestrator.worktree.install_hooks")
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.install_hooks")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_create_worktree_already_exists(self, mock_run, mock_install_hooks, tmp_path):
         """Test error when worktree path already exists."""
         # Setup
@@ -250,7 +250,7 @@ class TestCreateWorktree:
         # Verify hooks were reinstalled on reuse
         mock_install_hooks.assert_called_once_with(existing_worktree, None)
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_create_worktree_git_command_fails(self, mock_run, tmp_path):
         """Test error when git command fails."""
         # Setup
@@ -267,7 +267,7 @@ class TestCreateWorktree:
         with pytest.raises(WorktreeError, match="Failed to create worktree"):
             create_worktree(repo_root, 123, "Test")
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_create_worktree_creates_base_directory(self, mock_run, tmp_path):
         """Test that worktree base directory is created if it doesn't exist."""
         # Setup
@@ -287,7 +287,7 @@ class TestCreateWorktree:
         assert worktree_base.exists()
         assert worktree_base.is_dir()
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_create_worktree_with_complex_title(self, mock_run, tmp_path):
         """Test worktree creation with complex issue title."""
         # Setup
@@ -305,7 +305,7 @@ class TestCreateWorktree:
         # Verify branch name is properly slugified
         assert branch_name == "999-fix-bug-in-user-s-profile-100-coverage"
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_create_worktree_subprocess_exception(self, mock_run, tmp_path):
         """Test handling of subprocess exceptions."""
         # Setup
@@ -328,8 +328,8 @@ class TestCreateWorktree:
 class TestRemoveWorktree:
     """Test the remove_worktree function."""
 
-    @patch("issue_orchestrator.worktree._get_worktree_branch")
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl._get_worktree_branch")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_remove_worktree_success(self, mock_run, mock_get_branch, tmp_path):
         """Test successful worktree removal."""
         # Setup
@@ -362,7 +362,7 @@ class TestRemoveWorktree:
         assert second_call[2] == "-D"
         assert second_call[3] == "123-test-branch"
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_remove_worktree_not_exists(self, mock_run, tmp_path):
         """Test error when worktree doesn't exist."""
         # Setup
@@ -375,8 +375,8 @@ class TestRemoveWorktree:
         # Git should not have been called
         mock_run.assert_not_called()
 
-    @patch("issue_orchestrator.worktree._get_worktree_branch")
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl._get_worktree_branch")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_remove_worktree_git_fails(self, mock_run, mock_get_branch, tmp_path):
         """Test error when git worktree remove fails."""
         # Setup
@@ -392,8 +392,8 @@ class TestRemoveWorktree:
         with pytest.raises(WorktreeError, match="Failed to remove worktree"):
             remove_worktree(worktree_path)
 
-    @patch("issue_orchestrator.worktree._get_worktree_branch")
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl._get_worktree_branch")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_remove_worktree_branch_deletion_fails_silently(
         self, mock_run, mock_get_branch, tmp_path
     ):
@@ -416,8 +416,8 @@ class TestRemoveWorktree:
         # Verify both commands were attempted
         assert mock_run.call_count == 2
 
-    @patch("issue_orchestrator.worktree._get_worktree_branch")
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl._get_worktree_branch")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_remove_worktree_no_branch_name(self, mock_run, mock_get_branch, tmp_path):
         """Test removal when branch name cannot be determined."""
         # Setup
@@ -439,10 +439,10 @@ class TestRemoveWorktree:
 class TestFindWorktreeForBranch:
     """Test the find_worktree_for_branch function."""
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_find_worktree_for_branch_found(self, mock_run, tmp_path):
         """Test finding an existing worktree for a branch."""
-        from issue_orchestrator.worktree import find_worktree_for_branch
+        from issue_orchestrator._worktree_impl import find_worktree_for_branch
 
         mock_output = """worktree /path/to/main
 HEAD abc123
@@ -458,10 +458,10 @@ branch refs/heads/128-m9-ios-styling
         result = find_worktree_for_branch(tmp_path, "128-m9-ios-styling")
         assert result == Path("/path/to/worktree-128")
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_find_worktree_for_branch_not_found(self, mock_run, tmp_path):
         """Test when branch is not checked out in any worktree."""
-        from issue_orchestrator.worktree import find_worktree_for_branch
+        from issue_orchestrator._worktree_impl import find_worktree_for_branch
 
         mock_output = """worktree /path/to/main
 HEAD abc123
@@ -473,10 +473,10 @@ branch refs/heads/main
         result = find_worktree_for_branch(tmp_path, "nonexistent-branch")
         assert result is None
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_find_worktree_for_branch_git_fails(self, mock_run, tmp_path):
         """Test when git command fails."""
-        from issue_orchestrator.worktree import find_worktree_for_branch
+        from issue_orchestrator._worktree_impl import find_worktree_for_branch
 
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
 
@@ -487,7 +487,7 @@ branch refs/heads/main
 class TestListWorktrees:
     """Test the list_worktrees function."""
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_list_worktrees_success(self, mock_run):
         """Test successful listing of worktrees."""
         # Mock git output
@@ -511,7 +511,7 @@ branch refs/heads/456-bugfix
         assert Path("/path/to/worktree-123") in worktrees
         assert Path("/path/to/worktree-456") in worktrees
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_list_worktrees_empty(self, mock_run):
         """Test listing when only main worktree exists."""
         # Mock git output with only main worktree
@@ -527,7 +527,7 @@ branch refs/heads/main
         assert len(worktrees) == 1
         assert Path("/path/to/main") in worktrees
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_list_worktrees_git_fails(self, mock_run):
         """Test error when git command fails."""
         # Mock failed git command
@@ -539,7 +539,7 @@ branch refs/heads/main
         with pytest.raises(WorktreeError, match="Failed to list worktrees"):
             list_worktrees()
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_list_worktrees_subprocess_exception(self, mock_run):
         """Test handling of subprocess exceptions."""
         # Mock subprocess exception
@@ -553,7 +553,7 @@ branch refs/heads/main
 class TestWorktreeExists:
     """Test the worktree_exists function."""
 
-    @patch("issue_orchestrator.worktree.list_worktrees")
+    @patch("issue_orchestrator._worktree_impl.list_worktrees")
     def test_worktree_exists_true(self, mock_list):
         """Test checking existing worktree."""
         # Mock list of worktrees
@@ -568,7 +568,7 @@ class TestWorktreeExists:
         # Verify
         assert result is True
 
-    @patch("issue_orchestrator.worktree.list_worktrees")
+    @patch("issue_orchestrator._worktree_impl.list_worktrees")
     def test_worktree_exists_false(self, mock_list):
         """Test checking non-existent worktree."""
         # Mock list of worktrees
@@ -583,7 +583,7 @@ class TestWorktreeExists:
         # Verify
         assert result is False
 
-    @patch("issue_orchestrator.worktree.list_worktrees")
+    @patch("issue_orchestrator._worktree_impl.list_worktrees")
     def test_worktree_exists_error_propagates(self, mock_list):
         """Test that errors from list_worktrees propagate."""
         # Mock error from list_worktrees
@@ -597,7 +597,7 @@ class TestWorktreeExists:
 class TestHasUncommittedChanges:
     """Test the has_uncommitted_changes function."""
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_has_uncommitted_changes_true(self, mock_run, tmp_path):
         """Test detecting uncommitted changes."""
         # Setup
@@ -614,7 +614,7 @@ class TestHasUncommittedChanges:
         # Verify
         assert result is True
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_has_uncommitted_changes_false(self, mock_run, tmp_path):
         """Test no uncommitted changes."""
         # Setup
@@ -630,7 +630,7 @@ class TestHasUncommittedChanges:
         # Verify
         assert result is False
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_has_uncommitted_changes_not_exists(self, mock_run, tmp_path):
         """Test error when worktree doesn't exist."""
         # Setup
@@ -643,7 +643,7 @@ class TestHasUncommittedChanges:
         # Git should not have been called
         mock_run.assert_not_called()
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_has_uncommitted_changes_git_fails(self, mock_run, tmp_path):
         """Test error when git status fails."""
         # Setup
@@ -659,7 +659,7 @@ class TestHasUncommittedChanges:
         with pytest.raises(WorktreeError, match="Failed to check worktree status"):
             has_uncommitted_changes(worktree_path)
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_has_uncommitted_changes_staged_only(self, mock_run, tmp_path):
         """Test detecting staged changes."""
         # Setup
@@ -676,7 +676,7 @@ class TestHasUncommittedChanges:
         # Verify - staged changes count as uncommitted
         assert result is True
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_has_uncommitted_changes_untracked_only(self, mock_run, tmp_path):
         """Test detecting untracked files."""
         # Setup
@@ -697,7 +697,7 @@ class TestHasUncommittedChanges:
 class TestGetWorktreeBranch:
     """Test the _get_worktree_branch helper function."""
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_get_worktree_branch_success(self, mock_run, tmp_path):
         """Test successfully getting branch name."""
         # Setup
@@ -723,7 +723,7 @@ class TestGetWorktreeBranch:
         assert cmd[4] == "--abbrev-ref"
         assert cmd[5] == "HEAD"
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_get_worktree_branch_git_fails(self, mock_run, tmp_path):
         """Test when git command fails."""
         # Setup
@@ -740,7 +740,7 @@ class TestGetWorktreeBranch:
         # Verify - should return None on failure
         assert branch_name is None
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_get_worktree_branch_empty_output(self, mock_run, tmp_path):
         """Test when git returns empty output."""
         # Setup
@@ -755,7 +755,7 @@ class TestGetWorktreeBranch:
         # Verify
         assert branch_name is None
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_get_worktree_branch_subprocess_exception(self, mock_run, tmp_path):
         """Test handling of subprocess exceptions."""
         # Setup
@@ -774,7 +774,7 @@ class TestGetWorktreeBranch:
 class TestIntegrationScenarios:
     """Test integration scenarios with multiple operations."""
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_full_lifecycle(self, mock_run, tmp_path):
         """Test complete lifecycle: create, check, remove."""
         # Setup
@@ -817,7 +817,7 @@ class TestIntegrationScenarios:
         # Remove worktree
         remove_worktree(worktree_path)
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_edge_case_titles(self, mock_run, tmp_path):
         """Test various edge case issue titles."""
         # Setup
@@ -886,7 +886,7 @@ class TestInstallHooks:
         (worktree_path / ".git").write_text(f"gitdir: {worktrees_dir}")
         
         # Create a fake orchestrator hook
-        from issue_orchestrator.worktree import HOOKS_DIR
+        from issue_orchestrator._worktree_impl import HOOKS_DIR
         
         install_hooks(worktree_path)
         
@@ -945,7 +945,7 @@ class TestInstallHooks:
         assert pre_push_project.stat().st_mode & 0o111, "Project hook should be executable"
         assert pre_push_orchestrator.stat().st_mode & 0o111, "Orchestrator hook should be executable"
 
-    @patch("issue_orchestrator.worktree.subprocess.run")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_install_hooks_with_custom_hooks_path(self, mock_run, tmp_path):
         """Test hook installation when project uses core.hooksPath (e.g., .githooks/)."""
         # Setup fake git structure
@@ -1015,7 +1015,7 @@ class TestInstallClaudeSettings:
 
     def test_install_claude_settings_creates_file(self, tmp_path):
         """Test that install_claude_settings creates .claude/settings.json."""
-        from issue_orchestrator.worktree import install_claude_settings
+        from issue_orchestrator._worktree_impl import install_claude_settings
 
         install_claude_settings(tmp_path)
 
@@ -1025,7 +1025,7 @@ class TestInstallClaudeSettings:
     def test_install_claude_settings_has_stop_hook(self, tmp_path):
         """Test that the settings contain a Stop hook."""
         import json
-        from issue_orchestrator.worktree import install_claude_settings
+        from issue_orchestrator._worktree_impl import install_claude_settings
 
         install_claude_settings(tmp_path)
 
@@ -1039,7 +1039,7 @@ class TestInstallClaudeSettings:
     def test_install_claude_settings_merges_with_existing(self, tmp_path):
         """Test that install_claude_settings merges with existing settings."""
         import json
-        from issue_orchestrator.worktree import install_claude_settings
+        from issue_orchestrator._worktree_impl import install_claude_settings
 
         # Create existing settings
         claude_dir = tmp_path / ".claude"
@@ -1064,7 +1064,7 @@ class TestInstallVenvSymlink:
 
     def test_creates_symlink_when_venv_exists(self, tmp_path):
         """Test that symlink is created when main repo has .venv."""
-        from issue_orchestrator.worktree import install_venv_symlink
+        from issue_orchestrator._worktree_impl import install_venv_symlink
 
         # Setup main repo with .venv
         main_repo = tmp_path / "main_repo"
@@ -1087,7 +1087,7 @@ class TestInstallVenvSymlink:
 
     def test_returns_false_when_no_main_venv(self, tmp_path):
         """Test that function returns False when main repo has no .venv."""
-        from issue_orchestrator.worktree import install_venv_symlink
+        from issue_orchestrator._worktree_impl import install_venv_symlink
 
         # Setup main repo without .venv
         main_repo = tmp_path / "main_repo"
@@ -1106,7 +1106,7 @@ class TestInstallVenvSymlink:
 
     def test_skips_if_venv_already_exists(self, tmp_path):
         """Test that existing .venv in worktree is not overwritten."""
-        from issue_orchestrator.worktree import install_venv_symlink
+        from issue_orchestrator._worktree_impl import install_venv_symlink
 
         # Setup main repo with .venv
         main_repo = tmp_path / "main_repo"
@@ -1131,7 +1131,7 @@ class TestInstallVenvSymlink:
 
     def test_skips_if_symlink_already_exists(self, tmp_path):
         """Test that existing symlink is not replaced."""
-        from issue_orchestrator.worktree import install_venv_symlink
+        from issue_orchestrator._worktree_impl import install_venv_symlink
 
         # Setup main repo with .venv
         main_repo = tmp_path / "main_repo"

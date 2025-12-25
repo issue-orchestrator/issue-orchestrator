@@ -55,8 +55,14 @@ class ActionType(Enum):
     QUEUE_REWORK = "queue_rework"
     QUEUE_TRIAGE = "queue_triage"
 
+    # Issue creation
+    CREATE_TRIAGE_ISSUE = "create_triage_issue"
+
     # Escalation
     ESCALATE_TO_HUMAN = "escalate_to_human"
+
+    # Cleanup operations
+    CLEANUP_SESSION = "cleanup_session"
 
 
 @dataclass(frozen=True)
@@ -186,6 +192,21 @@ class QueueTriageAction(Action):
 
 
 @dataclass(frozen=True)
+class CreateTriageIssueAction(Action):
+    """Create a triage review issue when PR threshold is met.
+
+    The Planner produces this when triage_facts.pr_count >= threshold.
+    The orchestrator applies it by creating the GitHub issue.
+    """
+
+    title: str = ""
+    body: str = ""
+    labels: tuple[str, ...] = field(default_factory=tuple)
+    pr_count: int = 0
+    action_type: ActionType = field(default=ActionType.CREATE_TRIAGE_ISSUE, init=False)
+
+
+@dataclass(frozen=True)
 class EscalateToHumanAction(Action):
     """Escalate an issue to human intervention."""
 
@@ -204,6 +225,23 @@ class AddCommentAction(Action):
     comment: str = ""
     is_pr: bool = False
     action_type: ActionType = field(default=ActionType.ADD_COMMENT, init=False)
+
+
+@dataclass(frozen=True)
+class CleanupSessionAction(Action):
+    """Clean up a completed session (close tab, remove worktree).
+
+    Produced by the Planner when a pending cleanup's PR has been reviewed.
+    The orchestrator applies it by closing the terminal tab and removing the worktree.
+    """
+
+    issue_number: int = 0
+    pr_number: int = 0
+    terminal_session_name: str = ""
+    worktree_path: str = ""
+    close_tabs: bool = True
+    remove_worktrees: bool = True
+    action_type: ActionType = field(default=ActionType.CLEANUP_SESSION, init=False)
 
 
 # Action result types

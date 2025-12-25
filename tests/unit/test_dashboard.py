@@ -525,7 +525,7 @@ class TestDashboardApp:
 
         app = DashboardApp(orchestrator)
 
-        with patch('issue_orchestrator.iterm2.select_tab_by_name') as mock_select:
+        with patch('issue_orchestrator._iterm2_impl.select_tab_by_name') as mock_select:
             with patch.object(app, 'notify') as mock_notify:
                 mock_select.return_value = True
 
@@ -553,7 +553,7 @@ class TestDashboardApp:
         mock_manager.session = MagicMock()
         mock_manager.select_window.return_value = True
 
-        with patch('issue_orchestrator.tmux.get_manager', return_value=mock_manager):
+        with patch('issue_orchestrator._tmux_impl.get_manager', return_value=mock_manager):
             with patch.object(app, 'exit') as mock_exit:
                 await app.action_attach(1)
 
@@ -574,7 +574,7 @@ class TestDashboardApp:
 
         app = DashboardApp(orchestrator)
 
-        with patch('issue_orchestrator.tmux.get_manager', side_effect=Exception("Test error")):
+        with patch('issue_orchestrator._tmux_impl.get_manager', side_effect=Exception("Test error")):
             with patch.object(app, 'notify') as mock_notify:
                 await app.action_attach(1)
 
@@ -635,7 +635,7 @@ class TestDashboard:
         mock_manager = MagicMock()
         mock_manager.session = MagicMock()
 
-        with patch('issue_orchestrator.tmux.get_manager', return_value=mock_manager):
+        with patch('issue_orchestrator._tmux_impl.get_manager', return_value=mock_manager):
             await dashboard._handle_attach(42)
 
             mock_manager.select_window.assert_called_once_with(42)
@@ -650,7 +650,7 @@ class TestDashboard:
         dashboard._app = MagicMock()
         dashboard._app.notify = MagicMock()
 
-        with patch('issue_orchestrator.iterm2.select_tab_by_name') as mock_select:
+        with patch('issue_orchestrator._iterm2_impl.select_tab_by_name') as mock_select:
             mock_select.return_value = True
 
             await dashboard._handle_attach(42)
@@ -667,7 +667,7 @@ class TestDashboard:
         dashboard._app = MagicMock()
         dashboard._app.notify = MagicMock()
 
-        with patch('issue_orchestrator.iterm2.select_tab_by_name') as mock_select:
+        with patch('issue_orchestrator._iterm2_impl.select_tab_by_name') as mock_select:
             mock_select.return_value = False
 
             await dashboard._handle_attach(42)

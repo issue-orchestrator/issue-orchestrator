@@ -1,0 +1,202 @@
+"""SessionRestorer - handles restoring session tracking after restart.
+
+This module extracts session restoration logic from the orchestrator.
+It handles:
+1. Discovering running sessions from the terminal backend
+2. Finding corresponding worktrees
+3. Fetching issue details
+4. Creating Session objects for tracking
+
+Called during startup to restore tracking for sessions that survived a restart.
+"""
+
+import logging
+import subprocess
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional, Callable
+
+if TYPE_CHECKING:
+    from ..config import Config, AgentConfig
+
+from ..models import Issue, Session
+from ..ports import RepositoryHost
+
+logger = logging.getLogger(__name__)
+
+
+class SessionRestorer:
+    """Handles restoring session tracking after orchestrator restart.
+
+    Dependencies:
+    - config: Configuration with agent settings
+    - repository_host: For fetching issue details and cleanup
+    """
+
+    def __init__(
+        self,
+        config: "Config",
+        repository_host: RepositoryHost,
+    ):
+        self.config = config
+        self.repository_host = repository_host
+
+    def restore_sessions(
+        self,
+        running: list[dict],
+        already_tracked: list[Session],
+    ) -> list[Session]:
+        """Restore tracking for sessions that are still running after restart.
+
+        Args:
+            running: List of dicts from discover_running_sessions() with
+                     {issue_number, tab_name, is_review}
+            already_tracked: Sessions already being tracked (to avoid duplicates)
+
+        Returns:
+            List of newly restored Session objects
+        """
+        import re
+
+        restored = []
+
+        for session_info in running:
+            issue_number = session_info["issue_number"]
+            tab_name = session_info["tab_name"]
+            is_review = session_info["is_review"]
+
+            try:
+                session = self._restore_single_session(
+                    issue_number=issue_number,
+                    tab_name=tab_name,
+                    is_review=is_review,
+                    already_tracked=already_tracked + restored,
+                )
+                if session:
+                    restored.append(session)
+                    logger.info("Restored tracking for session %s (issue #%d)",
+                               session.tmux_session_name, issue_number)
+                    print(f"  Restored: {session.tmux_session_name} (#{issue_number})")
+
+            except Exception as e:
+                logger.exception("Failed to restore session for issue #%d: %s", issue_number, e)
+                print(f"  Warning: Failed to restore session for #{issue_number}: {e}")
+
+        return restored
+
+    def _restore_single_session(
+        self,
+        issue_number: int,
+        tab_name: str,
+        is_review: bool,
+        already_tracked: list[Session],
+    ) -> Optional[Session]:
+        """Restore a single session.
+
+        Returns:
+            Session object if restored, None if skipped
+        """
+        import re
+
+        # Determine session type and session_name
+        if is_review:
+            # Extract PR number from tab name like "#123 Review PR #456"
+            pr_match = re.search(r'Review PR #(\d+)', tab_name)
+            pr_number = int(pr_match.group(1)) if pr_match else issue_number
+            session_name = f"review-{pr_number}"
+        else:
+            session_name = f"issue-{issue_number}"
+
+        # Skip if already tracking this session
+        if any(s.tmux_session_name == session_name for s in already_tracked):
+            logger.info("Session %s already tracked - skipping restore", session_name)
+            return None
+
+        # Find the worktree
+        worktree_path, branch_name = self._find_worktree(issue_number)
+
+        if not worktree_path:
+            logger.warning("Could not find worktree for session %s - cleaning up orphaned issue", session_name)
+            self._cleanup_orphaned_issue(issue_number)
+            return None
+
+        # Fetch single issue details to get agent type
+        issue_obj = self.repository_host.get_issue(issue_number)
+        agent_config = None
+
+        if issue_obj and issue_obj.agent_type:
+            agent_config = self.config.agents.get(issue_obj.agent_type)
+
+        if not issue_obj:
+            # Create minimal issue object for reviews or if issue not found
+            issue_obj = Issue(
+                number=issue_number,
+                title=tab_name.replace("#", "").strip(),
+                labels=[],
+            )
+
+        if not agent_config:
+            # Use first available agent config as fallback
+            agent_config = next(iter(self.config.agents.values()), None)
+
+        if not agent_config:
+            logger.warning("No agent config available for session %s - skipping", session_name)
+            return None
+
+        # Create session object
+        return Session(
+            issue=issue_obj,
+            agent_config=agent_config,
+            tmux_session_name=session_name,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+        )
+
+    def _find_worktree(self, issue_number: int) -> tuple[Optional[Path], str]:
+        """Find the worktree for an issue.
+
+        Returns:
+            Tuple of (worktree_path, branch_name) or (None, "unknown") if not found
+        """
+        worktree_path = None
+        branch_name = "unknown"
+
+        # Check all agent repo_roots for the worktree
+        for agent_label, agent_config in self.config.agents.items():
+            repo_root = agent_config.repo_root or self.config.repo_root
+            candidate_path = repo_root.parent / f"{repo_root.name}-{issue_number}"
+            if candidate_path.exists():
+                worktree_path = candidate_path
+                # Get branch name from worktree
+                branch_name = self._get_branch_name(candidate_path)
+                break
+
+        return worktree_path, branch_name
+
+    def _get_branch_name(self, worktree_path: Path) -> str:
+        """Get the current branch name for a worktree.
+
+        Uses git command to get branch name.
+        TODO: Consider using a WorkingCopy abstraction instead.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(worktree_path), "branch", "--show-current"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception as e:
+            logger.warning("Failed to get branch name for %s: %s", worktree_path, e)
+        return "unknown"
+
+    def _cleanup_orphaned_issue(self, issue_number: int) -> None:
+        """Clean up an orphaned issue by removing the in-progress label.
+
+        Called when we find a session without a corresponding worktree.
+        """
+        try:
+            self.repository_host.remove_label(issue_number, "in-progress")
+            logger.info("Removed in-progress label from orphaned issue #%d", issue_number)
+            print(f"  Cleaned up orphaned issue #{issue_number} (removed in-progress label)")
+        except Exception as e:
+            logger.warning("Failed to cleanup orphaned issue #%d: %s", issue_number, e)

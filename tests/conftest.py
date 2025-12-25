@@ -98,6 +98,15 @@ class MockGitHubAdapter:
                     result.append(pr)
         return result
 
+    def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
+        """List all PRs."""
+        result = []
+        for prs in self.prs.values():
+            for pr in prs:
+                if state == "all" or pr.state.lower() == state.lower():
+                    result.append(pr)
+        return result[:limit]
+
     def get_pr(self, pr_number: int) -> Optional[PRInfo]:
         """Get a specific PR."""
         for prs in self.prs.values():
@@ -124,6 +133,29 @@ class MockGitHubAdapter:
         """Add a comment (mock)."""
         self.comments.append({"number": issue_or_pr_number, "body": body})
         return f"https://github.com/test/repo/issues/{issue_or_pr_number}#comment"
+
+    def create_issue(
+        self,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> int | None:
+        """Create a new issue (mock).
+
+        Returns the issue number (next available number based on existing issues).
+        """
+        # Generate next issue number
+        existing_numbers = [i.number for i in self.issues]
+        next_number = max(existing_numbers) + 1 if existing_numbers else 1
+
+        issue = Issue(
+            number=next_number,
+            title=title,
+            body=body,
+            labels=labels or [],
+        )
+        self.issues.append(issue)
+        return next_number
 
 
 @pytest.fixture

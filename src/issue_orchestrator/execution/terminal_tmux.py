@@ -6,7 +6,7 @@ Implements terminal hooks using tmux as the backend.
 from pathlib import Path
 
 from ..hookspec import hookimpl
-from ..tmux import TmuxManager
+from .._tmux_impl import TmuxManager
 
 
 class TmuxPlugin:

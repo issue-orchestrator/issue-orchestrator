@@ -2,6 +2,10 @@
 
 This module implements the state machine for tracking a development session through
 its lifecycle, from launch through completion or failure.
+
+The state machine is designed to be pure - it returns TransitionResult instead of
+publishing events directly. The caller (control layer) is responsible for emitting
+TraceEvents via EventSink.
 """
 
 import logging
@@ -11,7 +15,7 @@ from typing import Optional
 
 from transitions import Machine
 
-from ..events import EventBus, SessionEvent
+from .transition_result import TransitionResult
 
 logger = logging.getLogger(__name__)
 
@@ -46,23 +50,22 @@ class SessionStateMachine:
     - BLOCKED: Session is blocked waiting for resolution
     - NEEDS_HUMAN: Session needs human intervention
 
-    Each state transition emits an event via the EventBus to enable
-    decoupled components to react to state changes.
+    The state machine is pure - transitions store their result in last_transition
+    which callers use to emit appropriate TraceEvents via EventSink.
 
     Attributes:
         session_id: Unique identifier for this session
         issue_number: The GitHub issue number this session is working on
         state: Current state of the session
-        event_bus: EventBus for publishing state change events
         started_at: Timestamp when session started running (None if not started)
         timeout_minutes: Maximum runtime before timing out (None for no timeout)
+        last_transition: Result of the most recent transition (for event emission)
     """
 
     def __init__(
         self,
         session_id: str,
         issue_number: int,
-        event_bus: EventBus,
         initial_state: SessionState = SessionState.PENDING,
         timeout_minutes: Optional[int] = None
     ):
@@ -71,16 +74,15 @@ class SessionStateMachine:
         Args:
             session_id: Unique identifier for this session
             issue_number: The GitHub issue number
-            event_bus: EventBus instance for publishing events
             initial_state: Starting state (defaults to PENDING)
             timeout_minutes: Maximum runtime in minutes (None for no timeout)
         """
         self.session_id = session_id
         self.issue_number = issue_number
-        self.event_bus = event_bus
         self.state = initial_state
         self.started_at: Optional[datetime] = None
         self.timeout_minutes = timeout_minutes
+        self.last_transition: Optional[TransitionResult] = None
 
         # Define all possible states
         states = [state.value for state in SessionState]
@@ -171,11 +173,15 @@ class SessionStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            SessionEvent.LAUNCHED,
+        transition_data = {**data, 'session_id': self.session_id}
+
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=SessionState.PENDING.value,
+            to_state=SessionState.STARTING.value,
+            event_name="session.launched",
             entity_id=self.issue_number,
-            data={**data, 'session_id': self.session_id},
-            source="SessionStateMachine"
+            data=transition_data,
         )
         logger.info(f"Session {self.session_id} launched for issue {self.issue_number}")
 
@@ -187,11 +193,15 @@ class SessionStateMachine:
         """
         self.started_at = datetime.now()
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            SessionEvent.STARTED,
+        transition_data = {**data, 'session_id': self.session_id, 'started_at': self.started_at.isoformat()}
+
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=SessionState.STARTING.value,
+            to_state=SessionState.RUNNING.value,
+            event_name="session.started",
             entity_id=self.issue_number,
-            data={**data, 'session_id': self.session_id, 'started_at': self.started_at.isoformat()},
-            source="SessionStateMachine"
+            data=transition_data,
         )
         logger.info(f"Session {self.session_id} started for issue {self.issue_number}")
 
@@ -203,11 +213,15 @@ class SessionStateMachine:
         """
         data = event.kwargs.get('data', {})
         runtime = self._get_runtime_minutes()
-        self.event_bus.publish(
-            SessionEvent.SLOW,
+        transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
+
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=SessionState.RUNNING.value,
+            to_state=SessionState.SLOW.value,
+            event_name="session.slow",
             entity_id=self.issue_number,
-            data={**data, 'session_id': self.session_id, 'runtime_minutes': runtime},
-            source="SessionStateMachine"
+            data=transition_data,
         )
         logger.warning(f"Session {self.session_id} marked as slow (runtime: {runtime} minutes)")
 
@@ -219,11 +233,16 @@ class SessionStateMachine:
         """
         data = event.kwargs.get('data', {})
         runtime = self._get_runtime_minutes()
-        self.event_bus.publish(
-            SessionEvent.COMPLETED,
+        from_state = event.transition.source if hasattr(event, 'transition') else SessionState.RUNNING.value
+        transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
+
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=from_state,
+            to_state=SessionState.COMPLETED.value,
+            event_name="session.completed",
             entity_id=self.issue_number,
-            data={**data, 'session_id': self.session_id, 'runtime_minutes': runtime},
-            source="SessionStateMachine"
+            data=transition_data,
         )
         logger.info(f"Session {self.session_id} completed (runtime: {runtime} minutes)")
 
@@ -235,11 +254,16 @@ class SessionStateMachine:
         """
         data = event.kwargs.get('data', {})
         runtime = self._get_runtime_minutes()
-        self.event_bus.publish(
-            SessionEvent.FAILED,
+        from_state = event.transition.source if hasattr(event, 'transition') else SessionState.RUNNING.value
+        transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
+
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=from_state,
+            to_state=SessionState.FAILED.value,
+            event_name="session.failed",
             entity_id=self.issue_number,
-            data={**data, 'session_id': self.session_id, 'runtime_minutes': runtime},
-            source="SessionStateMachine"
+            data=transition_data,
         )
         logger.error(f"Session {self.session_id} failed (runtime: {runtime} minutes)")
 
@@ -251,11 +275,16 @@ class SessionStateMachine:
         """
         data = event.kwargs.get('data', {})
         runtime = self._get_runtime_minutes()
-        self.event_bus.publish(
-            SessionEvent.TIMED_OUT,
+        from_state = event.transition.source if hasattr(event, 'transition') else SessionState.RUNNING.value
+        transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
+
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=from_state,
+            to_state=SessionState.TIMED_OUT.value,
+            event_name="session.timeout",
             entity_id=self.issue_number,
-            data={**data, 'session_id': self.session_id, 'runtime_minutes': runtime},
-            source="SessionStateMachine"
+            data=transition_data,
         )
         logger.error(f"Session {self.session_id} timed out (runtime: {runtime} minutes)")
 
@@ -266,11 +295,15 @@ class SessionStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            SessionEvent.BLOCKED,
+        transition_data = {**data, 'session_id': self.session_id}
+
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=SessionState.RUNNING.value,
+            to_state=SessionState.BLOCKED.value,
+            event_name="session.blocked",
             entity_id=self.issue_number,
-            data={**data, 'session_id': self.session_id},
-            source="SessionStateMachine"
+            data=transition_data,
         )
         logger.warning(f"Session {self.session_id} blocked")
 
@@ -281,11 +314,15 @@ class SessionStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            SessionEvent.NEEDS_HUMAN,
+        transition_data = {**data, 'session_id': self.session_id}
+
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=SessionState.RUNNING.value,
+            to_state=SessionState.NEEDS_HUMAN.value,
+            event_name="session.needs_human",
             entity_id=self.issue_number,
-            data={**data, 'session_id': self.session_id},
-            source="SessionStateMachine"
+            data=transition_data,
         )
         logger.warning(f"Session {self.session_id} needs human intervention")
 
@@ -295,8 +332,17 @@ class SessionStateMachine:
         Args:
             event: Transition event data from transitions library
         """
-        # Note: We don't have a RESUMED event in SessionEvent enum,
-        # but we could emit STARTED again or create a new event type
+        from_state = event.transition.source if hasattr(event, 'transition') else SessionState.BLOCKED.value
+
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=from_state,
+            to_state=SessionState.RUNNING.value,
+            event_name="session.resumed",
+            entity_id=self.issue_number,
+            data={'session_id': self.session_id},
+        )
+
         logger.info(f"Session {self.session_id} resumed")
 
     def _get_runtime_minutes(self) -> Optional[float]:

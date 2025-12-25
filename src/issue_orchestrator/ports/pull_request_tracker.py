@@ -65,6 +65,27 @@ class PullRequestTracker(Protocol):
         """
         ...
 
+    def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
+        """Get all pull requests associated with a specific issue.
+
+        Finds PRs where:
+        - Branch starts with the issue number followed by a dash (e.g., "328-feature-name")
+        - OR title contains "#issue_number" (e.g., "#328: Feature")
+
+        Args:
+            issue_number: The issue number to find PRs for.
+            state: Filter by PR state. Can be "open", "closed", "merged", or "all".
+                  Defaults to "open".
+
+        Returns:
+            A list of PRInfo objects for PRs associated with the issue.
+            Returns empty list if no matching PRs found.
+
+        Raises:
+            RepositoryError: If there's an error accessing the data source.
+        """
+        ...
+
     def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
         """Get all pull requests with a specific label.
 
@@ -90,6 +111,23 @@ class PullRequestTracker(Protocol):
 
         Returns:
             The PRInfo object if found, None otherwise.
+
+        Raises:
+            RepositoryError: If there's an error accessing the data source.
+        """
+        ...
+
+    def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
+        """List pull requests.
+
+        Args:
+            state: Filter by PR state ("open", "closed", "merged", or "all").
+                  Defaults to "open".
+            limit: Maximum number of PRs to return. Defaults to 100.
+
+        Returns:
+            A list of PRInfo objects.
+            Returns empty list if no PRs found.
 
         Raises:
             RepositoryError: If there's an error accessing the data source.

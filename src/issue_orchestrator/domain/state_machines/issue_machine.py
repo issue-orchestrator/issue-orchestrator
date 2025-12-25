@@ -2,6 +2,10 @@
 
 This module implements the state machine for tracking an issue through its entire
 lifecycle, from initial availability through completion.
+
+The state machine is pure - it returns TransitionResult instead of publishing
+events directly. The caller (control layer) is responsible for emitting
+TraceEvents via EventSink.
 """
 
 import logging
@@ -10,7 +14,7 @@ from typing import Optional
 
 from transitions import Machine
 
-from ..events import EventBus, IssueEvent
+from .transition_result import TransitionResult
 
 logger = logging.getLogger(__name__)
 
@@ -39,26 +43,25 @@ class IssueStateMachine:
     - PR_PENDING: Pull request has been created and awaiting merge
     - COMPLETED: Issue is complete (PR merged)
 
-    Each state transition emits an event via the EventBus to enable
-    decoupled components to react to state changes.
+    The state machine is pure - transitions store their result in last_transition
+    which callers use to emit appropriate TraceEvents via EventSink.
 
     Attributes:
         issue_number: The GitHub issue number this state machine tracks
         state: Current state of the issue
-        event_bus: EventBus for publishing state change events
+        last_transition: Result of the most recent transition (for event emission)
     """
 
-    def __init__(self, issue_number: int, event_bus: EventBus, initial_state: IssueState = IssueState.AVAILABLE):
+    def __init__(self, issue_number: int, initial_state: IssueState = IssueState.AVAILABLE):
         """Initialize the issue state machine.
 
         Args:
             issue_number: The GitHub issue number
-            event_bus: EventBus instance for publishing events
             initial_state: Starting state (defaults to AVAILABLE)
         """
         self.issue_number = issue_number
-        self.event_bus = event_bus
         self.state = initial_state
+        self.last_transition: Optional[TransitionResult] = None
 
         # Define all possible states
         states = [state.value for state in IssueState]
@@ -154,11 +157,13 @@ class IssueStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            IssueEvent.CLAIMED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=IssueState.AVAILABLE.value,
+            to_state=IssueState.CLAIMED.value,
+            event_name="issue.claimed",
             entity_id=self.issue_number,
             data=data,
-            source="IssueStateMachine"
         )
         logger.info(f"Issue {self.issue_number} claimed")
 
@@ -169,11 +174,13 @@ class IssueStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            IssueEvent.SESSION_STARTED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=IssueState.CLAIMED.value,
+            to_state=IssueState.IN_PROGRESS.value,
+            event_name="issue.started",
             entity_id=self.issue_number,
             data=data,
-            source="IssueStateMachine"
         )
         logger.info(f"Issue {self.issue_number} work started")
 
@@ -184,11 +191,13 @@ class IssueStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            IssueEvent.BLOCKED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=IssueState.IN_PROGRESS.value,
+            to_state=IssueState.BLOCKED.value,
+            event_name="issue.blocked",
             entity_id=self.issue_number,
             data=data,
-            source="IssueStateMachine"
         )
         logger.warning(f"Issue {self.issue_number} blocked")
 
@@ -199,11 +208,13 @@ class IssueStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            IssueEvent.NEEDS_HUMAN,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=IssueState.IN_PROGRESS.value,
+            to_state=IssueState.NEEDS_HUMAN.value,
+            event_name="issue.needs_human",
             entity_id=self.issue_number,
             data=data,
-            source="IssueStateMachine"
         )
         logger.warning(f"Issue {self.issue_number} needs human intervention")
 
@@ -214,11 +225,14 @@ class IssueStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            IssueEvent.UNBLOCKED,
+        from_state = event.transition.source if hasattr(event, 'transition') else IssueState.BLOCKED.value
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=from_state,
+            to_state=IssueState.IN_PROGRESS.value,
+            event_name="issue.unblocked",
             entity_id=self.issue_number,
             data=data,
-            source="IssueStateMachine"
         )
         logger.info(f"Issue {self.issue_number} unblocked")
 
@@ -229,11 +243,13 @@ class IssueStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            IssueEvent.PR_CREATED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=IssueState.IN_PROGRESS.value,
+            to_state=IssueState.PR_PENDING.value,
+            event_name="issue.pr_created",
             entity_id=self.issue_number,
             data=data,
-            source="IssueStateMachine"
         )
         logger.info(f"PR created for issue {self.issue_number}")
 
@@ -244,11 +260,13 @@ class IssueStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            IssueEvent.PR_REJECTED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=IssueState.PR_PENDING.value,
+            to_state=IssueState.IN_PROGRESS.value,
+            event_name="issue.pr_rejected",
             entity_id=self.issue_number,
             data=data,
-            source="IssueStateMachine"
         )
         logger.info(f"PR rejected for issue {self.issue_number}")
 
@@ -259,11 +277,13 @@ class IssueStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            IssueEvent.COMPLETED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=IssueState.PR_PENDING.value,
+            to_state=IssueState.COMPLETED.value,
+            event_name="issue.completed",
             entity_id=self.issue_number,
             data=data,
-            source="IssueStateMachine"
         )
         logger.info(f"Issue {self.issue_number} completed")
 
@@ -274,11 +294,14 @@ class IssueStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            IssueEvent.RELEASED,
+        from_state = event.transition.source if hasattr(event, 'transition') else IssueState.IN_PROGRESS.value
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=from_state,
+            to_state=IssueState.AVAILABLE.value,
+            event_name="issue.released",
             entity_id=self.issue_number,
             data=data,
-            source="IssueStateMachine"
         )
         logger.info(f"Issue {self.issue_number} released back to available")
 

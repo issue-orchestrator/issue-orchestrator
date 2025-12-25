@@ -102,7 +102,7 @@ class TestDashboardEndpoint:
 
         web._orchestrator = mock_orch
         try:
-            with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
+            with patch("issue_orchestrator._github_impl.list_issues") as mock_list_issues:
                 mock_list_issues.return_value = []
 
                 client = TestClient(app)
@@ -125,7 +125,7 @@ class TestDashboardEndpoint:
 
         web._orchestrator = mock_orch
         try:
-            with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
+            with patch("issue_orchestrator._github_impl.list_issues") as mock_list_issues:
                 mock_list_issues.return_value = []
 
                 client = TestClient(app)
@@ -172,7 +172,7 @@ class TestDashboardEndpoint:
 
         web._orchestrator = mock_orch
         try:
-            with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
+            with patch("issue_orchestrator._github_impl.list_issues") as mock_list_issues:
                 mock_list_issues.return_value = []
 
                 client = TestClient(app)
@@ -202,7 +202,7 @@ class TestDashboardEndpoint:
 
         web._orchestrator = mock_orch
         try:
-            with patch("issue_orchestrator.github.list_issues") as mock_list_issues:
+            with patch("issue_orchestrator._github_impl.list_issues") as mock_list_issues:
                 mock_list_issues.return_value = []
 
                 client = TestClient(app)
@@ -347,7 +347,7 @@ class TestFocusSessionEndpoint:
 
         web._orchestrator = mock_orch
 
-        with patch("issue_orchestrator.iterm2.select_tab_by_name") as mock_select:
+        with patch("issue_orchestrator._iterm2_impl.select_tab_by_name") as mock_select:
             mock_select.return_value = True
 
             client = TestClient(app)
@@ -370,8 +370,8 @@ class TestFocusSessionEndpoint:
 
         web._orchestrator = mock_orch
 
-        with patch("issue_orchestrator.iterm2.select_tab_by_name") as mock_select:
-            with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._iterm2_impl.select_tab_by_name") as mock_select:
+            with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
                 mock_select.return_value = False
                 mock_manager = MagicMock()
                 mock_manager.select_window.return_value = True
@@ -408,8 +408,8 @@ class TestFocusSessionEndpoint:
 
         web._orchestrator = mock_orch
 
-        with patch("issue_orchestrator.iterm2.select_tab_by_name") as mock_select:
-            with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._iterm2_impl.select_tab_by_name") as mock_select:
+            with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
                 mock_select.return_value = False
                 mock_manager = MagicMock()
                 mock_manager.select_window.return_value = False

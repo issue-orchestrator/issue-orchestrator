@@ -7,7 +7,7 @@ help:
 	@echo "  typecheck           Run pyright type checking"
 	@echo "  test-unit           Run unit tests"
 	@echo "  test-integration    Run integration tests"
-	@echo "  test-e2e            Run e2e tests"
+	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test                Run all tests"
 	@echo "  validate            Full validation (parallel: pyright + unit + integration + e2e)"
@@ -35,12 +35,24 @@ test-unit:
 test-integration:
 	$(PYTEST) tests/integration -x -q --tb=short
 
+# E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
+# Usage: make test-e2e        (stops on first failure)
+#        make test-e2e NOFAST=1  (runs all tests even if some fail)
 test-e2e:
+ifdef NOFAST
 	$(PYTEST) tests/e2e -v -s --tb=short
+else
+	$(PYTEST) tests/e2e -v -s --tb=short -x
+endif
 
 # Run a single e2e test by name. Usage: make test-e2e-one TEST=test_code_review_produces_review_comment
+# E2E tests stop on first failure by default
 test-e2e-one:
+ifdef NOFAST
 	$(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)"
+else
+	$(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)"
+endif
 
 test:
 	$(PYTEST) tests/ -x -q --tb=short

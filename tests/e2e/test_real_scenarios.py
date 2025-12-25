@@ -25,7 +25,7 @@ from typing import Optional
 import pytest
 
 from issue_orchestrator.test_data import create_test_issues, cleanup_test_issues
-from issue_orchestrator.github import get_prs_for_issue as _get_prs_for_issue
+from issue_orchestrator._github_impl import get_prs_for_issue as _get_prs_for_issue
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def get_issue_state(repo: str, issue_number: int) -> dict:
 def get_prs_for_issue(repo: str, issue_number: int) -> list[dict]:
     """Find PRs that reference an issue.
 
-    Uses the centralized get_prs_for_issue from issue_orchestrator.github.
+    Uses the centralized get_prs_for_issue from issue_orchestrator._github_impl.
     """
     return _get_prs_for_issue(repo=repo, issue_number=issue_number)
 
@@ -123,13 +123,30 @@ def wait_for_condition(
 
 
 def start_orchestrator(repo: str, max_issues: int = 1) -> subprocess.Popen:
-    """Start orchestrator as background process."""
+    """Start orchestrator as background process.
+
+    Respects E2E_UI_MODE env var:
+    - "tmux" (default): Uses tmux with --no-dashboard
+    - "web": Uses web UI at port E2E_WEB_PORT (default 8080)
+    """
+    ui_mode = os.environ.get("E2E_UI_MODE", "tmux")
+
+    cmd = [
+        sys.executable, "-m", "issue_orchestrator.cli", "start",
+        "--label", "test-data",
+        "--max-issues", str(max_issues),
+        "--ui-mode", ui_mode,
+    ]
+
+    if ui_mode == "web":
+        port = os.environ.get("E2E_WEB_PORT", "8080")
+        cmd.extend(["--port", port])
+        print(f"  [E2E] Web UI available at http://localhost:{port}")
+    else:
+        cmd.append("--no-dashboard")
+
     proc = subprocess.Popen(
-        [sys.executable, "-m", "issue_orchestrator.cli", "start",
-         "--label", "test-data",
-         "--max-issues", str(max_issues),
-         "--ui-mode", "tmux",
-         "--no-dashboard"],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -1025,17 +1042,30 @@ def start_orchestrator_with_config(config_path: Path, max_issues: int = 1) -> su
     """Start orchestrator with a specific config file.
 
     Cleans up any stale processes from previous runs first.
+    Respects E2E_UI_MODE env var (see start_orchestrator).
     """
     # Clean up stale processes from previous runs
     cleanup_stale_orchestrators(config_path)
 
+    ui_mode = os.environ.get("E2E_UI_MODE", "tmux")
+
+    cmd = [
+        sys.executable, "-m", "issue_orchestrator.cli",
+        "--config", str(config_path),  # Global arg goes BEFORE subcommand
+        "start",
+        "--max-issues", str(max_issues),
+        "--ui-mode", ui_mode,
+    ]
+
+    if ui_mode == "web":
+        port = os.environ.get("E2E_WEB_PORT", "8080")
+        cmd.extend(["--port", port])
+        print(f"  [E2E] Web UI available at http://localhost:{port}")
+    else:
+        cmd.append("--no-dashboard")
+
     proc = subprocess.Popen(
-        [sys.executable, "-m", "issue_orchestrator.cli",
-         "--config", str(config_path),  # Global arg goes BEFORE subcommand
-         "start",
-         "--max-issues", str(max_issues),
-         "--ui-mode", "tmux",
-         "--no-dashboard"],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

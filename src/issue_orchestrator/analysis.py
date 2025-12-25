@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .github import get_open_prs_for_branch
+from ._github_impl import get_open_prs_for_branch
 from .models import Issue
 
 
@@ -194,7 +194,7 @@ def analyze_orphan_branches(
     Returns:
         List of OrphanBranchState objects
     """
-    from .github import get_open_prs_for_branch
+    from ._github_impl import get_open_prs_for_branch
 
     orphans = []
     for issue_num, branch_name in issue_branches.items():

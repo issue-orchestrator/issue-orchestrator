@@ -3,7 +3,7 @@
 import json
 import pytest
 from unittest.mock import Mock, patch, MagicMock
-from issue_orchestrator.github import (
+from issue_orchestrator._github_impl import (
     GitHubError,
     _run_gh,
     _run_gh_json,
@@ -13,6 +13,7 @@ from issue_orchestrator.github import (
     remove_label,
     add_comment,
     get_open_prs_for_branch,
+    get_prs_for_issue,
     get_issue_comments,
     get_latest_blocked_info,
     get_latest_needs_human_info,
@@ -28,7 +29,7 @@ from issue_orchestrator.models import Issue
 class TestRunGh:
     """Test _run_gh helper function."""
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_run_gh_success(self, mock_run):
         """Test successful gh command execution."""
         mock_run.return_value = Mock(returncode=0, stdout="output", stderr="")
@@ -40,7 +41,7 @@ class TestRunGh:
         args = mock_run.call_args[0][0]
         assert args == ["gh", "issue", "list"]
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_run_gh_with_repo(self, mock_run):
         """Test gh command with repo argument."""
         mock_run.return_value = Mock(returncode=0, stdout="output", stderr="")
@@ -51,7 +52,7 @@ class TestRunGh:
         args = mock_run.call_args[0][0]
         assert args == ["gh", "issue", "list", "--repo", "owner/repo"]
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_run_gh_failure(self, mock_run):
         """Test gh command failure raises GitHubError."""
         mock_run.return_value = Mock(returncode=1, stdout="", stderr="error message")
@@ -59,7 +60,7 @@ class TestRunGh:
         with pytest.raises(GitHubError, match="gh command failed: error message"):
             _run_gh(["issue", "list"])
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_run_gh_captures_output(self, mock_run):
         """Test that subprocess.run is called with correct parameters."""
         mock_run.return_value = Mock(returncode=0, stdout="output", stderr="")
@@ -75,7 +76,7 @@ class TestRunGh:
 class TestRunGhJson:
     """Test _run_gh_json helper function."""
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_run_gh_json_success(self, mock_run_gh):
         """Test successful JSON parsing."""
         mock_run_gh.return_value = '{"key": "value"}'
@@ -84,7 +85,7 @@ class TestRunGhJson:
 
         assert result == {"key": "value"}
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_run_gh_json_list(self, mock_run_gh):
         """Test parsing JSON list."""
         mock_run_gh.return_value = '[{"number": 1}, {"number": 2}]'
@@ -93,7 +94,7 @@ class TestRunGhJson:
 
         assert result == [{"number": 1}, {"number": 2}]
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_run_gh_json_invalid_json(self, mock_run_gh):
         """Test invalid JSON raises GitHubError."""
         mock_run_gh.return_value = "not valid json"
@@ -101,7 +102,7 @@ class TestRunGhJson:
         with pytest.raises(GitHubError, match="Failed to parse gh JSON output"):
             _run_gh_json(["issue", "view", "123"])
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_run_gh_json_propagates_github_error(self, mock_run_gh):
         """Test that GitHubError from _run_gh is propagated."""
         mock_run_gh.side_effect = GitHubError("gh failed")
@@ -113,7 +114,7 @@ class TestRunGhJson:
 class TestGetRepo:
     """Test get_repo function."""
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_get_repo_https_url(self, mock_run):
         """Test extracting repo from HTTPS URL."""
         mock_run.return_value = Mock(
@@ -126,7 +127,7 @@ class TestGetRepo:
 
         assert result == "owner/repo"
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_get_repo_https_url_no_git_suffix(self, mock_run):
         """Test HTTPS URL without .git suffix."""
         mock_run.return_value = Mock(
@@ -139,7 +140,7 @@ class TestGetRepo:
 
         assert result == "owner/repo"
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_get_repo_ssh_url(self, mock_run):
         """Test extracting repo from SSH URL."""
         mock_run.return_value = Mock(
@@ -152,7 +153,7 @@ class TestGetRepo:
 
         assert result == "owner/repo"
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_get_repo_ssh_url_no_git_suffix(self, mock_run):
         """Test SSH URL without .git suffix."""
         mock_run.return_value = Mock(
@@ -165,7 +166,7 @@ class TestGetRepo:
 
         assert result == "owner/repo"
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_get_repo_git_command_fails(self, mock_run):
         """Test git command failure raises GitHubError."""
         mock_run.return_value = Mock(returncode=1, stdout="", stderr="not a git repo")
@@ -173,7 +174,7 @@ class TestGetRepo:
         with pytest.raises(GitHubError, match="Could not determine repository"):
             get_repo()
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_get_repo_unrecognized_url(self, mock_run):
         """Test unrecognized URL format raises GitHubError."""
         mock_run.return_value = Mock(
@@ -185,7 +186,7 @@ class TestGetRepo:
         with pytest.raises(GitHubError, match="Unrecognized GitHub remote URL"):
             get_repo()
 
-    @patch("issue_orchestrator.github.subprocess.run")
+    @patch("issue_orchestrator._github_impl.subprocess.run")
     def test_get_repo_exception_handling(self, mock_run):
         """Test exception handling wraps non-GitHubError exceptions."""
         mock_run.side_effect = RuntimeError("unexpected error")
@@ -197,7 +198,7 @@ class TestGetRepo:
 class TestListIssues:
     """Test list_issues function."""
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_basic(self, mock_run_gh_json):
         """Test basic issue listing."""
         mock_run_gh_json.return_value = [
@@ -222,7 +223,7 @@ class TestListIssues:
         assert issues[0].body == "Test body"
         assert issues[0].milestone is None
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_with_milestone(self, mock_run_gh_json):
         """Test issue with milestone."""
         mock_run_gh_json.return_value = [
@@ -241,7 +242,7 @@ class TestListIssues:
         assert len(issues) == 1
         assert issues[0].milestone == "v1.0"
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_with_labels_filter(self, mock_run_gh_json):
         """Test issue listing with label filter."""
         mock_run_gh_json.return_value = []
@@ -253,7 +254,7 @@ class TestListIssues:
         assert "bug" in args
         assert "priority:high" in args
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_with_state(self, mock_run_gh_json):
         """Test issue listing with state filter."""
         mock_run_gh_json.return_value = []
@@ -264,7 +265,7 @@ class TestListIssues:
         assert "--state" in args
         assert "closed" in args
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_with_milestone_filter(self, mock_run_gh_json):
         """Test issue listing with milestone filter."""
         mock_run_gh_json.return_value = []
@@ -275,7 +276,7 @@ class TestListIssues:
         assert "--milestone" in args
         assert "v1.0" in args
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_with_repo(self, mock_run_gh_json):
         """Test issue listing with repo argument."""
         mock_run_gh_json.return_value = []
@@ -285,7 +286,7 @@ class TestListIssues:
         # repo is passed as positional argument to _run_gh_json
         assert mock_run_gh_json.call_args[0][1] == "owner/repo"
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_empty_labels(self, mock_run_gh_json):
         """Test issue with empty labels list."""
         mock_run_gh_json.return_value = [
@@ -304,7 +305,7 @@ class TestListIssues:
         assert len(issues) == 1
         assert issues[0].labels == []
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_multiple_labels(self, mock_run_gh_json):
         """Test issue with multiple labels."""
         mock_run_gh_json.return_value = [
@@ -323,7 +324,7 @@ class TestListIssues:
         assert len(issues) == 1
         assert issues[0].labels == ["bug", "priority:high", "agent:web"]
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_empty_result(self, mock_run_gh_json):
         """Test empty issue list."""
         mock_run_gh_json.return_value = []
@@ -332,7 +333,7 @@ class TestListIssues:
 
         assert issues == []
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_non_list_result(self, mock_run_gh_json):
         """Test non-list JSON result returns empty list."""
         mock_run_gh_json.return_value = {"error": "something"}
@@ -341,7 +342,7 @@ class TestListIssues:
 
         assert issues == []
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_github_error_propagated(self, mock_run_gh_json):
         """Test GitHubError is propagated."""
         mock_run_gh_json.side_effect = GitHubError("gh failed")
@@ -349,7 +350,7 @@ class TestListIssues:
         with pytest.raises(GitHubError, match="gh failed"):
             list_issues()
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_issues_exception_wrapped(self, mock_run_gh_json):
         """Test unexpected exceptions are wrapped in GitHubError."""
         mock_run_gh_json.side_effect = KeyError("number")
@@ -361,7 +362,7 @@ class TestListIssues:
 class TestAddLabel:
     """Test add_label function."""
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_add_label_success(self, mock_run_gh):
         """Test successful label addition."""
         mock_run_gh.return_value = ""
@@ -371,7 +372,7 @@ class TestAddLabel:
         args = mock_run_gh.call_args[0][0]
         assert args == ["issue", "edit", "123", "--add-label", "bug"]
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_add_label_with_repo(self, mock_run_gh):
         """Test label addition with repo argument."""
         mock_run_gh.return_value = ""
@@ -391,7 +392,7 @@ class TestAddLabel:
         with pytest.raises(ValueError, match="label is required"):
             add_label(issue_number=123, label=None)
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_add_label_github_error_propagated(self, mock_run_gh):
         """Test GitHubError is propagated."""
         mock_run_gh.side_effect = GitHubError("gh failed")
@@ -399,7 +400,7 @@ class TestAddLabel:
         with pytest.raises(GitHubError, match="gh failed"):
             add_label(issue_number=123, label="bug")
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_add_label_exception_wrapped(self, mock_run_gh):
         """Test unexpected exceptions are wrapped in GitHubError."""
         mock_run_gh.side_effect = RuntimeError("unexpected")
@@ -411,7 +412,7 @@ class TestAddLabel:
 class TestRemoveLabel:
     """Test remove_label function."""
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_remove_label_success(self, mock_run_gh):
         """Test successful label removal."""
         mock_run_gh.return_value = ""
@@ -421,7 +422,7 @@ class TestRemoveLabel:
         args = mock_run_gh.call_args[0][0]
         assert args == ["issue", "edit", "123", "--remove-label", "bug"]
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_remove_label_with_repo(self, mock_run_gh):
         """Test label removal with repo argument."""
         mock_run_gh.return_value = ""
@@ -441,7 +442,7 @@ class TestRemoveLabel:
         with pytest.raises(ValueError, match="label is required"):
             remove_label(issue_number=123, label=None)
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_remove_label_github_error_propagated(self, mock_run_gh):
         """Test GitHubError is propagated."""
         mock_run_gh.side_effect = GitHubError("gh failed")
@@ -449,7 +450,7 @@ class TestRemoveLabel:
         with pytest.raises(GitHubError, match="gh failed"):
             remove_label(issue_number=123, label="bug")
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_remove_label_exception_wrapped(self, mock_run_gh):
         """Test unexpected exceptions are wrapped in GitHubError."""
         mock_run_gh.side_effect = RuntimeError("unexpected")
@@ -461,7 +462,7 @@ class TestRemoveLabel:
 class TestAddComment:
     """Test add_comment function."""
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_add_comment_success(self, mock_run_gh):
         """Test successful comment addition."""
         mock_run_gh.return_value = ""
@@ -471,7 +472,7 @@ class TestAddComment:
         args = mock_run_gh.call_args[0][0]
         assert args == ["issue", "comment", "123", "--body", "Test comment"]
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_add_comment_with_repo(self, mock_run_gh):
         """Test comment addition with repo argument."""
         mock_run_gh.return_value = ""
@@ -491,7 +492,7 @@ class TestAddComment:
         with pytest.raises(ValueError, match="body is required"):
             add_comment(issue_number=123, body=None)
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_add_comment_github_error_propagated(self, mock_run_gh):
         """Test GitHubError is propagated."""
         mock_run_gh.side_effect = GitHubError("gh failed")
@@ -499,7 +500,7 @@ class TestAddComment:
         with pytest.raises(GitHubError, match="gh failed"):
             add_comment(issue_number=123, body="Test")
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_add_comment_exception_wrapped(self, mock_run_gh):
         """Test unexpected exceptions are wrapped in GitHubError."""
         mock_run_gh.side_effect = RuntimeError("unexpected")
@@ -511,7 +512,7 @@ class TestAddComment:
 class TestGetOpenPrsForBranch:
     """Test get_open_prs_for_branch function."""
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_open_prs_success(self, mock_run_gh_json):
         """Test successful PR retrieval."""
         mock_run_gh_json.return_value = [
@@ -524,7 +525,7 @@ class TestGetOpenPrsForBranch:
         assert prs[0]["number"] == 1
         assert prs[0]["title"] == "Test PR"
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_open_prs_with_repo(self, mock_run_gh_json):
         """Test PR retrieval with repo argument."""
         mock_run_gh_json.return_value = []
@@ -536,7 +537,7 @@ class TestGetOpenPrsForBranch:
         # repo is passed as positional argument to _run_gh_json
         assert mock_run_gh_json.call_args[0][1] == "owner/repo"
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_open_prs_empty_result(self, mock_run_gh_json):
         """Test empty PR list."""
         mock_run_gh_json.return_value = []
@@ -545,7 +546,7 @@ class TestGetOpenPrsForBranch:
 
         assert prs == []
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_open_prs_non_list_result(self, mock_run_gh_json):
         """Test non-list JSON result returns empty list."""
         mock_run_gh_json.return_value = {"error": "something"}
@@ -559,7 +560,7 @@ class TestGetOpenPrsForBranch:
         with pytest.raises(ValueError, match="branch is required"):
             get_open_prs_for_branch(branch=None)
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_open_prs_github_error_propagated(self, mock_run_gh_json):
         """Test GitHubError is propagated."""
         mock_run_gh_json.side_effect = GitHubError("gh failed")
@@ -567,7 +568,7 @@ class TestGetOpenPrsForBranch:
         with pytest.raises(GitHubError, match="gh failed"):
             get_open_prs_for_branch(branch="feature-branch")
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_open_prs_exception_wrapped(self, mock_run_gh_json):
         """Test unexpected exceptions are wrapped in GitHubError."""
         mock_run_gh_json.side_effect = RuntimeError("unexpected")
@@ -579,7 +580,7 @@ class TestGetOpenPrsForBranch:
 class TestGetIssueComments:
     """Test get_issue_comments function."""
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_issue_comments_success(self, mock_run_gh_json):
         """Test successful comment retrieval."""
         mock_run_gh_json.return_value = {
@@ -595,7 +596,7 @@ class TestGetIssueComments:
         assert comments[0]["body"] == "First comment"
         assert comments[1]["body"] == "Second comment"
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_issue_comments_empty(self, mock_run_gh_json):
         """Test issue with no comments."""
         mock_run_gh_json.return_value = {"comments": []}
@@ -604,7 +605,7 @@ class TestGetIssueComments:
 
         assert comments == []
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_issue_comments_missing_field(self, mock_run_gh_json):
         """Test issue view output without comments field."""
         mock_run_gh_json.return_value = {}
@@ -613,7 +614,7 @@ class TestGetIssueComments:
 
         assert comments == []
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_get_issue_comments_with_repo(self, mock_run_gh_json):
         """Test comment retrieval with repo argument."""
         mock_run_gh_json.return_value = {"comments": []}
@@ -743,7 +744,7 @@ class TestExtractNumberedList:
 class TestGetLatestBlockedInfo:
     """Test get_latest_blocked_info function."""
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_blocked_info_success(self, mock_get_comments):
         """Test successful parsing of blocked info."""
         mock_get_comments.return_value = [
@@ -770,7 +771,7 @@ class TestGetLatestBlockedInfo:
         assert info.comment_url == "https://github.com/owner/repo/issues/1#issuecomment-1"
         assert info.timestamp == "2024-01-01T12:00:00Z"
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_blocked_info_no_emoji(self, mock_get_comments):
         """Test parsing blocked section without emoji."""
         mock_get_comments.return_value = [
@@ -791,7 +792,7 @@ class TestGetLatestBlockedInfo:
         assert info is not None
         assert info.reason == "Test reason"
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_blocked_info_latest_comment(self, mock_get_comments):
         """Test that latest comment is parsed (reversed order)."""
         mock_get_comments.return_value = [
@@ -820,7 +821,7 @@ class TestGetLatestBlockedInfo:
         assert info is not None
         assert info.reason == "New reason"
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_blocked_info_no_blocked_by(self, mock_get_comments):
         """Test blocked info without blocked_by field."""
         mock_get_comments.return_value = [
@@ -840,7 +841,7 @@ class TestGetLatestBlockedInfo:
         assert info is not None
         assert info.blocked_by == []
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_blocked_info_not_found(self, mock_get_comments):
         """Test no blocked section found."""
         mock_get_comments.return_value = [
@@ -851,7 +852,7 @@ class TestGetLatestBlockedInfo:
 
         assert info is None
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_blocked_info_empty_comments(self, mock_get_comments):
         """Test empty comments list."""
         mock_get_comments.return_value = []
@@ -860,7 +861,7 @@ class TestGetLatestBlockedInfo:
 
         assert info is None
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_blocked_info_defaults(self, mock_get_comments):
         """Test default values when fields are missing."""
         mock_get_comments.return_value = [
@@ -883,7 +884,7 @@ class TestGetLatestBlockedInfo:
 class TestGetLatestNeedsHumanInfo:
     """Test get_latest_needs_human_info function."""
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_needs_human_info_success(self, mock_get_comments):
         """Test successful parsing of needs-human info."""
         mock_get_comments.return_value = [
@@ -913,7 +914,7 @@ class TestGetLatestNeedsHumanInfo:
         assert info.comment_url == "https://github.com/owner/repo/issues/1#issuecomment-1"
         assert info.timestamp == "2024-01-01T12:00:00Z"
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_needs_human_info_no_emoji(self, mock_get_comments):
         """Test parsing needs-human section without emoji."""
         mock_get_comments.return_value = [
@@ -935,7 +936,7 @@ class TestGetLatestNeedsHumanInfo:
         assert info is not None
         assert info.question == "Test question?"
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_needs_human_info_latest_comment(self, mock_get_comments):
         """Test that latest comment is parsed."""
         mock_get_comments.return_value = [
@@ -968,7 +969,7 @@ class TestGetLatestNeedsHumanInfo:
         assert info is not None
         assert info.question == "New question?"
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_needs_human_info_not_found(self, mock_get_comments):
         """Test no needs-human section found."""
         mock_get_comments.return_value = [
@@ -979,7 +980,7 @@ class TestGetLatestNeedsHumanInfo:
 
         assert info is None
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_needs_human_info_empty_comments(self, mock_get_comments):
         """Test empty comments list."""
         mock_get_comments.return_value = []
@@ -988,7 +989,7 @@ class TestGetLatestNeedsHumanInfo:
 
         assert info is None
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_needs_human_info_defaults(self, mock_get_comments):
         """Test default values when fields are missing."""
         mock_get_comments.return_value = [
@@ -1007,7 +1008,7 @@ class TestGetLatestNeedsHumanInfo:
         assert info.options == []
         assert info.default_action == ""
 
-    @patch("issue_orchestrator.github.get_issue_comments")
+    @patch("issue_orchestrator._github_impl.get_issue_comments")
     def test_get_latest_needs_human_info_empty_options(self, mock_get_comments):
         """Test needs-human with no options listed."""
         mock_get_comments.return_value = [
@@ -1032,10 +1033,10 @@ class TestGetLatestNeedsHumanInfo:
 class TestListPrsWithLabel:
     """Test list_prs_with_label function."""
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_prs_with_label_success(self, mock_run_gh_json):
         """Test successful PR listing by label."""
-        from issue_orchestrator.github import list_prs_with_label
+        from issue_orchestrator._github_impl import list_prs_with_label
 
         mock_run_gh_json.return_value = [
             {"number": 1, "title": "PR 1", "url": "https://github.com/owner/repo/pull/1"},
@@ -1048,10 +1049,10 @@ class TestListPrsWithLabel:
         assert prs[0]["number"] == 1
         assert prs[1]["number"] == 2
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_prs_with_label_empty(self, mock_run_gh_json):
         """Test empty PR list."""
-        from issue_orchestrator.github import list_prs_with_label
+        from issue_orchestrator._github_impl import list_prs_with_label
 
         mock_run_gh_json.return_value = []
 
@@ -1059,10 +1060,10 @@ class TestListPrsWithLabel:
 
         assert prs == []
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_prs_with_label_error_returns_empty(self, mock_run_gh_json):
         """Test that errors return empty list."""
-        from issue_orchestrator.github import list_prs_with_label
+        from issue_orchestrator._github_impl import list_prs_with_label
 
         mock_run_gh_json.side_effect = GitHubError("gh failed")
 
@@ -1070,10 +1071,10 @@ class TestListPrsWithLabel:
 
         assert prs == []
 
-    @patch("issue_orchestrator.github._run_gh_json")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
     def test_list_prs_with_label_non_list_returns_empty(self, mock_run_gh_json):
         """Test non-list result returns empty list."""
-        from issue_orchestrator.github import list_prs_with_label
+        from issue_orchestrator._github_impl import list_prs_with_label
 
         mock_run_gh_json.return_value = {"error": "something"}
 
@@ -1085,10 +1086,10 @@ class TestListPrsWithLabel:
 class TestCreateIssue:
     """Test create_issue function."""
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_create_issue_success(self, mock_run_gh):
         """Test successful issue creation."""
-        from issue_orchestrator.github import create_issue
+        from issue_orchestrator._github_impl import create_issue
 
         mock_run_gh.return_value = "https://github.com/owner/repo/issues/42\n"
 
@@ -1101,10 +1102,10 @@ class TestCreateIssue:
 
         assert issue_number == 42
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_create_issue_no_labels(self, mock_run_gh):
         """Test issue creation without labels."""
-        from issue_orchestrator.github import create_issue
+        from issue_orchestrator._github_impl import create_issue
 
         mock_run_gh.return_value = "https://github.com/owner/repo/issues/123\n"
 
@@ -1118,10 +1119,10 @@ class TestCreateIssue:
         args = mock_run_gh.call_args[0][0]
         assert "--label" not in args
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_create_issue_error_returns_none(self, mock_run_gh):
         """Test that errors return None."""
-        from issue_orchestrator.github import create_issue
+        from issue_orchestrator._github_impl import create_issue
 
         mock_run_gh.side_effect = GitHubError("gh failed")
 
@@ -1133,10 +1134,10 @@ class TestCreateIssue:
 
         assert issue_number is None
 
-    @patch("issue_orchestrator.github._run_gh")
+    @patch("issue_orchestrator._github_impl._run_gh")
     def test_create_issue_invalid_output_returns_none(self, mock_run_gh):
         """Test that invalid output returns None."""
-        from issue_orchestrator.github import create_issue
+        from issue_orchestrator._github_impl import create_issue
 
         mock_run_gh.return_value = "unexpected output"
 
@@ -1147,3 +1148,128 @@ class TestCreateIssue:
         )
 
         assert issue_number is None
+
+
+class TestGetPrsForIssue:
+    """Test get_prs_for_issue function."""
+
+    @patch("issue_orchestrator._github_impl.get_repo")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
+    def test_get_prs_for_issue_matches_exact_title_format(self, mock_run_gh_json, mock_get_repo):
+        """Test that PRs are matched by title starting with our exact format '#N:'."""
+        mock_get_repo.return_value = "owner/repo"
+        mock_run_gh_json.return_value = [
+            {"number": 941, "title": "#940: [E2E-REVIEW] Test", "headRefName": "940-e2e-review-test", "labels": [], "state": "open", "url": ""},
+            {"number": 285, "title": "delete telegram user", "headRefName": "940", "labels": [], "state": "open", "url": ""},  # Just "940" not "940-"
+            {"number": 1417, "title": "wip (bug 940528)", "headRefName": "940528", "labels": [], "state": "open", "url": ""},  # Starts with 940 but not 940-
+            {"number": 951, "title": "use mods 3.6", "headRefName": "940-mods-3.6", "labels": [], "state": "open", "url": ""},  # Branch matches but title doesn't reference #940
+            {"number": 942, "title": "fix #940 Add single()", "headRefName": "940-monoSingle", "labels": [], "state": "open", "url": ""},  # Branch and title both reference #940
+        ]
+
+        prs = get_prs_for_issue(issue_number=940)
+
+        # Should only return PRs where:
+        # - Title starts with "#940:" (our exact format), OR
+        # - Branch starts with "940-" AND title contains "#940"
+        # PR #951 should NOT match (branch=940-mods but title doesn't mention #940)
+        assert len(prs) == 2
+        assert prs[0]["number"] == 941  # Title starts with "#940:"
+        assert prs[1]["number"] == 942  # Branch "940-monoSingle" and title contains "#940"
+
+    @patch("issue_orchestrator._github_impl.get_repo")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
+    def test_get_prs_for_issue_requires_branch_and_title_for_non_exact(self, mock_run_gh_json, mock_get_repo):
+        """Test that branch-only matches without title reference are rejected."""
+        mock_get_repo.return_value = "owner/repo"
+        mock_run_gh_json.return_value = [
+            {"number": 100, "title": "#42: Fix the bug", "headRefName": "fix-bug", "labels": [], "state": "open", "url": ""},  # Exact title format
+            {"number": 101, "title": "Resolves #42", "headRefName": "42-fix", "labels": [], "state": "open", "url": ""},  # Branch + title
+            {"number": 102, "title": "Related to issue 42", "headRefName": "42-related", "labels": [], "state": "open", "url": ""},  # Branch only, no #42 in title
+        ]
+
+        prs = get_prs_for_issue(issue_number=42)
+
+        # #100 matches (title starts with "#42:")
+        # #101 matches (branch starts with "42-" AND title contains "#42")
+        # #102 does NOT match (branch matches but title doesn't contain "#42")
+        assert len(prs) == 2
+        assert prs[0]["number"] == 100
+        assert prs[1]["number"] == 101
+
+    @patch("issue_orchestrator._github_impl.get_repo")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
+    def test_get_prs_for_issue_no_false_positives(self, mock_run_gh_json, mock_get_repo):
+        """Test that substring matches and branch-only matches are rejected."""
+        mock_get_repo.return_value = "owner/repo"
+        mock_run_gh_json.return_value = [
+            {"number": 100, "title": "Some PR", "headRefName": "940-feature", "labels": [], "state": "open", "url": ""},
+            {"number": 101, "title": "Another PR", "headRefName": "9400-other", "labels": [], "state": "open", "url": ""},
+            {"number": 102, "title": "use mods 3.6", "headRefName": "94-mods", "labels": [], "state": "open", "url": ""},  # Branch matches but title doesn't
+        ]
+
+        # Search for issue 94 - should NOT match any
+        prs = get_prs_for_issue(issue_number=94)
+
+        # None should match because:
+        # - "940-feature" starts with "940-" not "94-"
+        # - "9400-other" starts with "9400-" not "94-"
+        # - "94-mods" has matching branch but title doesn't contain "#94"
+        assert len(prs) == 0
+
+    @patch("issue_orchestrator._github_impl.get_repo")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
+    def test_get_prs_for_issue_empty_result(self, mock_run_gh_json, mock_get_repo):
+        """Test empty PR list."""
+        mock_get_repo.return_value = "owner/repo"
+        mock_run_gh_json.return_value = []
+
+        prs = get_prs_for_issue(issue_number=123)
+
+        assert prs == []
+
+    def test_get_prs_for_issue_missing_issue_number(self):
+        """Test ValueError when issue_number is None."""
+        with pytest.raises(ValueError, match="issue_number is required"):
+            get_prs_for_issue(issue_number=None)
+
+    @patch("issue_orchestrator._github_impl.get_repo")
+    @patch("issue_orchestrator._github_impl._run_gh_json")
+    def test_get_prs_for_issue_github_error_propagated(self, mock_run_gh_json, mock_get_repo):
+        """Test GitHubError is propagated."""
+        mock_get_repo.return_value = "owner/repo"
+        mock_run_gh_json.side_effect = GitHubError("gh failed")
+
+        with pytest.raises(GitHubError, match="gh failed"):
+            get_prs_for_issue(issue_number=123)
+
+    @patch("issue_orchestrator._github_impl._run_gh_json")
+    def test_get_prs_for_issue_with_repo(self, mock_run_gh_json):
+        """Test PR lookup with repo argument."""
+        mock_run_gh_json.return_value = []
+
+        get_prs_for_issue(repo="owner/repo", issue_number=123)
+
+        # repo is passed as positional argument to _run_gh_json
+        assert mock_run_gh_json.call_args[0][1] == "owner/repo"
+
+    @patch("issue_orchestrator._github_impl._run_gh_json")
+    def test_get_prs_for_issue_non_list_returns_empty(self, mock_run_gh_json):
+        """Test non-list result returns empty list."""
+        mock_run_gh_json.return_value = {"error": "something"}
+
+        prs = get_prs_for_issue(repo="owner/repo", issue_number=123)
+
+        assert prs == []
+
+    @patch("issue_orchestrator._github_impl._run_gh_json")
+    def test_get_prs_for_issue_search_includes_repo(self, mock_run_gh_json):
+        """Test that search query includes repo: to scope results correctly."""
+        mock_run_gh_json.return_value = []
+
+        get_prs_for_issue(repo="myorg/myrepo", issue_number=456)
+
+        # Verify the search query includes repo: scoping
+        args = mock_run_gh_json.call_args[0][0]
+        search_index = args.index("--search")
+        search_query = args[search_index + 1]
+        assert "repo:myorg/myrepo" in search_query, f"Expected repo:myorg/myrepo in search query, got: {search_query}"

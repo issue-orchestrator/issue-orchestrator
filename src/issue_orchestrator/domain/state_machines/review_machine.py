@@ -2,6 +2,10 @@
 
 This module implements the state machine for tracking a pull request through the
 review, rework, and merge process.
+
+The state machine is pure - it returns TransitionResult instead of publishing
+events directly. The caller (control layer) is responsible for emitting
+TraceEvents via EventSink.
 """
 
 import logging
@@ -10,7 +14,7 @@ from typing import Optional
 
 from transitions import Machine
 
-from ..events import EventBus, ReviewEvent
+from .transition_result import TransitionResult
 
 logger = logging.getLogger(__name__)
 
@@ -51,23 +55,22 @@ class ReviewStateMachine:
     maximum rework cycles are exceeded, the review automatically escalates
     to ESCALATED state rather than silently blocking.
 
-    Each state transition emits an event via the EventBus to enable
-    decoupled components to react to state changes.
+    The state machine is pure - transitions store their result in last_transition
+    which callers use to emit appropriate TraceEvents via EventSink.
 
     Attributes:
         pr_number: The GitHub pull request number
         issue_number: The associated GitHub issue number
         state: Current state of the review
-        event_bus: EventBus for publishing state change events
         rework_count: Number of times changes have been requested
         max_rework_cycles: Maximum allowed rework cycles (None for unlimited)
+        last_transition: Result of the most recent transition (for event emission)
     """
 
     def __init__(
         self,
         pr_number: int,
         issue_number: int,
-        event_bus: EventBus,
         initial_state: ReviewState = ReviewState.PENDING,
         max_rework_cycles: Optional[int] = None
     ):
@@ -76,16 +79,15 @@ class ReviewStateMachine:
         Args:
             pr_number: The GitHub pull request number
             issue_number: The associated GitHub issue number
-            event_bus: EventBus instance for publishing events
             initial_state: Starting state (defaults to PENDING)
             max_rework_cycles: Maximum allowed rework cycles (None for unlimited)
         """
         self.pr_number = pr_number
         self.issue_number = issue_number
-        self.event_bus = event_bus
         self.state = initial_state
         self.rework_count = 0
         self.max_rework_cycles = max_rework_cycles
+        self.last_transition: Optional[TransitionResult] = None
 
         # Define all possible states
         states = [state.value for state in ReviewState]
@@ -237,11 +239,13 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.REVIEW_STARTED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=ReviewState.PENDING.value,
+            to_state=ReviewState.IN_REVIEW.value,
+            event_name="review.started",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number},
-            source="ReviewStateMachine"
         )
         logger.info(f"Review started for PR {self.pr_number}")
 
@@ -252,11 +256,13 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.APPROVED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=ReviewState.IN_REVIEW.value,
+            to_state=ReviewState.APPROVED.value,
+            event_name="review.approved",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number},
-            source="ReviewStateMachine"
         )
         logger.info(f"PR {self.pr_number} approved")
 
@@ -267,11 +273,14 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.CHANGES_REQUESTED,
+        from_state = event.transition.source if hasattr(event, 'transition') else ReviewState.IN_REVIEW.value
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=from_state,
+            to_state=ReviewState.CHANGES_REQUESTED.value,
+            event_name="review.changes_requested",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number, 'rework_count': self.rework_count},
-            source="ReviewStateMachine"
         )
         logger.info(f"Changes requested for PR {self.pr_number} (rework count: {self.rework_count})")
 
@@ -282,11 +291,13 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.REWORK_STARTED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=ReviewState.REWORK_PENDING.value,
+            to_state=ReviewState.REWORK_IN_PROGRESS.value,
+            event_name="review.rework_started",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number, 'rework_count': self.rework_count},
-            source="ReviewStateMachine"
         )
         logger.info(f"Rework started for PR {self.pr_number}")
 
@@ -297,11 +308,13 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.REWORK_COMPLETED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=ReviewState.REWORK_IN_PROGRESS.value,
+            to_state=ReviewState.IN_REVIEW.value,
+            event_name="review.rework_completed",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number, 'rework_count': self.rework_count},
-            source="ReviewStateMachine"
         )
         logger.info(f"Rework completed for PR {self.pr_number}")
 
@@ -312,11 +325,13 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.TRIAGE_REVIEW_STARTED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=ReviewState.APPROVED.value,
+            to_state=ReviewState.TRIAGE_PENDING.value,
+            event_name="review.triage_started",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number},
-            source="ReviewStateMachine"
         )
         logger.info(f"triage review requested for PR {self.pr_number}")
 
@@ -327,11 +342,13 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.TRIAGE_APPROVED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=ReviewState.TRIAGE_PENDING.value,
+            to_state=ReviewState.TRIAGE_REVIEWED.value,
+            event_name="review.triage_approved",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number},
-            source="ReviewStateMachine"
         )
         logger.info(f"triage review completed for PR {self.pr_number}")
 
@@ -342,11 +359,14 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.MERGED,
+        from_state = event.transition.source if hasattr(event, 'transition') else ReviewState.APPROVED.value
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=from_state,
+            to_state=ReviewState.MERGED.value,
+            event_name="review.merged",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number, 'rework_count': self.rework_count},
-            source="ReviewStateMachine"
         )
         logger.info(f"PR {self.pr_number} merged (after {self.rework_count} rework cycles)")
 
@@ -357,11 +377,14 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.CLOSED,
+        from_state = event.transition.source if hasattr(event, 'transition') else ReviewState.PENDING.value
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=from_state,
+            to_state=ReviewState.CLOSED.value,
+            event_name="review.closed",
             entity_id=self.pr_number,
             data={**data, 'issue_number': self.issue_number, 'rework_count': self.rework_count},
-            source="ReviewStateMachine"
         )
         logger.info(f"PR {self.pr_number} closed without merging")
 
@@ -375,8 +398,11 @@ class ReviewStateMachine:
             event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
-        self.event_bus.publish(
-            ReviewEvent.ESCALATED,
+        self.last_transition = TransitionResult(
+            success=True,
+            from_state=ReviewState.CHANGES_REQUESTED.value,
+            to_state=ReviewState.ESCALATED.value,
+            event_name="review.escalated",
             entity_id=self.pr_number,
             data={
                 **data,
@@ -384,7 +410,6 @@ class ReviewStateMachine:
                 'rework_count': self.rework_count,
                 'max_rework_cycles': self.max_rework_cycles,
             },
-            source="ReviewStateMachine"
         )
         logger.warning(
             f"PR {self.pr_number} ESCALATED: exceeded rework limit "

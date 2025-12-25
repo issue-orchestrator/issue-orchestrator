@@ -397,6 +397,94 @@ class PendingReview:
     branch_name: str
 
 
+@dataclass(frozen=True)
+class DiscoveredReview:
+    """A PR discovered from session completion, pending Planner decision.
+
+    This is a "fact" - the Planner will decide whether to queue it.
+    Immutable to be safely included in OrchestratorSnapshot.
+    """
+    issue_number: int
+    pr_number: int
+    pr_url: str
+    branch_name: str
+
+
+@dataclass(frozen=True)
+class TriageFacts:
+    """Facts about triage review trigger conditions.
+
+    Immutable snapshot of conditions for Planner to decide on triage.
+    """
+    pr_count: int = 0  # PRs with watch label
+    threshold: int = 0  # Configured threshold
+    existing_triage_issue: Optional[int] = None  # Existing open triage issue number
+    watch_label: str = ""  # Label being watched
+    prs: tuple = field(default_factory=tuple)  # PR info for body generation
+
+
+@dataclass(frozen=True)
+class DiscoveredRework:
+    """A PR discovered needing rework, pending Planner decision.
+
+    This is a "fact" - the Planner will decide whether to queue it.
+    Immutable to be safely included in OrchestratorSnapshot.
+    """
+    issue_number: int
+    pr_number: int
+    branch_name: str
+    agent_type: str
+    rework_cycle: int = 1
+
+
+@dataclass(frozen=True)
+class DiscoveredEscalation:
+    """An escalation discovered during rework scan, pending Planner decision.
+
+    This is a "fact" - the Planner will decide whether to escalate.
+    Immutable to be safely included in OrchestratorSnapshot.
+    """
+    issue_number: int
+    pr_number: int
+    rework_cycle: int
+
+
+@dataclass(frozen=True)
+class DiscoveredFailure:
+    """A session failure discovered, pending Planner decision on triage.
+
+    This is a "fact" - the Planner will decide whether to queue a triage review.
+    Immutable to be safely included in OrchestratorSnapshot.
+    """
+    issue_number: int
+    issue_title: str
+    failure_reason: str  # "failed" or "timed_out"
+
+
+@dataclass(frozen=True)
+class CleanupFacts:
+    """Facts about pending cleanups and their review status.
+
+    Immutable snapshot of conditions for Planner to decide on cleanups.
+    """
+    pending_cleanups: tuple  # tuple of PendingCleanup-like info
+    reviewed_pr_numbers: frozenset[int]  # PRs that have the cleanup label
+    close_tabs: bool = False  # Config: whether to close terminal tabs
+    remove_worktrees: bool = False  # Config: whether to remove worktrees
+
+
+@dataclass(frozen=True)
+class ReadyCleanup:
+    """A cleanup that's ready to execute (PR has been reviewed).
+
+    This is a "fact" discovered during cleanup fact-gathering.
+    """
+    issue_number: int
+    pr_number: int
+    terminal_session_name: str
+    worktree_path: str  # String for immutability
+
+
 @dataclass
 class PendingRework:
     """A work item that needs rework after review requested changes.
@@ -450,6 +538,11 @@ class OrchestratorState:
     startup_message: str = ""  # Current startup task description
     cached_queue_issues: list["Issue"] = field(default_factory=list)  # Cached queue for instant pagination
     dependency_problems: dict[int, "DependencyProblem"] = field(default_factory=dict)  # Issues blocked by dependencies
+    # Discovered facts pending Planner decision
+    discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
+    discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
+    discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
+    discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage
 
 
 @dataclass

@@ -4,7 +4,7 @@ Implements terminal hooks using iTerm2 as the backend (macOS only).
 """
 
 from ..hookspec import hookimpl
-from ..iterm2 import (
+from .._iterm2_impl import (
     ITermSessionManager,
     discover_running_sessions,
     cleanup_idle_tabs,

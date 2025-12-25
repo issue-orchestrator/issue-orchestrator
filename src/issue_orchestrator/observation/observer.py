@@ -17,9 +17,9 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
 
 from ..config import Config
-from ..github import add_label, get_issue_labels, get_open_prs_for_branch, remove_label
+from .._github_impl import add_label, get_issue_labels, get_open_prs_for_branch, remove_label
 from ..models import Session, SessionStatus
-from ..tmux import kill_session, session_exists
+from .._tmux_impl import kill_session, session_exists
 from ..ports import EventSink, TraceEvent, NullEventSink
 from .. import labels
 from .observation import SessionObservation, SessionObservationResult
@@ -64,7 +64,7 @@ class SessionObserver:
     def _get_iterm_manager(self):
         """Get the iTerm2 session manager (lazy init)."""
         if self._iterm_manager is None:
-            from ..iterm2 import get_iterm_manager
+            from .._iterm2_impl import get_iterm_manager
             self._iterm_manager = get_iterm_manager()
         return self._iterm_manager
 

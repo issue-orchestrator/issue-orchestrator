@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from ..ports.issue_tracker import IssueTracker
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PRInfo, PullRequestTracker
-from .. import github
+from .. import _github_impl as github
 from ..models import Issue
 
 if TYPE_CHECKING:
@@ -265,6 +265,42 @@ class GitHubAdapter:
             logger.error(f"Unexpected error getting PRs with label '{label}': {e}")
             return []
 
+    def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
+        """Get all pull requests associated with a specific issue.
+
+        Finds PRs where:
+        - Branch starts with the issue number followed by a dash (e.g., "328-feature-name")
+        - OR title contains "#issue_number" (e.g., "#328: Feature")
+
+        Args:
+            issue_number: The issue number to find PRs for.
+            state: Filter by PR state ("open", "closed", "merged", or "all").
+
+        Returns:
+            List of PRInfo objects. Returns empty list on error.
+        """
+        try:
+            # Use the existing github.get_prs_for_issue function
+            prs = github.get_prs_for_issue(repo=self.repo, issue_number=issue_number)
+            return [
+                PRInfo(
+                    number=pr["number"],
+                    title=pr["title"],
+                    url=pr.get("url", ""),
+                    branch=pr.get("headRefName", ""),
+                    body=pr.get("body", ""),
+                    state=pr.get("state", "OPEN"),
+                    labels=[label["name"] for label in pr.get("labels", [])],
+                )
+                for pr in prs
+            ]
+        except github.GitHubError as e:
+            logger.error(f"Failed to get PRs for issue {issue_number}: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error getting PRs for issue {issue_number}: {e}")
+            return []
+
     def get_pr(self, pr_number: int) -> PRInfo | None:
         """Get a specific pull request by number.
 
@@ -296,6 +332,42 @@ class GitHubAdapter:
         except Exception as e:
             logger.error(f"Unexpected error getting PR {pr_number}: {e}")
             return None
+
+    def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
+        """List pull requests.
+
+        Args:
+            state: Filter by PR state ("open", "closed", "merged", or "all").
+            limit: Maximum number of PRs to return.
+
+        Returns:
+            List of PRInfo objects. Returns empty list on error.
+        """
+        try:
+            args = ["pr", "list", "--state", state, "--limit", str(limit),
+                   "--json", "number,title,url,headRefName,body,state,labels"]
+            output = github._run_gh_json(args, self.repo)
+
+            if isinstance(output, list):
+                return [
+                    PRInfo(
+                        number=pr["number"],
+                        title=pr["title"],
+                        url=pr["url"],
+                        branch=pr["headRefName"],
+                        body=pr.get("body", ""),
+                        state=pr["state"],
+                        labels=[label["name"] for label in pr.get("labels", [])],
+                    )
+                    for pr in output
+                ]
+            return []
+        except github.GitHubError as e:
+            logger.error(f"Failed to list PRs: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error listing PRs: {e}")
+            return []
 
     def create_pr(
         self, title: str, body: str, head: str, base: str = "main"
@@ -446,3 +518,26 @@ class GitHubAdapter:
 
         # Fall back to issue number if no external_id found
         return GitHubIssueKey(repo=self.repo, external_id=str(issue_number))
+
+    def create_issue(
+        self,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> int | None:
+        """Create a new issue.
+
+        Args:
+            title: Issue title
+            body: Issue body
+            labels: Labels to add
+
+        Returns:
+            Issue number if created, None on failure
+        """
+        return github.create_issue(
+            repo=self.repo,
+            title=title,
+            body=body,
+            labels=labels,
+        )

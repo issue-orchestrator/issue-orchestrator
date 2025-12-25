@@ -346,3 +346,638 @@ class TestExplainSkip:
         reason = planner.explain_skip(2, snapshot)
 
         assert "capacity" in reason.lower()
+
+
+class TestPlanDiscoveredReviews:
+    """Tests for Planner's _plan_discovered_reviews method.
+
+    This method processes DiscoveredReview facts from session completions
+    and produces QueueReviewAction for the orchestrator to apply.
+    """
+
+    def test_plans_queue_action_for_discovered_review(self):
+        """Planner produces QueueReviewAction for discovered reviews."""
+        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredReview(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/test/repo/pull/100",
+            branch_name="feature/issue-42",
+        )
+
+        snapshot = make_snapshot(
+            discovered_reviews=(discovered,),
+            pending_reviews=(),  # Not already queued
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should have a QueueReviewAction
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
+        assert len(queue_actions) == 1
+        action = queue_actions[0]
+        assert action.issue_number == 42
+        assert action.pr_number == 100
+        assert action.pr_url == "https://github.com/test/repo/pull/100"
+        assert action.branch_name == "feature/issue-42"
+
+    def test_skips_already_queued_reviews(self):
+        """Planner skips discovered reviews that are already in pending_reviews."""
+        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredReview(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/test/repo/pull/100",
+            branch_name="feature/issue-42",
+        )
+
+        # Already queued in pending_reviews
+        already_pending = PendingReview(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/test/repo/pull/100",
+            branch_name="feature/issue-42",
+        )
+
+        snapshot = make_snapshot(
+            discovered_reviews=(discovered,),
+            pending_reviews=(already_pending,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should NOT have a QueueReviewAction for already-queued PR
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
+        assert len(queue_actions) == 0
+
+    def test_no_queue_actions_when_no_discovered_reviews(self):
+        """Planner produces no queue actions when no discovered reviews."""
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            discovered_reviews=(),  # Empty
+        )
+
+        plan = planner.plan(snapshot)
+
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
+        assert len(queue_actions) == 0
+
+
+class TestPlanTriageIssueCreation:
+    """Tests for Planner's _plan_triage_issue_creation method.
+
+    This method processes TriageFacts and produces CreateTriageIssueAction
+    when the threshold is met and no existing triage issue exists.
+    """
+
+    def test_creates_triage_issue_at_threshold(self):
+        """Planner produces CreateTriageIssueAction when threshold is met."""
+        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=3,
+            triage_reviewed_label="triage-reviewed",
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        triage_facts = TriageFacts(
+            pr_count=3,
+            threshold=3,
+            existing_triage_issue=None,
+            watch_label="code-reviewed",
+            prs=((1, "PR 1"), (2, "PR 2"), (3, "PR 3")),
+        )
+
+        snapshot = make_snapshot(
+            triage_facts=triage_facts,
+        )
+
+        plan = planner.plan(snapshot)
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 1
+        action = create_actions[0]
+        assert "Triage Batch Review" in action.title
+        assert action.pr_count == 3
+        assert "agent:triage" in action.labels
+
+    def test_no_triage_issue_below_threshold(self):
+        """Planner produces no CreateTriageIssueAction when below threshold."""
+        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=5,
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        triage_facts = TriageFacts(
+            pr_count=2,  # Below threshold of 5
+            threshold=5,
+            existing_triage_issue=None,
+            watch_label="code-reviewed",
+            prs=((1, "PR 1"), (2, "PR 2")),
+        )
+
+        snapshot = make_snapshot(
+            triage_facts=triage_facts,
+        )
+
+        plan = planner.plan(snapshot)
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 0
+
+    def test_no_triage_issue_when_existing_issue(self):
+        """Planner produces no CreateTriageIssueAction when existing issue exists."""
+        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=3,
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        triage_facts = TriageFacts(
+            pr_count=5,  # Above threshold
+            threshold=3,
+            existing_triage_issue=100,  # Already exists!
+            watch_label="code-reviewed",
+            prs=tuple(),
+        )
+
+        snapshot = make_snapshot(
+            triage_facts=triage_facts,
+        )
+
+        plan = planner.plan(snapshot)
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 0
+
+    def test_no_triage_issue_when_no_facts(self):
+        """Planner produces no CreateTriageIssueAction when triage_facts is None."""
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config()  # No triage config
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            triage_facts=None,  # No facts gathered
+        )
+
+        plan = planner.plan(snapshot)
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 0
+
+    def test_triage_issue_body_includes_pr_list(self):
+        """Planner includes PR details in triage issue body."""
+        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=2,
+            triage_reviewed_label="triage-reviewed",
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        triage_facts = TriageFacts(
+            pr_count=2,
+            threshold=2,
+            existing_triage_issue=None,
+            watch_label="code-reviewed",
+            prs=((10, "Fix bug A"), (20, "Add feature B")),
+        )
+
+        snapshot = make_snapshot(
+            triage_facts=triage_facts,
+        )
+
+        plan = planner.plan(snapshot)
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 1
+        body = create_actions[0].body
+        assert "PR #10" in body
+        assert "Fix bug A" in body
+        assert "PR #20" in body
+        assert "Add feature B" in body
+        assert "code-reviewed" in body
+        assert "triage-reviewed" in body
+
+
+class TestPlanDiscoveredReworks:
+    """Tests for Planner's _plan_discovered_reworks method.
+
+    This method processes DiscoveredRework facts from scans
+    and produces QueueReworkAction for the orchestrator to apply.
+    """
+
+    def test_plans_queue_action_for_discovered_rework(self):
+        """Planner produces QueueReworkAction for discovered reworks."""
+        from issue_orchestrator.models import DiscoveredRework
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredRework(
+            issue_number=42,
+            pr_number=100,
+            branch_name="feature/issue-42",
+            agent_type="agent:developer",
+            rework_cycle=2,
+        )
+
+        snapshot = make_snapshot(
+            discovered_reworks=(discovered,),
+            pending_reworks=(),  # Not already queued
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should have a QueueReworkAction
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REWORK]
+        assert len(queue_actions) == 1
+        action = queue_actions[0]
+        assert action.issue_number == 42
+        assert action.rework_cycle == 2
+
+    def test_skips_already_queued_reworks(self):
+        """Planner skips discovered reworks that are already in pending_reworks."""
+        from issue_orchestrator.models import DiscoveredRework
+        from issue_orchestrator.domain.issue_key import GitHubIssueKey
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredRework(
+            issue_number=42,
+            pr_number=100,
+            branch_name="feature/issue-42",
+            agent_type="agent:developer",
+            rework_cycle=1,
+        )
+
+        # Already queued in pending_reworks
+        already_pending = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="42"),
+            agent_type="agent:developer",
+            rework_cycle=1,
+        )
+
+        snapshot = make_snapshot(
+            discovered_reworks=(discovered,),
+            pending_reworks=(already_pending,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should NOT have a QueueReworkAction for already-queued rework
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REWORK]
+        assert len(queue_actions) == 0
+
+
+class TestPlanDiscoveredEscalations:
+    """Tests for Planner's _plan_discovered_escalations method.
+
+    This method processes DiscoveredEscalation facts from scans
+    and produces EscalateToHumanAction for the orchestrator to apply.
+    """
+
+    def test_plans_escalate_action_for_discovered_escalation(self):
+        """Planner produces EscalateToHumanAction for discovered escalations."""
+        from issue_orchestrator.models import DiscoveredEscalation
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer", max_rework_cycles=2)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredEscalation(
+            issue_number=42,
+            pr_number=100,
+            rework_cycle=3,  # Exceeded max of 2
+        )
+
+        snapshot = make_snapshot(
+            discovered_escalations=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should have an EscalateToHumanAction
+        escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
+        assert len(escalate_actions) == 1
+        action = escalate_actions[0]
+        assert action.issue_number == 42
+        assert action.pr_number == 100
+        assert action.rework_cycles == 2  # rework_cycle - 1
+
+    def test_no_escalate_actions_when_no_discovered_escalations(self):
+        """Planner produces no escalate actions when no discovered escalations."""
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            discovered_escalations=(),  # Empty
+        )
+
+        plan = planner.plan(snapshot)
+
+        escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
+        assert len(escalate_actions) == 0
+
+
+class TestPlanDiscoveredFailures:
+    """Tests for Planner's _plan_discovered_failures method.
+
+    This method processes DiscoveredFailure facts from session completions
+    and produces QueueTriageAction for the orchestrator to apply.
+    """
+
+    def test_plans_triage_action_for_discovered_failure(self):
+        """Planner produces QueueTriageAction for discovered failures."""
+        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_on_failure=True,
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredFailure(
+            issue_number=42,
+            issue_title="Test issue",
+            failure_reason="failed",
+        )
+
+        snapshot = make_snapshot(
+            discovered_failures=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should have a QueueTriageAction
+        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
+        assert len(triage_actions) == 1
+        action = triage_actions[0]
+        assert action.issue_number == 42
+        assert "failed" in action.title
+
+    def test_no_triage_action_when_disabled(self):
+        """Planner produces no triage actions when triage_review_on_failure is disabled."""
+        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_on_failure=False,  # Disabled
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredFailure(
+            issue_number=42,
+            issue_title="Test issue",
+            failure_reason="failed",
+        )
+
+        snapshot = make_snapshot(
+            discovered_failures=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
+        assert len(triage_actions) == 0
+
+    def test_no_triage_action_when_no_agent_configured(self):
+        """Planner produces no triage actions when no triage_review_agent configured."""
+        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(
+            triage_review_agent=None,  # Not configured
+            triage_review_on_failure=True,
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredFailure(
+            issue_number=42,
+            issue_title="Test issue",
+            failure_reason="failed",
+        )
+
+        snapshot = make_snapshot(
+            discovered_failures=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
+        assert len(triage_actions) == 0
+
+    def test_skips_already_queued_triage(self):
+        """Planner skips failures for issues already queued for triage."""
+        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_on_failure=True,
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredFailure(
+            issue_number=42,
+            issue_title="Test issue",
+            failure_reason="failed",
+        )
+
+        # Already queued for triage
+        pending_triage = PendingTriageReview(
+            issue_number=42,
+            title="Already queued",
+        )
+
+        snapshot = make_snapshot(
+            discovered_failures=(discovered,),
+            pending_triage=[pending_triage],
+        )
+
+        plan = planner.plan(snapshot)
+
+        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
+        assert len(triage_actions) == 0
+
+    def test_no_triage_actions_when_no_discovered_failures(self):
+        """Planner produces no triage actions when no discovered failures."""
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_on_failure=True,
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            discovered_failures=(),  # Empty
+        )
+
+        plan = planner.plan(snapshot)
+
+        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
+        assert len(triage_actions) == 0
+
+
+class TestPlanCleanups:
+    """Tests for Planner's _plan_cleanups method.
+
+    This method processes CleanupFacts from cleanup fact-gathering
+    and produces CleanupSessionAction for the orchestrator to apply.
+    """
+
+    def test_plans_cleanup_action_for_reviewed_pr(self):
+        """Planner produces CleanupSessionAction when PR has been reviewed."""
+        from issue_orchestrator.models import CleanupFacts
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Pending cleanup with PR #100
+        cleanup_facts = CleanupFacts(
+            pending_cleanups=((42, 100, "session-42", "/tmp/worktree-42"),),
+            reviewed_pr_numbers=frozenset({100}),  # PR #100 has been reviewed
+            close_tabs=True,
+            remove_worktrees=True,
+        )
+
+        snapshot = make_snapshot(
+            cleanup_facts=cleanup_facts,
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should have a CleanupSessionAction
+        cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
+        assert len(cleanup_actions) == 1
+        action = cleanup_actions[0]
+        assert action.issue_number == 42
+        assert action.pr_number == 100
+        assert action.terminal_session_name == "session-42"
+        assert action.worktree_path == "/tmp/worktree-42"
+        assert action.close_tabs is True
+        assert action.remove_worktrees is True
+
+    def test_no_cleanup_when_pr_not_reviewed(self):
+        """Planner produces no CleanupSessionAction when PR is not reviewed."""
+        from issue_orchestrator.models import CleanupFacts
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Pending cleanup with PR #100, but PR #100 is NOT in reviewed set
+        cleanup_facts = CleanupFacts(
+            pending_cleanups=((42, 100, "session-42", "/tmp/worktree-42"),),
+            reviewed_pr_numbers=frozenset({200, 300}),  # Different PRs reviewed
+            close_tabs=True,
+            remove_worktrees=True,
+        )
+
+        snapshot = make_snapshot(
+            cleanup_facts=cleanup_facts,
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should NOT have a CleanupSessionAction
+        cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
+        assert len(cleanup_actions) == 0
+
+    def test_no_cleanup_when_no_facts(self):
+        """Planner produces no CleanupSessionAction when cleanup_facts is None."""
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            cleanup_facts=None,  # No facts gathered
+        )
+
+        plan = planner.plan(snapshot)
+
+        cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
+        assert len(cleanup_actions) == 0
+
+    def test_cleanup_respects_close_tabs_setting(self):
+        """Planner respects the close_tabs setting from CleanupFacts."""
+        from issue_orchestrator.models import CleanupFacts
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        cleanup_facts = CleanupFacts(
+            pending_cleanups=((42, 100, "session-42", "/tmp/worktree-42"),),
+            reviewed_pr_numbers=frozenset({100}),
+            close_tabs=False,  # Don't close tabs
+            remove_worktrees=True,
+        )
+
+        snapshot = make_snapshot(
+            cleanup_facts=cleanup_facts,
+        )
+
+        plan = planner.plan(snapshot)
+
+        cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
+        assert len(cleanup_actions) == 1
+        assert cleanup_actions[0].close_tabs is False
+        assert cleanup_actions[0].remove_worktrees is True

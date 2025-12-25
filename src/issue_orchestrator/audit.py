@@ -13,7 +13,7 @@ from typing import Optional
 from .analysis import analyze_issue, get_issue_branches
 from .config import Config
 from .domain.dependencies import DependencyReport, parse_dependencies
-from .github import list_issues
+from ._github_impl import list_issues
 from .models import Issue, OrchestratorState
 from .control.scheduler import Scheduler
 

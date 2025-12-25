@@ -290,11 +290,14 @@ def get_prs_for_issue(
     """Find PRs associated with a GitHub issue.
 
     Searches for PRs where:
-    - Branch starts with the issue number (e.g., "328-feature-name")
+    - Branch starts with the issue number followed by a dash (e.g., "328-feature-name")
     - OR title contains "#issue_number" (e.g., "#328: Feature")
 
     This is the canonical way to find PRs for an issue. Both the orchestrator
     and tests should use this function.
+
+    Note: GitHub's search can return false positives (e.g., head:940 matches "9405-feature").
+    We filter the results to ensure the branch actually matches our pattern.
 
     Args:
         repo: Optional repository in owner/repo format. If None, uses current repo.
@@ -312,9 +315,11 @@ def get_prs_for_issue(
 
     # Search for PRs where branch starts with issue number OR title contains #issue_number
     # The branch pattern is: {issue_number}-{title-slug}
+    # IMPORTANT: Include repo: in search to scope to target repo (--repo flag doesn't scope searches)
+    search_repo = repo if repo else get_repo()
     args = [
         "pr", "list",
-        "--search", f"head:{issue_number} OR #{issue_number}",
+        "--search", f"repo:{search_repo} head:{issue_number} OR repo:{search_repo} #{issue_number}",
         "--state", "open",
         "--json", "number,title,state,labels,headRefName,url",
     ]
@@ -323,7 +328,21 @@ def get_prs_for_issue(
         output = _run_gh_json(args, repo)
 
         if isinstance(output, list):
-            return output
+            # Filter to PRs that actually match our issue:
+            # Priority 1: Title starts with "#{issue_number}:" (our exact PR title format)
+            # Priority 2: Branch starts with "{issue_number}-" AND title contains #{issue_number}
+            # This avoids false positives from unrelated PRs that happen to have similar branches
+            filtered = []
+            prefix = f"{issue_number}-"
+            issue_ref_exact = f"#{issue_number}:"  # Our exact format
+            issue_ref = f"#{issue_number}"
+            for pr in output:
+                branch = pr.get("headRefName", "")
+                title = pr.get("title", "")
+                # Match if title starts with our exact format OR branch+title both reference issue
+                if title.startswith(issue_ref_exact) or (branch.startswith(prefix) and issue_ref in title):
+                    filtered.append(pr)
+            return filtered
         return []
     except GitHubError:
         raise

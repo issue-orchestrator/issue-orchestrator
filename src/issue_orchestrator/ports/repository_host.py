@@ -61,3 +61,21 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
             An IssueKey implementation appropriate for this repository host.
         """
         ...
+
+    def create_issue(
+        self,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> int | None:
+        """Create a new issue.
+
+        Args:
+            title: Issue title
+            body: Issue body
+            labels: Labels to add
+
+        Returns:
+            Issue number if created, None on failure
+        """
+        ...

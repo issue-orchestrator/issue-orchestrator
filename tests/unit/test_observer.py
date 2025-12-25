@@ -110,7 +110,7 @@ class TestSessionObserverProperties:
         monitor = SessionObserver(mock_config)
         assert monitor._using_iterm2 is True
 
-    @patch('issue_orchestrator.iterm2.get_iterm_manager')
+    @patch('issue_orchestrator._iterm2_impl.get_iterm_manager')
     def test_get_iterm_manager_lazy_init(self, mock_get_manager, mock_config):
         """Test that iTerm manager is lazily initialized."""
         mock_config.ui_mode = "iterm2"
@@ -129,7 +129,7 @@ class TestSessionObserverProperties:
         assert monitor._iterm_manager == mock_manager
         mock_get_manager.assert_called_once()
 
-    @patch('issue_orchestrator.iterm2.get_iterm_manager')
+    @patch('issue_orchestrator._iterm2_impl.get_iterm_manager')
     def test_get_iterm_manager_caching(self, mock_get_manager, mock_config):
         """Test that iTerm manager is cached after first call."""
         mock_config.ui_mode = "iterm2"
@@ -161,7 +161,7 @@ class TestSessionObserverBackends:
         assert result is True
         mock_session_exists.assert_called_once_with("issue-123")
 
-    @patch('issue_orchestrator.iterm2.get_iterm_manager')
+    @patch('issue_orchestrator._iterm2_impl.get_iterm_manager')
     def test_session_exists_iterm2_mode(self, mock_get_manager, monitor):
         """Test _session_exists uses iTerm2 backend in iterm2 mode."""
         monitor.config.ui_mode = "iterm2"
@@ -183,7 +183,7 @@ class TestSessionObserverBackends:
 
         mock_kill_session.assert_called_once_with("issue-456")
 
-    @patch('issue_orchestrator.iterm2.get_iterm_manager')
+    @patch('issue_orchestrator._iterm2_impl.get_iterm_manager')
     def test_kill_session_iterm2_mode(self, mock_get_manager, monitor):
         """Test _kill_session uses iTerm2 backend in iterm2 mode."""
         monitor.config.ui_mode = "iterm2"
@@ -202,7 +202,7 @@ class TestSessionObserverBackends:
 
         assert result is False
 
-    @patch('issue_orchestrator.iterm2.get_iterm_manager')
+    @patch('issue_orchestrator._iterm2_impl.get_iterm_manager')
     def test_send_exit_to_session_iterm2_mode(self, mock_get_manager, monitor):
         """Test _send_exit_to_session sends exit in iterm2 mode."""
         monitor.config.ui_mode = "iterm2"

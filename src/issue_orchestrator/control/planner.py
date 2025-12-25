@@ -31,6 +31,13 @@ from ..models import (
     PendingReview,
     PendingRework,
     PendingTriageReview,
+    DiscoveredReview,
+    DiscoveredRework,
+    DiscoveredEscalation,
+    DiscoveredFailure,
+    TriageFacts,
+    CleanupFacts,
+    ReadyCleanup,
 )
 
 if TYPE_CHECKING:
@@ -52,7 +59,9 @@ from .actions import (
     QueueReviewAction,
     QueueReworkAction,
     QueueTriageAction,
+    CreateTriageIssueAction,
     EscalateToHumanAction,
+    CleanupSessionAction,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,6 +84,13 @@ class OrchestratorSnapshot:
     priority_queue: tuple[int, ...] = field(default_factory=tuple)
     issues_started_count: int = 0
     max_issues_to_start: Optional[int] = None
+    # Discovered facts for Planner-centric queue management
+    discovered_reviews: tuple[DiscoveredReview, ...] = field(default_factory=tuple)
+    discovered_reworks: tuple[DiscoveredRework, ...] = field(default_factory=tuple)
+    discovered_escalations: tuple[DiscoveredEscalation, ...] = field(default_factory=tuple)
+    discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
+    triage_facts: Optional[TriageFacts] = None
+    cleanup_facts: Optional[CleanupFacts] = None
 
     @property
     def active_count(self) -> int:
@@ -92,6 +108,12 @@ class OrchestratorSnapshot:
         issues: Sequence[Issue],
         state: "OrchestratorState",  # Forward reference to avoid circular import
         max_issues_to_start: Optional[int] = None,
+        discovered_reviews: Sequence[DiscoveredReview] = (),
+        discovered_reworks: Sequence[DiscoveredRework] = (),
+        discovered_escalations: Sequence[DiscoveredEscalation] = (),
+        discovered_failures: Sequence[DiscoveredFailure] = (),
+        triage_facts: Optional[TriageFacts] = None,
+        cleanup_facts: Optional[CleanupFacts] = None,
     ) -> "OrchestratorSnapshot":
         """Create snapshot from mutable state.
 
@@ -99,6 +121,12 @@ class OrchestratorSnapshot:
             issues: Current list of issues from GitHub
             state: Mutable orchestrator state object
             max_issues_to_start: Optional limit on issues to start this session
+            discovered_reviews: Reviews discovered from session completions/scans
+            discovered_reworks: Reworks discovered from scans
+            discovered_escalations: Escalations discovered from scans
+            discovered_failures: Failures discovered from session completions (for triage)
+            triage_facts: Facts about triage trigger conditions
+            cleanup_facts: Facts about pending cleanups and their review status
         """
         return cls(
             issues=tuple(issues),
@@ -110,6 +138,12 @@ class OrchestratorSnapshot:
             priority_queue=tuple(state.priority_queue),
             issues_started_count=state.issues_started_count,
             max_issues_to_start=max_issues_to_start,
+            discovered_reviews=tuple(discovered_reviews),
+            discovered_reworks=tuple(discovered_reworks),
+            discovered_escalations=tuple(discovered_escalations),
+            discovered_failures=tuple(discovered_failures),
+            triage_facts=triage_facts,
+            cleanup_facts=cleanup_facts,
         )
 
 
@@ -222,38 +256,68 @@ class Planner:
             logger.debug("Planner: orchestrator is paused, returning empty plan")
             return Plan.empty()
 
+        # === PHASE 1: Queue population actions (don't consume capacity) ===
+
+        # 1a. Queue discovered reviews from session completions/scans
+        queue_actions = self._plan_discovered_reviews(snapshot)
+        actions.extend(queue_actions)
+
+        # 1b. Queue discovered reworks from scans
+        rework_queue_actions = self._plan_discovered_reworks(snapshot)
+        actions.extend(rework_queue_actions)
+
+        # 1c. Handle escalations (PRs exceeding max rework cycles)
+        escalation_actions = self._plan_discovered_escalations(snapshot)
+        actions.extend(escalation_actions)
+
+        # 1d. Queue triage reviews for session failures
+        failure_triage_actions = self._plan_discovered_failures(snapshot)
+        actions.extend(failure_triage_actions)
+
+        # 1e. Create triage issue if threshold met
+        triage_create_action = self._plan_triage_issue_creation(snapshot)
+        if triage_create_action:
+            actions.append(triage_create_action)
+
+        # 1f. Process cleanups for reviewed PRs
+        cleanup_actions = self._plan_cleanups(snapshot)
+        actions.extend(cleanup_actions)
+
+        # === PHASE 2: Session launch actions (consume capacity) ===
+
         # Calculate available capacity
         capacity = self.config.max_concurrent_sessions - snapshot.active_count
         if capacity <= 0:
             logger.debug("Planner: no capacity available (active=%d, max=%d)",
                         snapshot.active_count, self.config.max_concurrent_sessions)
-            return Plan.empty()
+            # Still return queue actions even if no capacity for launches
+            return Plan(actions=tuple(actions), skipped=tuple(skipped))
 
         # PRIORITY ORDER: Reviews > Reworks > Triage > New Issues
         # This ensures completed work (PRs) gets reviewed before starting new work
 
-        # 1. Plan review launches (highest priority)
+        # 2. Plan review launches (highest priority)
         if capacity > 0 and self.review_workflow:
             review_actions, review_skipped = self._plan_reviews(snapshot, capacity)
             actions.extend(review_actions)
             skipped.extend(review_skipped)
             capacity -= len(review_actions)
 
-        # 2. Plan rework launches
+        # 3. Plan rework launches
         if capacity > 0 and self.rework_workflow:
             rework_actions, rework_skipped = self._plan_reworks(snapshot, capacity)
             actions.extend(rework_actions)
             skipped.extend(rework_skipped)
             capacity -= len(rework_actions)
 
-        # 3. Plan triage launches
+        # 4. Plan triage launches
         if capacity > 0 and self.triage_workflow:
             triage_actions, triage_skipped = self._plan_triage(snapshot, capacity)
             actions.extend(triage_actions)
             skipped.extend(triage_skipped)
             capacity -= len(triage_actions)
 
-        # 4. Plan issue launches (only if no reviews/reworks/triage pending)
+        # 5. Plan issue launches (only if no reviews/reworks/triage pending)
         # This ensures we don't start new work when there's existing work to review
         has_pending_work = (
             len(snapshot.pending_reviews) > 0 or
@@ -272,6 +336,213 @@ class Planner:
                         len(snapshot.pending_triage))
 
         return Plan(actions=tuple(actions), skipped=tuple(skipped))
+
+    def _plan_discovered_reviews(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+        """Plan queue actions for discovered reviews from session completions.
+
+        Returns:
+            List of QueueReviewAction for reviews not already queued
+        """
+        actions: list[Action] = []
+
+        if not snapshot.discovered_reviews:
+            return actions
+
+        # Get already-queued PR numbers
+        queued_pr_numbers = {r.pr_number for r in snapshot.pending_reviews}
+
+        for review in snapshot.discovered_reviews:
+            if review.pr_number not in queued_pr_numbers:
+                actions.append(QueueReviewAction(
+                    issue_number=review.issue_number,
+                    pr_number=review.pr_number,
+                    pr_url=review.pr_url,
+                    branch_name=review.branch_name,
+                    reason=f"session completed with PR #{review.pr_number}",
+                ))
+                logger.debug("Planner: queuing review for PR #%d", review.pr_number)
+            else:
+                logger.debug("Planner: PR #%d already queued, skipping", review.pr_number)
+
+        return actions
+
+    def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:
+        """Plan triage issue creation if threshold is met.
+
+        Returns:
+            CreateTriageIssueAction if threshold met and no existing issue, else None
+        """
+        if not snapshot.triage_facts:
+            return None
+
+        facts = snapshot.triage_facts
+        if facts.pr_count < facts.threshold:
+            logger.debug("Planner: triage threshold not met (%d/%d)",
+                        facts.pr_count, facts.threshold)
+            return None
+
+        if facts.existing_triage_issue:
+            logger.debug("Planner: triage issue #%d already exists",
+                        facts.existing_triage_issue)
+            return None
+
+        # Build issue body from PR list
+        pr_list = "\n".join(f"- PR #{pr[0]}: {pr[1]}" for pr in facts.prs)
+        body = f"""## Triage Batch Review Triggered
+
+{facts.pr_count} PRs have passed code review and are ready for triage review:
+
+{pr_list}
+
+Review these PRs for patterns, architectural concerns, and process improvements.
+Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` after review.
+"""
+        title = f"Triage Batch Review: {facts.pr_count} PRs pending"
+        labels = (self.config.triage_review_agent,) if self.config.triage_review_agent else ()
+
+        logger.info("Planner: creating triage issue for %d PRs", facts.pr_count)
+        return CreateTriageIssueAction(
+            title=title,
+            body=body,
+            labels=labels,
+            pr_count=facts.pr_count,
+            reason=f"threshold met: {facts.pr_count} >= {facts.threshold}",
+        )
+
+    def _plan_discovered_reworks(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+        """Plan queue actions for discovered reworks from scans.
+
+        Returns:
+            List of QueueReworkAction for reworks not already queued
+        """
+        actions: list[Action] = []
+
+        if not snapshot.discovered_reworks:
+            return actions
+
+        # Get already-queued issue numbers (using stable_id for IssueKey comparison)
+        queued_issue_ids = {int(r.issue_key.stable_id()) for r in snapshot.pending_reworks}
+
+        for rework in snapshot.discovered_reworks:
+            if rework.issue_number not in queued_issue_ids:
+                actions.append(QueueReworkAction(
+                    issue_number=rework.issue_number,
+                    pr_number=rework.pr_number,
+                    pr_url="",  # Not tracked in DiscoveredRework
+                    branch_name=rework.branch_name,
+                    rework_cycle=rework.rework_cycle,
+                    reason=f"scan found PR needing rework (cycle {rework.rework_cycle})",
+                ))
+                logger.debug("Planner: queuing rework for issue #%d (cycle %d)",
+                            rework.issue_number, rework.rework_cycle)
+            else:
+                logger.debug("Planner: issue #%d already queued for rework, skipping",
+                            rework.issue_number)
+
+        return actions
+
+    def _plan_discovered_escalations(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+        """Plan escalation actions for PRs exceeding max rework cycles.
+
+        Returns:
+            List of EscalateToHumanAction for escalations
+        """
+        actions: list[Action] = []
+
+        if not snapshot.discovered_escalations:
+            return actions
+
+        for escalation in snapshot.discovered_escalations:
+            actions.append(EscalateToHumanAction(
+                issue_number=escalation.issue_number,
+                pr_number=escalation.pr_number,
+                escalation_reason="max rework cycles exceeded",
+                rework_cycles=escalation.rework_cycle - 1,
+                reason=f"PR #{escalation.pr_number} exceeded max rework cycles ({escalation.rework_cycle - 1})",
+            ))
+            logger.info("Planner: escalating PR #%d after %d rework cycles",
+                       escalation.pr_number, escalation.rework_cycle - 1)
+
+        return actions
+
+    def _plan_discovered_failures(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+        """Plan triage actions for session failures.
+
+        When a session fails or times out, the Planner decides whether to
+        queue a triage review based on:
+        - triage_review_on_failure config setting
+        - triage_review_agent being configured
+        - not already queued for this issue
+
+        Returns:
+            List of QueueTriageAction for failures to investigate
+        """
+        actions: list[Action] = []
+
+        if not snapshot.discovered_failures:
+            return actions
+
+        # Check if triage-on-failure is enabled
+        if not self.config.triage_review_on_failure:
+            logger.debug("Planner: triage_review_on_failure disabled, skipping %d failures",
+                        len(snapshot.discovered_failures))
+            return actions
+
+        # Check if triage agent is configured
+        if not self.config.triage_review_agent:
+            logger.debug("Planner: no triage_review_agent configured, skipping failures")
+            return actions
+
+        # Get issue numbers already queued for triage
+        already_queued = {t.issue_number for t in snapshot.pending_triage}
+
+        for failure in snapshot.discovered_failures:
+            if failure.issue_number in already_queued:
+                logger.debug("Planner: issue #%d already queued for triage, skipping",
+                           failure.issue_number)
+                continue
+
+            actions.append(QueueTriageAction(
+                issue_number=failure.issue_number,
+                title=f"Investigate: {failure.issue_title} ({failure.failure_reason})",
+                reason=f"Session failed with status '{failure.failure_reason}'",
+            ))
+            logger.info("Planner: queuing triage for failed issue #%d (%s)",
+                       failure.issue_number, failure.failure_reason)
+
+        return actions
+
+    def _plan_cleanups(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+        """Plan cleanup actions for sessions with reviewed PRs.
+
+        Returns:
+            List of CleanupSessionAction for cleanups ready to process
+        """
+        actions: list[Action] = []
+
+        if not snapshot.cleanup_facts:
+            return actions
+
+        facts = snapshot.cleanup_facts
+
+        # For each pending cleanup, check if its PR is in the reviewed set
+        for cleanup in facts.pending_cleanups:
+            # cleanup is a tuple of (issue_number, pr_number, terminal_session_name, worktree_path)
+            issue_number, pr_number, terminal_session_name, worktree_path = cleanup
+            if pr_number in facts.reviewed_pr_numbers:
+                actions.append(CleanupSessionAction(
+                    issue_number=issue_number,
+                    pr_number=pr_number,
+                    terminal_session_name=terminal_session_name,
+                    worktree_path=worktree_path,
+                    close_tabs=facts.close_tabs,
+                    remove_worktrees=facts.remove_worktrees,
+                    reason=f"PR #{pr_number} has been reviewed",
+                ))
+                logger.info("Planner: cleanup for issue #%d (PR #%d reviewed)",
+                           issue_number, pr_number)
+
+        return actions
 
     def _plan_issues(
         self,

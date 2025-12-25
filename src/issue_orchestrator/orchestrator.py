@@ -6,7 +6,6 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -15,6 +14,7 @@ if TYPE_CHECKING:
     from .control.session_manager import SessionManager
     from .control.label_sync import LabelSync
     from .control.actions import LaunchSessionAction, EscalateToHumanAction
+    from .models import TriageFacts
 
 logger = logging.getLogger(__name__)
 
@@ -46,79 +46,30 @@ def log_transition(
 
 
 from .config import Config
-from .github import (
-    # TODO: Move create_issue to RepositoryHost protocol
-    create_issue,
-)
-# Lock files removed - using direct iTerm/active_sessions checks instead
-from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER, get_completion_path
+from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
 from .observation.observer import SessionObserver
 from .control.scheduler import Scheduler
 from .control.dependency_evaluator import DependencyEvaluator
 # Terminal backend handled via adapters (see _terminal_adapter property)
-from .worktree import create_worktree, remove_worktree, has_uncommitted_changes, extract_issue_number_from_branch
+from ._worktree_impl import remove_worktree, extract_issue_number_from_branch
 # State machine infrastructure
-from .domain.events import EventBus, IssueEvent, SessionEvent, ReviewEvent
+# Note: EventBus removed - state machines now use TransitionResult pattern
+# See domain/state_machines/transition_result.py
 from .domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from .domain.state_machines.session_machine import SessionStateMachine, SessionState
 from .domain.state_machines.review_machine import ReviewStateMachine, ReviewState
-from .control.completion_processor import CompletionProcessor, ProcessingResult
-from .control.session_controller import SessionController, SessionDecision
-from .models import CompletionOutcome
-from .observation.observation import SessionObservation, SessionObservationResult
+from .control.completion_processor import CompletionProcessor
+from .control.session_controller import SessionController
+from .control.pr_scanner import PRScanner
+from .control.session_launcher import SessionLauncher
+from .control.cleanup_manager import CleanupManager
+from .control.completion_handler import CompletionHandler
+from .control.session_restorer import SessionRestorer
+from .observation.observation import SessionObservation
 # Port imports (protocols only - no concrete implementations in core)
 from .ports import EventSink, SessionRunner, TraceEvent, NullEventSink, NullSessionRunner, RepositoryHost
 # TODO: Inject WorkingCopy via bootstrap instead of importing concrete adapter
 from .execution.git_working_copy import GitWorkingCopy
-
-
-def detect_existing_work(worktree_path: Path) -> Optional[str]:
-    """Check if worktree has commits ahead of main and return context for agent.
-
-    Returns:
-        Context string if existing work found, None otherwise.
-    """
-    try:
-        # Get commits ahead of main
-        result = subprocess.run(
-            ["git", "-C", str(worktree_path), "log", "--oneline", "main..HEAD"],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
-
-        commits = result.stdout.strip().split('\n')
-        num_commits = len(commits)
-
-        if num_commits == 0:
-            return None
-
-        # Get branch name
-        branch_result = subprocess.run(
-            ["git", "-C", str(worktree_path), "branch", "--show-current"],
-            capture_output=True, text=True, timeout=5
-        )
-        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
-
-        # Build context message
-        commit_list = '\n'.join(f"  - {c}" for c in commits[:10])
-        if num_commits > 10:
-            commit_list += f"\n  ... and {num_commits - 10} more"
-
-        return (
-            f"This worktree has {num_commits} existing commit(s) from a previous session. "
-            f"Branch: {branch}. "
-            f"Commits: {commit_list}. "
-            f"EVALUATE this existing work BEFORE starting fresh: "
-            f"(1) Check git log and diff to see what was done. "
-            f"(2) Run tests. "
-            f"(3) If complete and tests pass, just push via agent-done. "
-            f"(4) If minor fixes needed, fix and complete. "
-            f"(5) Only restart if fundamentally broken."
-        )
-    except Exception as e:
-        logger.warning("Failed to detect existing work: %s", e)
-        return None
 
 
 @dataclass
@@ -200,13 +151,11 @@ class Orchestrator:
         self.observer = SessionObserver(self.config, events=self.events)
 
         # State machine infrastructure
-        self.event_bus = EventBus()
+        # Note: State machines are now pure - they return TransitionResult via last_transition
+        # The caller should emit TraceEvents via EventSink after transitions
         self.issue_machines: dict[int, IssueStateMachine] = {}
         self.session_machines: dict[str, SessionStateMachine] = {}
         self.review_machines: dict[int, ReviewStateMachine] = {}  # keyed by PR number
-
-        # Set up event handlers
-        self._setup_event_handlers()
 
         # Update observer's reference to session machines
         self.observer.session_machines = self.session_machines
@@ -218,28 +167,19 @@ class Orchestrator:
         return self._repository_host
 
     @property
-    def _using_iterm2(self) -> bool:
-        """Check if we're using iTerm2 mode (or web mode, which also uses iTerm2 tabs)."""
-        # Check explicit terminal_adapter first, then fall back to ui_mode
-        if self.config.terminal_adapter:
-            return "iterm" in self.config.terminal_adapter.lower()
-        return self.config.ui_mode in ("iterm2", "web")
-
-    @property
     def _completion_processor(self) -> CompletionProcessor:
         """Get the completion processor with proper adapters.
 
         Creates a CompletionProcessor with:
         - RepositoryHost for labels and PR operations
         - WorkingCopy for git push operations
-        - EventBus for event emission
         - Config-based label mapping
         """
         return CompletionProcessor(
             label_adapter=self.repository_host,
             pr_adapter=self.repository_host,
             git_adapter=GitWorkingCopy(),
-            event_bus=self.event_bus,
+            event_bus=None,  # EventBus removed - events emitted via EventSink
             label_config={
                 "blocked": self.config.get_label_blocked(),
                 "needs_human": self.config.get_label_needs_human(),
@@ -262,185 +202,74 @@ class Orchestrator:
             events=self.events,
         )
 
-    def _process_session_exit(self, session: Session) -> tuple[SessionStatus, ProcessingResult | None]:
-        """Process completion.json when a session exits.
+    @property
+    def _pr_scanner(self) -> PRScanner:
+        """Get the PR scanner for discovering orphaned reviews/reworks."""
+        return PRScanner(
+            config=self.config,
+            repository=self.repository_host,
+            events=self.events,
+        )
 
-        This is the key integration point between agents and orchestrator.
-        When an agent calls agent-done, it writes completion.json with
-        requested_actions. This method reads that file and executes the
-        actions (push, create PR, add labels, etc.).
+    @property
+    def _session_launcher(self) -> SessionLauncher:
+        """Get the session launcher for launching agent sessions."""
+        return SessionLauncher(
+            config=self.config,
+            events=self.events,
+            repository_host=self.repository_host,
+            session_manager=self.session_manager,
+            session_exists_fn=self._session_exists,
+            create_session_fn=self._create_session,
+            get_issue_machine=self._get_issue_machine,
+            get_session_machine=self._get_session_machine,
+            get_review_machine=self._get_review_machine,
+            refresh_issue_fn=self._refresh_issue,
+            dependency_evaluator=getattr(self.scheduler, 'dependency_evaluator', None),
+        )
 
-        Args:
-            session: The session that has exited.
+    @property
+    def _cleanup_manager(self) -> CleanupManager:
+        """Get the cleanup manager for worktree and session cleanup."""
+        return CleanupManager(
+            config=self.config,
+            repository_host=self.repository_host,
+            kill_session_fn=self._kill_session,
+            session_exists_fn=self._session_exists,
+            get_worktree_path_fn=self._get_worktree_path,
+            get_session_name_fn=self._get_session_name,
+        )
 
-        Returns:
-            Tuple of (SessionStatus, ProcessingResult or None if no completion record).
-        """
-        worktree = session.worktree_path
-        issue_number = session.issue.number
+    @property
+    def _completion_handler(self) -> CompletionHandler:
+        """Get the completion handler for session completion processing."""
+        return CompletionHandler(
+            config=self.config,
+            events=self.events,
+            repository_host=self.repository_host,
+            get_issue_machine_fn=lambda n: self.issue_machines.get(n),
+            get_session_machine_fn=lambda s: self.session_machines.get(s),
+            get_review_machine_fn=lambda n: self.review_machines.get(n),
+        )
 
-        # Read and process completion record
-        processor = self._completion_processor
-        record = processor.read_completion_record(worktree)
-
-        if record is None:
-            # No completion record - session died without calling agent-done
-            self.events.publish(TraceEvent("completion.missing", {
-                "issue_number": issue_number,
-                "session_id": session.tmux_session_name,
-                "worktree": str(worktree),
-            }))
-            return SessionStatus.FAILED, None
-
-        # Emit event for completion processing start
-        self.events.publish(TraceEvent("completion.processing", {
-            "issue_number": issue_number,
-            "outcome": record.outcome.value,
-            "requested_actions": [a.value for a in record.requested_actions],
-        }))
-
-        # Process the completion record (executes push, PR, labels, etc.)
-        result = processor.process(worktree, issue_number, session.issue.title)
-
-        # Map outcome to SessionStatus
-        outcome_to_status = {
-            CompletionOutcome.COMPLETED: SessionStatus.COMPLETED,
-            CompletionOutcome.BLOCKED: SessionStatus.BLOCKED,
-            CompletionOutcome.NEEDS_HUMAN: SessionStatus.NEEDS_HUMAN,
-            # Review outcomes map to COMPLETED (review session completed its job)
-            CompletionOutcome.REVIEW_APPROVED: SessionStatus.COMPLETED,
-            CompletionOutcome.REVIEW_CHANGES_REQUESTED: SessionStatus.COMPLETED,
-        }
-        status = outcome_to_status.get(record.outcome, SessionStatus.FAILED)
-
-        # Emit event for processing result
-        if result.success:
-            self.events.publish(TraceEvent("completion.succeeded", {
-                "issue_number": issue_number,
-                "outcome": record.outcome.value,
-                "status": status.value,
-                "pr_url": result.pr_url,
-                "actions_taken": result.actions_taken,
-            }))
-        else:
-            self.events.publish(TraceEvent("completion.failed", {
-                "issue_number": issue_number,
-                "outcome": record.outcome.value,
-                "status": status.value,
-                "errors": result.errors,
-                "actions_taken": result.actions_taken,
-            }))
-
-        return status, result
-
-    # NOTE: Plugin management (pluggy) has been moved to bootstrap.py
-    # The orchestrator receives EventSink and SessionRunner via constructor injection.
-    # IPC/SSE plugin lifecycle is managed by the caller (CLI/bootstrap).
+    @property
+    def _session_restorer(self) -> SessionRestorer:
+        """Get the session restorer for recovering sessions after restart."""
+        return SessionRestorer(
+            config=self.config,
+            repository_host=self.repository_host,
+        )
 
     async def _verify_hooks_on_startup(self) -> None:
         """Verify AI meta-agent hooks are installed and effective.
 
-        This check ensures that agents cannot bypass safety guardrails
-        like --no-verify. If verification fails and skip_verification
-        is not enabled, startup will be blocked.
-
-        Optimization: First checks for a valid verification marker from a
-        previous run. Only runs full verification if marker is missing/invalid.
+        Delegates to HookVerifier for the actual verification logic.
         """
-        from .hooks import (
-            detect_agents_from_config,
-            get_adapter,
-            check_verification_status,
-            UnsupportedMetaAgentError,
-            MetaAgentType,
-        )
+        from .control.hook_verifier import HookVerifier
 
-        # Check if verification should be skipped
-        if self.config.dangerous.skip_verification:
-            logger.warning(
-                "[DANGEROUS] Hook verification skipped - safety guardrails may not be effective!"
-            )
-            print("[WARNING] Hook verification skipped (dangerous.skip_verification=true)")
-            print("[WARNING] Agents may be able to bypass --no-verify protection!")
-            return
-
-        # First check if we have a valid verification marker
-        is_valid, status_msg = check_verification_status(self.config.repo_root, self.config)
-        if is_valid:
-            logger.info("Using cached verification: %s", status_msg)
-            print(f"[OK] Hooks verified (cached): {status_msg}")
-            return
-
-        # No valid marker - need to run full verification
-        logger.info("No valid verification marker found - running full verification")
-
-        # Detect which meta-agents are configured
-        agent_types = detect_agents_from_config(self.config)
-        unique_types = set(agent_types.values())
-
-        logger.info("Verifying hooks for meta-agents: %s", [t.value for t in unique_types])
-
-        all_verified = True
-        unsupported = []
-
-        for agent_type in unique_types:
-            try:
-                adapter = get_adapter(agent_type)
-
-                # Check if hooks are installed
-                if not adapter.is_installed(self.config.repo_root):
-                    logger.error(
-                        "Hooks not installed for %s. Run 'issue-orchestrator setup-hooks'",
-                        agent_type.value
-                    )
-                    print(f"[ERROR] Hooks not installed for {agent_type.value}")
-                    print("        Run 'issue-orchestrator setup-hooks' to install them")
-                    all_verified = False
-                    continue
-
-                # Verify hooks are working
-                result = adapter.verify_hooks(self.config.repo_root)
-                if result.success:
-                    logger.info("Hooks verified for %s (%d checks)", agent_type.value, len(result.checks_passed))
-                    print(f"[OK] Hooks verified for {agent_type.value}")
-                else:
-                    logger.error("Hook verification failed for %s: %s", agent_type.value, result.checks_failed)
-                    print(f"[ERROR] Hook verification failed for {agent_type.value}")
-                    for failure in result.checks_failed:
-                        print(f"        - {failure}")
-                    all_verified = False
-
-            except UnsupportedMetaAgentError as e:
-                unsupported.append((agent_type, str(e)))
-                if not self.config.dangerous.allow_unsupported_agents:
-                    logger.error("Unsupported meta-agent: %s", e)
-                    all_verified = False
-
-        # Handle unsupported agents
-        if unsupported:
-            if self.config.dangerous.allow_unsupported_agents:
-                for agent_type, reason in unsupported:
-                    logger.warning("[DANGEROUS] Allowing unsupported agent %s: %s", agent_type.value, reason)
-                    print(f"[WARNING] Unsupported agent {agent_type.value} allowed (dangerous mode)")
-            else:
-                for agent_type, reason in unsupported:
-                    print(f"[ERROR] Unsupported meta-agent: {agent_type.value}")
-                    print(f"        {reason}")
-                print("\nTo allow unsupported agents, set dangerous.allow_unsupported_agents: true")
-
-        # Block startup if verification failed
-        if not all_verified:
-            print("\n" + "=" * 60)
-            print("STARTUP BLOCKED: Hook verification failed")
-            print("=" * 60)
-            print("\nWithout verified hooks, agents can bypass --no-verify")
-            print("and push code without running pre-push tests/checks.")
-            print("\nOptions:")
-            print("  1. Run 'issue-orchestrator setup-hooks' to install hooks")
-            print("  2. Run 'issue-orchestrator verify' to diagnose issues")
-            print("  3. Set 'dangerous.skip_verification: true' in config (NOT RECOMMENDED)")
-            print()
-            raise RuntimeError("Hook verification failed - cannot start orchestrator safely")
+        verifier = HookVerifier(self.config)
+        result = await verifier.verify()
+        verifier.raise_on_failure(result)
 
     # ==================== Naming Conventions ====================
     # Centralized methods for deriving session names and paths.
@@ -494,7 +323,7 @@ class Orchestrator:
             IssueStateMachine for the given issue
         """
         if issue_number not in self.issue_machines:
-            self.issue_machines[issue_number] = IssueStateMachine(issue_number, self.event_bus)
+            self.issue_machines[issue_number] = IssueStateMachine(issue_number)
             logger.debug(f"Created IssueStateMachine for issue #{issue_number}")
         return self.issue_machines[issue_number]
 
@@ -513,7 +342,7 @@ class Orchestrator:
         """
         if session_name not in self.session_machines:
             self.session_machines[session_name] = SessionStateMachine(
-                session_name, issue_number, self.event_bus, timeout_minutes=timeout_minutes
+                session_name, issue_number, timeout_minutes=timeout_minutes
             )
             logger.debug(f"Created SessionStateMachine for session {session_name}")
         return self.session_machines[session_name]
@@ -530,275 +359,70 @@ class Orchestrator:
         """
         if pr_number not in self.review_machines:
             self.review_machines[pr_number] = ReviewStateMachine(
-                pr_number, issue_number, self.event_bus, max_rework_cycles=self.config.max_rework_cycles
+                pr_number, issue_number, max_rework_cycles=self.config.max_rework_cycles
             )
             logger.debug(f"Created ReviewStateMachine for PR #{pr_number}")
         return self.review_machines[pr_number]
 
-    def _setup_event_handlers(self) -> None:
-        """Set up event handlers for state machine events.
+    # ==================== Label Sync Helpers ====================
+    # Note: These methods can be called directly after state machine transitions
+    # to sync labels. They no longer rely on EventBus subscriptions.
 
-        Connects state machine events to existing _emit_event for dashboard integration.
+    def _sync_label(self, issue_number: int, label: str, operation: str) -> None:
+        """Sync a label on an issue via label_sync or direct adapter call.
+
+        Args:
+            issue_number: GitHub issue number
+            label: Label to add/remove
+            operation: "add" or "remove"
         """
-        # Issue lifecycle events
-        self.event_bus.subscribe(IssueEvent.CLAIMED, self._on_issue_claimed)
-        self.event_bus.subscribe(IssueEvent.SESSION_STARTED, self._on_issue_session_started)
-        self.event_bus.subscribe(IssueEvent.PR_CREATED, self._on_issue_pr_created)
-        self.event_bus.subscribe(IssueEvent.COMPLETED, self._on_issue_completed)
+        try:
+            if self.label_sync:
+                if operation == "add":
+                    self.label_sync.sync_add(issue_number, label)
+                else:
+                    self.label_sync.sync_remove(issue_number, label)
+            else:
+                if operation == "add":
+                    self.repository_host.add_label(issue_number, label)
+                else:
+                    self.repository_host.remove_label(issue_number, label)
+        except Exception as e:
+            self.events.publish(TraceEvent("labels.sync_error", {
+                "issue_number": issue_number, "label": label, "operation": operation, "error": str(e)
+            }))
 
-        # Session lifecycle events
-        self.event_bus.subscribe(SessionEvent.LAUNCHED, self._on_session_launched)
-        self.event_bus.subscribe(SessionEvent.STARTED, self._on_session_started)
-        self.event_bus.subscribe(SessionEvent.COMPLETED, self._on_session_completed)
-
-        # Review lifecycle events
-        self.event_bus.subscribe(ReviewEvent.APPROVED, self._on_review_approved)
-        self.event_bus.subscribe(ReviewEvent.CHANGES_REQUESTED, self._on_review_changes_requested)
-
-        # Label automation based on state changes
-        self.event_bus.subscribe(IssueEvent.CLAIMED, self._sync_label_in_progress)
-        self.event_bus.subscribe(IssueEvent.BLOCKED, self._sync_label_blocked)
-        self.event_bus.subscribe(IssueEvent.NEEDS_HUMAN, self._sync_label_needs_human)
-        self.event_bus.subscribe(IssueEvent.UNBLOCKED, self._sync_label_unblocked)
-        self.event_bus.subscribe(IssueEvent.COMPLETED, self._sync_label_completed)
-        self.event_bus.subscribe(IssueEvent.RELEASED, self._sync_label_released)
-
-        logger.info("Event handlers configured for state machine integration")
-
-    def _on_issue_claimed(self, event) -> None:
-        """Handle issue claimed event from state machine."""
-        logger.debug(f"[STATE_MACHINE] Issue #{event.entity_id} claimed")
-        self.events.publish(TraceEvent("issue.claimed", {"issue_number": event.entity_id}))
-
-    def _on_issue_session_started(self, event) -> None:
-        """Handle issue session started event from state machine."""
-        logger.debug(f"[STATE_MACHINE] Issue #{event.entity_id} session started")
-        # Note: session.started is emitted in launch_session with more context
-
-    def _on_issue_pr_created(self, event) -> None:
-        """Handle issue PR created event from state machine."""
-        logger.debug(f"[STATE_MACHINE] Issue #{event.entity_id} PR created")
-        self.events.publish(TraceEvent("pr.created", {"issue_number": event.entity_id}))
-
-    def _on_issue_completed(self, event) -> None:
-        """Handle issue completed event from state machine."""
-        logger.debug(f"[STATE_MACHINE] Issue #{event.entity_id} completed")
-        # Note: session.completed is emitted in handle_session_completion with more context
-
-    def _on_session_launched(self, event) -> None:
-        """Handle session launched event from state machine."""
-        logger.debug(f"[STATE_MACHINE] Session launched for issue #{event.entity_id}")
-
-    def _on_session_started(self, event) -> None:
-        """Handle session started event from state machine."""
-        logger.debug(f"[STATE_MACHINE] Session started for issue #{event.entity_id}")
-
-    def _on_session_completed(self, event) -> None:
-        """Handle session completed event from state machine."""
-        logger.debug(f"[STATE_MACHINE] Session completed for issue #{event.entity_id}")
-
-    def _on_review_approved(self, event) -> None:
-        """Handle review approved event from state machine."""
-        pr_number = event.entity_id
-        logger.info(f"[STATE_MACHINE] PR #{pr_number} approved")
-        self.events.publish(TraceEvent("review.approved", {"pr_number": pr_number}))
-
-    def _on_review_changes_requested(self, event) -> None:
-        """Handle review changes requested event from state machine."""
-        pr_number = event.entity_id
-        rework_count = event.data.get("rework_count", 0)
-        logger.info(f"[STATE_MACHINE] PR #{pr_number} changes requested (rework cycle {rework_count})")
-        self.events.publish(TraceEvent("review.changes_requested", {"pr_number": pr_number, "rework_count": rework_count}))
-
-    # ==================== Label Sync Handlers ====================
-
-    def _sync_label_in_progress(self, event) -> None:
-        """Add in-progress label when issue is claimed."""
-        if self.label_sync:
-            self.label_sync.sync_add(event.entity_id, "in-progress")
-        else:
-            try:
-                self.repository_host.add_label(event.entity_id, "in-progress")
-            except Exception as e:
-                self.events.publish(TraceEvent("labels.sync_error", {
-                    "issue_number": event.entity_id, "label": "in-progress", "operation": "add", "error": str(e)
-                }))
-
-    def _sync_label_blocked(self, event) -> None:
-        """Add blocked label when issue is blocked."""
-        reason = event.data.get('reason', '')
-        label = f"blocked-{reason}" if reason else "blocked"
-        if self.label_sync:
-            self.label_sync.sync_add(event.entity_id, label)
-        else:
-            try:
-                self.repository_host.add_label(event.entity_id, label)
-            except Exception as e:
-                self.events.publish(TraceEvent("labels.sync_error", {
-                    "issue_number": event.entity_id, "label": label, "operation": "add", "error": str(e)
-                }))
-
-    def _sync_label_needs_human(self, event) -> None:
-        """Add needs-human label."""
-        if self.label_sync:
-            self.label_sync.sync_add(event.entity_id, "blocked-needs-human")
-        else:
-            try:
-                self.repository_host.add_label(event.entity_id, "blocked-needs-human")
-            except Exception as e:
-                self.events.publish(TraceEvent("labels.sync_error", {
-                    "issue_number": event.entity_id, "label": "blocked-needs-human", "operation": "add", "error": str(e)
-                }))
-
-    def _sync_label_unblocked(self, event) -> None:
-        """Remove blocking labels when unblocked."""
-        if self.label_sync:
-            labels = self.repository_host.get_issue_labels(event.entity_id)
-            self.label_sync.remove_blocked_labels(event.entity_id, set(labels))
-        else:
-            try:
-                labels = self.repository_host.get_issue_labels(event.entity_id)
+    def _remove_blocked_labels(self, issue_number: int) -> None:
+        """Remove all blocked-* labels from an issue."""
+        try:
+            labels = self.repository_host.get_issue_labels(issue_number)
+            if self.label_sync:
+                self.label_sync.remove_blocked_labels(issue_number, set(labels))
+            else:
                 for label in labels:
                     if label.startswith("blocked"):
-                        self.repository_host.remove_label(event.entity_id, label)
-            except Exception as e:
-                self.events.publish(TraceEvent("labels.sync_error", {
-                    "issue_number": event.entity_id, "label": "blocked-*", "operation": "remove", "error": str(e)
-                }))
+                        self.repository_host.remove_label(issue_number, label)
+        except Exception as e:
+            self.events.publish(TraceEvent("labels.sync_error", {
+                "issue_number": issue_number, "label": "blocked-*", "operation": "remove", "error": str(e)
+            }))
 
-    def _sync_label_completed(self, event) -> None:
-        """Remove in-progress label when completed."""
-        if self.label_sync:
-            self.label_sync.sync_remove(event.entity_id, "in-progress")
-        else:
-            try:
-                self.repository_host.remove_label(event.entity_id, "in-progress")
-            except Exception as e:
-                self.events.publish(TraceEvent("labels.sync_error", {
-                    "issue_number": event.entity_id, "label": "in-progress", "operation": "remove", "error": str(e)
-                }))
-
-    def _sync_label_released(self, event) -> None:
-        """Remove in-progress label when released."""
-        if self.label_sync:
-            self.label_sync.sync_remove(event.entity_id, "in-progress")
-        else:
-            try:
-                self.repository_host.remove_label(event.entity_id, "in-progress")
-            except Exception as e:
-                self.events.publish(TraceEvent("labels.sync_error", {
-                    "issue_number": event.entity_id, "label": "in-progress", "operation": "remove", "error": str(e)
-                }))
-
-    # ==================== End State Machine Helpers ====================
+    # ==================== End Label Sync Helpers ====================
 
     async def _restore_running_sessions(self, running: list[dict]) -> None:
         """Restore tracking for sessions that are still running after orchestrator restart.
+
+        Delegates to SessionRestorer for the actual restoration logic.
 
         Args:
             running: List of dicts from discover_running_sessions() with
                      {issue_number, tab_name, is_review}
         """
-        import re
-
-        for session_info in running:
-            issue_number = session_info["issue_number"]
-            tab_name = session_info["tab_name"]
-            is_review = session_info["is_review"]
-
-            try:
-                # Determine session type and session_name
-                if is_review:
-                    # Extract PR number from tab name like "#123 Review PR #456"
-                    pr_match = re.search(r'Review PR #(\d+)', tab_name)
-                    pr_number = int(pr_match.group(1)) if pr_match else issue_number
-                    session_name = f"review-{pr_number}"
-                else:
-                    session_name = f"issue-{issue_number}"
-
-                # Skip if already tracking this session
-                if any(s.tmux_session_name == session_name for s in self.state.active_sessions):
-                    logger.info("Session %s already tracked - skipping restore", session_name)
-                    continue
-
-                # Find the worktree
-                worktree_path = None
-                branch_name = "unknown"
-
-                # Check all agent repo_roots for the worktree
-                for agent_label, agent_config in self.config.agents.items():
-                    repo_root = agent_config.repo_root or self.config.repo_root
-                    candidate_path = repo_root.parent / f"{repo_root.name}-{issue_number}"
-                    if candidate_path.exists():
-                        worktree_path = candidate_path
-                        # Get branch name from worktree
-                        result = subprocess.run(
-                            ["git", "-C", str(candidate_path), "branch", "--show-current"],
-                            capture_output=True, text=True, timeout=5
-                        )
-                        if result.returncode == 0 and result.stdout.strip():
-                            branch_name = result.stdout.strip()
-                        break
-
-                if not worktree_path:
-                    logger.warning("Could not find worktree for session %s - cleaning up orphaned issue", session_name)
-                    # Clean up the orphaned in-progress label so this issue can be re-processed
-                    try:
-                        self.repository_host.remove_label(issue_number, "in-progress")
-                        logger.info("Removed in-progress label from orphaned issue #%d", issue_number)
-                        print(f"  Cleaned up orphaned issue #{issue_number} (removed in-progress label)")
-                    except Exception as e:
-                        logger.warning("Failed to cleanup orphaned issue #%d: %s", issue_number, e)
-                    continue
-
-                # Fetch single issue details to get agent type
-                issue_obj = self.repository_host.get_issue(issue_number)
-                agent_config = None
-
-                if issue_obj and issue_obj.agent_type:
-                    agent_config = self.config.agents.get(issue_obj.agent_type)
-
-                if not issue_obj:
-                    # Create minimal issue object for reviews or if issue not found
-                    from .models import Issue
-                    issue_obj = Issue(
-                        number=issue_number,
-                        title=tab_name.replace("#", "").strip(),
-                        labels=[],
-                    )
-
-                if not agent_config:
-                    # Use first available agent config as fallback
-                    agent_config = next(iter(self.config.agents.values()), None)
-
-                if not agent_config:
-                    logger.warning("No agent config available for session %s - skipping", session_name)
-                    continue
-
-                # Create session object
-                session = Session(
-                    issue=issue_obj,
-                    agent_config=agent_config,
-                    tmux_session_name=session_name,
-                    worktree_path=worktree_path,
-                    branch_name=branch_name,
-                )
-
-                self.state.active_sessions.append(session)
-                logger.info("Restored tracking for session %s (issue #%d)", session_name, issue_number)
-                print(f"  Restored: {session_name} (#{issue_number})")
-
-            except Exception as e:
-                logger.exception("Failed to restore session for issue #%d: %s", issue_number, e)
-                print(f"  Warning: Failed to restore session for #{issue_number}: {e}")
-
-    def _extract_session_number(self, session_name: str) -> int:
-        """Extract the number from a session name like 'issue-42' or 'review-123'."""
-        import re
-        match = re.search(r"-(\d+)$", session_name)
-        if match:
-            return int(match.group(1))
-        raise ValueError(f"Could not extract number from session name: {session_name}")
+        restored = self._session_restorer.restore_sessions(
+            running=running,
+            already_tracked=self.state.active_sessions,
+        )
+        self.state.active_sessions.extend(restored)
 
     def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> bool:
         """Create a session using the SessionManager.
@@ -882,8 +506,6 @@ class Orchestrator:
 
         # Emit merged configuration for debugging (YAML + command line overrides)
         self.events.publish(TraceEvent("config.merged", self.config.to_event_dict()))
-
-        # NOTE: IPC/SSE plugins are now registered by bootstrap.py before calling startup()
 
         # Verify AI meta-agent hooks are installed and working
         self.state.startup_message = "Verifying hook enforcement..."
@@ -1078,193 +700,35 @@ class Orchestrator:
         }))
 
     def launch_session(self, issue: Issue) -> Optional[Session]:
-        """Launch a new session for an issue."""
-        launch_start = time.time()
-        logger.info("Launching session for issue #%d: %s", issue.number, issue.title)
+        """Launch a new session for an issue.
 
-        if issue.agent_type is None:
-            raise ValueError(f"Issue #{issue.number} has no agent type label")
-        agent_config = self.config.agents.get(issue.agent_type)
-        if not agent_config:
-            raise ValueError(f"No agent config for {issue.agent_type}")
-
-        # Check if already being worked on (no lock files - direct reality check)
-        session_name = f"issue-{issue.number}"
-        if any(s.issue.number == issue.number for s in self.state.active_sessions):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
-            print(f"Issue #{issue.number} already in active sessions - skipping")
-            return None
-
-        if self._session_exists(session_name):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "iTerm tab already running")
-            print(f"Issue #{issue.number} already has running iTerm tab - skipping")
-            return None
-
-        # CAS check: Re-verify dependencies before launching (issue body may have changed)
-        dep_eval = getattr(self.scheduler, 'dependency_evaluator', None)
-        if dep_eval:
-            fresh_issue = self._refresh_issue(issue.number)
-            if fresh_issue and fresh_issue.body:
-                report = dep_eval.evaluate(
-                    issue_number=issue.number,
-                    issue_body=fresh_issue.body,
-                )
-                if not report.runnable:
-                    log_transition(
-                        "issue", issue.number, "AVAILABLE", "SKIP",
-                        f"dependencies changed: {report.summary()}"
-                    )
-                    print(f"Issue #{issue.number} now has unsatisfied dependencies - skipping")
-                    self.events.publish(TraceEvent(
-                        name="issue.dependency_blocked",
-                        data={
-                            "issue_number": issue.number,
-                            "issue_title": issue.title,
-                            "reason": report.summary(),
-                        },
-                    ))
-                    return None
-
-        log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
-
-        # Use agent's repo_root if set, otherwise fall back to config.repo_root
-        repo_root = agent_config.repo_root or self.config.repo_root
-        logger.info("Using repo_root=%s (agent=%s, config=%s)", repo_root, agent_config.repo_root, self.config.repo_root)
-
-        # Create worktree (sibling to repo, named {repo}-{issue_number})
-        step_start = time.time()
-        logger.debug("Creating worktree for issue #%d", issue.number)
-        print(f"[launch] Creating worktree for issue #{issue.number}...")
-        worktree_path, branch_name = create_worktree(
-            repo_root=repo_root,
-            issue_number=issue.number,
-            issue_title=issue.title,
-            worktree_base=agent_config.worktree_base,
-            enforce_hooks=self.config.enforce_hooks,
-            pre_push_hook=self.config.pre_push_hook,
-        )
-        worktree_time = time.time() - step_start
-        logger.debug("Worktree created in %.1fs", worktree_time)
-        print(f"[launch] Worktree created in {worktree_time:.1f}s")
-
-        # Run setup commands in worktree (e.g., npm install)
-        if self.config.setup_worktree:
-            step_start = time.time()
-            for cmd in self.config.setup_worktree:
-                logger.debug("Running setup command: %s", cmd)
-                print(f"[launch] Running setup: {cmd}")
-                result = subprocess.run(
-                    cmd,
-                    shell=True,
-                    cwd=str(worktree_path),
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    logger.warning("Setup command failed: %s\n%s", cmd, result.stderr)
-                    print(f"[launch] Warning: setup command failed: {cmd}")
-            setup_time = time.time() - step_start
-            logger.debug("Setup commands completed in %.1fs", setup_time)
-            print(f"[launch] Setup completed in {setup_time:.1f}s")
-
-        # Mark issue as in-progress
-        step_start = time.time()
-        self.repository_host.add_label(issue.number, self.config.get_label_in_progress())
-        label_time = time.time() - step_start
-        logger.debug("Label added in %.1fs", label_time)
-        print(f"[launch] Label added in {label_time:.1f}s")
-
-        # Check for existing work from previous interrupted session
-        existing_work = detect_existing_work(worktree_path)
-        if existing_work:
-            logger.info("Detected existing work in worktree for issue #%d", issue.number)
-            print(f"[launch] Found existing work - agent will evaluate before starting fresh")
-
-        # Build command
-        base_command = agent_config.get_command(
-            issue_number=issue.number,
-            issue_title=issue.title,
-            worktree=worktree_path,
-            existing_work=existing_work,
-        )
-
-        # Set completion path env var so agent-done writes to agent-specific file
-        # This avoids race conditions when review sessions reuse the same worktree
-        completion_path = get_completion_path(issue.agent_type)
-        command = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}' {base_command}"
-
-        # Create session (tmux or iTerm2 tab) - command includes the initial prompt as a CLI argument
-        session_name = f"issue-{issue.number}"
-        step_start = time.time()
-        session_created = self._create_session(session_name, command, worktree_path, title=issue.title)
-        session_time = time.time() - step_start
-
-        if not session_created:
-            # Session creation failed - clean up and return None
-            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
-            print(f"[launch] ERROR: Failed to create session for issue #{issue.number}")
-            print("[launch] Is iTerm2 running with a window open?")
-            # Remove the in-progress label (no lock to release)
-            logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
-            self.repository_host.remove_label(issue.number, self.config.get_label_in_progress())
-            return None
-
-        log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
-        logger.debug("Session created in %.1fs", session_time)
-        print(f"[launch] Session created in {session_time:.1f}s")
-
-        # Create session object
-        session = Session(
+        Delegates to SessionLauncher for the actual launch logic.
+        The orchestrator owns state management (active_sessions).
+        """
+        result = self._session_launcher.launch_issue_session(
             issue=issue,
-            agent_config=agent_config,
-            tmux_session_name=session_name,
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-            completion_path=completion_path,
+            active_sessions=self.state.active_sessions,
         )
-
-        self.state.active_sessions.append(session)
-        total_time = time.time() - launch_start
-        logger.info("Session launched for issue #%d in %.1fs (worktree=%.1fs, label=%.1fs, session=%.1fs)",
-                    issue.number, total_time, worktree_time, label_time, session_time)
-        print(f"Launched session for issue #{issue.number}: {issue.title}")
-
-        # Emit trace event via EventSink (SSE, IPC, etc.)
-        full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent("session.started", {
-            "issue_number": issue.number,
-            "session_id": session_name,
-            "worktree_path": str(worktree_path),
-            "branch_name": branch_name,
-            "completion_path": completion_path,
-            "completion_path_absolute": str(full_completion_path),
-        }))
-
-        # Trigger state machine transitions
-        # Note: claim/start/launch/started are dynamically added by transitions library
-        logger.debug(f"[STATE_MACHINE] Triggering transitions for issue #{issue.number}")
-        issue_machine = self._get_issue_machine(issue.number)
-        if issue_machine.state == IssueState.AVAILABLE.value:
-            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: AVAILABLE -> CLAIMED")
-            issue_machine.claim()  # type: ignore[attr-defined]
-            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: CLAIMED -> IN_PROGRESS")
-            issue_machine.start()  # type: ignore[attr-defined]
-
-        # Create session state machine
-        session_machine = self._get_session_machine(
-            session_name, issue.number, agent_config.timeout_minutes
-        )
-        logger.debug(f"[STATE_MACHINE] Session {session_name}: PENDING -> STARTING")
-        session_machine.launch()  # type: ignore[attr-defined]
-        logger.debug(f"[STATE_MACHINE] Session {session_name}: STARTING -> RUNNING")
-        session_machine.started()  # type: ignore[attr-defined]
-
-        return session
+        if result.success and result.session:
+            self.state.active_sessions.append(result.session)
+            return result.session
+        return None
 
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None:
-        """Handle a completed session."""
-        from .models import SessionHistoryEntry
+        """Handle a completed session.
 
+        Delegates to CompletionHandler for:
+        - State machine transitions
+        - Event emission
+        - History recording
+        - Cleanup decision
+
+        Orchestrator handles:
+        - Active sessions list update
+        - Observer notification
+        - Actual cleanup execution
+        - Review queue management
+        """
         # Determine entity type from session name
         is_review = session.tmux_session_name.startswith("review-")
         is_rework = session.tmux_session_name.startswith("rework-")
@@ -1282,7 +746,7 @@ class Orchestrator:
 
         print(f"Session #{session.issue.number} completed with status: {status.value}")
 
-        # Remove from active sessions (no lock to release)
+        # Remove from active sessions
         self.state.active_sessions = [
             s for s in self.state.active_sessions
             if s.issue.number != session.issue.number
@@ -1295,176 +759,15 @@ class Orchestrator:
         if status == SessionStatus.COMPLETED:
             self.state.completed_today.append(session.issue.number)
 
-        # Record in session history
-        pr_url = None
-        prs = None
-        if status == SessionStatus.COMPLETED:
-            logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
-            pr_infos = self.repository_host.get_prs_for_branch(session.branch_name)
-            if pr_infos:
-                pr_url = pr_infos[0].url
-                # Convert PRInfo to dict for backward compatibility
-                prs = [{"url": pi.url, "number": pi.number, "title": pi.title} for pi in pr_infos]
+        # Delegate to completion handler for state machine updates, events, etc.
+        result = self._completion_handler.process_completion(session, status)
 
-        # Generate human-readable status reason
-        status_reasons = {
-            SessionStatus.COMPLETED: "PR created successfully",
-            SessionStatus.BLOCKED: "Agent marked issue as blocked",
-            SessionStatus.NEEDS_HUMAN: "Agent requested human input",
-            SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
-            SessionStatus.FAILED: "Session ended without PR or status update",
-        }
-        status_reason = status_reasons.get(status, "Unknown")
+        # Record history
+        self.state.session_history.append(result.history_entry)
 
-        history_entry = SessionHistoryEntry(
-            issue_number=session.issue.number,
-            title=session.issue.title,
-            agent_type=session.issue.agent_type or "unknown",
-            status=status.value,
-            runtime_minutes=session.runtime_minutes,
-            pr_url=pr_url,
-            status_reason=status_reason,
-        )
-        self.state.session_history.append(history_entry)
-
-        # Emit trace events via EventSink (SSE, IPC, etc.)
-        if status == SessionStatus.COMPLETED:
-            self.events.publish(TraceEvent("session.completed", {
-                "issue_number": session.issue.number,
-                "session_id": session.tmux_session_name,
-                "pr_url": pr_url,
-                "runtime_minutes": session.runtime_minutes,
-            }))
-        elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
-            self.events.publish(TraceEvent("session.failed", {
-                "issue_number": session.issue.number,
-                "session_id": session.tmux_session_name,
-                "error": status_reason,
-                "runtime_minutes": session.runtime_minutes,
-            }))
-        elif status == SessionStatus.BLOCKED:
-            self.events.publish(TraceEvent("issue.blocked", {
-                "issue_number": session.issue.number,
-                "reason": status_reason,
-            }))
-        elif status == SessionStatus.NEEDS_HUMAN:
-            self.events.publish(TraceEvent("issue.needs_human", {
-                "issue_number": session.issue.number,
-                "reason": status_reason,
-            }))
-
-        # Trigger state machine transitions based on session status
-        logger.debug(f"[STATE_MACHINE] Triggering transitions for session {session.tmux_session_name}")
-
-        # 1. Update session state machine
-        session_machine = self.session_machines.get(session.tmux_session_name)
-        if session_machine:
-            logger.debug(f"[STATE_MACHINE] Found session machine for {session.tmux_session_name}")
-            if status == SessionStatus.COMPLETED:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> COMPLETED")
-                session_machine.complete()  # type: ignore[attr-defined]
-            elif status == SessionStatus.FAILED:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> FAILED (reason: {status_reason})")
-                session_machine.fail(data={'reason': status_reason})  # type: ignore[attr-defined]
-            elif status == SessionStatus.TIMED_OUT:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> TIMED_OUT")
-                session_machine.timeout()  # type: ignore[attr-defined]
-            elif status == SessionStatus.BLOCKED:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> BLOCKED")
-                session_machine.block()  # type: ignore[attr-defined]
-            elif status == SessionStatus.NEEDS_HUMAN:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> NEEDS_HUMAN")
-                session_machine.needs_human()  # type: ignore[attr-defined]
-        else:
-            logger.debug(f"[STATE_MACHINE] No session machine found for {session.tmux_session_name} (may be restored session)")
-
-        # 2. Update issue state machine
-        issue_machine = self.issue_machines.get(session.issue.number)
-        if issue_machine:
-            logger.debug(f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}")
-            if status == SessionStatus.COMPLETED and pr_url:
-                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> PR_PENDING (PR: {pr_url})")
-                issue_machine.pr_created(data={'pr_url': pr_url})  # type: ignore[attr-defined]
-            elif status == SessionStatus.BLOCKED:
-                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> BLOCKED")
-                issue_machine.block()  # type: ignore[attr-defined]
-            elif status == SessionStatus.NEEDS_HUMAN:
-                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> NEEDS_HUMAN")
-                issue_machine.needs_human()  # type: ignore[attr-defined]
-        else:
-            logger.debug(f"[STATE_MACHINE] No issue machine found for issue #{session.issue.number} (may be restored session)")
-
-        # 3. Update review state machine (if this is a review session)
-        if is_review and status == SessionStatus.COMPLETED:
-            # Extract PR number from review session name (e.g., "review-123")
-            import re
-            match = re.match(r"review-(\d+)", session.tmux_session_name)
-            if match:
-                pr_number_review = int(match.group(1))
-                review_machine = self.review_machines.get(pr_number_review)
-                if review_machine:
-                    logger.debug(f"[STATE_MACHINE] Found review machine for PR #{pr_number_review}")
-                    # Check PR labels to determine outcome
-                    # The agent-done script adds either code-reviewed or needs-rework label
-                    try:
-                        result = subprocess.run(
-                            ["gh", "pr", "view", str(pr_number_review), "--json", "labels", "-q", ".labels[].name"],
-                            capture_output=True, text=True, timeout=10
-                        )
-                        if result.returncode == 0:
-                            labels = result.stdout.strip().split('\n')
-                            if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
-                                # Review was approved
-                                logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: IN_REVIEW -> APPROVED")
-                                review_machine.approve()  # type: ignore[attr-defined]
-                                # Could also trigger merge here if appropriate
-                                # review_machine.merge()  # type: ignore[attr-defined]
-                            elif self.config.get_label_needs_rework() in labels:
-                                # Changes requested
-                                logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: IN_REVIEW -> CHANGES_REQUESTED")
-                                review_machine.request_changes()  # type: ignore[attr-defined]
-                                logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: CHANGES_REQUESTED -> REWORK_PENDING")
-                                review_machine.queue_rework()  # type: ignore[attr-defined]
-                    except Exception as e:
-                        logger.warning(f"Failed to check PR labels for review outcome: {e}")
-                else:
-                    logger.debug(f"[STATE_MACHINE] No review machine found for PR #{pr_number_review}")
-
-        # Determine cleanup strategy based on config and status
-        # Non-completed sessions: never cleanup (leave for investigation)
-        # Completed sessions: may defer cleanup until review completes
-        is_work_session = not session.tmux_session_name.startswith(("review-", "rework-"))
-        should_defer_cleanup = False
-        pr_number = prs[0].get("number") if prs else None
-
-        if status == SessionStatus.COMPLETED and is_work_session and pr_url and pr_number:
-            # Check if we should defer cleanup based on review workflow
-            if self.config.triage_review_agent:
-                # Triage workflow: defer until triage review passes
-                should_defer_cleanup = self.config.cleanup.with_triage.close_ai_session_tabs
-            elif self.config.code_review_agent:
-                # Code review only: defer if configured to wait
-                should_defer_cleanup = (
-                    self.config.cleanup.without_triage.wait_for_code_review
-                    and self.config.cleanup.without_triage.close_ai_session_tabs
-                )
-            # No review workflow: cleanup immediately (should_defer_cleanup stays False)
-
-        if should_defer_cleanup:
-            # Defer cleanup until review completes
-            # pr_number and pr_url are guaranteed non-None here (checked in condition on line 733)
-            assert pr_number is not None
-            assert pr_url is not None
-            pending = PendingCleanup(
-                issue_number=session.issue.number,
-                pr_number=pr_number,
-                pr_url=pr_url,
-                branch_name=session.branch_name,
-                terminal_session_name=session.tmux_session_name,
-                worktree_path=session.worktree_path,
-            )
-            self.state.pending_cleanups.append(pending)
-            logger.info(f"[CLEANUP] Deferred cleanup for #{session.issue.number} until review completes")
+        # Handle cleanup based on result
+        if result.should_defer_cleanup and result.pending_cleanup:
+            self.state.pending_cleanups.append(result.pending_cleanup)
         else:
             # Immediate cleanup
             if status == SessionStatus.COMPLETED:
@@ -1476,72 +779,34 @@ class Orchestrator:
                         print(f"Warning: failed to remove worktree: {e}")
 
             # Close the terminal session/tab
-            # Uses _kill_session which handles both iTerm2 and tmux backends
             try:
                 self._kill_session(session.tmux_session_name)
                 logger.info(f"Closed session for #{session.issue.number}")
             except Exception as e:
                 logger.warning(f"Failed to close session for #{session.issue.number}: {e}")
 
-        # Trigger code review immediately if configured
-        # Skip if agent has skip_review set (e.g., domain-expert agents)
-        # Skip if this was a review session (not a work session)
-        is_review_session = session.tmux_session_name.startswith("review-")
-        if pr_url and self.config.code_review_agent and not session.agent_config.skip_review and not is_review_session:
-            logger.info(f"[REVIEW] Session #{session.issue.number} completed with PR, queuing code review")
-            self.queue_code_review(
+        # Store discovered review for Planner to decide (instead of calling queue_code_review directly)
+        if result.should_queue_review and result.pr_url and result.pr_number:
+            from .models import DiscoveredReview
+            discovered = DiscoveredReview(
                 issue_number=session.issue.number,
-                pr_url=pr_url,
+                pr_number=result.pr_number,
+                pr_url=result.pr_url,
                 branch_name=session.branch_name,
             )
-        elif pr_url and is_review_session:
-            logger.info(f"[REVIEW] Review session {session.tmux_session_name} completed - no re-queue needed")
-        elif pr_url and not self.config.code_review_agent:
-            logger.info(f"[REVIEW] Session #{session.issue.number} completed but code review not configured")
-        elif pr_url and session.agent_config.skip_review:
-            logger.info(f"[REVIEW] Session #{session.issue.number} skipping review (skip_review=true)")
-        elif not pr_url:
-            logger.info(f"[REVIEW] Session #{session.issue.number} completed but no PR found")
+            self.state.discovered_reviews.append(discovered)
+            logger.info("[COMPLETION] Discovered review for PR #%d - Planner will decide", result.pr_number)
 
-        # Trigger triage review on failure if configured
+        # Store discovered failure for Planner to decide (instead of calling _queue_triage_failure_review directly)
         if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
-            self._queue_triage_failure_review(session, status)
-
-    def _queue_triage_failure_review(self, session: Session, status: SessionStatus) -> None:
-        """Queue a triage review to investigate a session failure.
-
-        Only queues if:
-        - triage_review_on_failure is enabled (default: True)
-        - triage_review_agent is configured
-        - No triage review is already pending for this issue
-        """
-        if not self.config.triage_review_on_failure:
-            logger.debug("[TRIAGE] Skipping failure review - triage_review_on_failure disabled")
-            return
-
-        if not self.config.triage_review_agent:
-            logger.debug("[TRIAGE] Skipping failure review - triage_review_agent not configured")
-            return
-
-        # Check if already queued
-        already_queued = any(
-            r.issue_number == session.issue.number
-            for r in self.state.pending_triage_reviews
-        )
-        if already_queued:
-            logger.debug("[TRIAGE] Skipping failure review - already queued for #%d", session.issue.number)
-            return
-
-        logger.info("[TRIAGE] Queuing failure review for issue #%d (%s)",
-                   session.issue.number, status.value)
-        print(f"[TRIAGE] Queuing failure investigation for #{session.issue.number}")
-
-        self.state.pending_triage_reviews.append(
-            PendingTriageReview(
+            from .models import DiscoveredFailure
+            discovered = DiscoveredFailure(
                 issue_number=session.issue.number,
-                title=f"Investigate: {session.issue.title} ({status.value})",
+                issue_title=session.issue.title,
+                failure_reason=status.value,
             )
-        )
+            self.state.discovered_failures.append(discovered)
+            logger.info("[COMPLETION] Discovered failure for issue #%d - Planner will decide", session.issue.number)
 
     async def run_loop(self) -> None:
         """Main orchestration loop."""
@@ -1597,15 +862,6 @@ class Orchestrator:
 
                 # Scan for PRs needing rework (populates pending_reworks queue)
                 self.scan_needs_rework_prs()
-
-                # Check if triage review should be triggered (may add to pending_triage_reviews)
-                self.check_triage_review_trigger()
-
-                # Process deferred cleanups (sessions waiting for review to complete)
-                self.process_deferred_cleanups()
-
-                # NOTE: process_pending_reviews, process_pending_reworks, process_pending_triage_reviews
-                # are now handled by the planner below
 
                 # === PLANNER-BASED DECISION MAKING ===
                 # The planner decides WHAT to do, the orchestrator does HOW
@@ -1677,6 +933,25 @@ class Orchestrator:
                     # Apply the plan
                     self._apply_plan(plan)
 
+                    # Clear discovered facts after plan is applied
+                    # The Planner has already decided what to do with them
+                    if self.state.discovered_reviews:
+                        logger.debug("[PLAN] Clearing %d discovered reviews after plan applied",
+                                   len(self.state.discovered_reviews))
+                        self.state.discovered_reviews.clear()
+                    if self.state.discovered_reworks:
+                        logger.debug("[PLAN] Clearing %d discovered reworks after plan applied",
+                                   len(self.state.discovered_reworks))
+                        self.state.discovered_reworks.clear()
+                    if self.state.discovered_escalations:
+                        logger.debug("[PLAN] Clearing %d discovered escalations after plan applied",
+                                   len(self.state.discovered_escalations))
+                        self.state.discovered_escalations.clear()
+                    if self.state.discovered_failures:
+                        logger.debug("[PLAN] Clearing %d discovered failures after plan applied",
+                                   len(self.state.discovered_failures))
+                        self.state.discovered_failures.clear()
+
                 # Periodically emit state_changed for UI to update runtimes
                 # This ensures "Starting" transitions to "Active" as time passes
                 ui_age = time.time() - last_ui_update
@@ -1745,6 +1020,106 @@ class Orchestrator:
         print("Orchestrator resumed")
         self.events.publish(TraceEvent("orchestrator.resumed"))
 
+    def _gather_triage_facts(self) -> Optional["TriageFacts"]:
+        """Gather facts for triage review trigger decision.
+
+        Returns immutable facts for the Planner to decide whether to create
+        a triage issue. Does NOT create the issue - that's the Planner's job.
+
+        Returns:
+            TriageFacts if triage is configured, else None
+        """
+        from .models import TriageFacts
+
+        # Check if triage review is configured
+        if not self.config.triage_review_agent:
+            return None
+        if self.config.triage_review_threshold <= 0:
+            return None
+
+        # Label to watch: either explicit triage_review_label or code_reviewed_label
+        watch_label = self.config.triage_review_label or self.config.code_reviewed_label
+        if not watch_label:
+            return None
+
+        # Count PRs ready for triage review
+        prs = self.repository_host.get_prs_with_label(watch_label)
+        pr_count = len(prs)
+        threshold = self.config.triage_review_threshold
+
+        # Check if a triage review issue already exists
+        existing_triage_issue: Optional[int] = None
+        existing = self.repository_host.list_issues(
+            labels=[self.config.triage_review_agent],
+            limit=10,
+        )
+        for issue in existing:
+            if "Batch Review" in issue.title or "Triage Review" in issue.title:
+                existing_triage_issue = issue.number
+                break
+
+        # Build PR info tuples for body generation
+        pr_tuples = tuple((pr.number, pr.title) for pr in prs)
+
+        return TriageFacts(
+            pr_count=pr_count,
+            threshold=threshold,
+            existing_triage_issue=existing_triage_issue,
+            watch_label=watch_label,
+            prs=pr_tuples,
+        )
+
+    def _gather_cleanup_facts(self) -> Optional["CleanupFacts"]:
+        """Gather facts for cleanup decision.
+
+        Returns immutable facts for the Planner to decide which cleanups to process.
+        Does NOT perform cleanup - that's the Planner's job.
+
+        Returns:
+            CleanupFacts if there are pending cleanups, else None
+        """
+        from .models import CleanupFacts
+
+        if not self.state.pending_cleanups:
+            return None
+
+        # Determine which label indicates review is complete
+        if self.config.triage_review_agent:
+            cleanup_label = self.config.triage_reviewed_label
+            close_tabs = self.config.cleanup.with_triage.close_ai_session_tabs
+            remove_wt = self.config.cleanup.with_triage.remove_worktrees
+        elif self.config.code_review_agent:
+            cleanup_label = self.config.code_reviewed_label
+            close_tabs = self.config.cleanup.without_triage.close_ai_session_tabs
+            remove_wt = self.config.cleanup.without_triage.remove_worktrees
+        else:
+            # No review workflow configured
+            return None
+
+        if not cleanup_label:
+            return None
+
+        # Get all PRs with the cleanup label
+        try:
+            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
+            reviewed_pr_numbers = frozenset(pr.number for pr in reviewed_prs)
+        except Exception as e:
+            logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
+            return None
+
+        # Build immutable tuples of pending cleanup info
+        pending_tuples = tuple(
+            (c.issue_number, c.pr_number, c.terminal_session_name, str(c.worktree_path))
+            for c in self.state.pending_cleanups
+        )
+
+        return CleanupFacts(
+            pending_cleanups=pending_tuples,
+            reviewed_pr_numbers=reviewed_pr_numbers,
+            close_tabs=close_tabs,
+            remove_worktrees=remove_wt,
+        )
+
     def _create_snapshot(self, issues: list[Issue]) -> "OrchestratorSnapshot":
         """Create an immutable snapshot for planning.
 
@@ -1766,6 +1141,12 @@ class Orchestrator:
             priority_queue=tuple(self.state.priority_queue),
             issues_started_count=self.state.issues_started_count,
             max_issues_to_start=self.config.max_issues_to_start if self.config.max_issues_to_start > 0 else None,
+            discovered_reviews=tuple(self.state.discovered_reviews),
+            discovered_reworks=tuple(self.state.discovered_reworks),
+            discovered_escalations=tuple(self.state.discovered_escalations),
+            discovered_failures=tuple(self.state.discovered_failures),
+            triage_facts=self._gather_triage_facts(),
+            cleanup_facts=self._gather_cleanup_facts(),
         )
 
     def _apply_plan(self, plan: "Plan") -> None:
@@ -1793,7 +1174,26 @@ class Orchestrator:
                 elif action.action_type == ActionType.ESCALATE_TO_HUMAN:
                     assert isinstance(action, EscalateToHumanAction)
                     self._execute_escalate_action(action)
-                # Add more action types as needed
+                elif action.action_type == ActionType.QUEUE_REVIEW:
+                    from .control.actions import QueueReviewAction
+                    assert isinstance(action, QueueReviewAction)
+                    self._execute_queue_review_action(action)
+                elif action.action_type == ActionType.CREATE_TRIAGE_ISSUE:
+                    from .control.actions import CreateTriageIssueAction
+                    assert isinstance(action, CreateTriageIssueAction)
+                    self._execute_create_triage_issue_action(action)
+                elif action.action_type == ActionType.QUEUE_REWORK:
+                    from .control.actions import QueueReworkAction
+                    assert isinstance(action, QueueReworkAction)
+                    self._execute_queue_rework_action(action)
+                elif action.action_type == ActionType.QUEUE_TRIAGE:
+                    from .control.actions import QueueTriageAction
+                    assert isinstance(action, QueueTriageAction)
+                    self._execute_queue_triage_action(action)
+                elif action.action_type == ActionType.CLEANUP_SESSION:
+                    from .control.actions import CleanupSessionAction
+                    assert isinstance(action, CleanupSessionAction)
+                    self._execute_cleanup_action(action)
             except Exception as e:
                 logger.exception("Failed to apply action %s: %s", action, e)
 
@@ -1870,6 +1270,191 @@ class Orchestrator:
         )
         logger.info("[PLAN] Escalated PR #%d to needs-human (cycle %d)",
                    action.pr_number, action.rework_cycles)
+
+    def _execute_queue_review_action(self, action: "QueueReviewAction") -> None:
+        """Execute a queue review action.
+
+        Adds the review to pending_reviews and adds the review label.
+        This is the execution of the Planner's decision to queue a review.
+        """
+        from .control.actions import QueueReviewAction
+
+        # Check if already queued (defensive)
+        if any(r.pr_number == action.pr_number for r in self.state.pending_reviews):
+            logger.debug("[PLAN] PR #%d already queued, skipping", action.pr_number)
+            return
+
+        # Add needs-code-review label as backup via adapter
+        if self.config.code_review_label:
+            try:
+                self.repository_host.add_label(action.pr_number, self.config.code_review_label)
+                logger.info("Added '%s' label to PR #%d", self.config.code_review_label, action.pr_number)
+            except Exception as e:
+                logger.warning("Failed to add review label to PR #%d: %s", action.pr_number, e)
+
+        # Create pending review
+        review = PendingReview(
+            issue_number=action.issue_number,
+            pr_number=action.pr_number,
+            pr_url=action.pr_url,
+            branch_name=action.branch_name,
+        )
+        self.state.pending_reviews.append(review)
+        log_transition("review", action.pr_number, "CREATED", "QUEUED", f"from issue #{action.issue_number}")
+
+        # Emit event for visibility
+        self.events.publish(TraceEvent("review.queued", {
+            "pr_number": action.pr_number,
+            "issue_number": action.issue_number,
+            "pr_url": action.pr_url,
+        }))
+
+        # Create review state machine
+        review_machine = self._get_review_machine(action.pr_number, action.issue_number)
+        logger.debug("[STATE_MACHINE] ReviewStateMachine for PR #%d in %s", action.pr_number, review_machine.state)
+        logger.info("[PLAN] Queued review for PR #%d", action.pr_number)
+
+    def _execute_queue_rework_action(self, action: "QueueReworkAction") -> None:
+        """Execute a queue rework action.
+
+        Adds the rework to pending_reworks.
+        This is the execution of the Planner's decision to queue a rework.
+        """
+        from .control.actions import QueueReworkAction
+
+        # Check if already queued (defensive)
+        queued_issue_ids = {int(r.issue_key.stable_id()) for r in self.state.pending_reworks}
+        if action.issue_number in queued_issue_ids:
+            logger.debug("[PLAN] Issue #%d already queued for rework, skipping", action.issue_number)
+            return
+
+        # Create IssueKey via repository
+        issue_key = self.repository_host.create_issue_key(action.issue_number)
+
+        # Need agent_type - try to find it from labels or use default
+        # For now, we'll get it from the discovered rework that triggered this action
+        agent_type = ""
+        for rework in self.state.discovered_reworks:
+            if rework.issue_number == action.issue_number:
+                agent_type = rework.agent_type
+                break
+        if not agent_type:
+            logger.warning("[PLAN] No agent_type found for rework issue #%d, using default", action.issue_number)
+            agent_type = "agent:developer"
+
+        # Create pending rework
+        rework = PendingRework(
+            issue_key=issue_key,
+            agent_type=agent_type,
+            rework_cycle=action.rework_cycle,
+        )
+        self.state.pending_reworks.append(rework)
+        log_transition("rework", action.issue_number, "CREATED", "QUEUED",
+                      f"cycle {action.rework_cycle}")
+
+        # Emit event for visibility
+        self.events.publish(TraceEvent("rework.queued", {
+            "issue_number": action.issue_number,
+            "rework_cycle": action.rework_cycle,
+        }))
+        logger.info("[PLAN] Queued rework for issue #%d (cycle %d)", action.issue_number, action.rework_cycle)
+        print(f"🔄 Queued issue #{action.issue_number} for rework (cycle {action.rework_cycle})")
+
+    def _execute_queue_triage_action(self, action: "QueueTriageAction") -> None:
+        """Execute a queue triage action.
+
+        Adds the triage review to pending_triage_reviews.
+        This is the execution of the Planner's decision to queue a triage review.
+        """
+        from .control.actions import QueueTriageAction
+
+        # Check if already queued (defensive)
+        if any(t.issue_number == action.issue_number for t in self.state.pending_triage_reviews):
+            logger.debug("[PLAN] Issue #%d already queued for triage, skipping", action.issue_number)
+            return
+
+        # Add to pending triage reviews
+        self.state.pending_triage_reviews.append(
+            PendingTriageReview(
+                issue_number=action.issue_number,
+                title=action.title,
+            )
+        )
+
+        # Emit event for visibility
+        self.events.publish(TraceEvent("triage.queued", {
+            "issue_number": action.issue_number,
+            "title": action.title,
+        }))
+        logger.info("[PLAN] Queued triage for issue #%d", action.issue_number)
+        print(f"[TRIAGE] Queued failure investigation for #{action.issue_number}")
+
+    def _execute_create_triage_issue_action(self, action: "CreateTriageIssueAction") -> None:
+        """Execute a create triage issue action.
+
+        Creates the GitHub issue and adds to pending_triage_reviews.
+        This is the execution of the Planner's decision to trigger triage.
+        """
+        from .control.actions import CreateTriageIssueAction
+
+        issue_number = self.repository_host.create_issue(
+            title=action.title,
+            body=action.body,
+            labels=list(action.labels),
+        )
+        if issue_number:
+            logger.info("[PLAN] Created triage review issue #%d for %d PRs", issue_number, action.pr_count)
+            print(f"📋 Created triage review issue #{issue_number} for {action.pr_count} PRs")
+            # Queue for immediate processing
+            self.state.pending_triage_reviews.append(
+                PendingTriageReview(issue_number=issue_number, title=action.title)
+            )
+        else:
+            logger.error("[PLAN] Failed to create triage review issue")
+
+    def _execute_cleanup_action(self, action: "CleanupSessionAction") -> None:
+        """Execute a cleanup session action.
+
+        Closes the terminal tab and removes the worktree for a reviewed session.
+        This is the execution of the Planner's decision to clean up.
+        """
+        from .control.actions import CleanupSessionAction
+        from ._worktree_impl import remove_worktree
+        from pathlib import Path
+
+        logger.info("[CLEANUP] Processing cleanup for issue #%d (PR #%d)",
+                   action.issue_number, action.pr_number)
+
+        # Close terminal session if configured
+        if action.close_tabs:
+            try:
+                self._terminal.kill_session(action.terminal_session_name)
+                logger.info("[CLEANUP] Closed terminal session for #%d", action.issue_number)
+            except Exception as e:
+                logger.warning("[CLEANUP] Failed to close session for #%d: %s",
+                             action.issue_number, e)
+
+        # Remove worktree if configured
+        if action.remove_worktrees:
+            try:
+                remove_worktree(Path(action.worktree_path))
+                logger.info("[CLEANUP] Removed worktree for #%d", action.issue_number)
+            except Exception as e:
+                logger.warning("[CLEANUP] Failed to remove worktree for #%d: %s",
+                             action.issue_number, e)
+
+        # Remove from pending_cleanups
+        self.state.pending_cleanups = [
+            c for c in self.state.pending_cleanups
+            if c.pr_number != action.pr_number
+        ]
+
+        # Emit event
+        self.events.publish(TraceEvent("cleanup.completed", {
+            "issue_number": action.issue_number,
+            "pr_number": action.pr_number,
+        }))
+        logger.info("[CLEANUP] Completed cleanup for issue #%d", action.issue_number)
 
     def _fetch_all_issues(self) -> list[Issue]:
         """Fetch all issues from GitHub for configured agents.
@@ -2015,12 +1600,12 @@ class Orchestrator:
 
         Called immediately after a work agent creates a PR.
         The review will be processed in the next loop iteration.
+        Uses repository_host adapter for all GitHub operations.
 
         Also ensures the needs-code-review label is added to the PR as a backup
         (in case the agent didn't use agent-done and bypassed the label).
         """
         import re
-        import subprocess
 
         # Extract PR number from URL
         match = re.search(r"/pull/(\d+)", pr_url)
@@ -2035,36 +1620,24 @@ class Orchestrator:
             if review.pr_number == pr_number:
                 return
 
-        # Fetch PR body to check verification (this is a new PR, may need verification)
+        # Fetch PR to check verification (this is a new PR, may need verification)
         try:
-            result = subprocess.run(
-                ["gh", "pr", "view", str(pr_number), "--json", "body", "-q", ".body",
-                 "--repo", self.config.repo] if self.config.repo else
-                ["gh", "pr", "view", str(pr_number), "--json", "body", "-q", ".body"],
-                capture_output=True, text=True
-            )
-            if result.returncode == 0:
-                pr_body = result.stdout.strip()
+            pr_info = self.repository_host.get_pr(pr_number)
+            if pr_info:
                 from .agent_done import extract_pr_verification_status
-                has_marker, _ = extract_pr_verification_status(pr_body)
+                has_marker, _ = extract_pr_verification_status(pr_info.body)
                 if not has_marker:
                     logger.warning(f"PR #{pr_number}: No verification token - created outside agent-done")
                     print(f"  PR #{pr_number}: ⚠️  No verification token - created outside agent-done")
         except Exception as e:
             logger.warning(f"Could not check verification for PR #{pr_number}: {e}")
 
-        # Add needs-code-review label as backup (idempotent - won't duplicate if already present)
-        if self.config.code_review_label and self.config.repo:
+        # Add needs-code-review label as backup via adapter (idempotent - won't duplicate if already present)
+        # Note: GitHub treats PRs as issues, so issue label operations work on PRs
+        if self.config.code_review_label:
             try:
-                result = subprocess.run(
-                    ["gh", "pr", "edit", str(pr_number), "--add-label", self.config.code_review_label,
-                     "--repo", self.config.repo],
-                    capture_output=True, text=True
-                )
-                if result.returncode == 0:
-                    logger.info(f"Added '{self.config.code_review_label}' label to PR #{pr_number}")
-                else:
-                    logger.warning(f"Could not add label to PR #{pr_number}: {result.stderr}")
+                self.repository_host.add_label(pr_number, self.config.code_review_label)
+                logger.info(f"Added '{self.config.code_review_label}' label to PR #{pr_number}")
             except Exception as e:
                 logger.warning(f"Failed to add review label to PR #{pr_number}: {e}")
 
@@ -2091,189 +1664,22 @@ class Orchestrator:
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:
         """Launch a code review session for a PR.
 
-        Similar to launch_session but for reviewing PRs instead of implementing issues.
+        Delegates to SessionLauncher for the actual launch logic.
+        The orchestrator owns state management (active_sessions, pending_reviews).
         """
-        agent_label = self.config.code_review_agent
-        if not agent_label:
-            return None
-
-        agent_config = self.config.agents.get(agent_label)
-        if not agent_config:
-            print(f"Warning: No agent config for {agent_label}")
-            return None
-
-        # Check if already being worked on (no lock files - direct reality check)
-        session_name = f"review-{review.pr_number}"
-        if any(s.tmux_session_name == session_name for s in self.state.active_sessions):
-            log_transition("review", review.pr_number, "QUEUED", "SKIP", "already in active_sessions")
+        result = self._session_launcher.launch_review_session(
+            review=review,
+            active_sessions=self.state.active_sessions,
+        )
+        if result.success and result.session:
+            self.state.active_sessions.append(result.session)
+            # Remove from pending queue
             self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
-            return None
-
-        if self._session_exists(session_name):
-            log_transition("review", review.pr_number, "QUEUED", "SKIP", "iTerm tab already running")
+            return result.session
+        elif not result.success:
+            # Session skipped (already running or conflict) - remove from pending
             self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
-            return None
-
-        log_transition("review", review.pr_number, "QUEUED", "LAUNCHING", "no conflicts")
-
-        # Use agent's repo_root if set, otherwise fall back to config.repo_root
-        repo_root = agent_config.repo_root or self.config.repo_root
-
-        # Create worktree for the review (checks out the PR branch)
-        from .worktree import create_worktree
-        worktree_path, _ = create_worktree(
-            repo_root=repo_root,
-            issue_number=review.issue_number,
-            issue_title=f"Review PR #{review.pr_number}",
-            branch_name=review.branch_name,  # Use existing PR branch
-            enforce_hooks=False,  # Reviewer doesn't need pre-push hooks
-        )
-
-        # Build command - review agent gets PR context
-        base_command = agent_config.get_command(
-            issue_number=review.issue_number,
-            issue_title=f"Review PR #{review.pr_number}",
-            worktree=worktree_path,
-            pr_number=review.pr_number,
-        )
-
-        # Set completion path env var so agent-done writes to agent-specific file
-        # Each agent (issue agent, review agent) writes to its own file - no race conditions
-        completion_path = get_completion_path(agent_label)
-        command = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}' {base_command}"
-
-        # Create session
-        session_name = f"review-{review.pr_number}"
-        self._create_session(session_name, command, worktree_path, title=f"Review PR #{review.pr_number}")
-
-        # Create a pseudo-issue for the session
-        from .models import Issue
-        pseudo_issue = Issue(
-            number=review.issue_number,
-            title=f"Review PR #{review.pr_number}",
-            labels=[agent_label],
-        )
-
-        session = Session(
-            issue=pseudo_issue,
-            agent_config=agent_config,
-            tmux_session_name=session_name,
-            worktree_path=worktree_path,
-            branch_name=review.branch_name,
-            completion_path=completion_path,
-        )
-
-        self.state.active_sessions.append(session)
-        log_transition("review", review.pr_number, "LAUNCHING", "ACTIVE", "session launched")
-
-        # Emit event for visibility
-        full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent("review.started", {
-            "pr_number": review.pr_number,
-            "issue_number": review.issue_number,
-            "session_name": session_name,
-            "completion_path": completion_path,
-            "completion_path_absolute": str(full_completion_path),
-        }))
-
-        # Trigger state machine transition
-        review_machine = self._get_review_machine(review.pr_number, review.issue_number)
-        if review_machine.state == ReviewState.PENDING.value:
-            logger.debug(f"[STATE_MACHINE] PR #{review.pr_number}: PENDING -> IN_REVIEW")
-            review_machine.start_review()  # type: ignore[attr-defined]
-
-        # Remove from pending queue
-        self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
-
-        return session
-
-    def process_pending_reviews(self) -> None:
-        """Process any pending code reviews.
-
-        Called each loop iteration to launch review sessions.
-        Respects max_concurrent_sessions and paused state.
-        """
-        if not self.config.code_review_agent:
-            logger.info("[REVIEW] No code_review_agent configured - skipping")
-            return
-
-        if not self.state.pending_reviews:
-            return  # Normal case when queue is empty, no logging needed
-
-        # Don't start reviews while paused
-        if self.state.paused:
-            logger.info("[REVIEW] Skipping reviews - orchestrator paused")
-            return
-
-        # Check capacity
-        available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
-        if available_slots <= 0:
-            logger.info("[REVIEW] Skipping reviews - no capacity (active=%d, max=%d)",
-                       len(self.state.active_sessions), self.config.max_concurrent_sessions)
-            return
-
-        logger.info("[REVIEW] Processing %d pending reviews (capacity=%d)",
-                   len(self.state.pending_reviews), available_slots)
-
-        # Launch reviews up to capacity
-        for review in list(self.state.pending_reviews)[:available_slots]:
-            logger.info("[REVIEW] Launching review for PR #%d (issue #%d)",
-                       review.pr_number, review.issue_number)
-            try:
-                self.launch_review_session(review)
-            except Exception as e:
-                logger.exception("[REVIEW] Failed to launch review for PR #%d: %s",
-                                review.pr_number, e)
-                print(f"[REVIEW] Failed to launch review for PR #{review.pr_number}: {e}")
-
-    def process_pending_triage_reviews(self) -> None:
-        """Process any pending triage reviews (failure investigations or batch reviews).
-
-        Called each loop iteration to launch triage sessions.
-        Respects max_concurrent_sessions and paused state.
-        triage reviews are treated with same priority as code reviews.
-        """
-        if not self.config.triage_review_agent:
-            return  # Triage not configured
-
-        if not self.state.pending_triage_reviews:
-            return  # Normal case when queue is empty
-
-        # Don't start reviews while paused
-        if self.state.paused:
-            logger.info("[TRIAGE] Skipping triage reviews - orchestrator paused")
-            return
-
-        # Check capacity
-        available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
-        if available_slots <= 0:
-            logger.info("[TRIAGE] Skipping triage reviews - no capacity (active=%d, max=%d)",
-                       len(self.state.active_sessions), self.config.max_concurrent_sessions)
-            return
-
-        logger.info("[TRIAGE] Processing %d pending triage reviews (capacity=%d)",
-                   len(self.state.pending_triage_reviews), available_slots)
-
-        # Launch triage reviews up to capacity
-        for triage_review in list(self.state.pending_triage_reviews)[:available_slots]:
-            logger.info("[TRIAGE] Launching triage review for issue #%d: %s",
-                       triage_review.issue_number, triage_review.title)
-            try:
-                self._launch_triage_session(triage_review)
-                # Remove from queue after successful launch
-                self.state.pending_triage_reviews = [
-                    r for r in self.state.pending_triage_reviews
-                    if r.issue_number != triage_review.issue_number
-                ]
-            except Exception as e:
-                logger.exception("[TRIAGE] Failed to launch triage review for #%d: %s",
-                                triage_review.issue_number, e)
-                print(f"[TRIAGE] Failed to launch triage review for #{triage_review.issue_number}: {e}")
-                # Remove from queue to prevent infinite retry loop
-                self.state.pending_triage_reviews = [
-                    r for r in self.state.pending_triage_reviews
-                    if r.issue_number != triage_review.issue_number
-                ]
+        return None
 
     def _launch_triage_session(self, triage_review: PendingTriageReview) -> None:
         """Launch a triage session to investigate a failure or review PRs.
@@ -2304,379 +1710,116 @@ class Orchestrator:
     def process_deferred_cleanups(self) -> None:
         """Process deferred cleanups for sessions awaiting review completion.
 
-        Checks pending cleanups and performs cleanup when:
-        - Triage workflow: PR has triage-reviewed label
-        - Code review workflow: PR has code-reviewed label
-
-        Called each loop iteration.
+        Delegates to CleanupManager for the actual cleanup logic.
         """
-        if not self.state.pending_cleanups:
-            return  # Nothing to process
-
-        # Determine which label indicates review is complete
-        if self.config.triage_review_agent:
-            cleanup_label = self.config.triage_reviewed_label
-        elif self.config.code_review_agent:
-            cleanup_label = self.config.code_reviewed_label
-        else:
-            # No review workflow - shouldn't have deferred cleanups
-            logger.warning("[CLEANUP] Found deferred cleanups but no review workflow configured")
-            return
-
-        if not cleanup_label:
-            logger.warning("[CLEANUP] No cleanup label configured")
-            return
-
-        # Get all PRs with the cleanup label
-        try:
-            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
-            reviewed_pr_numbers = {pr.number for pr in reviewed_prs}
-        except Exception as e:
-            logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
-            return
-
-        # Process each pending cleanup
-        cleanups_to_remove = []
-        for pending in self.state.pending_cleanups:
-            if pending.pr_number in reviewed_pr_numbers:
-                logger.info(f"[CLEANUP] PR #{pending.pr_number} has '{cleanup_label}' label - cleaning up")
-
-                # Close terminal session if configured
-                close_tabs = (
-                    self.config.cleanup.with_triage.close_ai_session_tabs
-                    if self.config.triage_review_agent
-                    else self.config.cleanup.without_triage.close_ai_session_tabs
-                )
-                if close_tabs:
-                    try:
-                        self._kill_session(pending.terminal_session_name)
-                        logger.info(f"[CLEANUP] Closed terminal session for #{pending.issue_number}")
-                    except Exception as e:
-                        logger.warning(f"[CLEANUP] Failed to close session for #{pending.issue_number}: {e}")
-
-                # Remove worktree if configured
-                remove_wt = (
-                    self.config.cleanup.with_triage.remove_worktrees
-                    if self.config.triage_review_agent
-                    else self.config.cleanup.without_triage.remove_worktrees
-                )
-                if remove_wt:
-                    try:
-                        remove_worktree(pending.worktree_path)
-                        logger.info(f"[CLEANUP] Removed worktree for #{pending.issue_number}")
-                    except Exception as e:
-                        logger.warning(f"[CLEANUP] Failed to remove worktree for #{pending.issue_number}: {e}")
-
-                cleanups_to_remove.append(pending)
-
-        # Remove processed cleanups
-        for cleanup in cleanups_to_remove:
-            self.state.pending_cleanups.remove(cleanup)
-
-        if cleanups_to_remove:
-            logger.info(f"[CLEANUP] Processed {len(cleanups_to_remove)} deferred cleanups")
+        self.state.pending_cleanups = self._cleanup_manager.process_deferred_cleanups(
+            self.state.pending_cleanups
+        )
 
     def _recover_orphaned_cleanups(self) -> None:
         """Recover and process orphaned cleanups from before restart.
 
-        Called during startup to clean up worktrees for PRs that were reviewed
-        (have triage-reviewed or code-reviewed label) but weren't cleaned up before
-        the orchestrator stopped.
-
-        Uses centralized naming conventions to derive worktree paths.
+        Delegates to CleanupManager for the actual cleanup logic.
         """
-        import re
+        def set_startup_message(msg: str) -> None:
+            self.state.startup_message = msg
 
-        # Determine which label indicates cleanup is due
-        if self.config.triage_review_agent:
-            cleanup_label = self.config.triage_reviewed_label
-            close_tabs = self.config.cleanup.with_triage.close_ai_session_tabs
-            remove_wt = self.config.cleanup.with_triage.remove_worktrees
-        elif self.config.code_review_agent:
-            cleanup_label = self.config.code_reviewed_label
-            close_tabs = self.config.cleanup.without_triage.close_ai_session_tabs
-            remove_wt = self.config.cleanup.without_triage.remove_worktrees
-        else:
-            # No review workflow - nothing to recover
-            return
-
-        if not cleanup_label:
-            return
-
-        self.state.startup_message = "Checking for orphaned cleanups..."
-        print(f"\nChecking for orphaned cleanups (PRs with '{cleanup_label}' label)...")
-
-        try:
-            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
-        except Exception as e:
-            logger.warning(f"[CLEANUP] Failed to fetch reviewed PRs: {e}")
-            return
-
-        if not reviewed_prs:
-            print("  No reviewed PRs found")
-            return
-
-        cleaned_count = 0
-        for pr in reviewed_prs:
-            # Extract issue number from branch name (e.g., "328-description" -> 328)
-            branch = pr.branch
-            issue_number = extract_issue_number_from_branch(branch)
-            if issue_number is None:
-                continue
-            session_name = self._get_session_name(issue_number, "issue")
-
-            # Check if session is still running (skip if so)
-            if self._session_exists(session_name):
-                logger.debug(f"[CLEANUP] Session {session_name} still running - skipping")
-                continue
-
-            # Check each agent config for matching worktree
-            for agent_label, agent_config in self.config.agents.items():
-                worktree_path = self._get_worktree_path(issue_number, agent_config)
-
-                if worktree_path.exists():
-                    logger.info(f"[CLEANUP] Found orphaned worktree for #{issue_number} at {worktree_path}")
-                    print(f"  #{issue_number}: Cleaning up orphaned worktree")
-
-                    # Close terminal if configured (may already be closed)
-                    if close_tabs:
-                        try:
-                            self._kill_session(session_name)
-                        except Exception:
-                            pass  # Session probably already gone
-
-                    # Remove worktree if configured
-                    if remove_wt:
-                        try:
-                            remove_worktree(worktree_path)
-                            logger.info(f"[CLEANUP] Removed orphaned worktree for #{issue_number}")
-                        except Exception as e:
-                            logger.warning(f"[CLEANUP] Failed to remove worktree for #{issue_number}: {e}")
-
-                    cleaned_count += 1
-                    break  # Found the worktree, no need to check other agents
-
-        if cleaned_count > 0:
-            print(f"  Cleaned up {cleaned_count} orphaned worktree(s)")
-        else:
-            print("  No orphaned worktrees found")
-
-    def check_triage_review_trigger(self) -> None:
-        """Check if we should trigger a triage batch review based on PR count.
-
-        Creates a review issue if:
-        - triage_review_agent is configured
-        - triage_review_threshold > 0
-        - Number of code-reviewed PRs >= threshold
-        - No existing open triage review issue exists
-        - Orchestrator is not paused
-        """
-        # Don't trigger new reviews while paused
-        if self.state.paused:
-            logger.debug("[TRIAGE] Skipped - orchestrator paused")
-            return
-
-        # Check if triage review is configured
-        if not self.config.triage_review_agent:
-            logger.debug("[TRIAGE] Skipped - triage_review_agent not configured")
-            return
-        if self.config.triage_review_threshold <= 0:
-            logger.debug("[TRIAGE] Skipped - threshold is 0 (manual only)")
-            return
-
-        # Label to watch: either explicit triage_review_label or code_reviewed_label
-        watch_label = self.config.triage_review_label or self.config.code_reviewed_label
-        if not watch_label:
-            logger.debug("[TRIAGE] Skipped - no watch label configured")
-            return
-
-        # Count PRs ready for triage review
-        prs = self.repository_host.get_prs_with_label(watch_label)
-        pr_count = len(prs)
-        threshold = self.config.triage_review_threshold
-
-        # Log the check (audit trail)
-        logger.info("[TRIAGE] Check: %d PRs with '%s' label (threshold: %d)",
-                   pr_count, watch_label, threshold)
-
-        if pr_count < threshold:
-            logger.info("[TRIAGE] Not triggered - %d/%d PRs (need %d more)",
-                       pr_count, threshold, threshold - pr_count)
-            return
-
-        # Check if a triage review issue already exists (avoid duplicates)
-        logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-        existing = self.repository_host.list_issues(
-            labels=[self.config.triage_review_agent],
-            limit=10,
-        )
-        for issue in existing:
-            if "Batch Review" in issue.title or "Triage Review" in issue.title:
-                logger.info("[TRIAGE] Skipped - existing triage review issue #%d already open",
-                           issue.number)
-                return
-
-        # Create the triage review issue
-        logger.info("[TRIAGE] TRIGGERING batch review for %d PRs", pr_count)
-        pr_list = "\n".join(f"- PR #{pr.number}: {pr.title}" for pr in prs)
-        body = f"""## Triage Batch Review Triggered
-
-{len(prs)} PRs have passed code review and are ready for triage review:
-
-{pr_list}
-
-Review these PRs for patterns, architectural concerns, and process improvements.
-Flip labels from `{watch_label}` to `{self.config.triage_reviewed_label}` after review.
-"""
-        title = f"Triage Batch Review: {len(prs)} PRs pending"
-        issue_number = create_issue(
-            self.config.repo,
-            title=title,
-            body=body,
-            labels=[self.config.triage_review_agent],
-        )
-        if issue_number:
-            logger.info("[TRIAGE] Created triage review issue #%d for %d PRs", issue_number, pr_count)
-            print(f"📋 Created triage review issue #{issue_number} for {len(prs)} PRs")
-            # Queue for immediate processing
-            self.state.pending_triage_reviews.append(
-                PendingTriageReview(issue_number=issue_number, title=title)
-            )
-        else:
-            logger.error("[TRIAGE] Failed to create triage review issue")
+        self._cleanup_manager.recover_orphaned_cleanups(set_startup_message)
 
     def scan_needs_code_review_prs(self) -> None:
-        """Scan for PRs with needs-code-review label and queue them.
+        """Scan for PRs with needs-code-review label and store as discovered.
 
         Called periodically to pick up PRs that need review but aren't queued.
-        This handles cases where review sessions crashed or the orchestrator restarted.
+        Uses PRScanner controller for discovery logic.
+
+        NOTE: This method stores discovered reviews for the Planner to decide.
+        The Planner produces QueueReviewAction, which the orchestrator applies.
         """
-        if not self.config.code_review_agent or not self.config.code_review_label:
-            return
+        from .models import DiscoveredReview
 
-        prs = self.repository_host.get_prs_with_label(self.config.code_review_label)
+        # Get active session names for filtering
+        active_sessions = [s.tmux_session_name for s in self.state.active_sessions]
 
-        for pr in prs:
-            pr_number = pr.number
+        # Use scanner to find orphaned reviews
+        reviews = self._pr_scanner.scan_for_reviews(
+            already_queued=self.state.pending_reviews,
+            active_sessions=active_sessions,
+        )
 
-            # Skip if already queued
-            if any(r.pr_number == pr_number for r in self.state.pending_reviews):
-                continue
-
-            # Skip if already being reviewed (check for active review session)
-            if self._session_exists(f"review-{pr_number}"):
-                continue
-
-            # Extract issue number from PR body
-            import re
-            pr_body = pr.body
-            issue_match = re.search(r'Closes #(\d+)', pr_body, re.IGNORECASE)
-            issue_number = int(issue_match.group(1)) if issue_match else pr_number
-
-            review = PendingReview(
-                issue_number=issue_number,
-                pr_number=pr_number,
-                pr_url=pr.url,
-                branch_name=pr.branch,
+        # Store as discovered reviews for Planner to decide
+        for review in reviews:
+            # Convert PendingReview to DiscoveredReview for Planner
+            discovered = DiscoveredReview(
+                issue_number=review.issue_number,
+                pr_number=review.pr_number,
+                pr_url=review.pr_url,
+                branch_name=review.branch_name,
             )
-            self.state.pending_reviews.append(review)
-            logger.info("[REVIEW] Queued orphaned PR #%d for code review", pr_number)
-            print(f"📝 Found orphaned PR #{pr_number} - queued for code review")
+            self.state.discovered_reviews.append(discovered)
+            logger.info("[SCAN] Discovered orphaned PR #%d for code review - Planner will decide",
+                       review.pr_number)
 
     def scan_needs_rework_prs(self) -> None:
-        """Scan for PRs with needs-rework label and queue them for rework.
+        """Scan for PRs with needs-rework label and store as discovered.
 
         Called periodically to pick up PRs where reviewers requested changes.
+        Uses PRScanner controller for discovery logic.
+
+        NOTE: This method stores discovered reworks/escalations for the Planner to decide.
+        The Planner produces QueueReworkAction/EscalateToHumanAction, which the orchestrator applies.
         """
-        if not self.config.code_review_agent:
-            return  # Review workflow not configured
+        from .models import DiscoveredRework, DiscoveredEscalation
 
-        rework_label = self.config.get_label_needs_rework()
-        prs = self.repository_host.get_prs_with_label(rework_label)
-        logger.info("[REWORK] Scanned for '%s' label, found %d PRs", rework_label, len(prs))
+        # Get active issue numbers for filtering
+        active_issues = [s.issue.number for s in self.state.active_sessions]
 
-        for pr in prs:
-            pr_number = pr.number
+        # Use scanner to find reworks and escalations
+        reworks, escalations = self._pr_scanner.scan_for_reworks(
+            already_queued=self.state.pending_reworks,
+            active_sessions=active_issues,
+        )
 
-            # Get the PR details to find associated issue
-            import re
-            pr_body = pr.body
-            issue_match = re.search(r"Closes #(\d+)", pr_body)
-            issue_number = int(issue_match.group(1)) if issue_match else pr_number
-
-            # Check if already queued (by issue_key)
-            if any(int(r.issue_key.stable_id()) == issue_number for r in self.state.pending_reworks):
-                continue
-
-            # Check if already being worked on
-            if any(s.issue.number == issue_number for s in self.state.active_sessions):
-                continue
-
-            branch_name = pr.branch or f"{issue_number}-rework"
-
-            # Determine rework cycle from labels (PRInfo.labels is list[str])
-            rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
-
-            # Check if we've exceeded max rework cycles
-            if rework_cycle > self.config.max_rework_cycles:
-                self._escalate_to_needs_human(pr_number, issue_number, rework_cycle)
-                continue
-
-            # Extract agent type from PR labels (PRInfo.labels is list[str])
-            agent_type = None
-            for label_name in pr.labels:
-                if label_name.startswith("agent:"):
-                    agent_type = label_name
-                    break
-
-            if not agent_type:
-                logger.warning("[REWORK] PR #%d has no agent label, skipping", pr_number)
-                continue
-
-            # Create store-agnostic IssueKey via adapter
-            issue_key = self.repository_host.create_issue_key(issue_number)
-
-            # Queue for rework
-            rework = PendingRework(
-                issue_key=issue_key,
-                agent_type=agent_type,
+        # Store escalations as discovered facts for Planner
+        for pr_number, issue_number, rework_cycle in escalations:
+            discovered = DiscoveredEscalation(
+                issue_number=issue_number,
+                pr_number=pr_number,
                 rework_cycle=rework_cycle,
             )
-            self.state.pending_reworks.append(rework)
-            print(f"🔄 Queued issue {issue_key} for rework (cycle {rework_cycle})")
+            self.state.discovered_escalations.append(discovered)
+            logger.info("[SCAN] Discovered escalation for PR #%d - Planner will decide",
+                       pr_number)
 
-    def _get_rework_cycle_from_labels(self, labels: list) -> int:
-        """Extract rework cycle number from PR labels.
-
-        Looks for labels like "rework-1", "rework-2", etc.
-        Returns 1 if no rework label found (first rework).
-        """
-        import re
-        for label in labels:
-            label_name = label.get("name", "") if isinstance(label, dict) else str(label)
-            match = re.match(r"rework-(\d+)", label_name)
-            if match:
-                return int(match.group(1)) + 1  # Next cycle
-        return 1  # First rework
+        # Store reworks as discovered facts for Planner
+        for rework in reworks:
+            discovered = DiscoveredRework(
+                issue_number=int(rework.issue_key.stable_id()),
+                pr_number=0,  # PR number not directly available from PendingRework
+                branch_name="",  # Branch not directly available
+                agent_type=rework.agent_type,
+                rework_cycle=rework.rework_cycle,
+            )
+            self.state.discovered_reworks.append(discovered)
+            logger.info("[SCAN] Discovered rework for issue #%d - Planner will decide",
+                       int(rework.issue_key.stable_id()))
 
     def _escalate_to_needs_human(self, pr_number: int, issue_number: int, rework_cycle: int) -> None:
         """Escalate PR to needs-human after max rework cycles.
 
         Removes needs-rework label and adds needs-human label.
+        Uses repository_host adapter for all GitHub operations.
         """
         needs_human_label = self.config.get_label_needs_human()
         rework_label = self.config.get_label_needs_rework()
 
-        # Add needs-human label and remove needs-rework
+        # Add needs-human label and remove needs-rework via adapter
+        # Note: GitHub treats PRs as issues, so issue label operations work on PRs
         try:
-            subprocess.run([
-                "gh", "pr", "edit", str(pr_number),
-                "--add-label", needs_human_label,
-                "--remove-label", rework_label,
-            ], capture_output=True, text=True, check=True)
+            self.repository_host.add_label(pr_number, needs_human_label)
+            self.repository_host.remove_label(pr_number, rework_label)
             print(f"⚠️  PR #{pr_number} escalated to {needs_human_label} after {rework_cycle} rework cycles")
 
-            # Post comment explaining escalation
+            # Post comment explaining escalation via adapter
             comment = f"""## ⚠️ Escalated to Human Review
 
 This PR has gone through {rework_cycle - 1} rework cycles without passing review.
@@ -2687,7 +1830,7 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
 - Provide specific guidance for the agent
 - Take over the implementation
 """
-            subprocess.run(["gh", "pr", "comment", str(pr_number), "--body", comment], capture_output=True, text=True, check=True)
+            self.repository_host.add_comment(pr_number, comment)
 
             # Emit trace event via EventSink (SSE, IPC, etc.)
             self.events.publish(TraceEvent("review.escalated", {
@@ -2704,6 +1847,7 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
 
         Called on startup to catch PRs where label addition failed due to
         orchestrator crash/restart or other failures.
+        Uses repository_host adapter for all GitHub operations.
 
         Returns the number of PRs that were fixed.
         """
@@ -2713,54 +1857,30 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
         fixed_count = 0
         code_reviewed_label = self.config.code_reviewed_label
 
-        # Get all open PRs
-        try:
-            result = subprocess.run(
-                ["gh", "pr", "list", "--repo", self.config.repo, "--state", "open",
-                 "--json", "number,body,labels", "--limit", "100"],
-                capture_output=True, text=True
-            )
-            if result.returncode != 0:
-                logger.warning("Failed to list PRs for label reconciliation: %s", result.stderr)
-                return 0
-
-            import json
-            prs = json.loads(result.stdout)
-        except Exception as e:
-            logger.warning("Failed to list PRs for label reconciliation: %s", e)
-            return 0
+        # Get all open PRs via adapter
+        prs = self.repository_host.list_prs(state="open", limit=100)
 
         for pr in prs:
-            pr_number = pr.get("number")
-            body = pr.get("body", "")
-            labels = [l.get("name", "") for l in pr.get("labels", [])]
-
             # Only reconcile PRs created by the orchestrator
-            if ORCHESTRATOR_PR_MARKER not in body:
+            if ORCHESTRATOR_PR_MARKER not in pr.body:
                 continue
 
             # Check if it already has a review label
             has_review_label = (
-                self.config.code_review_label in labels or
-                code_reviewed_label in labels
+                self.config.code_review_label in pr.labels or
+                code_reviewed_label in pr.labels
             )
 
             if not has_review_label:
-                # Add the needs-code-review label
+                # Add the needs-code-review label via adapter
+                # Note: GitHub treats PRs as issues, so issue label operations work on PRs
                 try:
-                    result = subprocess.run(
-                        ["gh", "pr", "edit", str(pr_number), "--add-label",
-                         self.config.code_review_label, "--repo", self.config.repo],
-                        capture_output=True, text=True
-                    )
-                    if result.returncode == 0:
-                        fixed_count += 1
-                        print(f"🏷️  Added '{self.config.code_review_label}' to orphaned PR #{pr_number}")
-                        logger.info("Reconciled label on PR #%d", pr_number)
-                    else:
-                        logger.warning("Failed to add label to PR #%d: %s", pr_number, result.stderr)
+                    self.repository_host.add_label(pr.number, self.config.code_review_label)
+                    fixed_count += 1
+                    print(f"🏷️  Added '{self.config.code_review_label}' to orphaned PR #{pr.number}")
+                    logger.info("Reconciled label on PR #%d", pr.number)
                 except Exception as e:
-                    logger.warning("Failed to reconcile label on PR #%d: %s", pr_number, e)
+                    logger.warning("Failed to reconcile label on PR #%d: %s", pr.number, e)
 
         if fixed_count > 0:
             print(f"✅ Reconciled labels on {fixed_count} orphaned PR(s)")
@@ -2770,157 +1890,22 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
         """Launch a rework session to fix issues found in review.
 
-        Similar to launch_session but for fixing an existing PR.
-        Uses IssueKey for store-agnostic identity, resolves PR details via adapter.
+        Delegates to SessionLauncher for the actual launch logic.
+        The orchestrator owns state management (active_sessions, pending_reworks).
         """
-        # Use cached agent_type from PendingRework (no fetch needed)
-        agent_config = self.config.agents.get(rework.agent_type)
-        if not agent_config:
-            print(f"Warning: No agent config for {rework.agent_type}")
-            return None
-
-        # Resolve issue number from IssueKey (adapter translates key → handle)
-        # For GitHub, external_id is the issue number as string
-        issue_number = int(rework.issue_key.stable_id())
-
-        # Resolve PR details from issue number via adapter
-        # The adapter knows how to find the PR associated with an issue
-        prs = self.repository_host.get_prs_for_branch(f"{issue_number}-")  # Branch pattern
-        if not prs:
-            # Try fetching by issue reference in PR body
-            logger.warning("[REWORK] Could not find PR for issue %s", rework.issue_key)
-            # Fall back to constructing branch name
-            branch_name = f"{issue_number}-rework"
-            pr_number = issue_number  # Use issue number as fallback
-        else:
-            pr = prs[0]  # Take first matching PR
-            branch_name = pr.branch
-            pr_number = pr.number
-
-        # Check if already being worked on (no lock files - direct reality check)
-        session_name = f"rework-{issue_number}"
-        if any(s.tmux_session_name == session_name for s in self.state.active_sessions):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "already in active_sessions")
+        result = self._session_launcher.launch_rework_session(
+            rework=rework,
+            active_sessions=self.state.active_sessions,
+        )
+        if result.success and result.session:
+            self.state.active_sessions.append(result.session)
+            # Remove from pending queue
             self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
-            return None
-
-        if self._session_exists(session_name):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "iTerm tab already running")
+            return result.session
+        elif not result.success:
+            # Session skipped (already running or conflict) - remove from pending
             self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
-            return None
-
-        log_transition("rework", issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")
-
-        # Use agent's repo_root if set, otherwise fall back to config.repo_root
-        repo_root = agent_config.repo_root or self.config.repo_root
-
-        # Create worktree for rework (checks out the existing PR branch)
-        worktree_path, _ = create_worktree(
-            repo_root=repo_root,
-            issue_number=issue_number,
-            issue_title=f"Rework #{pr_number}",
-            branch_name=branch_name,  # Use existing PR branch
-            enforce_hooks=self.config.enforce_hooks,
-            pre_push_hook=self.config.pre_push_hook,
-        )
-
-        # Build command - include rework context
-        base_command = agent_config.get_command(
-            issue_number=issue_number,
-            issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
-            worktree=worktree_path,
-            pr_number=pr_number,
-        )
-
-        # Set completion path env var so agent-done writes to agent-specific file
-        completion_path = get_completion_path(rework.agent_type)
-        command = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}' {base_command}"
-
-        # Create session
-        self._create_session(session_name, command, worktree_path, title=f"Rework #{issue_number}")
-
-        # Create minimal Issue object for session tracking
-        # (We have the key identity, agent type is cached in rework)
-        rework_issue = Issue(
-            number=issue_number,
-            title=f"Rework #{pr_number}",
-            labels=[rework.agent_type],
-        )
-
-        session = Session(
-            issue=rework_issue,
-            agent_config=agent_config,
-            tmux_session_name=session_name,
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-            completion_path=completion_path,
-        )
-
-        self.state.active_sessions.append(session)
-        log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
-        print(f"🔧 Launched rework session for issue #{issue_number} (cycle {rework.rework_cycle})")
-
-        # Emit event for visibility
-        full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent("rework.started", {
-            "issue_number": issue_number,
-            "pr_number": pr_number,
-            "session_name": session_name,
-            "rework_cycle": rework.rework_cycle,
-            "completion_path": completion_path,
-            "completion_path_absolute": str(full_completion_path),
-        }))
-
-        # Update rework cycle label on PR
-        self._update_rework_cycle_label(pr_number, rework.rework_cycle)
-
-        # Remove from pending queue and remove needs-rework label
-        self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
-        rework_label = self.config.get_label_needs_rework()
-        try:
-            subprocess.run(["gh", "pr", "edit", str(pr_number), "--remove-label", rework_label],
-                          capture_output=True, text=True)
-        except Exception:
-            pass
-
-        return session
-
-    def _update_rework_cycle_label(self, pr_number: int, cycle: int) -> None:
-        """Update the rework cycle label on a PR."""
-        try:
-            # Remove old rework labels and add new one
-            for i in range(1, cycle):
-                try:
-                    subprocess.run(["gh", "pr", "edit", str(pr_number), "--remove-label", f"rework-{i}"],
-                                  capture_output=True, text=True)
-                except Exception:
-                    pass
-            subprocess.run(["gh", "pr", "edit", str(pr_number), "--add-label", f"rework-{cycle}"],
-                          capture_output=True, text=True, check=True)
-        except Exception as e:
-            print(f"Warning: Failed to update rework label on PR #{pr_number}: {e}")
-
-    def process_pending_reworks(self) -> None:
-        """Process any pending rework requests.
-
-        Called each loop iteration to launch rework sessions.
-        Respects max_concurrent_sessions and paused state.
-        """
-        if not self.state.pending_reworks:
-            return
-
-        # Don't start reworks while paused
-        if self.state.paused:
-            return
-
-        # Check capacity
-        available_slots = self.config.max_concurrent_sessions - len(self.state.active_sessions)
-        if available_slots <= 0:
-            return
-
-        # Launch reworks up to capacity
-        for rework in list(self.state.pending_reworks)[:available_slots]:
-            self.launch_rework_session(rework)
+        return None
 
     def prioritize(self, issue_number: int) -> None:
         """Add an issue to the priority queue."""

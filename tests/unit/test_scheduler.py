@@ -1192,7 +1192,13 @@ class TestLaunchSessionDependencyCAS:
         # Create orchestrator with mocked dependencies
         config = MagicMock(spec=Config)
         config.repo = "test/repo"
+        config.repo_root = "/tmp"
         config.agents = {"agent:backend": MagicMock(repo_root="/tmp", worktree_base=None)}
+        config.setup_worktree = None
+
+        # Create a mock repository host
+        mock_repository_host = MagicMock()
+        mock_repository_host.add_label = MagicMock()
 
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
@@ -1204,6 +1210,8 @@ class TestLaunchSessionDependencyCAS:
             orch.runner.session_exists.return_value = False
             orch.scheduler = MagicMock()
             orch.scheduler.dependency_evaluator = evaluator
+            orch._repository_host = mock_repository_host  # Add repository host
+            orch.session_manager = MagicMock()  # Add session manager
 
         # Original issue had no dependencies
         issue = Issue(
@@ -1244,6 +1252,11 @@ class TestLaunchSessionDependencyCAS:
         config.repo = "test/repo"
         config.repo_root = "/tmp/repo"
         config.agents = {"agent:backend": MagicMock(repo_root="/tmp", worktree_base=None)}
+        config.setup_worktree = None
+
+        # Create a mock repository host
+        mock_repository_host = MagicMock()
+        mock_repository_host.add_label = MagicMock()
 
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
@@ -1255,6 +1268,8 @@ class TestLaunchSessionDependencyCAS:
             orch.runner.session_exists.return_value = False
             orch.scheduler = MagicMock()
             orch.scheduler.dependency_evaluator = evaluator
+            orch._repository_host = mock_repository_host  # Add repository host
+            orch.session_manager = MagicMock()  # Add session manager
 
         issue = Issue(
             number=1,
@@ -1275,7 +1290,7 @@ class TestLaunchSessionDependencyCAS:
         # The rest of the launch will fail due to incomplete mocking, but that's OK
         with patch.object(orch, '_refresh_issue', return_value=fresh_issue):
             with patch.object(orch, '_session_exists', return_value=False):
-                with patch('issue_orchestrator.orchestrator.create_worktree') as mock_worktree:
+                with patch('issue_orchestrator.control.session_launcher.create_worktree') as mock_worktree:
                     # If we get to create_worktree, the dependency check passed
                     mock_worktree.side_effect = Exception("Stop here - deps check passed")
                     try:

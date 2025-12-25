@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from issue_orchestrator import tmux
+from issue_orchestrator import _tmux_impl as tmux
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +53,7 @@ class TestTmuxManager:
     def test_server_property_creates_server(self, mock_server):
         """Test server property creates a server on first access."""
         manager = tmux.TmuxManager()
-        with patch("issue_orchestrator.tmux.libtmux.Server", return_value=mock_server):
+        with patch("issue_orchestrator._tmux_impl.libtmux.Server", return_value=mock_server):
             server = manager.server
             assert server == mock_server
             assert manager._server == mock_server
@@ -415,7 +415,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_create_session_success(self, mock_session, mock_window):
         """Test create_session creates a window."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_get_manager.return_value = mock_manager
 
@@ -433,7 +433,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_session_exists_true(self):
         """Test session_exists returns True when window exists."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_manager.window_exists.return_value = True
             mock_get_manager.return_value = mock_manager
@@ -444,7 +444,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_session_exists_false(self):
         """Test session_exists returns False when window doesn't exist."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_manager.window_exists.return_value = False
             mock_get_manager.return_value = mock_manager
@@ -459,7 +459,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_kill_session_success(self):
         """Test kill_session kills the window."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_get_manager.return_value = mock_manager
 
@@ -468,7 +468,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_kill_session_invalid_name(self):
         """Test kill_session does nothing for invalid session name."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_get_manager.return_value = mock_manager
 
@@ -478,7 +478,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_list_sessions(self):
         """Test list_sessions returns issue session names."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_manager.list_issue_windows.return_value = [42, 123]
             mock_get_manager.return_value = mock_manager
@@ -488,7 +488,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_list_sessions_empty(self):
         """Test list_sessions returns empty list."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_manager.list_issue_windows.return_value = []
             mock_get_manager.return_value = mock_manager
@@ -498,7 +498,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_attach_session(self):
         """Test attach_session calls os.execvp."""
-        with patch("issue_orchestrator.tmux.os.execvp") as mock_execvp:
+        with patch("issue_orchestrator._tmux_impl.os.execvp") as mock_execvp:
             tmux.attach_session("issue-42")
             mock_execvp.assert_called_once_with(
                 "tmux", ["tmux", "attach-session", "-t", tmux.SESSION_NAME]
@@ -506,7 +506,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_send_keys_with_enter(self, mock_session, mock_window):
         """Test send_keys sends keys with enter."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_manager.get_window.return_value = mock_window
             mock_get_manager.return_value = mock_manager
@@ -516,7 +516,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_send_keys_without_enter(self, mock_session, mock_window):
         """Test send_keys sends keys without enter."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_manager.get_window.return_value = mock_window
             mock_get_manager.return_value = mock_manager
@@ -528,7 +528,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_send_keys_no_window(self):
         """Test send_keys does nothing when window doesn't exist."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_manager.get_window.return_value = None
             mock_get_manager.return_value = mock_manager
@@ -538,7 +538,7 @@ class TestBackwardCompatibleFunctions:
 
     def test_send_keys_invalid_name(self):
         """Test send_keys does nothing for invalid session name."""
-        with patch("issue_orchestrator.tmux.get_manager") as mock_get_manager:
+        with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
             mock_get_manager.return_value = mock_manager
 
