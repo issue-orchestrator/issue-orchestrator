@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .control.session_manager import SessionManager
     from .control.label_sync import LabelSync
     from .control.action_applier import ActionApplier
+    from .control.fact_gatherer import FactGatherer
     from .control.actions import LaunchSessionAction, EscalateToHumanAction
     from .models import TriageFacts
 
@@ -99,6 +100,8 @@ class Orchestrator:
     label_sync: Optional["LabelSync"] = field(default=None, repr=False)
     # Action applier (IO boundary) - can be injected, otherwise created in __post_init__
     action_applier: Optional["ActionApplier"] = field(default=None, repr=False)
+    # Fact gatherer (read-only snapshot creation) - can be injected, otherwise created in __post_init__
+    fact_gatherer: Optional["FactGatherer"] = field(default=None, repr=False)
     # Internal state
     state: OrchestratorState = field(default_factory=OrchestratorState)
     scheduler: Scheduler = field(init=False)
@@ -160,6 +163,14 @@ class Orchestrator:
                 worktree_manager=GitWorktreeManager(),
                 issue_tracker=self.repository_host,
                 reconcile=False,  # Can enable later
+            )
+
+        # Use injected fact gatherer or create default
+        if self.fact_gatherer is None:
+            from .control.fact_gatherer import FactGatherer as FactGathererClass
+            self.fact_gatherer = FactGathererClass(
+                config=self.config,
+                repository_host=self.repository_host,
             )
 
         # Note: Observer is initialized without session_machines initially
@@ -936,7 +947,7 @@ class Orchestrator:
                         filtered_issues = self.state.cached_queue_issues
 
                     # Create snapshot and plan (uses cached or fresh issues)
-                    snapshot = self._create_snapshot(filtered_issues)
+                    snapshot = self.fact_gatherer.create_snapshot(self.state, filtered_issues)
                     assert self.planner is not None, "Planner not initialized"
                     plan = self.planner.plan(snapshot)
 
@@ -1036,135 +1047,6 @@ class Orchestrator:
         self.state.paused = False
         print("Orchestrator resumed")
         self.events.publish(TraceEvent("orchestrator.resumed"))
-
-    def _gather_triage_facts(self) -> Optional["TriageFacts"]:
-        """Gather facts for triage review trigger decision.
-
-        Returns immutable facts for the Planner to decide whether to create
-        a triage issue. Does NOT create the issue - that's the Planner's job.
-
-        Returns:
-            TriageFacts if triage is configured, else None
-        """
-        from .models import TriageFacts
-
-        # Check if triage review is configured
-        if not self.config.triage_review_agent:
-            return None
-        if self.config.triage_review_threshold <= 0:
-            return None
-
-        # Label to watch: either explicit triage_review_label or code_reviewed_label
-        watch_label = self.config.triage_review_label or self.config.code_reviewed_label
-        if not watch_label:
-            return None
-
-        # Count PRs ready for triage review
-        prs = self.repository_host.get_prs_with_label(watch_label)
-        pr_count = len(prs)
-        threshold = self.config.triage_review_threshold
-
-        # Check if a triage review issue already exists
-        existing_triage_issue: Optional[int] = None
-        existing = self.repository_host.list_issues(
-            labels=[self.config.triage_review_agent],
-            limit=10,
-        )
-        for issue in existing:
-            if "Batch Review" in issue.title or "Triage Review" in issue.title:
-                existing_triage_issue = issue.number
-                break
-
-        # Build PR info tuples for body generation
-        pr_tuples = tuple((pr.number, pr.title) for pr in prs)
-
-        return TriageFacts(
-            pr_count=pr_count,
-            threshold=threshold,
-            existing_triage_issue=existing_triage_issue,
-            watch_label=watch_label,
-            prs=pr_tuples,
-        )
-
-    def _gather_cleanup_facts(self) -> Optional["CleanupFacts"]:
-        """Gather facts for cleanup decision.
-
-        Returns immutable facts for the Planner to decide which cleanups to process.
-        Does NOT perform cleanup - that's the Planner's job.
-
-        Returns:
-            CleanupFacts if there are pending cleanups, else None
-        """
-        from .models import CleanupFacts
-
-        if not self.state.pending_cleanups:
-            return None
-
-        # Determine which label indicates review is complete
-        if self.config.triage_review_agent:
-            cleanup_label = self.config.triage_reviewed_label
-            close_tabs = self.config.cleanup.with_triage.close_ai_session_tabs
-            remove_wt = self.config.cleanup.with_triage.remove_worktrees
-        elif self.config.code_review_agent:
-            cleanup_label = self.config.code_reviewed_label
-            close_tabs = self.config.cleanup.without_triage.close_ai_session_tabs
-            remove_wt = self.config.cleanup.without_triage.remove_worktrees
-        else:
-            # No review workflow configured
-            return None
-
-        if not cleanup_label:
-            return None
-
-        # Get all PRs with the cleanup label
-        try:
-            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
-            reviewed_pr_numbers = frozenset(pr.number for pr in reviewed_prs)
-        except Exception as e:
-            logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
-            return None
-
-        # Build immutable tuples of pending cleanup info
-        pending_tuples = tuple(
-            (c.issue_number, c.pr_number, c.terminal_session_name, str(c.worktree_path))
-            for c in self.state.pending_cleanups
-        )
-
-        return CleanupFacts(
-            pending_cleanups=pending_tuples,
-            reviewed_pr_numbers=reviewed_pr_numbers,
-            close_tabs=close_tabs,
-            remove_worktrees=remove_wt,
-        )
-
-    def _create_snapshot(self, issues: list[Issue]) -> "OrchestratorSnapshot":
-        """Create an immutable snapshot for planning.
-
-        Args:
-            issues: Current list of issues from GitHub
-
-        Returns:
-            Immutable snapshot of orchestrator state
-        """
-        from .control.planner import OrchestratorSnapshot
-
-        return OrchestratorSnapshot(
-            issues=tuple(issues),
-            active_sessions=tuple(self.state.active_sessions),
-            pending_reviews=tuple(self.state.pending_reviews),
-            pending_reworks=tuple(self.state.pending_reworks),
-            pending_triage=tuple(self.state.pending_triage_reviews),
-            paused=self.state.paused,
-            priority_queue=tuple(self.state.priority_queue),
-            issues_started_count=self.state.issues_started_count,
-            max_issues_to_start=self.config.max_issues_to_start if self.config.max_issues_to_start > 0 else None,
-            discovered_reviews=tuple(self.state.discovered_reviews),
-            discovered_reworks=tuple(self.state.discovered_reworks),
-            discovered_escalations=tuple(self.state.discovered_escalations),
-            discovered_failures=tuple(self.state.discovered_failures),
-            triage_facts=self._gather_triage_facts(),
-            cleanup_facts=self._gather_cleanup_facts(),
-        )
 
     def _apply_plan(self, plan: "Plan") -> None:
         """Apply the actions from a plan.

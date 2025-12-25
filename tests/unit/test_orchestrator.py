@@ -1426,36 +1426,36 @@ class TestRunOrchestrator:
 
 
 class TestGatherTriageFacts:
-    """Test the _gather_triage_facts method for triage review workflow.
+    """Test the fact_gatherer.gather_triage_facts method for triage review workflow.
 
     Triage issue creation is now handled by the Planner via:
-    - _gather_triage_facts() gathers TriageFacts snapshot
-    - _create_snapshot() includes triage_facts
+    - fact_gatherer.gather_triage_facts() gathers TriageFacts snapshot
+    - fact_gatherer.create_snapshot() includes triage_facts
     - Planner._plan_triage_issue_creation() decides whether to create
     """
 
     def test_gather_triage_facts_returns_none_without_agent(self, sample_config, mock_repository_host):
-        """Test that _gather_triage_facts returns None without triage_review_agent."""
+        """Test that gather_triage_facts returns None without triage_review_agent."""
         sample_config.triage_review_agent = None
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 5
 
         orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
-        facts = orchestrator._gather_triage_facts()
+        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
         assert facts is None
 
     def test_gather_triage_facts_returns_none_with_zero_threshold(self, sample_config, mock_repository_host):
-        """Test that _gather_triage_facts returns None with threshold=0."""
+        """Test that gather_triage_facts returns None with threshold=0."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 0
 
         orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
-        facts = orchestrator._gather_triage_facts()
+        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
         assert facts is None
 
     def test_gather_triage_facts_returns_facts_below_threshold(self, sample_config, mock_repository_host):
-        """Test that _gather_triage_facts returns facts even when below threshold."""
+        """Test that gather_triage_facts returns facts even when below threshold."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 5
@@ -1467,7 +1467,7 @@ class TestGatherTriageFacts:
         ]
 
         orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
-        facts = orchestrator._gather_triage_facts()
+        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         # Facts should be returned (Planner decides whether to act)
         assert facts is not None
@@ -1476,7 +1476,7 @@ class TestGatherTriageFacts:
         assert facts.watch_label == "code-reviewed"
 
     def test_gather_triage_facts_returns_facts_at_threshold(self, sample_config, mock_repository_host):
-        """Test that _gather_triage_facts returns facts when at threshold."""
+        """Test that gather_triage_facts returns facts when at threshold."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 3
@@ -1490,7 +1490,7 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = []
 
         orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
-        facts = orchestrator._gather_triage_facts()
+        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         assert facts is not None
         assert facts.pr_count == 3
@@ -1499,7 +1499,7 @@ class TestGatherTriageFacts:
         assert len(facts.prs) == 3
 
     def test_gather_triage_facts_finds_existing_triage_issue(self, sample_config, mock_repository_host):
-        """Test that _gather_triage_facts detects existing triage issue."""
+        """Test that gather_triage_facts detects existing triage issue."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_review_threshold = 3
@@ -1516,13 +1516,13 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = [existing_issue]
 
         orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
-        facts = orchestrator._gather_triage_facts()
+        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         assert facts is not None
         assert facts.existing_triage_issue == 100
 
     def test_gather_triage_facts_includes_pr_info(self, sample_config, mock_repository_host):
-        """Test that _gather_triage_facts includes PR number and title tuples."""
+        """Test that gather_triage_facts includes PR number and title tuples."""
         sample_config.triage_review_agent = "agent:triage"
         sample_config.code_reviewed_label = "code-reviewed"
         sample_config.triage_reviewed_label = "triage-reviewed"
@@ -1536,7 +1536,7 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = []
 
         orchestrator = Orchestrator(config=sample_config, _repository_host=mock_repository_host)
-        facts = orchestrator._gather_triage_facts()
+        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         assert facts is not None
         assert len(facts.prs) == 2
