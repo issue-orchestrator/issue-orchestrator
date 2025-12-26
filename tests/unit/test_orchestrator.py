@@ -71,6 +71,9 @@ def create_test_orchestrator(config, repository_host=None, worktree_manager=None
     Note: This works with the patch_orchestrator_dependencies fixture which injects
     mock events and runner via __post_init__. Components like session_manager,
     planner, etc. are created by __post_init__ fallbacks using the injected mocks.
+
+    For tests that need explicit control over all dependencies, use
+    build_test_orchestrator_deps() from conftest.py instead.
     """
     from issue_orchestrator.control.session_controller import SessionController
     from issue_orchestrator.control.completion_processor import CompletionProcessor

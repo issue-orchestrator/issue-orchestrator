@@ -371,6 +371,92 @@ def mock_session_runner(mock_terminal_plugin):
     return MockSessionRunner(mock_terminal_plugin)
 
 
+def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_manager):
+    """Factory function to create all Orchestrator dependencies for testing.
+
+    This creates properly wired control components with injected mocks,
+    enabling explicit dependency injection without relying on __post_init__ fallbacks.
+
+    Args:
+        config: Config object
+        repo_host: Repository host (MockGitHubAdapter or similar)
+        events: EventSink (MockEventSink or similar)
+        runner: SessionRunner (MockSessionRunner or similar)
+        worktree_manager: WorktreeManager mock
+
+    Returns:
+        Dict of all components needed for Orchestrator constructor
+    """
+    from issue_orchestrator.control.scheduler import Scheduler
+    from issue_orchestrator.control.planner import Planner
+    from issue_orchestrator.control.session_manager import SessionManager
+    from issue_orchestrator.control.action_applier import ActionApplier
+    from issue_orchestrator.control.fact_gatherer import FactGatherer
+    from issue_orchestrator.control.state_machine_manager import StateMachineManager
+    from issue_orchestrator.control.session_controller import SessionController
+    from issue_orchestrator.control.completion_processor import CompletionProcessor
+    from issue_orchestrator.control.pr_scanner import PRScanner
+    from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+
+    working_copy = GitWorkingCopy()
+
+    # Create control components with injected mocks
+    scheduler = Scheduler(config=config)
+    planner = Planner(config=config, scheduler=scheduler)
+    session_manager = SessionManager(runner=runner, events=events, config=config)
+    fact_gatherer = FactGatherer(config=config, repository_host=repo_host)
+    state_machine_manager = StateMachineManager(config=config, events=events)
+
+    completion_processor = CompletionProcessor(
+        label_adapter=repo_host,
+        pr_adapter=repo_host,
+        git_adapter=working_copy,
+        event_bus=None,
+        label_config={
+            "blocked": config.get_label_blocked(),
+            "needs_human": config.get_label_needs_human(),
+            "code_reviewed": config.code_reviewed_label or "code-reviewed",
+            "needs_rework": config.get_label_needs_rework(),
+            "code_review": config.code_review_label or "needs-code-review",
+            "in_progress": config.get_label_in_progress(),
+        },
+    )
+    session_controller = SessionController(
+        completion_processor=completion_processor,
+        events=events,
+    )
+    pr_scanner = PRScanner(
+        config=config,
+        repository=repo_host,
+        events=events,
+    )
+    # Create action_applier without session_launcher callback - it will be set in __post_init__
+    action_applier = ActionApplier(
+        labels=repo_host,
+        sessions=session_manager,
+        events=events,
+        repository_host=repo_host,
+        worktree_manager=worktree_manager,
+        issue_tracker=repo_host,
+        reconcile=False,
+    )
+
+    return {
+        'events': events,
+        'runner': runner,
+        'planner': planner,
+        'session_manager': session_manager,
+        'action_applier': action_applier,
+        'fact_gatherer': fact_gatherer,
+        'state_machine_manager': state_machine_manager,
+        'completion_processor': completion_processor,
+        'session_controller': session_controller,
+        'pr_scanner': pr_scanner,
+        'worktree_manager': worktree_manager,
+        'working_copy': working_copy,
+    }
+
+
 @pytest.fixture(autouse=True)
 def patch_orchestrator_dependencies(monkeypatch, request):
     """Auto-patch orchestrator dependencies for all tests.
@@ -378,8 +464,8 @@ def patch_orchestrator_dependencies(monkeypatch, request):
     This injects MockEventSink, MockSessionRunner, and MockGitHubAdapter into
     Orchestrator instances so tests don't need actual backends or infrastructure.
 
-    The mocks are injected before __post_init__ runs (via __init__ wrapper),
-    ensuring all Orchestrator instances get test-friendly dependencies.
+    The fixture patches __post_init__ to inject mocks BEFORE fallback creation,
+    ensuring all components (like session_manager) use the mock runner/events.
     """
     # Use provided mocks if test requests them, otherwise create new ones
     if 'mock_terminal_plugin' in request.fixturenames:
@@ -420,6 +506,45 @@ def patch_orchestrator_dependencies(monkeypatch, request):
 
     # Return the mocks so tests can access them
     return {'events': mock_events, 'runner': mock_runner, 'github': github_adapter}
+
+
+@pytest.fixture
+def explicit_orchestrator_deps(request):
+    """Create Orchestrator with all dependencies explicitly injected (no fallbacks).
+
+    Use this fixture when you want full control over all dependencies without
+    relying on __post_init__ fallbacks. This is the preferred pattern for new tests.
+
+    Usage:
+        def test_something(explicit_orchestrator_deps, sample_config):
+            deps = explicit_orchestrator_deps(sample_config, mock_repo_host, mock_wt_manager)
+            orchestrator = Orchestrator(
+                config=sample_config,
+                _repository_host=mock_repo_host,
+                **deps,
+            )
+    """
+    # Use provided mocks if test requests them, otherwise create new ones
+    if 'mock_terminal_plugin' in request.fixturenames:
+        plugin = request.getfixturevalue('mock_terminal_plugin')
+    else:
+        plugin = MockTerminalPlugin()
+
+    if 'mock_repository_host' in request.fixturenames:
+        default_repo_host = request.getfixturevalue('mock_repository_host')
+    else:
+        default_repo_host = MockGitHubAdapter()
+
+    mock_events = MockEventSink()
+    mock_runner = MockSessionRunner(plugin)
+
+    def create_deps(config, repo_host=None, worktree_manager=None):
+        """Create all dependencies for Orchestrator constructor."""
+        rh = repo_host or default_repo_host
+        wm = worktree_manager or MagicMock()
+        return build_test_orchestrator_deps(config, rh, mock_events, mock_runner, wm)
+
+    return create_deps
 
 
 @pytest.fixture
