@@ -971,6 +971,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     """Audit the queue - show why issues are queued or skipped."""
     from .audit import audit_queue, print_audit
     from .config import Config
+    from .execution.github_adapter import GitHubAdapter
 
     console.print("[bold]Queue Audit[/bold]\n")
 
@@ -989,7 +990,8 @@ def cmd_audit(args: argparse.Namespace) -> int:
     console.print(f"[dim]Agents: {', '.join(config.agents.keys())}[/dim]")
 
     # Run audit (no state = fresh start, no session history)
-    entries = audit_queue(config, state=None)
+    issue_tracker = GitHubAdapter()
+    entries = audit_queue(config, state=None, issue_tracker=issue_tracker)
     print_audit(entries)
 
     return 0

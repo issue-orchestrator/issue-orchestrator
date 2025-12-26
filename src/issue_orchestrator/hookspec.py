@@ -108,6 +108,18 @@ class TerminalSpec:
             Terminal output string, or None if not available/supported.
         """
 
+    @hookspec(firstresult=True)
+    def send_to_session(self, session_id: int, text: str) -> bool | None:
+        """Send text to a running session.
+
+        Args:
+            session_id: Numeric ID
+            text: Text to send (e.g., "/exit")
+
+        Returns:
+            True if sent, False if failed, None to defer to next plugin.
+        """
+
 
 class TraceEventSpec:
     """Hook specification for trace event broadcasting.

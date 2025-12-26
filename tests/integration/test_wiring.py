@@ -56,8 +56,15 @@ class TestOrchestratorWiring:
     async def test_startup_queries_in_progress_issues(self, config, mock_repository_host):
         """Verify startup() queries for in-progress issues."""
         from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
+        from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 
-        orchestrator = Orchestrator(config, _repository_host=mock_repository_host)
+        orchestrator = Orchestrator(
+            config,
+            _repository_host=mock_repository_host,
+            worktree_manager=GitWorktreeManager(),
+            working_copy=GitWorkingCopy(),
+        )
 
         with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
             await orchestrator.startup()
@@ -68,11 +75,25 @@ class TestOrchestratorWiring:
     def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager, mock_repository_host):
         """Verify launch_session actually creates worktree and tmux window."""
         from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.ports.worktree_manager import WorktreeInfo
+        from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 
         # Configure mock plugin to allow session creation
         patch_plugin_manager.plugin.session_exists_override = False
 
-        orchestrator = Orchestrator(config, _repository_host=mock_repository_host)
+        # Create a mock WorktreeManager
+        mock_worktree_manager = MagicMock()
+        mock_worktree_manager.create.return_value = WorktreeInfo(
+            path=Path("/fake/worktree"),
+            branch_name="456-test-feature",
+        )
+
+        orchestrator = Orchestrator(
+            config,
+            _repository_host=mock_repository_host,
+            worktree_manager=mock_worktree_manager,
+            working_copy=GitWorkingCopy(),
+        )
         test_issue = Issue(
             number=456,
             title="Test Feature",
@@ -80,26 +101,17 @@ class TestOrchestratorWiring:
             state="open"
         )
 
-        created = {"worktree": False}
+        # launch_session only takes issue - gets agent_config internally
+        session = orchestrator.launch_session(test_issue)
 
-        # Patch where functions are USED (in orchestrator module)
-        with patch('issue_orchestrator.orchestrator.create_worktree') as mock_worktree:
-            def record_worktree(*args, **kwargs):
-                created['worktree'] = True
-                return (Path("/fake/worktree"), "456-test-feature")
-            mock_worktree.side_effect = record_worktree
-
-            # launch_session only takes issue - gets agent_config internally
-            session = orchestrator.launch_session(test_issue)
-
-            # Verify all steps happened
-            assert created['worktree'], "Worktree should be created"
-            # Verify window created via plugin manager
-            assert len(patch_plugin_manager.plugin.create_session_calls) == 1, "Tmux window should be created"
-            # Verify label added via the mock adapter
-            assert (456, "in-progress") in mock_repository_host.add_label_calls, "In-progress label should be added"
-            assert session is not None
-            assert session.issue.number == 456
+        # Verify all steps happened
+        assert mock_worktree_manager.create.called, "Worktree should be created"
+        # Verify window created via plugin manager
+        assert len(patch_plugin_manager.plugin.create_session_calls) == 1, "Tmux window should be created"
+        # Verify label added via the mock adapter
+        assert (456, "in-progress") in mock_repository_host.add_label_calls, "In-progress label should be added"
+        assert session is not None
+        assert session.issue.number == 456
 
 
 class TestCLIWiring:

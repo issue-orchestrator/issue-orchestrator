@@ -79,3 +79,12 @@ class TmuxPlugin:
     def get_session_output(self, session_id: int, lines: int) -> str | None:
         """Get recent output from a tmux window."""
         return self._manager.capture_pane_output(session_id, lines)
+
+    @hookimpl
+    def send_to_session(self, session_id: int, text: str) -> bool:
+        """Send text to a tmux window."""
+        try:
+            self._manager.send_keys(session_id, text)
+            return True
+        except Exception:
+            return False

@@ -17,8 +17,7 @@ if TYPE_CHECKING:
     from ..config import Config, AgentConfig
     from ..models import PendingCleanup
     from ..ports import RepositoryHost
-
-from .._worktree_impl import remove_worktree, extract_issue_number_from_branch
+    from ..ports.worktree_manager import WorktreeManager
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +37,7 @@ class CleanupManager:
         self,
         config: "Config",
         repository_host: "RepositoryHost",
+        worktree_manager: "WorktreeManager",
         kill_session_fn: Callable[[str], None],
         session_exists_fn: Callable[[str], bool],
         get_worktree_path_fn: Callable[[int, "AgentConfig"], Path],
@@ -45,6 +45,7 @@ class CleanupManager:
     ):
         self.config = config
         self.repository_host = repository_host
+        self._worktree_manager = worktree_manager
         self._kill_session = kill_session_fn
         self._session_exists = session_exists_fn
         self._get_worktree_path = get_worktree_path_fn
@@ -117,7 +118,7 @@ class CleanupManager:
                 )
                 if remove_wt:
                     try:
-                        remove_worktree(pending.worktree_path)
+                        self._worktree_manager.remove(pending.worktree_path)
                         logger.info(f"[CLEANUP] Removed worktree for #{pending.issue_number}")
                     except Exception as e:
                         logger.warning(f"[CLEANUP] Failed to remove worktree for #{pending.issue_number}: {e}")
@@ -181,7 +182,7 @@ class CleanupManager:
         for pr in reviewed_prs:
             # Extract issue number from branch name (e.g., "328-description" -> 328)
             branch = pr.branch
-            issue_number = extract_issue_number_from_branch(branch)
+            issue_number = self._worktree_manager.extract_issue_number(branch)
             if issue_number is None:
                 continue
             session_name = self._get_session_name(issue_number, "issue")
@@ -209,7 +210,7 @@ class CleanupManager:
                     # Remove worktree if configured
                     if remove_wt:
                         try:
-                            remove_worktree(worktree_path)
+                            self._worktree_manager.remove(worktree_path)
                             logger.info(f"[CLEANUP] Removed orphaned worktree for #{issue_number}")
                         except Exception as e:
                             logger.warning(f"[CLEANUP] Failed to remove worktree for #{issue_number}: {e}")

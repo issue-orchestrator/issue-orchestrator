@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 from ..config import Config, AgentConfig
 from ..models import Issue, Session, PendingReview, PendingRework, get_completion_path
 from ..ports import EventSink, TraceEvent, RepositoryHost
-from .._worktree_impl import create_worktree
+from ..ports.worktree_manager import WorktreeManager
 from .session_manager import SessionManager, SessionRef, SessionContext
 
 logger = logging.getLogger(__name__)
@@ -112,6 +112,7 @@ class SessionLauncher:
         events: EventSink,
         repository_host: RepositoryHost,
         session_manager: SessionManager,
+        worktree_manager: WorktreeManager,
         session_exists_fn: Callable[[str], bool],
         create_session_fn: Callable[[str, str, Path, str | None], bool],
         get_issue_machine: Callable[[int], "IssueStateMachine"],
@@ -124,6 +125,7 @@ class SessionLauncher:
         self.events = events
         self.repository_host = repository_host
         self.session_manager = session_manager
+        self._worktree_manager = worktree_manager
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -195,7 +197,7 @@ class SessionLauncher:
         repo_root = agent_config.repo_root or self.config.repo_root
         step_start = time.time()
         print(f"[launch] Creating worktree for issue #{issue.number}...")
-        worktree_path, branch_name = create_worktree(
+        worktree_info = self._worktree_manager.create(
             repo_root=repo_root,
             issue_number=issue.number,
             issue_title=issue.title,
@@ -203,6 +205,8 @@ class SessionLauncher:
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
         )
+        worktree_path = worktree_info.path
+        branch_name = worktree_info.branch_name
         worktree_time = time.time() - step_start
         print(f"[launch] Worktree created in {worktree_time:.1f}s")
 
@@ -302,13 +306,14 @@ class SessionLauncher:
 
         # Create worktree
         repo_root = agent_config.repo_root or self.config.repo_root
-        worktree_path, _ = create_worktree(
+        worktree_info = self._worktree_manager.create(
             repo_root=repo_root,
             issue_number=review.issue_number,
             issue_title=f"Review PR #{review.pr_number}",
             branch_name=review.branch_name,
             enforce_hooks=False,
         )
+        worktree_path = worktree_info.path
 
         # Build command
         base_command = agent_config.get_command(
@@ -392,7 +397,7 @@ class SessionLauncher:
 
         # Create worktree
         repo_root = agent_config.repo_root or self.config.repo_root
-        worktree_path, _ = create_worktree(
+        worktree_info = self._worktree_manager.create(
             repo_root=repo_root,
             issue_number=issue_number,
             issue_title=f"Rework #{pr_number}",
@@ -400,6 +405,7 @@ class SessionLauncher:
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
         )
+        worktree_path = worktree_info.path
 
         # Build command
         base_command = agent_config.get_command(

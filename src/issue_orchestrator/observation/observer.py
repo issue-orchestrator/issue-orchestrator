@@ -15,11 +15,10 @@ from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
+    from ..ports import RepositoryHost, SessionRunner
 
 from ..config import Config
-from .._github_impl import add_label, get_issue_labels, get_open_prs_for_branch, remove_label
 from ..models import Session, SessionStatus
-from .._tmux_impl import kill_session, session_exists
 from ..ports import EventSink, TraceEvent, NullEventSink
 from .. import labels
 from .observation import SessionObservation, SessionObservationResult
@@ -43,6 +42,8 @@ class SessionObserver:
         config: Config,
         session_machines: dict[str, "SessionStateMachine"] | None = None,
         events: EventSink | None = None,
+        session_runner: Optional["SessionRunner"] = None,
+        repository_host: Optional["RepositoryHost"] = None,
     ) -> None:
         """Initialize the observer with configuration.
 
@@ -50,23 +51,14 @@ class SessionObserver:
             config: Orchestrator configuration
             session_machines: Optional dict mapping session names to state machines
             events: Optional EventSink for emitting trace events
+            session_runner: SessionRunner port for terminal operations
+            repository_host: RepositoryHost port for GitHub operations
         """
         self.config = config
         self.session_machines = session_machines or {}
         self.events = events or NullEventSink()
-        self._iterm_manager = None  # Lazy init
-
-    @property
-    def _using_iterm2(self) -> bool:
-        """Check if we're using iTerm2 mode (or web mode, which also uses iTerm2 tabs)."""
-        return self.config.ui_mode in ("iterm2", "web")
-
-    def _get_iterm_manager(self):
-        """Get the iTerm2 session manager (lazy init)."""
-        if self._iterm_manager is None:
-            from .._iterm2_impl import get_iterm_manager
-            self._iterm_manager = get_iterm_manager()
-        return self._iterm_manager
+        self._session_runner = session_runner
+        self._repository_host = repository_host
 
     def _extract_session_number(self, session_name: str) -> int:
         """Extract the numeric ID from a session name (handles both issue- and review- prefixes)."""
@@ -77,27 +69,47 @@ class SessionObserver:
         else:
             raise ValueError(f"Unknown session name format: {session_name}")
 
-    def _session_exists(self, session_name: str) -> bool:
-        """Check if a session exists using the appropriate backend."""
-        if self._using_iterm2:
-            session_number = self._extract_session_number(session_name)
-            return self._get_iterm_manager().session_exists(session_number)
-        else:
-            return session_exists(session_name)
+    def _session_exists(self, session_id: int) -> bool:
+        """Check if a session exists using the session runner."""
+        if self._session_runner is None:
+            return False
+        return self._session_runner.session_exists(session_id)
 
-    def _kill_session(self, session_name: str) -> None:
-        """Kill a session using the appropriate backend."""
-        if self._using_iterm2:
-            session_number = self._extract_session_number(session_name)
-            self._get_iterm_manager().kill_session(session_number)
-        else:
-            kill_session(session_name)
+    def _kill_session(self, session_id: int) -> None:
+        """Kill a session using the session runner."""
+        if self._session_runner is None:
+            return
+        self._session_runner.kill_session(session_id)
 
-    def _send_exit_to_session(self, issue_number: int) -> bool:
+    def _send_exit_to_session(self, session_id: int) -> bool:
         """Send /exit command to a session."""
-        if self._using_iterm2:
-            return self._get_iterm_manager().send_to_session(issue_number, "/exit")
-        return False
+        if self._session_runner is None:
+            return False
+        return self._session_runner.send_to_session(session_id, "/exit")
+
+    def _get_open_prs_for_branch(self, branch: str) -> list:
+        """Get open PRs for a branch using the repository host."""
+        if self._repository_host is None:
+            return []
+        return self._repository_host.get_prs_for_branch(branch, state="open")
+
+    def _get_issue_labels(self, issue_number: int) -> list[str]:
+        """Get labels for an issue using the repository host."""
+        if self._repository_host is None:
+            return []
+        return self._repository_host.get_issue_labels(issue_number)
+
+    def _add_label(self, issue_number: int, label: str) -> None:
+        """Add a label to an issue using the repository host."""
+        if self._repository_host is None:
+            return
+        self._repository_host.add_label(issue_number, label)
+
+    def _remove_label(self, issue_number: int, label: str) -> None:
+        """Remove a label from an issue using the repository host."""
+        if self._repository_host is None:
+            return
+        self._repository_host.remove_label(issue_number, label)
 
     def observe_session(self, session: Session) -> SessionObservationResult:
         """Observe a session and return facts about its state.
@@ -129,7 +141,7 @@ class SessionObserver:
             timeout_exceeded = True
 
         # Check if session exists
-        exists = self._session_exists(session.tmux_session_name)
+        exists = self._session_exists(session.issue.number)
 
         # Check for completion.json - this is the source of truth for agent completion
         # If it exists AND is valid JSON, the agent called agent-done and work is done
@@ -169,10 +181,7 @@ class SessionObserver:
         # This helps sessions that completed but forgot to exit
         if exists and not session.exit_sent:
             try:
-                prs = get_open_prs_for_branch(
-                    repo=self.config.repo,
-                    branch=session.branch_name,
-                )
+                prs = self._get_open_prs_for_branch(session.branch_name)
                 if prs:
                     logger.info(
                         f"Session #{session.issue.number} has PR but still running - sending /exit"
@@ -253,15 +262,12 @@ class SessionObserver:
             return SessionStatus.TIMED_OUT
 
         # Check if session is still running
-        if self._session_exists(session.tmux_session_name):
+        if self._session_exists(session.issue.number):
             # Session still running - but check if it has a PR (meaning it's done but didn't exit)
             # Only send /exit once to avoid spamming
             if not session.exit_sent:
                 try:
-                    prs = get_open_prs_for_branch(
-                        repo=self.config.repo,
-                        branch=session.branch_name,
-                    )
+                    prs = self._get_open_prs_for_branch(session.branch_name)
                     if prs:
                         logger.info(
                             f"Session #{session.issue.number} has PR but still running - sending /exit"
@@ -285,10 +291,7 @@ class SessionObserver:
 
         # Check if PR exists for the branch
         try:
-            prs = get_open_prs_for_branch(
-                repo=self.config.repo,
-                branch=session.branch_name,
-            )
+            prs = self._get_open_prs_for_branch(session.branch_name)
             if prs:
                 logger.info(
                     f"Found {len(prs)} open PR(s) for branch {session.branch_name}, "
@@ -302,7 +305,7 @@ class SessionObserver:
 
         # Fetch fresh labels from GitHub (session.issue.labels is stale from launch time)
         try:
-            current_labels = get_issue_labels(self.config.repo, session.issue.number)
+            current_labels = self._get_issue_labels(session.issue.number)
             logger.debug(f"Fresh labels for #{session.issue.number}: {current_labels}")
         except Exception as e:
             logger.warning(f"Failed to fetch labels for #{session.issue.number}: {e}")
@@ -372,13 +375,12 @@ class SessionObserver:
             status: The final status of the session
         """
         issue_number = session.issue.number
-        repo = self.config.repo
 
         try:
             if status == SessionStatus.TIMED_OUT:
                 # Kill the session
                 try:
-                    self._kill_session(session.tmux_session_name)
+                    self._kill_session(issue_number)
                     logger.info(
                         f"Killed session {session.tmux_session_name} "
                         f"for issue #{issue_number}"
@@ -390,11 +392,7 @@ class SessionObserver:
 
                 # Add blocking label to prevent re-queuing
                 try:
-                    add_label(
-                        repo=repo,
-                        issue_number=issue_number,
-                        label=labels.BLOCKED_FAILED,
-                    )
+                    self._add_label(issue_number, labels.BLOCKED_FAILED)
                     logger.info(f"Added '{labels.BLOCKED_FAILED}' label to issue #{issue_number} (timed out)")
                 except Exception as e:
                     logger.error(
@@ -404,11 +402,7 @@ class SessionObserver:
             elif status == SessionStatus.FAILED:
                 # Add blocking label to prevent re-queuing
                 try:
-                    add_label(
-                        repo=repo,
-                        issue_number=issue_number,
-                        label=labels.BLOCKED_FAILED,
-                    )
+                    self._add_label(issue_number, labels.BLOCKED_FAILED)
                     logger.info(f"Added '{labels.BLOCKED_FAILED}' label to issue #{issue_number}")
                 except Exception as e:
                     logger.warning(
@@ -423,11 +417,7 @@ class SessionObserver:
                 SessionStatus.TIMED_OUT,
             ):
                 try:
-                    remove_label(
-                        repo=repo,
-                        issue_number=issue_number,
-                        label=self.config.get_label_in_progress(),
-                    )
+                    self._remove_label(issue_number, self.config.get_label_in_progress())
                     logger.info(
                         f"Removed '{self.config.get_label_in_progress()}' label from issue #{issue_number}"
                     )
@@ -445,7 +435,7 @@ class SessionObserver:
             )
             if should_close:
                 try:
-                    self._kill_session(session.tmux_session_name)
+                    self._kill_session(issue_number)
                     logger.info(f"Closed tab for {status.value} session #{issue_number}")
                 except Exception as e:
                     logger.debug(f"Could not close tab for #{issue_number}: {e}")

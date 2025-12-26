@@ -53,7 +53,7 @@ from .observation.observer import SessionObserver
 from .control.scheduler import Scheduler
 from .control.dependency_evaluator import DependencyEvaluator
 # Terminal backend handled via adapters (see _terminal_adapter property)
-from ._worktree_impl import remove_worktree, extract_issue_number_from_branch
+# Worktree operations handled via WorktreeManager port (injected)
 # State machine infrastructure
 # Note: EventBus removed - state machines now use TransitionResult pattern
 # See domain/state_machines/transition_result.py
@@ -67,11 +67,12 @@ from .control.session_launcher import SessionLauncher
 from .control.cleanup_manager import CleanupManager
 from .control.completion_handler import CompletionHandler
 from .control.session_restorer import SessionRestorer
+from .control.startup_manager import StartupManager
 from .observation.observation import SessionObservation
 # Port imports (protocols only - no concrete implementations in core)
 from .ports import EventSink, SessionRunner, TraceEvent, NullEventSink, NullSessionRunner, RepositoryHost
-# TODO: Inject WorkingCopy via bootstrap instead of importing concrete adapter
-from .execution.git_working_copy import GitWorkingCopy
+from .ports.worktree_manager import WorktreeManager
+from .ports.working_copy import WorkingCopy
 
 
 @dataclass
@@ -102,6 +103,10 @@ class Orchestrator:
     action_applier: Optional["ActionApplier"] = field(default=None, repr=False)
     # Fact gatherer (read-only snapshot creation) - can be injected, otherwise created in __post_init__
     fact_gatherer: Optional["FactGatherer"] = field(default=None, repr=False)
+    # Worktree manager (port) - for worktree lifecycle operations
+    worktree_manager: Optional[WorktreeManager] = field(default=None, repr=False)
+    # Working copy (port) - for git operations inside worktrees
+    working_copy: Optional[WorkingCopy] = field(default=None, repr=False)
     # Internal state
     state: OrchestratorState = field(default_factory=OrchestratorState)
     scheduler: Scheduler = field(init=False)
@@ -151,18 +156,23 @@ class Orchestrator:
                 config=self.config,
             )
 
-        # Use injected action applier or create default
+        # Use injected action applier or create default (requires worktree_manager)
         if self.action_applier is None:
+            if self.worktree_manager is None:
+                raise ValueError(
+                    "Either action_applier or worktree_manager must be injected. "
+                    "Use bootstrap.build_orchestrator() or bootstrap.build_orchestrator_for_testing()."
+                )
             from .control.action_applier import ActionApplier as ActionApplierClass
-            from .execution.worktree_adapter import GitWorktreeManager
             self.action_applier = ActionApplierClass(
                 labels=self.repository_host,
                 sessions=self.session_manager,
                 events=self.events,
                 repository_host=self.repository_host,
-                worktree_manager=GitWorktreeManager(),
+                worktree_manager=self.worktree_manager,
                 issue_tracker=self.repository_host,
                 reconcile=True,  # Compare-before-mutate for label operations
+                session_launcher=self._session_launcher_callback,  # For LAUNCH_SESSION actions
             )
 
         # Use injected fact gatherer or create default
@@ -176,7 +186,12 @@ class Orchestrator:
         # Note: Observer is initialized without session_machines initially
         # We'll update the reference after session_machines is created
         # Pass events for observability (tests can subscribe to observe behavior)
-        self.observer = SessionObserver(self.config, events=self.events)
+        self.observer = SessionObserver(
+            self.config,
+            events=self.events,
+            session_runner=self.runner,
+            repository_host=self._repository_host,
+        )
 
         # State machine infrastructure
         # Note: State machines are now pure - they return TransitionResult via last_transition
@@ -200,13 +215,18 @@ class Orchestrator:
 
         Creates a CompletionProcessor with:
         - RepositoryHost for labels and PR operations
-        - WorkingCopy for git push operations
+        - WorkingCopy for git push operations (injected via bootstrap)
         - Config-based label mapping
         """
+        if self.working_copy is None:
+            raise ValueError(
+                "WorkingCopy (working_copy) must be injected. "
+                "Use bootstrap.build_orchestrator() or bootstrap.build_orchestrator_for_testing()."
+            )
         return CompletionProcessor(
             label_adapter=self.repository_host,
             pr_adapter=self.repository_host,
-            git_adapter=GitWorkingCopy(),
+            git_adapter=self.working_copy,
             event_bus=None,  # EventBus removed - events emitted via EventSink
             label_config={
                 "blocked": self.config.get_label_blocked(),
@@ -247,6 +267,7 @@ class Orchestrator:
             events=self.events,
             repository_host=self.repository_host,
             session_manager=self.session_manager,
+            worktree_manager=self.worktree_manager,
             session_exists_fn=self._session_exists,
             create_session_fn=self._create_session,
             get_issue_machine=self._get_issue_machine,
@@ -262,6 +283,7 @@ class Orchestrator:
         return CleanupManager(
             config=self.config,
             repository_host=self.repository_host,
+            worktree_manager=self.worktree_manager,
             kill_session_fn=self._kill_session,
             session_exists_fn=self._session_exists,
             get_worktree_path_fn=self._get_worktree_path,
@@ -288,16 +310,7 @@ class Orchestrator:
             repository_host=self.repository_host,
         )
 
-    async def _verify_hooks_on_startup(self) -> None:
-        """Verify AI meta-agent hooks are installed and effective.
-
-        Delegates to HookVerifier for the actual verification logic.
-        """
-        from .control.hook_verifier import HookVerifier
-
-        verifier = HookVerifier(self.config)
-        result = await verifier.verify()
-        verifier.raise_on_failure(result)
+    # Note: _verify_hooks_on_startup moved to StartupManager
 
     # ==================== Naming Conventions ====================
     # Centralized methods for deriving session names and paths.
@@ -338,6 +351,96 @@ class Orchestrator:
         return worktree_base / f"{repo_name}-{issue_number}"
 
     # ==================== End Naming Conventions ====================
+
+    # ==================== Session Launcher Callback ====================
+
+    def _session_launcher_callback(self, session_type: str, number: int) -> Optional[Session]:
+        """Session launcher callback for ActionApplier.
+
+        This callback does entity lookup and delegates to the appropriate
+        launch method. It bridges the gap between ActionApplier (which only
+        knows session_type and number) and the actual launch logic (which
+        needs the full entity).
+
+        Args:
+            session_type: "issue", "review", "rework", or "triage"
+            number: Issue or PR number
+
+        Returns:
+            Session if launched successfully, None otherwise
+        """
+        if session_type == "issue":
+            # Find the issue and launch
+            issue = next(
+                (i for i in self.state.cached_queue_issues if i.number == number),
+                None
+            )
+            if issue:
+                session = self.launch_session(issue)
+                if session:
+                    self.state.issues_started_count += 1
+                    logger.info("[APPLIER] Launched issue session for #%d", number)
+                return session
+            else:
+                logger.warning("[APPLIER] Issue #%d not found in cache", number)
+                return None
+
+        elif session_type == "review":
+            # Find the pending review and launch
+            review = next(
+                (r for r in self.state.pending_reviews if r.pr_number == number),
+                None
+            )
+            if review:
+                session = self.launch_review_session(review)
+                if session:
+                    logger.info("[APPLIER] Launched review session for PR #%d", number)
+                return session
+            else:
+                logger.warning("[APPLIER] Review for PR #%d not found", number)
+                return None
+
+        elif session_type == "rework":
+            # Find the pending rework by issue number
+            rework = next(
+                (r for r in self.state.pending_reworks if int(r.issue_key.stable_id()) == number),
+                None
+            )
+            if rework:
+                session = self.launch_rework_session(rework)
+                if session:
+                    logger.info("[APPLIER] Launched rework session for issue #%d", number)
+                return session
+            else:
+                logger.warning("[APPLIER] Rework for issue #%d not found", number)
+                return None
+
+        elif session_type == "triage":
+            # Find the pending triage and launch
+            triage = next(
+                (t for t in self.state.pending_triage_reviews if t.issue_number == number),
+                None
+            )
+            if triage:
+                self._launch_triage_session(triage)
+                # _launch_triage_session doesn't return a session, need to find it
+                # Return the session from active_sessions
+                session = next(
+                    (s for s in self.state.active_sessions if s.issue.number == number),
+                    None
+                )
+                if session:
+                    logger.info("[APPLIER] Launched triage session for #%d", number)
+                return session
+            else:
+                logger.warning("[APPLIER] Triage for #%d not found", number)
+                return None
+
+        else:
+            logger.warning("[APPLIER] Unknown session type: %s", session_type)
+            return None
+
+    # ==================== End Session Launcher Callback ====================
 
     # ==================== State Machine Helpers ====================
 
@@ -525,207 +628,23 @@ class Orchestrator:
         """Get the milestone filter if configured."""
         return self.config.filter_milestone
 
+    @property
+    def _startup_manager(self) -> StartupManager:
+        """Get the startup manager for handling startup sequence."""
+        return StartupManager(
+            config=self.config,
+            events=self.events,
+            runner=self.runner,
+            repository_host=self.repository_host,
+            session_exists_fn=self._session_exists,
+            restore_sessions_fn=lambda running: self._restore_running_sessions(running),
+            launch_session_fn=self.launch_session,
+            update_queue_cache_fn=self.update_queue_cache,
+        )
+
     async def startup(self) -> None:
-        """Handle startup - check for stale in-progress issues."""
-        from .analysis import analyze_issue, get_issue_branches
-
-        startup_start = time.time()
-        self.state.startup_status = "running"
-
-        # Emit merged configuration for debugging (YAML + command line overrides)
-        self.events.publish(TraceEvent("config.merged", self.config.to_event_dict()))
-
-        # Verify AI meta-agent hooks are installed and working
-        self.state.startup_message = "Verifying hook enforcement..."
-        await self._verify_hooks_on_startup()
-
-        self.state.startup_message = "Cleaning up stale claims..."
-        logger.info("Starting up - checking for stale in-progress issues...")
-        print("Checking for stale in-progress issues...")
-
-        # Clean up idle terminal sessions (tabs at shell prompt where Claude has exited)
-        self.state.startup_message = "Cleaning up idle terminal sessions..."
-        closed_tabs = self.runner.cleanup_idle_sessions()
-        if closed_tabs:
-            logger.info("Closed %d idle terminal sessions", closed_tabs)
-            print(f"  Closed {closed_tabs} idle terminal sessions")
-
-        # Discover and restore tracking for running sessions
-        self.state.startup_message = "Discovering running sessions..."
-        running = self.runner.discover_running_sessions()
-        if running:
-            logger.info("Found %d running sessions to restore tracking", len(running))
-            print(f"  Found {len(running)} running sessions to restore tracking")
-            await self._restore_running_sessions(running)
-
-        # Get existing branches for issue detection
-        self.state.startup_message = "Scanning local branches..."
-        issue_branches = get_issue_branches(self.config.repo_root)
-
-        # Collect issues that need to be resumed (have partial work)
-        issues_to_resume: list[tuple[Issue, str]] = []  # (issue, agent_label)
-
-        # Get all in-progress issues for our agent types
-        self.state.startup_message = "Checking in-progress issues on GitHub..."
-        for agent_label in self.config.agents.keys():
-            api_start = time.time()
-            logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-            issues = self.repository_host.list_issues(
-                labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
-                milestone=self._get_milestone_filter(),
-                limit=self.config.issue_fetch_limit,
-            )
-            elapsed = time.time() - api_start
-            logger.debug("Fetched %d in-progress issues for %s in %.1fs", len(issues), agent_label, elapsed)
-            print(f"[startup] Fetched {len(issues)} in-progress issues for {agent_label} in {elapsed:.1f}s")
-
-            for issue in issues:
-                self.state.startup_message = f"Analyzing issue #{issue.number}..."
-                # Use shared analysis logic
-                state = analyze_issue(
-                    issue=issue,
-                    repo=self.config.repo,
-                    issue_branches=issue_branches,
-                    check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
-                )
-
-                # Check if blocked - skip these, waiting for intervention
-                if issue.is_blocked:
-                    print(f"  #{issue.number}: Blocked - waiting for intervention")
-                    continue
-
-                if state.has_session:
-                    print(f"  #{issue.number}: Active session found - resuming monitoring")
-                    # TODO: recreate Session object and add to state
-                elif state.has_open_pr:
-                    print(f"  #{issue.number}: Has open PR ({state.pr_url or 'unknown'}) - skipping")
-                    # Don't clear label - PR is pending review
-                elif state.has_partial_work:
-                    # Keep in-progress label - we still own this issue
-                    # Queue for immediate resume when main loop starts
-                    print(f"  #{issue.number}: Has branch '{state.branch}' with commits - queuing for resume")
-                    issues_to_resume.append((issue, agent_label))
-                elif state.is_orphaned_label:
-                    # No work done at all - claim was made but nothing happened
-                    # Clear label so issue becomes available again
-                    print(f"  #{issue.number}: No session or branch - clearing stale label")
-                    logger.debug("[ADAPTER] Using GitHubAdapter for remove_label")
-                    self.repository_host.remove_label(issue.number, self.config.get_label_in_progress())
-
-        # Check for PRs needing code review (recovery after crash/restart)
-        if self.config.code_review_agent and self.config.code_review_label:
-            self.state.startup_message = "Checking PRs needing code review..."
-            print("\nChecking for PRs needing code review...")
-            prs = self.repository_host.get_prs_with_label(self.config.code_review_label)
-            for pr in prs:
-                pr_number = pr.number
-                pr_url = pr.url
-                pr_body = pr.body
-
-                # Extract issue number from "Closes #N" in PR body
-                import re
-                issue_match = re.search(r'Closes #(\d+)', pr_body, re.IGNORECASE)
-                issue_number: int = int(issue_match.group(1)) if issue_match else pr_number
-
-                # Check if PR was created by orchestrator (has marker)
-                # Note: In the new architecture, PRs are created by CompletionProcessor
-                from .models import ORCHESTRATOR_PR_MARKER
-                if ORCHESTRATOR_PR_MARKER not in pr_body:
-                    logger.debug(f"PR #{pr_number}: Not created by orchestrator (no marker)")
-
-                # Check if review is already in progress
-                if not self._session_exists(f"review-{pr_number}"):
-                    # Queue for review
-                    review = PendingReview(
-                        issue_number=issue_number,
-                        pr_number=pr_number,
-                        pr_url=pr_url,
-                        branch_name=pr.branch,
-                    )
-                    if review not in self.state.pending_reviews:
-                        self.state.pending_reviews.append(review)
-                        print(f"  PR #{pr_number}: Queued for code review")
-                else:
-                    print(f"  PR #{pr_number}: Review already in progress")
-
-        # Check for pending triage review issues (recovery after crash/restart)
-        if self.config.triage_review_agent:
-            self.state.startup_message = "Checking for pending triage review issues..."
-            print("\nChecking for pending triage review issues...")
-            logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-            triage_issues = self.repository_host.list_issues(
-                labels=[self.config.triage_review_agent],
-                limit=20,
-            )
-            for triage_issue in triage_issues:
-                # Skip if already in active session
-                session_name = f"issue-{triage_issue.number}"
-                if self._session_exists(session_name):
-                    print(f"  triage issue #{triage_issue.number}: Already running")
-                    continue
-
-                # Skip if already queued
-                if any(r.issue_number == triage_issue.number for r in self.state.pending_triage_reviews):
-                    print(f"  triage issue #{triage_issue.number}: Already queued")
-                    continue
-
-                # Queue for processing
-                self.state.pending_triage_reviews.append(
-                    PendingTriageReview(
-                        issue_number=triage_issue.number,
-                        title=triage_issue.title,
-                    )
-                )
-                print(f"  triage issue #{triage_issue.number}: Queued ({triage_issue.title})")
-
-            if self.state.pending_triage_reviews:
-                print(f"  Found {len(self.state.pending_triage_reviews)} triage review(s) to process")
-
-        # Recover orphaned cleanups (worktrees for PRs that were reviewed but not cleaned up)
-        self._recover_orphaned_cleanups()
-
-        # Resume issues with partial work (have in-progress label and commits but no session)
-        if issues_to_resume:
-            self.state.startup_message = f"Resuming {len(issues_to_resume)} in-progress issue(s)..."
-            print(f"\n🔄 Resuming {len(issues_to_resume)} in-progress issue(s) with partial work...")
-            for issue, agent_label in issues_to_resume:
-                # Check capacity before starting
-                if len(self.state.active_sessions) >= self.config.max_concurrent_sessions:
-                    print(f"  #{issue.number}: At max capacity, will resume when slot available")
-                    # Add to priority queue so it gets picked up first
-                    if issue.number not in self.state.priority_queue:
-                        self.state.priority_queue.insert(0, issue.number)
-                    continue
-
-                print(f"  #{issue.number}: Starting session to resume work...")
-                session = self.launch_session(issue)
-                if session:
-                    print(f"  #{issue.number}: ✅ Session started")
-                else:
-                    print(f"  #{issue.number}: ❌ Failed to start session")
-
-        # Run queue audit to show what will be processed
-        self.state.startup_message = "Auditing queue..."
-        from .audit import audit_queue, print_audit
-        audit_entries = audit_queue(self.config, self.state)
-        print_audit(audit_entries)
-
-        # Cache queue issues for instant dashboard pagination
-        self.state.startup_message = "Caching queue..."
-        self.update_queue_cache()
-
-        self.state.startup_status = "complete"
-        self.state.startup_message = ""
-        elapsed = time.time() - startup_start
-        logger.info("Startup complete in %.1fs", elapsed)
-        print(f"[startup] Total startup time: {elapsed:.1f}s")
-        self.events.publish(TraceEvent("orchestrator.ready", {
-            "filter_label": self.config.filter_label,
-            "filter_milestone": self.config.filter_milestone,
-            "agents": list(self.config.agents.keys()),
-            "max_concurrent": self.config.max_concurrent_sessions,
-            "startup_seconds": round(elapsed, 1),
-        }))
+        """Handle startup - delegates to StartupManager."""
+        await self._startup_manager.run_startup(self.state)
 
     def launch_session(self, issue: Issue) -> Optional[Session]:
         """Launch a new session for an issue.
@@ -802,7 +721,8 @@ class Orchestrator:
                 # Remove worktree for completed sessions
                 if self.config.cleanup.without_triage.close_ai_session_tabs or not self.config.code_review_agent:
                     try:
-                        remove_worktree(session.worktree_path)
+                        if self.worktree_manager:
+                            self.worktree_manager.remove(session.worktree_path)
                     except Exception as e:
                         print(f"Warning: failed to remove worktree: {e}")
 
@@ -1075,12 +995,19 @@ class Orchestrator:
                 break
 
             try:
-                # Actions that need entity lookup before IO
+                # LAUNCH_SESSION - ActionApplier uses the session_launcher callback
+                # which does entity lookup + delegates to launch_session/launch_review_session/etc.
                 if action.action_type == ActionType.LAUNCH_SESSION:
                     assert isinstance(action, LaunchSessionAction)
-                    self._execute_launch_action(action)
+                    result = self.action_applier.apply(action)
+                    if result.success:
+                        logger.info("[PLAN] Launched %s session for #%d",
+                                   action.session_type, action.number)
+                    elif not result.success:
+                        logger.warning("[PLAN] Failed to launch %s session for #%d: %s",
+                                      action.session_type, action.number, result.error)
 
-                # Actions that can delegate directly to ActionApplier
+                # Actions that delegate to ActionApplier with state updates
                 elif action.action_type == ActionType.ESCALATE_TO_HUMAN:
                     assert isinstance(action, EscalateToHumanAction)
                     result = self.action_applier.apply(action)
@@ -1222,64 +1149,7 @@ class Orchestrator:
         logger.info("[PLAN] Queued triage for issue #%d", action.issue_number)
         print(f"[TRIAGE] Queued failure investigation for #{action.issue_number}")
 
-    def _execute_launch_action(self, action: "LaunchSessionAction") -> None:
-        """Execute a launch session action.
-
-        Args:
-            action: The launch action to execute
-        """
-        from .control.actions import LaunchSessionAction
-
-        if action.session_type == "issue":
-            # Find the issue and launch
-            issue = next(
-                (i for i in self.state.cached_queue_issues if i.number == action.number),
-                None
-            )
-            if issue:
-                session = self.launch_session(issue)
-                if session:
-                    self.state.issues_started_count += 1
-                    logger.info("[PLAN] Launched issue session for #%d", action.number)
-            else:
-                logger.warning("[PLAN] Issue #%d not found in cache", action.number)
-
-        elif action.session_type == "review":
-            # Find the pending review and launch
-            review = next(
-                (r for r in self.state.pending_reviews if r.pr_number == action.number),
-                None
-            )
-            if review:
-                self.launch_review_session(review)
-                logger.info("[PLAN] Launched review session for PR #%d", action.number)
-            else:
-                logger.warning("[PLAN] Review for PR #%d not found", action.number)
-
-        elif action.session_type == "rework":
-            # Find the pending rework by issue number (from issue_key.stable_id())
-            rework = next(
-                (r for r in self.state.pending_reworks if int(r.issue_key.stable_id()) == action.number),
-                None
-            )
-            if rework:
-                self.launch_rework_session(rework)
-                logger.info("[PLAN] Launched rework session for issue #%d", action.number)
-            else:
-                logger.warning("[PLAN] Rework for issue #%d not found", action.number)
-
-        elif action.session_type == "triage":
-            # Find the pending triage and launch
-            triage = next(
-                (t for t in self.state.pending_triage_reviews if t.issue_number == action.number),
-                None
-            )
-            if triage:
-                self._launch_triage_session(triage)
-                logger.info("[PLAN] Launched triage session for #%d", action.number)
-            else:
-                logger.warning("[PLAN] Triage for #%d not found", action.number)
-
+    # _execute_launch_action removed - now handled via ActionApplier + _session_launcher_callback
     # Legacy _execute_* methods removed - now handled by ActionApplier + _handle_*_state_update
 
     def _fetch_all_issues(self) -> list[Issue]:
@@ -1316,7 +1186,7 @@ class Orchestrator:
         """
         from .audit import get_queue_issues
         try:
-            queue_issues = get_queue_issues(self.config, self.state)
+            queue_issues = get_queue_issues(self.config, self.state, issue_tracker=self.repository_host)
 
             # Track changes for events
             old_numbers = {i.number for i in self.state.cached_queue_issues}
@@ -1742,13 +1612,15 @@ Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
 
 async def run_orchestrator(config_path: Optional[Path] = None) -> None:
     """Entry point to run the orchestrator."""
+    from .bootstrap import build_orchestrator
+
     # Load config
     if config_path:
         config = Config.load(config_path)
     else:
         config = Config.find_and_load()
 
-    orchestrator = Orchestrator(config=config)
+    orchestrator = build_orchestrator(config)
 
     # Setup signal handlers with force kill on second Ctrl+C
     def handle_signal(signum, frame):

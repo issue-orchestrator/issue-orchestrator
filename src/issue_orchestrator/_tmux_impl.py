@@ -211,6 +211,25 @@ class TmuxManager:
         output = pane.capture_pane(start=-lines)
         return "\n".join(output) if output else ""
 
+    def send_keys(self, issue_number: int, keys: str, enter: bool = True) -> None:
+        """Send keys to an issue's pane.
+
+        Args:
+            issue_number: GitHub issue number
+            keys: Keys/text to send
+            enter: Whether to press enter after sending
+        """
+        window = self.get_window(issue_number)
+        if window is None:
+            return
+        pane = window.active_pane
+        if pane is None:
+            return
+        if enter:
+            pane.send_keys(keys)
+        else:
+            pane.send_keys(keys, enter=False)
+
     def kill_session(self) -> None:
         """Kill the entire orchestrator session."""
         if self.session:

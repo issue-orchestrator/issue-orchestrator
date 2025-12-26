@@ -1258,6 +1258,10 @@ class TestLaunchSessionDependencyCAS:
         mock_repository_host = MagicMock()
         mock_repository_host.add_label = MagicMock()
 
+        # Create mock worktree manager
+        mock_worktree_manager = MagicMock()
+        mock_worktree_manager.create.side_effect = Exception("Stop here - deps check passed")
+
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
             orch.config = config
@@ -1270,6 +1274,7 @@ class TestLaunchSessionDependencyCAS:
             orch.scheduler.dependency_evaluator = evaluator
             orch._repository_host = mock_repository_host  # Add repository host
             orch.session_manager = MagicMock()  # Add session manager
+            orch.worktree_manager = mock_worktree_manager  # Add worktree manager
 
         issue = Issue(
             number=1,
@@ -1290,14 +1295,12 @@ class TestLaunchSessionDependencyCAS:
         # The rest of the launch will fail due to incomplete mocking, but that's OK
         with patch.object(orch, '_refresh_issue', return_value=fresh_issue):
             with patch.object(orch, '_session_exists', return_value=False):
-                with patch('issue_orchestrator.control.session_launcher.create_worktree') as mock_worktree:
-                    # If we get to create_worktree, the dependency check passed
-                    mock_worktree.side_effect = Exception("Stop here - deps check passed")
-                    try:
-                        orch.launch_session(issue)
-                    except Exception as e:
-                        if "Stop here" not in str(e):
-                            raise  # Re-raise unexpected errors
+                # If we get to create_worktree, the dependency check passed
+                try:
+                    orch.launch_session(issue)
+                except Exception as e:
+                    if "Stop here" not in str(e):
+                        raise  # Re-raise unexpected errors
 
         # The key assertion: no dependency_blocked event was emitted
         dep_blocked_events = [e for e in events.events if e.name == "issue.dependency_blocked"]

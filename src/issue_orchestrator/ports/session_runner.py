@@ -84,6 +84,18 @@ class SessionRunner(Protocol):
         """
         ...
 
+    def send_to_session(self, session_id: int, text: str) -> bool:
+        """Send text to a running session.
+
+        Args:
+            session_id: Numeric ID
+            text: Text to send (e.g., "/exit")
+
+        Returns:
+            True if sent successfully, False otherwise.
+        """
+        ...
+
 
 class NullSessionRunner:
     """No-op session runner for testing."""
@@ -111,3 +123,6 @@ class NullSessionRunner:
 
     def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
         return None
+
+    def send_to_session(self, session_id: int, text: str) -> bool:
+        return False

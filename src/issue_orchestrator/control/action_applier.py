@@ -35,6 +35,7 @@ from ..ports.label_set import LabelSet
 from ..ports.issue_tracker import IssueTracker
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
+from ..models import Session
 from .actions import (
     Action,
     ActionResult,
@@ -65,6 +66,11 @@ from .reconciliation import (
 
 logger = logging.getLogger(__name__)
 
+# Type alias for session launcher callback
+# Takes (session_type, number) and returns Optional[Session]
+# This allows orchestrator to inject entity lookup + SessionLauncher
+SessionLauncherCallback = Callable[[str, int], Optional[Session]]
+
 
 @dataclass
 class ActionApplier:
@@ -86,6 +92,10 @@ class ActionApplier:
     worktree_manager: Optional[WorktreeManager] = None  # For worktree operations
     issue_tracker: Optional[IssueTracker] = None
     reconcile: bool = False  # If True, verify state before mutations
+    # Session launcher callback - handles entity lookup + launching
+    # Injected by orchestrator, allows ActionApplier to launch sessions without
+    # knowing about Issue/PendingReview/PendingRework entities
+    session_launcher: Optional[SessionLauncherCallback] = None
 
     def apply(self, action: Action) -> ActionResult:
         """Apply a single action.
@@ -297,8 +307,35 @@ class ActionApplier:
         )
 
     def _apply_launch_session(self, action: Action) -> ActionResult:
-        """Launch a terminal session."""
+        """Launch a terminal session.
+
+        Uses the injected session_launcher callback to handle entity lookup
+        and actual session launching. This keeps ActionApplier unaware of
+        Issue/PendingReview/PendingRework entity types.
+        """
         assert isinstance(action, LaunchSessionAction)
+
+        # Use the callback if provided (preferred path - handles entity lookup)
+        if self.session_launcher is not None:
+            session = self.session_launcher(action.session_type, action.number)
+            if session:
+                return ActionResult.ok(
+                    action,
+                    session_name=session.tmux_session_name,
+                    issue_number=session.issue.number,
+                )
+            else:
+                return ActionResult.fail(
+                    action,
+                    f"Failed to launch {action.session_type} session for #{action.number}"
+                )
+
+        # Fallback: use command/working_dir from action (for testing or direct calls)
+        if not action.command or not action.working_dir:
+            return ActionResult.fail(
+                action,
+                "No session_launcher callback and action missing command/working_dir"
+            )
 
         # Map session type string to enum
         session_type_map = {
@@ -319,8 +356,6 @@ class ActionApplier:
         # Check if already running
         if self.sessions.exists(ref):
             return ActionResult.skip(action, f"Session {ref.name} already running")
-
-        from pathlib import Path
 
         ctx = SessionContext(
             ref=ref,

@@ -132,3 +132,8 @@ forbidden_modules = [
   "issue_orchestrator._tmux_impl",
   "issue_orchestrator._iterm2_impl",
 ]
+# Allow orchestrator to import bootstrap for run_orchestrator() entry point
+# This is the only allowed path to execution - via the composition root
+ignore_imports = [
+  "issue_orchestrator.orchestrator -> issue_orchestrator.bootstrap",
+]

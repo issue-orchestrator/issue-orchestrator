@@ -470,8 +470,15 @@ def sample_config(sample_agent_config, tmp_path):
 def sample_orchestrator(sample_config, mock_repository_host, patch_plugin_manager):
     """Create an Orchestrator with mock adapter injected (proper DI for testing)."""
     from issue_orchestrator.orchestrator import Orchestrator
+    from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
+    from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
     patch_plugin_manager.plugin.session_exists_override = False
-    return Orchestrator(config=sample_config, _repository_host=mock_repository_host)
+    return Orchestrator(
+        config=sample_config,
+        _repository_host=mock_repository_host,
+        worktree_manager=GitWorktreeManager(),
+        working_copy=GitWorkingCopy(),
+    )
 
 
 @pytest.fixture

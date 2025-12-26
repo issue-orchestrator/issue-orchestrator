@@ -8,12 +8,14 @@ should use this module.
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .ports.issue_tracker import IssueTracker
 
 from .analysis import analyze_issue, get_issue_branches
 from .config import Config
 from .domain.dependencies import DependencyReport, parse_dependencies
-from ._github_impl import list_issues
 from .models import Issue, OrchestratorState
 from .control.scheduler import Scheduler
 
@@ -47,7 +49,10 @@ class IssueAuditEntry:
             return f"  #{self.issue.number} {self.issue.title} - SKIP: {self.status.value}{detail_str}"
 
 
-def fetch_all_issues(config: Config) -> list[Issue]:
+def fetch_all_issues(
+    config: Config,
+    issue_tracker: "IssueTracker",
+) -> list[Issue]:
     """Fetch all issues for configured agents.
 
     This is the single source of truth for fetching issues.
@@ -55,6 +60,7 @@ def fetch_all_issues(config: Config) -> list[Issue]:
 
     Args:
         config: Configuration with agent labels and repo info.
+        issue_tracker: IssueTracker port for fetching issues.
 
     Returns:
         Deduplicated list of issues sorted by number.
@@ -64,8 +70,7 @@ def fetch_all_issues(config: Config) -> list[Issue]:
         labels = [agent_label]
         if config.filter_label:
             labels.append(config.filter_label)
-        fetched = list_issues(
-            config.repo,
+        fetched = issue_tracker.list_issues(
             labels=labels,
             milestone=config.filter_milestone,
             limit=config.issue_fetch_limit,
@@ -87,6 +92,7 @@ def get_queue_issues(
     config: Config,
     state: Optional[OrchestratorState] = None,
     all_issues: Optional[list[Issue]] = None,
+    issue_tracker: Optional["IssueTracker"] = None,
 ) -> list[Issue]:
     """Get issues that should be in the queue (ready to process).
 
@@ -97,12 +103,15 @@ def get_queue_issues(
         config: Configuration.
         state: Optional orchestrator state for session/history filtering.
         all_issues: Optional pre-fetched issues (fetches if not provided).
+        issue_tracker: Optional IssueTracker for fetching issues if all_issues not provided.
 
     Returns:
         List of issues ready for processing, sorted by priority.
     """
     if all_issues is None:
-        all_issues = fetch_all_issues(config)
+        if issue_tracker is None:
+            raise ValueError("issue_tracker is required when all_issues is not provided")
+        all_issues = fetch_all_issues(config, issue_tracker)
 
     # Get history and active issue numbers
     history_numbers = set()
@@ -129,16 +138,21 @@ def get_queue_issues(
 def audit_queue(
     config: Config,
     state: Optional[OrchestratorState] = None,
+    issue_tracker: Optional["IssueTracker"] = None,
 ) -> list[IssueAuditEntry]:
     """Audit all issues and explain why each is queued or skipped.
 
     Args:
         config: Configuration with agent labels and repo info.
         state: Optional orchestrator state for session history check.
+        issue_tracker: IssueTracker for fetching issues.
 
     Returns:
         List of audit entries, one per issue.
     """
+    if issue_tracker is None:
+        raise ValueError("issue_tracker is required")
+
     entries = []
 
     # Get history issue numbers
@@ -152,7 +166,7 @@ def audit_queue(
     issue_branches = get_issue_branches(config.repo_root)
 
     # Fetch all issues
-    all_issues = fetch_all_issues(config)
+    all_issues = fetch_all_issues(config, issue_tracker)
 
     # Sort by issue number for consistent output
     all_issues.sort(key=lambda i: i.number)

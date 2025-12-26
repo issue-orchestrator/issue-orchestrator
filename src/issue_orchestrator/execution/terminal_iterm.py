@@ -64,3 +64,8 @@ class ITermPlugin:
         Note: Not currently implemented for iTerm2.
         """
         return None
+
+    @hookimpl
+    def send_to_session(self, session_id: int, text: str) -> bool:
+        """Send text to an iTerm2 tab."""
+        return self._manager.send_to_session(session_id, text)

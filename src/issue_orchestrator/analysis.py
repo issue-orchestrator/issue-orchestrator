@@ -3,9 +3,11 @@
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from ._github_impl import get_open_prs_for_branch
+if TYPE_CHECKING:
+    from .ports.pull_request_tracker import PullRequestTracker
+
 from .models import Issue
 
 
@@ -94,6 +96,7 @@ def analyze_issue(
     repo: Optional[str],
     issue_branches: dict[int, str],
     check_session_fn,
+    pr_tracker: Optional["PullRequestTracker"] = None,
 ) -> IssueState:
     """Analyze the full state of an issue.
 
@@ -102,6 +105,7 @@ def analyze_issue(
         repo: GitHub repo (owner/repo format)
         issue_branches: Dict of issue number -> branch name
         check_session_fn: Function to check if tmux session exists (issue_number) -> bool
+        pr_tracker: Optional PullRequestTracker for checking open PRs
 
     Returns:
         IssueState with all analyzed information
@@ -115,12 +119,12 @@ def analyze_issue(
     state.branch = issue_branches.get(issue.number)
 
     # Check for open PR if branch exists
-    if state.branch and repo:
+    if state.branch and pr_tracker:
         try:
-            prs = get_open_prs_for_branch(repo, state.branch)
+            prs = pr_tracker.get_prs_for_branch(state.branch, state="open")
             if prs:
                 state.has_open_pr = True
-                state.pr_url = prs[0].get("url")
+                state.pr_url = prs[0].url
         except Exception:
             pass
 
@@ -132,6 +136,7 @@ def analyze_all_issues(
     repo: Optional[str],
     repo_root: Path,
     check_session_fn,
+    pr_tracker: Optional["PullRequestTracker"] = None,
 ) -> list[IssueState]:
     """Analyze all issues and return their states.
 
@@ -140,13 +145,14 @@ def analyze_all_issues(
         repo: GitHub repo (owner/repo format)
         repo_root: Path to git repository
         check_session_fn: Function to check if tmux session exists
+        pr_tracker: Optional PullRequestTracker for checking open PRs
 
     Returns:
         List of IssueState objects
     """
     branches = get_issue_branches(repo_root)
     return [
-        analyze_issue(issue, repo, branches, check_session_fn)
+        analyze_issue(issue, repo, branches, check_session_fn, pr_tracker)
         for issue in issues
     ]
 
@@ -194,7 +200,7 @@ def analyze_orphan_branches(
     Returns:
         List of OrphanBranchState objects
     """
-    from ._github_impl import get_open_prs_for_branch
+    import json
 
     orphans = []
     for issue_num, branch_name in issue_branches.items():
@@ -237,7 +243,6 @@ def analyze_orphan_branches(
                     capture_output=True, text=True
                 )
                 if result.returncode == 0:
-                    import json
                     data = json.loads(result.stdout)
                     state.issue_state = data.get("state", "").lower()
                     state.issue_title = data.get("title")
@@ -252,7 +257,6 @@ def analyze_orphan_branches(
                     capture_output=True, text=True
                 )
                 if result.returncode == 0:
-                    import json
                     prs = json.loads(result.stdout)
                     closed_prs = [p for p in prs if p.get("state") in ("CLOSED", "MERGED")]
                     if closed_prs:

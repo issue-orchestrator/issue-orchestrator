@@ -168,6 +168,7 @@ class TestQueueChangeEvents:
             orch.state = state
             orch.events = events
             orch.config = config
+            orch._repository_host = MagicMock()
 
         # Mock get_queue_issues to return different issues
         with patch('issue_orchestrator.audit.get_queue_issues') as mock_get:
@@ -200,6 +201,7 @@ class TestQueueChangeEvents:
             orch.state = state
             orch.events = events
             orch.config = config
+            orch._repository_host = MagicMock()
 
         # Mock get_queue_issues to return same issues
         with patch('issue_orchestrator.audit.get_queue_issues') as mock_get:

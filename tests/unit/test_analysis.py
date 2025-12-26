@@ -357,8 +357,7 @@ class TestGetIssueBranches:
 class TestAnalyzeIssue:
     """Test the analyze_issue function."""
 
-    @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    def test_analyze_issue_basic(self, mock_get_prs):
+    def test_analyze_issue_basic(self):
         """Test basic issue analysis with no branch or session."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
@@ -372,8 +371,7 @@ class TestAnalyzeIssue:
         assert result.pr_url is None
         check_session.assert_called_once_with(5)
 
-    @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    def test_analyze_issue_with_session(self, mock_get_prs):
+    def test_analyze_issue_with_session(self):
         """Test issue with active session."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=True)
@@ -382,63 +380,64 @@ class TestAnalyzeIssue:
 
         assert result.has_session is True
 
-    @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    def test_analyze_issue_with_branch_and_pr(self, mock_get_prs):
+    def test_analyze_issue_with_branch_and_pr(self):
         """Test issue with branch and open PR."""
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
 
-        mock_get_prs.return_value = [
-            {"number": 10, "url": "https://github.com/owner/repo/pull/10"}
+        mock_pr_tracker = Mock()
+        mock_pr_tracker.get_prs_for_branch.return_value = [
+            PRInfo(number=10, url="https://github.com/owner/repo/pull/10", title="PR", branch="5-test-issue", labels=[], body="", state="open")
         ]
 
         result = analyze_issue(
-            issue, "owner/repo", {5: "5-test-issue"}, check_session
+            issue, "owner/repo", {5: "5-test-issue"}, check_session, mock_pr_tracker
         )
 
         assert result.branch == "5-test-issue"
         assert result.has_open_pr is True
         assert result.pr_url == "https://github.com/owner/repo/pull/10"
-        mock_get_prs.assert_called_once_with("owner/repo", "5-test-issue")
+        mock_pr_tracker.get_prs_for_branch.assert_called_once_with("5-test-issue", state="open")
 
-    @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    def test_analyze_issue_with_branch_no_pr(self, mock_get_prs):
+    def test_analyze_issue_with_branch_no_pr(self):
         """Test issue with branch but no open PR."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
 
-        mock_get_prs.return_value = []
+        mock_pr_tracker = Mock()
+        mock_pr_tracker.get_prs_for_branch.return_value = []
 
         result = analyze_issue(
-            issue, "owner/repo", {5: "5-test-issue"}, check_session
+            issue, "owner/repo", {5: "5-test-issue"}, check_session, mock_pr_tracker
         )
 
         assert result.branch == "5-test-issue"
         assert result.has_open_pr is False
         assert result.pr_url is None
 
-    @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    def test_analyze_issue_no_repo_skips_pr_check(self, mock_get_prs):
-        """Test that PR check is skipped when no repo provided."""
+    def test_analyze_issue_no_pr_tracker_skips_pr_check(self):
+        """Test that PR check is skipped when no pr_tracker provided."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
 
-        result = analyze_issue(issue, None, {5: "5-test-issue"}, check_session)
+        result = analyze_issue(issue, "owner/repo", {5: "5-test-issue"}, check_session)
 
         assert result.branch == "5-test-issue"
         assert result.has_open_pr is False
-        mock_get_prs.assert_not_called()
+        # No pr_tracker, so no PR check
 
-    @patch("issue_orchestrator.analysis.get_open_prs_for_branch")
-    def test_analyze_issue_pr_check_exception_ignored(self, mock_get_prs):
+    def test_analyze_issue_pr_check_exception_ignored(self):
         """Test that exceptions in PR check are caught and ignored."""
         issue = Issue(number=5, title="Test Issue", labels=[])
         check_session = Mock(return_value=False)
 
-        mock_get_prs.side_effect = Exception("API error")
+        mock_pr_tracker = Mock()
+        mock_pr_tracker.get_prs_for_branch.side_effect = Exception("API error")
 
         result = analyze_issue(
-            issue, "owner/repo", {5: "5-test-issue"}, check_session
+            issue, "owner/repo", {5: "5-test-issue"}, check_session, mock_pr_tracker
         )
 
         assert result.has_open_pr is False
@@ -489,10 +488,10 @@ class TestAnalyzeAllIssues:
 
         assert mock_analyze.call_count == 2
         mock_analyze.assert_any_call(
-            issue1, "owner/repo", {1: "1-issue-1"}, check_session
+            issue1, "owner/repo", {1: "1-issue-1"}, check_session, None
         )
         mock_analyze.assert_any_call(
-            issue2, "owner/repo", {1: "1-issue-1"}, check_session
+            issue2, "owner/repo", {1: "1-issue-1"}, check_session, None
         )
 
     @patch("issue_orchestrator.analysis.get_issue_branches")

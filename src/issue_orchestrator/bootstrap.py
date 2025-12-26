@@ -35,6 +35,7 @@ from .control.action_applier import ActionApplier
 from .control.fact_gatherer import FactGatherer
 from .execution import GitHubIssueResolver
 from .execution.worktree_adapter import GitWorktreeManager
+from .execution.git_working_copy import GitWorkingCopy
 from .control.dependency_evaluator import DependencyEvaluator
 from .control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 
@@ -148,13 +149,17 @@ def build_orchestrator(
         triage_workflow=triage_workflow,
     )
 
+    # Create adapters for IO operations
+    worktree_manager = GitWorktreeManager()
+    working_copy = GitWorkingCopy()
+
     # Create ActionApplier (IO boundary)
     action_applier = ActionApplier(
         labels=github,
         sessions=session_manager,
         events=events,
         repository_host=github,
-        worktree_manager=GitWorktreeManager(),
+        worktree_manager=worktree_manager,
         issue_tracker=github,
         reconcile=True,
     ) if github else None
@@ -176,6 +181,8 @@ def build_orchestrator(
         label_sync=label_sync,
         action_applier=action_applier,
         fact_gatherer=fact_gatherer,
+        worktree_manager=worktree_manager,
+        working_copy=working_copy,
     )
 
 
@@ -221,6 +228,10 @@ def build_orchestrator_for_testing(
     if session_manager is None:
         session_manager = SessionManager(runner=runner, events=events, config=config)
 
+    # Create adapters for IO operations
+    worktree_manager = GitWorktreeManager()
+    working_copy = GitWorkingCopy()
+
     # Create default action applier if github is available and none provided
     if action_applier is None and github is not None:
         action_applier = ActionApplier(
@@ -228,7 +239,7 @@ def build_orchestrator_for_testing(
             sessions=session_manager,
             events=events,
             repository_host=github,
-            worktree_manager=GitWorktreeManager(),
+            worktree_manager=worktree_manager,
             issue_tracker=github,
             reconcile=False,  # Disable for testing by default
         )
@@ -249,6 +260,8 @@ def build_orchestrator_for_testing(
         session_manager=session_manager,
         action_applier=action_applier,
         fact_gatherer=fact_gatherer,
+        worktree_manager=worktree_manager,
+        working_copy=working_copy,
     )
 
 
@@ -357,13 +370,17 @@ async def build_orchestrator_with_ipc(
         triage_workflow=triage_workflow,
     )
 
+    # Create adapters for IO operations
+    worktree_manager = GitWorktreeManager()
+    working_copy = GitWorkingCopy()
+
     # Create ActionApplier (IO boundary)
     action_applier = ActionApplier(
         labels=github,
         sessions=session_manager,
         events=events,
         repository_host=github,
-        worktree_manager=GitWorktreeManager(),
+        worktree_manager=worktree_manager,
         issue_tracker=github,
         reconcile=True,
     ) if github else None
@@ -385,6 +402,8 @@ async def build_orchestrator_with_ipc(
         label_sync=label_sync,
         action_applier=action_applier,
         fact_gatherer=fact_gatherer,
+        worktree_manager=worktree_manager,
+        working_copy=working_copy,
     )
 
     return orchestrator, ipc_server
