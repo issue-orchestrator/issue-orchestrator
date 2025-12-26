@@ -98,12 +98,20 @@ class Orchestrator:
             from .control.action_applier import ActionApplier as A
             self.action_applier = A(self.repository_host, self.session_manager, self.events, self.repository_host,
                                     self.worktree_manager, self.repository_host, True, self._session_launcher_callback)
+        else:
+            # Ensure injected action_applier has the session_launcher callback
+            self.action_applier.session_launcher = self._session_launcher_callback
 
         if not self.fact_gatherer:
             from .control.fact_gatherer import FactGatherer as F
             self.fact_gatherer = F(self.config, self.repository_host, self.events)
 
-        self.observer = SessionObserver(self.config, self.events, self.runner, self._repository_host)
+        self.observer = SessionObserver(
+            config=self.config,
+            events=self.events,
+            session_runner=self.runner,
+            repository_host=self._repository_host,
+        )
 
         if not self.state_machine_manager:
             self.state_machine_manager = StateMachineManager(self.config, self.events)

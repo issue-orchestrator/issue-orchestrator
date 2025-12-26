@@ -145,10 +145,13 @@ def start_orchestrator(repo: str, max_issues: int = 1) -> subprocess.Popen:
     else:
         cmd.append("--no-dashboard")
 
+    # Write output to log files for debugging
+    # Using DEVNULL caused orchestrator to run but we couldn't see logs
+    log_file = Path("/tmp/e2e-orchestrator.log")
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=open(log_file, "w"),
+        stderr=subprocess.STDOUT,
     )
     time.sleep(3)  # Give it time to start
     return proc
@@ -1064,10 +1067,11 @@ def start_orchestrator_with_config(config_path: Path, max_issues: int = 1) -> su
     else:
         cmd.append("--no-dashboard")
 
+    # Use DEVNULL to avoid blocking on pipe buffer fill
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     time.sleep(3)
     return proc
