@@ -505,14 +505,13 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         """
         assert isinstance(action, QueueReviewAction)
 
-        # Add review label if repository_host is available
-        if self.repository_host and action.pr_number:
+        # Add review label if available
+        if self.labels and action.code_review_label and action.pr_number:
             try:
-                # Try to add needs-code-review label (config-dependent)
-                # The orchestrator will pass the label via the action if needed
-                pass  # Label adding is done by orchestrator for now
+                self.labels.add_label(action.pr_number, action.code_review_label)
+                logger.info("Added '%s' label to PR #%d", action.code_review_label, action.pr_number)
             except Exception as e:
-                logger.warning("Failed to add review label: %s", e)
+                logger.warning("Failed to add review label to PR #%d: %s", action.pr_number, e)
 
         self.events.publish(TraceEvent("review.queued", {
             "pr_number": action.pr_number,
@@ -524,7 +523,6 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             action,
             pr_number=action.pr_number,
             issue_number=action.issue_number,
-            note="Queue operation - state update by orchestrator",
         )
 
     def _apply_create_triage_issue(self, action: Action) -> ActionResult:

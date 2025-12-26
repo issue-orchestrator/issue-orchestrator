@@ -77,8 +77,11 @@ These are the "calling card" level improvements that turn layer disconnects into
   - Removed `queue_code_review` (legacy, replaced by discovered_reviews pattern)
   - Removed dead label sync helpers (`_sync_label`, `_remove_blocked_labels`)
   - Simplified `_session_launcher_callback` using dispatch pattern (85→45 lines)
+  - Consolidated small state update handlers into `_update_state_after_action`
+  - Simplified `_handle_queue_*_state_update` handlers (~90→30 lines)
+  - Moved label adding to ActionApplier (added `code_review_label` to QueueReviewAction)
   - Updated test helpers to inject required components (session_controller, etc.)
-- **Current: 1353 lines** (down from 2924, -1571 lines removed, -54%)
+- **Current: 1287 lines** (down from 2924, -1637 lines removed, -56%)
 
 **Remaining to extract (~950 lines to reach 400 line goal):**
 - `handle_session_completion` (95 lines) - mostly delegated to CompletionHandler

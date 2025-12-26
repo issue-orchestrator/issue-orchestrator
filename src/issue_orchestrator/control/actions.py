@@ -167,6 +167,7 @@ class QueueReviewAction(Action):
     pr_number: int = 0
     pr_url: str = ""
     branch_name: str = ""
+    code_review_label: str = ""  # Label to add (e.g., needs-code-review)
     action_type: ActionType = field(default=ActionType.QUEUE_REVIEW, init=False)
 
 

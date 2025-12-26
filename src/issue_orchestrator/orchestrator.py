@@ -879,93 +879,48 @@ class Orchestrator:
             self._handle_queue_triage_state_update(action, result)
 
     def _handle_queue_review_state_update(self, action: "Action", result: "ActionResult") -> None:
-        """Update state after queue review action succeeds."""
+        """Update state after queue review action succeeds (label added by ActionApplier)."""
         from .control.actions import QueueReviewAction
-        assert isinstance(action, QueueReviewAction)
+        a = cast(QueueReviewAction, action)
 
-        # Check if already queued (defensive)
-        if any(r.pr_number == action.pr_number for r in self.state.pending_reviews):
-            logger.debug("[PLAN] PR #%d already queued, skipping state update", action.pr_number)
-            return
+        if any(r.pr_number == a.pr_number for r in self.state.pending_reviews):
+            return  # Already queued
 
-        # Add needs-code-review label as backup
-        if self.config.code_review_label:
-            try:
-                self.repository_host.add_label(action.pr_number, self.config.code_review_label)
-                logger.info("Added '%s' label to PR #%d", self.config.code_review_label, action.pr_number)
-            except Exception as e:
-                logger.warning("Failed to add review label to PR #%d: %s", action.pr_number, e)
-
-        # Create pending review
-        review = PendingReview(
-            issue_number=action.issue_number,
-            pr_number=action.pr_number,
-            pr_url=action.pr_url,
-            branch_name=action.branch_name,
-        )
-        self.state.pending_reviews.append(review)
-        log_transition("review", action.pr_number, "CREATED", "QUEUED", f"from issue #{action.issue_number}")
-
-        # Create review state machine
-        review_machine = self._get_review_machine(action.pr_number, action.issue_number)
-        logger.debug("[STATE_MACHINE] ReviewStateMachine for PR #%d in %s", action.pr_number, review_machine.state)
-        logger.info("[PLAN] Queued review for PR #%d", action.pr_number)
+        self.state.pending_reviews.append(PendingReview(
+            issue_number=a.issue_number, pr_number=a.pr_number, pr_url=a.pr_url, branch_name=a.branch_name,
+        ))
+        log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from issue #{a.issue_number}")
+        self._get_review_machine(a.pr_number, a.issue_number)  # Create state machine
 
     def _handle_queue_rework_state_update(self, action: "Action", result: "ActionResult") -> None:
         """Update state after queue rework action succeeds."""
         from .control.actions import QueueReworkAction
-        assert isinstance(action, QueueReworkAction)
+        a = cast(QueueReworkAction, action)
 
-        # Check if already queued (defensive)
-        queued_issue_ids = {int(r.issue_key.stable_id()) for r in self.state.pending_reworks}
-        if action.issue_number in queued_issue_ids:
-            logger.debug("[PLAN] Issue #%d already queued for rework, skipping state update", action.issue_number)
-            return
+        if any(int(r.issue_key.stable_id()) == a.issue_number for r in self.state.pending_reworks):
+            return  # Already queued
 
-        # Create IssueKey via repository
-        issue_key = self.repository_host.create_issue_key(action.issue_number)
+        # Find agent_type from discovered reworks or use default
+        agent_type = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
 
-        # Need agent_type - try to find it from discovered reworks
-        agent_type = ""
-        for rework in self.state.discovered_reworks:
-            if rework.issue_number == action.issue_number:
-                agent_type = rework.agent_type
-                break
-        if not agent_type:
-            logger.warning("[PLAN] No agent_type found for rework issue #%d, using default", action.issue_number)
-            agent_type = "agent:developer"
-
-        # Create pending rework
-        rework = PendingRework(
-            issue_key=issue_key,
+        self.state.pending_reworks.append(PendingRework(
+            issue_key=self.repository_host.create_issue_key(a.issue_number),
             agent_type=agent_type,
-            rework_cycle=action.rework_cycle,
-        )
-        self.state.pending_reworks.append(rework)
-        log_transition("rework", action.issue_number, "CREATED", "QUEUED",
-                      f"cycle {action.rework_cycle}")
-        logger.info("[PLAN] Queued rework for issue #%d (cycle %d)", action.issue_number, action.rework_cycle)
-        print(f"🔄 Queued issue #{action.issue_number} for rework (cycle {action.rework_cycle})")
+            rework_cycle=a.rework_cycle,
+        ))
+        log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
+        print(f"🔄 Queued issue #{a.issue_number} for rework (cycle {a.rework_cycle})")
 
     def _handle_queue_triage_state_update(self, action: "Action", result: "ActionResult") -> None:
         """Update state after queue triage action succeeds."""
         from .control.actions import QueueTriageAction
-        assert isinstance(action, QueueTriageAction)
+        a = cast(QueueTriageAction, action)
 
-        # Check if already queued (defensive)
-        if any(t.issue_number == action.issue_number for t in self.state.pending_triage_reviews):
-            logger.debug("[PLAN] Issue #%d already queued for triage, skipping state update", action.issue_number)
-            return
+        if any(t.issue_number == a.issue_number for t in self.state.pending_triage_reviews):
+            return  # Already queued
 
-        # Add to pending triage reviews
-        self.state.pending_triage_reviews.append(
-            PendingTriageReview(
-                issue_number=action.issue_number,
-                title=action.title,
-            )
-        )
-        logger.info("[PLAN] Queued triage for issue #%d", action.issue_number)
-        print(f"[TRIAGE] Queued failure investigation for #{action.issue_number}")
+        self.state.pending_triage_reviews.append(PendingTriageReview(issue_number=a.issue_number, title=a.title))
+        print(f"[TRIAGE] Queued failure investigation for #{a.issue_number}")
 
     # _execute_launch_action removed - now handled via ActionApplier + _session_launcher_callback
     # Legacy _execute_* methods removed - now handled by ActionApplier + _handle_*_state_update
