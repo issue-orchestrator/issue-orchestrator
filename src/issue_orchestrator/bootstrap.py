@@ -185,6 +185,13 @@ def build_orchestrator(
         repository_host=github,
     ) if github else None
 
+    # Create StateMachineManager (centralized state machine management)
+    from .control.state_machine_manager import StateMachineManager
+    state_machine_manager = StateMachineManager(
+        config=config,
+        events=events,
+    )
+
     # Build the orchestrator with injected dependencies
     return Orchestrator(
         config=config,
@@ -200,6 +207,7 @@ def build_orchestrator(
         session_restorer=session_restorer,
         worktree_manager=worktree_manager,
         working_copy=working_copy,
+        state_machine_manager=state_machine_manager,
     )
 
 
@@ -408,6 +416,12 @@ async def build_orchestrator_with_ipc(
         repository_host=github,
     ) if github else None
 
+    # Create StateMachineManager
+    state_machine_manager = StateMachineManager(
+        config=config,
+        events=events,
+    )
+
     # Build the orchestrator
     orchestrator = Orchestrator(
         config=config,
@@ -421,6 +435,7 @@ async def build_orchestrator_with_ipc(
         fact_gatherer=fact_gatherer,
         worktree_manager=worktree_manager,
         working_copy=working_copy,
+        state_machine_manager=state_machine_manager,
     )
 
     return orchestrator, ipc_server

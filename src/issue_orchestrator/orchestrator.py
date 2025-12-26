@@ -112,6 +112,8 @@ class Orchestrator:
     worktree_manager: Optional[WorktreeManager] = field(default=None, repr=False)
     # Working copy (port) - for git operations inside worktrees
     working_copy: Optional[WorkingCopy] = field(default=None, repr=False)
+    # State machine manager - single source of truth for state machines
+    state_machine_manager: Optional[StateMachineManager] = field(default=None, repr=False)
     # Internal state
     state: OrchestratorState = field(default_factory=OrchestratorState)
     scheduler: Scheduler = field(init=False)
@@ -203,12 +205,20 @@ class Orchestrator:
             repository_host=self._repository_host,
         )
 
-        # State machine infrastructure
+        # State machine infrastructure - use injected manager or create
         # Note: State machines are now pure - they return TransitionResult via last_transition
         # The caller should emit TraceEvents via EventSink after transitions
-        self.issue_machines: dict[int, IssueStateMachine] = {}
-        self.session_machines: dict[str, SessionStateMachine] = {}
-        self.review_machines: dict[int, ReviewStateMachine] = {}  # keyed by PR number
+        if self.state_machine_manager is None:
+            self.state_machine_manager = StateMachineManager(
+                config=self.config,
+                events=self.events,
+            )
+
+        # Expose state machine dicts as properties for backwards compatibility
+        # These delegate to the StateMachineManager
+        self.issue_machines = self.state_machine_manager.issue_machines
+        self.session_machines = self.state_machine_manager.session_machines
+        self.review_machines = self.state_machine_manager.review_machines
 
         # Update observer's reference to session machines
         self.observer.session_machines = self.session_machines
@@ -329,12 +339,9 @@ class Orchestrator:
     @property
     def _state_machines(self) -> StateMachineManager:
         """Get the state machine manager."""
-        if not hasattr(self, "_state_machine_manager_cache"):
-            self._state_machine_manager_cache = StateMachineManager(
-                config=self.config,
-                events=self.events,
-            )
-        return self._state_machine_manager_cache
+        # state_machine_manager is always set in __post_init__
+        assert self.state_machine_manager is not None
+        return self.state_machine_manager
 
     # Note: _verify_hooks_on_startup moved to StartupManager
 
