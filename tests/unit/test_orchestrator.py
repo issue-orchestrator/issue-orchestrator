@@ -66,14 +66,19 @@ class MockWorktreeManager:
 
 
 def create_test_orchestrator(config, repository_host=None, worktree_manager=None, working_copy=None):
-    """Helper to create an Orchestrator with required dependencies for testing.
+    """Helper to create an Orchestrator for testing.
 
-    Note: This works with the patch_orchestrator_dependencies fixture which injects
-    mock events and runner via __post_init__. Components like session_manager,
-    planner, etc. are created by __post_init__ fallbacks using the injected mocks.
+    This works with the patch_orchestrator_dependencies autouse fixture which:
+    1. Injects MockEventSink and MockSessionRunner via __post_init__
+    2. Creates fallback components (planner, session_manager, etc.) using the mocks
 
-    For tests that need explicit control over all dependencies, use
-    build_test_orchestrator_deps() from conftest.py instead.
+    Tests can access mocks via:
+        - orchestrator.events (MockEventSink)
+        - orchestrator.runner (MockSessionRunner)
+        - orchestrator.runner.plugin or patch_plugin_manager.plugin (MockTerminalPlugin)
+
+    The fixture handles events/runner injection, so we just need to provide
+    the required components that aren't created by fallbacks.
     """
     from issue_orchestrator.control.session_controller import SessionController
     from issue_orchestrator.control.completion_processor import CompletionProcessor
@@ -81,13 +86,12 @@ def create_test_orchestrator(config, repository_host=None, worktree_manager=None
     from issue_orchestrator.ports import NullEventSink
 
     repo_host = repository_host or MagicMock()
-    events = NullEventSink()
+    events = NullEventSink()  # Will be replaced by fixture mock
     wt_manager = worktree_manager or MockWorktreeManager()
     wc = working_copy or GitWorkingCopy()
 
-    # Create only the components that must be explicitly provided
-    # Other components (planner, session_manager, etc.) are created by __post_init__
-    # using the mocks injected by patch_orchestrator_dependencies fixture
+    # Only create components that aren't created by __post_init__ fallbacks
+    # planner, session_manager, etc. are created in __post_init__ using fixture mocks
     completion_processor = CompletionProcessor(
         label_adapter=repo_host,
         pr_adapter=repo_host,
@@ -104,7 +108,7 @@ def create_test_orchestrator(config, repository_host=None, worktree_manager=None
     )
     session_controller = SessionController(
         completion_processor=completion_processor,
-        events=events,
+        events=events,  # SessionController uses its own events reference
     )
     pr_scanner = PRScanner(
         config=config,

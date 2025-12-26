@@ -464,9 +464,12 @@ def patch_orchestrator_dependencies(monkeypatch, request):
     This injects MockEventSink, MockSessionRunner, and MockGitHubAdapter into
     Orchestrator instances so tests don't need actual backends or infrastructure.
 
-    The fixture patches __post_init__ to inject mocks BEFORE fallback creation,
-    ensuring all components (like session_manager) use the mock runner/events.
+    The fixture patches __post_init__ to inject mocks ONLY for fields that are
+    still at their default values (NullEventSink, NullSessionRunner, None).
+    This allows tests to pass explicit mocks while still benefiting from auto-patching.
     """
+    from issue_orchestrator.ports import NullEventSink, NullSessionRunner
+
     # Use provided mocks if test requests them, otherwise create new ones
     if 'mock_terminal_plugin' in request.fixturenames:
         plugin = request.getfixturevalue('mock_terminal_plugin')
@@ -490,15 +493,20 @@ def patch_orchestrator_dependencies(monkeypatch, request):
         # Inject GitHub adapter if not already set
         if self._repository_host is None:
             self._repository_host = github_adapter
-        # Inject mocks BEFORE calling original __post_init__ so session_manager
-        # gets the mock runner (session_manager is created during __post_init__)
-        self.events = mock_events
-        self.runner = mock_runner
+
+        # Only inject mocks for fields that are still at default values
+        # This preserves explicitly passed dependencies
+        if isinstance(self.events, NullEventSink):
+            self.events = mock_events
+        if isinstance(self.runner, NullSessionRunner):
+            self.runner = mock_runner
+
         # Call original (which now creates session_manager with our mock runner)
         original_post_init(self)
-        # Store references for test assertions
-        self._mock_event_sink = mock_events
-        self._mock_session_runner = mock_runner
+
+        # Store references for test assertions (use actual values, not fixture mocks)
+        self._mock_event_sink = self.events
+        self._mock_session_runner = self.runner
         self._mock_repository_host = self._repository_host
 
     # Patch __post_init__
