@@ -2191,6 +2191,8 @@ class TestReconcileOrphanedPrLabels:
     def test_reconcile_adds_label_to_orphaned_prs(self, sample_config, mock_repository_host):
         """Test that orphaned PRs get the code review label added."""
         from issue_orchestrator.ports.pull_request_tracker import PRInfo
+        from issue_orchestrator.control import LabelSync
+        from issue_orchestrator.ports import NullEventSink
 
         sample_config.code_review_label = "needs-code-review"
         sample_config.code_reviewed_label = "code-reviewed"
@@ -2208,7 +2210,16 @@ class TestReconcileOrphanedPrLabels:
         )
         mock_repository_host.prs["feature-branch"] = [orphaned_pr]
 
+        # Create label_sync with the mock (it needs both labels and pr_tracker)
+        label_sync = LabelSync(
+            labels=mock_repository_host,
+            events=NullEventSink(),
+            pr_tracker=mock_repository_host,
+        )
+
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator.label_sync = label_sync  # Inject label_sync
+
         fixed_count = orchestrator.reconcile_orphaned_pr_labels()
 
         assert fixed_count == 1
@@ -2218,6 +2229,8 @@ class TestReconcileOrphanedPrLabels:
     def test_reconcile_skips_non_orchestrator_prs(self, sample_config, mock_repository_host):
         """Test that non-orchestrator PRs are skipped."""
         from issue_orchestrator.ports.pull_request_tracker import PRInfo
+        from issue_orchestrator.control import LabelSync
+        from issue_orchestrator.ports import NullEventSink
 
         sample_config.code_review_label = "needs-code-review"
         sample_config.code_reviewed_label = "code-reviewed"
@@ -2235,7 +2248,16 @@ class TestReconcileOrphanedPrLabels:
         )
         mock_repository_host.prs["feature-branch"] = [external_pr]
 
+        # Create label_sync with the mock
+        label_sync = LabelSync(
+            labels=mock_repository_host,
+            events=NullEventSink(),
+            pr_tracker=mock_repository_host,
+        )
+
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator.label_sync = label_sync  # Inject label_sync
+
         fixed_count = orchestrator.reconcile_orphaned_pr_labels()
 
         assert fixed_count == 0
@@ -2245,6 +2267,8 @@ class TestReconcileOrphanedPrLabels:
     def test_reconcile_skips_prs_with_review_label(self, sample_config, mock_repository_host):
         """Test that PRs already with review labels are skipped."""
         from issue_orchestrator.ports.pull_request_tracker import PRInfo
+        from issue_orchestrator.control import LabelSync
+        from issue_orchestrator.ports import NullEventSink
 
         sample_config.code_review_label = "needs-code-review"
         sample_config.code_reviewed_label = "code-reviewed"
@@ -2262,7 +2286,16 @@ class TestReconcileOrphanedPrLabels:
         )
         mock_repository_host.prs["feature-branch"] = [reviewed_pr]
 
+        # Create label_sync with the mock
+        label_sync = LabelSync(
+            labels=mock_repository_host,
+            events=NullEventSink(),
+            pr_tracker=mock_repository_host,
+        )
+
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator.label_sync = label_sync  # Inject label_sync
+
         fixed_count = orchestrator.reconcile_orphaned_pr_labels()
 
         assert fixed_count == 0
@@ -2937,39 +2970,60 @@ class TestReworkEscalation:
     Tests use MockGitHubAdapter to verify adapter calls rather than mocking subprocess.
     """
 
-    def test_escalate_to_needs_human_adds_label_and_comment(
+    def test_escalation_flows_through_planner_and_action_applier(
         self,
         sample_config,
         mock_repository_host,
     ):
-        """Test that escalation adds needs-human label and posts comment."""
+        """Test that escalation is handled by Planner producing EscalateToHumanAction.
+
+        The flow is:
+        1. scan_needs_rework_prs stores DiscoveredEscalation
+        2. Planner produces EscalateToHumanAction
+        3. ActionApplier executes the escalation (label, comment)
+
+        This test verifies the Planner produces the action with correct labels.
+        ActionApplier tests verify the execution.
+        """
+        from issue_orchestrator.control.planner import Planner
+        from issue_orchestrator.control.scheduler import Scheduler
+        from issue_orchestrator.control.actions import EscalateToHumanAction
+
         sample_config.max_rework_cycles = 2
 
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        scheduler = Scheduler(config=sample_config)
+        planner = Planner(config=sample_config, scheduler=scheduler)
 
-        # Clear any calls from initialization
-        mock_repository_host.add_label_calls.clear()
-        mock_repository_host.remove_label_calls.clear()
-        mock_repository_host.comments.clear()
+        # Create a snapshot with a discovered escalation
+        from issue_orchestrator.models import OrchestratorState, DiscoveredEscalation
+        from issue_orchestrator.control.planner import OrchestratorSnapshot
 
-        orchestrator._escalate_to_needs_human(
+        state = OrchestratorState()
+
+        escalation = DiscoveredEscalation(
             pr_number=123,
             issue_number=456,
-            rework_cycle=3,
+            rework_cycle=3,  # 3 means 2 completed cycles (exceeded max of 2)
         )
 
-        # Should have called add_label for needs-human
-        assert (123, "needs-human") in mock_repository_host.add_label_calls
+        snapshot = OrchestratorSnapshot.from_state(
+            issues=[],  # No issues to start
+            state=state,
+            discovered_escalations=[escalation],
+        )
+        plan = planner.plan(snapshot)
 
-        # Should have called remove_label for needs-rework
-        assert (123, "needs-rework") in mock_repository_host.remove_label_calls
+        # Should have an EscalateToHumanAction
+        escalate_actions = [a for a in plan.actions if isinstance(a, EscalateToHumanAction)]
+        assert len(escalate_actions) == 1
+        action = escalate_actions[0]
 
-        # Should have posted a comment
-        assert len(mock_repository_host.comments) == 1
-        comment = mock_repository_host.comments[0]
-        assert comment["number"] == 123
-        assert "Escalated to Human Review" in comment["body"]
-        assert "2 rework cycles" in comment["body"]
+        # Verify the action has correct labels
+        assert action.pr_number == 123
+        assert action.issue_number == 456
+        assert action.needs_human_label == sample_config.get_label_needs_human()
+        assert action.needs_rework_label == sample_config.get_label_needs_rework()
+        assert action.max_rework_cycles == sample_config.max_rework_cycles
 
     def test_scan_needs_rework_discovers_escalation_at_max_cycles(
         self,

@@ -10,10 +10,11 @@ Usage:
 
 import logging
 from dataclasses import dataclass
-from typing import Set
+from typing import Optional, Set
 
 from ..ports import EventSink, TraceEvent
 from ..ports.label_set import LabelSet
+from ..ports.pull_request_tracker import PullRequestTracker
 from .label_projection import DesiredLabels, compute_label_changes
 
 logger = logging.getLogger(__name__)
@@ -53,15 +54,22 @@ class LabelSync:
     It uses the LabelSet port for actual label operations.
     """
 
-    def __init__(self, labels: LabelSet, events: EventSink):
+    def __init__(
+        self,
+        labels: LabelSet,
+        events: EventSink,
+        pr_tracker: Optional[PullRequestTracker] = None,
+    ):
         """Initialize the sync service.
 
         Args:
             labels: LabelSet port for label operations
             events: EventSink for trace events
+            pr_tracker: Optional PullRequestTracker for PR operations (used for reconciliation)
         """
         self.labels = labels
         self.events = events
+        self.pr_tracker = pr_tracker
 
     def sync(
         self,
@@ -188,3 +196,60 @@ class LabelSync:
             current=current,
             desired=DesiredLabels.remove(*blocked_labels),
         )
+
+    def reconcile_orphaned_pr_labels(
+        self,
+        code_review_label: str,
+        code_reviewed_label: str | None,
+        orchestrator_marker: str,
+    ) -> int:
+        """Reconcile labels on agent-created PRs missing review labels.
+
+        Called on startup to catch PRs where label addition failed due to
+        orchestrator crash/restart or other failures.
+
+        Args:
+            code_review_label: The needs-code-review label to add
+            code_reviewed_label: The code-reviewed label (skip if present)
+            orchestrator_marker: Marker to identify orchestrator-created PRs
+
+        Returns:
+            Number of PRs that were fixed
+        """
+        if not self.pr_tracker:
+            logger.warning("[LABEL_SYNC] No PR tracker configured for reconciliation")
+            return 0
+
+        fixed_count = 0
+
+        try:
+            prs = self.pr_tracker.list_prs(state="open", limit=100)
+        except Exception as e:
+            logger.warning("[LABEL_SYNC] Failed to list PRs for reconciliation: %s", e)
+            return 0
+
+        for pr in prs:
+            # Only reconcile PRs created by the orchestrator
+            if orchestrator_marker not in pr.body:
+                continue
+
+            # Check if it already has a review label
+            has_review_label = (
+                code_review_label in pr.labels or
+                (code_reviewed_label and code_reviewed_label in pr.labels)
+            )
+
+            if not has_review_label:
+                # Add the needs-code-review label
+                try:
+                    self.labels.add_label(pr.number, code_review_label)
+                    fixed_count += 1
+                    print(f"🏷️  Added '{code_review_label}' to orphaned PR #{pr.number}")
+                    logger.info("[LABEL_SYNC] Reconciled label on PR #%d", pr.number)
+                except Exception as e:
+                    logger.warning("[LABEL_SYNC] Failed to reconcile label on PR #%d: %s", pr.number, e)
+
+        if fixed_count > 0:
+            print(f"✅ Reconciled labels on {fixed_count} orphaned PR(s)")
+
+        return fixed_count

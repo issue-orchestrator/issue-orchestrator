@@ -457,7 +457,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 issue_number=escalation.issue_number,
                 pr_number=escalation.pr_number,
                 escalation_reason="max rework cycles exceeded",
-                rework_cycles=escalation.rework_cycle - 1,
+                rework_cycles=escalation.rework_cycle - 1,  # Completed cycles, not current
+                needs_human_label=self.config.get_label_needs_human(),
+                needs_rework_label=self.config.get_label_needs_rework(),
+                max_rework_cycles=self.config.max_rework_cycles,
                 reason=f"PR #{escalation.pr_number} exceeded max rework cycles ({escalation.rework_cycle - 1})",
             ))
             logger.info("Planner: escalating PR #%d after %d rework cycles",
@@ -684,6 +687,9 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         pr_number=issue_num,  # PR resolved by adapter at execution time
                         escalation_reason=escalation.reason or "max rework cycles reached",
                         rework_cycles=rework.rework_cycle,
+                        needs_human_label=self.config.get_label_needs_human(),
+                        needs_rework_label=self.config.get_label_needs_rework(),
+                        max_rework_cycles=self.config.max_rework_cycles,
                         reason=f"escalating: cycle {rework.rework_cycle} >= max {escalation.max_cycles}",
                     ))
                 else:

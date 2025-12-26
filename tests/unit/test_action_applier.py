@@ -290,21 +290,47 @@ class TestEscalateToHumanAction:
     """Tests for ESCALATE_TO_HUMAN action."""
 
     def test_escalate_success(self, applier, mock_labels, mock_events):
-        """Test successful escalation."""
+        """Test successful escalation adds label to PR number."""
         action = EscalateToHumanAction(
             issue_number=123,
             pr_number=456,
             escalation_reason="Max rework cycles exceeded",
             rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
         )
 
         result = applier.apply(action)
 
         assert result.success
-        mock_labels.add_label.assert_called_once_with(123, "blocked-needs-human")
+        # Should add needs-human to PR number (456), not issue number
+        mock_labels.add_label.assert_called_with(456, "needs-human")
+        # Should try to remove needs-rework
+        mock_labels.remove_label.assert_called_with(456, "needs-rework")
+
+    def test_escalate_posts_comment(self, applier, mock_labels, mock_events, mock_repository_host):
+        """Test escalation posts explanatory comment."""
+        action = EscalateToHumanAction(
+            issue_number=123,
+            pr_number=456,
+            escalation_reason="Max rework cycles exceeded",
+            rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        mock_repository_host.add_comment.assert_called_once()
+        call_args = mock_repository_host.add_comment.call_args
+        assert call_args[0][0] == 456  # PR number
+        assert "Escalated to Human Review" in call_args[0][1]
 
     def test_escalate_failure(self, applier, mock_labels):
-        """Test escalation failure."""
+        """Test escalation failure when add_label fails."""
         mock_labels.add_label.side_effect = Exception("API error")
         action = EscalateToHumanAction(
             issue_number=123,

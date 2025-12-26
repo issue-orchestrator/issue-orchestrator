@@ -132,7 +132,7 @@ def build_orchestrator(
         repo=config.repo,
     ) if github else None
     session_manager = SessionManager(runner=runner, events=events, config=config)
-    label_sync = LabelSync(labels=github, events=events) if github else None
+    label_sync = LabelSync(labels=github, events=events, pr_tracker=github) if github else None
 
     # Create workflow instances
     review_workflow = ReviewWorkflow(config=config, events=events)
@@ -370,7 +370,7 @@ async def build_orchestrator_with_ipc(
         repo=config.repo,
     ) if github else None
     session_manager = SessionManager(runner=runner, events=events, config=config)
-    label_sync = LabelSync(labels=github, events=events) if github else None
+    label_sync = LabelSync(labels=github, events=events, pr_tracker=github) if github else None
 
     # Create workflow instances
     review_workflow = ReviewWorkflow(config=config, events=events)

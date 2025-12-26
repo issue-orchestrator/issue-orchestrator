@@ -55,7 +55,7 @@ These are the "calling card" level improvements that turn layer disconnects into
 **Key remaining extractions:**
 - [ ] `launch_session` + related helpers → `session_controller.py`
 - [ ] `launch_review_session`, `launch_rework_session` → workflow controllers
-- [ ] `reconcile_orphaned_pr_labels` → `reconciliation.py`
+- [x] `reconcile_orphaned_pr_labels` → `LabelSync` (done)
 - [ ] Main loop (`run_loop`) → should just call controllers, not contain logic
 
 **Progress:**
@@ -63,19 +63,33 @@ These are the "calling card" level improvements that turn layer disconnects into
 - [x] PRScanner extraction: 2725 → 2665 lines (-60)
 - [x] HookVerifier extraction + stale comments: 2665 → 2033 lines (-632)
 - [x] EventBus removal + triage-to-planner: 2033 → 1945 lines (-88)
-- **Current: 1945 lines** (down from 2924, -979 lines removed, -33%)
+- [x] Orchestrator-mediator refactor session (2025-12-25):
+  - Extracted tick() pattern from run_loop
+  - Added StateMachineManager for centralized state machine access
+  - Simplified _apply_plan using dispatch table pattern
+  - Made PRScanner and SessionRestorer injectable via bootstrap
+  - Fixed observer wiring tests to use mock session_runner
+  - Moved `reconcile_orphaned_pr_labels` → `LabelSync` (1593 → 1526)
+  - Moved `_escalate_to_needs_human` → `ActionApplier` (full escalation flow)
+- **Current: 1526 lines** (down from 2924, -1398 lines removed, -48%)
 
-**Remaining to extract (~1445 lines to reach 500 line goal):**
-- `handle_session_completion` (246 lines) - state machine updates, cleanup, review queueing
-- `launch_session` (184 lines) - session launching logic
-- `startup` (204 lines) - startup/initialization
-- `_launch_triage_session`, `launch_review_session`, `launch_rework_session` (~300 lines)
-- `_recover_orphaned_cleanups` (~100 lines) - startup cleanup
+**Remaining to extract (~1026 lines to reach 500 line goal):**
+- `handle_session_completion` (95 lines) - mostly delegated to CompletionHandler
+- `_session_launcher_callback` (91 lines) - session type dispatch
+- `__post_init__` (90 lines) - could simplify with more injection
+- `queue_code_review` (66 lines) - legacy, replaced by discovered_reviews pattern
+- `_update_dependency_problems` (65 lines) - state update logic
+- `scan_needs_rework_prs` (44 lines) - already delegates to PRScanner
+- Various smaller methods (lazy properties could be made injectable)
 
-**Layer violations still present:**
-- Legacy module imports (`_github_impl.py`, `_worktree_impl.py`) - should go through ports
+**Architecture status:**
+- [x] 5 import-linter contracts enforced
+- [x] ActionApplier is the only executor (via callbacks)
+- [x] FactGatherer extracts fact gathering
+- [x] Reconciliation in ActionApplier
+- [x] PRScanner/SessionRestorer injectable via bootstrap
 
-**Goal:** orchestrator.py becomes ~500 lines (loop + wiring only)
+**Goal:** orchestrator.py becomes ~400 lines (loop + wiring only)
 
 ### F) Two event systems compete - PARTIALLY COMPLETE
 - [x] **Pick EventSink as canonical outward event stream**

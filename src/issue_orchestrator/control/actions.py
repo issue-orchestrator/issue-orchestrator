@@ -208,12 +208,21 @@ class CreateTriageIssueAction(Action):
 
 @dataclass(frozen=True)
 class EscalateToHumanAction(Action):
-    """Escalate an issue to human intervention."""
+    """Escalate an issue to human intervention.
+
+    When applied:
+    1. Adds needs_human_label to the PR
+    2. Removes needs_rework_label from the PR
+    3. Posts an escalation comment explaining why human review is needed
+    """
 
     issue_number: int = 0
     pr_number: int = 0
     escalation_reason: str = ""
     rework_cycles: int = 0
+    needs_human_label: str = "blocked-needs-human"
+    needs_rework_label: str = "needs-rework"
+    max_rework_cycles: int = 3  # For comment message
     action_type: ActionType = field(default=ActionType.ESCALATE_TO_HUMAN, init=False)
 
 

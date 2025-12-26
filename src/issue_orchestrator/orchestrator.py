@@ -1449,89 +1449,22 @@ class Orchestrator:
             logger.info("[SCAN] Discovered rework for issue #%d - Planner will decide",
                        int(rework.issue_key.stable_id()))
 
-    def _escalate_to_needs_human(self, pr_number: int, issue_number: int, rework_cycle: int) -> None:
-        """Escalate PR to needs-human after max rework cycles.
-
-        Removes needs-rework label and adds needs-human label.
-        Uses repository_host adapter for all GitHub operations.
-        """
-        needs_human_label = self.config.get_label_needs_human()
-        rework_label = self.config.get_label_needs_rework()
-
-        # Add needs-human label and remove needs-rework via adapter
-        # Note: GitHub treats PRs as issues, so issue label operations work on PRs
-        try:
-            self.repository_host.add_label(pr_number, needs_human_label)
-            self.repository_host.remove_label(pr_number, rework_label)
-            print(f"⚠️  PR #{pr_number} escalated to {needs_human_label} after {rework_cycle} rework cycles")
-
-            # Post comment explaining escalation via adapter
-            comment = f"""## ⚠️ Escalated to Human Review
-
-This PR has gone through {rework_cycle - 1} rework cycles without passing review.
-Maximum rework cycles ({self.config.max_rework_cycles}) exceeded.
-
-**A human needs to review and either:**
-- Approve the PR manually
-- Provide specific guidance for the agent
-- Take over the implementation
-"""
-            self.repository_host.add_comment(pr_number, comment)
-
-            # Emit trace event via EventSink (SSE, IPC, etc.)
-            self.events.publish(TraceEvent("review.escalated", {
-                "pr_number": pr_number,
-                "issue_number": issue_number,
-                "rework_count": rework_cycle - 1,
-                "max_rework_cycles": self.config.max_rework_cycles,
-            }))
-        except Exception as e:
-            print(f"Warning: Failed to escalate PR #{pr_number}: {e}")
-
     def reconcile_orphaned_pr_labels(self) -> int:
         """Reconcile labels on agent-created PRs that are missing review labels.
 
         Called on startup to catch PRs where label addition failed due to
         orchestrator crash/restart or other failures.
-        Uses repository_host adapter for all GitHub operations.
 
         Returns the number of PRs that were fixed.
         """
-        if not self.config.code_review_label or not self.config.repo:
+        if not self.config.code_review_label or not self.config.repo or not self.label_sync:
             return 0
 
-        fixed_count = 0
-        code_reviewed_label = self.config.code_reviewed_label
-
-        # Get all open PRs via adapter
-        prs = self.repository_host.list_prs(state="open", limit=100)
-
-        for pr in prs:
-            # Only reconcile PRs created by the orchestrator
-            if ORCHESTRATOR_PR_MARKER not in pr.body:
-                continue
-
-            # Check if it already has a review label
-            has_review_label = (
-                self.config.code_review_label in pr.labels or
-                code_reviewed_label in pr.labels
-            )
-
-            if not has_review_label:
-                # Add the needs-code-review label via adapter
-                # Note: GitHub treats PRs as issues, so issue label operations work on PRs
-                try:
-                    self.repository_host.add_label(pr.number, self.config.code_review_label)
-                    fixed_count += 1
-                    print(f"🏷️  Added '{self.config.code_review_label}' to orphaned PR #{pr.number}")
-                    logger.info("Reconciled label on PR #%d", pr.number)
-                except Exception as e:
-                    logger.warning("Failed to reconcile label on PR #%d: %s", pr.number, e)
-
-        if fixed_count > 0:
-            print(f"✅ Reconciled labels on {fixed_count} orphaned PR(s)")
-
-        return fixed_count
+        return self.label_sync.reconcile_orphaned_pr_labels(
+            code_review_label=self.config.code_review_label,
+            code_reviewed_label=self.config.code_reviewed_label,
+            orchestrator_marker=ORCHESTRATOR_PR_MARKER,
+        )
 
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
         """Launch a rework session to fix issues found in review.

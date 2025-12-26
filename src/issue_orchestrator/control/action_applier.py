@@ -407,32 +407,70 @@ class ActionApplier:
     def _apply_escalate(self, action: Action) -> ActionResult:
         """Escalate to human intervention.
 
-        The applier adds the needs-human label and emits an event.
+        The full escalation flow:
+        1. Add needs-human label to the PR
+        2. Remove needs-rework label from the PR
+        3. Post an explanatory comment
+        4. Emit trace event
         """
         assert isinstance(action, EscalateToHumanAction)
 
+        errors = []
+
+        # Add needs-human label
         try:
-            self.labels.add_label(action.issue_number, "blocked-needs-human")
-
-            self.events.publish(
-                TraceEvent(
-                    name="issue.escalated",
-                    data={
-                        "issue_number": action.issue_number,
-                        "pr_number": action.pr_number,
-                        "reason": action.escalation_reason,
-                        "rework_cycles": action.rework_cycles,
-                    },
-                )
-            )
-
-            return ActionResult.ok(
-                action,
-                issue_number=action.issue_number,
-                escalation_reason=action.escalation_reason,
-            )
+            self.labels.add_label(action.pr_number, action.needs_human_label)
         except Exception as e:
-            return ActionResult.fail(action, str(e))
+            errors.append(f"add label: {e}")
+
+        # Remove needs-rework label
+        try:
+            self.labels.remove_label(action.pr_number, action.needs_rework_label)
+        except Exception as e:
+            # Not a hard failure - label may already be removed
+            logger.debug("Failed to remove needs-rework label: %s", e)
+
+        # Post explanatory comment
+        if self.repository_host:
+            comment = f"""## ⚠️ Escalated to Human Review
+
+This PR has gone through {action.rework_cycles - 1} rework cycles without passing review.
+Maximum rework cycles ({action.max_rework_cycles}) exceeded.
+
+**A human needs to review and either:**
+- Approve the PR manually
+- Provide specific guidance for the agent
+- Take over the implementation
+"""
+            try:
+                self.repository_host.add_comment(action.pr_number, comment)
+            except Exception as e:
+                errors.append(f"add comment: {e}")
+
+        print(f"⚠️  PR #{action.pr_number} escalated to {action.needs_human_label} after {action.rework_cycles} rework cycles")
+
+        # Emit trace event
+        self.events.publish(
+            TraceEvent(
+                name="review.escalated",
+                data={
+                    "pr_number": action.pr_number,
+                    "issue_number": action.issue_number,
+                    "rework_count": action.rework_cycles - 1,
+                    "max_rework_cycles": action.max_rework_cycles,
+                },
+            )
+        )
+
+        if errors:
+            return ActionResult.fail(action, "; ".join(errors))
+
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            pr_number=action.pr_number,
+            escalation_reason=action.escalation_reason,
+        )
 
     def _emit_action_start(self, action: Action) -> None:
         """Emit a trace event when starting an action."""

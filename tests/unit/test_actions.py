@@ -300,14 +300,18 @@ class TestActionApplier:
             pr_number=456,
             escalation_reason="Max rework cycles exceeded",
             rework_cycles=3,
+            needs_human_label="blocked-needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
         )
 
         result = applier.apply(action)
 
         assert result.success
-        assert mock_labels.has_label(123, "blocked-needs-human")
+        # Label is added to pr_number (456), not issue_number
+        assert mock_labels.has_label(456, "blocked-needs-human")
         # Check event was emitted
-        escalation_events = [e for e in collecting_sink.events if e.name == "issue.escalated"]
+        escalation_events = [e for e in collecting_sink.events if e.name == "review.escalated"]
         assert len(escalation_events) == 1
 
     def test_apply_handles_errors(self, applier, mock_labels):
