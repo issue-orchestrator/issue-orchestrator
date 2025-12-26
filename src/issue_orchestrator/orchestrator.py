@@ -121,6 +121,12 @@ class Orchestrator:
         self.review_machines = self.state_machine_manager.review_machines
         self.observer.session_machines = self.session_machines
 
+        # Initialize helper managers once (not lazy @property that recreates on each access)
+        self._session_launcher_instance: SessionLauncher | None = None  # Deferred until first use
+        self._cleanup_manager_instance: CleanupManager | None = None
+        self._completion_handler_instance: CompletionHandler | None = None
+        self._startup_manager_instance: StartupManager | None = None
+
     @property
     def repository_host(self) -> RepositoryHost:
         """Get the repository host (always initialized after __post_init__)."""
@@ -147,19 +153,25 @@ class Orchestrator:
 
     @property
     def _session_launcher(self) -> SessionLauncher:
-        return SessionLauncher(self.config, self.events, self.repository_host, self.session_manager, self.worktree_manager,
-            self._session_exists, self._create_session, self._get_issue_machine, self._get_session_machine,
-            self._get_review_machine, self._refresh_issue, getattr(self.scheduler, 'dependency_evaluator', None))
+        if self._session_launcher_instance is None:
+            self._session_launcher_instance = SessionLauncher(self.config, self.events, self.repository_host, self.session_manager, self.worktree_manager,
+                self._session_exists, self._create_session, self._get_issue_machine, self._get_session_machine,
+                self._get_review_machine, self._refresh_issue, getattr(self.scheduler, 'dependency_evaluator', None))
+        return self._session_launcher_instance
 
     @property
     def _cleanup_manager(self) -> CleanupManager:
-        return CleanupManager(self.config, self.repository_host, self.worktree_manager, self._kill_session,
-            self._session_exists, self._get_worktree_path, self._get_session_name)
+        if self._cleanup_manager_instance is None:
+            self._cleanup_manager_instance = CleanupManager(self.config, self.repository_host, self.worktree_manager, self._kill_session,
+                self._session_exists, self._get_worktree_path, self._get_session_name)
+        return self._cleanup_manager_instance
 
     @property
     def _completion_handler(self) -> CompletionHandler:
-        return CompletionHandler(self.config, self.events, self.repository_host,
-            lambda n: self.issue_machines.get(n), lambda s: self.session_machines.get(s), lambda n: self.review_machines.get(n))
+        if self._completion_handler_instance is None:
+            self._completion_handler_instance = CompletionHandler(self.config, self.events, self.repository_host,
+                lambda n: self.issue_machines.get(n), lambda s: self.session_machines.get(s), lambda n: self.review_machines.get(n))
+        return self._completion_handler_instance
 
     @property
     def _session_restorer(self) -> SessionRestorer:
@@ -229,8 +241,10 @@ class Orchestrator:
 
     @property
     def _startup_manager(self) -> StartupManager:
-        return StartupManager(self.config, self.events, self.runner, self.repository_host, self._session_exists,
-            lambda r: self._restore_running_sessions(r), self.launch_session, self.update_queue_cache)
+        if self._startup_manager_instance is None:
+            self._startup_manager_instance = StartupManager(self.config, self.events, self.runner, self.repository_host, self._session_exists,
+                lambda r: self._restore_running_sessions(r), self.launch_session, self.update_queue_cache)
+        return self._startup_manager_instance
 
     async def startup(self) -> None: await self._startup_manager.run_startup(self.state)
 
@@ -315,7 +329,7 @@ class Orchestrator:
             self._last_ui_update = time.time()
 
     async def run_loop(self) -> None:
-        print("Starting orchestration loop...")
+        logger.info("Starting orchestration loop")
         self.reconcile_orphaned_pr_labels()
         self._last_issue_fetch, self._last_ui_update, self._loop_iteration = 0.0, time.time(), 0
         while not self._shutdown_requested:
@@ -324,22 +338,34 @@ class Orchestrator:
             except Exception as e:
                 logger.exception("[LOOP] Error in iteration %d: %s", self._loop_iteration, e)
             await asyncio.sleep(10)
+        # Shutdown sequence
+        active = self.state.active_sessions
+        self.events.publish(TraceEvent("orchestrator.shutdown_started", {
+            "active_session_count": len(active), "sessions": [s.issue.number for s in active],
+        }))
+        self.events.publish(TraceEvent("orchestrator.shutdown_completed", {
+            "iterations": self._loop_iteration,
+        }))
 
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""
         self._shutdown_requested = True
         active = self.state.active_sessions
+        self.events.publish(TraceEvent("orchestrator.shutdown_requested", {
+            "force": force, "active_session_count": len(active),
+            "sessions": [s.issue.number for s in active],
+        }))
         if not active:
-            print("Shutdown requested - no active sessions, exiting...")
+            logger.info("Shutdown requested - no active sessions, exiting")
             return
         if force:
-            print(f"Force shutdown - killing {len(active)} session(s)")
+            logger.info("Force shutdown - killing %d session(s)", len(active))
             for s in active:
                 try: self._kill_session(s.tmux_session_name)
-                except Exception as e: print(f"  Warning: {e}")
+                except Exception as e: logger.warning("Failed to kill session %s: %s", s.tmux_session_name, e)
             self.state.active_sessions = []
         else:
-            print(f"Shutdown requested - waiting for {len(active)} session(s). Ctrl+C again to force.")
+            logger.info("Shutdown requested - waiting for %d session(s)", len(active))
 
     def request_refresh(self) -> None:
         self._refresh_requested = True
@@ -347,12 +373,12 @@ class Orchestrator:
 
     def pause(self) -> None:
         self.state.paused = True
-        print("Orchestrator paused")
+        logger.info("Orchestrator paused")
         self.events.publish(TraceEvent("orchestrator.paused"))
 
     def resume(self) -> None:
         self.state.paused = False
-        print("Orchestrator resumed")
+        logger.info("Orchestrator resumed")
         self.events.publish(TraceEvent("orchestrator.resumed"))
 
     def _apply_plan(self, plan: "Plan") -> None:
@@ -374,7 +400,7 @@ class Orchestrator:
             a = cast(EscalateToHumanAction, action); logger.info("[PLAN] Escalated PR #%d (cycle %d)", a.pr_number, a.rework_cycles)
         elif t == ActionType.CREATE_TRIAGE_ISSUE:
             a, num = cast(CreateTriageIssueAction, action), result.details.get("issue_number")
-            if num: self.state.pending_triage_reviews.append(PendingTriageReview(num, a.title)); print(f"Created triage #{num}")
+            if num: self.state.pending_triage_reviews.append(PendingTriageReview(num, a.title)); logger.info("Created triage #%d", num)
         elif t == ActionType.CLEANUP_SESSION:
             self.state.pending_cleanups = [c for c in self.state.pending_cleanups if c.pr_number != cast(CleanupSessionAction, action).pr_number]
         elif t == ActionType.QUEUE_REVIEW:
@@ -461,10 +487,6 @@ class Orchestrator:
         self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
         if result.success and result.session: self.state.active_sessions.append(result.session)
         return result.session if result.success else None
-
-    def prioritize(self, n: int) -> None:
-        if n not in self.state.priority_queue: self.state.priority_queue.insert(0, n)
-
 
 async def run_orchestrator(config_path: Optional[Path] = None) -> None:
     from .bootstrap import build_orchestrator

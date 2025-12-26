@@ -1331,37 +1331,6 @@ class TestControlMethods:
 
         assert orchestrator.state.paused is False
 
-    def test_prioritize_adds_to_queue(self, sample_config):
-        """Test that prioritize() adds issue to priority queue."""
-        orchestrator = create_test_orchestrator(sample_config)
-
-        assert len(orchestrator.state.priority_queue) == 0
-
-        orchestrator.prioritize(42)
-
-        assert len(orchestrator.state.priority_queue) == 1
-        assert orchestrator.state.priority_queue[0] == 42
-
-    def test_prioritize_adds_to_front_of_queue(self, sample_config):
-        """Test that prioritize() adds issue to front of queue."""
-        orchestrator = create_test_orchestrator(sample_config)
-        orchestrator.state.priority_queue = [1, 2, 3]
-
-        orchestrator.prioritize(42)
-
-        assert orchestrator.state.priority_queue[0] == 42
-        assert orchestrator.state.priority_queue == [42, 1, 2, 3]
-
-    def test_prioritize_ignores_duplicates(self, sample_config):
-        """Test that prioritize() doesn't add duplicates."""
-        orchestrator = create_test_orchestrator(sample_config)
-        orchestrator.state.priority_queue = [1, 2, 3]
-
-        orchestrator.prioritize(2)
-
-        # Should not add duplicate
-        assert orchestrator.state.priority_queue == [1, 2, 3]
-
     def test_request_shutdown_sets_flag(self, sample_config):
         """Test that request_shutdown() sets the shutdown flag."""
         orchestrator = create_test_orchestrator(sample_config)
@@ -1371,6 +1340,46 @@ class TestControlMethods:
         orchestrator.request_shutdown()
 
         assert orchestrator._shutdown_requested is True
+
+    def test_request_shutdown_emits_shutdown_requested_event(self, sample_config):
+        """Test that request_shutdown() emits orchestrator.shutdown_requested event."""
+        orchestrator = create_test_orchestrator(sample_config)
+
+        orchestrator.request_shutdown()
+
+        events = [e for e in orchestrator.events.events if e.name == "orchestrator.shutdown_requested"]
+        assert len(events) == 1
+        assert events[0].data["force"] is False
+        assert events[0].data["active_session_count"] == 0
+        assert events[0].data["sessions"] == []
+
+    def test_request_shutdown_force_emits_event_with_force_flag(self, sample_config):
+        """Test that force shutdown emits event with force=True."""
+        orchestrator = create_test_orchestrator(sample_config)
+        # Add an active session to test force behavior
+        issue = create_issue(123)
+        session = create_session(issue)
+        orchestrator.state.active_sessions.append(session)
+
+        orchestrator.request_shutdown(force=True)
+
+        events = [e for e in orchestrator.events.events if e.name == "orchestrator.shutdown_requested"]
+        assert len(events) == 1
+        assert events[0].data["force"] is True
+        assert events[0].data["active_session_count"] == 1
+        assert events[0].data["sessions"] == [123]
+
+    @pytest.mark.asyncio
+    async def test_run_loop_emits_shutdown_events(self, sample_config):
+        """Test that run_loop emits shutdown_started and shutdown_completed events."""
+        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator._shutdown_requested = True  # Trigger immediate exit
+
+        await orchestrator.run_loop()
+
+        event_names = [e.name for e in orchestrator.events.events]
+        assert "orchestrator.shutdown_started" in event_names
+        assert "orchestrator.shutdown_completed" in event_names
 
 
 class TestRunOrchestrator:

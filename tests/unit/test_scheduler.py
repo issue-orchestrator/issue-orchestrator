@@ -1212,6 +1212,12 @@ class TestLaunchSessionDependencyCAS:
             orch.scheduler.dependency_evaluator = evaluator
             orch._repository_host = mock_repository_host  # Add repository host
             orch.session_manager = MagicMock()  # Add session manager
+            orch.worktree_manager = MagicMock()  # Add worktree manager
+            # Initialize cached instance variables
+            orch._session_launcher_instance = None
+            orch._cleanup_manager_instance = None
+            orch._completion_handler_instance = None
+            orch._startup_manager_instance = None
 
         # Original issue had no dependencies
         issue = Issue(
@@ -1275,6 +1281,11 @@ class TestLaunchSessionDependencyCAS:
             orch._repository_host = mock_repository_host  # Add repository host
             orch.session_manager = MagicMock()  # Add session manager
             orch.worktree_manager = mock_worktree_manager  # Add worktree manager
+            # Initialize cached instance variables
+            orch._session_launcher_instance = None
+            orch._cleanup_manager_instance = None
+            orch._completion_handler_instance = None
+            orch._startup_manager_instance = None
 
         issue = Issue(
             number=1,
