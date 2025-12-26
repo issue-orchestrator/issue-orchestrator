@@ -192,6 +192,30 @@ def build_orchestrator(
         events=events,
     )
 
+    # Create CompletionProcessor (processes session completion files)
+    from .control.completion_processor import CompletionProcessor
+    completion_processor = CompletionProcessor(
+        label_adapter=github,
+        pr_adapter=github,
+        git_adapter=working_copy,
+        event_bus=None,  # EventBus removed
+        label_config={
+            "blocked": config.get_label_blocked(),
+            "needs_human": config.get_label_needs_human(),
+            "code_reviewed": config.code_reviewed_label or "code-reviewed",
+            "needs_rework": config.get_label_needs_rework(),
+            "code_review": config.code_review_label or "needs-code-review",
+            "in_progress": config.get_label_in_progress(),
+        },
+    ) if github else None
+
+    # Create SessionController (decides session outcomes)
+    from .control.session_controller import SessionController
+    session_controller_instance = SessionController(
+        completion_processor=completion_processor,
+        events=events,
+    ) if completion_processor else None
+
     # Build the orchestrator with injected dependencies
     return Orchestrator(
         config=config,
@@ -208,6 +232,8 @@ def build_orchestrator(
         worktree_manager=worktree_manager,
         working_copy=working_copy,
         state_machine_manager=state_machine_manager,
+        completion_processor=completion_processor,
+        session_controller=session_controller_instance,
     )
 
 

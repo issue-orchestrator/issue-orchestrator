@@ -114,6 +114,10 @@ class Orchestrator:
     working_copy: Optional[WorkingCopy] = field(default=None, repr=False)
     # State machine manager - single source of truth for state machines
     state_machine_manager: Optional[StateMachineManager] = field(default=None, repr=False)
+    # Completion processor - can be injected, otherwise created in __post_init__
+    completion_processor: Optional["CompletionProcessor"] = field(default=None, repr=False)
+    # Session controller - can be injected, otherwise created in __post_init__
+    session_controller: Optional["SessionController"] = field(default=None, repr=False)
     # Internal state
     state: OrchestratorState = field(default_factory=OrchestratorState)
     scheduler: Scheduler = field(init=False)
@@ -231,13 +235,10 @@ class Orchestrator:
 
     @property
     def _completion_processor(self) -> CompletionProcessor:
-        """Get the completion processor with proper adapters.
-
-        Creates a CompletionProcessor with:
-        - RepositoryHost for labels and PR operations
-        - WorkingCopy for git push operations (injected via bootstrap)
-        - Config-based label mapping
-        """
+        """Get the completion processor (injected or created)."""
+        if self.completion_processor is not None:
+            return self.completion_processor
+        # Fallback: create if not injected
         if self.working_copy is None:
             raise ValueError(
                 "WorkingCopy (working_copy) must be injected. "
@@ -247,7 +248,7 @@ class Orchestrator:
             label_adapter=self.repository_host,
             pr_adapter=self.repository_host,
             git_adapter=self.working_copy,
-            event_bus=None,  # EventBus removed - events emitted via EventSink
+            event_bus=None,
             label_config={
                 "blocked": self.config.get_label_blocked(),
                 "needs_human": self.config.get_label_needs_human(),
@@ -260,11 +261,10 @@ class Orchestrator:
 
     @property
     def _session_controller(self) -> SessionController:
-        """Get the session controller for deciding session outcomes.
-
-        The controller uses observations + completion.json to decide outcomes.
-        This is the proper separation: observer observes, controller decides.
-        """
+        """Get the session controller (injected or created)."""
+        if self.session_controller is not None:
+            return self.session_controller
+        # Fallback: create if not injected
         return SessionController(
             completion_processor=self._completion_processor,
             events=self.events,
