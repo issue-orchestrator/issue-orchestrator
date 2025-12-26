@@ -71,7 +71,9 @@ These are the "calling card" level improvements that turn layer disconnects into
   - Fixed observer wiring tests to use mock session_runner
   - Moved `reconcile_orphaned_pr_labels` → `LabelSync` (1593 → 1526)
   - Moved `_escalate_to_needs_human` → `ActionApplier` (full escalation flow)
-- **Current: 1526 lines** (down from 2924, -1398 lines removed, -48%)
+  - Made StateMachineManager, CompletionProcessor, SessionController injectable via bootstrap
+  - State machine dicts now delegate to StateMachineManager (single source of truth)
+- **Current: 1533 lines** (down from 2924, -1391 lines removed, -48%)
 
 **Remaining to extract (~1026 lines to reach 500 line goal):**
 - `handle_session_completion` (95 lines) - mostly delegated to CompletionHandler
