@@ -285,7 +285,7 @@ class Orchestrator:
         self.scan_needs_code_review_prs(); self.scan_needs_rework_prs()
         if not self.state.paused and len(self.state.active_sessions) < self.config.max_concurrent_sessions:
             self._run_planning_cycle()
-        self._emit_ui_update_if_needed()
+        self._emit_heartbeat_if_needed()
         return True
 
     def _process_active_sessions(self) -> None:
@@ -322,10 +322,14 @@ class Orchestrator:
         for attr in ("discovered_reviews", "discovered_reworks", "discovered_escalations", "discovered_failures"):
             getattr(self.state, attr).clear()
 
-    def _emit_ui_update_if_needed(self) -> None:
+    def _emit_heartbeat_if_needed(self) -> None:
+        """Emit periodic heartbeat event for observability (not UI-specific)."""
         if time.time() - self._last_ui_update >= self._ui_update_interval and self.state.active_sessions:
-            self.events.publish(TraceEvent("orchestrator.state_changed", {
-                "active_count": len(self.state.active_sessions), "sessions": [s.issue.number for s in self.state.active_sessions]}))
+            self.events.publish(TraceEvent("orchestrator.heartbeat", {
+                "active_count": len(self.state.active_sessions),
+                "sessions": [s.issue.number for s in self.state.active_sessions],
+                "iteration": self._loop_iteration,
+            }))
             self._last_ui_update = time.time()
 
     async def run_loop(self) -> None:
@@ -426,21 +430,13 @@ class Orchestrator:
         return self.fact_gatherer.fetch_issues(base_labels, self._get_milestone_filter())
 
     def update_queue_cache(self) -> None:
-        """Update the cached queue issues and emit queue.changed event if changed."""
-        from .audit import get_queue_issues
-        try:
-            queue_issues = get_queue_issues(self.config, self.state, issue_tracker=self.repository_host)
-            old, new = {i.number for i in self.state.cached_queue_issues}, {i.number for i in queue_issues}
-            added, removed = new - old, old - new
-            self.state.cached_queue_issues = queue_issues
-            if added or removed:
-                self.events.publish(TraceEvent("queue.changed", {
-                    "added": [{"number": i.number, "title": i.title} for i in queue_issues if i.number in added],
-                    "removed": [{"number": num} for num in removed], "total": len(queue_issues),
-                }))
-                logger.info("Queue changed: %d added, %d removed, %d total", len(added), len(removed), len(queue_issues))
-        except Exception as e:
-            logger.warning("Failed to update queue cache: %s", e)
+        """Update the cached queue issues and emit queue.changed event if changed.
+
+        Delegates to QueueProjection for computation and event emission.
+        """
+        from .control.queue_projection import QueueProjection
+        projection = QueueProjection(self.config, self.repository_host, self.events)
+        projection.update_and_emit(self.state)
 
     def _update_dependency_problems(self, dep_blocked: list[tuple["Issue", str]]) -> None:
         from .models import DependencyProblem
