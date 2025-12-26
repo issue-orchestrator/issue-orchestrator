@@ -1,10 +1,6 @@
 """Main orchestrator - ties everything together."""
 
-import asyncio
-import logging
-import signal
-import subprocess
-import time
+import asyncio, logging, signal, time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, cast
@@ -20,31 +16,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-def log_transition(
-    entity_type: str,  # "issue", "review", "rework"
-    number: int,
-    from_state: str,
-    to_state: str,
-    reason: str,
-    extra: dict | None = None,
-) -> None:
-    """Log a state transition in a consistent, searchable format.
-
-    Format: [TRANSITION] {type} #{number}: {from} → {to} ({reason})
-
-    Args:
-        entity_type: Type of entity (issue, review, rework)
-        number: Issue or PR number
-        from_state: Previous state
-        to_state: New state
-        reason: Why the transition happened
-        extra: Optional extra context (logged at debug level)
-    """
-    msg = f"[TRANSITION] {entity_type} #{number}: {from_state} → {to_state} ({reason})"
-    logger.info(msg)
-    if extra:
-        logger.debug(f"[TRANSITION] #{number} extra: {extra}")
+def log_transition(entity_type: str, number: int, from_state: str, to_state: str, reason: str, extra: dict | None = None) -> None:
+    """Log state transition: [TRANSITION] {type} #{number}: {from} → {to} ({reason})"""
+    logger.info(f"[TRANSITION] {entity_type} #{number}: {from_state} → {to_state} ({reason})")
+    if extra: logger.debug(f"[TRANSITION] #{number} extra: {extra}")
 
 
 from .config import Config
@@ -52,11 +27,6 @@ from .models import Issue, Session, SessionStatus, OrchestratorState, PendingRev
 from .observation.observer import SessionObserver
 from .control.scheduler import Scheduler
 from .control.dependency_evaluator import DependencyEvaluator
-# Terminal backend handled via adapters (see _terminal_adapter property)
-# Worktree operations handled via WorktreeManager port (injected)
-# State machine infrastructure
-# Note: EventBus removed - state machines now use TransitionResult pattern
-# See domain/state_machines/transition_result.py
 from .domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from .domain.state_machines.session_machine import SessionStateMachine, SessionState
 from .domain.state_machines.review_machine import ReviewStateMachine, ReviewState
@@ -70,7 +40,6 @@ from .control.session_restorer import SessionRestorer
 from .control.startup_manager import StartupManager
 from .control.state_machine_manager import StateMachineManager
 from .observation.observation import SessionObservation
-# Port imports (protocols only - no concrete implementations in core)
 from .ports import EventSink, SessionRunner, TraceEvent, NullEventSink, NullSessionRunner, RepositoryHost
 from .ports.worktree_manager import WorktreeManager
 from .ports.working_copy import WorkingCopy
@@ -78,153 +47,70 @@ from .ports.working_copy import WorkingCopy
 
 @dataclass
 class Orchestrator:
-    """Main orchestrator that coordinates everything.
-
-    Dependencies are injected via constructor following hexagonal architecture:
-    - events: EventSink for trace event emission (SSE, IPC, logging)
-    - runner: SessionRunner for terminal session management (tmux, iTerm2)
-    - _repository_host: RepositoryHost for issue/label/PR operations (protocol, not implementation)
-
-    The orchestrator core only knows about port interfaces (Protocols),
-    never concrete implementations. Wiring happens in bootstrap.py.
-    """
-
+    """Main orchestrator - mediates gather → plan → apply cycle. Dependencies injected via bootstrap."""
     config: Config
-    # Injected dependencies (ports)
     events: EventSink = field(default_factory=NullEventSink)
     runner: SessionRunner = field(default_factory=NullSessionRunner)
-    # Repository host (issues, labels, PRs) - required, injected from bootstrap
     _repository_host: Optional[RepositoryHost] = field(default=None, repr=False)
-    # Optional planner (can be injected for testing, otherwise created in __post_init__)
     planner: Optional["Planner"] = field(default=None, repr=False)
-    # Optional session manager (can be injected, otherwise created in __post_init__)
     session_manager: Optional["SessionManager"] = field(default=None, repr=False)
     label_sync: Optional["LabelSync"] = field(default=None, repr=False)
-    # Action applier (IO boundary) - can be injected, otherwise created in __post_init__
     action_applier: Optional["ActionApplier"] = field(default=None, repr=False)
-    # Fact gatherer (read-only snapshot creation) - can be injected, otherwise created in __post_init__
     fact_gatherer: Optional["FactGatherer"] = field(default=None, repr=False)
-    # PR scanner (for orphaned review/rework discovery) - can be injected
     pr_scanner: Optional["PRScanner"] = field(default=None, repr=False)
-    # Session restorer (for session recovery) - can be injected
     session_restorer: Optional["SessionRestorer"] = field(default=None, repr=False)
-    # Worktree manager (port) - for worktree lifecycle operations
     worktree_manager: Optional[WorktreeManager] = field(default=None, repr=False)
-    # Working copy (port) - for git operations inside worktrees
     working_copy: Optional[WorkingCopy] = field(default=None, repr=False)
-    # State machine manager - single source of truth for state machines
     state_machine_manager: Optional[StateMachineManager] = field(default=None, repr=False)
-    # Completion processor - can be injected, otherwise created in __post_init__
     completion_processor: Optional["CompletionProcessor"] = field(default=None, repr=False)
-    # Session controller - can be injected, otherwise created in __post_init__
     session_controller: Optional["SessionController"] = field(default=None, repr=False)
-    # Internal state
     state: OrchestratorState = field(default_factory=OrchestratorState)
     scheduler: Scheduler = field(init=False)
     observer: SessionObserver = field(init=False)
     _shutdown_requested: bool = field(default=False, init=False)
     _refresh_requested: bool = field(default=False, init=False)
-    # Loop timing state (initialized in __post_init__)
     _last_issue_fetch: float = field(default=0.0, init=False)
     _last_ui_update: float = field(default=0.0, init=False)
     _loop_iteration: int = field(default=0, init=False)
-    _ui_update_interval: int = field(default=30, init=False)  # Emit state_changed every 30s
+    _ui_update_interval: int = field(default=30, init=False)
 
     def __post_init__(self):
-        # GitHub adapter must be injected via bootstrap.py
-        # This enforces the hexagonal architecture boundary
         if self._repository_host is None:
-            raise ValueError(
-                "RepositoryHost (_repository_host) must be injected. "
-                "Use bootstrap.build_orchestrator() or bootstrap.build_orchestrator_for_testing()."
-            )
+            raise ValueError("RepositoryHost must be injected via bootstrap")
+        if self.action_applier is None and self.worktree_manager is None:
+            raise ValueError("Either action_applier or worktree_manager must be injected")
 
-        # Create dependency evaluator for issue dependency gating
-        dependency_evaluator = DependencyEvaluator(
-            issue_checker=self._repository_host,
-            events=self.events,
-        )
+        dep_eval = DependencyEvaluator(self._repository_host, self.events)
 
-        # Use injected planner or create default
-        if self.planner is not None:
-            # Use the injected planner's scheduler
+        # Initialize components with injected or default values
+        if self.planner:
             self.scheduler = self.planner.scheduler
         else:
-            # Create scheduler and planner
-            self.scheduler = Scheduler(
-                self.config,
-                dependency_evaluator=dependency_evaluator,
-            )
-            # Import here to avoid circular imports
-            from .control.planner import Planner as PlannerClass
-            self.planner = PlannerClass(
-                config=self.config,
-                scheduler=self.scheduler,
-                dependency_evaluator=dependency_evaluator,
-            )
+            from .control.planner import Planner as P
+            self.scheduler = Scheduler(self.config, dependency_evaluator=dep_eval)
+            self.planner = P(self.config, self.scheduler, dep_eval)
 
-        # Use injected session manager or create default
-        if self.session_manager is None:
-            from .control.session_manager import SessionManager as SessionManagerClass
-            self.session_manager = SessionManagerClass(
-                runner=self.runner,
-                events=self.events,
-                config=self.config,
-            )
+        if not self.session_manager:
+            from .control.session_manager import SessionManager as S
+            self.session_manager = S(self.runner, self.events, self.config)
 
-        # Use injected action applier or create default (requires worktree_manager)
-        if self.action_applier is None:
-            if self.worktree_manager is None:
-                raise ValueError(
-                    "Either action_applier or worktree_manager must be injected. "
-                    "Use bootstrap.build_orchestrator() or bootstrap.build_orchestrator_for_testing()."
-                )
-            from .control.action_applier import ActionApplier as ActionApplierClass
-            self.action_applier = ActionApplierClass(
-                labels=self.repository_host,
-                sessions=self.session_manager,
-                events=self.events,
-                repository_host=self.repository_host,
-                worktree_manager=self.worktree_manager,
-                issue_tracker=self.repository_host,
-                reconcile=True,  # Compare-before-mutate for label operations
-                session_launcher=self._session_launcher_callback,  # For LAUNCH_SESSION actions
-            )
+        if not self.action_applier:
+            from .control.action_applier import ActionApplier as A
+            self.action_applier = A(self.repository_host, self.session_manager, self.events, self.repository_host,
+                                    self.worktree_manager, self.repository_host, True, self._session_launcher_callback)
 
-        # Use injected fact gatherer or create default
-        if self.fact_gatherer is None:
-            from .control.fact_gatherer import FactGatherer as FactGathererClass
-            self.fact_gatherer = FactGathererClass(
-                config=self.config,
-                repository_host=self.repository_host,
-            )
+        if not self.fact_gatherer:
+            from .control.fact_gatherer import FactGatherer as F
+            self.fact_gatherer = F(self.config, self.repository_host, self.events)
 
-        # Note: Observer is initialized without session_machines initially
-        # We'll update the reference after session_machines is created
-        # Pass events for observability (tests can subscribe to observe behavior)
-        self.observer = SessionObserver(
-            self.config,
-            events=self.events,
-            session_runner=self.runner,
-            repository_host=self._repository_host,
-        )
+        self.observer = SessionObserver(self.config, self.events, self.runner, self._repository_host)
 
-        # State machine infrastructure - use injected manager or create
-        # Note: State machines are now pure - they return TransitionResult via last_transition
-        # The caller should emit TraceEvents via EventSink after transitions
-        if self.state_machine_manager is None:
-            self.state_machine_manager = StateMachineManager(
-                config=self.config,
-                events=self.events,
-            )
+        if not self.state_machine_manager:
+            self.state_machine_manager = StateMachineManager(self.config, self.events)
 
-        # Expose state machine dicts as properties for backwards compatibility
-        # These delegate to the StateMachineManager
         self.issue_machines = self.state_machine_manager.issue_machines
         self.session_machines = self.state_machine_manager.session_machines
         self.review_machines = self.state_machine_manager.review_machines
-
-        # Update observer's reference to session machines
         self.observer.session_machines = self.session_machines
 
     @property
@@ -253,836 +139,331 @@ class Orchestrator:
 
     @property
     def _session_launcher(self) -> SessionLauncher:
-        """Get the session launcher for launching agent sessions."""
-        return SessionLauncher(
-            config=self.config,
-            events=self.events,
-            repository_host=self.repository_host,
-            session_manager=self.session_manager,
-            worktree_manager=self.worktree_manager,
-            session_exists_fn=self._session_exists,
-            create_session_fn=self._create_session,
-            get_issue_machine=self._get_issue_machine,
-            get_session_machine=self._get_session_machine,
-            get_review_machine=self._get_review_machine,
-            refresh_issue_fn=self._refresh_issue,
-            dependency_evaluator=getattr(self.scheduler, 'dependency_evaluator', None),
-        )
+        return SessionLauncher(self.config, self.events, self.repository_host, self.session_manager, self.worktree_manager,
+            self._session_exists, self._create_session, self._get_issue_machine, self._get_session_machine,
+            self._get_review_machine, self._refresh_issue, getattr(self.scheduler, 'dependency_evaluator', None))
 
     @property
     def _cleanup_manager(self) -> CleanupManager:
-        """Get the cleanup manager for worktree and session cleanup."""
-        return CleanupManager(
-            config=self.config,
-            repository_host=self.repository_host,
-            worktree_manager=self.worktree_manager,
-            kill_session_fn=self._kill_session,
-            session_exists_fn=self._session_exists,
-            get_worktree_path_fn=self._get_worktree_path,
-            get_session_name_fn=self._get_session_name,
-        )
+        return CleanupManager(self.config, self.repository_host, self.worktree_manager, self._kill_session,
+            self._session_exists, self._get_worktree_path, self._get_session_name)
 
     @property
     def _completion_handler(self) -> CompletionHandler:
-        """Get the completion handler for session completion processing."""
-        return CompletionHandler(
-            config=self.config,
-            events=self.events,
-            repository_host=self.repository_host,
-            get_issue_machine_fn=lambda n: self.issue_machines.get(n),
-            get_session_machine_fn=lambda s: self.session_machines.get(s),
-            get_review_machine_fn=lambda n: self.review_machines.get(n),
-        )
+        return CompletionHandler(self.config, self.events, self.repository_host,
+            lambda n: self.issue_machines.get(n), lambda s: self.session_machines.get(s), lambda n: self.review_machines.get(n))
 
     @property
     def _session_restorer(self) -> SessionRestorer:
-        """Get the session restorer for recovering sessions after restart."""
-        if self.session_restorer is not None:
-            return self.session_restorer
-        # Fallback: create if not injected (for backwards compatibility)
-        return SessionRestorer(
-            config=self.config,
-            repository_host=self.repository_host,
-        )
+        return self.session_restorer or SessionRestorer(self.config, self.repository_host)
 
     @property
     def _state_machines(self) -> StateMachineManager:
-        """Get the state machine manager."""
-        # state_machine_manager is always set in __post_init__
-        assert self.state_machine_manager is not None
-        return self.state_machine_manager
-
-    # Note: _verify_hooks_on_startup moved to StartupManager
-
-    # ==================== Naming Conventions ====================
-    # Centralized methods for deriving session names and paths.
-    # These ensure consistency across launch, recovery, and cleanup.
+        assert self.state_machine_manager is not None; return self.state_machine_manager
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str:
-        """Get the terminal session name for a given issue/PR number.
-
-        Args:
-            number: Issue number (for issue/rework) or PR number (for review)
-            session_type: One of "issue", "review", or "rework"
-
-        Returns:
-            Session name like "issue-123", "review-456", or "rework-123"
-        """
-        if session_type not in ("issue", "review", "rework"):
-            raise ValueError(f"Invalid session_type: {session_type}")
+        if session_type not in ("issue", "review", "rework"): raise ValueError(f"Invalid session_type: {session_type}")
         return f"{session_type}-{number}"
 
     def _get_worktree_path(self, issue_number: int, agent_config: AgentConfig) -> Path:
-        """Get the worktree path for a given issue number.
-
-        Args:
-            issue_number: The GitHub issue number
-            agent_config: Agent configuration (for worktree_base and repo_root)
-
-        Returns:
-            Path to the worktree directory
-        """
         repo_root = agent_config.repo_root or self.config.repo_root
-        worktree_base = agent_config.worktree_base
-        if worktree_base is None:
-            worktree_base = repo_root.parent
-        else:
-            worktree_base = Path(worktree_base).resolve()
-
-        repo_name = repo_root.name
-        return worktree_base / f"{repo_name}-{issue_number}"
-
-    # ==================== End Naming Conventions ====================
+        return (Path(agent_config.worktree_base).resolve() if agent_config.worktree_base else repo_root.parent) / f"{repo_root.name}-{issue_number}"
 
     def _session_launcher_callback(self, session_type: str, number: int) -> Optional[Session]:
-        """Session launcher callback for ActionApplier - dispatches by session type."""
-        handlers = {
-            "issue": self._launch_issue_by_number,
-            "review": self._launch_review_by_number,
-            "rework": self._launch_rework_by_number,
-            "triage": self._launch_triage_by_number,
-        }
-        handler = handlers.get(session_type)
-        if not handler:
-            logger.warning("[APPLIER] Unknown session type: %s", session_type)
-            return None
-        return handler(number)
+        handlers = {"issue": self._launch_issue_by_number, "review": self._launch_review_by_number, "rework": self._launch_rework_by_number, "triage": self._launch_triage_by_number}
+        return handlers.get(session_type, lambda n: None)(number)
 
-    def _launch_issue_by_number(self, number: int) -> Optional[Session]:
-        issue = next((i for i in self.state.cached_queue_issues if i.number == number), None)
-        if not issue:
-            logger.warning("[APPLIER] Issue #%d not found in cache", number)
-            return None
-        session = self.launch_session(issue)
-        if session:
-            self.state.issues_started_count += 1
-        return session
+    def _launch_issue_by_number(self, n: int) -> Optional[Session]:
+        issue = next((i for i in self.state.cached_queue_issues if i.number == n), None)
+        if not issue: return None
+        s = self.launch_session(issue); self.state.issues_started_count += 1 if s else 0; return s
 
-    def _launch_review_by_number(self, number: int) -> Optional[Session]:
-        review = next((r for r in self.state.pending_reviews if r.pr_number == number), None)
-        if not review:
-            logger.warning("[APPLIER] Review for PR #%d not found", number)
-            return None
-        return self.launch_review_session(review)
+    def _launch_review_by_number(self, n: int) -> Optional[Session]:
+        r = next((r for r in self.state.pending_reviews if r.pr_number == n), None)
+        return self.launch_review_session(r) if r else None
 
-    def _launch_rework_by_number(self, number: int) -> Optional[Session]:
-        rework = next((r for r in self.state.pending_reworks if int(r.issue_key.stable_id()) == number), None)
-        if not rework:
-            logger.warning("[APPLIER] Rework for issue #%d not found", number)
-            return None
-        return self.launch_rework_session(rework)
+    def _launch_rework_by_number(self, n: int) -> Optional[Session]:
+        r = next((r for r in self.state.pending_reworks if int(r.issue_key.stable_id()) == n), None)
+        return self.launch_rework_session(r) if r else None
 
-    def _launch_triage_by_number(self, number: int) -> Optional[Session]:
-        triage = next((t for t in self.state.pending_triage_reviews if t.issue_number == number), None)
-        if not triage:
-            logger.warning("[APPLIER] Triage for #%d not found", number)
-            return None
-        self._launch_triage_session(triage)
-        return next((s for s in self.state.active_sessions if s.issue.number == number), None)
+    def _launch_triage_by_number(self, n: int) -> Optional[Session]:
+        t = next((t for t in self.state.pending_triage_reviews if t.issue_number == n), None)
+        if t: self._launch_triage_session(t)
+        return next((s for s in self.state.active_sessions if s.issue.number == n), None)
 
-    # ==================== State Machine Helpers ====================
-    # These delegate to the StateMachineManager
-
-    def _get_issue_machine(self, issue_number: int) -> IssueStateMachine:
-        """Get or create issue state machine. Delegates to StateMachineManager."""
-        return self._state_machines.get_issue_machine(issue_number)
-
-    def _get_session_machine(
-        self, session_name: str, issue_number: int, timeout_minutes: int
-    ) -> SessionStateMachine:
-        """Get or create session state machine. Delegates to StateMachineManager."""
-        return self._state_machines.get_session_machine(session_name, issue_number, timeout_minutes)
-
-    def _get_review_machine(self, pr_number: int, issue_number: int) -> ReviewStateMachine:
-        """Get or create review state machine. Delegates to StateMachineManager."""
-        return self._state_machines.get_review_machine(pr_number, issue_number)
-
-    # Label sync methods removed - use LabelSync directly via label_sync property
+    def _get_issue_machine(self, n: int) -> IssueStateMachine: return self._state_machines.get_issue_machine(n)
+    def _get_session_machine(self, name: str, n: int, timeout: int) -> SessionStateMachine: return self._state_machines.get_session_machine(name, n, timeout)
+    def _get_review_machine(self, pr: int, issue: int) -> ReviewStateMachine: return self._state_machines.get_review_machine(pr, issue)
 
     async def _restore_running_sessions(self, running: list[dict]) -> None:
-        """Restore tracking for sessions that are still running after orchestrator restart.
-
-        Delegates to SessionRestorer for the actual restoration logic.
-
-        Args:
-            running: List of dicts from discover_running_sessions() with
-                     {issue_number, tab_name, is_review}
-        """
-        restored = self._session_restorer.restore_sessions(
-            running=running,
-            already_tracked=self.state.active_sessions,
-        )
-        self.state.active_sessions.extend(restored)
+        self.state.active_sessions.extend(self._session_restorer.restore_sessions(running, self.state.active_sessions))
 
     def _parse_session_ref(self, session_name: str, operation: str) -> "SessionRef":
-        """Parse session name to SessionRef, emitting error event on failure."""
         from .control.session_manager import SessionRef
-        try:
-            return SessionRef.from_name(session_name)
-        except ValueError as e:
-            self.events.publish(TraceEvent("session.name_parse_error", {"session_name": session_name, "error": str(e), "operation": operation}))
-            raise
+        try: return SessionRef.from_name(session_name)
+        except ValueError as e: self.events.publish(TraceEvent("session.name_parse_error", {"session_name": session_name, "error": str(e)})); raise
 
-    def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> bool:
+    def _create_session(self, name: str, cmd: str, wd: Path, title: str | None = None) -> bool:
         from .control.session_manager import SessionContext
-        return self.session_manager.start(SessionContext(ref=self._parse_session_ref(session_name, "create"), command=command, working_dir=working_dir, title=title))
+        return self.session_manager.start(SessionContext(ref=self._parse_session_ref(name, "create"), command=cmd, working_dir=wd, title=title))
 
-    def _session_exists(self, session_name: str) -> bool:
-        return self.session_manager.exists(self._parse_session_ref(session_name, "exists"))
+    def _session_exists(self, name: str) -> bool: return self.session_manager.exists(self._parse_session_ref(name, "exists"))
+    def _kill_session(self, name: str) -> None: self.session_manager.stop(self._parse_session_ref(name, "kill"))
 
-    def _kill_session(self, session_name: str) -> None:
-        self.session_manager.stop(self._parse_session_ref(session_name, "kill"))
-
-    def _refresh_issue(self, issue_number: int) -> Optional[Issue]:
-        """Fetch fresh issue data from GitHub.
-
-        Used for CAS checks before launching to detect race conditions
-        where the issue body may have been modified (adding dependencies).
-        """
-        try:
-            return self.repository_host.get_issue(issue_number)
-        except Exception as e:
-            logger.warning("Failed to refresh issue #%d: %s", issue_number, e)
-            return None
+    def _refresh_issue(self, n: int) -> Optional[Issue]:
+        try: return self.repository_host.get_issue(n)
+        except Exception as e: logger.warning("Failed to refresh issue #%d: %s", n, e); return None
 
     def _build_labels(self, *labels: str) -> list[str]:
-        """Build labels list, including filter_label if configured."""
-        result = list(labels)
-        if self.config.filter_label:
-            result.append(self.config.filter_label)
-        return result
+        return list(labels) + ([self.config.filter_label] if self.config.filter_label else [])
 
-    def _get_milestone_filter(self) -> str | None:
-        """Get the milestone filter if configured."""
-        return self.config.filter_milestone
+    def _get_milestone_filter(self) -> str | None: return self.config.filter_milestone
 
     @property
     def _startup_manager(self) -> StartupManager:
-        """Get the startup manager for handling startup sequence."""
-        return StartupManager(
-            config=self.config,
-            events=self.events,
-            runner=self.runner,
-            repository_host=self.repository_host,
-            session_exists_fn=self._session_exists,
-            restore_sessions_fn=lambda running: self._restore_running_sessions(running),
-            launch_session_fn=self.launch_session,
-            update_queue_cache_fn=self.update_queue_cache,
-        )
+        return StartupManager(self.config, self.events, self.runner, self.repository_host, self._session_exists,
+            lambda r: self._restore_running_sessions(r), self.launch_session, self.update_queue_cache)
 
-    async def startup(self) -> None:
-        """Handle startup - delegates to StartupManager."""
-        await self._startup_manager.run_startup(self.state)
+    async def startup(self) -> None: await self._startup_manager.run_startup(self.state)
 
     def launch_session(self, issue: Issue) -> Optional[Session]:
-        """Launch a new session for an issue.
-
-        Delegates to SessionLauncher for the actual launch logic.
-        The orchestrator owns state management (active_sessions).
-        """
-        result = self._session_launcher.launch_issue_session(
-            issue=issue,
-            active_sessions=self.state.active_sessions,
-        )
-        if result.success and result.session:
-            self.state.active_sessions.append(result.session)
-            return result.session
-        return None
+        result = self._session_launcher.launch_issue_session(issue, self.state.active_sessions)
+        if result.success and result.session: self.state.active_sessions.append(result.session)
+        return result.session if result.success else None
 
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None:
-        """Handle a completed session.
-
-        Delegates to CompletionHandler for:
-        - State machine transitions
-        - Event emission
-        - History recording
-        - Cleanup decision
-
-        Orchestrator handles:
-        - Active sessions list update
-        - Observer notification
-        - Actual cleanup execution
-        - Review queue management
-        """
-        # Determine entity type from session name
-        is_review = session.tmux_session_name.startswith("review-")
-        is_rework = session.tmux_session_name.startswith("rework-")
-        entity_type = "review" if is_review else ("rework" if is_rework else "issue")
-
-        # Log the state transition
-        log_transition(
-            entity_type,
-            session.issue.number,
-            "ACTIVE",
-            status.value.upper(),
-            f"runtime={session.runtime_minutes}min",
-            {"agent": session.issue.agent_type, "branch": session.branch_name},
-        )
-
-        print(f"Session #{session.issue.number} completed with status: {status.value}")
-
-        # Remove from active sessions
-        self.state.active_sessions = [
-            s for s in self.state.active_sessions
-            if s.issue.number != session.issue.number
-        ]
-
-        # Let observer handle label updates
+        from .models import DiscoveredReview, DiscoveredFailure
+        name = session.tmux_session_name
+        entity = "review" if name.startswith("review-") else ("rework" if name.startswith("rework-") else "issue")
+        log_transition(entity, session.issue.number, "ACTIVE", status.value.upper(), f"runtime={session.runtime_minutes}min")
+        self.state.active_sessions = [s for s in self.state.active_sessions if s.issue.number != session.issue.number]
         self.observer.handle_completion(session, status)
-
-        # Track completion
-        if status == SessionStatus.COMPLETED:
-            self.state.completed_today.append(session.issue.number)
-
-        # Delegate to completion handler for state machine updates, events, etc.
+        if status == SessionStatus.COMPLETED: self.state.completed_today.append(session.issue.number)
         result = self._completion_handler.process_completion(session, status)
-
-        # Record history
         self.state.session_history.append(result.history_entry)
-
-        # Handle cleanup based on result
-        if result.should_defer_cleanup and result.pending_cleanup:
-            self.state.pending_cleanups.append(result.pending_cleanup)
-        else:
-            # Immediate cleanup
-            if status == SessionStatus.COMPLETED:
-                # Remove worktree for completed sessions
-                if self.config.cleanup.without_triage.close_ai_session_tabs or not self.config.code_review_agent:
-                    try:
-                        if self.worktree_manager:
-                            self.worktree_manager.remove(session.worktree_path)
-                    except Exception as e:
-                        print(f"Warning: failed to remove worktree: {e}")
-
-            # Close the terminal session/tab
-            try:
-                self._kill_session(session.tmux_session_name)
-                logger.info(f"Closed session for #{session.issue.number}")
-            except Exception as e:
-                logger.warning(f"Failed to close session for #{session.issue.number}: {e}")
-
-        # Store discovered review for Planner to decide (instead of calling queue_code_review directly)
+        if result.should_defer_cleanup and result.pending_cleanup: self.state.pending_cleanups.append(result.pending_cleanup)
+        else: self._immediate_cleanup(session, status)
         if result.should_queue_review and result.pr_url and result.pr_number:
-            from .models import DiscoveredReview
-            discovered = DiscoveredReview(
-                issue_number=session.issue.number,
-                pr_number=result.pr_number,
-                pr_url=result.pr_url,
-                branch_name=session.branch_name,
-            )
-            self.state.discovered_reviews.append(discovered)
-            logger.info("[COMPLETION] Discovered review for PR #%d - Planner will decide", result.pr_number)
-
-        # Store discovered failure for Planner to decide (instead of calling _queue_triage_failure_review directly)
+            self.state.discovered_reviews.append(DiscoveredReview(session.issue.number, result.pr_number, result.pr_url, session.branch_name))
         if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
-            from .models import DiscoveredFailure
-            discovered = DiscoveredFailure(
-                issue_number=session.issue.number,
-                issue_title=session.issue.title,
-                failure_reason=status.value,
-            )
-            self.state.discovered_failures.append(discovered)
-            logger.info("[COMPLETION] Discovered failure for issue #%d - Planner will decide", session.issue.number)
+            self.state.discovered_failures.append(DiscoveredFailure(session.issue.number, session.issue.title, status.value))
+
+    def _immediate_cleanup(self, session: Session, status: SessionStatus) -> None:
+        if status == SessionStatus.COMPLETED and (self.config.cleanup.without_triage.close_ai_session_tabs or not self.config.code_review_agent):
+            try: self.worktree_manager.remove(session.worktree_path) if self.worktree_manager else None
+            except: pass
+        try: self._kill_session(session.tmux_session_name)
+        except: pass
 
     def tick(self) -> bool:
-        """Execute one iteration of the orchestration loop.
-
-        Returns:
-            True if the loop should continue, False if shutdown requested.
-        """
         self._loop_iteration += 1
-        logger.info("[LOOP] Iteration %d - active=%d, pending_reviews=%d, paused=%s",
-                   self._loop_iteration, len(self.state.active_sessions),
-                   len(self.state.pending_reviews), self.state.paused)
-
-        if self._shutdown_requested:
-            return False
-
-        # Check status of all active sessions using observer/controller separation
+        logger.info("[LOOP] Iteration %d - active=%d, paused=%s", self._loop_iteration, len(self.state.active_sessions), self.state.paused)
+        if self._shutdown_requested: return False
         self._process_active_sessions()
-
-        # Scan for PRs needing code review/rework (populates queues)
-        self.scan_needs_code_review_prs()
-        self.scan_needs_rework_prs()
-
-        # Planner-based decision making (skipped if paused or at capacity)
+        self.scan_needs_code_review_prs(); self.scan_needs_rework_prs()
         if not self.state.paused and len(self.state.active_sessions) < self.config.max_concurrent_sessions:
             self._run_planning_cycle()
-
-        # Periodically emit state_changed for UI
         self._emit_ui_update_if_needed()
-
         return True
 
     def _process_active_sessions(self) -> None:
-        """Check all active sessions and handle completions."""
-        controller = self._session_controller
         for session in list(self.state.active_sessions):
-            observation = self.observer.observe_session(session)
-            if observation.observation == SessionObservation.RUNNING:
-                continue
-
-            decision = controller.decide_outcome(
-                observation=observation,
-                worktree_path=session.worktree_path,
-                issue_number=session.issue.number,
-                issue_title=session.issue.title,
-                session_name=session.tmux_session_name,
-                completion_path=session.completion_path,
-            )
-
-            if decision.recovered_from_timeout:
-                logger.info("Session %s: timeout recovered - agent completed work",
-                           session.tmux_session_name)
-
+            obs = self.observer.observe_session(session)
+            if obs.observation == SessionObservation.RUNNING: continue
+            decision = self._session_controller.decide_outcome(obs, session.worktree_path, session.issue.number,
+                session.issue.title, session.tmux_session_name, session.completion_path)
             self.handle_session_completion(session, decision.status)
 
     def _run_planning_cycle(self) -> None:
         """Fetch issues, create snapshot, plan, and apply."""
-        # Only fetch issues when refresh interval passed or manual refresh requested
-        issue_fetch_age = time.time() - self._last_issue_fetch
-        should_fetch = issue_fetch_age >= self.config.queue_refresh_seconds or self._refresh_requested
+        should_fetch = (time.time() - self._last_issue_fetch >= self.config.queue_refresh_seconds) or self._refresh_requested
 
         if should_fetch:
-            if self._refresh_requested:
-                logger.info("[FETCH] Manual refresh triggered")
-                self._refresh_requested = False
-            else:
-                logger.info("[FETCH] Scheduled refresh (every %ds)", self.config.queue_refresh_seconds)
-
+            logger.info("[FETCH] %s refresh", "Manual" if self._refresh_requested else "Scheduled")
+            self._refresh_requested = False
             all_issues = self._fetch_all_issues()
             self._last_issue_fetch = time.time()
-
-            # Update dependency problems state
             _, dep_blocked = self.scheduler.get_available_issues(all_issues)
             self._update_dependency_problems(dep_blocked)
+            exclude = {e.issue_number for e in self.state.session_history} | {s.issue.number for s in self.state.active_sessions}
+            filtered = [i for i in all_issues if i.number not in exclude]
+            self.state.cached_queue_issues = [i for i in filtered if i.number == self.config.filter_issue] if self.config.filter_issue else filtered
 
-            # Filter issues for planning
-            history_numbers = {e.issue_number for e in self.state.session_history}
-            active_numbers = {s.issue.number for s in self.state.active_sessions}
-            exclude_numbers = history_numbers | active_numbers
-            filtered_issues = [i for i in all_issues if i.number not in exclude_numbers]
-
-            if self.config.filter_issue:
-                filtered_issues = [i for i in filtered_issues if i.number == self.config.filter_issue]
-
-            self.state.cached_queue_issues = filtered_issues
-        else:
-            filtered_issues = self.state.cached_queue_issues
-
-        # Create snapshot, plan, and apply
-        snapshot = self.fact_gatherer.create_snapshot(self.state, filtered_issues)
-        assert self.planner is not None, "Planner not initialized"
+        snapshot = self.fact_gatherer.create_snapshot(self.state, self.state.cached_queue_issues)
         plan = self.planner.plan(snapshot)
-
         if plan.action_count > 0:
-            logger.info("[PLAN] Planning %d action(s): %s", plan.action_count,
-                       ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}" for a in plan.actions))
-
+            logger.info("[PLAN] %d action(s): %s", plan.action_count, ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}" for a in plan.actions))
         self._apply_plan(plan)
         self._clear_discovered_facts()
 
     def _clear_discovered_facts(self) -> None:
-        """Clear discovered facts after plan is applied."""
         for attr in ("discovered_reviews", "discovered_reworks", "discovered_escalations", "discovered_failures"):
-            lst = getattr(self.state, attr)
-            if lst:
-                logger.debug("[PLAN] Clearing %d %s after plan applied", len(lst), attr)
-                lst.clear()
+            getattr(self.state, attr).clear()
 
     def _emit_ui_update_if_needed(self) -> None:
-        """Emit state_changed event for UI if interval has passed."""
-        ui_age = time.time() - self._last_ui_update
-        if ui_age >= self._ui_update_interval and self.state.active_sessions:
+        if time.time() - self._last_ui_update >= self._ui_update_interval and self.state.active_sessions:
             self.events.publish(TraceEvent("orchestrator.state_changed", {
-                "active_count": len(self.state.active_sessions),
-                "sessions": [s.issue.number for s in self.state.active_sessions],
-            }))
+                "active_count": len(self.state.active_sessions), "sessions": [s.issue.number for s in self.state.active_sessions]}))
             self._last_ui_update = time.time()
 
     async def run_loop(self) -> None:
-        """Main orchestration loop."""
         print("Starting orchestration loop...")
-
-        # Reconcile orphaned PR labels on startup
         self.reconcile_orphaned_pr_labels()
-
-        # Initialize timing state
-        self._last_issue_fetch = 0.0  # Force immediate fetch
-        self._last_ui_update = time.time()
-        self._loop_iteration = 0
-
+        self._last_issue_fetch, self._last_ui_update, self._loop_iteration = 0.0, time.time(), 0
         while not self._shutdown_requested:
             try:
-                if not self.tick():
-                    break
+                if not self.tick(): break
             except Exception as e:
                 logger.exception("[LOOP] Error in iteration %d: %s", self._loop_iteration, e)
-                print(f"[LOOP] Error in iteration {self._loop_iteration}: {e}")
             await asyncio.sleep(10)
 
     def request_shutdown(self, force: bool = False) -> None:
-        """Request graceful shutdown.
-
-        Args:
-            force: If True, kill active sessions immediately instead of waiting.
-        """
+        """Request graceful or forced shutdown."""
         self._shutdown_requested = True
         active = self.state.active_sessions
-        if active:
-            if force:
-                print(f"Force shutdown - killing {len(active)} active session(s):")
-                for s in active:
-                    print(f"  #{s.issue.number}: {s.issue.title}")
-                    try:
-                        self._kill_session(s.tmux_session_name)
-                    except Exception as e:
-                        print(f"    Warning: failed to kill session: {e}")
-                self.state.active_sessions = []
-                print("All sessions killed. Exiting...")
-            else:
-                print(f"Shutdown requested - waiting for {len(active)} active session(s):")
-                for s in active:
-                    print(f"  #{s.issue.number}: {s.issue.title} ({s.runtime_minutes} min)")
-                print("\nPress Ctrl+C again to force kill all sessions.")
-        else:
+        if not active:
             print("Shutdown requested - no active sessions, exiting...")
-
-        # NOTE: IPC server shutdown is handled by the caller (CLI/bootstrap)
+            return
+        if force:
+            print(f"Force shutdown - killing {len(active)} session(s)")
+            for s in active:
+                try: self._kill_session(s.tmux_session_name)
+                except Exception as e: print(f"  Warning: {e}")
+            self.state.active_sessions = []
+        else:
+            print(f"Shutdown requested - waiting for {len(active)} session(s). Ctrl+C again to force.")
 
     def request_refresh(self) -> None:
-        """Request an immediate refresh of issues from GitHub.
-
-        This triggers the orchestrator to fetch issues on the next loop iteration,
-        bypassing the queue_refresh_seconds interval. Can be called from web UI
-        or IPC to manually trigger a refresh.
-        """
         self._refresh_requested = True
         logger.info("[REFRESH] Manual refresh requested")
 
     def pause(self) -> None:
-        """Pause - don't start new sessions."""
         self.state.paused = True
-        print("Orchestrator paused - will finish current sessions but not start new ones")
+        print("Orchestrator paused")
         self.events.publish(TraceEvent("orchestrator.paused"))
 
     def resume(self) -> None:
-        """Resume after pause."""
         self.state.paused = False
         print("Orchestrator resumed")
         self.events.publish(TraceEvent("orchestrator.resumed"))
 
     def _apply_plan(self, plan: "Plan") -> None:
-        """Apply the actions from a plan.
-
-        The planner decides WHAT should happen.
-        This method makes it happen via ActionApplier + state updates.
-
-        Args:
-            plan: Plan with actions to execute
-        """
         for action in plan.actions:
-            if self.state.paused:
-                logger.debug("[PLAN] Stopping plan application - orchestrator paused")
-                break
-
+            if self.state.paused: break
             try:
                 result = self.action_applier.apply(action)
-                if result.success:
-                    self._update_state_after_action(action, result)
-                else:
-                    logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
+                if result.success: self._update_state_after_action(action, result)
+                else: logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
             except Exception as e:
                 logger.exception("Failed to apply action %s: %s", action, e)
 
     def _update_state_after_action(self, action: "Action", result: "ActionResult") -> None:
-        """Update orchestrator state after a successful action."""
-        from .control.actions import (
-            ActionType, LaunchSessionAction, CreateTriageIssueAction,
-            CleanupSessionAction, EscalateToHumanAction
-        )
-
+        from .control.actions import ActionType, LaunchSessionAction, CreateTriageIssueAction, CleanupSessionAction, EscalateToHumanAction, QueueReviewAction, QueueReworkAction, QueueTriageAction
         t = action.action_type
         if t == ActionType.LAUNCH_SESSION:
-            a = cast(LaunchSessionAction, action)
-            logger.info("[PLAN] Launched %s session for #%d", a.session_type, a.number)
+            logger.info("[PLAN] Launched %s session for #%d", cast(LaunchSessionAction, action).session_type, cast(LaunchSessionAction, action).number)
         elif t == ActionType.ESCALATE_TO_HUMAN:
-            a = cast(EscalateToHumanAction, action)
-            logger.info("[PLAN] Escalated PR #%d (cycle %d)", a.pr_number, a.rework_cycles)
+            a = cast(EscalateToHumanAction, action); logger.info("[PLAN] Escalated PR #%d (cycle %d)", a.pr_number, a.rework_cycles)
         elif t == ActionType.CREATE_TRIAGE_ISSUE:
-            a = cast(CreateTriageIssueAction, action)
-            issue_number = result.details.get("issue_number")
-            if issue_number:
-                self.state.pending_triage_reviews.append(
-                    PendingTriageReview(issue_number=issue_number, title=a.title)
-                )
-                print(f"📋 Created triage issue #{issue_number} for {a.pr_count} PRs")
+            a, num = cast(CreateTriageIssueAction, action), result.details.get("issue_number")
+            if num: self.state.pending_triage_reviews.append(PendingTriageReview(num, a.title)); print(f"Created triage #{num}")
         elif t == ActionType.CLEANUP_SESSION:
-            a = cast(CleanupSessionAction, action)
-            self.state.pending_cleanups = [c for c in self.state.pending_cleanups if c.pr_number != a.pr_number]
+            self.state.pending_cleanups = [c for c in self.state.pending_cleanups if c.pr_number != cast(CleanupSessionAction, action).pr_number]
         elif t == ActionType.QUEUE_REVIEW:
-            self._handle_queue_review_state_update(action, result)
+            a = cast(QueueReviewAction, action)
+            if not any(r.pr_number == a.pr_number for r in self.state.pending_reviews):
+                self.state.pending_reviews.append(PendingReview(a.issue_number, a.pr_number, a.pr_url, a.branch_name))
+                log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
+                self._get_review_machine(a.pr_number, a.issue_number)
         elif t == ActionType.QUEUE_REWORK:
-            self._handle_queue_rework_state_update(action, result)
+            a = cast(QueueReworkAction, action)
+            if not any(int(r.issue_key.stable_id()) == a.issue_number for r in self.state.pending_reworks):
+                agent = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
+                self.state.pending_reworks.append(PendingRework(self.repository_host.create_issue_key(a.issue_number), agent, a.rework_cycle))
+                log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
         elif t == ActionType.QUEUE_TRIAGE:
-            self._handle_queue_triage_state_update(action, result)
-
-    def _handle_queue_review_state_update(self, action: "Action", result: "ActionResult") -> None:
-        """Update state after queue review action succeeds (label added by ActionApplier)."""
-        from .control.actions import QueueReviewAction
-        a = cast(QueueReviewAction, action)
-
-        if any(r.pr_number == a.pr_number for r in self.state.pending_reviews):
-            return  # Already queued
-
-        self.state.pending_reviews.append(PendingReview(
-            issue_number=a.issue_number, pr_number=a.pr_number, pr_url=a.pr_url, branch_name=a.branch_name,
-        ))
-        log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from issue #{a.issue_number}")
-        self._get_review_machine(a.pr_number, a.issue_number)  # Create state machine
-
-    def _handle_queue_rework_state_update(self, action: "Action", result: "ActionResult") -> None:
-        """Update state after queue rework action succeeds."""
-        from .control.actions import QueueReworkAction
-        a = cast(QueueReworkAction, action)
-
-        if any(int(r.issue_key.stable_id()) == a.issue_number for r in self.state.pending_reworks):
-            return  # Already queued
-
-        # Find agent_type from discovered reworks or use default
-        agent_type = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
-
-        self.state.pending_reworks.append(PendingRework(
-            issue_key=self.repository_host.create_issue_key(a.issue_number),
-            agent_type=agent_type,
-            rework_cycle=a.rework_cycle,
-        ))
-        log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
-        print(f"🔄 Queued issue #{a.issue_number} for rework (cycle {a.rework_cycle})")
-
-    def _handle_queue_triage_state_update(self, action: "Action", result: "ActionResult") -> None:
-        """Update state after queue triage action succeeds."""
-        from .control.actions import QueueTriageAction
-        a = cast(QueueTriageAction, action)
-
-        if any(t.issue_number == a.issue_number for t in self.state.pending_triage_reviews):
-            return  # Already queued
-
-        self.state.pending_triage_reviews.append(PendingTriageReview(issue_number=a.issue_number, title=a.title))
-        print(f"[TRIAGE] Queued failure investigation for #{a.issue_number}")
-
-    # _execute_launch_action removed - now handled via ActionApplier + _session_launcher_callback
-    # Legacy _execute_* methods removed - now handled by ActionApplier + _handle_*_state_update
+            a = cast(QueueTriageAction, action)
+            if not any(t.issue_number == a.issue_number for t in self.state.pending_triage_reviews):
+                self.state.pending_triage_reviews.append(PendingTriageReview(a.issue_number, a.title))
 
     def _fetch_all_issues(self) -> list[Issue]:
-        """Fetch all issues from GitHub for configured agents.
-
-        Returns:
-            List of issues across all agent types
-        """
-        all_issues: list[Issue] = []
-        for agent_label in self.config.agents.keys():
-            labels = self._build_labels(agent_label)
-            logger.debug("[ADAPTER] Using GitHubAdapter for list_issues")
-            issues = self.repository_host.list_issues(
-                labels=labels,
-                milestone=self._get_milestone_filter(),
-                limit=self.config.issue_fetch_limit,
-            )
-            all_issues.extend(issues)
-            # Emit event for visibility
-            self.events.publish(TraceEvent("issues.fetched", {
-                "agent": agent_label,
-                "labels": labels,
-                "milestone": self._get_milestone_filter(),
-                "count": len(issues),
-                "issue_numbers": [i.number for i in issues],
-            }))
-        return all_issues
+        """Fetch all issues from GitHub - delegates to FactGatherer."""
+        base_labels = [self.config.filter_label] if self.config.filter_label else []
+        return self.fact_gatherer.fetch_issues(base_labels, self._get_milestone_filter())
 
     def update_queue_cache(self) -> None:
-        """Update the cached queue issues for instant dashboard pagination.
-
-        This should be called after startup and periodically in run_loop.
-        Emits queue.changed event when the queue composition changes.
-        """
+        """Update the cached queue issues and emit queue.changed event if changed."""
         from .audit import get_queue_issues
         try:
             queue_issues = get_queue_issues(self.config, self.state, issue_tracker=self.repository_host)
-
-            # Track changes for events
-            old_numbers = {i.number for i in self.state.cached_queue_issues}
-            new_numbers = {i.number for i in queue_issues}
-
-            added = new_numbers - old_numbers
-            removed = old_numbers - new_numbers
-
+            old, new = {i.number for i in self.state.cached_queue_issues}, {i.number for i in queue_issues}
+            added, removed = new - old, old - new
             self.state.cached_queue_issues = queue_issues
-
-            # Emit event if queue changed
             if added or removed:
-                # Build issue info for added issues
-                added_info = [
-                    {"number": i.number, "title": i.title}
-                    for i in queue_issues if i.number in added
-                ]
-                removed_info = [
-                    {"number": num}
-                    for num in removed
-                ]
-
-                self.events.publish(TraceEvent(
-                    name="queue.changed",
-                    data={
-                        "added": added_info,
-                        "removed": removed_info,
-                        "total": len(queue_issues),
-                    },
-                ))
-                logger.info(
-                    "Queue changed: %d added, %d removed, %d total",
-                    len(added), len(removed), len(queue_issues),
-                )
-            else:
-                logger.debug("Updated queue cache with %d issues (no changes)", len(queue_issues))
+                self.events.publish(TraceEvent("queue.changed", {
+                    "added": [{"number": i.number, "title": i.title} for i in queue_issues if i.number in added],
+                    "removed": [{"number": num} for num in removed], "total": len(queue_issues),
+                }))
+                logger.info("Queue changed: %d added, %d removed, %d total", len(added), len(removed), len(queue_issues))
         except Exception as e:
             logger.warning("Failed to update queue cache: %s", e)
 
     def _update_dependency_problems(self, dep_blocked: list[tuple["Issue", str]]) -> None:
-        """Update dependency problems state and emit events for changes."""
         from .models import DependencyProblem
-
-        new_problems = {i.number: DependencyProblem(i.number, i.title, [], r) for i, r in dep_blocked}
-        current, new = set(self.state.dependency_problems.keys()), set(new_problems.keys())
-        newly_blocked, newly_unblocked = new - current, current - new
-
-        for num in newly_blocked:
-            p = new_problems[num]
-            self.events.publish(TraceEvent("dependency.blocked", {"issue_number": p.issue_number, "issue_title": p.issue_title, "summary": p.summary}))
-        for num in newly_unblocked:
-            p = self.state.dependency_problems[num]
-            self.events.publish(TraceEvent("dependency.unblocked", {"issue_number": p.issue_number, "issue_title": p.issue_title}))
-
-        self.state.dependency_problems = new_problems
-        if newly_blocked or newly_unblocked:
-            logger.info("Dependency status: %d blocked, %d unblocked", len(newly_blocked), len(newly_unblocked))
-
-    # queue_code_review removed - replaced by discovered_reviews pattern
-    # PRs are discovered by scan_needs_code_review_prs, stored in state.discovered_reviews,
-    # then Planner produces QueueReviewAction which is applied via _handle_queue_review_state_update
+        new = {i.number: DependencyProblem(i.number, i.title, [], r) for i, r in dep_blocked}
+        blocked, unblocked = set(new) - set(self.state.dependency_problems), set(self.state.dependency_problems) - set(new)
+        for n in blocked: self.events.publish(TraceEvent("dependency.blocked", {"issue_number": n, "summary": new[n].summary}))
+        for n in unblocked: self.events.publish(TraceEvent("dependency.unblocked", {"issue_number": n}))
+        self.state.dependency_problems = new
 
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:
-        """Launch a code review session - delegates to SessionLauncher."""
         result = self._session_launcher.launch_review_session(review, self.state.active_sessions)
         self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
-        if result.success and result.session:
-            self.state.active_sessions.append(result.session)
-            return result.session
-        return None
+        if result.success and result.session: self.state.active_sessions.append(result.session)
+        return result.session if result.success else None
 
-    def _launch_triage_session(self, triage_review: PendingTriageReview) -> None:
-        """Launch a triage session - creates synthetic issue and delegates to launch_session."""
+    def _launch_triage_session(self, triage: PendingTriageReview) -> None:
         agent = self.config.triage_review_agent
-        if not agent or agent not in self.config.agents:
-            raise ValueError(f"Invalid triage agent: {agent}")
-        session = self.launch_session(Issue(triage_review.issue_number, triage_review.title, [agent]))
-        if session:
-            print(f"[TRIAGE] Launched session for #{triage_review.issue_number}")
+        if not agent or agent not in self.config.agents: raise ValueError(f"Invalid triage agent: {agent}")
+        self.launch_session(Issue(triage.issue_number, triage.title, [agent]))
 
     def process_deferred_cleanups(self) -> None:
-        """Process deferred cleanups - delegates to CleanupManager."""
         self.state.pending_cleanups = self._cleanup_manager.process_deferred_cleanups(self.state.pending_cleanups)
 
     def _recover_orphaned_cleanups(self) -> None:
-        """Recover orphaned cleanups - delegates to CleanupManager."""
         self._cleanup_manager.recover_orphaned_cleanups(lambda msg: setattr(self.state, 'startup_message', msg))
 
     def scan_needs_code_review_prs(self) -> None:
-        """Scan for PRs with needs-code-review label and store as discovered."""
         from .models import DiscoveredReview
-        reviews = self._pr_scanner.scan_for_reviews(self.state.pending_reviews, [s.tmux_session_name for s in self.state.active_sessions])
-        for r in reviews:
+        for r in self._pr_scanner.scan_for_reviews(self.state.pending_reviews, [s.tmux_session_name for s in self.state.active_sessions]):
             self.state.discovered_reviews.append(DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name))
 
     def scan_needs_rework_prs(self) -> None:
-        """Scan for PRs with needs-rework label and store as discovered."""
         from .models import DiscoveredRework, DiscoveredEscalation
         reworks, escalations = self._pr_scanner.scan_for_reworks(self.state.pending_reworks, [s.issue.number for s in self.state.active_sessions])
-        for pr_num, issue_num, cycle in escalations:
-            self.state.discovered_escalations.append(DiscoveredEscalation(issue_num, pr_num, cycle))
-        for r in reworks:
-            self.state.discovered_reworks.append(DiscoveredRework(int(r.issue_key.stable_id()), 0, "", r.agent_type, r.rework_cycle))
+        for pr, issue, cycle in escalations: self.state.discovered_escalations.append(DiscoveredEscalation(issue, pr, cycle))
+        for r in reworks: self.state.discovered_reworks.append(DiscoveredRework(int(r.issue_key.stable_id()), 0, "", r.agent_type, r.rework_cycle))
 
     def reconcile_orphaned_pr_labels(self) -> int:
-        """Reconcile labels on agent-created PRs - delegates to LabelSync."""
-        if not self.config.code_review_label or not self.config.repo or not self.label_sync:
-            return 0
+        if not self.config.code_review_label or not self.config.repo or not self.label_sync: return 0
         return self.label_sync.reconcile_orphaned_pr_labels(self.config.code_review_label, self.config.code_reviewed_label, ORCHESTRATOR_PR_MARKER)
 
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
-        """Launch a rework session - delegates to SessionLauncher."""
         result = self._session_launcher.launch_rework_session(rework, self.state.active_sessions)
         self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
-        if result.success and result.session:
-            self.state.active_sessions.append(result.session)
-            return result.session
-        return None
+        if result.success and result.session: self.state.active_sessions.append(result.session)
+        return result.session if result.success else None
 
-    def prioritize(self, issue_number: int) -> None:
-        """Add an issue to the priority queue."""
-        if issue_number not in self.state.priority_queue:
-            self.state.priority_queue.insert(0, issue_number)
-            print(f"Issue #{issue_number} added to priority queue")
+    def prioritize(self, n: int) -> None:
+        if n not in self.state.priority_queue: self.state.priority_queue.insert(0, n)
 
 
 async def run_orchestrator(config_path: Optional[Path] = None) -> None:
-    """Entry point to run the orchestrator."""
     from .bootstrap import build_orchestrator
-
-    # Load config
-    if config_path:
-        config = Config.load(config_path)
-    else:
-        config = Config.find_and_load()
-
+    config = Config.load(config_path) if config_path else Config.find_and_load()
     orchestrator = build_orchestrator(config)
-
-    # Setup signal handlers with force kill on second Ctrl+C
     def handle_signal(signum, frame):
-        if orchestrator._shutdown_requested:
-            # Second signal - force kill
-            orchestrator.request_shutdown(force=True)
-        else:
-            # First signal - graceful shutdown
-            orchestrator.request_shutdown()
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-
-    # Run startup checks
+        orchestrator.request_shutdown(force=orchestrator._shutdown_requested)
+    signal.signal(signal.SIGINT, handle_signal); signal.signal(signal.SIGTERM, handle_signal)
     await orchestrator.startup()
-
-    # Run main loop
     await orchestrator.run_loop()
-
-    print("Orchestrator stopped")

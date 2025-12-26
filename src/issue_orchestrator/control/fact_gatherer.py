@@ -23,6 +23,7 @@ from typing import Optional, TYPE_CHECKING
 
 from ..config import Config
 from ..ports.repository_host import RepositoryHost
+from ..ports import EventSink, TraceEvent
 
 if TYPE_CHECKING:
     from ..models import (
@@ -46,6 +47,38 @@ class FactGatherer:
 
     config: Config
     repository_host: RepositoryHost
+    events: Optional[EventSink] = None
+
+    def fetch_issues(self, labels_for_agent: list[str], milestone: Optional[str] = None) -> list["Issue"]:
+        """Fetch all issues for configured agents from GitHub.
+
+        Args:
+            labels_for_agent: Labels that identify agent issues
+            milestone: Optional milestone filter
+
+        Returns:
+            List of issues across all agent types
+        """
+        from ..models import Issue
+        all_issues: list[Issue] = []
+        for agent_label in self.config.agents.keys():
+            labels = list(labels_for_agent)
+            labels.append(agent_label)
+            issues = self.repository_host.list_issues(
+                labels=labels,
+                milestone=milestone,
+                limit=self.config.issue_fetch_limit,
+            )
+            all_issues.extend(issues)
+            if self.events:
+                self.events.publish(TraceEvent("issues.fetched", {
+                    "agent": agent_label,
+                    "labels": labels,
+                    "milestone": milestone,
+                    "count": len(issues),
+                    "issue_numbers": [i.number for i in issues],
+                }))
+        return all_issues
 
     def create_snapshot(
         self,
