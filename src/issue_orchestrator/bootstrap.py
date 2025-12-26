@@ -170,6 +170,21 @@ def build_orchestrator(
         repository_host=github,
     ) if github else None
 
+    # Create PRScanner (for orphaned review/rework discovery)
+    from .control.pr_scanner import PRScanner
+    pr_scanner = PRScanner(
+        config=config,
+        repository=github,
+        events=events,
+    ) if github else None
+
+    # Create SessionRestorer (for session recovery after restart)
+    from .control.session_restorer import SessionRestorer
+    session_restorer = SessionRestorer(
+        config=config,
+        repository_host=github,
+    ) if github else None
+
     # Build the orchestrator with injected dependencies
     return Orchestrator(
         config=config,
@@ -181,6 +196,8 @@ def build_orchestrator(
         label_sync=label_sync,
         action_applier=action_applier,
         fact_gatherer=fact_gatherer,
+        pr_scanner=pr_scanner,
+        session_restorer=session_restorer,
         worktree_manager=worktree_manager,
         working_copy=working_copy,
     )

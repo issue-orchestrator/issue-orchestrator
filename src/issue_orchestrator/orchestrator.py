@@ -104,6 +104,10 @@ class Orchestrator:
     action_applier: Optional["ActionApplier"] = field(default=None, repr=False)
     # Fact gatherer (read-only snapshot creation) - can be injected, otherwise created in __post_init__
     fact_gatherer: Optional["FactGatherer"] = field(default=None, repr=False)
+    # PR scanner (for orphaned review/rework discovery) - can be injected
+    pr_scanner: Optional["PRScanner"] = field(default=None, repr=False)
+    # Session restorer (for session recovery) - can be injected
+    session_restorer: Optional["SessionRestorer"] = field(default=None, repr=False)
     # Worktree manager (port) - for worktree lifecycle operations
     worktree_manager: Optional[WorktreeManager] = field(default=None, repr=False)
     # Working copy (port) - for git operations inside worktrees
@@ -259,6 +263,9 @@ class Orchestrator:
     @property
     def _pr_scanner(self) -> PRScanner:
         """Get the PR scanner for discovering orphaned reviews/reworks."""
+        if self.pr_scanner is not None:
+            return self.pr_scanner
+        # Fallback: create if not injected (for backwards compatibility)
         return PRScanner(
             config=self.config,
             repository=self.repository_host,
@@ -311,6 +318,9 @@ class Orchestrator:
     @property
     def _session_restorer(self) -> SessionRestorer:
         """Get the session restorer for recovering sessions after restart."""
+        if self.session_restorer is not None:
+            return self.session_restorer
+        # Fallback: create if not injected (for backwards compatibility)
         return SessionRestorer(
             config=self.config,
             repository_host=self.repository_host,
