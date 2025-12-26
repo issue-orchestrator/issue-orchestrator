@@ -288,7 +288,21 @@ class TestObserverWiring:
         config.get_label_blocked.return_value = "blocked"
         config.get_label_needs_human.return_value = "needs-human"
 
-        observer = SessionObserver(config)
+        # Mock the session runner to report session not exists
+        mock_runner = MagicMock()
+        mock_runner.session_exists.return_value = False
+
+        # Mock repository host for PR lookup
+        mock_repo_host = MagicMock()
+        mock_repo_host.get_open_prs_for_branch.return_value = [
+            MagicMock(url="https://github.com/test/pull/1")
+        ]
+
+        observer = SessionObserver(
+            config,
+            session_runner=mock_runner,
+            repository_host=mock_repo_host,
+        )
 
         session = Session(
             issue=Issue(number=789, title="Test", labels=["agent:test"]),
@@ -303,14 +317,10 @@ class TestObserverWiring:
             started_at=datetime.now(),
         )
 
-        with patch('issue_orchestrator.observation.observer.session_exists', return_value=False):
-            with patch('issue_orchestrator.observation.observer.get_open_prs_for_branch') as mock_prs:
-                mock_prs.return_value = [{"url": "https://github.com/test/pull/1"}]
+        # check_session is NOT async - it's a regular method
+        status = observer.check_session(session)
 
-                # check_session is NOT async - it's a regular method
-                status = observer.check_session(session)
-
-                assert status == SessionStatus.COMPLETED
+        assert status == SessionStatus.COMPLETED
 
     def test_observer_detects_running_session(self):
         """Verify observer detects when a session is still running."""
@@ -319,7 +329,12 @@ class TestObserverWiring:
         from datetime import datetime
 
         config = MagicMock()
-        observer = SessionObserver(config)
+
+        # Mock the session runner to report session exists
+        mock_runner = MagicMock()
+        mock_runner.session_exists.return_value = True
+
+        observer = SessionObserver(config, session_runner=mock_runner)
 
         session = Session(
             issue=Issue(number=101, title="Test", labels=["agent:test"]),
@@ -334,9 +349,8 @@ class TestObserverWiring:
             started_at=datetime.now(),
         )
 
-        with patch('issue_orchestrator.observation.observer.session_exists', return_value=True):
-            status = observer.check_session(session)
-            assert status == SessionStatus.RUNNING
+        status = observer.check_session(session)
+        assert status == SessionStatus.RUNNING
 
 
 class TestSmoke:
