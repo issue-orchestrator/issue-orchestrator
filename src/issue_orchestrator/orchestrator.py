@@ -7,7 +7,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, cast
 
 if TYPE_CHECKING:
     from .control.planner import Planner, Plan, OrchestratorSnapshot
@@ -235,52 +235,21 @@ class Orchestrator:
 
     @property
     def _completion_processor(self) -> CompletionProcessor:
-        """Get the completion processor (injected or created)."""
-        if self.completion_processor is not None:
-            return self.completion_processor
-        # Fallback: create if not injected
-        if self.working_copy is None:
-            raise ValueError(
-                "WorkingCopy (working_copy) must be injected. "
-                "Use bootstrap.build_orchestrator() or bootstrap.build_orchestrator_for_testing()."
-            )
-        return CompletionProcessor(
-            label_adapter=self.repository_host,
-            pr_adapter=self.repository_host,
-            git_adapter=self.working_copy,
-            event_bus=None,
-            label_config={
-                "blocked": self.config.get_label_blocked(),
-                "needs_human": self.config.get_label_needs_human(),
-                "code_reviewed": self.config.code_reviewed_label or "code-reviewed",
-                "needs_rework": self.config.get_label_needs_rework(),
-                "code_review": self.config.code_review_label or "needs-code-review",
-                "in_progress": self.config.get_label_in_progress(),
-            },
-        )
+        """Get the completion processor (must be injected)."""
+        assert self.completion_processor is not None, "CompletionProcessor must be injected via bootstrap"
+        return self.completion_processor
 
     @property
     def _session_controller(self) -> SessionController:
-        """Get the session controller (injected or created)."""
-        if self.session_controller is not None:
-            return self.session_controller
-        # Fallback: create if not injected
-        return SessionController(
-            completion_processor=self._completion_processor,
-            events=self.events,
-        )
+        """Get the session controller (must be injected)."""
+        assert self.session_controller is not None, "SessionController must be injected via bootstrap"
+        return self.session_controller
 
     @property
     def _pr_scanner(self) -> PRScanner:
-        """Get the PR scanner for discovering orphaned reviews/reworks."""
-        if self.pr_scanner is not None:
-            return self.pr_scanner
-        # Fallback: create if not injected (for backwards compatibility)
-        return PRScanner(
-            config=self.config,
-            repository=self.repository_host,
-            events=self.events,
-        )
+        """Get the PR scanner (must be injected)."""
+        assert self.pr_scanner is not None, "PRScanner must be injected via bootstrap"
+        return self.pr_scanner
 
     @property
     def _session_launcher(self) -> SessionLauncher:
@@ -385,95 +354,51 @@ class Orchestrator:
 
     # ==================== End Naming Conventions ====================
 
-    # ==================== Session Launcher Callback ====================
-
     def _session_launcher_callback(self, session_type: str, number: int) -> Optional[Session]:
-        """Session launcher callback for ActionApplier.
-
-        This callback does entity lookup and delegates to the appropriate
-        launch method. It bridges the gap between ActionApplier (which only
-        knows session_type and number) and the actual launch logic (which
-        needs the full entity).
-
-        Args:
-            session_type: "issue", "review", "rework", or "triage"
-            number: Issue or PR number
-
-        Returns:
-            Session if launched successfully, None otherwise
-        """
-        if session_type == "issue":
-            # Find the issue and launch
-            issue = next(
-                (i for i in self.state.cached_queue_issues if i.number == number),
-                None
-            )
-            if issue:
-                session = self.launch_session(issue)
-                if session:
-                    self.state.issues_started_count += 1
-                    logger.info("[APPLIER] Launched issue session for #%d", number)
-                return session
-            else:
-                logger.warning("[APPLIER] Issue #%d not found in cache", number)
-                return None
-
-        elif session_type == "review":
-            # Find the pending review and launch
-            review = next(
-                (r for r in self.state.pending_reviews if r.pr_number == number),
-                None
-            )
-            if review:
-                session = self.launch_review_session(review)
-                if session:
-                    logger.info("[APPLIER] Launched review session for PR #%d", number)
-                return session
-            else:
-                logger.warning("[APPLIER] Review for PR #%d not found", number)
-                return None
-
-        elif session_type == "rework":
-            # Find the pending rework by issue number
-            rework = next(
-                (r for r in self.state.pending_reworks if int(r.issue_key.stable_id()) == number),
-                None
-            )
-            if rework:
-                session = self.launch_rework_session(rework)
-                if session:
-                    logger.info("[APPLIER] Launched rework session for issue #%d", number)
-                return session
-            else:
-                logger.warning("[APPLIER] Rework for issue #%d not found", number)
-                return None
-
-        elif session_type == "triage":
-            # Find the pending triage and launch
-            triage = next(
-                (t for t in self.state.pending_triage_reviews if t.issue_number == number),
-                None
-            )
-            if triage:
-                self._launch_triage_session(triage)
-                # _launch_triage_session doesn't return a session, need to find it
-                # Return the session from active_sessions
-                session = next(
-                    (s for s in self.state.active_sessions if s.issue.number == number),
-                    None
-                )
-                if session:
-                    logger.info("[APPLIER] Launched triage session for #%d", number)
-                return session
-            else:
-                logger.warning("[APPLIER] Triage for #%d not found", number)
-                return None
-
-        else:
+        """Session launcher callback for ActionApplier - dispatches by session type."""
+        handlers = {
+            "issue": self._launch_issue_by_number,
+            "review": self._launch_review_by_number,
+            "rework": self._launch_rework_by_number,
+            "triage": self._launch_triage_by_number,
+        }
+        handler = handlers.get(session_type)
+        if not handler:
             logger.warning("[APPLIER] Unknown session type: %s", session_type)
             return None
+        return handler(number)
 
-    # ==================== End Session Launcher Callback ====================
+    def _launch_issue_by_number(self, number: int) -> Optional[Session]:
+        issue = next((i for i in self.state.cached_queue_issues if i.number == number), None)
+        if not issue:
+            logger.warning("[APPLIER] Issue #%d not found in cache", number)
+            return None
+        session = self.launch_session(issue)
+        if session:
+            self.state.issues_started_count += 1
+        return session
+
+    def _launch_review_by_number(self, number: int) -> Optional[Session]:
+        review = next((r for r in self.state.pending_reviews if r.pr_number == number), None)
+        if not review:
+            logger.warning("[APPLIER] Review for PR #%d not found", number)
+            return None
+        return self.launch_review_session(review)
+
+    def _launch_rework_by_number(self, number: int) -> Optional[Session]:
+        rework = next((r for r in self.state.pending_reworks if int(r.issue_key.stable_id()) == number), None)
+        if not rework:
+            logger.warning("[APPLIER] Rework for issue #%d not found", number)
+            return None
+        return self.launch_rework_session(rework)
+
+    def _launch_triage_by_number(self, number: int) -> Optional[Session]:
+        triage = next((t for t in self.state.pending_triage_reviews if t.issue_number == number), None)
+        if not triage:
+            logger.warning("[APPLIER] Triage for #%d not found", number)
+            return None
+        self._launch_triage_session(triage)
+        return next((s for s in self.state.active_sessions if s.issue.number == number), None)
 
     # ==================== State Machine Helpers ====================
     # These delegate to the StateMachineManager
@@ -492,50 +417,7 @@ class Orchestrator:
         """Get or create review state machine. Delegates to StateMachineManager."""
         return self._state_machines.get_review_machine(pr_number, issue_number)
 
-    # ==================== Label Sync Helpers ====================
-    # Note: These methods can be called directly after state machine transitions
-    # to sync labels. They no longer rely on EventBus subscriptions.
-
-    def _sync_label(self, issue_number: int, label: str, operation: str) -> None:
-        """Sync a label on an issue via label_sync or direct adapter call.
-
-        Args:
-            issue_number: GitHub issue number
-            label: Label to add/remove
-            operation: "add" or "remove"
-        """
-        try:
-            if self.label_sync:
-                if operation == "add":
-                    self.label_sync.sync_add(issue_number, label)
-                else:
-                    self.label_sync.sync_remove(issue_number, label)
-            else:
-                if operation == "add":
-                    self.repository_host.add_label(issue_number, label)
-                else:
-                    self.repository_host.remove_label(issue_number, label)
-        except Exception as e:
-            self.events.publish(TraceEvent("labels.sync_error", {
-                "issue_number": issue_number, "label": label, "operation": operation, "error": str(e)
-            }))
-
-    def _remove_blocked_labels(self, issue_number: int) -> None:
-        """Remove all blocked-* labels from an issue."""
-        try:
-            labels = self.repository_host.get_issue_labels(issue_number)
-            if self.label_sync:
-                self.label_sync.remove_blocked_labels(issue_number, set(labels))
-            else:
-                for label in labels:
-                    if label.startswith("blocked"):
-                        self.repository_host.remove_label(issue_number, label)
-        except Exception as e:
-            self.events.publish(TraceEvent("labels.sync_error", {
-                "issue_number": issue_number, "label": "blocked-*", "operation": "remove", "error": str(e)
-            }))
-
-    # ==================== End Label Sync Helpers ====================
+    # Label sync methods removed - use LabelSync directly via label_sync property
 
     async def _restore_running_sessions(self, running: list[dict]) -> None:
         """Restore tracking for sessions that are still running after orchestrator restart.
@@ -965,57 +847,36 @@ class Orchestrator:
                 logger.exception("Failed to apply action %s: %s", action, e)
 
     def _update_state_after_action(self, action: "Action", result: "ActionResult") -> None:
-        """Update orchestrator state after a successful action.
+        """Update orchestrator state after a successful action."""
+        from .control.actions import (
+            ActionType, LaunchSessionAction, CreateTriageIssueAction,
+            CleanupSessionAction, EscalateToHumanAction
+        )
 
-        Dispatches to specific state update handlers based on action type.
-        """
-        from .control.actions import ActionType
-
-        handlers = {
-            ActionType.LAUNCH_SESSION: self._handle_launch_state_update,
-            ActionType.ESCALATE_TO_HUMAN: self._handle_escalation_state_update,
-            ActionType.QUEUE_REVIEW: self._handle_queue_review_state_update,
-            ActionType.QUEUE_REWORK: self._handle_queue_rework_state_update,
-            ActionType.QUEUE_TRIAGE: self._handle_queue_triage_state_update,
-            ActionType.CREATE_TRIAGE_ISSUE: self._handle_create_triage_state_update,
-            ActionType.CLEANUP_SESSION: self._handle_cleanup_state_update,
-        }
-
-        handler = handlers.get(action.action_type)
-        if handler:
-            handler(action, result)
-
-    def _handle_launch_state_update(self, action: "Action", result: "ActionResult") -> None:
-        """Log successful session launch."""
-        from .control.actions import LaunchSessionAction
-        assert isinstance(action, LaunchSessionAction)
-        logger.info("[PLAN] Launched %s session for #%d", action.session_type, action.number)
-
-    def _handle_create_triage_state_update(self, action: "Action", result: "ActionResult") -> None:
-        """Update state after triage issue creation."""
-        from .control.actions import CreateTriageIssueAction
-        assert isinstance(action, CreateTriageIssueAction)
-        issue_number = result.details.get("issue_number")
-        if issue_number:
-            self.state.pending_triage_reviews.append(
-                PendingTriageReview(issue_number=issue_number, title=action.title)
-            )
-            print(f"📋 Created triage review issue #{issue_number} for {action.pr_count} PRs")
-
-    def _handle_cleanup_state_update(self, action: "Action", result: "ActionResult") -> None:
-        """Update state after cleanup action."""
-        from .control.actions import CleanupSessionAction
-        assert isinstance(action, CleanupSessionAction)
-        self.state.pending_cleanups = [
-            c for c in self.state.pending_cleanups if c.pr_number != action.pr_number
-        ]
-
-    def _handle_escalation_state_update(self, action: "Action", result: "ActionResult") -> None:
-        """Update state after escalation action succeeds."""
-        from .control.actions import EscalateToHumanAction
-        assert isinstance(action, EscalateToHumanAction)
-        logger.info("[PLAN] Escalated PR #%d to needs-human (cycle %d)",
-                   action.pr_number, action.rework_cycles)
+        t = action.action_type
+        if t == ActionType.LAUNCH_SESSION:
+            a = cast(LaunchSessionAction, action)
+            logger.info("[PLAN] Launched %s session for #%d", a.session_type, a.number)
+        elif t == ActionType.ESCALATE_TO_HUMAN:
+            a = cast(EscalateToHumanAction, action)
+            logger.info("[PLAN] Escalated PR #%d (cycle %d)", a.pr_number, a.rework_cycles)
+        elif t == ActionType.CREATE_TRIAGE_ISSUE:
+            a = cast(CreateTriageIssueAction, action)
+            issue_number = result.details.get("issue_number")
+            if issue_number:
+                self.state.pending_triage_reviews.append(
+                    PendingTriageReview(issue_number=issue_number, title=a.title)
+                )
+                print(f"📋 Created triage issue #{issue_number} for {a.pr_count} PRs")
+        elif t == ActionType.CLEANUP_SESSION:
+            a = cast(CleanupSessionAction, action)
+            self.state.pending_cleanups = [c for c in self.state.pending_cleanups if c.pr_number != a.pr_number]
+        elif t == ActionType.QUEUE_REVIEW:
+            self._handle_queue_review_state_update(action, result)
+        elif t == ActionType.QUEUE_REWORK:
+            self._handle_queue_rework_state_update(action, result)
+        elif t == ActionType.QUEUE_TRIAGE:
+            self._handle_queue_triage_state_update(action, result)
 
     def _handle_queue_review_state_update(self, action: "Action", result: "ActionResult") -> None:
         """Update state after queue review action succeeds."""
@@ -1248,71 +1109,9 @@ class Orchestrator:
                 len(newly_unblocked),
             )
 
-    def queue_code_review(self, issue_number: int, pr_url: str, branch_name: str) -> None:
-        """Queue a PR for code review.
-
-        Called immediately after a work agent creates a PR.
-        The review will be processed in the next loop iteration.
-        Uses repository_host adapter for all GitHub operations.
-
-        Also ensures the needs-code-review label is added to the PR as a backup
-        (in case the agent didn't use agent-done and bypassed the label).
-        """
-        import re
-
-        # Extract PR number from URL
-        match = re.search(r"/pull/(\d+)", pr_url)
-        if not match:
-            print(f"Warning: Could not extract PR number from {pr_url}")
-            return
-
-        pr_number = int(match.group(1))
-
-        # Check if already queued
-        for review in self.state.pending_reviews:
-            if review.pr_number == pr_number:
-                return
-
-        # Fetch PR to check verification (this is a new PR, may need verification)
-        try:
-            pr_info = self.repository_host.get_pr(pr_number)
-            if pr_info:
-                from .agent_done import extract_pr_verification_status
-                has_marker, _ = extract_pr_verification_status(pr_info.body)
-                if not has_marker:
-                    logger.warning(f"PR #{pr_number}: No verification token - created outside agent-done")
-                    print(f"  PR #{pr_number}: ⚠️  No verification token - created outside agent-done")
-        except Exception as e:
-            logger.warning(f"Could not check verification for PR #{pr_number}: {e}")
-
-        # Add needs-code-review label as backup via adapter (idempotent - won't duplicate if already present)
-        # Note: GitHub treats PRs as issues, so issue label operations work on PRs
-        if self.config.code_review_label:
-            try:
-                self.repository_host.add_label(pr_number, self.config.code_review_label)
-                logger.info(f"Added '{self.config.code_review_label}' label to PR #{pr_number}")
-            except Exception as e:
-                logger.warning(f"Failed to add review label to PR #{pr_number}: {e}")
-
-        review = PendingReview(
-            issue_number=issue_number,
-            pr_number=pr_number,
-            pr_url=pr_url,
-            branch_name=branch_name,
-        )
-        self.state.pending_reviews.append(review)
-        log_transition("review", pr_number, "CREATED", "QUEUED", f"from issue #{issue_number}")
-
-        # Emit event for visibility
-        self.events.publish(TraceEvent("review.queued", {
-            "pr_number": pr_number,
-            "issue_number": issue_number,
-            "pr_url": pr_url,
-        }))
-
-        # Create review state machine (starts in PENDING state)
-        review_machine = self._get_review_machine(pr_number, issue_number)
-        logger.debug(f"[STATE_MACHINE] ReviewStateMachine for PR #{pr_number} in {review_machine.state}")
+    # queue_code_review removed - replaced by discovered_reviews pattern
+    # PRs are discovered by scan_needs_code_review_prs, stored in state.discovered_reviews,
+    # then Planner produces QueueReviewAction which is applied via _handle_queue_review_state_update
 
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:
         """Launch a code review session for a PR.

@@ -67,11 +67,47 @@ class MockWorktreeManager:
 
 def create_test_orchestrator(config, repository_host=None, worktree_manager=None, working_copy=None):
     """Helper to create an Orchestrator with required dependencies for testing."""
+    from issue_orchestrator.control.session_controller import SessionController
+    from issue_orchestrator.control.completion_processor import CompletionProcessor
+    from issue_orchestrator.control.pr_scanner import PRScanner
+    from issue_orchestrator.ports import NullEventSink
+
+    repo_host = repository_host or MagicMock()
+    events = NullEventSink()
+
+    # Create required control components
+    completion_processor = CompletionProcessor(
+        label_adapter=repo_host,
+        pr_adapter=repo_host,
+        git_adapter=working_copy or GitWorkingCopy(),
+        event_bus=None,
+        label_config={
+            "blocked": config.get_label_blocked(),
+            "needs_human": config.get_label_needs_human(),
+            "code_reviewed": config.code_reviewed_label or "code-reviewed",
+            "needs_rework": config.get_label_needs_rework(),
+            "code_review": config.code_review_label or "needs-code-review",
+            "in_progress": config.get_label_in_progress(),
+        },
+    )
+    session_controller = SessionController(
+        completion_processor=completion_processor,
+        events=events,
+    )
+    pr_scanner = PRScanner(
+        config=config,
+        repository=repo_host,
+        events=events,
+    )
+
     return Orchestrator(
         config=config,
-        _repository_host=repository_host or MagicMock(),
+        _repository_host=repo_host,
         worktree_manager=worktree_manager or MockWorktreeManager(),
         working_copy=working_copy or GitWorkingCopy(),
+        completion_processor=completion_processor,
+        session_controller=session_controller,
+        pr_scanner=pr_scanner,
     )
 
 
@@ -1574,83 +1610,9 @@ class TestGatherTriageFacts:
         assert 20 in pr_numbers
 
 
-class TestQueueCodeReview:
-    """Test the queue_code_review method."""
-
-    def test_queue_code_review_adds_to_pending_reviews(self, sample_config):
-        """Test that queue_code_review adds PR to pending_reviews."""
-        orchestrator = create_test_orchestrator(sample_config)
-
-        assert len(orchestrator.state.pending_reviews) == 0
-
-        orchestrator.queue_code_review(
-            issue_number=42,
-            pr_url="https://github.com/owner/repo/pull/123",
-            branch_name="feature/issue-42",
-        )
-
-        assert len(orchestrator.state.pending_reviews) == 1
-        review = orchestrator.state.pending_reviews[0]
-        assert review.issue_number == 42
-        assert review.pr_number == 123
-        assert review.pr_url == "https://github.com/owner/repo/pull/123"
-        assert review.branch_name == "feature/issue-42"
-
-    def test_queue_code_review_extracts_pr_number_from_url(self, sample_config):
-        """Test that PR number is correctly extracted from various URL formats."""
-        orchestrator = create_test_orchestrator(sample_config)
-
-        # Standard URL
-        orchestrator.queue_code_review(
-            issue_number=1,
-            pr_url="https://github.com/owner/repo/pull/456",
-            branch_name="feature/test",
-        )
-        assert orchestrator.state.pending_reviews[0].pr_number == 456
-
-        # URL with trailing slash or query params should still work
-        orchestrator.queue_code_review(
-            issue_number=2,
-            pr_url="https://github.com/owner/repo/pull/789/files",
-            branch_name="feature/test2",
-        )
-        assert orchestrator.state.pending_reviews[1].pr_number == 789
-
-    def test_queue_code_review_skips_invalid_pr_url(self, sample_config):
-        """Test that invalid PR URLs are skipped."""
-        orchestrator = create_test_orchestrator(sample_config)
-
-        orchestrator.queue_code_review(
-            issue_number=42,
-            pr_url="https://github.com/owner/repo/issues/123",  # Not a pull URL
-            branch_name="feature/test",
-        )
-
-        # Should not add to pending reviews
-        assert len(orchestrator.state.pending_reviews) == 0
-
-    def test_queue_code_review_skips_duplicates(self, sample_config):
-        """Test that duplicate PRs are not queued twice."""
-        from issue_orchestrator.models import PendingReview
-
-        orchestrator = create_test_orchestrator(sample_config)
-
-        # Add first review
-        orchestrator.queue_code_review(
-            issue_number=42,
-            pr_url="https://github.com/owner/repo/pull/123",
-            branch_name="feature/issue-42",
-        )
-
-        # Try to add same PR again
-        orchestrator.queue_code_review(
-            issue_number=42,
-            pr_url="https://github.com/owner/repo/pull/123",
-            branch_name="feature/issue-42",
-        )
-
-        # Should still have only 1 review
-        assert len(orchestrator.state.pending_reviews) == 1
+# TestQueueCodeReview removed - queue_code_review method was legacy
+# Code review queueing is now tested via discovered_reviews + Planner pattern
+# See test_planner.py for QueueReviewAction tests
 
 
 class TestLaunchReviewSession:

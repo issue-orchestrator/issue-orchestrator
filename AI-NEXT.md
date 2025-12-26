@@ -73,15 +73,19 @@ These are the "calling card" level improvements that turn layer disconnects into
   - Moved `_escalate_to_needs_human` → `ActionApplier` (full escalation flow)
   - Made StateMachineManager, CompletionProcessor, SessionController injectable via bootstrap
   - State machine dicts now delegate to StateMachineManager (single source of truth)
-- **Current: 1533 lines** (down from 2924, -1391 lines removed, -48%)
+- [x] Orchestrator-mediator refactor continuation (2025-12-26):
+  - Removed `queue_code_review` (legacy, replaced by discovered_reviews pattern)
+  - Removed dead label sync helpers (`_sync_label`, `_remove_blocked_labels`)
+  - Simplified `_session_launcher_callback` using dispatch pattern (85→45 lines)
+  - Updated test helpers to inject required components (session_controller, etc.)
+- **Current: 1353 lines** (down from 2924, -1571 lines removed, -54%)
 
-**Remaining to extract (~1026 lines to reach 500 line goal):**
+**Remaining to extract (~950 lines to reach 400 line goal):**
 - `handle_session_completion` (95 lines) - mostly delegated to CompletionHandler
-- `_session_launcher_callback` (91 lines) - session type dispatch
+- `_handle_*_state_update` methods (100 lines) - state updates after actions
 - `__post_init__` (90 lines) - could simplify with more injection
-- `queue_code_review` (66 lines) - legacy, replaced by discovered_reviews pattern
 - `_update_dependency_problems` (65 lines) - state update logic
-- `scan_needs_rework_prs` (44 lines) - already delegates to PRScanner
+- `scan_needs_*_prs` (75 lines) - scanning methods
 - Various smaller methods (lazy properties could be made injectable)
 
 **Architecture status:**
