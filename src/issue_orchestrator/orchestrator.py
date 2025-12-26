@@ -68,6 +68,7 @@ from .control.cleanup_manager import CleanupManager
 from .control.completion_handler import CompletionHandler
 from .control.session_restorer import SessionRestorer
 from .control.startup_manager import StartupManager
+from .control.state_machine_manager import StateMachineManager
 from .observation.observation import SessionObservation
 # Port imports (protocols only - no concrete implementations in core)
 from .ports import EventSink, SessionRunner, TraceEvent, NullEventSink, NullSessionRunner, RepositoryHost
@@ -113,6 +114,11 @@ class Orchestrator:
     observer: SessionObserver = field(init=False)
     _shutdown_requested: bool = field(default=False, init=False)
     _refresh_requested: bool = field(default=False, init=False)
+    # Loop timing state (initialized in __post_init__)
+    _last_issue_fetch: float = field(default=0.0, init=False)
+    _last_ui_update: float = field(default=0.0, init=False)
+    _loop_iteration: int = field(default=0, init=False)
+    _ui_update_interval: int = field(default=30, init=False)  # Emit state_changed every 30s
 
     def __post_init__(self):
         # GitHub adapter must be injected via bootstrap.py
@@ -310,6 +316,16 @@ class Orchestrator:
             repository_host=self.repository_host,
         )
 
+    @property
+    def _state_machines(self) -> StateMachineManager:
+        """Get the state machine manager."""
+        if not hasattr(self, "_state_machine_manager_cache"):
+            self._state_machine_manager_cache = StateMachineManager(
+                config=self.config,
+                events=self.events,
+            )
+        return self._state_machine_manager_cache
+
     # Note: _verify_hooks_on_startup moved to StartupManager
 
     # ==================== Naming Conventions ====================
@@ -443,57 +459,21 @@ class Orchestrator:
     # ==================== End Session Launcher Callback ====================
 
     # ==================== State Machine Helpers ====================
+    # These delegate to the StateMachineManager
 
     def _get_issue_machine(self, issue_number: int) -> IssueStateMachine:
-        """Get or create issue state machine.
-
-        Args:
-            issue_number: The GitHub issue number
-
-        Returns:
-            IssueStateMachine for the given issue
-        """
-        if issue_number not in self.issue_machines:
-            self.issue_machines[issue_number] = IssueStateMachine(issue_number)
-            logger.debug(f"Created IssueStateMachine for issue #{issue_number}")
-        return self.issue_machines[issue_number]
+        """Get or create issue state machine. Delegates to StateMachineManager."""
+        return self._state_machines.get_issue_machine(issue_number)
 
     def _get_session_machine(
         self, session_name: str, issue_number: int, timeout_minutes: int
     ) -> SessionStateMachine:
-        """Get or create session state machine.
-
-        Args:
-            session_name: Terminal session name (e.g., "issue-123")
-            issue_number: The GitHub issue number
-            timeout_minutes: Session timeout in minutes
-
-        Returns:
-            SessionStateMachine for the given session
-        """
-        if session_name not in self.session_machines:
-            self.session_machines[session_name] = SessionStateMachine(
-                session_name, issue_number, timeout_minutes=timeout_minutes
-            )
-            logger.debug(f"Created SessionStateMachine for session {session_name}")
-        return self.session_machines[session_name]
+        """Get or create session state machine. Delegates to StateMachineManager."""
+        return self._state_machines.get_session_machine(session_name, issue_number, timeout_minutes)
 
     def _get_review_machine(self, pr_number: int, issue_number: int) -> ReviewStateMachine:
-        """Get or create review state machine for a PR.
-
-        Args:
-            pr_number: The GitHub PR number
-            issue_number: The associated GitHub issue number
-
-        Returns:
-            ReviewStateMachine for the given PR
-        """
-        if pr_number not in self.review_machines:
-            self.review_machines[pr_number] = ReviewStateMachine(
-                pr_number, issue_number, max_rework_cycles=self.config.max_rework_cycles
-            )
-            logger.debug(f"Created ReviewStateMachine for PR #{pr_number}")
-        return self.review_machines[pr_number]
+        """Get or create review state machine. Delegates to StateMachineManager."""
+        return self._state_machines.get_review_machine(pr_number, issue_number)
 
     # ==================== Label Sync Helpers ====================
     # Note: These methods can be called directly after state machine transitions
@@ -756,165 +736,141 @@ class Orchestrator:
             self.state.discovered_failures.append(discovered)
             logger.info("[COMPLETION] Discovered failure for issue #%d - Planner will decide", session.issue.number)
 
+    def tick(self) -> bool:
+        """Execute one iteration of the orchestration loop.
+
+        Returns:
+            True if the loop should continue, False if shutdown requested.
+        """
+        self._loop_iteration += 1
+        logger.info("[LOOP] Iteration %d - active=%d, pending_reviews=%d, paused=%s",
+                   self._loop_iteration, len(self.state.active_sessions),
+                   len(self.state.pending_reviews), self.state.paused)
+
+        if self._shutdown_requested:
+            return False
+
+        # Check status of all active sessions using observer/controller separation
+        self._process_active_sessions()
+
+        # Scan for PRs needing code review/rework (populates queues)
+        self.scan_needs_code_review_prs()
+        self.scan_needs_rework_prs()
+
+        # Planner-based decision making (skipped if paused or at capacity)
+        if not self.state.paused and len(self.state.active_sessions) < self.config.max_concurrent_sessions:
+            self._run_planning_cycle()
+
+        # Periodically emit state_changed for UI
+        self._emit_ui_update_if_needed()
+
+        return True
+
+    def _process_active_sessions(self) -> None:
+        """Check all active sessions and handle completions."""
+        controller = self._session_controller
+        for session in list(self.state.active_sessions):
+            observation = self.observer.observe_session(session)
+            if observation.observation == SessionObservation.RUNNING:
+                continue
+
+            decision = controller.decide_outcome(
+                observation=observation,
+                worktree_path=session.worktree_path,
+                issue_number=session.issue.number,
+                issue_title=session.issue.title,
+                session_name=session.tmux_session_name,
+                completion_path=session.completion_path,
+            )
+
+            if decision.recovered_from_timeout:
+                logger.info("Session %s: timeout recovered - agent completed work",
+                           session.tmux_session_name)
+
+            self.handle_session_completion(session, decision.status)
+
+    def _run_planning_cycle(self) -> None:
+        """Fetch issues, create snapshot, plan, and apply."""
+        # Only fetch issues when refresh interval passed or manual refresh requested
+        issue_fetch_age = time.time() - self._last_issue_fetch
+        should_fetch = issue_fetch_age >= self.config.queue_refresh_seconds or self._refresh_requested
+
+        if should_fetch:
+            if self._refresh_requested:
+                logger.info("[FETCH] Manual refresh triggered")
+                self._refresh_requested = False
+            else:
+                logger.info("[FETCH] Scheduled refresh (every %ds)", self.config.queue_refresh_seconds)
+
+            all_issues = self._fetch_all_issues()
+            self._last_issue_fetch = time.time()
+
+            # Update dependency problems state
+            _, dep_blocked = self.scheduler.get_available_issues(all_issues)
+            self._update_dependency_problems(dep_blocked)
+
+            # Filter issues for planning
+            history_numbers = {e.issue_number for e in self.state.session_history}
+            active_numbers = {s.issue.number for s in self.state.active_sessions}
+            exclude_numbers = history_numbers | active_numbers
+            filtered_issues = [i for i in all_issues if i.number not in exclude_numbers]
+
+            if self.config.filter_issue:
+                filtered_issues = [i for i in filtered_issues if i.number == self.config.filter_issue]
+
+            self.state.cached_queue_issues = filtered_issues
+        else:
+            filtered_issues = self.state.cached_queue_issues
+
+        # Create snapshot, plan, and apply
+        snapshot = self.fact_gatherer.create_snapshot(self.state, filtered_issues)
+        assert self.planner is not None, "Planner not initialized"
+        plan = self.planner.plan(snapshot)
+
+        if plan.action_count > 0:
+            logger.info("[PLAN] Planning %d action(s): %s", plan.action_count,
+                       ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}" for a in plan.actions))
+
+        self._apply_plan(plan)
+        self._clear_discovered_facts()
+
+    def _clear_discovered_facts(self) -> None:
+        """Clear discovered facts after plan is applied."""
+        for attr in ("discovered_reviews", "discovered_reworks", "discovered_escalations", "discovered_failures"):
+            lst = getattr(self.state, attr)
+            if lst:
+                logger.debug("[PLAN] Clearing %d %s after plan applied", len(lst), attr)
+                lst.clear()
+
+    def _emit_ui_update_if_needed(self) -> None:
+        """Emit state_changed event for UI if interval has passed."""
+        ui_age = time.time() - self._last_ui_update
+        if ui_age >= self._ui_update_interval and self.state.active_sessions:
+            self.events.publish(TraceEvent("orchestrator.state_changed", {
+                "active_count": len(self.state.active_sessions),
+                "sessions": [s.issue.number for s in self.state.active_sessions],
+            }))
+            self._last_ui_update = time.time()
+
     async def run_loop(self) -> None:
         """Main orchestration loop."""
         print("Starting orchestration loop...")
 
-        # Reconcile any orphaned PR labels on startup
+        # Reconcile orphaned PR labels on startup
         self.reconcile_orphaned_pr_labels()
 
-        last_issue_fetch = 0.0  # Force immediate fetch on first iteration
-        last_ui_update = time.time()
-        ui_update_interval = 30  # Emit state_changed every 30 seconds for UI refresh
+        # Initialize timing state
+        self._last_issue_fetch = 0.0  # Force immediate fetch
+        self._last_ui_update = time.time()
+        self._loop_iteration = 0
 
-        loop_iteration = 0
         while not self._shutdown_requested:
-            loop_iteration += 1
-            logger.info("[LOOP] Iteration %d - active=%d, pending_reviews=%d, paused=%s",
-                       loop_iteration, len(self.state.active_sessions),
-                       len(self.state.pending_reviews), self.state.paused)
-
             try:
-                # Check status of all active sessions using proper observer/controller separation
-                controller = self._session_controller
-                for session in list(self.state.active_sessions):
-                    # Step 1: Observer gathers facts (does not decide outcome)
-                    observation = self.observer.observe_session(session)
-
-                    if observation.observation == SessionObservation.RUNNING:
-                        continue  # Still running, nothing to do
-
-                    # Step 2: Controller decides outcome based on observation + completion.json
-                    # This is the key architectural change: completion.json is the source of truth
-                    # for agent intent, regardless of whether session timed out or exited cleanly
-                    decision = controller.decide_outcome(
-                        observation=observation,
-                        worktree_path=session.worktree_path,
-                        issue_number=session.issue.number,
-                        issue_title=session.issue.title,
-                        session_name=session.tmux_session_name,
-                        completion_path=session.completion_path,
-                    )
-
-                    if decision.recovered_from_timeout:
-                        logger.info(
-                            "Session %s: timeout recovered - agent completed work",
-                            session.tmux_session_name,
-                        )
-
-                    # Step 3: Handle the decided outcome
-                    self.handle_session_completion(session, decision.status)
-
-                # Scan for PRs needing code review (populates pending_reviews queue)
-                self.scan_needs_code_review_prs()
-
-                # Scan for PRs needing rework (populates pending_reworks queue)
-                self.scan_needs_rework_prs()
-
-                # === PLANNER-BASED DECISION MAKING ===
-                # The planner decides WHAT to do, the orchestrator does HOW
-                #
-                # Priority order (handled by planner):
-                # 1. Reviews (highest priority - complete existing work)
-                # 2. Reworks (fix rejected PRs)
-                # 3. Triage (investigate failures)
-                # 4. New issues (only if no pending work above)
-
-                # Skip fetching and planning if paused or at capacity
-                if self.state.paused:
-                    logger.debug("[PLAN] Skipping - orchestrator paused")
-                elif len(self.state.active_sessions) >= self.config.max_concurrent_sessions:
-                    logger.debug("[PLAN] Skipping - at capacity")
-                else:
-                    # Only fetch issues from GitHub when refresh interval has passed
-                    # or manual refresh was requested (reduces API calls significantly)
-                    issue_fetch_age = time.time() - last_issue_fetch
-                    should_fetch = (
-                        issue_fetch_age >= self.config.queue_refresh_seconds
-                        or self._refresh_requested
-                    )
-
-                    if should_fetch:
-                        if self._refresh_requested:
-                            logger.info("[FETCH] Manual refresh triggered")
-                            self._refresh_requested = False
-                        else:
-                            logger.info("[FETCH] Scheduled refresh (every %ds)",
-                                       self.config.queue_refresh_seconds)
-
-                        # Fetch issues for planning
-                        all_issues = self._fetch_all_issues()
-                        last_issue_fetch = time.time()
-
-                        # Update dependency problems state
-                        _, dep_blocked = self.scheduler.get_available_issues(all_issues)
-                        self._update_dependency_problems(dep_blocked)
-
-                        # Filter issues for planning
-                        history_numbers = {e.issue_number for e in self.state.session_history}
-                        active_numbers = {s.issue.number for s in self.state.active_sessions}
-                        exclude_numbers = history_numbers | active_numbers
-                        filtered_issues = [i for i in all_issues if i.number not in exclude_numbers]
-
-                        # Filter to single issue if specified
-                        if self.config.filter_issue:
-                            filtered_issues = [i for i in filtered_issues if i.number == self.config.filter_issue]
-
-                        # Update cached queue for dashboard and plan execution
-                        self.state.cached_queue_issues = filtered_issues
-                    else:
-                        # Use cached issues for planning
-                        filtered_issues = self.state.cached_queue_issues
-
-                    # Create snapshot and plan (uses cached or fresh issues)
-                    snapshot = self.fact_gatherer.create_snapshot(self.state, filtered_issues)
-                    assert self.planner is not None, "Planner not initialized"
-                    plan = self.planner.plan(snapshot)
-
-                    # Log plan summary
-                    if plan.action_count > 0:
-                        logger.info("[PLAN] Planning %d action(s): %s",
-                                   plan.action_count,
-                                   ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}"
-                                            for a in plan.actions))
-
-                    # Apply the plan
-                    self._apply_plan(plan)
-
-                    # Clear discovered facts after plan is applied
-                    # The Planner has already decided what to do with them
-                    if self.state.discovered_reviews:
-                        logger.debug("[PLAN] Clearing %d discovered reviews after plan applied",
-                                   len(self.state.discovered_reviews))
-                        self.state.discovered_reviews.clear()
-                    if self.state.discovered_reworks:
-                        logger.debug("[PLAN] Clearing %d discovered reworks after plan applied",
-                                   len(self.state.discovered_reworks))
-                        self.state.discovered_reworks.clear()
-                    if self.state.discovered_escalations:
-                        logger.debug("[PLAN] Clearing %d discovered escalations after plan applied",
-                                   len(self.state.discovered_escalations))
-                        self.state.discovered_escalations.clear()
-                    if self.state.discovered_failures:
-                        logger.debug("[PLAN] Clearing %d discovered failures after plan applied",
-                                   len(self.state.discovered_failures))
-                        self.state.discovered_failures.clear()
-
-                # Periodically emit state_changed for UI to update runtimes
-                # This ensures "Starting" transitions to "Active" as time passes
-                ui_age = time.time() - last_ui_update
-                if ui_age >= ui_update_interval and self.state.active_sessions:
-                    self.events.publish(TraceEvent("orchestrator.state_changed", {
-                        "active_count": len(self.state.active_sessions),
-                        "sessions": [s.issue.number for s in self.state.active_sessions],
-                    }))
-                    last_ui_update = time.time()
-
+                if not self.tick():
+                    break
             except Exception as e:
-                logger.exception("[LOOP] Error in iteration %d: %s", loop_iteration, e)
-                print(f"[LOOP] Error in iteration {loop_iteration}: {e}")
-
-            # Wait before next check
+                logger.exception("[LOOP] Error in iteration %d: %s", self._loop_iteration, e)
+                print(f"[LOOP] Error in iteration {self._loop_iteration}: {e}")
             await asyncio.sleep(10)
 
     def request_shutdown(self, force: bool = False) -> None:
@@ -974,98 +930,80 @@ class Orchestrator:
         The planner decides WHAT should happen.
         This method makes it happen via ActionApplier + state updates.
 
-        Flow:
-        1. ActionApplier handles IO (labels, sessions, worktrees, issues)
-        2. Orchestrator handles state updates based on results
-
         Args:
             plan: Plan with actions to execute
         """
-        from .control.planner import Plan
-        from .control.actions import (
-            ActionType, LaunchSessionAction, EscalateToHumanAction,
-            QueueReviewAction, QueueReworkAction, QueueTriageAction,
-            CreateTriageIssueAction, CleanupSessionAction,
-        )
-
         for action in plan.actions:
-            # Respect pause mid-batch: stop applying actions if paused
             if self.state.paused:
                 logger.debug("[PLAN] Stopping plan application - orchestrator paused")
                 break
 
             try:
-                # LAUNCH_SESSION - ActionApplier uses the session_launcher callback
-                # which does entity lookup + delegates to launch_session/launch_review_session/etc.
-                if action.action_type == ActionType.LAUNCH_SESSION:
-                    assert isinstance(action, LaunchSessionAction)
-                    result = self.action_applier.apply(action)
-                    if result.success:
-                        logger.info("[PLAN] Launched %s session for #%d",
-                                   action.session_type, action.number)
-                    elif not result.success:
-                        logger.warning("[PLAN] Failed to launch %s session for #%d: %s",
-                                      action.session_type, action.number, result.error)
-
-                # Actions that delegate to ActionApplier with state updates
-                elif action.action_type == ActionType.ESCALATE_TO_HUMAN:
-                    assert isinstance(action, EscalateToHumanAction)
-                    result = self.action_applier.apply(action)
-                    if result.success:
-                        self._handle_escalation_state_update(action)
-
-                elif action.action_type == ActionType.QUEUE_REVIEW:
-                    assert isinstance(action, QueueReviewAction)
-                    result = self.action_applier.apply(action)
-                    if result.success:
-                        self._handle_queue_review_state_update(action)
-
-                elif action.action_type == ActionType.QUEUE_REWORK:
-                    assert isinstance(action, QueueReworkAction)
-                    result = self.action_applier.apply(action)
-                    if result.success:
-                        self._handle_queue_rework_state_update(action)
-
-                elif action.action_type == ActionType.QUEUE_TRIAGE:
-                    assert isinstance(action, QueueTriageAction)
-                    result = self.action_applier.apply(action)
-                    if result.success:
-                        self._handle_queue_triage_state_update(action)
-
-                elif action.action_type == ActionType.CREATE_TRIAGE_ISSUE:
-                    assert isinstance(action, CreateTriageIssueAction)
-                    result = self.action_applier.apply(action)
-                    if result.success:
-                        # Add to pending triage reviews
-                        issue_number = result.details.get("issue_number")
-                        if issue_number:
-                            self.state.pending_triage_reviews.append(
-                                PendingTriageReview(issue_number=issue_number, title=action.title)
-                            )
-                            print(f"📋 Created triage review issue #{issue_number} for {action.pr_count} PRs")
-
-                elif action.action_type == ActionType.CLEANUP_SESSION:
-                    assert isinstance(action, CleanupSessionAction)
-                    result = self.action_applier.apply(action)
-                    if result.success:
-                        # Remove from pending_cleanups
-                        self.state.pending_cleanups = [
-                            c for c in self.state.pending_cleanups
-                            if c.pr_number != action.pr_number
-                        ]
+                result = self.action_applier.apply(action)
+                if result.success:
+                    self._update_state_after_action(action, result)
+                else:
+                    logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
             except Exception as e:
                 logger.exception("Failed to apply action %s: %s", action, e)
 
-    def _handle_escalation_state_update(self, action: "EscalateToHumanAction") -> None:
+    def _update_state_after_action(self, action: "Action", result: "ActionResult") -> None:
+        """Update orchestrator state after a successful action.
+
+        Dispatches to specific state update handlers based on action type.
+        """
+        from .control.actions import ActionType
+
+        handlers = {
+            ActionType.LAUNCH_SESSION: self._handle_launch_state_update,
+            ActionType.ESCALATE_TO_HUMAN: self._handle_escalation_state_update,
+            ActionType.QUEUE_REVIEW: self._handle_queue_review_state_update,
+            ActionType.QUEUE_REWORK: self._handle_queue_rework_state_update,
+            ActionType.QUEUE_TRIAGE: self._handle_queue_triage_state_update,
+            ActionType.CREATE_TRIAGE_ISSUE: self._handle_create_triage_state_update,
+            ActionType.CLEANUP_SESSION: self._handle_cleanup_state_update,
+        }
+
+        handler = handlers.get(action.action_type)
+        if handler:
+            handler(action, result)
+
+    def _handle_launch_state_update(self, action: "Action", result: "ActionResult") -> None:
+        """Log successful session launch."""
+        from .control.actions import LaunchSessionAction
+        assert isinstance(action, LaunchSessionAction)
+        logger.info("[PLAN] Launched %s session for #%d", action.session_type, action.number)
+
+    def _handle_create_triage_state_update(self, action: "Action", result: "ActionResult") -> None:
+        """Update state after triage issue creation."""
+        from .control.actions import CreateTriageIssueAction
+        assert isinstance(action, CreateTriageIssueAction)
+        issue_number = result.details.get("issue_number")
+        if issue_number:
+            self.state.pending_triage_reviews.append(
+                PendingTriageReview(issue_number=issue_number, title=action.title)
+            )
+            print(f"📋 Created triage review issue #{issue_number} for {action.pr_count} PRs")
+
+    def _handle_cleanup_state_update(self, action: "Action", result: "ActionResult") -> None:
+        """Update state after cleanup action."""
+        from .control.actions import CleanupSessionAction
+        assert isinstance(action, CleanupSessionAction)
+        self.state.pending_cleanups = [
+            c for c in self.state.pending_cleanups if c.pr_number != action.pr_number
+        ]
+
+    def _handle_escalation_state_update(self, action: "Action", result: "ActionResult") -> None:
         """Update state after escalation action succeeds."""
-        # Escalation state is handled by the label being added
-        # Any additional state tracking can go here
+        from .control.actions import EscalateToHumanAction
+        assert isinstance(action, EscalateToHumanAction)
         logger.info("[PLAN] Escalated PR #%d to needs-human (cycle %d)",
                    action.pr_number, action.rework_cycles)
 
-    def _handle_queue_review_state_update(self, action: "QueueReviewAction") -> None:
+    def _handle_queue_review_state_update(self, action: "Action", result: "ActionResult") -> None:
         """Update state after queue review action succeeds."""
         from .control.actions import QueueReviewAction
+        assert isinstance(action, QueueReviewAction)
 
         # Check if already queued (defensive)
         if any(r.pr_number == action.pr_number for r in self.state.pending_reviews):
@@ -1095,9 +1033,10 @@ class Orchestrator:
         logger.debug("[STATE_MACHINE] ReviewStateMachine for PR #%d in %s", action.pr_number, review_machine.state)
         logger.info("[PLAN] Queued review for PR #%d", action.pr_number)
 
-    def _handle_queue_rework_state_update(self, action: "QueueReworkAction") -> None:
+    def _handle_queue_rework_state_update(self, action: "Action", result: "ActionResult") -> None:
         """Update state after queue rework action succeeds."""
         from .control.actions import QueueReworkAction
+        assert isinstance(action, QueueReworkAction)
 
         # Check if already queued (defensive)
         queued_issue_ids = {int(r.issue_key.stable_id()) for r in self.state.pending_reworks}
@@ -1130,9 +1069,10 @@ class Orchestrator:
         logger.info("[PLAN] Queued rework for issue #%d (cycle %d)", action.issue_number, action.rework_cycle)
         print(f"🔄 Queued issue #{action.issue_number} for rework (cycle {action.rework_cycle})")
 
-    def _handle_queue_triage_state_update(self, action: "QueueTriageAction") -> None:
+    def _handle_queue_triage_state_update(self, action: "Action", result: "ActionResult") -> None:
         """Update state after queue triage action succeeds."""
         from .control.actions import QueueTriageAction
+        assert isinstance(action, QueueTriageAction)
 
         # Check if already queued (defensive)
         if any(t.issue_number == action.issue_number for t in self.state.pending_triage_reviews):
