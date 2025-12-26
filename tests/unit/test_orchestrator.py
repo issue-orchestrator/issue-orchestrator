@@ -66,7 +66,12 @@ class MockWorktreeManager:
 
 
 def create_test_orchestrator(config, repository_host=None, worktree_manager=None, working_copy=None):
-    """Helper to create an Orchestrator with required dependencies for testing."""
+    """Helper to create an Orchestrator with required dependencies for testing.
+
+    Note: This works with the patch_orchestrator_dependencies fixture which injects
+    mock events and runner via __post_init__. Components like session_manager,
+    planner, etc. are created by __post_init__ fallbacks using the injected mocks.
+    """
     from issue_orchestrator.control.session_controller import SessionController
     from issue_orchestrator.control.completion_processor import CompletionProcessor
     from issue_orchestrator.control.pr_scanner import PRScanner
@@ -74,12 +79,16 @@ def create_test_orchestrator(config, repository_host=None, worktree_manager=None
 
     repo_host = repository_host or MagicMock()
     events = NullEventSink()
+    wt_manager = worktree_manager or MockWorktreeManager()
+    wc = working_copy or GitWorkingCopy()
 
-    # Create required control components
+    # Create only the components that must be explicitly provided
+    # Other components (planner, session_manager, etc.) are created by __post_init__
+    # using the mocks injected by patch_orchestrator_dependencies fixture
     completion_processor = CompletionProcessor(
         label_adapter=repo_host,
         pr_adapter=repo_host,
-        git_adapter=working_copy or GitWorkingCopy(),
+        git_adapter=wc,
         event_bus=None,
         label_config={
             "blocked": config.get_label_blocked(),
@@ -103,8 +112,8 @@ def create_test_orchestrator(config, repository_host=None, worktree_manager=None
     return Orchestrator(
         config=config,
         _repository_host=repo_host,
-        worktree_manager=worktree_manager or MockWorktreeManager(),
-        working_copy=working_copy or GitWorkingCopy(),
+        worktree_manager=wt_manager,
+        working_copy=wc,
         completion_processor=completion_processor,
         session_controller=session_controller,
         pr_scanner=pr_scanner,

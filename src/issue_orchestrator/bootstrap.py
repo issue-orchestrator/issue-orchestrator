@@ -322,6 +322,11 @@ async def build_orchestrator_with_ipc(
 ) -> tuple["Orchestrator", "EventServer"]:
     """Build orchestrator with IPC server for external UI processes.
 
+    .. deprecated::
+        This function is deprecated. Use build_orchestrator() with SSE instead.
+        IPC (Unix socket) transport adds complexity without benefits over HTTP+SSE.
+        This function is currently unused and will be removed in a future version.
+
     This variant starts the IPC server and registers the IPC plugin.
     Use this when running in daemon mode with external UI clients.
 
@@ -332,6 +337,12 @@ async def build_orchestrator_with_ipc(
     Returns:
         Tuple of (Orchestrator, EventServer)
     """
+    import warnings
+    warnings.warn(
+        "build_orchestrator_with_ipc is deprecated. Use build_orchestrator() with SSE instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     from .orchestrator import Orchestrator
     from .ipc import EventServer
 
