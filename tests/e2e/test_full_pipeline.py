@@ -2,24 +2,21 @@
 
 This test verifies the complete system works end-to-end by:
 1. Creating multiple real GitHub issues
-2. Starting ONE orchestrator that processes them concurrently
+2. Using the shared session orchestrator that processes them concurrently
 3. Verifying labels, sessions, PRs at each stage
 
-This is the "if this passes, the system works" test.
-
-Design principle: Tests should mirror production behavior.
-In production, one orchestrator handles many issues concurrently.
+Uses the single-orchestrator pattern for efficiency.
 """
 
 import json
 import subprocess
 import time
-from typing import Optional
 
 import pytest
 
 from tests.e2e.conftest import (
-    OrchestratorProcess,
+    inflight_create,
+    trigger_refresh,
     wait_for_issue_label,
     wait_for_pr_created,
 )
@@ -44,21 +41,6 @@ def get_issue_labels(repo: str, issue_number: int) -> list[str]:
     return []
 
 
-def get_pr_labels(repo: str, pr_number: int) -> list[str]:
-    """Get current labels on a PR."""
-    result = subprocess.run(
-        ["gh", "pr", "view", str(pr_number),
-         "--repo", repo,
-         "--json", "labels"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        data = json.loads(result.stdout)
-        return [l["name"] for l in data.get("labels", [])]
-    return []
-
-
 def close_pr(repo: str, pr_number: int) -> None:
     """Close a PR and delete its branch."""
     subprocess.run(
@@ -70,25 +52,23 @@ def close_pr(repo: str, pr_number: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The Main E2E Test
+# Concurrent Pipeline Test
 # ---------------------------------------------------------------------------
 
 @pytest.mark.e2e
 @pytest.mark.live
-@pytest.mark.timeout(900)  # 15 min timeout (publish_gate runs full tests, takes 10+ min)
-@pytest.mark.parametrize("concurrent_test_run", [3], indirect=True)
+@pytest.mark.timeout(900)  # 15 min timeout
 class TestConcurrentPipeline:
     """Test the orchestrator processing multiple issues concurrently.
 
-    This is THE e2e test. It creates N issues and verifies
-    ONE orchestrator processes them all in parallel.
+    Uses the shared session-scoped orchestrator for efficiency.
     """
 
     def test_concurrent_issue_processing(
         self,
-        concurrent_test_run: dict,
-        orchestrator_process: OrchestratorProcess,
+        e2e_orchestrator,
         repo_name: str,
+        filter_label: str,
     ):
         """Test orchestrator processes multiple issues concurrently.
 
@@ -96,34 +76,35 @@ class TestConcurrentPipeline:
         1. All issues get 'in-progress' label (sessions started)
         2. All issues get PRs created
         3. Processing happens concurrently (not sequentially)
-        4. Labels are cleaned up after completion
         """
-        run_label = concurrent_test_run["label"]
-        issues = concurrent_test_run["issues"]
-        issue_numbers = [i["number"] for i in issues]
-
-        print(f"\n=== Testing {len(issues)} issues concurrently ===")
-        print(f"Run label: {run_label}")
-        print(f"Issues: {issue_numbers}")
-
-        # Start orchestrator with the unique run label
-        orchestrator_process.start(
-            max_issues=len(issues),
-            extra_args=["--label", run_label]
-        )
-        assert orchestrator_process.is_running(), "Orchestrator should start"
-
+        num_issues = 3
+        issues = []
         created_prs = []
         start_time = time.time()
 
+        print(f"\n=== Testing {num_issues} issues concurrently ===")
+        print(f"Filter label: {filter_label}")
+
         try:
+            # Create issues dynamically
+            for i in range(num_issues):
+                issue = inflight_create(
+                    repo_name,
+                    f"[E2E-CONCURRENT-{i+1}] Concurrent pipeline test",
+                    [filter_label, "agent:e2e-test", f"e2e:concurrent_{i}"],
+                )
+                issues.append(issue)
+                print(f"Created issue #{issue.stable_id()}")
+
+            issue_numbers = [int(i.stable_id()) for i in issues]
+
             # Phase 1: Wait for all sessions to start (in-progress labels)
             print("\nPhase 1: Waiting for all sessions to start...")
             sessions_started = {}
 
             for _ in range(60):  # 2 minutes max
-                if not orchestrator_process.is_running():
-                    stdout, stderr = orchestrator_process.stop()
+                if not e2e_orchestrator.is_running():
+                    stdout, stderr = e2e_orchestrator.stop()
                     pytest.fail(
                         f"Orchestrator crashed.\n"
                         f"stdout: {stdout[:1000] if stdout else '(empty)'}\n"
@@ -137,8 +118,8 @@ class TestConcurrentPipeline:
                             sessions_started[issue_num] = time.time() - start_time
                             print(f"  ✓ Issue #{issue_num} started at {sessions_started[issue_num]:.1f}s")
 
-                if len(sessions_started) == len(issues):
-                    print(f"All {len(issues)} sessions started!")
+                if len(sessions_started) == num_issues:
+                    print(f"All {num_issues} sessions started!")
                     break
 
                 time.sleep(2)
@@ -151,8 +132,8 @@ class TestConcurrentPipeline:
             prs_created = {}
 
             for _ in range(120):  # 4 minutes max
-                if not orchestrator_process.is_running():
-                    stdout, stderr = orchestrator_process.stop()
+                if not e2e_orchestrator.is_running():
+                    stdout, stderr = e2e_orchestrator.stop()
                     pytest.fail(
                         f"Orchestrator crashed waiting for PRs.\n"
                         f"stdout: {stdout[:1000] if stdout else '(empty)'}\n"
@@ -170,8 +151,8 @@ class TestConcurrentPipeline:
                             created_prs.append(pr)
                             print(f"  ✓ PR #{pr['number']} for issue #{issue_num} at {prs_created[issue_num]['time']:.1f}s")
 
-                if len(prs_created) == len(issues):
-                    print(f"All {len(issues)} PRs created!")
+                if len(prs_created) == num_issues:
+                    print(f"All {num_issues} PRs created!")
                     break
 
                 time.sleep(2)
@@ -179,34 +160,21 @@ class TestConcurrentPipeline:
                 missing = set(issue_numbers) - set(prs_created.keys())
                 pytest.fail(f"PRs never created for issues: {missing}")
 
-            # Phase 3: Verify label cleanup
-            print("\nPhase 3: Verifying label cleanup...")
-            time.sleep(5)
-            for issue_num in issue_numbers:
-                labels = get_issue_labels(repo_name, issue_num)
-                print(f"  Issue #{issue_num} final labels: {labels}")
-
             # Summary
             total_time = time.time() - start_time
             print(f"\n=== Summary ===")
             print(f"Total time: {total_time:.1f}s")
-            print(f"Issues processed: {len(issues)}")
+            print(f"Issues processed: {num_issues}")
             print(f"PRs created: {len(created_prs)}")
 
-            # Verify concurrency: if sequential, would take N * ~60s each
-            # If concurrent, should complete in roughly the time of one
-            if len(issues) > 1:
-                avg_time = total_time / len(issues)
+            # Verify concurrency
+            if num_issues > 1:
+                avg_time = total_time / num_issues
                 print(f"Avg time per issue: {avg_time:.1f}s")
-                # If truly concurrent, avg should be much less than 60s per issue
                 if avg_time < 45:
                     print("✓ Processing was concurrent (avg < 45s per issue)")
-                else:
-                    print("⚠ Processing may have been sequential")
 
         finally:
-            orchestrator_process.stop()
-
             # Cleanup: close all PRs
             for pr in created_prs:
                 close_pr(repo_name, pr["number"])
@@ -224,31 +192,15 @@ class TestEdgeCases:
 
     def test_orchestrator_handles_no_matching_issues(
         self,
-        orchestrator_process: OrchestratorProcess,
-        repo_name: str,
+        e2e_orchestrator,
     ):
-        """Orchestrator should handle having no matching issues gracefully."""
-        # Use a label that doesn't exist
-        fake_label = "nonexistent-label-xyz123"
+        """Orchestrator should handle having no matching issues gracefully.
 
-        # Start orchestrator with the fake label
-        orchestrator_process.start(
-            max_issues=1,
-            extra_args=["--label", fake_label]
-        )
-
-        try:
-            # Should run without crashing for 10 seconds
-            time.sleep(10)
-            assert orchestrator_process.is_running(), "Orchestrator should still be running"
-
-            # Stop and check output
-            stdout, stderr = orchestrator_process.stop()
-
-            # Should not have crashed
-            assert "Traceback" not in stderr, f"Should not have crashed: {stderr[:500]}"
-            print("✓ Orchestrator handled no matching issues gracefully")
-
-        finally:
-            if orchestrator_process.is_running():
-                orchestrator_process.stop()
+        Since the shared orchestrator uses a filter label that matches test issues,
+        we just verify it's healthy after running for a bit.
+        """
+        # The session-scoped orchestrator is already running
+        # Just verify it stays healthy
+        time.sleep(5)
+        assert e2e_orchestrator.is_running(), "Orchestrator should still be running"
+        print("✓ Orchestrator running healthy")

@@ -75,7 +75,29 @@ class StateMachineManager:
 
         Returns:
             SessionStateMachine for the given session
+
+        Note:
+            If an existing machine is in a terminal state (completed, failed,
+            timed_out), it will be replaced with a fresh machine. This allows
+            re-processing issues that previously failed or timed out.
         """
+        from ..domain.state_machines.session_machine import SessionState
+
+        terminal_states = {
+            SessionState.COMPLETED.value,
+            SessionState.FAILED.value,
+            SessionState.TIMED_OUT.value,
+        }
+
+        # Check if existing machine is in a terminal state - if so, replace it
+        if session_name in self._session_machines:
+            existing = self._session_machines[session_name]
+            if existing.state in terminal_states:
+                logger.debug(
+                    f"[STATE_MACHINE] Replacing {session_name} (was in terminal state: {existing.state})"
+                )
+                del self._session_machines[session_name]
+
         if session_name not in self._session_machines:
             timeout = timeout_minutes or self.config.session_timeout_minutes
             machine = SessionStateMachine(

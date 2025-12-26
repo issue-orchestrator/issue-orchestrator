@@ -255,11 +255,22 @@ class Orchestrator:
 
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None:
         from .models import DiscoveredReview, DiscoveredFailure
+        from .control.actions import AddLabelAction, RemoveLabelAction, AddCommentAction
+        from . import labels
+
         name = session.tmux_session_name
         entity = "review" if name.startswith("review-") else ("rework" if name.startswith("rework-") else "issue")
         log_transition(entity, session.issue.number, "ACTIVE", status.value.upper(), f"runtime={session.runtime_minutes}min")
         self.state.active_sessions = [s for s in self.state.active_sessions if s.issue.number != session.issue.number]
+
+        # Generate and apply failure handling actions (proper architecture)
+        failure_actions = self._generate_completion_actions(session, status)
+        if failure_actions:
+            self.action_applier.apply_all(failure_actions)
+
+        # Observer handles session-level cleanup (kill sessions, close tabs)
         self.observer.handle_completion(session, status)
+
         if status == SessionStatus.COMPLETED: self.state.completed_today.append(session.issue.number)
         result = self._completion_handler.process_completion(session, status)
         self.state.session_history.append(result.history_entry)
@@ -269,6 +280,82 @@ class Orchestrator:
             self.state.discovered_reviews.append(DiscoveredReview(session.issue.number, result.pr_number, result.pr_url, session.branch_name))
         if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
             self.state.discovered_failures.append(DiscoveredFailure(session.issue.number, session.issue.title, status.value))
+
+    def _generate_completion_actions(self, session: Session, status: SessionStatus) -> list:
+        """Generate actions for session completion based on status.
+
+        This replaces the direct label manipulation that was in observer.handle_completion.
+        Actions describe WHAT should happen; ActionApplier handles HOW.
+        """
+        from .control.actions import AddLabelAction, RemoveLabelAction, AddCommentAction
+        from . import labels
+
+        actions = []
+        issue_number = session.issue.number
+        in_progress_label = self.config.get_label_in_progress()
+
+        if status == SessionStatus.TIMED_OUT:
+            # Add blocked-failed label
+            actions.append(AddLabelAction(
+                issue_number=issue_number,
+                label=labels.BLOCKED_FAILED,
+                reason=f"Session timed out after {session.runtime_minutes} minutes",
+            ))
+            # Add explanatory comment
+            timeout_mins = session.agent_config.timeout_minutes if session.agent_config else "unknown"
+            actions.append(AddCommentAction(
+                number=issue_number,
+                comment=f"⏱️ **Session Timed Out**\n\n"
+                        f"The agent session exceeded the {timeout_mins} minute timeout limit.\n\n"
+                        f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                        f"- Session: `{session.tmux_session_name}`\n\n"
+                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                        f"Remove the label to allow reprocessing.",
+                reason="Notify about session timeout",
+            ))
+            # Remove in-progress label
+            actions.append(RemoveLabelAction(
+                issue_number=issue_number,
+                label=in_progress_label,
+                reason="Session timed out - releasing claim",
+            ))
+
+        elif status == SessionStatus.FAILED:
+            # Add blocked-failed label
+            actions.append(AddLabelAction(
+                issue_number=issue_number,
+                label=labels.BLOCKED_FAILED,
+                reason="Session failed without completing",
+            ))
+            # Add explanatory comment
+            actions.append(AddCommentAction(
+                number=issue_number,
+                comment=f"❌ **Session Failed**\n\n"
+                        f"The agent session ended without creating a PR or status update.\n\n"
+                        f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                        f"- Session: `{session.tmux_session_name}`\n\n"
+                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                        f"Remove the label to allow reprocessing.",
+                reason="Notify about session failure",
+            ))
+            # Remove in-progress label
+            actions.append(RemoveLabelAction(
+                issue_number=issue_number,
+                label=in_progress_label,
+                reason="Session failed - releasing claim",
+            ))
+
+        elif status == SessionStatus.COMPLETED:
+            # Remove in-progress label on completion
+            actions.append(RemoveLabelAction(
+                issue_number=issue_number,
+                label=in_progress_label,
+                reason="Session completed successfully",
+            ))
+
+        # Note: BLOCKED and NEEDS_HUMAN keep in-progress label to maintain ownership claim
+
+        return actions
 
     def _immediate_cleanup(self, session: Session, status: SessionStatus) -> None:
         if status == SessionStatus.COMPLETED and (self.config.cleanup.without_triage.close_ai_session_tabs or not self.config.code_review_agent):

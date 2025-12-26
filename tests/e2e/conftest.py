@@ -9,13 +9,110 @@ import os
 import signal
 import subprocess
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Generator, AsyncGenerator, Callable, TypeVar
 
 import pytest
 
+
+# ---------------------------------------------------------------------------
+# Timing Infrastructure
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TestTiming:
+    """Track timing for a single test."""
+    name: str
+    start: float = 0.0
+    end: float = 0.0
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start if self.end else time.time() - self.start
+
+
+@dataclass
+class E2ETimingStats:
+    """Track timing for the entire e2e test session."""
+    session_start: float = field(default_factory=time.time)
+    test_timings: list[TestTiming] = field(default_factory=list)
+    current_test: TestTiming | None = None
+
+    def start_test(self, name: str) -> None:
+        self.current_test = TestTiming(name=name, start=time.time())
+
+    def end_test(self) -> TestTiming | None:
+        if self.current_test:
+            self.current_test.end = time.time()
+            self.test_timings.append(self.current_test)
+            result = self.current_test
+            self.current_test = None
+            return result
+        return None
+
+    @property
+    def total_duration(self) -> float:
+        return time.time() - self.session_start
+
+    def print_summary(self) -> None:
+        print("\n" + "=" * 70)
+        print("E2E TEST TIMING SUMMARY")
+        print("=" * 70)
+        for t in self.test_timings:
+            status = "✓" if t.duration < 120 else "⚠"  # Warn if > 2 min
+            print(f"  {status} {t.name}: {t.duration:.1f}s")
+        print("-" * 70)
+        print(f"  TOTAL: {self.total_duration:.1f}s ({self.total_duration/60:.1f} min)")
+        print(f"  Tests: {len(self.test_timings)}")
+        if self.test_timings:
+            avg = sum(t.duration for t in self.test_timings) / len(self.test_timings)
+            print(f"  Average: {avg:.1f}s per test")
+        print("=" * 70)
+
+
+# Global timing tracker (session-scoped)
+_timing_stats: E2ETimingStats | None = None
+
+
+@pytest.fixture(scope="session")
+def e2e_timing_stats() -> E2ETimingStats:
+    """Session-scoped timing statistics."""
+    global _timing_stats
+    _timing_stats = E2ETimingStats()
+    return _timing_stats
+
+
+@pytest.fixture(autouse=True)
+def track_test_timing(request, e2e_timing_stats):
+    """Automatically track timing for each e2e test."""
+    test_name = request.node.name
+    e2e_timing_stats.start_test(test_name)
+    print(f"\n⏱️  [{test_name}] Started at {time.strftime('%H:%M:%S')}")
+
+    yield
+
+    timing = e2e_timing_stats.end_test()
+    if timing:
+        print(f"⏱️  [{test_name}] Completed in {timing.duration:.1f}s")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Print timing summary at end of test session."""
+    global _timing_stats
+    if _timing_stats and _timing_stats.test_timings:
+        _timing_stats.print_summary()
+
 from issue_orchestrator.config import Config, AgentConfig
-from issue_orchestrator.test_data import create_test_issues, cleanup_test_issues
+from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
+from issue_orchestrator.test_data import (
+    create_issue,
+    create_test_issues,
+    cleanup_test_issues,
+    cleanup_issues_by_label,
+    update_issue,
+    close_issue,
+)
 
 
 T = TypeVar("T")
@@ -268,6 +365,227 @@ def e2e_project_root() -> Path:
     return Path(__file__).parent.parent.parent
 
 
+@pytest.fixture(scope="session")
+def e2e_session_tmp(tmp_path_factory) -> Path:
+    """Session-scoped temp directory for e2e tests."""
+    return tmp_path_factory.mktemp("e2e")
+
+
+@pytest.fixture(scope="session")
+def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name: str) -> Config:
+    """Session-scoped config for single orchestrator."""
+    from issue_orchestrator.config import ValidationConfig, ValidationGateConfig
+
+    config = Config()
+    config.repo = repo_name
+    config.repo_root = e2e_project_root
+    config.ui_mode = "tmux"
+    config.max_concurrent_sessions = 2  # Allow some concurrency
+    config.filter_label = "test-data"
+
+    # Configure e2e-test agent
+    config.agents = {
+        "agent:e2e-test": AgentConfig(
+            prompt_path=e2e_project_root / "examples" / "prompts" / "e2e-test.md",
+            worktree_base=e2e_session_tmp / "worktrees",
+            timeout_minutes=3,
+            model="sonnet",
+        )
+    }
+
+    config.session_timeout_minutes = 3
+
+    # Fast validation for e2e
+    config.validation = ValidationConfig(
+        agent_gate=ValidationGateConfig(cmd="make typecheck", timeout_seconds=120),
+        publish_gate=ValidationGateConfig(cmd="make typecheck", timeout_seconds=120),
+    )
+
+    return config
+
+
+@pytest.fixture(scope="session")
+def e2e_issues(repo_name: str) -> Generator[dict[str, int], None, None]:
+    """Create all e2e test issues once at session start.
+
+    Returns a dict mapping scenario names to issue numbers.
+    Tests reference issues by name for clarity.
+    """
+    # Clean up any stale issues first
+    cleanup_test_issues(repo_name)
+
+    issues = {
+        "simple_task": create_issue(
+            repo_name,
+            "[E2E] Simple task",
+            ["agent:e2e-test", "test-data"],
+            body="A simple task for basic e2e testing.",
+        ),
+        "will_block": create_issue(
+            repo_name,
+            "[E2E] Task that blocks",
+            ["agent:e2e-test", "test-data"],
+            body="This task should end up blocked.",
+        ),
+    }
+
+    print(f"\n[E2E SETUP] Created {len(issues)} test issues: {issues}")
+
+    yield issues
+
+    # Cleanup at session end
+    print(f"\n[E2E TEARDOWN] Cleaning up test issues...")
+    cleanup_test_issues(repo_name)
+
+
+@pytest.fixture(scope="session")
+def e2e_orchestrator(
+    e2e_session_config: Config,
+    e2e_project_root: Path,
+    filter_label: str,
+) -> Generator["OrchestratorProcess", None, None]:
+    """Single orchestrator instance for all e2e tests.
+
+    Starts once at session start, stops at session end.
+    Tests create their own issues via test_issue_factory or inflight_create.
+    """
+    proc = OrchestratorProcess(e2e_session_config, e2e_project_root)
+    proc.start(max_issues=5, extra_args=["--label", filter_label])
+
+    # Wait for orchestrator to be ready
+    time.sleep(2)
+
+    if not proc.is_running():
+        stdout, stderr = proc.stop()
+        raise RuntimeError(
+            f"Orchestrator failed to start.\nstdout: {stdout}\nstderr: {stderr}"
+        )
+
+    print(f"\n[E2E] Orchestrator running (pid={proc.process.pid})")
+
+    yield proc
+
+    print(f"\n[E2E TEARDOWN] Stopping orchestrator...")
+    proc.stop()
+
+
+def trigger_refresh(port: int = 8080, timeout: int = 5) -> bool:
+    """Trigger orchestrator to refresh issues immediately.
+
+    Returns True if refresh was requested successfully.
+    """
+    import urllib.request
+    import urllib.error
+
+    try:
+        req = urllib.request.Request(
+            f"http://localhost:{port}/api/refresh",
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, TimeoutError):
+        return False
+
+
+def inflight_create(
+    repo: str,
+    title: str,
+    labels: list[str],
+    body: str = "Created mid-test.",
+    port: int = 8080,
+) -> IssueKey:
+    """Create an issue while orchestrator is running.
+
+    Args:
+        repo: GitHub repo in owner/repo format
+        title: Issue title
+        labels: Labels to apply
+        body: Issue body
+        port: Dashboard port for refresh API
+
+    Returns:
+        IssueKey for the created issue
+    """
+    issue_number = create_issue(repo, title, labels, body)
+    trigger_refresh(port)
+    return GitHubIssueKey(repo=repo, external_id=str(issue_number))
+
+
+def inflight_update(
+    issue: IssueKey,
+    add_labels: list[str] | None = None,
+    remove_labels: list[str] | None = None,
+    port: int = 8080,
+) -> None:
+    """Update an issue while orchestrator is running.
+
+    Args:
+        issue: The issue to update
+        add_labels: Labels to add
+        remove_labels: Labels to remove
+        port: Dashboard port for refresh API
+    """
+    issue_number = int(issue.stable_id())
+    update_issue(issue.scope(), issue_number, add_labels, remove_labels)
+    trigger_refresh(port)
+
+
+def inflight_close(
+    issue: IssueKey,
+    comment: str | None = None,
+    port: int = 8080,
+) -> None:
+    """Close an issue while orchestrator is running.
+
+    Args:
+        issue: The issue to close
+        comment: Optional comment when closing
+        port: Dashboard port for refresh API
+    """
+    issue_number = int(issue.stable_id())
+    close_issue(issue.scope(), issue_number, comment)
+    trigger_refresh(port)
+
+
+@pytest.fixture
+def test_label(request) -> str:
+    """Generate unique label from test name for isolation."""
+    return f"e2e:{request.node.name}"
+
+
+@pytest.fixture(scope="session")
+def filter_label() -> str:
+    """Configurable filter label for parallel test runs.
+
+    Set E2E_FILTER env var to run parallel test sessions:
+        E2E_FILTER=run-a pytest tests/e2e/
+        E2E_FILTER=run-b pytest tests/e2e/  # parallel, no interference
+    """
+    return os.environ.get("E2E_FILTER", "test-data")
+
+
+@pytest.fixture
+def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
+    """Factory for creating test-scoped issues.
+
+    Cleans up issues from previous failed runs of this test,
+    then provides a factory to create fresh issues.
+    """
+    # Cleanup stale issues from this specific test
+    cleanup_issues_by_label(repo_name, test_label)
+
+    def create(title: str, extra_labels: list[str] | None = None) -> IssueKey:
+        """Create an issue scoped to this test."""
+        labels = [filter_label, "agent:e2e-test", test_label]
+        if extra_labels:
+            labels.extend(extra_labels)
+        issue_num = create_issue(repo_name, title, labels)
+        return GitHubIssueKey(repo=repo_name, external_id=str(issue_num))
+
+    return create
+
+
 @pytest.fixture
 def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config:
     """Create e2e test config with e2e-test agent."""
@@ -310,8 +628,8 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config
 
 
 @pytest.fixture
-def test_issues(repo_name: str) -> Generator[list[str], None, None]:
-    """Create test issues, yield URLs, then cleanup.
+def test_issues(repo_name: str) -> Generator[list[int], None, None]:
+    """Create test issues, yield issue numbers, then cleanup.
 
     Creates issues with 'agent:e2e-test' and 'test-data' labels.
     Cleans up any stale test issues first to avoid interference.
@@ -319,52 +637,31 @@ def test_issues(repo_name: str) -> Generator[list[str], None, None]:
     # Clean up stale test issues before creating new ones
     cleanup_test_issues(repo_name)
 
-    # Create just one test issue for e2e
-    urls = create_test_issues(repo_name, ["agent:e2e-test"])
+    # Create test issues for e2e
+    issue_numbers = create_test_issues(repo_name, ["agent:e2e-test"])
 
-    yield urls
+    yield issue_numbers
 
     # Cleanup: close all test issues
     cleanup_test_issues(repo_name)
 
 
-def _ensure_test_labels(repo_name: str) -> None:
-    """Create test labels if they don't exist."""
-    subprocess.run(
-        ["gh", "label", "create", "agent:e2e-test", "--repo", repo_name, "--force",
-         "--description", "E2E test agent"],
-        capture_output=True
-    )
-    subprocess.run(
-        ["gh", "label", "create", "test-data", "--repo", repo_name, "--force",
-         "--description", "Test data for e2e tests"],
-        capture_output=True
-    )
-
-
 def _create_test_issue(repo_name: str, index: int = 0) -> dict:
-    """Create a single test issue and return its details."""
-    result = subprocess.run(
-        ["gh", "issue", "create",
-         "--repo", repo_name,
-         "--title", f"[E2E-TEST] Automated test issue {index}",
-         "--body", f"This is automated test issue {index} for e2e testing.\n\nExpected: Agent completes quickly.",
-         "--label", "agent:e2e-test",
-         "--label", "test-data"],
-        capture_output=True,
-        text=True,
+    """Create a single test issue and return its details.
+
+    Delegates to the canonical create_issue() function.
+    """
+    title = f"[E2E-TEST] Automated test issue {index}"
+    issue_number = create_issue(
+        repo=repo_name,
+        title=title,
+        labels=["agent:e2e-test", "test-data"],
+        body=f"This is automated test issue {index} for e2e testing.\n\nExpected: Agent completes quickly.",
     )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to create test issue: {result.stderr}")
-
-    issue_url = result.stdout.strip()
-    issue_number = int(issue_url.split("/")[-1])
-
     return {
         "number": issue_number,
-        "url": issue_url,
-        "title": f"[E2E-TEST] Automated test issue {index}",
+        "url": f"https://github.com/{repo_name}/issues/{issue_number}",
+        "title": title,
     }
 
 
@@ -384,7 +681,6 @@ def single_test_issue(repo_name: str) -> Generator[dict, None, None]:
 
     Cleans up any stale test issues first to avoid interference.
     """
-    _ensure_test_labels(repo_name)
     # Clean up stale test issues before creating new one
     cleanup_test_issues(repo_name)
     issue_data = _create_test_issue(repo_name, index=0)
@@ -410,35 +706,19 @@ def concurrent_test_run(repo_name: str, request) -> Generator[dict, None, None]:
     run_id = str(uuid.uuid4())[:8]
     run_label = f"e2e-run-{run_id}"
 
-    # Create the unique label
-    subprocess.run(
-        ["gh", "label", "create", run_label, "--repo", repo_name, "--force",
-         "--description", f"E2E test run {run_id}"],
-        capture_output=True
-    )
-    _ensure_test_labels(repo_name)
-
     issues = []
     for i in range(count):
-        result = subprocess.run(
-            ["gh", "issue", "create",
-             "--repo", repo_name,
-             "--title", f"[E2E-TEST] Concurrent test issue {i}",
-             "--body", f"Test issue {i} for concurrent e2e run {run_id}.\n\nExpected: Agent completes quickly.",
-             "--label", "agent:e2e-test",
-             "--label", run_label],  # Use unique run label instead of test-data
-            capture_output=True,
-            text=True,
+        title = f"[E2E-TEST] Concurrent test issue {i}"
+        issue_number = create_issue(
+            repo=repo_name,
+            title=title,
+            labels=["agent:e2e-test", run_label],
+            body=f"Test issue {i} for concurrent e2e run {run_id}.\n\nExpected: Agent completes quickly.",
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to create test issue: {result.stderr}")
-
-        issue_url = result.stdout.strip()
-        issue_number = int(issue_url.split("/")[-1])
         issues.append({
             "number": issue_number,
-            "url": issue_url,
-            "title": f"[E2E-TEST] Concurrent test issue {i}",
+            "url": f"https://github.com/{repo_name}/issues/{issue_number}",
+            "title": title,
         })
         print(f"Created test issue #{issue_number} with label {run_label}")
 

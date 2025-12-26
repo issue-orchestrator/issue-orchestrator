@@ -146,6 +146,8 @@ class ActionApplier:
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
+            # Comments
+            ActionType.ADD_COMMENT: self._apply_add_comment,
         }
 
         handler = handlers.get(action.action_type)
@@ -180,6 +182,20 @@ class ActionApplier:
                 action,
                 issue_number=action.issue_number,
                 label=action.label,
+            )
+        except Exception as e:
+            return ActionResult.fail(action, str(e))
+
+    def _apply_add_comment(self, action: Action) -> ActionResult:
+        """Add a comment to an issue or PR."""
+        assert isinstance(action, AddCommentAction)
+
+        try:
+            self.repository_host.add_comment(action.number, action.comment)
+            return ActionResult.ok(
+                action,
+                number=action.number,
+                is_pr=action.is_pr,
             )
         except Exception as e:
             return ActionResult.fail(action, str(e))

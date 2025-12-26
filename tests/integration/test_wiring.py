@@ -93,6 +93,7 @@ class TestOrchestratorWiring:
             _repository_host=mock_repository_host,
             worktree_manager=mock_worktree_manager,
             working_copy=GitWorkingCopy(),
+            runner=patch_plugin_manager,
         )
         test_issue = Issue(
             number=456,

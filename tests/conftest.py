@@ -518,21 +518,6 @@ def explicit_orchestrator_deps(request):
 
 
 @pytest.fixture
-def patch_plugin_manager(patch_orchestrator_dependencies):
-    """Backwards-compatible fixture for tests using the old pattern.
-
-    Returns the MockSessionRunner, which has a .plugin property for accessing
-    the underlying MockTerminalPlugin. This allows existing tests to work
-    with minimal changes.
-
-    Usage in tests:
-        patch_plugin_manager.plugin.session_exists_override = False
-        patch_plugin_manager.plugin.create_session_calls  # list of calls
-    """
-    return patch_orchestrator_dependencies['runner']
-
-
-@pytest.fixture
 def sample_agent_config(tmp_path):
     """Create a sample agent config for testing."""
     prompt_file = tmp_path / "prompt.txt"
