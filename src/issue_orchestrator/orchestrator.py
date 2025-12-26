@@ -434,55 +434,24 @@ class Orchestrator:
         )
         self.state.active_sessions.extend(restored)
 
-    def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> bool:
-        """Create a session using the SessionManager.
-
-        Returns:
-            True if session was created successfully, False otherwise.
-        """
-        from .control.session_manager import SessionRef, SessionContext
-        assert self.session_manager is not None  # Set in __post_init__
+    def _parse_session_ref(self, session_name: str, operation: str) -> "SessionRef":
+        """Parse session name to SessionRef, emitting error event on failure."""
+        from .control.session_manager import SessionRef
         try:
-            ref = SessionRef.from_name(session_name)
+            return SessionRef.from_name(session_name)
         except ValueError as e:
-            self.events.publish(TraceEvent("session.name_parse_error", {
-                "session_name": session_name,
-                "error": str(e),
-                "operation": "create",
-            }))
+            self.events.publish(TraceEvent("session.name_parse_error", {"session_name": session_name, "error": str(e), "operation": operation}))
             raise
-        ctx = SessionContext(ref=ref, command=command, working_dir=working_dir, title=title)
-        return self.session_manager.start(ctx)
+
+    def _create_session(self, session_name: str, command: str, working_dir: Path, title: str | None = None) -> bool:
+        from .control.session_manager import SessionContext
+        return self.session_manager.start(SessionContext(ref=self._parse_session_ref(session_name, "create"), command=command, working_dir=working_dir, title=title))
 
     def _session_exists(self, session_name: str) -> bool:
-        """Check if a session exists using the SessionManager."""
-        from .control.session_manager import SessionRef
-        assert self.session_manager is not None  # Set in __post_init__
-        try:
-            ref = SessionRef.from_name(session_name)
-        except ValueError as e:
-            self.events.publish(TraceEvent("session.name_parse_error", {
-                "session_name": session_name,
-                "error": str(e),
-                "operation": "exists",
-            }))
-            raise
-        return self.session_manager.exists(ref)
+        return self.session_manager.exists(self._parse_session_ref(session_name, "exists"))
 
     def _kill_session(self, session_name: str) -> None:
-        """Kill a session using the SessionManager."""
-        from .control.session_manager import SessionRef
-        assert self.session_manager is not None  # Set in __post_init__
-        try:
-            ref = SessionRef.from_name(session_name)
-        except ValueError as e:
-            self.events.publish(TraceEvent("session.name_parse_error", {
-                "session_name": session_name,
-                "error": str(e),
-                "operation": "kill",
-            }))
-            raise
-        self.session_manager.stop(ref)
+        self.session_manager.stop(self._parse_session_ref(session_name, "kill"))
 
     def _refresh_issue(self, issue_number: int) -> Optional[Issue]:
         """Fetch fresh issue data from GitHub.
@@ -999,252 +968,84 @@ class Orchestrator:
         except Exception as e:
             logger.warning("Failed to update queue cache: %s", e)
 
-    def _update_dependency_problems(
-        self,
-        dep_blocked: list[tuple["Issue", str]],
-    ) -> None:
-        """Update dependency problems state and emit events for changes.
-
-        Compares current state with new blocked issues and emits events for:
-        - dependency.blocked: when an issue becomes blocked
-        - dependency.unblocked: when a blocked issue is no longer blocked
-
-        Args:
-            dep_blocked: List of (issue, reason) tuples from scheduler.
-        """
+    def _update_dependency_problems(self, dep_blocked: list[tuple["Issue", str]]) -> None:
+        """Update dependency problems state and emit events for changes."""
         from .models import DependencyProblem
 
-        # Build new problems dict
-        new_problems: dict[int, DependencyProblem] = {}
-        for issue, reason in dep_blocked:
-            new_problems[issue.number] = DependencyProblem(
-                issue_number=issue.number,
-                issue_title=issue.title,
-                blocked_by=[],  # We'll parse from reason if needed
-                summary=reason,
-            )
+        new_problems = {i.number: DependencyProblem(i.number, i.title, [], r) for i, r in dep_blocked}
+        current, new = set(self.state.dependency_problems.keys()), set(new_problems.keys())
+        newly_blocked, newly_unblocked = new - current, current - new
 
-        # Find newly blocked issues (in new but not in current)
-        current_blocked = set(self.state.dependency_problems.keys())
-        new_blocked = set(new_problems.keys())
+        for num in newly_blocked:
+            p = new_problems[num]
+            self.events.publish(TraceEvent("dependency.blocked", {"issue_number": p.issue_number, "issue_title": p.issue_title, "summary": p.summary}))
+        for num in newly_unblocked:
+            p = self.state.dependency_problems[num]
+            self.events.publish(TraceEvent("dependency.unblocked", {"issue_number": p.issue_number, "issue_title": p.issue_title}))
 
-        newly_blocked = new_blocked - current_blocked
-        newly_unblocked = current_blocked - new_blocked
-
-        # Emit events for newly blocked
-        for issue_num in newly_blocked:
-            problem = new_problems[issue_num]
-            self.events.publish(TraceEvent(
-                name="dependency.blocked",
-                data={
-                    "issue_number": problem.issue_number,
-                    "issue_title": problem.issue_title,
-                    "summary": problem.summary,
-                },
-            ))
-
-        # Emit events for newly unblocked
-        for issue_num in newly_unblocked:
-            problem = self.state.dependency_problems[issue_num]
-            self.events.publish(TraceEvent(
-                name="dependency.unblocked",
-                data={
-                    "issue_number": problem.issue_number,
-                    "issue_title": problem.issue_title,
-                },
-            ))
-
-        # Update state
         self.state.dependency_problems = new_problems
-
         if newly_blocked or newly_unblocked:
-            logger.info(
-                "Dependency status changed: %d newly blocked, %d unblocked",
-                len(newly_blocked),
-                len(newly_unblocked),
-            )
+            logger.info("Dependency status: %d blocked, %d unblocked", len(newly_blocked), len(newly_unblocked))
 
     # queue_code_review removed - replaced by discovered_reviews pattern
     # PRs are discovered by scan_needs_code_review_prs, stored in state.discovered_reviews,
     # then Planner produces QueueReviewAction which is applied via _handle_queue_review_state_update
 
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:
-        """Launch a code review session for a PR.
-
-        Delegates to SessionLauncher for the actual launch logic.
-        The orchestrator owns state management (active_sessions, pending_reviews).
-        """
-        result = self._session_launcher.launch_review_session(
-            review=review,
-            active_sessions=self.state.active_sessions,
-        )
+        """Launch a code review session - delegates to SessionLauncher."""
+        result = self._session_launcher.launch_review_session(review, self.state.active_sessions)
+        self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
         if result.success and result.session:
             self.state.active_sessions.append(result.session)
-            # Remove from pending queue
-            self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
             return result.session
-        elif not result.success:
-            # Session skipped (already running or conflict) - remove from pending
-            self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
         return None
 
     def _launch_triage_session(self, triage_review: PendingTriageReview) -> None:
-        """Launch a triage session to investigate a failure or review PRs.
-
-        Creates a worktree, launches the triage agent, and tracks the session.
-        """
-        triage_agent_name = self.config.triage_review_agent
-        if not triage_agent_name:
-            raise ValueError("No triage review agent configured")
-
-        agent_config = self.config.agents.get(triage_agent_name)
-        if not agent_config:
-            raise ValueError(f"No agent config for {triage_agent_name}")
-
-        # Create a synthetic Issue for the triage session
-        # This allows reusing the normal session launch flow
-        triage_issue = Issue(
-            number=triage_review.issue_number,
-            title=triage_review.title,
-            labels=[triage_agent_name],
-        )
-
-        # Launch using normal flow
-        session = self.launch_session(triage_issue)
+        """Launch a triage session - creates synthetic issue and delegates to launch_session."""
+        agent = self.config.triage_review_agent
+        if not agent or agent not in self.config.agents:
+            raise ValueError(f"Invalid triage agent: {agent}")
+        session = self.launch_session(Issue(triage_review.issue_number, triage_review.title, [agent]))
         if session:
-            print(f"[TRIAGE] Launched investigation session for #{triage_review.issue_number}")
+            print(f"[TRIAGE] Launched session for #{triage_review.issue_number}")
 
     def process_deferred_cleanups(self) -> None:
-        """Process deferred cleanups for sessions awaiting review completion.
-
-        Delegates to CleanupManager for the actual cleanup logic.
-        """
-        self.state.pending_cleanups = self._cleanup_manager.process_deferred_cleanups(
-            self.state.pending_cleanups
-        )
+        """Process deferred cleanups - delegates to CleanupManager."""
+        self.state.pending_cleanups = self._cleanup_manager.process_deferred_cleanups(self.state.pending_cleanups)
 
     def _recover_orphaned_cleanups(self) -> None:
-        """Recover and process orphaned cleanups from before restart.
-
-        Delegates to CleanupManager for the actual cleanup logic.
-        """
-        def set_startup_message(msg: str) -> None:
-            self.state.startup_message = msg
-
-        self._cleanup_manager.recover_orphaned_cleanups(set_startup_message)
+        """Recover orphaned cleanups - delegates to CleanupManager."""
+        self._cleanup_manager.recover_orphaned_cleanups(lambda msg: setattr(self.state, 'startup_message', msg))
 
     def scan_needs_code_review_prs(self) -> None:
-        """Scan for PRs with needs-code-review label and store as discovered.
-
-        Called periodically to pick up PRs that need review but aren't queued.
-        Uses PRScanner controller for discovery logic.
-
-        NOTE: This method stores discovered reviews for the Planner to decide.
-        The Planner produces QueueReviewAction, which the orchestrator applies.
-        """
+        """Scan for PRs with needs-code-review label and store as discovered."""
         from .models import DiscoveredReview
-
-        # Get active session names for filtering
-        active_sessions = [s.tmux_session_name for s in self.state.active_sessions]
-
-        # Use scanner to find orphaned reviews
-        reviews = self._pr_scanner.scan_for_reviews(
-            already_queued=self.state.pending_reviews,
-            active_sessions=active_sessions,
-        )
-
-        # Store as discovered reviews for Planner to decide
-        for review in reviews:
-            # Convert PendingReview to DiscoveredReview for Planner
-            discovered = DiscoveredReview(
-                issue_number=review.issue_number,
-                pr_number=review.pr_number,
-                pr_url=review.pr_url,
-                branch_name=review.branch_name,
-            )
-            self.state.discovered_reviews.append(discovered)
-            logger.info("[SCAN] Discovered orphaned PR #%d for code review - Planner will decide",
-                       review.pr_number)
+        reviews = self._pr_scanner.scan_for_reviews(self.state.pending_reviews, [s.tmux_session_name for s in self.state.active_sessions])
+        for r in reviews:
+            self.state.discovered_reviews.append(DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name))
 
     def scan_needs_rework_prs(self) -> None:
-        """Scan for PRs with needs-rework label and store as discovered.
-
-        Called periodically to pick up PRs where reviewers requested changes.
-        Uses PRScanner controller for discovery logic.
-
-        NOTE: This method stores discovered reworks/escalations for the Planner to decide.
-        The Planner produces QueueReworkAction/EscalateToHumanAction, which the orchestrator applies.
-        """
+        """Scan for PRs with needs-rework label and store as discovered."""
         from .models import DiscoveredRework, DiscoveredEscalation
-
-        # Get active issue numbers for filtering
-        active_issues = [s.issue.number for s in self.state.active_sessions]
-
-        # Use scanner to find reworks and escalations
-        reworks, escalations = self._pr_scanner.scan_for_reworks(
-            already_queued=self.state.pending_reworks,
-            active_sessions=active_issues,
-        )
-
-        # Store escalations as discovered facts for Planner
-        for pr_number, issue_number, rework_cycle in escalations:
-            discovered = DiscoveredEscalation(
-                issue_number=issue_number,
-                pr_number=pr_number,
-                rework_cycle=rework_cycle,
-            )
-            self.state.discovered_escalations.append(discovered)
-            logger.info("[SCAN] Discovered escalation for PR #%d - Planner will decide",
-                       pr_number)
-
-        # Store reworks as discovered facts for Planner
-        for rework in reworks:
-            discovered = DiscoveredRework(
-                issue_number=int(rework.issue_key.stable_id()),
-                pr_number=0,  # PR number not directly available from PendingRework
-                branch_name="",  # Branch not directly available
-                agent_type=rework.agent_type,
-                rework_cycle=rework.rework_cycle,
-            )
-            self.state.discovered_reworks.append(discovered)
-            logger.info("[SCAN] Discovered rework for issue #%d - Planner will decide",
-                       int(rework.issue_key.stable_id()))
+        reworks, escalations = self._pr_scanner.scan_for_reworks(self.state.pending_reworks, [s.issue.number for s in self.state.active_sessions])
+        for pr_num, issue_num, cycle in escalations:
+            self.state.discovered_escalations.append(DiscoveredEscalation(issue_num, pr_num, cycle))
+        for r in reworks:
+            self.state.discovered_reworks.append(DiscoveredRework(int(r.issue_key.stable_id()), 0, "", r.agent_type, r.rework_cycle))
 
     def reconcile_orphaned_pr_labels(self) -> int:
-        """Reconcile labels on agent-created PRs that are missing review labels.
-
-        Called on startup to catch PRs where label addition failed due to
-        orchestrator crash/restart or other failures.
-
-        Returns the number of PRs that were fixed.
-        """
+        """Reconcile labels on agent-created PRs - delegates to LabelSync."""
         if not self.config.code_review_label or not self.config.repo or not self.label_sync:
             return 0
-
-        return self.label_sync.reconcile_orphaned_pr_labels(
-            code_review_label=self.config.code_review_label,
-            code_reviewed_label=self.config.code_reviewed_label,
-            orchestrator_marker=ORCHESTRATOR_PR_MARKER,
-        )
+        return self.label_sync.reconcile_orphaned_pr_labels(self.config.code_review_label, self.config.code_reviewed_label, ORCHESTRATOR_PR_MARKER)
 
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
-        """Launch a rework session to fix issues found in review.
-
-        Delegates to SessionLauncher for the actual launch logic.
-        The orchestrator owns state management (active_sessions, pending_reworks).
-        """
-        result = self._session_launcher.launch_rework_session(
-            rework=rework,
-            active_sessions=self.state.active_sessions,
-        )
+        """Launch a rework session - delegates to SessionLauncher."""
+        result = self._session_launcher.launch_rework_session(rework, self.state.active_sessions)
+        self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
         if result.success and result.session:
             self.state.active_sessions.append(result.session)
-            # Remove from pending queue
-            self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
             return result.session
-        elif not result.success:
-            # Session skipped (already running or conflict) - remove from pending
-            self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
         return None
 
     def prioritize(self, issue_number: int) -> None:
