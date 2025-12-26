@@ -457,63 +457,25 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
     }
 
 
-@pytest.fixture(autouse=True)
-def patch_orchestrator_dependencies(monkeypatch, request):
-    """Auto-patch orchestrator dependencies for all tests.
+# NOTE: The autouse patch_orchestrator_dependencies fixture has been removed.
+# Tests now use explicit DI via create_test_orchestrator() or build_test_orchestrator_deps().
+# See tests/unit/test_orchestrator.py::create_test_orchestrator() for the pattern.
+#
+# If you need the legacy patching behavior for backward compatibility, use:
+#   @pytest.fixture
+#   def patched_orchestrator(monkeypatch):
+#       # ... patching code here ...
 
-    This injects MockEventSink, MockSessionRunner, and MockGitHubAdapter into
-    Orchestrator instances so tests don't need actual backends or infrastructure.
 
-    The fixture patches __post_init__ to inject mocks ONLY for fields that are
-    still at their default values (NullEventSink, NullSessionRunner, None).
-    This allows tests to pass explicit mocks while still benefiting from auto-patching.
+@pytest.fixture
+def patch_plugin_manager():
+    """Create a MockSessionRunner for test assertions.
+
+    DEPRECATED: Prefer using create_test_orchestrator(runner=runner) instead.
+    This fixture exists for backward compatibility with tests that expect
+    patch_plugin_manager.plugin to be the shared plugin instance.
     """
-    from issue_orchestrator.ports import NullEventSink, NullSessionRunner
-
-    # Use provided mocks if test requests them, otherwise create new ones
-    if 'mock_terminal_plugin' in request.fixturenames:
-        plugin = request.getfixturevalue('mock_terminal_plugin')
-    else:
-        plugin = MockTerminalPlugin()
-
-    if 'mock_repository_host' in request.fixturenames:
-        github_adapter = request.getfixturevalue('mock_repository_host')
-    else:
-        github_adapter = MockGitHubAdapter()
-
-    # Create shared mocks for this test
-    mock_events = MockEventSink()
-    mock_runner = MockSessionRunner(plugin)
-
-    # Store original __post_init__
-    from issue_orchestrator.orchestrator import Orchestrator
-    original_post_init = Orchestrator.__post_init__
-
-    def patched_post_init(self):
-        # Inject GitHub adapter if not already set
-        if self._repository_host is None:
-            self._repository_host = github_adapter
-
-        # Only inject mocks for fields that are still at default values
-        # This preserves explicitly passed dependencies
-        if isinstance(self.events, NullEventSink):
-            self.events = mock_events
-        if isinstance(self.runner, NullSessionRunner):
-            self.runner = mock_runner
-
-        # Call original (which now creates session_manager with our mock runner)
-        original_post_init(self)
-
-        # Store references for test assertions (use actual values, not fixture mocks)
-        self._mock_event_sink = self.events
-        self._mock_session_runner = self.runner
-        self._mock_repository_host = self._repository_host
-
-    # Patch __post_init__
-    monkeypatch.setattr(Orchestrator, '__post_init__', patched_post_init)
-
-    # Return the mocks so tests can access them
-    return {'events': mock_events, 'runner': mock_runner, 'github': github_adapter}
+    return MockSessionRunner()
 
 
 @pytest.fixture
@@ -600,17 +562,33 @@ def sample_config(sample_agent_config, tmp_path):
 
 
 @pytest.fixture
-def sample_orchestrator(sample_config, mock_repository_host, patch_plugin_manager):
-    """Create an Orchestrator with mock adapter injected (proper DI for testing)."""
+def sample_orchestrator(sample_config, mock_repository_host):
+    """Create an Orchestrator with all dependencies explicitly injected.
+
+    Uses the explicit DI pattern - no autouse fixture patching needed.
+    """
     from issue_orchestrator.orchestrator import Orchestrator
     from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
     from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
-    patch_plugin_manager.plugin.session_exists_override = False
+
+    runner = MockSessionRunner()
+    runner.plugin.session_exists_override = False
+    wt_manager = GitWorktreeManager()
+    wc = GitWorkingCopy()
+
+    deps = build_test_orchestrator_deps(
+        sample_config,
+        mock_repository_host,
+        MockEventSink(),
+        runner,
+        wt_manager,
+    )
+    deps['working_copy'] = wc
+
     return Orchestrator(
         config=sample_config,
         _repository_host=mock_repository_host,
-        worktree_manager=GitWorktreeManager(),
-        working_copy=GitWorkingCopy(),
+        **deps,
     )
 
 

@@ -5,6 +5,7 @@ import pytest
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
+from tests.conftest import MockSessionRunner
 from issue_orchestrator.orchestrator import Orchestrator, run_orchestrator
 from issue_orchestrator.models import (
     Issue,
@@ -65,65 +66,48 @@ class MockWorktreeManager:
         return None
 
 
-def create_test_orchestrator(config, repository_host=None, worktree_manager=None, working_copy=None):
-    """Helper to create an Orchestrator for testing.
+def create_test_orchestrator(config, repository_host=None, worktree_manager=None, working_copy=None, runner=None):
+    """Create an Orchestrator with ALL dependencies explicitly injected.
 
-    This works with the patch_orchestrator_dependencies autouse fixture which:
-    1. Injects MockEventSink and MockSessionRunner via __post_init__
-    2. Creates fallback components (planner, session_manager, etc.) using the mocks
+    This is the proper hexagonal architecture test pattern:
+    1. Creates MockEventSink and MockSessionRunner (or uses provided runner)
+    2. Uses build_test_orchestrator_deps() to create all control components
+    3. Passes everything explicitly to Orchestrator (no __post_init__ fallbacks)
 
-    Tests can access mocks via:
+    Args:
+        config: Config object
+        repository_host: Optional MockGitHubAdapter (creates MagicMock if None)
+        worktree_manager: Optional MockWorktreeManager
+        working_copy: Optional GitWorkingCopy
+        runner: Optional pre-configured MockSessionRunner. Use this when you need
+                to configure session behavior BEFORE orchestrator creation, e.g.:
+                    runner = MockSessionRunner()
+                    runner.plugin.session_exists_override = False
+                    orchestrator = create_test_orchestrator(..., runner=runner)
+
+    Access mocks via:
         - orchestrator.events (MockEventSink)
         - orchestrator.runner (MockSessionRunner)
-        - orchestrator.runner.plugin or patch_plugin_manager.plugin (MockTerminalPlugin)
-
-    The fixture handles events/runner injection, so we just need to provide
-    the required components that aren't created by fallbacks.
+        - orchestrator.runner.plugin (MockTerminalPlugin for session call assertions)
     """
-    from issue_orchestrator.control.session_controller import SessionController
-    from issue_orchestrator.control.completion_processor import CompletionProcessor
-    from issue_orchestrator.control.pr_scanner import PRScanner
-    from issue_orchestrator.ports import NullEventSink
+    from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
 
     repo_host = repository_host or MagicMock()
-    events = NullEventSink()  # Will be replaced by fixture mock
     wt_manager = worktree_manager or MockWorktreeManager()
     wc = working_copy or GitWorkingCopy()
 
-    # Only create components that aren't created by __post_init__ fallbacks
-    # planner, session_manager, etc. are created in __post_init__ using fixture mocks
-    completion_processor = CompletionProcessor(
-        label_adapter=repo_host,
-        pr_adapter=repo_host,
-        git_adapter=wc,
-        event_bus=None,
-        label_config={
-            "blocked": config.get_label_blocked(),
-            "needs_human": config.get_label_needs_human(),
-            "code_reviewed": config.code_reviewed_label or "code-reviewed",
-            "needs_rework": config.get_label_needs_rework(),
-            "code_review": config.code_review_label or "needs-code-review",
-            "in_progress": config.get_label_in_progress(),
-        },
-    )
-    session_controller = SessionController(
-        completion_processor=completion_processor,
-        events=events,  # SessionController uses its own events reference
-    )
-    pr_scanner = PRScanner(
-        config=config,
-        repository=repo_host,
-        events=events,
-    )
+    # Create mock adapters (test implementations of ports)
+    events = MockEventSink()
+    runner = runner or MockSessionRunner()
+
+    # Build all dependencies with the mock adapters
+    deps = build_test_orchestrator_deps(config, repo_host, events, runner, wt_manager)
+    deps['working_copy'] = wc
 
     return Orchestrator(
         config=config,
         _repository_host=repo_host,
-        worktree_manager=wt_manager,
-        working_copy=wc,
-        completion_processor=completion_processor,
-        session_controller=session_controller,
-        pr_scanner=pr_scanner,
+        **deps,
     )
 
 
@@ -354,13 +338,13 @@ class TestStartup:
         self,
         mock_analyze,
         mock_get_branches,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup resumes work for partial work (branch but no session)."""
         mock_get_branches.return_value = {}
-        patch_plugin_manager.plugin.session_exists_override = False  # No existing session, allow launch
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False  # No existing session, allow launch
 
         issue = create_issue(1, labels=["agent:web", "in-progress"])
         mock_repository_host.issues = [issue]
@@ -373,7 +357,7 @@ class TestStartup:
         mock_state.branch = "feature/issue-1"
         mock_analyze.return_value = mock_state
 
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, runner=runner)
         await orchestrator.startup()
 
         # Should NOT remove the label - we keep in-progress and resume work
@@ -421,16 +405,16 @@ class TestLaunchSession:
 
     def test_launch_session_creates_worktree(
         self,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that launch_session creates a worktree."""
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
 
@@ -439,17 +423,17 @@ class TestLaunchSession:
 
     def test_launch_session_adds_in_progress_label(
         self,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that launch_session adds the in-progress label."""
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
         # Proper DI: inject mock adapter instead of patching functions
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
 
@@ -458,39 +442,39 @@ class TestLaunchSession:
 
     def test_launch_session_creates_tmux_session(
         self,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that launch_session creates a tmux session."""
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, title="Test Issue", labels=["agent:web"])
         sample_config.ui_mode = "tmux"  # Explicitly test tmux mode
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
 
         # Verify session was created via plugin
-        assert len(patch_plugin_manager.plugin.create_session_calls) == 1
-        call = patch_plugin_manager.plugin.create_session_calls[0]
+        assert len(orchestrator.runner.plugin.create_session_calls) == 1
+        call = orchestrator.runner.plugin.create_session_calls[0]
         assert call["session_id"] == 1  # issue number
         assert isinstance(call["command"], str)
         assert call["working_dir"] == "/tmp/worktree"
 
     def test_launch_session_adds_to_active_sessions(
         self,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that launch_session adds the session to active_sessions."""
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         assert len(orchestrator.state.active_sessions) == 0
 
@@ -501,16 +485,16 @@ class TestLaunchSession:
 
     def test_launch_session_returns_session_object(
         self,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that launch_session returns a Session object."""
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
 
@@ -522,14 +506,14 @@ class TestLaunchSession:
 
     def test_launch_session_returns_none_if_session_already_exists(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that launch_session returns None if session already exists."""
-        patch_plugin_manager.plugin.session_exists_override = True  # Session exists in iTerm/tmux
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = True  # Session exists in iTerm/tmux
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator = create_test_orchestrator(sample_config, runner=runner)
 
         session = orchestrator.launch_session(issue)
 
@@ -549,19 +533,19 @@ class TestLaunchSession:
 
     def test_launch_session_uses_agent_repo_root_if_configured(
         self,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that launch_session uses agent-specific repo_root if configured."""
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager()
 
         # Configure agent with specific repo_root
         sample_config.agents["agent:web"].repo_root = Path("/custom/repo/path")
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
 
@@ -570,12 +554,12 @@ class TestLaunchSession:
 
     def test_launch_session_falls_back_to_config_repo_root(
         self,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that launch_session falls back to config.repo_root if agent doesn't specify."""
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager()
 
         # Ensure agent doesn't have repo_root set
@@ -583,7 +567,7 @@ class TestLaunchSession:
         sample_config.repo_root = Path("/default/repo/path")
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         session = orchestrator.launch_session(issue)
 
@@ -1224,16 +1208,16 @@ class TestMaxIssuesToStart:
 
     def test_launch_session_increments_issues_started_count(
         self,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that launching a session increments issues_started_count."""
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager()
 
         issue = create_issue(1, labels=["agent:web"])
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         assert orchestrator.state.issues_started_count == 0
 
@@ -1402,116 +1386,127 @@ class TestRunOrchestrator:
     """Test the run_orchestrator entry point."""
 
     @pytest.mark.asyncio
+    @patch("issue_orchestrator.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_loads_config_from_path(
         self,
         mock_signal,
         mock_config_load,
+        mock_build,
         sample_config,
         tmp_path,
     ):
         """Test that run_orchestrator loads config from provided path."""
         mock_config_load.return_value = sample_config
+
+        # Mock the orchestrator that build_orchestrator returns
+        mock_orch = MagicMock()
+        mock_orch.startup = AsyncMock()
+        mock_orch.run_loop = AsyncMock()
+        mock_build.return_value = mock_orch
+
         config_path = tmp_path / "config.yaml"
+        await run_orchestrator(config_path)
 
-        with patch("issue_orchestrator.orchestrator.Orchestrator.startup") as mock_startup:
-            with patch("issue_orchestrator.orchestrator.Orchestrator.run_loop") as mock_run_loop:
-                mock_startup.return_value = None
-                mock_run_loop.return_value = None
-
-                await run_orchestrator(config_path)
-
-                mock_config_load.assert_called_once_with(config_path)
+        mock_config_load.assert_called_once_with(config_path)
 
     @pytest.mark.asyncio
+    @patch("issue_orchestrator.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.find_and_load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_finds_config_when_no_path(
         self,
         mock_signal,
         mock_config_find,
+        mock_build,
         sample_config,
     ):
         """Test that run_orchestrator finds config when no path provided."""
         mock_config_find.return_value = sample_config
 
-        with patch("issue_orchestrator.orchestrator.Orchestrator.startup") as mock_startup:
-            with patch("issue_orchestrator.orchestrator.Orchestrator.run_loop") as mock_run_loop:
-                mock_startup.return_value = None
-                mock_run_loop.return_value = None
+        mock_orch = MagicMock()
+        mock_orch.startup = AsyncMock()
+        mock_orch.run_loop = AsyncMock()
+        mock_build.return_value = mock_orch
 
-                await run_orchestrator(None)
+        await run_orchestrator(None)
 
-                mock_config_find.assert_called_once()
+        mock_config_find.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("issue_orchestrator.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.find_and_load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_calls_startup(
         self,
         mock_signal,
         mock_config_find,
+        mock_build,
         sample_config,
     ):
         """Test that run_orchestrator calls startup."""
         mock_config_find.return_value = sample_config
 
-        with patch("issue_orchestrator.orchestrator.Orchestrator.startup") as mock_startup:
-            with patch("issue_orchestrator.orchestrator.Orchestrator.run_loop") as mock_run_loop:
-                mock_startup.return_value = None
-                mock_run_loop.return_value = None
+        mock_orch = MagicMock()
+        mock_orch.startup = AsyncMock()
+        mock_orch.run_loop = AsyncMock()
+        mock_build.return_value = mock_orch
 
-                await run_orchestrator(None)
+        await run_orchestrator(None)
 
-                mock_startup.assert_called_once()
+        mock_orch.startup.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("issue_orchestrator.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.find_and_load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_calls_run_loop(
         self,
         mock_signal,
         mock_config_find,
+        mock_build,
         sample_config,
     ):
         """Test that run_orchestrator calls run_loop."""
         mock_config_find.return_value = sample_config
 
-        with patch("issue_orchestrator.orchestrator.Orchestrator.startup") as mock_startup:
-            with patch("issue_orchestrator.orchestrator.Orchestrator.run_loop") as mock_run_loop:
-                mock_startup.return_value = None
-                mock_run_loop.return_value = None
+        mock_orch = MagicMock()
+        mock_orch.startup = AsyncMock()
+        mock_orch.run_loop = AsyncMock()
+        mock_build.return_value = mock_orch
 
-                await run_orchestrator(None)
+        await run_orchestrator(None)
 
-                mock_run_loop.assert_called_once()
+        mock_orch.run_loop.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("issue_orchestrator.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.find_and_load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_sets_up_signal_handlers(
         self,
         mock_signal,
         mock_config_find,
+        mock_build,
         sample_config,
     ):
         """Test that run_orchestrator sets up signal handlers."""
         mock_config_find.return_value = sample_config
 
-        with patch("issue_orchestrator.orchestrator.Orchestrator.startup") as mock_startup:
-            with patch("issue_orchestrator.orchestrator.Orchestrator.run_loop") as mock_run_loop:
-                mock_startup.return_value = None
-                mock_run_loop.return_value = None
+        mock_orch = MagicMock()
+        mock_orch.startup = AsyncMock()
+        mock_orch.run_loop = AsyncMock()
+        mock_build.return_value = mock_orch
 
-                await run_orchestrator(None)
+        await run_orchestrator(None)
 
-                # Should set up handlers for SIGINT and SIGTERM
-                import signal
-                assert mock_signal.call_count == 2
-                call_args_list = [call[0][0] for call in mock_signal.call_args_list]
-                assert signal.SIGINT in call_args_list
-                assert signal.SIGTERM in call_args_list
+        # Should set up handlers for SIGINT and SIGTERM
+        import signal
+        assert mock_signal.call_count == 2
+        call_args_list = [call[0][0] for call in mock_signal.call_args_list]
+        assert signal.SIGINT in call_args_list
+        assert signal.SIGTERM in call_args_list
 
 
 class TestGatherTriageFacts:
@@ -1645,13 +1640,13 @@ class TestLaunchReviewSession:
 
     def test_launch_review_session_creates_worktree(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that launch_review_session creates a worktree."""
         from issue_orchestrator.models import PendingReview
 
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager(
             worktree_path=Path("/tmp/review-worktree"),
             branch_name="feature/issue-42",
@@ -1667,7 +1662,7 @@ class TestLaunchReviewSession:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager, runner=runner)
         session = orchestrator.launch_review_session(review)
 
         assert len(mock_worktree_manager.create_calls) == 1
@@ -1676,13 +1671,13 @@ class TestLaunchReviewSession:
 
     def test_launch_review_session_creates_tmux_session(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that launch_review_session creates a tmux session."""
         from issue_orchestrator.models import PendingReview
 
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager(
             worktree_path=Path("/tmp/review-worktree"),
             branch_name="feature/issue-42",
@@ -1698,24 +1693,24 @@ class TestLaunchReviewSession:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager, runner=runner)
         session = orchestrator.launch_review_session(review)
 
         # Verify session was created via plugin
-        assert len(patch_plugin_manager.plugin.create_session_calls) == 1
-        call = patch_plugin_manager.plugin.create_session_calls[0]
+        assert len(orchestrator.runner.plugin.create_session_calls) == 1
+        call = orchestrator.runner.plugin.create_session_calls[0]
         # Session ID should be review-{pr_number} encoded as integer
         assert call["session_id"] == 123  # PR number
 
     def test_launch_review_session_adds_to_active_sessions(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that launch_review_session adds session to active_sessions."""
         from issue_orchestrator.models import PendingReview
 
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager(
             worktree_path=Path("/tmp/review-worktree"),
             branch_name="feature/issue-42",
@@ -1730,7 +1725,7 @@ class TestLaunchReviewSession:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager, runner=runner)
         assert len(orchestrator.state.active_sessions) == 0
 
         session = orchestrator.launch_review_session(review)
@@ -1740,13 +1735,13 @@ class TestLaunchReviewSession:
 
     def test_launch_review_session_removes_from_pending_queue(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that launch_review_session removes PR from pending_reviews."""
         from issue_orchestrator.models import PendingReview
 
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager(
             worktree_path=Path("/tmp/review-worktree"),
             branch_name="feature/issue-42",
@@ -1761,7 +1756,7 @@ class TestLaunchReviewSession:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager, runner=runner)
         orchestrator.state.pending_reviews.append(review)
         assert len(orchestrator.state.pending_reviews) == 1
 
@@ -1771,13 +1766,13 @@ class TestLaunchReviewSession:
 
     def test_launch_review_session_returns_none_if_session_exists(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that launch_review_session returns None if session already exists."""
         from issue_orchestrator.models import PendingReview
 
-        patch_plugin_manager.plugin.session_exists_override = True  # Session already running
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = True  # Session already running
 
         sample_config.code_review_agent = "agent:web"
 
@@ -1788,21 +1783,21 @@ class TestLaunchReviewSession:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator = create_test_orchestrator(sample_config, runner=runner)
         session = orchestrator.launch_review_session(review)
 
         assert session is None
 
     def test_launch_review_session_uses_review_prefix_for_session_check(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that launch_review_session checks for review-{pr_number} session."""
         from issue_orchestrator.models import PendingReview
 
+        runner = MockSessionRunner()
         # Session exists - already running
-        patch_plugin_manager.plugin.session_exists_override = True
+        runner.plugin.session_exists_override = True
 
         sample_config.code_review_agent = "agent:web"
 
@@ -1813,11 +1808,11 @@ class TestLaunchReviewSession:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator = create_test_orchestrator(sample_config, runner=runner)
         orchestrator.launch_review_session(review)
 
         # Should check for review-{pr_number} session
-        assert 123 in patch_plugin_manager.plugin.session_exists_calls
+        assert 123 in orchestrator.runner.plugin.session_exists_calls
 
     def test_launch_review_session_returns_none_without_agent_config(self, sample_config):
         """Test that launch_review_session returns None without code_review_agent configured."""
@@ -1839,13 +1834,13 @@ class TestLaunchReviewSession:
 
     def test_launch_review_session_does_not_enforce_hooks(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that launch_review_session does not install pre-push hooks."""
         from issue_orchestrator.models import PendingReview
 
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager(
             worktree_path=Path("/tmp/review-worktree"),
             branch_name="feature/issue-42",
@@ -1861,7 +1856,7 @@ class TestLaunchReviewSession:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager, runner=runner)
         session = orchestrator.launch_review_session(review)
 
         # Should explicitly disable hooks for review sessions
@@ -2010,14 +2005,14 @@ class TestStartupPendingReviews:
     async def test_startup_scans_for_pending_reviews(
         self,
         mock_get_branches,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup scans for PRs with code_review_label."""
         mock_get_branches.return_value = {}
         mock_repository_host.issues = []
-        patch_plugin_manager.plugin.session_exists_override = False
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False
 
         sample_config.code_review_agent = "agent:reviewer"
         sample_config.code_review_label = "needs-code-review"
@@ -2028,7 +2023,7 @@ class TestStartupPendingReviews:
             create_pr_info(456, "PR 456", labels=["needs-code-review"], branch="feature/456"),
         ]
 
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, runner=runner)
         await orchestrator.startup()
 
         # Should have queued both PRs for review
@@ -2326,13 +2321,13 @@ class TestSessionExistsDetection:
 
     def test_review_with_active_session_removed_from_pending(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that reviews with active sessions are removed from pending queue."""
         from issue_orchestrator.models import PendingReview
 
-        patch_plugin_manager.plugin.session_exists_override = True  # Session already running
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = True  # Session already running
 
         sample_config.code_review_agent = "agent:web"
 
@@ -2343,7 +2338,7 @@ class TestSessionExistsDetection:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator = create_test_orchestrator(sample_config, runner=runner)
         orchestrator.state.pending_reviews.append(review)
 
         # Launch should fail and remove from pending
@@ -2385,7 +2380,6 @@ class TestSessionExistsDetection:
 
     def test_rework_with_active_session_removed_from_pending(
         self,
-        patch_plugin_manager,
         sample_config,
         mock_repository_host,
     ):
@@ -2393,7 +2387,8 @@ class TestSessionExistsDetection:
         from issue_orchestrator.models import PendingRework
         from issue_orchestrator.domain.issue_key import FakeIssueKey
 
-        patch_plugin_manager.plugin.session_exists_override = True  # Session already running
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = True  # Session already running
         mock_repository_host.issues = [create_issue(42)]
 
         sample_config.code_review_agent = "agent:web"
@@ -2404,7 +2399,7 @@ class TestSessionExistsDetection:
             rework_cycle=1,
         )
 
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, runner=runner)
         orchestrator.state.pending_reworks.append(rework)
 
         result = orchestrator.launch_rework_session(rework)
@@ -2419,13 +2414,13 @@ class TestStateMachineTransitions:
 
     def test_successful_review_launch_transitions_pending_to_active(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that successful launch moves review from pending to active."""
         from issue_orchestrator.models import PendingReview
 
-        patch_plugin_manager.plugin.session_exists_override = False  # No existing session
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = False  # No existing session
         mock_worktree_manager = MockWorktreeManager()
 
         sample_config.code_review_agent = "agent:web"
@@ -2437,7 +2432,7 @@ class TestStateMachineTransitions:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
+        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager, runner=runner)
         orchestrator.state.pending_reviews.append(review)
 
         session = orchestrator.launch_review_session(review)
@@ -2450,7 +2445,6 @@ class TestStateMachineTransitions:
 
     def test_failed_launch_does_not_leave_stuck_pending(
         self,
-        patch_plugin_manager,
         sample_config,
     ):
         """Test that failed launch doesn't leave item stuck in pending.
@@ -2460,7 +2454,8 @@ class TestStateMachineTransitions:
         """
         from issue_orchestrator.models import PendingReview
 
-        patch_plugin_manager.plugin.session_exists_override = True  # Session already exists
+        runner = MockSessionRunner()
+        runner.plugin.session_exists_override = True  # Session already exists
 
         sample_config.code_review_agent = "agent:web"
 
@@ -2471,7 +2466,7 @@ class TestStateMachineTransitions:
             branch_name="feature/issue-42",
         )
 
-        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator = create_test_orchestrator(sample_config, runner=runner)
         # Manually add to pending (simulating process_pending_reviews behavior)
         orchestrator.state.pending_reviews.append(review)
 
