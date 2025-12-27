@@ -31,6 +31,7 @@ from ..models import (
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
+from .. import labels
 
 
 
@@ -215,7 +216,14 @@ class StartupManager:
                 if analysis.has_session:
                     print(f"  #{issue.number}: Active session found - resuming monitoring")
                 elif analysis.has_open_pr:
-                    print(f"  #{issue.number}: Has open PR ({analysis.pr_url or 'unknown'}) - skipping")
+                    # S2: PR exists but issue might be missing pr-pending label
+                    # Add pr-pending and remove in-progress (crash recovery)
+                    if not labels.is_pr_pending(issue.labels):
+                        print(f"  #{issue.number}: Has open PR - adding pr-pending label (crash recovery)")
+                        self.repository_host.add_label(issue.number, labels.PR_PENDING)
+                        self.repository_host.remove_label(issue.number, self.config.get_label_in_progress())
+                    else:
+                        print(f"  #{issue.number}: Has open PR ({analysis.pr_url or 'unknown'}) - already has pr-pending")
                 elif analysis.has_partial_work:
                     print(f"  #{issue.number}: Has branch '{analysis.branch}' with commits - queuing for resume")
                     issues_to_resume.append((issue, agent_label))

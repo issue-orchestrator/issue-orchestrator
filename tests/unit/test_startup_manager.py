@@ -193,7 +193,7 @@ class TestStartupManagerInProgressIssues:
     @pytest.mark.asyncio
     @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
-    async def test_skips_issues_with_open_prs(
+    async def test_reconciles_issues_with_open_prs(
         self,
         mock_analyze,
         mock_get_branches,
@@ -202,7 +202,7 @@ class TestStartupManagerInProgressIssues:
         mock_repository_host,
         mock_config,
     ):
-        """Test that issues with open PRs are skipped."""
+        """Test that issues with open PRs get pr-pending label and in-progress removed (S2 crash recovery)."""
         mock_get_branches.return_value = {}
         mock_config.agents = {"agent:web": MagicMock()}
 
@@ -218,8 +218,9 @@ class TestStartupManagerInProgressIssues:
 
         await startup_manager.run_startup(sample_state)
 
-        # Should NOT remove the label
-        mock_repository_host.remove_label.assert_not_called()
+        # S2 crash recovery: add pr-pending, remove in-progress
+        mock_repository_host.add_label.assert_called_once_with(1, "pr-pending")
+        mock_repository_host.remove_label.assert_called_once_with(1, "in-progress")
 
 
 class TestStartupManagerCodeReviewRecovery:

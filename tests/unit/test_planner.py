@@ -440,6 +440,74 @@ class TestPlanDiscoveredReviews:
         queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
         assert len(queue_actions) == 0
 
+    def test_queue_action_has_expected_state(self):
+        """Planner attaches ExpectedState to QueueReviewAction."""
+        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredReview(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/test/repo/pull/100",
+            branch_name="feature/issue-42",
+        )
+
+        snapshot = make_snapshot(
+            discovered_reviews=(discovered,),
+            pending_reviews=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
+        assert len(queue_actions) == 1
+        action = queue_actions[0]
+
+        # Should have ExpectedState attached
+        assert action.expected is not None
+        # Should forbid the pause label
+        assert "io:needs-reconcile" in action.expected.forbidden_labels
+
+    def test_add_label_action_has_expected_state(self):
+        """Planner attaches ExpectedState to AddLabelAction for pr-pending."""
+        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredReview(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/test/repo/pull/100",
+            branch_name="feature/issue-42",
+        )
+
+        snapshot = make_snapshot(
+            discovered_reviews=(discovered,),
+            pending_reviews=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Find the AddLabelAction for pr-pending
+        add_label_actions = [
+            a for a in plan.actions
+            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"
+        ]
+        assert len(add_label_actions) == 1
+        action = add_label_actions[0]
+
+        # Should have ExpectedState attached
+        assert action.expected is not None
+        # Should forbid the pause label
+        assert "io:needs-reconcile" in action.expected.forbidden_labels
+
 
 class TestPlanTriageIssueCreation:
     """Tests for Planner's _plan_triage_issue_creation method.

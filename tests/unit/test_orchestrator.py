@@ -306,14 +306,14 @@ class TestStartup:
     @pytest.mark.asyncio
     @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
-    async def test_startup_skips_issues_with_open_prs(
+    async def test_startup_reconciles_issues_with_open_prs(
         self,
         mock_analyze,
         mock_get_branches,
         sample_config,
         mock_repository_host,
     ):
-        """Test that startup doesn't clear labels for issues with open PRs."""
+        """Test that startup adds pr-pending and removes in-progress for issues with open PRs (S2 crash recovery)."""
         mock_get_branches.return_value = {}
 
         issue = create_issue(1, labels=["agent:web", "in-progress"])
@@ -329,8 +329,11 @@ class TestStartup:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
         await orchestrator.startup()
 
-        # Should NOT remove the label
-        assert len(mock_repository_host.remove_label_calls) == 0
+        # S2 crash recovery: add pr-pending, remove in-progress
+        assert len(mock_repository_host.add_label_calls) == 1
+        assert mock_repository_host.add_label_calls[0] == (1, "pr-pending")
+        assert len(mock_repository_host.remove_label_calls) == 1
+        assert mock_repository_host.remove_label_calls[0] == (1, "in-progress")
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.control.startup_manager.get_issue_branches")

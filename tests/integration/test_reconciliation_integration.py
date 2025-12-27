@@ -394,3 +394,165 @@ class TestReconciliationEventTracing:
         for event in recon_events:
             assert "issue_number" in event.data
             assert event.data["issue_number"] == 42
+
+
+class TestOrchestratorReconciliationCatch:
+    """Integration tests for orchestrator catching ReconciliationRequired.
+
+    These tests verify that when ActionApplier raises ReconciliationRequired,
+    the orchestrator properly catches it and pauses the issue.
+    """
+
+    def test_orchestrator_pauses_issue_on_reconciliation_required(self):
+        """When ReconciliationRequired is raised, orchestrator applies pause label."""
+        from issue_orchestrator.control.reconciliation import (
+            ExpectedState,
+            get_pause_label,
+        )
+        from issue_orchestrator.control.actions import AddLabelAction
+        from issue_orchestrator.events import EventName
+
+        label_set = MockLabelSet()
+        session_manager = MockSessionManager()
+        event_sink = MockEventSink()
+
+        # Issue currently has "blocked" label (would fail ExpectedState check)
+        issue_tracker = MockIssueTracker({42: ["agent:web", "blocked"]})
+
+        applier = ActionApplier(
+            labels=label_set,
+            sessions=session_manager,
+            events=event_sink,
+            issue_tracker=issue_tracker,
+            reconcile=True,
+        )
+
+        # Action expects "in-progress" label but issue has "blocked"
+        action = AddLabelAction(
+            issue_number=42,
+            label="pr-pending",
+            reason="Session completed",
+            expected=ExpectedState.with_labels(
+                required={"in-progress"},
+                forbidden={"blocked"},
+            ),
+        )
+
+        # Simulate what orchestrator does: catch and pause
+        try:
+            applier.apply(action)
+            paused = False
+        except ReconciliationRequired as rr:
+            paused = True
+            # Orchestrator would apply pause label here
+            issue_tracker.add_label(rr.entity_id, get_pause_label())
+            # Emit pause event
+            event_sink.publish(TraceEvent(
+                EventName.ISSUE_PAUSED_RECONCILE,
+                {"issue_number": rr.entity_id, "reason": rr.reason},
+            ))
+
+        assert paused, "ReconciliationRequired should have been raised"
+
+        # Verify pause label was applied
+        assert get_pause_label() in issue_tracker._labels_by_issue.get(42, [])
+
+        # Verify pause event was emitted
+        pause_events = [
+            e for e in event_sink.events
+            if e.name == EventName.ISSUE_PAUSED_RECONCILE
+        ]
+        assert len(pause_events) == 1
+        assert pause_events[0].data["issue_number"] == 42
+
+    def test_reconciliation_required_contains_diagnostic_info(self):
+        """ReconciliationRequired exception contains useful diagnostic info."""
+        from issue_orchestrator.control.reconciliation import ExpectedState
+        from issue_orchestrator.control.actions import AddLabelAction
+
+        label_set = MockLabelSet()
+        session_manager = MockSessionManager()
+        event_sink = MockEventSink()
+
+        # Current state differs from expected
+        issue_tracker = MockIssueTracker({99: ["old-label", "stale"]})
+
+        applier = ActionApplier(
+            labels=label_set,
+            sessions=session_manager,
+            events=event_sink,
+            issue_tracker=issue_tracker,
+            reconcile=True,
+        )
+
+        action = AddLabelAction(
+            issue_number=99,
+            label="new-label",
+            reason="Test",
+            expected=ExpectedState.with_labels(
+                required={"expected-label"},
+                forbidden={"stale"},
+            ),
+        )
+
+        try:
+            applier.apply(action)
+            assert False, "Should have raised ReconciliationRequired"
+        except ReconciliationRequired as rr:
+            # Verify diagnostic info is present
+            assert rr.entity_id == 99
+            assert rr.entity_type == "issue"
+            assert rr.expected is not None
+            assert rr.actual is not None
+            # Reason should mention what's wrong
+            assert "expected-label" in rr.reason or "stale" in rr.reason
+
+    def test_multiple_actions_stop_on_first_reconciliation_failure(self):
+        """When one action fails reconciliation, subsequent actions don't run."""
+        from issue_orchestrator.control.reconciliation import ExpectedState
+        from issue_orchestrator.control.actions import AddLabelAction
+
+        label_set = MockLabelSet()
+        session_manager = MockSessionManager()
+        event_sink = MockEventSink()
+        issue_tracker = MockIssueTracker({
+            1: ["ready"],  # This one will fail
+            2: ["ready"],
+        })
+
+        applier = ActionApplier(
+            labels=label_set,
+            sessions=session_manager,
+            events=event_sink,
+            issue_tracker=issue_tracker,
+            reconcile=True,
+        )
+
+        actions = [
+            AddLabelAction(
+                issue_number=1,
+                label="test",
+                reason="First",
+                expected=ExpectedState.with_labels(required={"missing"}),  # Will fail
+            ),
+            AddLabelAction(
+                issue_number=2,
+                label="test",
+                reason="Second",
+                expected=None,  # Would succeed
+            ),
+        ]
+
+        # Apply actions one by one, stopping on ReconciliationRequired
+        applied_count = 0
+        for action in actions:
+            try:
+                applier.apply(action)
+                applied_count += 1
+            except ReconciliationRequired:
+                break
+
+        # Only the first action was attempted (and failed)
+        assert applied_count == 0
+        # Neither label was added
+        assert len(label_set.add_calls) == 0

@@ -255,3 +255,58 @@ class TestReconciliationResult:
 
         assert not result.passed
         assert result.reason == "Labels don't match"
+
+
+class TestHelperFunctions:
+    """Tests for helper functions get_pause_label and build_expected_for_mutation."""
+
+    def test_get_pause_label_with_default_prefix(self):
+        """Test get_pause_label returns correct label with default prefix."""
+        from issue_orchestrator.control.reconciliation import get_pause_label
+
+        label = get_pause_label()
+        assert label == "io:needs-reconcile"
+
+    def test_get_pause_label_with_custom_prefix(self):
+        """Test get_pause_label returns correct label with custom prefix."""
+        from issue_orchestrator.control.reconciliation import get_pause_label
+
+        label = get_pause_label("myprefix")
+        assert label == "myprefix:needs-reconcile"
+
+    def test_build_expected_for_mutation_forbids_pause_label(self):
+        """Test build_expected_for_mutation includes pause label in forbidden."""
+        from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+        expected = build_expected_for_mutation()
+
+        # Should forbid the pause label by default
+        assert "io:needs-reconcile" in expected.forbidden_labels
+
+    def test_build_expected_for_mutation_with_required(self):
+        """Test build_expected_for_mutation includes required labels."""
+        from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+        expected = build_expected_for_mutation(required={"in-progress"})
+
+        assert "in-progress" in expected.required_labels
+        assert "io:needs-reconcile" in expected.forbidden_labels
+
+    def test_build_expected_for_mutation_with_forbidden(self):
+        """Test build_expected_for_mutation merges forbidden labels."""
+        from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+        expected = build_expected_for_mutation(forbidden={"blocked"})
+
+        # Should have both the custom forbidden and the pause label
+        assert "blocked" in expected.forbidden_labels
+        assert "io:needs-reconcile" in expected.forbidden_labels
+
+    def test_build_expected_for_mutation_with_custom_prefix(self):
+        """Test build_expected_for_mutation uses custom prefix."""
+        from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+
+        expected = build_expected_for_mutation(prefix="custom")
+
+        assert "custom:needs-reconcile" in expected.forbidden_labels
+        assert "io:needs-reconcile" not in expected.forbidden_labels

@@ -106,6 +106,9 @@ class ActionApplier:
 
         try:
             result = self._dispatch(action)
+        except ReconciliationRequired:
+            # Re-raise ReconciliationRequired - it must propagate to orchestrator
+            raise
         except Exception as e:
             logger.exception(f"Action failed: {action}")
             result = ActionResult.fail(action, str(e))

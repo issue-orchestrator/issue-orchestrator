@@ -513,3 +513,153 @@ class TestReconciliation:
 
         assert result.success
         applier.issue_tracker.get_issue_labels.assert_called_once_with(123)
+
+
+class TestExpectedStateEnforcement:
+    """Tests for ExpectedState enforcement via _require_expected."""
+
+    @pytest.fixture
+    def applier_with_reconcile(self, mock_labels, mock_sessions, mock_events, mock_repository_host, mock_worktree_manager):
+        """Create an ActionApplier with reconciliation enabled."""
+        return ActionApplier(
+            labels=mock_labels,
+            sessions=mock_sessions,
+            events=mock_events,
+            repository_host=mock_repository_host,
+            worktree_manager=mock_worktree_manager,
+            issue_tracker=mock_repository_host,
+            reconcile=True,
+        )
+
+    def test_add_label_with_expected_passes_when_satisfied(self, applier_with_reconcile, mock_labels, mock_repository_host):
+        """Test AddLabelAction proceeds when ExpectedState is satisfied."""
+        from issue_orchestrator.control.reconciliation import ExpectedState
+
+        # Current labels satisfy the expected state
+        mock_repository_host.get_issue_labels.return_value = ["agent:web", "in-progress"]
+
+        action = AddLabelAction(
+            issue_number=123,
+            label="pr-pending",
+            reason="Session completed",
+            expected=ExpectedState.with_labels(
+                required={"in-progress"},
+                forbidden={"io:needs-reconcile"},
+            ),
+        )
+
+        result = applier_with_reconcile.apply(action)
+
+        assert result.success
+        mock_labels.add_label.assert_called_once_with(123, "pr-pending")
+
+    def test_add_label_with_expected_raises_when_missing_required(self, applier_with_reconcile, mock_labels, mock_repository_host):
+        """Test AddLabelAction raises ReconciliationRequired when required label missing."""
+        from issue_orchestrator.control.reconciliation import ExpectedState, ReconciliationRequired
+
+        # Current labels don't have required "in-progress"
+        mock_repository_host.get_issue_labels.return_value = ["agent:web"]
+
+        action = AddLabelAction(
+            issue_number=42,
+            label="pr-pending",
+            reason="Session completed",
+            expected=ExpectedState.with_labels(
+                required={"in-progress"},
+            ),
+        )
+
+        with pytest.raises(ReconciliationRequired) as exc_info:
+            applier_with_reconcile.apply(action)
+
+        assert exc_info.value.entity_id == 42
+        assert "in-progress" in exc_info.value.reason
+        mock_labels.add_label.assert_not_called()
+
+    def test_add_label_with_expected_raises_when_has_forbidden(self, applier_with_reconcile, mock_labels, mock_repository_host):
+        """Test AddLabelAction raises ReconciliationRequired when forbidden label present."""
+        from issue_orchestrator.control.reconciliation import ExpectedState, ReconciliationRequired
+
+        # Current labels have forbidden "io:needs-reconcile"
+        mock_repository_host.get_issue_labels.return_value = ["in-progress", "io:needs-reconcile"]
+
+        action = AddLabelAction(
+            issue_number=99,
+            label="pr-pending",
+            reason="Session completed",
+            expected=ExpectedState.with_labels(
+                forbidden={"io:needs-reconcile"},
+            ),
+        )
+
+        with pytest.raises(ReconciliationRequired) as exc_info:
+            applier_with_reconcile.apply(action)
+
+        assert exc_info.value.entity_id == 99
+        assert "forbidden" in exc_info.value.reason.lower()
+        mock_labels.add_label.assert_not_called()
+
+    def test_add_label_without_expected_proceeds_normally(self, applier_with_reconcile, mock_labels, mock_repository_host):
+        """Test AddLabelAction without ExpectedState doesn't check constraints."""
+        # Even if labels would fail constraints, no ExpectedState means no check
+        mock_repository_host.get_issue_labels.return_value = ["blocked"]
+
+        action = AddLabelAction(
+            issue_number=123,
+            label="test-label",
+            reason="Test",
+            expected=None,  # No ExpectedState
+        )
+
+        result = applier_with_reconcile.apply(action)
+
+        assert result.success
+        mock_labels.add_label.assert_called_once()
+
+    def test_expected_not_enforced_when_reconcile_disabled(self, mock_labels, mock_sessions, mock_events, mock_repository_host, mock_worktree_manager):
+        """Test ExpectedState is not enforced when reconcile=False."""
+        from issue_orchestrator.control.reconciliation import ExpectedState
+
+        applier = ActionApplier(
+            labels=mock_labels,
+            sessions=mock_sessions,
+            events=mock_events,
+            repository_host=mock_repository_host,
+            worktree_manager=mock_worktree_manager,
+            issue_tracker=mock_repository_host,
+            reconcile=False,  # Disabled
+        )
+
+        # ExpectedState would fail if checked, but reconcile=False
+        action = AddLabelAction(
+            issue_number=123,
+            label="test-label",
+            reason="Test",
+            expected=ExpectedState.with_labels(required={"nonexistent-label"}),
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        mock_labels.add_label.assert_called_once()
+
+    def test_expected_raises_when_labels_cannot_be_fetched(self, applier_with_reconcile, mock_labels, mock_repository_host):
+        """Test raises ReconciliationRequired when labels cannot be fetched."""
+        from issue_orchestrator.control.reconciliation import ExpectedState, ReconciliationRequired
+
+        # Simulate API failure
+        mock_repository_host.get_issue_labels.return_value = None
+
+        action = AddLabelAction(
+            issue_number=123,
+            label="test-label",
+            reason="Test",
+            expected=ExpectedState.with_labels(required={"in-progress"}),
+        )
+
+        with pytest.raises(ReconciliationRequired) as exc_info:
+            applier_with_reconcile.apply(action)
+
+        assert exc_info.value.entity_id == 123
+        assert "fetch" in exc_info.value.reason.lower()
+        mock_labels.add_label.assert_not_called()
