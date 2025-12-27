@@ -19,16 +19,15 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from ..models import (
     CompletionRecord,
-    CompletionOutcome,
     RequestedAction,
     COMPLETION_RECORD_PATH,
 )
 from ..domain.events import EventBus, SessionEvent
-from .validation import PublishGate, PublishGateResult
+from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
 

@@ -21,17 +21,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Callable
 
 if TYPE_CHECKING:
-    from ..domain.state_machines.issue_machine import IssueStateMachine, IssueState
+    from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
-    from ..domain.state_machines.review_machine import ReviewStateMachine, ReviewState
+    from ..domain.state_machines.review_machine import ReviewStateMachine
     from .dependency_evaluator import DependencyEvaluator
 
-from ..config import Config, AgentConfig
+from ..config import Config
 from ..events import EventName
 from ..models import Issue, Session, PendingReview, PendingRework, get_completion_path
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue as IssueProtocol
 from ..ports.worktree_manager import WorktreeManager
-from .session_manager import SessionManager, SessionRef, SessionContext
+from .session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +240,7 @@ class SessionLauncher:
         # Create terminal session
         step_start = time.time()
         session_created = self._create_session(session_name, command, worktree_path, issue.title)
-        session_time = time.time() - step_start
+        _session_time = time.time() - step_start
 
         if not session_created:
             log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")

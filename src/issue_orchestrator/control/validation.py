@@ -12,8 +12,7 @@ Storage location: .issue-orchestrator/validation/<suite>/<HEAD_SHA>.json
 import json
 import logging
 import subprocess
-import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional

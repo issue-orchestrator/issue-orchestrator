@@ -280,7 +280,7 @@ class ActionApplier:
         assert isinstance(action, SyncLabelsAction)
 
         # Reconciliation check
-        should_proceed, msg, current_labels = self._check_reconciliation_for_sync(
+        should_proceed, msg, _current_labels = self._check_reconciliation_for_sync(
             action.issue_number,
             action.add_labels,
             action.remove_labels,

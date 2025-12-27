@@ -193,7 +193,7 @@ class CleanupManager:
                 continue
 
             # Check each agent config for matching worktree
-            for agent_label, agent_config in self.config.agents.items():
+            for _agent_label, agent_config in self.config.agents.items():
                 worktree_path = self._get_worktree_path(issue_number, agent_config)
 
                 if worktree_path.exists():

@@ -12,7 +12,6 @@ from datetime import datetime
 from typing import Optional, Protocol, Sequence
 
 from ..ports.issue import Issue
-from ..models import AgentConfig
 
 # Sort keys can contain floats (timestamps/inf), ints (numbers), or strings (names)
 SortKey = tuple[float | int | str, ...]

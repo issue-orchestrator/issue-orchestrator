@@ -13,10 +13,10 @@ Called during startup to restore tracking for sessions that survived a restart.
 import logging
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Callable
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from ..config import Config, AgentConfig
+    from ..config import Config
 
 from ..models import Issue, Session
 from ..ports import RepositoryHost
@@ -56,8 +56,6 @@ class SessionRestorer:
         Returns:
             List of newly restored Session objects
         """
-        import re
-
         restored = []
 
         for session_info in running:
@@ -162,7 +160,7 @@ class SessionRestorer:
         branch_name = "unknown"
 
         # Check all agent repo_roots for the worktree
-        for agent_label, agent_config in self.config.agents.items():
+        for _agent_label, agent_config in self.config.agents.items():
             repo_root = agent_config.repo_root or self.config.repo_root
             candidate_path = repo_root.parent / f"{repo_root.name}-{issue_number}"
             if candidate_path.exists():

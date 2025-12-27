@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .isolation import FORBIDDEN_ENV_VARS, all_env_scrubbed, verify_env_scrubbed
+from .isolation import verify_env_scrubbed
 
 logger = logging.getLogger(__name__)
 

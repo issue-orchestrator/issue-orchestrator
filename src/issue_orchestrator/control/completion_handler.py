@@ -12,7 +12,6 @@ The orchestrator calls this to handle the complex state updates when a session c
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Callable
 
 if TYPE_CHECKING:
@@ -83,7 +82,7 @@ class CompletionHandler:
             CompletionResult with history entry and cleanup decision
         """
         # Fetch PR info if completed
-        pr_url, pr_number, prs = self._fetch_pr_info(session, status)
+        pr_url, pr_number, _prs = self._fetch_pr_info(session, status)
 
         # Create history entry
         history_entry = self._create_history_entry(

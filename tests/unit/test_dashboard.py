@@ -123,7 +123,7 @@ class TestStatusBar:
         orchestrator.state.completed_today = []
 
         status_bar = StatusBar(orchestrator)
-        content = status_bar._render_content()
+        content = status_bar._get_status_text()
 
         assert "[green]RUNNING[/green]" in content
         assert "Active: 0/3" in content
@@ -135,7 +135,7 @@ class TestStatusBar:
         orchestrator.state.paused = True
 
         status_bar = StatusBar(orchestrator)
-        content = status_bar._render_content()
+        content = status_bar._get_status_text()
 
         assert "[yellow]PAUSED[/yellow]" in content
 
@@ -153,7 +153,7 @@ class TestStatusBar:
         orchestrator.state.completed_today = [3, 4, 5]
 
         status_bar = StatusBar(orchestrator)
-        content = status_bar._render_content()
+        content = status_bar._get_status_text()
 
         assert "Active: 2/3" in content
         assert "Completed: 3" in content
@@ -816,7 +816,7 @@ class TestStatusBarRendering:
         orchestrator.state.active_sessions = sessions
 
         status_bar = StatusBar(orchestrator)
-        content = status_bar._render_content()
+        content = status_bar._get_status_text()
 
         assert "Active: 3/3" in content
 
@@ -826,7 +826,7 @@ class TestStatusBarRendering:
         orchestrator.state.completed_today = list(range(1, 51))  # 50 completed
 
         status_bar = StatusBar(orchestrator)
-        content = status_bar._render_content()
+        content = status_bar._get_status_text()
 
         assert "Completed: 50" in content
 

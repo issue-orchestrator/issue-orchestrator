@@ -11,7 +11,6 @@ allow them to perform privileged operations (push, merge, API calls).
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

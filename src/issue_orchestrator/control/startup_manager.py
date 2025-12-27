@@ -16,7 +16,6 @@ The startup sequence:
 import logging
 import re
 import time
-from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
 from ..analysis import analyze_issue, get_issue_branches
@@ -33,8 +32,6 @@ from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
 
-if TYPE_CHECKING:
-    from .hook_verifier import HookVerifier
 
 
 logger = logging.getLogger(__name__)
@@ -315,7 +312,7 @@ class StartupManager:
         state.startup_message = f"Resuming {len(issues_to_resume)} in-progress issue(s)..."
         print(f"\n🔄 Resuming {len(issues_to_resume)} in-progress issue(s) with partial work...")
 
-        for issue, agent_label in issues_to_resume:
+        for issue, _agent_label in issues_to_resume:
             # Check capacity
             if len(state.active_sessions) >= self.config.max_concurrent_sessions:
                 print(f"  #{issue.number}: At max capacity, will resume when slot available")

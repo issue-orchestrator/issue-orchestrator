@@ -167,7 +167,7 @@ class PRScanner:
             if issue_number in active_issue_numbers:
                 continue
 
-            branch_name = pr.branch or f"{issue_number}-rework"
+            _branch_name = pr.branch or f"{issue_number}-rework"
             rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
 
             # Check if exceeded max rework cycles

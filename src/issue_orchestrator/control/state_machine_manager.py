@@ -5,7 +5,6 @@ providing a clean interface for getting or creating state machines.
 """
 
 import logging
-from typing import Optional
 
 from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
