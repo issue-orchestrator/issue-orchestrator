@@ -493,3 +493,55 @@ def require_reconciliation(
             actual=actual,
             reason=result.reason,
         )
+
+
+# =============================================================================
+# Pause Label (needs-reconcile)
+# =============================================================================
+
+# Default namespace prefix for orchestrator labels
+DEFAULT_LABEL_PREFIX = "io"
+
+# Base key for the pause label (rendered as {prefix}:needs-reconcile)
+PAUSE_LABEL_KEY = "needs-reconcile"
+
+
+def get_pause_label(prefix: str = DEFAULT_LABEL_PREFIX) -> str:
+    """Get the fully-rendered pause label.
+
+    Args:
+        prefix: Label namespace prefix (default: "io")
+
+    Returns:
+        The pause label (e.g., "io:needs-reconcile")
+    """
+    return f"{prefix}:{PAUSE_LABEL_KEY}"
+
+
+def build_expected_for_mutation(
+    *,
+    required: set[str] | None = None,
+    forbidden: set[str] | None = None,
+    prefix: str = DEFAULT_LABEL_PREFIX,
+) -> ExpectedState:
+    """Build ExpectedState for a mutating action.
+
+    This helper ensures the pause label is always forbidden (fail-closed).
+
+    Args:
+        required: Labels that must be present
+        forbidden: Additional labels that must not be present
+        prefix: Label namespace prefix
+
+    Returns:
+        ExpectedState with pause label in forbidden set
+    """
+    pause_label = get_pause_label(prefix)
+    all_forbidden = {pause_label}
+    if forbidden:
+        all_forbidden.update(forbidden)
+
+    return ExpectedState.with_labels(
+        required=required,
+        forbidden=all_forbidden,
+    )

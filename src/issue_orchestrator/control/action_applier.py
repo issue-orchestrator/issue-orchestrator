@@ -37,6 +37,11 @@ from ..ports.issue_tracker import IssueTracker
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
 from ..models import Session
+from .reconciliation import (
+    ExternalSnapshot,
+    ReconciliationRequired,
+    require_reconciliation,
+)
 from .actions import (
     Action,
     ActionResult,
@@ -153,6 +158,9 @@ class ActionApplier:
         """Add a label to an issue."""
         assert isinstance(action, AddLabelAction)
 
+        # Enforce expected state before mutation (raises ReconciliationRequired)
+        self._require_expected(action, action.issue_number)
+
         try:
             self.labels.add_label(action.issue_number, action.label)
             return ActionResult.ok(
@@ -166,6 +174,9 @@ class ActionApplier:
     def _apply_remove_label(self, action: Action) -> ActionResult:
         """Remove a label from an issue."""
         assert isinstance(action, RemoveLabelAction)
+
+        # Enforce expected state before mutation (raises ReconciliationRequired)
+        self._require_expected(action, action.issue_number)
 
         try:
             self.labels.remove_label(action.issue_number, action.label)
@@ -181,6 +192,9 @@ class ActionApplier:
         """Add a comment to an issue or PR."""
         assert isinstance(action, AddCommentAction)
         assert self.repository_host is not None, "repository_host required for add_comment"
+
+        # Enforce expected state before mutation (raises ReconciliationRequired)
+        self._require_expected(action, action.number)
 
         try:
             self.repository_host.add_comment(action.number, action.comment)
@@ -209,6 +223,49 @@ class ActionApplier:
                 issue_number, e
             )
             return None
+
+    def _require_expected(self, action: Action, issue_number: int) -> None:
+        """Enforce reconciliation before a mutation if action has expected state.
+
+        This is the hard gate for optimistic concurrency control. If the action
+        has an ExpectedState attached, we fetch current state and verify it
+        satisfies the constraints. If not, we raise ReconciliationRequired.
+
+        Args:
+            action: The action being applied (checks action.expected)
+            issue_number: The issue/PR number to check
+
+        Raises:
+            ReconciliationRequired: If current state doesn't satisfy expected
+        """
+        if action.expected is None:
+            # No expected state attached - allow (for backwards compatibility)
+            return
+
+        if not self.reconcile:
+            # Reconciliation disabled - skip enforcement
+            return
+
+        # Fetch current state
+        current_labels = self._fetch_current_labels(issue_number)
+        if current_labels is None:
+            # Can't verify - fail closed (require issue_tracker for reconciliation)
+            logger.warning(
+                "Reconciliation required but cannot fetch labels for #%d - failing closed",
+                issue_number
+            )
+            raise ReconciliationRequired(
+                entity_type="issue",
+                entity_id=issue_number,
+                expected=ExternalSnapshot.for_issue(issue_number, set(action.expected.required_labels)),
+                actual=ExternalSnapshot.for_issue(issue_number, set()),
+                reason="Cannot fetch current labels to verify expected state",
+            )
+
+        actual = ExternalSnapshot.for_issue(issue_number, current_labels)
+
+        # This raises ReconciliationRequired if constraints not satisfied
+        require_reconciliation(action.expected, actual, entity_type="issue")
 
     def _check_reconciliation_for_sync(
         self,
@@ -273,13 +330,17 @@ class ActionApplier:
         """Synchronize labels on an issue.
 
         If reconciliation is enabled:
-        1. Fetches current labels before mutations
-        2. Logs any unexpected state (e.g., labels to remove not present)
-        3. Emits reconciliation events for traceability
+        1. Enforces expected state constraints (hard gate)
+        2. Fetches current labels before mutations
+        3. Logs any unexpected state (e.g., labels to remove not present)
+        4. Emits reconciliation events for traceability
         """
         assert isinstance(action, SyncLabelsAction)
 
-        # Reconciliation check
+        # Enforce expected state before mutation (raises ReconciliationRequired)
+        self._require_expected(action, action.issue_number)
+
+        # Soft reconciliation check (backwards compatibility - logs warnings)
         should_proceed, msg, _current_labels = self._check_reconciliation_for_sync(
             action.issue_number,
             action.add_labels,
@@ -416,12 +477,16 @@ class ActionApplier:
         """Escalate to human intervention.
 
         The full escalation flow:
-        1. Add needs-human label to the PR
-        2. Remove needs-rework label from the PR
-        3. Post an explanatory comment
-        4. Emit trace event
+        1. Enforce expected state (reconciliation)
+        2. Add needs-human label to the PR
+        3. Remove needs-rework label from the PR
+        4. Post an explanatory comment
+        5. Emit trace event
         """
         assert isinstance(action, EscalateToHumanAction)
+
+        # Enforce expected state before mutation (raises ReconciliationRequired)
+        self._require_expected(action, action.pr_number)
 
         errors = []
 
@@ -515,6 +580,10 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         by the orchestrator after this returns.
         """
         assert isinstance(action, QueueReviewAction)
+
+        # Enforce expected state before mutation (raises ReconciliationRequired)
+        if action.pr_number:
+            self._require_expected(action, action.pr_number)
 
         # Add review label if available
         if self.labels and action.code_review_label and action.pr_number:

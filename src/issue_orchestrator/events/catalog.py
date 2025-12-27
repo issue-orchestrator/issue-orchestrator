@@ -177,6 +177,8 @@ class EventName(str, Enum):
     # =========================================================================
     RECONCILIATION_CHECKED = "reconciliation.checked"
     RECONCILIATION_WARNING = "reconciliation.warning"
+    RECONCILIATION_REQUIRED = "reconciliation.required"  # Drift detected, action blocked
+    ISSUE_PAUSED_RECONCILE = "issue.paused_reconcile"  # Issue paused due to drift
 
     # =========================================================================
     # Queue projection (UI-specific, consider moving to projection layer)

@@ -63,6 +63,7 @@ from .actions import (
     EscalateToHumanAction,
     CleanupSessionAction,
 )
+from .reconciliation import build_expected_for_mutation
 from .. import labels
 
 logger = logging.getLogger(__name__)
@@ -359,6 +360,7 @@ class Planner:
                     issue_number=review.issue_number,
                     label=labels.PR_PENDING,
                     reason=f"session completed with PR #{review.pr_number} - awaiting merge",
+                    expected=build_expected_for_mutation(),
                 ))
                 actions.append(QueueReviewAction(
                     issue_number=review.issue_number,
@@ -367,6 +369,7 @@ class Planner:
                     branch_name=review.branch_name,
                     code_review_label=self.config.code_review_label or "",
                     reason=f"session completed with PR #{review.pr_number}",
+                    expected=build_expected_for_mutation(),
                 ))
                 logger.debug("Planner: queuing review for PR #%d", review.pr_number)
             else:
@@ -470,6 +473,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 needs_rework_label=self.config.get_label_needs_rework(),
                 max_rework_cycles=self.config.max_rework_cycles,
                 reason=f"PR #{escalation.pr_number} exceeded max rework cycles ({escalation.rework_cycle - 1})",
+                expected=build_expected_for_mutation(),
             ))
             logger.info("Planner: escalating PR #%d after %d rework cycles",
                        escalation.pr_number, escalation.rework_cycle - 1)
@@ -699,6 +703,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         needs_rework_label=self.config.get_label_needs_rework(),
                         max_rework_cycles=self.config.max_rework_cycles,
                         reason=f"escalating: cycle {rework.rework_cycle} >= max {escalation.max_cycles}",
+                        expected=build_expected_for_mutation(),
                     ))
                 else:
                     actions.append(LaunchSessionAction(

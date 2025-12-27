@@ -44,6 +44,7 @@ from .control.completion_handler import CompletionHandler
 from .control.session_restorer import SessionRestorer
 from .control.startup_manager import StartupManager
 from .control.state_machine_manager import StateMachineManager
+from .control.reconciliation import ReconciliationRequired, get_pause_label
 from .observation.observation import SessionObservation
 from .ports import EventSink, SessionRunner, TraceEvent, NullEventSink, NullSessionRunner, RepositoryHost
 from .ports.worktree_manager import WorktreeManager
@@ -319,11 +320,13 @@ class Orchestrator:
         Actions describe WHAT should happen; ActionApplier handles HOW.
         """
         from .control.actions import AddLabelAction, RemoveLabelAction, AddCommentAction
+        from .control.reconciliation import build_expected_for_mutation
         from . import labels
 
         actions = []
         issue_number = session.issue.number
         in_progress_label = self.config.get_label_in_progress()
+        expected = build_expected_for_mutation()
 
         if status == SessionStatus.TIMED_OUT:
             # Add blocked-failed label
@@ -331,6 +334,7 @@ class Orchestrator:
                 issue_number=issue_number,
                 label=labels.BLOCKED_FAILED,
                 reason=f"Session timed out after {session.runtime_minutes} minutes",
+                expected=expected,
             ))
             # Add explanatory comment
             timeout_mins = session.agent_config.timeout_minutes if session.agent_config else "unknown"
@@ -343,12 +347,14 @@ class Orchestrator:
                         f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
                         f"Remove the label to allow reprocessing.",
                 reason="Notify about session timeout",
+                expected=expected,
             ))
             # Remove in-progress label
             actions.append(RemoveLabelAction(
                 issue_number=issue_number,
                 label=in_progress_label,
                 reason="Session timed out - releasing claim",
+                expected=expected,
             ))
 
         elif status == SessionStatus.FAILED:
@@ -357,6 +363,7 @@ class Orchestrator:
                 issue_number=issue_number,
                 label=labels.BLOCKED_FAILED,
                 reason="Session failed without completing",
+                expected=expected,
             ))
             # Add explanatory comment
             actions.append(AddCommentAction(
@@ -368,12 +375,14 @@ class Orchestrator:
                         f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
                         f"Remove the label to allow reprocessing.",
                 reason="Notify about session failure",
+                expected=expected,
             ))
             # Remove in-progress label
             actions.append(RemoveLabelAction(
                 issue_number=issue_number,
                 label=in_progress_label,
                 reason="Session failed - releasing claim",
+                expected=expected,
             ))
 
         elif status == SessionStatus.COMPLETED:
@@ -382,6 +391,7 @@ class Orchestrator:
                 issue_number=issue_number,
                 label=in_progress_label,
                 reason="Session completed successfully",
+                expected=expected,
             ))
 
         # Note: BLOCKED and NEEDS_HUMAN keep in-progress label to maintain ownership claim
@@ -593,6 +603,33 @@ class Orchestrator:
             self._event_context.enrich({}),
         ))
 
+    def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None:
+        """Pause an issue due to reconciliation failure (state drift).
+
+        Adds the pause label (io:needs-reconcile) to prevent further processing
+        until a human or startup reconciler resolves the inconsistency.
+        """
+        pause_label = get_pause_label()
+        try:
+            self.repository_host.add_label(issue_number, pause_label)
+            logger.warning(
+                "[RECONCILIATION] Paused issue #%d with label '%s': %s",
+                issue_number, pause_label, reason
+            )
+            self.events.publish(TraceEvent(
+                EventName.ISSUE_PAUSED_RECONCILE,
+                self._event_context.enrich({
+                    "issue_number": issue_number,
+                    "pause_label": pause_label,
+                    "reason": reason,
+                }),
+            ))
+        except Exception as e:
+            logger.error(
+                "[RECONCILIATION] Failed to add pause label to #%d: %s",
+                issue_number, e
+            )
+
     def _apply_plan(self, plan: "Plan") -> None:
         if plan.action_count == 0:
             return
@@ -635,6 +672,28 @@ class Orchestrator:
                             "error": result.error or "unknown",
                         }),
                     ))
+            except ReconciliationRequired as rr:
+                # Drift detected - pause the issue and stop processing actions for it
+                issue_number = rr.entity_id
+                failed_count += 1
+                logger.warning(
+                    "[RECONCILIATION] Drift detected for %s #%d: %s",
+                    rr.entity_type, issue_number, rr.reason
+                )
+                self.events.publish(TraceEvent(
+                    EventName.RECONCILIATION_REQUIRED,
+                    self._event_context.enrich({
+                        "issue_number": issue_number,
+                        "entity_type": rr.entity_type,
+                        "reason": rr.reason,
+                        "expected_labels": list(rr.expected.labels),
+                        "actual_labels": list(rr.actual.labels),
+                    }),
+                ))
+                # Pause the issue by adding the pause label
+                self._pause_issue_for_reconciliation(issue_number, rr.reason)
+                # Stop processing further actions (they depend on consistent state)
+                break
             except Exception as e:
                 failed_count += 1
                 logger.exception("Failed to apply action %s: %s", action, e)

@@ -22,7 +22,10 @@ Usage:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from .reconciliation import ExpectedState
 
 
 class ActionType(Enum):
@@ -70,10 +73,17 @@ class Action:
 
     All actions are immutable data objects that describe an intended change.
     The actual execution is handled by the ActionApplier.
+
+    Mutating actions (those that write to GitHub) should have `expected` set
+    to enable optimistic concurrency control. Before applying the mutation,
+    the applier verifies current state satisfies `expected`. If not, it raises
+    ReconciliationRequired instead of applying the mutation.
     """
 
     action_type: ActionType
     reason: str = ""  # Why this action is being taken (for audit)
+    # Expected state constraints for reconciliation (required for mutating actions)
+    expected: Optional["ExpectedState"] = None
 
     def __post_init__(self):
         # Validate that subclasses set the correct action_type
