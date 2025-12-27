@@ -591,6 +591,11 @@ class TestCmdTestReset:
 class TestSetupLogging:
     """Tests for setup_logging function."""
 
+    def setup_method(self):
+        """Reset logging config before each test."""
+        from issue_orchestrator.logging_config import reset_logging
+        reset_logging()
+
     def test_setup_logging_default(self):
         """Verify logging setup with default settings."""
         with patch('logging.getLogger') as mock_get_logger:
@@ -603,7 +608,7 @@ class TestSetupLogging:
                     mock_handler = Mock()
                     mock_file_handler.return_value = mock_handler
 
-                    setup_logging(debug=False)
+                    setup_logging(level="INFO")
 
                     mock_logger.setLevel.assert_called_once()
                     mock_logger.addHandler.assert_called_once_with(mock_handler)
@@ -620,7 +625,7 @@ class TestSetupLogging:
                     mock_handler = Mock()
                     mock_file_handler.return_value = mock_handler
 
-                    setup_logging(debug=True)
+                    setup_logging(level="DEBUG")
 
                     # Verify debug level was set
                     import logging
@@ -640,7 +645,7 @@ class TestSetupLogging:
                     mock_handler = Mock()
                     mock_file_handler.return_value = mock_handler
 
-                    setup_logging(debug=False)
+                    setup_logging(level="INFO")
 
                     # Should remove existing handler
                     mock_logger.removeHandler.assert_called_once_with(existing_handler)

@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..events import EventName
 from ..models import Issue, OrchestratorState
 from ..ports.event_sink import EventSink, TraceEvent
 
@@ -77,7 +78,7 @@ class QueueProjection:
                 change = QueueChange(added=added, removed=list(removed_numbers), total=len(queue_issues))
 
                 # Emit structured event
-                self._events.publish(TraceEvent("queue.changed", {
+                self._events.publish(TraceEvent(EventName.QUEUE_CHANGED, {
                     "added": [{"number": i.number, "title": i.title} for i in change.added],
                     "removed": [{"number": num} for num in change.removed],
                     "total": change.total,

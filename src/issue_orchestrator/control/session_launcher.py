@@ -26,8 +26,9 @@ if TYPE_CHECKING:
     from ..domain.state_machines.review_machine import ReviewStateMachine, ReviewState
 
 from ..config import Config, AgentConfig
+from ..events import EventName
 from ..models import Issue, Session, PendingReview, PendingRework, get_completion_path
-from ..ports import EventSink, TraceEvent, RepositoryHost
+from ..ports import EventSink, TraceEvent, RepositoryHost, Issue as IssueProtocol
 from ..ports.worktree_manager import WorktreeManager
 from .session_manager import SessionManager, SessionRef, SessionContext
 
@@ -115,7 +116,7 @@ class SessionLauncher:
         worktree_manager: WorktreeManager,
         session_exists_fn: Callable[[str], bool],
         create_session_fn: Callable[[str, str, Path, str | None], bool],
-        get_issue_machine: Callable[[int], "IssueStateMachine"],
+        get_issue_machine: Callable[["IssueProtocol"], "IssueStateMachine"],
         get_session_machine: Callable[[str, int, int], "SessionStateMachine"],
         get_review_machine: Callable[[int, int], "ReviewStateMachine"],
         refresh_issue_fn: Optional[Callable[[int], Optional[Issue]]] = None,
@@ -182,8 +183,8 @@ class SessionLauncher:
                         f"dependencies changed: {report.summary()}"
                     )
                     self.events.publish(TraceEvent(
-                        name="issue.dependency_blocked",
-                        data={
+                        EventName.ISSUE_DEPENDENCY_BLOCKED,
+                        {
                             "issue_number": issue.number,
                             "issue_title": issue.title,
                             "reason": report.summary(),
@@ -259,12 +260,11 @@ class SessionLauncher:
         )
 
         total_time = time.time() - launch_start
-        logger.info("Session launched for issue #%d in %.1fs", issue.number, total_time)
-        print(f"Launched session for issue #{issue.number}: {issue.title}")
+        logger.info("Session launched for issue #%d in %.1fs: %s", issue.number, total_time, issue.title)
 
         # Emit trace event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent("session.started", {
+        self.events.publish(TraceEvent(EventName.SESSION_STARTED, {
             "issue_number": issue.number,
             "session_id": session_name,
             "worktree_path": str(worktree_path),
@@ -274,7 +274,7 @@ class SessionLauncher:
         }))
 
         # State machine transitions
-        self._trigger_issue_session_state_transitions(issue.number, session_name, agent_config.timeout_minutes)
+        self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)
 
         return LaunchResult(session, True)
 
@@ -348,7 +348,7 @@ class SessionLauncher:
 
         # Emit event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent("review.started", {
+        self.events.publish(TraceEvent(EventName.REVIEW_STARTED, {
             "pr_number": review.pr_number,
             "issue_number": review.issue_number,
             "session_name": session_name,
@@ -437,11 +437,11 @@ class SessionLauncher:
         )
 
         log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
-        print(f"🔧 Launched rework session for issue #{issue_number} (cycle {rework.rework_cycle})")
+        logger.info("Launched rework session for issue #%d (cycle %d)", issue_number, rework.rework_cycle)
 
         # Emit event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent("rework.started", {
+        self.events.publish(TraceEvent(EventName.REWORK_STARTED, {
             "issue_number": issue_number,
             "pr_number": pr_number,
             "session_name": session_name,
@@ -482,22 +482,22 @@ class SessionLauncher:
 
     def _trigger_issue_session_state_transitions(
         self,
-        issue_number: int,
+        issue: "IssueProtocol",
         session_name: str,
         timeout_minutes: int,
     ) -> None:
         """Trigger state machine transitions for issue session launch."""
         from ..domain.state_machines.issue_machine import IssueState
 
-        logger.debug(f"[STATE_MACHINE] Triggering transitions for issue #{issue_number}")
-        issue_machine = self._get_issue_machine(issue_number)
+        logger.debug(f"[STATE_MACHINE] Triggering transitions for issue #{issue.number}")
+        issue_machine = self._get_issue_machine(issue)
         if issue_machine.state == IssueState.AVAILABLE.value:
-            logger.debug(f"[STATE_MACHINE] Issue #{issue_number}: AVAILABLE -> CLAIMED")
+            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: AVAILABLE -> CLAIMED")
             issue_machine.claim()
-            logger.debug(f"[STATE_MACHINE] Issue #{issue_number}: CLAIMED -> IN_PROGRESS")
+            logger.debug(f"[STATE_MACHINE] Issue #{issue.number}: CLAIMED -> IN_PROGRESS")
             issue_machine.start()
 
-        session_machine = self._get_session_machine(session_name, issue_number, timeout_minutes)
+        session_machine = self._get_session_machine(session_name, issue.number, timeout_minutes)
         logger.debug(f"[STATE_MACHINE] Session {session_name}: PENDING -> STARTING")
         session_machine.launch()
         logger.debug(f"[STATE_MACHINE] Session {session_name}: STARTING -> RUNNING")

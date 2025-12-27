@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from transitions import MachineError
 
+from ..events import EventName
 from ..ports import EventSink, TraceEvent
 
 
@@ -188,8 +189,8 @@ class TransitionGuard:
     def _emit_applied(self, result: TransitionResult) -> None:
         """Emit a trace event for a successful transition."""
         event = TraceEvent(
-            name="transition.applied",
-            data={
+            EventName.TRANSITION_APPLIED,
+            {
                 "entity_type": result.entity_type,
                 "entity_id": result.entity_id,
                 "trigger": result.trigger,
@@ -203,8 +204,8 @@ class TransitionGuard:
     def _emit_rejected(self, result: TransitionResult) -> None:
         """Emit a trace event for a rejected/failed transition."""
         event = TraceEvent(
-            name="transition.rejected",
-            data={
+            EventName.TRANSITION_REJECTED,
+            {
                 "entity_type": result.entity_type,
                 "entity_id": result.entity_id,
                 "trigger": result.trigger,

@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Sequence, TYPE_CHECKING
 
+from ..events import EventName
 from ..ports import EventSink, TraceEvent
 from ..ports.label_set import LabelSet
 from ..ports.issue_tracker import IssueTracker
@@ -255,8 +256,8 @@ class ActionApplier:
             # This is a warning, not a hard failure - label may have been
             # removed externally which is fine
             self.events.publish(TraceEvent(
-                name="reconciliation.warning",
-                data={
+                EventName.RECONCILIATION_WARNING,
+                {
                     "issue_number": issue_number,
                     "message": msg,
                     "missing_labels": list(missing_to_remove),
@@ -266,8 +267,8 @@ class ActionApplier:
         # Check 2: Labels we expect to be there for this transition
         # For now, we just log what we found vs expected
         self.events.publish(TraceEvent(
-            name="reconciliation.checked",
-            data={
+            EventName.RECONCILIATION_CHECKED,
+            {
                 "issue_number": issue_number,
                 "current_labels": list(current),
                 "add_labels": list(add_labels),
@@ -463,13 +464,16 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             except Exception as e:
                 errors.append(f"add comment: {e}")
 
-        print(f"⚠️  PR #{action.pr_number} escalated to {action.needs_human_label} after {action.rework_cycles} rework cycles")
+        logger.warning(
+            "PR #%d escalated to %s after %d rework cycles",
+            action.pr_number, action.needs_human_label, action.rework_cycles,
+        )
 
         # Emit trace event
         self.events.publish(
             TraceEvent(
-                name="review.escalated",
-                data={
+                EventName.REVIEW_ESCALATED,
+                {
                     "pr_number": action.pr_number,
                     "issue_number": action.issue_number,
                     "rework_count": action.rework_cycles - 1,
@@ -492,8 +496,8 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         """Emit a trace event when starting an action."""
         self.events.publish(
             TraceEvent(
-                name="action.start",
-                data={
+                EventName.ACTION_START,
+                {
                     "action_type": action.action_type.value,
                     "reason": action.reason,
                 },
@@ -504,8 +508,8 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         """Emit a trace event when completing an action."""
         self.events.publish(
             TraceEvent(
-                name="action.end",
-                data={
+                EventName.ACTION_END,
+                {
                     "action_type": action.action_type.value,
                     "result": result.result_type.value,
                     "error": result.error,
@@ -529,7 +533,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             except Exception as e:
                 logger.warning("Failed to add review label to PR #%d: %s", action.pr_number, e)
 
-        self.events.publish(TraceEvent("review.queued", {
+        self.events.publish(TraceEvent(EventName.REVIEW_QUEUED, {
             "pr_number": action.pr_number,
             "issue_number": action.issue_number,
             "pr_url": action.pr_url,
@@ -565,7 +569,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     "[APPLIER] Created triage issue #%d for %d PRs",
                     issue_number, action.pr_count
                 )
-                self.events.publish(TraceEvent("triage.issue_created", {
+                self.events.publish(TraceEvent(EventName.TRIAGE_ISSUE_CREATED, {
                     "issue_number": issue_number,
                     "pr_count": action.pr_count,
                 }))
@@ -635,7 +639,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             else:
                 errors.append("no worktree_manager configured")
 
-        self.events.publish(TraceEvent("cleanup.completed", {
+        self.events.publish(TraceEvent(EventName.CLEANUP_COMPLETED, {
             "issue_number": action.issue_number,
             "pr_number": action.pr_number,
         }))

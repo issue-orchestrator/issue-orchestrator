@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..domain.issue_key import IssueKey, IssueHandle, GitHubIssueKey, parse_external_id
+from ..events import EventName
 from ..ports import IssueTracker, EventSink, TraceEvent
 
 if TYPE_CHECKING:
@@ -116,8 +117,8 @@ class GitHubIssueResolver:
             )
             self.events.publish(
                 TraceEvent(
-                    name="resolver.duplicate_external_id",
-                    data={
+                    EventName.RESOLVER_DUPLICATE_EXTERNAL_ID,
+                    {
                         "external_id": ext_id,
                         "issue_numbers": numbers,
                     },

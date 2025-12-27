@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Sequence, Protocol
 
 from ..config import Config
+from ..events import EventName
 from ..models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..ports import EventSink, TraceEvent
@@ -106,7 +107,7 @@ class PRScanner:
             issue_number = self._extract_issue_number(pr.body, pr.number)
 
             review = PendingReview(
-                issue_number=issue_number,
+                issue_key=self.repository.create_issue_key(issue_number),
                 pr_number=pr.number,
                 pr_url=pr.url,
                 branch_name=pr.branch,
@@ -117,8 +118,8 @@ class PRScanner:
         if results:
             self.events.publish(
                 TraceEvent(
-                    name="scanner.reviews_found",
-                    data={"count": len(results)},
+                    EventName.SCANNER_REVIEWS_FOUND,
+                    {"count": len(results)},
                 )
             )
 
@@ -194,8 +195,8 @@ class PRScanner:
         if results or escalations:
             self.events.publish(
                 TraceEvent(
-                    name="scanner.reworks_found",
-                    data={
+                    EventName.SCANNER_REWORKS_FOUND,
+                    {
                         "reworks": len(results),
                         "escalations": len(escalations),
                     },

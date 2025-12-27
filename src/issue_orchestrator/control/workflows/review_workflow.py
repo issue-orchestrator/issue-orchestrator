@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 from ...config import Config
+from ...events import EventName
 from ...models import PendingReview
 from ...ports import EventSink, TraceEvent
 
@@ -112,8 +113,8 @@ class ReviewWorkflow:
         if paused:
             self.events.publish(
                 TraceEvent(
-                    name="review.skipped",
-                    data={"reason": "orchestrator_paused"},
+                    EventName.REVIEW_SKIPPED,
+                    {"reason": "orchestrator_paused"},
                 )
             )
             return ReviewDecision.skip("Orchestrator paused")
@@ -125,8 +126,8 @@ class ReviewWorkflow:
         if available <= 0:
             self.events.publish(
                 TraceEvent(
-                    name="review.skipped",
-                    data={
+                    EventName.REVIEW_SKIPPED,
+                    {
                         "reason": "no_capacity",
                         "active": active_session_count,
                         "max": max_sessions,
@@ -142,8 +143,8 @@ class ReviewWorkflow:
 
         self.events.publish(
             TraceEvent(
-                name="review.launching",
-                data={
+                EventName.REVIEW_LAUNCHING,
+                {
                     "count": len(reviews_to_launch),
                     "capacity": available,
                     "pending": len(pending_reviews),

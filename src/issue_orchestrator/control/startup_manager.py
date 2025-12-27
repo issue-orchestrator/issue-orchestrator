@@ -29,6 +29,7 @@ from ..models import (
     Session,
     ORCHESTRATOR_PR_MARKER,
 )
+from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost
 
 if TYPE_CHECKING:
@@ -94,7 +95,7 @@ class StartupManager:
         state.startup_status = "running"
 
         # Emit merged configuration for debugging
-        self.events.publish(TraceEvent("config.merged", self.config.to_event_dict()))
+        self.events.publish(TraceEvent(EventName.CONFIG_MERGED, self.config.to_event_dict()))
 
         # Step 1: Verify AI meta-agent hooks
         state.startup_message = "Verifying hook enforcement..."
@@ -103,7 +104,6 @@ class StartupManager:
         # Step 2: Clean up stale claims
         state.startup_message = "Cleaning up stale claims..."
         logger.info("Starting up - checking for stale in-progress issues...")
-        print("Checking for stale in-progress issues...")
 
         # Step 3: Clean up idle terminal sessions
         state.startup_message = "Cleaning up idle terminal sessions..."
@@ -155,9 +155,8 @@ class StartupManager:
         state.startup_message = ""
         elapsed = time.time() - startup_start
         logger.info("Startup complete in %.1fs", elapsed)
-        print(f"[startup] Total startup time: {elapsed:.1f}s")
 
-        self.events.publish(TraceEvent("orchestrator.ready", {
+        self.events.publish(TraceEvent(EventName.ORCHESTRATOR_READY, {
             "filter_label": self.config.filter_label,
             "filter_milestone": self.config.filter_milestone,
             "agents": list(self.config.agents.keys()),
@@ -248,7 +247,7 @@ class StartupManager:
             # Check if review is already in progress
             if not self._session_exists(f"review-{pr_number}"):
                 review = PendingReview(
-                    issue_number=issue_number,
+                    issue_key=self.repository_host.create_issue_key(issue_number),
                     pr_number=pr_number,
                     pr_url=pr_url,
                     branch_name=pr.branch,

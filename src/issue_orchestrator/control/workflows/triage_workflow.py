@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
 from ...config import Config
+from ...events import EventName
 from ...models import PendingTriageReview
 from ...ports import EventSink, TraceEvent
 
@@ -153,8 +154,8 @@ class TriageWorkflow:
         if paused:
             self.events.publish(
                 TraceEvent(
-                    name="triage.skipped",
-                    data={"reason": "orchestrator_paused"},
+                    EventName.TRIAGE_SKIPPED,
+                    {"reason": "orchestrator_paused"},
                 )
             )
             return TriageDecision.skip("Orchestrator paused")
@@ -166,8 +167,8 @@ class TriageWorkflow:
         if available <= 0:
             self.events.publish(
                 TraceEvent(
-                    name="triage.skipped",
-                    data={
+                    EventName.TRIAGE_SKIPPED,
+                    {
                         "reason": "no_capacity",
                         "active": active_session_count,
                         "max": max_sessions,
@@ -183,8 +184,8 @@ class TriageWorkflow:
 
         self.events.publish(
             TraceEvent(
-                name="triage.launching",
-                data={
+                EventName.TRIAGE_LAUNCHING,
+                {
                     "count": len(triage_to_launch),
                     "capacity": available,
                     "pending": len(pending_triage),
@@ -239,8 +240,8 @@ class TriageWorkflow:
 
         self.events.publish(
             TraceEvent(
-                name="triage.batch_triggered",
-                data={
+                EventName.TRIAGE_BATCH_TRIGGERED,
+                {
                     "failure_count": failure_count,
                     "threshold": threshold,
                 },

@@ -14,6 +14,7 @@ from issue_orchestrator.models import (
     AgentConfig,
     OrchestratorState,
 )
+from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
@@ -1656,7 +1657,7 @@ class TestLaunchReviewSession:
         sample_config.code_review_agent = "agent:web"
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -1687,7 +1688,7 @@ class TestLaunchReviewSession:
         sample_config.ui_mode = "tmux"  # Explicitly use tmux mode
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -1719,7 +1720,7 @@ class TestLaunchReviewSession:
         sample_config.code_review_agent = "agent:web"
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -1750,7 +1751,7 @@ class TestLaunchReviewSession:
         sample_config.code_review_agent = "agent:web"
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -1777,7 +1778,7 @@ class TestLaunchReviewSession:
         sample_config.code_review_agent = "agent:web"
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -1802,7 +1803,7 @@ class TestLaunchReviewSession:
         sample_config.code_review_agent = "agent:web"
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -1821,7 +1822,7 @@ class TestLaunchReviewSession:
         sample_config.code_review_agent = None  # Not configured
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -1850,7 +1851,7 @@ class TestLaunchReviewSession:
         sample_config.enforce_hooks = True  # Even if enabled globally
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -2332,7 +2333,7 @@ class TestSessionExistsDetection:
         sample_config.code_review_agent = "agent:web"
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -2358,7 +2359,7 @@ class TestSessionExistsDetection:
         sample_config.code_review_agent = "agent:web"
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -2426,7 +2427,7 @@ class TestStateMachineTransitions:
         sample_config.code_review_agent = "agent:web"
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -2460,7 +2461,7 @@ class TestStateMachineTransitions:
         sample_config.code_review_agent = "agent:web"
 
         review = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=123,
             pr_url="https://github.com/owner/repo/pull/123",
             branch_name="feature/issue-42",
@@ -2736,7 +2737,7 @@ class TestProcessDeferredCleanups:
 
         # Add pending cleanup
         pending = PendingCleanup(
-            issue_number=1,
+            issue=Issue(number=1, title="Test issue", labels=[]),
             pr_number=100,
             pr_url="https://github.com/owner/repo/pull/100",
             branch_name="issue-1-test",
@@ -2775,7 +2776,7 @@ class TestProcessDeferredCleanups:
 
         # Add pending cleanup
         pending = PendingCleanup(
-            issue_number=1,
+            issue=Issue(number=1, title="Test issue", labels=[]),
             pr_number=100,
             pr_url="https://github.com/owner/repo/pull/100",
             branch_name="issue-1-test",
@@ -2814,7 +2815,7 @@ class TestProcessDeferredCleanups:
 
         # Add a pending cleanup (shouldn't happen in practice, but test robustness)
         pending = PendingCleanup(
-            issue_number=1,
+            issue=Issue(number=1, title="Test issue", labels=[]),
             pr_number=100,
             pr_url="https://github.com/owner/repo/pull/100",
             branch_name="issue-1-test",

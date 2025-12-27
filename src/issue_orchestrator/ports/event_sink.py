@@ -9,7 +9,10 @@ This is the key abstraction that keeps pluggy out of the core.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from issue_orchestrator.events.catalog import EventName
 
 
 @dataclass(frozen=True)
@@ -19,22 +22,22 @@ class TraceEvent:
     Trace events are notifications about what happened. They're fire-and-forget
     and must not influence orchestrator behavior.
 
-    Event naming convention: {domain}.{action}
-        - session.started, session.completed, session.failed
-        - issue.claimed, issue.blocked, issue.needs_human
-        - pr.created
-        - review.approved, review.changes_requested, review.escalated
-        - orchestrator.ready, orchestrator.paused, orchestrator.resumed
+    The event_type must be an EventName from the catalog - raw strings are not
+    accepted. This ensures all events are documented and type-safe.
+
+    Usage:
+        from issue_orchestrator.events import EventName
+        event = TraceEvent(EventName.TICK_STARTED, {"tick_id": 1})
     """
 
-    name: str
+    event_type: "EventName"
     data: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
-    def __post_init__(self):
-        # Validate event name format
-        if "." not in self.name:
-            raise ValueError(f"Event name must be domain.action format: {self.name}")
+    @property
+    def name(self) -> str:
+        """Get the event name string for serialization."""
+        return str(self.event_type)
 
 
 class EventSink(Protocol):
@@ -60,3 +63,59 @@ class NullEventSink:
     def publish(self, event: TraceEvent) -> None:
         """Silently drop all events."""
         pass
+
+
+class InMemoryEventSink:
+    """Event sink that collects events in memory for testing.
+
+    Provides methods to query and wait for specific events, enabling
+    deterministic test synchronization without sleeps or timeouts.
+
+    Usage:
+        sink = InMemoryEventSink()
+        orchestrator = Orchestrator(..., events=sink)
+
+        # After some operation
+        assert sink.has_event("tick.started")
+        events = sink.get_events("session.completed")
+        sink.clear()
+    """
+
+    def __init__(self) -> None:
+        self._events: list[TraceEvent] = []
+
+    def publish(self, event: TraceEvent) -> None:
+        """Store the event for later inspection."""
+        self._events.append(event)
+
+    @property
+    def events(self) -> list[TraceEvent]:
+        """Get all collected events."""
+        return list(self._events)
+
+    def get_events(self, name: str) -> list[TraceEvent]:
+        """Get all events with the given name."""
+        return [e for e in self._events if e.name == name]
+
+    def has_event(self, name: str) -> bool:
+        """Check if an event with the given name was published."""
+        return any(e.name == name for e in self._events)
+
+    def last_event(self, name: str) -> TraceEvent | None:
+        """Get the most recent event with the given name."""
+        for e in reversed(self._events):
+            if e.name == name:
+                return e
+        return None
+
+    def event_names(self) -> list[str]:
+        """Get list of all event names in order."""
+        return [e.name for e in self._events]
+
+    def clear(self) -> None:
+        """Clear all collected events."""
+        self._events.clear()
+
+    def __len__(self) -> int:
+        """Return number of collected events."""
+        return len(self._events)

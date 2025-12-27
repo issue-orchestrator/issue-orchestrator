@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
 from ...config import Config
+from ...events import EventName
 from ...models import PendingRework
 from ...ports import EventSink, TraceEvent
 
@@ -137,8 +138,8 @@ class ReworkWorkflow:
         if paused:
             self.events.publish(
                 TraceEvent(
-                    name="rework.skipped",
-                    data={"reason": "orchestrator_paused"},
+                    EventName.REWORK_SKIPPED,
+                    {"reason": "orchestrator_paused"},
                 )
             )
             return ReworkDecision.skip("Orchestrator paused")
@@ -150,8 +151,8 @@ class ReworkWorkflow:
         if available <= 0:
             self.events.publish(
                 TraceEvent(
-                    name="rework.skipped",
-                    data={
+                    EventName.REWORK_SKIPPED,
+                    {
                         "reason": "no_capacity",
                         "active": active_session_count,
                         "max": max_sessions,
@@ -167,8 +168,8 @@ class ReworkWorkflow:
 
         self.events.publish(
             TraceEvent(
-                name="rework.launching",
-                data={
+                EventName.REWORK_LAUNCHING,
+                {
                     "count": len(reworks_to_launch),
                     "capacity": available,
                     "pending": len(pending_reworks),
@@ -196,8 +197,8 @@ class ReworkWorkflow:
             reason = f"Exceeded max rework cycles ({rework_cycle} >= {max_cycles})"
             self.events.publish(
                 TraceEvent(
-                    name="rework.escalating",
-                    data={
+                    EventName.REWORK_ESCALATING,
+                    {
                         "rework_cycle": rework_cycle,
                         "max_cycles": max_cycles,
                         "reason": reason,

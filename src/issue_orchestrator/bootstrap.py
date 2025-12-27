@@ -20,9 +20,7 @@ from .execution import (
     create_plugin_manager,
     PluggyEventSink,
     PluggySessionRunner,
-    LifecycleIPCPlugin,
     LifecycleSSEPlugin,
-    LifecycleLoggingPlugin,
     GitHubAdapter,
 )
 from .control import (
@@ -41,7 +39,6 @@ from .control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
-    from .ipc.server import EventServer
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +96,6 @@ def build_orchestrator(
             logger.info("SSE lifecycle plugin registered")
         except Exception as e:
             logger.warning("Failed to register SSE plugin: %s", e)
-
-    # Always register logging plugin for visibility into orchestrator events
-    logging_plugin = LifecycleLoggingPlugin()
-    pm.register(logging_plugin, name="lifecycle_logging")
 
     # Create port adapters
     events = PluggyEventSink(pm)
@@ -316,163 +309,3 @@ def build_orchestrator_for_testing(
     )
 
 
-async def build_orchestrator_with_ipc(
-    config: Config,
-    enable_sse: bool = True,
-) -> tuple["Orchestrator", "EventServer"]:
-    """Build orchestrator with IPC server for external UI processes.
-
-    .. deprecated::
-        This function is deprecated. Use build_orchestrator() with SSE instead.
-        IPC (Unix socket) transport adds complexity without benefits over HTTP+SSE.
-        This function is currently unused and will be removed in a future version.
-
-    This variant starts the IPC server and registers the IPC plugin.
-    Use this when running in daemon mode with external UI clients.
-
-    Args:
-        config: Application configuration
-        enable_sse: Whether to also enable SSE
-
-    Returns:
-        Tuple of (Orchestrator, EventServer)
-    """
-    import warnings
-    warnings.warn(
-        "build_orchestrator_with_ipc is deprecated. Use build_orchestrator() with SSE instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    from .orchestrator import Orchestrator
-    from .ipc import EventServer
-
-    # Create the pluggy plugin manager
-    pm = create_plugin_manager(
-        terminal_plugin=config.terminal_adapter,
-        ui_mode=config.ui_mode,
-    )
-
-    # Start IPC server
-    ipc_server = EventServer()
-    await ipc_server.start()
-
-    # Register IPC plugin to forward events
-    ipc_plugin = LifecycleIPCPlugin(ipc_server)
-    pm.register(ipc_plugin, name="lifecycle_ipc")
-    logger.info("IPC server started at %s", ipc_server.socket_path)
-
-    # Register SSE plugin if enabled
-    if enable_sse:
-        try:
-            sse_plugin = LifecycleSSEPlugin()
-            pm.register(sse_plugin, name="lifecycle_sse")
-            logger.info("SSE lifecycle plugin registered")
-        except Exception as e:
-            logger.warning("Failed to register SSE plugin: %s", e)
-
-    # Always register logging plugin for visibility into orchestrator events
-    logging_plugin = LifecycleLoggingPlugin()
-    pm.register(logging_plugin, name="lifecycle_logging")
-
-    # Create port adapters
-    events = PluggyEventSink(pm)
-    runner = PluggySessionRunner(pm)
-
-    # Wire up subprocess events to flow through the main event system
-    from .ports.event_sink import TraceEvent
-
-    def handle_subprocess_event(event_name: str, event_data: dict) -> None:
-        """Forward subprocess events through the main event system."""
-        try:
-            trace_event = TraceEvent(name=event_name, data=event_data)
-            events.publish(trace_event)
-        except Exception as e:
-            logger.warning("Failed to forward subprocess event %s: %s", event_name, e)
-
-    ipc_server.set_event_handler(handle_subprocess_event)
-
-    # Create GitHub adapter if repo is configured
-    github = None
-    if config.repo:
-        github = GitHubAdapter(config.repo)
-
-    # Create control plane components
-    scheduler = Scheduler(config=config)
-
-    # Create issue resolver for external ID dependencies (M1-010 style)
-    issue_resolver = None
-    if github and config.repo:
-        issue_resolver = GitHubIssueResolver(
-            repo=config.repo,
-            issue_tracker=github,
-            events=events,
-        )
-
-    dependency_evaluator = DependencyEvaluator(
-        issue_checker=github,
-        events=events,
-        issue_resolver=issue_resolver,
-        repo=config.repo,
-    ) if github else None
-    session_manager = SessionManager(runner=runner, events=events, config=config)
-    label_sync = LabelSync(labels=github, events=events, pr_tracker=github) if github else None
-
-    # Create workflow instances
-    review_workflow = ReviewWorkflow(config=config, events=events)
-    rework_workflow = ReworkWorkflow(config=config, events=events)
-    triage_workflow = TriageWorkflow(config=config, events=events)
-
-    # Create the planner with all dependencies
-    planner = Planner(
-        config=config,
-        scheduler=scheduler,
-        dependency_evaluator=dependency_evaluator,
-        review_workflow=review_workflow,
-        rework_workflow=rework_workflow,
-        triage_workflow=triage_workflow,
-    )
-
-    # Create adapters for IO operations
-    worktree_manager = GitWorktreeManager()
-    working_copy = GitWorkingCopy()
-
-    # Create ActionApplier (IO boundary)
-    action_applier = ActionApplier(
-        labels=github,
-        sessions=session_manager,
-        events=events,
-        repository_host=github,
-        worktree_manager=worktree_manager,
-        issue_tracker=github,
-        reconcile=True,
-    ) if github else None
-
-    # Create FactGatherer (read-only snapshot creation)
-    fact_gatherer = FactGatherer(
-        config=config,
-        repository_host=github,
-    ) if github else None
-
-    # Create StateMachineManager
-    state_machine_manager = StateMachineManager(
-        config=config,
-        events=events,
-    )
-
-    # Build the orchestrator
-    orchestrator = Orchestrator(
-        config=config,
-        events=events,
-        runner=runner,
-        _repository_host=github,
-        planner=planner,
-        session_manager=session_manager,
-        label_sync=label_sync,
-        action_applier=action_applier,
-        fact_gatherer=fact_gatherer,
-        worktree_manager=worktree_manager,
-        working_copy=working_copy,
-        state_machine_manager=state_machine_manager,
-    )
-
-    return orchestrator, ipc_server

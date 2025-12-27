@@ -16,6 +16,7 @@ from issue_orchestrator.models import (
     PendingCleanup,
     PendingTriageReview,
 )
+from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.ports import PRInfo
 
 
@@ -100,7 +101,7 @@ class TestFactGathererCreateSnapshot:
     ):
         """Test snapshot includes pending reviews."""
         review = PendingReview(
-            issue_number=1,
+            issue_key=FakeIssueKey(name="1"),
             pr_number=10,
             pr_url="https://github.com/owner/repo/pull/10",
             branch_name="1-issue-1",
@@ -264,7 +265,7 @@ class TestFactGathererCleanupFacts:
         """Test returns None when no review workflow configured."""
         sample_state.pending_cleanups = [
             PendingCleanup(
-                issue_number=1,
+                issue=Issue(number=1, title="Test issue", labels=[]),
                 pr_number=10,
                 pr_url="https://github.com/owner/repo/pull/10",
                 branch_name="1-issue-1",
@@ -290,7 +291,7 @@ class TestFactGathererCleanupFacts:
 
         sample_state.pending_cleanups = [
             PendingCleanup(
-                issue_number=1,
+                issue=Issue(number=1, title="Test issue", labels=[]),
                 pr_number=10,
                 pr_url="https://github.com/owner/repo/pull/10",
                 branch_name="1-issue-1",
@@ -323,7 +324,7 @@ class TestFactGathererCleanupFacts:
 
         sample_state.pending_cleanups = [
             PendingCleanup(
-                issue_number=1,
+                issue=Issue(number=1, title="Test issue", labels=[]),
                 pr_number=10,
                 pr_url="https://github.com/owner/repo/pull/10",
                 branch_name="1-issue-1",
@@ -351,7 +352,7 @@ class TestFactGathererCleanupFacts:
 
         sample_state.pending_cleanups = [
             PendingCleanup(
-                issue_number=1,
+                issue=Issue(number=1, title="Test issue", labels=[]),
                 pr_number=10,
                 pr_url="https://github.com/owner/repo/pull/10",
                 branch_name="1-issue-1",

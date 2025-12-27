@@ -16,6 +16,13 @@ from issue_orchestrator.domain.state_machines.review_machine import (
     ReviewStateMachine,
     ReviewState,
 )
+from issue_orchestrator.models import Issue
+
+
+@pytest.fixture
+def sample_issue():
+    """Create a sample issue for state machine tests."""
+    return Issue(number=123, title="Test issue", labels=[])
 
 
 class TestIssueStateMachine:
@@ -23,7 +30,7 @@ class TestIssueStateMachine:
 
     def test_initialization_default_state(self):
         """Test state machine initializes with default AVAILABLE state."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         assert machine.issue_number == 123
         assert machine.get_state() == IssueState.AVAILABLE
@@ -32,7 +39,7 @@ class TestIssueStateMachine:
     def test_initialization_custom_state(self):
         """Test state machine initializes with custom initial state."""
         machine = IssueStateMachine(
-            issue_number=123,
+            issue=Issue(number=123, title="Test", labels=[]),
             initial_state=IssueState.IN_PROGRESS
         )
 
@@ -40,7 +47,7 @@ class TestIssueStateMachine:
 
     def test_happy_path_complete_flow(self):
         """Test the complete happy path: available -> claimed -> in_progress -> pr_pending -> completed."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         # Available -> Claimed
         machine.claim()
@@ -60,7 +67,7 @@ class TestIssueStateMachine:
 
     def test_blocking_flow(self):
         """Test blocking and unblocking an issue."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -76,7 +83,7 @@ class TestIssueStateMachine:
 
     def test_needs_human_flow(self):
         """Test needs_human flow."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -92,7 +99,7 @@ class TestIssueStateMachine:
 
     def test_release_from_claimed(self):
         """Test releasing an issue from claimed state."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         assert machine.get_state() == IssueState.CLAIMED
@@ -102,7 +109,7 @@ class TestIssueStateMachine:
 
     def test_release_from_in_progress(self):
         """Test releasing an issue from in_progress state."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -113,7 +120,7 @@ class TestIssueStateMachine:
 
     def test_release_from_blocked(self):
         """Test releasing an issue from blocked state."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -125,7 +132,7 @@ class TestIssueStateMachine:
 
     def test_release_from_needs_human(self):
         """Test releasing an issue from needs_human state."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -137,7 +144,7 @@ class TestIssueStateMachine:
 
     def test_pr_closed_returns_to_in_progress(self):
         """Test that closing a PR returns to in_progress state."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -149,7 +156,7 @@ class TestIssueStateMachine:
 
     def test_invalid_transition_raises_error(self):
         """Test that invalid transitions raise MachineError."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         # Can't start from available state
         with pytest.raises(MachineError):
@@ -157,7 +164,7 @@ class TestIssueStateMachine:
 
     def test_invalid_claim_from_in_progress(self):
         """Test that claiming from in_progress state is invalid."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -168,7 +175,7 @@ class TestIssueStateMachine:
 
     def test_cannot_release_from_completed(self):
         """Test that releasing from completed state is invalid."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -182,7 +189,7 @@ class TestIssueStateMachine:
 
     def test_cannot_release_from_pr_pending(self):
         """Test that releasing from pr_pending state is invalid."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -195,7 +202,7 @@ class TestIssueStateMachine:
 
     def test_transition_result_on_claim(self):
         """Test that TransitionResult is stored when claiming."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim(data={"agent": "web"})
 
@@ -209,7 +216,7 @@ class TestIssueStateMachine:
 
     def test_transition_result_on_start(self):
         """Test that TransitionResult is stored when starting."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start(data={"session_id": "session-123"})
@@ -220,7 +227,7 @@ class TestIssueStateMachine:
 
     def test_transition_result_on_block(self):
         """Test that TransitionResult is stored when blocking."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -232,7 +239,7 @@ class TestIssueStateMachine:
 
     def test_transition_result_on_needs_human(self):
         """Test that TransitionResult is stored when needs_human."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -244,7 +251,7 @@ class TestIssueStateMachine:
 
     def test_transition_result_on_unblock(self):
         """Test that TransitionResult is stored when unblocking."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -257,7 +264,7 @@ class TestIssueStateMachine:
 
     def test_transition_result_on_pr_created(self):
         """Test that TransitionResult is stored when PR is created."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -269,7 +276,7 @@ class TestIssueStateMachine:
 
     def test_transition_result_on_pr_rejected(self):
         """Test that TransitionResult is stored when PR is closed."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -282,7 +289,7 @@ class TestIssueStateMachine:
 
     def test_transition_result_on_completed(self):
         """Test that TransitionResult is stored when PR is merged."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()
@@ -295,7 +302,7 @@ class TestIssueStateMachine:
 
     def test_transition_result_on_release(self):
         """Test that TransitionResult is stored when releasing."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.release(data={"reason": "agent failed"})
@@ -306,7 +313,7 @@ class TestIssueStateMachine:
 
     def test_can_transition_returns_true_for_valid(self):
         """Test that can_transition returns True for valid transitions."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         assert machine.can_transition('claim') is True
         assert machine.can_transition('start') is False  # Not valid from AVAILABLE
@@ -317,7 +324,7 @@ class TestIssueStateMachine:
 
     def test_can_transition_returns_false_for_invalid(self):
         """Test that can_transition returns False for invalid transitions."""
-        machine = IssueStateMachine(issue_number=123)
+        machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         machine.claim()
         machine.start()

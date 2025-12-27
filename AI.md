@@ -100,6 +100,31 @@ curl -s http://localhost:8080/api/status | jq
 
 **Configuration:** `.issue-orchestrator.yaml` - see `examples/config.example.yaml`
 
+## Events vs Logs (Key Patterns)
+
+**Events** (machine-consumable):
+- Audience: Web UI, tests, automations
+- Stable names from `EventName` enum (`events/catalog.py`)
+- Structured payloads with `run_id`, `tick_id`, `schema` version
+- Emit via `self.events.publish(TraceEvent(EventName.TICK_STARTED, ctx.enrich({...})))`
+
+**Logs** (human-consumable):
+- Audience: Developers reading console/CI logs
+- Use `logging.getLogger(__name__)` with levels DEBUG/INFO/WARNING/ERROR
+- Include context via `extra=log_context(tick_id=1, issue_key="M1-011")`
+- Can change freely - UI/tests must NOT parse logs
+
+**Golden Rule**: UI and tests react to events, never parse log text.
+
+```python
+# Events - for UI/test synchronization
+from .events import EventName, EventContext
+self.events.publish(TraceEvent(EventName.TICK_COMPLETED, ctx.enrich({"idle": True})))
+
+# Logs - for debugging
+logger.info("[PLAN] %d action(s)", count, extra=log_context(tick_id=5))
+```
+
 ## Conventions
 
 - Ports in `ports/`, adapters in `execution/`

@@ -2,9 +2,6 @@
 
 This plugin implements the on_trace_event hook and forwards all events
 to SSE subscribers (web dashboard clients).
-
-This mirrors LifecycleIPCPlugin - both receive the same events via pluggy,
-but deliver them through different channels.
 """
 
 import asyncio

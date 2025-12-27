@@ -11,7 +11,7 @@ from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
 from ..config import Config
-from ..ports import EventSink
+from ..ports import EventSink, Issue
 
 logger = logging.getLogger(__name__)
 
@@ -45,17 +45,18 @@ class StateMachineManager:
         self._session_machines: dict[str, SessionStateMachine] = {}
         self._review_machines: dict[int, ReviewStateMachine] = {}
 
-    def get_issue_machine(self, issue_number: int) -> IssueStateMachine:
+    def get_issue_machine(self, issue: Issue) -> IssueStateMachine:
         """Get or create issue state machine.
 
         Args:
-            issue_number: The GitHub issue number
+            issue: The Issue object (identity via .key, lookup via .number)
 
         Returns:
             IssueStateMachine for the given issue
         """
+        issue_number = issue.number
         if issue_number not in self._issue_machines:
-            machine = IssueStateMachine(issue_number=issue_number)
+            machine = IssueStateMachine(issue=issue)
             self._issue_machines[issue_number] = machine
             logger.debug(f"[STATE_MACHINE] Created IssueStateMachine for #{issue_number}")
         return self._issue_machines[issue_number]

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import Config
+from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent
 
 logger = logging.getLogger(__name__)
@@ -181,8 +182,8 @@ class SessionManager:
         if success:
             self.events.publish(
                 TraceEvent(
-                    name="session.started",
-                    data={
+                    EventName.SESSION_STARTED,
+                    {
                         "session_type": ctx.ref.session_type.value,
                         "number": ctx.ref.number,
                         "session_name": ctx.ref.name,
@@ -194,8 +195,8 @@ class SessionManager:
         else:
             self.events.publish(
                 TraceEvent(
-                    name="session.start_failed",
-                    data={
+                    EventName.SESSION_START_FAILED,
+                    {
                         "session_type": ctx.ref.session_type.value,
                         "number": ctx.ref.number,
                         "session_name": ctx.ref.name,
@@ -215,8 +216,8 @@ class SessionManager:
         self.runner.kill_session(ref.number)
         self.events.publish(
             TraceEvent(
-                name="session.stopped",
-                data={
+                EventName.SESSION_STOPPED,
+                {
                     "session_type": ref.session_type.value,
                     "number": ref.number,
                     "session_name": ref.name,
@@ -276,8 +277,8 @@ class SessionManager:
         if count > 0:
             self.events.publish(
                 TraceEvent(
-                    name="session.cleanup",
-                    data={"cleaned_count": count},
+                    EventName.SESSION_CLEANUP,
+                    {"cleaned_count": count},
                 )
             )
             logger.info(f"Cleaned up {count} idle sessions")

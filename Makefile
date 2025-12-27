@@ -1,4 +1,4 @@
-.PHONY: help install typecheck lint-imports test test-unit test-integration test-e2e test-e2e-one validate validate-quick validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help install typecheck lint-imports test test-unit test-unit-cov test-integration test-e2e test-e2e-one validate validate-quick validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # Default target
 help:
@@ -7,6 +7,7 @@ help:
 	@echo "  typecheck           Run pyright type checking"
 	@echo "  lint-imports        Check import architecture contracts"
 	@echo "  test-unit           Run unit tests"
+	@echo "  test-unit-cov       Run unit tests with coverage report"
 	@echo "  test-integration    Run integration tests"
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
@@ -37,6 +38,9 @@ lint-imports:
 
 test-unit:
 	$(PYTEST) tests/unit -x -q --tb=short
+
+test-unit-cov:
+	$(PYTEST) tests/unit --cov=src/issue_orchestrator --cov-report=term-missing -x -q --tb=short
 
 test-integration:
 	$(PYTEST) tests/integration -x -q --tb=short

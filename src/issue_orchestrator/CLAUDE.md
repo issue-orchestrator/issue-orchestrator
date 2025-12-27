@@ -1,45 +1,52 @@
 # Orchestrator Core Development Guide
 
-## Event System - ALWAYS Use Events, Not Print Statements
+## Event System - ALWAYS Use EventName Constants
 
-**Critical**: When adding visibility/logging to the orchestrator, ALWAYS emit events via the EventSink, not `print()` statements.
+**Critical**: All events MUST use EventName constants from the catalog. Raw strings are not accepted.
 
-### Why Events?
+### Events vs Logs
 
-1. **Centralized Handling**: All events flow through pluggy hooks, enabling multiple sinks (logging, SSE, IPC, metrics) without code changes
-2. **Structured Data**: Events have typed data, making them parseable and queryable
-3. **Toggle-able**: Sinks can be enabled/disabled per deployment (e.g., verbose logging in e2e tests)
-4. **Audit Trail**: Events are automatically timestamped and can be stored
+- **Events** are for machines (UI, tests, automation) - structured, stable schema
+- **Logs** are for humans (developers) - can change freely
 
 ### How to Emit Events
 
 ```python
-# In orchestrator or any component with access to EventSink
-from ..ports.event_sink import TraceEvent
+from ..events import EventName
+from ..ports import TraceEvent
 
-# Create and publish the event
-event = TraceEvent(
-    name="session.started",  # Format: domain.action
-    data={
+# CORRECT - Use EventName constant
+self._events.publish(TraceEvent(
+    EventName.SESSION_STARTED,  # Type-checked!
+    {
         "issue_number": 123,
         "agent": "agent:developer",
         "worktree": "/path/to/worktree"
     }
-)
-self._events.publish(event)
+))
+
+# WRONG - Raw strings are NOT accepted
+# TraceEvent("session.started", {...})  # TypeError!
 ```
 
-### Event Naming Convention
+### Event Catalog
 
-Format: `{domain}.{action}`
+All canonical event names are defined in `events/catalog.py`. Event names follow the format: `{domain}.{action_past_tense}`
 
 Domains:
+- `orchestrator` - Lifecycle (started, ready, idle, paused, resumed, shutdown_*)
+- `tick` - Per-cycle boundaries (started, completed)
 - `session` - Agent session lifecycle (started, completed, failed, timeout)
 - `issue` - Issue state changes (claimed, blocked, needs_human)
-- `pr` - PR events (created, merged, closed)
-- `review` - Code review events (requested, approved, changes_requested, escalated)
-- `orchestrator` - Orchestrator state (ready, paused, resumed, state_changed)
-- `validation` - Validation events (started, completed, cache_hit, cache_miss)
+- `review` - Code review events (started, approved, changes_requested)
+- `rework` - Rework cycle events (started, skipped, launching)
+- `transition` - State machine transitions (applied, rejected)
+
+### Adding New Events
+
+1. Add the EventName constant to `events/catalog.py`
+2. Emit using `TraceEvent(EventName.YOUR_EVENT, {...})`
+3. Events automatically flow to all registered sinks (SSE, logging)
 
 ### How Events Flow
 
@@ -47,40 +54,18 @@ Domains:
 Code emits event          EventSink.publish()         pluggy hooks
       |                         |                          |
       v                         v                          v
-TraceEvent(name, data) --> PluggyEventSink --> on_trace_event(event, data)
-                                                    |
-                            +-------------------+---+-------------------+
-                            |                   |                       |
-                     LifecycleIPCPlugin  LifecycleSSEPlugin  LifecycleLoggingPlugin
-                            |                   |                       |
-                            v                   v                       v
-                       IPC socket           SSE stream           Python logger
+TraceEvent(EventName.X, {}) --> PluggyEventSink --> on_trace_event(event, data)
+                                                          |
+                                                          v
+                                                   LifecycleSSEPlugin
+                                                          |
+                                                          v
+                                                   SSE to web UI
 ```
-
-### Adding New Events
-
-1. Define the event name using the `domain.action` convention
-2. Document expected data fields in `hookspec.py` under `TraceEventSpec`
-3. Emit using `self._events.publish(TraceEvent(...))`
-4. Events automatically flow to all registered sinks
-
-### For E2E Tests
-
-Events are logged to `issue_orchestrator.events` logger. To see them during tests:
-
-```bash
-# Run with verbose output
-pytest tests/e2e -v -s
-```
-
-The `LifecycleLoggingPlugin` is registered by default and logs all events at INFO level.
 
 ### Related Files
 
+- `events/catalog.py` - Canonical EventName constants (SOURCE OF TRUTH)
 - `ports/event_sink.py` - EventSink protocol and TraceEvent dataclass
 - `execution/event_sink_adapter.py` - Pluggy-backed EventSink adapter
-- `execution/lifecycle_logging.py` - Logging plugin that logs all events
-- `execution/lifecycle_ipc.py` - IPC broadcast plugin
-- `execution/lifecycle_sse.py` - SSE broadcast plugin
-- `hookspec.py` - Hook specifications including on_trace_event
-- `bootstrap.py` - Where plugins are registered
+- `execution/lifecycle_sse.py` - SSE broadcast plugin (web UI)

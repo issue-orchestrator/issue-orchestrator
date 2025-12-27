@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
 from ..config import Config
+from ..events import EventName
 from ..ports.repository_host import RepositoryHost
 from ..ports import EventSink, TraceEvent
 
@@ -71,7 +72,7 @@ class FactGatherer:
             )
             all_issues.extend(issues)
             if self.events:
-                self.events.publish(TraceEvent("issues.fetched", {
+                self.events.publish(TraceEvent(EventName.ISSUES_FETCHED, {
                     "agent": agent_label,
                     "labels": labels,
                     "milestone": milestone,

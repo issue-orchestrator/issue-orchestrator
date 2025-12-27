@@ -35,11 +35,10 @@ from .manager import PluginManager, create_plugin_manager, BUILTIN_PLUGINS
 from .terminal_tmux import TmuxPlugin
 from .terminal_iterm import ITermPlugin
 from .github_adapter import GitHubAdapter
+from .github_issue import GitHubIssue
 from .git_working_copy import GitWorkingCopy
 from .json_store import JsonSessionStore
-from .lifecycle_ipc import LifecycleIPCPlugin
 from .lifecycle_sse import LifecycleSSEPlugin
-from .lifecycle_logging import LifecycleLoggingPlugin
 from .event_sink_adapter import PluggyEventSink, CompositeEventSink, LoggingEventSink
 from .session_runner_adapter import PluggySessionRunner
 from .github_issue_resolver import GitHubIssueResolver
@@ -58,11 +57,11 @@ __all__ = [
     "TmuxPlugin",
     "ITermPlugin",
     # Lifecycle plugins
-    "LifecycleIPCPlugin",
     "LifecycleSSEPlugin",
-    "LifecycleLoggingPlugin",
     # Platform adapters
     "GitHubAdapter",
+    # Issue implementation (Issue Protocol -> GitHubIssue)
+    "GitHubIssue",
     # Issue resolvers (IssueKey -> backing-store handle)
     "GitHubIssueResolver",
     # Local VCS adapters

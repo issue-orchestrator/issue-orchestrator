@@ -738,8 +738,15 @@
             };
 
             // Listen for specific events that should trigger refresh
-            // state_changed fires every 30s to update session runtimes (Starting -> Active)
-            const refreshEvents = ['session_started', 'session_completed', 'paused', 'resumed', 'startup_complete', 'state_changed'];
+            // Events use canonical names from events/catalog.py (dot notation)
+            // Note: startup_complete is broadcast directly (not via TraceEvent) so keeps underscore
+            const refreshEvents = [
+                'session.started',     // EventName.SESSION_STARTED
+                'session.completed',   // EventName.SESSION_COMPLETED
+                'orchestrator.paused', // EventName.ORCHESTRATOR_PAUSED
+                'orchestrator.resumed', // EventName.ORCHESTRATOR_RESUMED
+                'startup_complete',    // Broadcast directly from web.py (not via TraceEvent)
+            ];
             refreshEvents.forEach(eventType => {
                 evtSource.addEventListener(eventType, function(e) {
                     console.log('[SSE] Received event:', eventType, e.data);

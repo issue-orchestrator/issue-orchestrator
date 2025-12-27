@@ -28,6 +28,7 @@ Usage:
                 labels.add_label(issue.number, "processed")
 """
 
+from issue_orchestrator.ports.issue import Issue
 from issue_orchestrator.ports.issue_tracker import IssueTracker, IssueRepository
 from issue_orchestrator.ports.label_set import LabelSet, LabelManager
 from issue_orchestrator.ports.pull_request_tracker import PRInfo, PullRequestTracker, PRRepository
@@ -39,13 +40,15 @@ from issue_orchestrator.ports.working_copy import (
     PushResult,
     RebaseResult,
 )
-from issue_orchestrator.ports.event_sink import EventSink, TraceEvent, NullEventSink
+from issue_orchestrator.ports.event_sink import EventSink, TraceEvent, NullEventSink, InMemoryEventSink
 from issue_orchestrator.ports.session_runner import SessionRunner, NullSessionRunner
 from issue_orchestrator.ports.repository_host import RepositoryHost
 from issue_orchestrator.ports.issue_resolver import IssueResolver
 from issue_orchestrator.ports.worktree_manager import WorktreeManager, WorktreeInfo
 
 __all__ = [
+    # Issue Protocol (abstract work item)
+    "Issue",
     # Remote platform operations (new names)
     "IssueTracker",
     "LabelSet",
@@ -71,6 +74,7 @@ __all__ = [
     "EventSink",
     "TraceEvent",
     "NullEventSink",
+    "InMemoryEventSink",
     # Terminal session management
     "SessionRunner",
     "NullSessionRunner",

@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, Set
 
+from ..events import EventName
 from ..ports import EventSink, TraceEvent
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PullRequestTracker
@@ -126,8 +127,8 @@ class LabelSync:
         if result.changed:
             self.events.publish(
                 TraceEvent(
-                    name="labels.synced",
-                    data={
+                    EventName.LABELS_SYNCED,
+                    {
                         "issue_number": issue_number,
                         "added": list(added),
                         "removed": list(removed),
@@ -244,12 +245,11 @@ class LabelSync:
                 try:
                     self.labels.add_label(pr.number, code_review_label)
                     fixed_count += 1
-                    print(f"🏷️  Added '{code_review_label}' to orphaned PR #{pr.number}")
-                    logger.info("[LABEL_SYNC] Reconciled label on PR #%d", pr.number)
+                    logger.info("[LABEL_SYNC] Added '%s' to orphaned PR #%d", code_review_label, pr.number)
                 except Exception as e:
                     logger.warning("[LABEL_SYNC] Failed to reconcile label on PR #%d: %s", pr.number, e)
 
         if fixed_count > 0:
-            print(f"✅ Reconciled labels on {fixed_count} orphaned PR(s)")
+            logger.info("Reconciled labels on %d orphaned PR(s)", fixed_count)
 
         return fixed_count

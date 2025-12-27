@@ -21,8 +21,9 @@ if TYPE_CHECKING:
     from ..domain.state_machines.review_machine import ReviewStateMachine
 
 from ..config import Config
+from ..events import EventName
 from ..models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
-from ..ports import EventSink, TraceEvent, RepositoryHost
+from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class CompletionHandler:
         config: Config,
         events: EventSink,
         repository_host: RepositoryHost,
-        get_issue_machine_fn: Callable[[int], Optional["IssueStateMachine"]],
+        get_issue_machine_fn: Callable[[Issue], Optional["IssueStateMachine"]],
         get_session_machine_fn: Callable[[str], Optional["SessionStateMachine"]],
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
     ):
@@ -181,26 +182,26 @@ class CompletionHandler:
         status_reason = status_reasons.get(status, "Unknown")
 
         if status == SessionStatus.COMPLETED:
-            self.events.publish(TraceEvent("session.completed", {
+            self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, {
                 "issue_number": session.issue.number,
                 "session_id": session.tmux_session_name,
                 "pr_url": pr_url,
                 "runtime_minutes": session.runtime_minutes,
             }))
         elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
-            self.events.publish(TraceEvent("session.failed", {
+            self.events.publish(TraceEvent(EventName.SESSION_FAILED, {
                 "issue_number": session.issue.number,
                 "session_id": session.tmux_session_name,
                 "error": status_reason,
                 "runtime_minutes": session.runtime_minutes,
             }))
         elif status == SessionStatus.BLOCKED:
-            self.events.publish(TraceEvent("issue.blocked", {
+            self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, {
                 "issue_number": session.issue.number,
                 "reason": status_reason,
             }))
         elif status == SessionStatus.NEEDS_HUMAN:
-            self.events.publish(TraceEvent("issue.needs_human", {
+            self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, {
                 "issue_number": session.issue.number,
                 "reason": status_reason,
             }))
@@ -269,7 +270,7 @@ class CompletionHandler:
         pr_url: Optional[str],
     ) -> None:
         """Update the issue state machine."""
-        issue_machine = self._get_issue_machine(session.issue.number)
+        issue_machine = self._get_issue_machine(session.issue)
         if issue_machine:
             logger.debug(f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}")
             if status == SessionStatus.COMPLETED and pr_url:
@@ -347,7 +348,7 @@ class CompletionHandler:
 
         if should_defer:
             pending_cleanup = PendingCleanup(
-                issue_number=session.issue.number,
+                issue=session.issue,
                 pr_number=pr_number,
                 pr_url=pr_url,
                 branch_name=session.branch_name,

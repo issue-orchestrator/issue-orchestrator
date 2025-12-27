@@ -25,6 +25,7 @@ from issue_orchestrator.models import (
     PendingTriageReview,
     AgentConfig,
 )
+from issue_orchestrator.domain.issue_key import FakeIssueKey
 
 
 def make_config(**kwargs) -> Config:
@@ -233,7 +234,7 @@ class TestPlanReviews:
         mock_decision.should_launch = True
         mock_decision.skip_reason = None
         mock_decision.reviews_to_launch = [
-            PendingReview(issue_number=1, pr_number=100, pr_url="url", branch_name="branch"),
+            PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch"),
         ]
         mock_workflow.should_launch_reviews.return_value = mock_decision
 
@@ -245,7 +246,7 @@ class TestPlanReviews:
 
         snapshot = make_snapshot(
             pending_reviews=[
-                PendingReview(issue_number=1, pr_number=100, pr_url="url", branch_name="branch"),
+                PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch"),
             ],
         )
 
@@ -405,7 +406,7 @@ class TestPlanDiscoveredReviews:
 
         # Already queued in pending_reviews
         already_pending = PendingReview(
-            issue_number=42,
+            issue_key=FakeIssueKey(name="42"),
             pr_number=100,
             pr_url="https://github.com/test/repo/pull/100",
             branch_name="feature/issue-42",

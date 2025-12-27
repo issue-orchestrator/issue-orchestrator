@@ -17,10 +17,10 @@ from ..ports.issue_tracker import IssueTracker
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PRInfo, PullRequestTracker
 from .. import _github_impl as github
-from ..models import Issue
+from .github_issue import GitHubIssue
 
 if TYPE_CHECKING:
-    from ..domain.issue_key import GitHubIssueKey
+    from ..domain.issue_key import IssueKey, GitHubIssueKey
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class GitHubAdapter:
         milestone: str | None = None,
         state: str = "open",
         limit: int = 100,
-    ) -> list[Issue]:
+    ) -> list[GitHubIssue]:
         """List issues matching the given criteria.
 
         Args:
@@ -72,31 +72,44 @@ class GitHubAdapter:
             limit: Maximum number of issues to return.
 
         Returns:
-            List of Issue objects matching the criteria. Returns empty list on error.
+            List of GitHubIssue objects matching the criteria. Returns empty list on error.
         """
         try:
-            return github.list_issues(
+            # Get raw issues from github module (returns old Issue type)
+            raw_issues = github.list_issues(
                 repo=self.repo,
                 labels=labels,
                 state=state,
                 milestone=milestone,
                 limit=limit,
             )
+            # Convert to GitHubIssue (frozen, with key-based equality)
+            return [
+                GitHubIssue(
+                    number=issue.number,
+                    repo=self.repo,
+                    title=issue.title,
+                    labels=tuple(issue.labels),
+                    state=issue.state,
+                    body=issue.body,
+                    milestone=issue.milestone,
+                    milestone_number=issue.milestone_number,
+                    milestone_due_on=issue.milestone_due_on,
+                )
+                for issue in raw_issues
+            ]
         except github.GitHubError as e:
             logger.error(f"Failed to list issues: {e}")
             return []
 
-    def get_issue(self, issue_number: int) -> Issue | None:
+    def get_issue(self, issue_number: int) -> GitHubIssue | None:
         """Get a specific issue by number.
-
-        This method retrieves a single issue by listing issues with a limit of 1.
-        An alternative approach would be to use 'gh issue view' with JSON output.
 
         Args:
             issue_number: The issue number to retrieve.
 
         Returns:
-            The Issue object if found, None otherwise.
+            The GitHubIssue object if found, None otherwise.
         """
         try:
             # Use gh issue view to get a specific issue
@@ -105,10 +118,11 @@ class GitHubAdapter:
 
             if isinstance(output, dict):
                 milestone_obj = output.get("milestone")
-                return Issue(
+                return GitHubIssue(
                     number=output["number"],
+                    repo=self.repo,
                     title=output["title"],
-                    labels=[label["name"] for label in output.get("labels", [])],
+                    labels=tuple(label["name"] for label in output.get("labels", [])),
                     state=output.get("state", "open"),
                     body=output.get("body"),
                     milestone=milestone_obj.get("title") if milestone_obj else None,
@@ -121,6 +135,32 @@ class GitHubAdapter:
             return None
         except Exception as e:
             logger.error(f"Unexpected error getting issue {issue_number}: {e}")
+            return None
+
+    def get_issue_by_key(self, key: "IssueKey") -> GitHubIssue | None:
+        """Get an issue by its IssueKey.
+
+        This is the reverse lookup: IssueKey -> GitHubIssue.
+        For GitHubIssueKey, extracts the issue number and fetches.
+
+        Args:
+            key: The IssueKey to look up.
+
+        Returns:
+            The GitHubIssue if found, None otherwise.
+        """
+        from ..domain.issue_key import GitHubIssueKey
+
+        if isinstance(key, GitHubIssueKey):
+            # If external_id is numeric, it's the issue number
+            if key.external_id.isdigit():
+                return self.get_issue(int(key.external_id))
+            # Otherwise, we need to search - for now, return None
+            # Future: could search by title prefix
+            logger.warning(f"Cannot reverse lookup non-numeric external_id: {key}")
+            return None
+        else:
+            logger.warning(f"Cannot lookup non-GitHub IssueKey: {key}")
             return None
 
     def get_issue_labels(self, issue_number: int) -> list[str]:

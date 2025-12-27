@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from .control.actions import LaunchSessionAction, EscalateToHumanAction
     from .models import TriageFacts
 
+from .events import EventName, EventContext
+
 logger = logging.getLogger(__name__)
 
 def log_transition(entity_type: str, number: int, from_state: str, to_state: str, reason: str, extra: dict | None = None) -> None:
@@ -73,6 +75,7 @@ class Orchestrator:
     _last_ui_update: float = field(default=0.0, init=False)
     _loop_iteration: int = field(default=0, init=False)
     _ui_update_interval: int = field(default=30, init=False)
+    _event_context: EventContext = field(default_factory=EventContext, init=False)
 
     def __post_init__(self):
         if self._repository_host is None:
@@ -170,7 +173,7 @@ class Orchestrator:
     def _completion_handler(self) -> CompletionHandler:
         if self._completion_handler_instance is None:
             self._completion_handler_instance = CompletionHandler(self.config, self.events, self.repository_host,
-                lambda n: self.issue_machines.get(n), lambda s: self.session_machines.get(s), lambda n: self.review_machines.get(n))
+                lambda issue: self.issue_machines.get(issue.number), lambda s: self.session_machines.get(s), lambda n: self.review_machines.get(n))
         return self._completion_handler_instance
 
     @property
@@ -211,7 +214,7 @@ class Orchestrator:
         if t: self._launch_triage_session(t)
         return next((s for s in self.state.active_sessions if s.issue.number == n), None)
 
-    def _get_issue_machine(self, n: int) -> IssueStateMachine: return self._state_machines.get_issue_machine(n)
+    def _get_issue_machine(self, issue: Issue) -> IssueStateMachine: return self._state_machines.get_issue_machine(issue)
     def _get_session_machine(self, name: str, n: int, timeout: int) -> SessionStateMachine: return self._state_machines.get_session_machine(name, n, timeout)
     def _get_review_machine(self, pr: int, issue: int) -> ReviewStateMachine: return self._state_machines.get_review_machine(pr, issue)
 
@@ -221,7 +224,7 @@ class Orchestrator:
     def _parse_session_ref(self, session_name: str, operation: str) -> "SessionRef":
         from .control.session_manager import SessionRef
         try: return SessionRef.from_name(session_name)
-        except ValueError as e: self.events.publish(TraceEvent("session.name_parse_error", {"session_name": session_name, "error": str(e)})); raise
+        except ValueError as e: self.events.publish(TraceEvent(EventName.SESSION_NAME_PARSE_ERROR, {"session_name": session_name, "error": str(e)})); raise
 
     def _create_session(self, name: str, cmd: str, wd: Path, title: str | None = None) -> bool:
         from .control.session_manager import SessionContext
@@ -366,13 +369,46 @@ class Orchestrator:
 
     def tick(self) -> bool:
         self._loop_iteration += 1
+        self._event_context.tick_id = self._loop_iteration
         logger.info("[LOOP] Iteration %d - active=%d, paused=%s", self._loop_iteration, len(self.state.active_sessions), self.state.paused)
-        if self._shutdown_requested: return False
+
+        # Emit tick.started
+        self.events.publish(TraceEvent(
+            EventName.TICK_STARTED,
+            self._event_context.enrich({}),
+        ))
+
+        if self._shutdown_requested:
+            self.events.publish(TraceEvent(
+                EventName.TICK_COMPLETED,
+                self._event_context.enrich({"idle": True, "reason": "shutdown_requested"}),
+            ))
+            return False
+
         self._process_active_sessions()
-        self.scan_needs_code_review_prs(); self.scan_needs_rework_prs()
+        self.scan_needs_code_review_prs()
+        self.scan_needs_rework_prs()
+
         if not self.state.paused and len(self.state.active_sessions) < self.config.max_concurrent_sessions:
             self._run_planning_cycle()
+        else:
+            # Emit plan.noop when we skip planning
+            reason = "paused" if self.state.paused else "at_capacity"
+            self.events.publish(TraceEvent(
+                EventName.PLAN_NOOP,
+                self._event_context.enrich({"reason": reason}),
+            ))
+
         self._emit_heartbeat_if_needed()
+
+        # Emit tick.completed
+        self.events.publish(TraceEvent(
+            EventName.TICK_COMPLETED,
+            self._event_context.enrich({
+                "idle": len(self.state.active_sessions) == 0,
+                "active_sessions": len(self.state.active_sessions),
+            }),
+        ))
         return True
 
     def _process_active_sessions(self) -> None:
@@ -399,9 +435,32 @@ class Orchestrator:
             self.state.cached_queue_issues = [i for i in filtered if i.number == self.config.filter_issue] if self.config.filter_issue else filtered
 
         snapshot = self.fact_gatherer.create_snapshot(self.state, self.state.cached_queue_issues)
+
+        # Emit facts.gathered
+        self.events.publish(TraceEvent(
+            EventName.FACTS_GATHERED,
+            self._event_context.enrich({
+                "issues_count": len(self.state.cached_queue_issues),
+                "active_sessions": len(self.state.active_sessions),
+                "pending_reviews": len(self.state.pending_reviews),
+                "pending_reworks": len(self.state.pending_reworks),
+            }),
+        ))
+
         plan = self.planner.plan(snapshot)
+
+        # Emit plan.computed
+        self.events.publish(TraceEvent(
+            EventName.PLAN_COMPUTED,
+            self._event_context.enrich({
+                "steps": plan.action_count,
+                "actions": [a.action_type.value for a in plan.actions],
+            }),
+        ))
+
         if plan.action_count > 0:
             logger.info("[PLAN] %d action(s): %s", plan.action_count, ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}" for a in plan.actions))
+
         self._apply_plan(plan)
         self._clear_discovered_facts()
 
@@ -412,40 +471,68 @@ class Orchestrator:
     def _emit_heartbeat_if_needed(self) -> None:
         """Emit periodic heartbeat event for observability (not UI-specific)."""
         if time.time() - self._last_ui_update >= self._ui_update_interval and self.state.active_sessions:
-            self.events.publish(TraceEvent("orchestrator.heartbeat", {
-                "active_count": len(self.state.active_sessions),
-                "sessions": [s.issue.number for s in self.state.active_sessions],
-                "iteration": self._loop_iteration,
-            }))
+            self.events.publish(TraceEvent(
+                EventName.ORCHESTRATOR_HEARTBEAT,
+                self._event_context.enrich({
+                    "active_count": len(self.state.active_sessions),
+                    "sessions": [s.issue.number for s in self.state.active_sessions],
+                }),
+            ))
             self._last_ui_update = time.time()
 
     async def run_loop(self) -> None:
         logger.info("Starting orchestration loop")
+
+        # Emit orchestrator.started
+        self.events.publish(TraceEvent(
+            EventName.ORCHESTRATOR_STARTED,
+            self._event_context.enrich({
+                "mode": "web" if hasattr(self, "_web_mode") else "headless",
+            }),
+        ))
+
         self.reconcile_orphaned_pr_labels()
         self._last_issue_fetch, self._last_ui_update, self._loop_iteration = 0.0, time.time(), 0
+
         while not self._shutdown_requested:
             try:
-                if not self.tick(): break
+                if not self.tick():
+                    break
             except Exception as e:
                 logger.exception("[LOOP] Error in iteration %d: %s", self._loop_iteration, e)
             await asyncio.sleep(10)
+
         # Shutdown sequence
         active = self.state.active_sessions
-        self.events.publish(TraceEvent("orchestrator.shutdown_started", {
-            "active_session_count": len(active), "sessions": [s.issue.number for s in active],
-        }))
-        self.events.publish(TraceEvent("orchestrator.shutdown_completed", {
-            "iterations": self._loop_iteration,
-        }))
+        self.events.publish(TraceEvent(
+            EventName.ORCHESTRATOR_SHUTDOWN_STARTED,
+            self._event_context.enrich({
+                "force": False,
+                "active_sessions": len(active),
+                "sessions": [s.issue.number for s in active],
+            }),
+        ))
+        self.events.publish(TraceEvent(
+            EventName.ORCHESTRATOR_SHUTDOWN_COMPLETED,
+            self._event_context.enrich({
+                "force": False,
+                "active_sessions_final": len(self.state.active_sessions),
+                "iterations": self._loop_iteration,
+            }),
+        ))
 
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""
         self._shutdown_requested = True
         active = self.state.active_sessions
-        self.events.publish(TraceEvent("orchestrator.shutdown_requested", {
-            "force": force, "active_session_count": len(active),
-            "sessions": [s.issue.number for s in active],
-        }))
+        self.events.publish(TraceEvent(
+            EventName.ORCHESTRATOR_SHUTDOWN_REQUESTED,
+            self._event_context.enrich({
+                "force": force,
+                "active_session_count": len(active),
+                "sessions": [s.issue.number for s in active],
+            }),
+        ))
         if not active:
             logger.info("Shutdown requested - no active sessions, exiting")
             return
@@ -465,22 +552,80 @@ class Orchestrator:
     def pause(self) -> None:
         self.state.paused = True
         logger.info("Orchestrator paused")
-        self.events.publish(TraceEvent("orchestrator.paused"))
+        self.events.publish(TraceEvent(
+            EventName.ORCHESTRATOR_PAUSED,
+            self._event_context.enrich({}),
+        ))
 
     def resume(self) -> None:
         self.state.paused = False
         logger.info("Orchestrator resumed")
-        self.events.publish(TraceEvent("orchestrator.resumed"))
+        self.events.publish(TraceEvent(
+            EventName.ORCHESTRATOR_RESUMED,
+            self._event_context.enrich({}),
+        ))
 
     def _apply_plan(self, plan: "Plan") -> None:
+        if plan.action_count == 0:
+            return
+
+        # Emit apply.started
+        self.events.publish(TraceEvent(
+            EventName.APPLY_STARTED,
+            self._event_context.enrich({"steps": plan.action_count}),
+        ))
+
+        applied_count = 0
+        failed_count = 0
+
         for action in plan.actions:
-            if self.state.paused: break
+            if self.state.paused:
+                break
             try:
                 result = self.action_applier.apply(action)
-                if result.success: self._update_state_after_action(action, result)
-                else: logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
+                if result.success:
+                    self._update_state_after_action(action, result)
+                    applied_count += 1
+                    # Emit apply.step_applied
+                    self.events.publish(TraceEvent(
+                        EventName.APPLY_STEP_APPLIED,
+                        self._event_context.enrich({
+                            "step_type": action.action_type.value,
+                            "issue_number": getattr(action, "number", getattr(action, "issue_number", None)),
+                            "result": "success",
+                        }),
+                    ))
+                else:
+                    failed_count += 1
+                    logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
+                    # Emit apply.failed
+                    self.events.publish(TraceEvent(
+                        EventName.APPLY_FAILED,
+                        self._event_context.enrich({
+                            "step_type": action.action_type.value,
+                            "issue_number": getattr(action, "number", getattr(action, "issue_number", None)),
+                            "error": result.error or "unknown",
+                        }),
+                    ))
             except Exception as e:
+                failed_count += 1
                 logger.exception("Failed to apply action %s: %s", action, e)
+                self.events.publish(TraceEvent(
+                    EventName.APPLY_FAILED,
+                    self._event_context.enrich({
+                        "step_type": action.action_type.value,
+                        "error": str(e),
+                    }),
+                ))
+
+        # Emit apply.completed
+        self.events.publish(TraceEvent(
+            EventName.APPLY_COMPLETED,
+            self._event_context.enrich({
+                "applied_steps": applied_count,
+                "failed_steps": failed_count,
+            }),
+        ))
 
     def _update_state_after_action(self, action: "Action", result: "ActionResult") -> None:
         from .control.actions import ActionType, LaunchSessionAction, CreateTriageIssueAction, CleanupSessionAction, EscalateToHumanAction, QueueReviewAction, QueueReworkAction, QueueTriageAction
@@ -497,7 +642,7 @@ class Orchestrator:
         elif t == ActionType.QUEUE_REVIEW:
             a = cast(QueueReviewAction, action)
             if not any(r.pr_number == a.pr_number for r in self.state.pending_reviews):
-                self.state.pending_reviews.append(PendingReview(a.issue_number, a.pr_number, a.pr_url, a.branch_name))
+                self.state.pending_reviews.append(PendingReview(self.repository_host.create_issue_key(a.issue_number), a.pr_number, a.pr_url, a.branch_name))
                 log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
                 self._get_review_machine(a.pr_number, a.issue_number)
         elif t == ActionType.QUEUE_REWORK:
@@ -529,8 +674,16 @@ class Orchestrator:
         from .models import DependencyProblem
         new = {i.number: DependencyProblem(i.number, i.title, [], r) for i, r in dep_blocked}
         blocked, unblocked = set(new) - set(self.state.dependency_problems), set(self.state.dependency_problems) - set(new)
-        for n in blocked: self.events.publish(TraceEvent("dependency.blocked", {"issue_number": n, "summary": new[n].summary}))
-        for n in unblocked: self.events.publish(TraceEvent("dependency.unblocked", {"issue_number": n}))
+        for n in blocked:
+            self.events.publish(TraceEvent(
+                EventName.DEPENDENCY_BLOCKED,
+                self._event_context.enrich({"issue_number": n, "summary": new[n].summary}),
+            ))
+        for n in unblocked:
+            self.events.publish(TraceEvent(
+                EventName.DEPENDENCY_UNBLOCKED,
+                self._event_context.enrich({"issue_number": n}),
+            ))
         self.state.dependency_problems = new
 
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:

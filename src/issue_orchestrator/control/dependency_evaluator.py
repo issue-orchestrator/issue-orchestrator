@@ -21,6 +21,7 @@ from ..domain.dependencies import (
     parse_dependency_refs,
 )
 from ..domain.issue_key import GitHubIssueKey
+from ..events import EventName
 from ..ports import EventSink, TraceEvent, IssueResolver
 
 logger = logging.getLogger(__name__)
@@ -239,8 +240,8 @@ class DependencyEvaluator:
         """Emit trace event for dependency evaluation."""
         self.events.publish(
             TraceEvent(
-                name="dependencies.evaluated",
-                data={
+                EventName.DEPENDENCIES_EVALUATED,
+                {
                     "issue_number": report.issue_number,
                     "runnable": report.runnable,
                     "satisfied_count": len(report.satisfied),

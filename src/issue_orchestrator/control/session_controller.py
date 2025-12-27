@@ -22,6 +22,7 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .completion_processor import CompletionProcessor, ProcessingResult
 
+from ..events import EventName
 from ..models import SessionStatus
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
@@ -116,7 +117,7 @@ class SessionController:
         # This is the source of truth for agent intent
         # Each agent writes to its own file (based on completion_path)
         full_path = (worktree_path / completion_path).resolve() if completion_path else (worktree_path / ".issue-orchestrator/completion.json").resolve()
-        self._emit_event("completion.lookup", {
+        self._emit_event(EventName.COMPLETION_LOOKUP, {
             "issue_number": issue_number,
             "session_name": session_name,
             "worktree_path": str(worktree_path.resolve()),
@@ -144,7 +145,7 @@ class SessionController:
                 except Exception as e:
                     logger.debug("Could not read session log: %s", e)
 
-            self._emit_event("session.no_completion_record", {
+            self._emit_event(EventName.SESSION_NO_COMPLETION_RECORD, {
                 "issue_number": issue_number,
                 "session_name": session_name,
                 "observation": observation.observation.value,
@@ -171,7 +172,7 @@ class SessionController:
                 "Session %s timed out but has completion.json - recovering work",
                 session_name,
             )
-            self._emit_event("session.timeout_recovered", {
+            self._emit_event(EventName.SESSION_TIMEOUT_RECOVERED, {
                 "issue_number": issue_number,
                 "session_name": session_name,
                 "outcome": record.outcome.value,
@@ -197,7 +198,7 @@ class SessionController:
         )
 
         # Emit event for observability (tests can subscribe to see what happened)
-        self._emit_event("session.processing_completed", {
+        self._emit_event(EventName.SESSION_PROCESSING_COMPLETED, {
             "issue_number": issue_number,
             "session_name": session_name,
             "success": result.success,
@@ -226,6 +227,6 @@ class SessionController:
             reason=f"Processed completion record with outcome: {record.outcome.value}",
         )
 
-    def _emit_event(self, name: str, data: dict) -> None:
+    def _emit_event(self, event_type: EventName, data: dict) -> None:
         """Emit a trace event."""
-        self.events.publish(TraceEvent(name=name, data=data))
+        self.events.publish(TraceEvent(event_type, data))

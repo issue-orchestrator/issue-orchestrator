@@ -50,11 +50,13 @@ class TestOrchestratorDependencyProblems:
         state = OrchestratorState()
 
         # Create orchestrator and inject dependencies
+        from issue_orchestrator.events import EventContext
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
             orch.state = state
             orch.events = events
             orch.config = config
+            orch._event_context = EventContext()
 
         # Call update with a blocked issue
         issue = self.make_issue(5, "Blocked Issue")
@@ -96,11 +98,13 @@ class TestOrchestratorDependencyProblems:
             )
         }
 
+        from issue_orchestrator.events import EventContext
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
             orch.state = state
             orch.events = events
             orch.config = config
+            orch._event_context = EventContext()
 
         # Call update with empty blocked list (issue resolved)
         orch._update_dependency_problems([])
@@ -124,11 +128,13 @@ class TestOrchestratorDependencyProblems:
         events = MagicMock(spec=EventSink)
         state = OrchestratorState()
 
+        from issue_orchestrator.events import EventContext
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
             orch.state = state
             orch.events = events
             orch.config = config
+            orch._event_context = EventContext()
 
         # Call update with empty list twice
         orch._update_dependency_problems([])

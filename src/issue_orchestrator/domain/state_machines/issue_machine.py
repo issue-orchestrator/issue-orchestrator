@@ -10,11 +10,14 @@ TraceEvents via EventSink.
 
 import logging
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from transitions import Machine
 
 from .transition_result import TransitionResult
+
+if TYPE_CHECKING:
+    from ...ports import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +55,14 @@ class IssueStateMachine:
         last_transition: Result of the most recent transition (for event emission)
     """
 
-    def __init__(self, issue_number: int, initial_state: IssueState = IssueState.AVAILABLE):
+    def __init__(self, issue: "Issue", initial_state: IssueState = IssueState.AVAILABLE):
         """Initialize the issue state machine.
 
         Args:
-            issue_number: The GitHub issue number
+            issue: The Issue object (provides identity via .key)
             initial_state: Starting state (defaults to AVAILABLE)
         """
-        self.issue_number = issue_number
+        self.issue = issue
         self.state = initial_state
         self.last_transition: Optional[TransitionResult] = None
 
@@ -148,7 +151,12 @@ class IssueStateMachine:
             auto_transitions=False
         )
 
-        logger.info(f"IssueStateMachine initialized for issue {issue_number} in state {initial_state.value}")
+        logger.info(f"IssueStateMachine initialized for issue {self.issue.number} in state {initial_state.value}")
+
+    @property
+    def issue_number(self) -> int:
+        """Backwards-compatible access to issue number."""
+        return self.issue.number
 
     def _on_claimed(self, event):
         """Callback for claim transition.
