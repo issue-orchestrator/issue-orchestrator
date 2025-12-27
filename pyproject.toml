@@ -72,7 +72,9 @@ markers = [
 [tool.pyright]
 include = ["src"]
 pythonVersion = "3.11"
-typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
 reportMissingImports = true
 reportMissingTypeStubs = false
 

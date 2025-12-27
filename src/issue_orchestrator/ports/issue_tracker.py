@@ -11,7 +11,7 @@ This is an execution-layer interface.
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from issue_orchestrator.models import Issue
+    from .issue import Issue
 
 
 class IssueTracker(Protocol):

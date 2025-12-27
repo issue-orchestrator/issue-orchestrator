@@ -114,6 +114,9 @@ async def dashboard(
     def make_issue_url(issue_number: int) -> str:
         return f"https://github.com/{config.repo}/issues/{issue_number}" if config and config.repo else ""
 
+    # Initialize queue_total outside conditional to avoid unbound variable
+    queue_total = 0
+
     if state and config:
         active_numbers = {s.issue.number for s in state.active_sessions}
 
@@ -164,7 +167,6 @@ async def dashboard(
                 work_items.append(item)
 
         # 2. Queue (use cached issues for instant pagination)
-        queue_total = 0
         dependency_info = {}
         if state.startup_status == "complete":
             queue_issues = state.cached_queue_issues

@@ -13,11 +13,16 @@ Each state machine:
 - Supports conditional transitions and callbacks
 """
 
+from .errors import InvalidStateTransition, StateMachineError, StateInvariantViolation
 from .issue_machine import IssueState, IssueStateMachine
 from .review_machine import ReviewState, ReviewStateMachine
 from .session_machine import SessionState, SessionStateMachine
 
 __all__ = [
+    # Errors
+    "InvalidStateTransition",
+    "StateMachineError",
+    "StateInvariantViolation",
     # Issue state machine
     "IssueState",
     "IssueStateMachine",

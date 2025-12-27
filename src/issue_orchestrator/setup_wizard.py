@@ -172,9 +172,9 @@ def fetch_github_labels(repo: str) -> list[str]:
     if not ok:
         return []
 
-    try:
-        import json
+    import json
 
+    try:
         labels = json.loads(output)
         return [label["name"] for label in labels]
     except (json.JSONDecodeError, KeyError):

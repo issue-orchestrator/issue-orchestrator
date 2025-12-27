@@ -10,11 +10,12 @@ TraceEvents via EventSink.
 
 import logging
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
-from transitions import Machine
+from transitions import MachineError, EventData, Machine
 
 from .transition_result import TransitionResult
+from .errors import InvalidStateTransition
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,20 @@ class ReviewState(Enum):
     MERGED = "merged"
     CLOSED = "closed"
     ESCALATED = "escalated"  # Rework limit exceeded, needs human intervention
+
+
+# NOTE:
+# This class is the mutation target for `transitions.Machine`.
+# It must remain a simple data object with no logic or recursion.
+class _Model:
+    """Internal transitions model.
+
+    transitions injects trigger methods onto this object. The outer ReviewStateMachine
+    wrapper exposes a typed/stable API and prevents dynamic methods from leaking.
+    """
+
+    def __init__(self, initial_state: str) -> None:
+        self.state = initial_state
 
 
 class ReviewStateMachine:
@@ -84,7 +99,8 @@ class ReviewStateMachine:
         """
         self.pr_number = pr_number
         self.issue_number = issue_number
-        self.state = initial_state
+        self._model = _Model(initial_state.value)
+        self.state = self._model.state
         self.rework_count = 0
         self.max_rework_cycles = max_rework_cycles
         self.last_transition: Optional[TransitionResult] = None
@@ -99,71 +115,71 @@ class ReviewStateMachine:
                 'trigger': 'start_review',
                 'source': ReviewState.PENDING.value,
                 'dest': ReviewState.IN_REVIEW.value,
-                'after': '_on_review_started'
+                'after': self._on_review_started
             },
             # PR approved from in_review
             {
                 'trigger': 'approve',
                 'source': ReviewState.IN_REVIEW.value,
                 'dest': ReviewState.APPROVED.value,
-                'after': '_on_approved'
+                'after': self._on_approved
             },
             # Changes requested from in_review
             {
                 'trigger': 'request_changes',
                 'source': ReviewState.IN_REVIEW.value,
                 'dest': ReviewState.CHANGES_REQUESTED.value,
-                'after': '_on_changes_requested',
-                'before': '_increment_rework_count'
+                'after': self._on_changes_requested,
+                'before': self._increment_rework_count
             },
             # Move from changes_requested to rework_pending (if within limit)
             {
                 'trigger': 'queue_rework',
                 'source': ReviewState.CHANGES_REQUESTED.value,
                 'dest': ReviewState.REWORK_PENDING.value,
-                'conditions': '_can_rework'
+                'conditions': self._can_rework
             },
             # Escalate when rework limit exceeded
             {
                 'trigger': 'escalate',
                 'source': ReviewState.CHANGES_REQUESTED.value,
                 'dest': ReviewState.ESCALATED.value,
-                'after': '_on_escalated'
+                'after': self._on_escalated
             },
             # Start rework
             {
                 'trigger': 'start_rework',
                 'source': ReviewState.REWORK_PENDING.value,
                 'dest': ReviewState.REWORK_IN_PROGRESS.value,
-                'after': '_on_rework_started'
+                'after': self._on_rework_started
             },
             # Rework completed, return to in_review
             {
                 'trigger': 'complete_rework',
                 'source': ReviewState.REWORK_IN_PROGRESS.value,
                 'dest': ReviewState.IN_REVIEW.value,
-                'after': '_on_rework_completed'
+                'after': self._on_rework_completed
             },
             # Send approved PR to triage review
             {
                 'trigger': 'request_triage_review',
                 'source': ReviewState.APPROVED.value,
                 'dest': ReviewState.TRIAGE_PENDING.value,
-                'after': '_on_triage_review_started'
+                'after': self._on_triage_review_started
             },
             # triage review completed
             {
                 'trigger': 'triage_reviewed',
                 'source': ReviewState.TRIAGE_PENDING.value,
                 'dest': ReviewState.TRIAGE_REVIEWED.value,
-                'after': '_on_triage_reviewed'
+                'after': self._on_triage_reviewed
             },
             # Merge from approved or triage_reviewed state
             {
                 'trigger': 'merge',
                 'source': [ReviewState.APPROVED.value, ReviewState.TRIAGE_REVIEWED.value],
                 'dest': ReviewState.MERGED.value,
-                'after': '_on_merged'
+                'after': self._on_merged
             },
             # Close PR from various states
             {
@@ -179,21 +195,21 @@ class ReviewStateMachine:
                     ReviewState.TRIAGE_REVIEWED.value
                 ],
                 'dest': ReviewState.CLOSED.value,
-                'after': '_on_closed'
+                'after': self._on_closed
             },
             # Reopen from in_review (if more changes requested after triage review)
             {
                 'trigger': 'request_changes_after_triage',
                 'source': ReviewState.TRIAGE_REVIEWED.value,
                 'dest': ReviewState.CHANGES_REQUESTED.value,
-                'after': '_on_changes_requested',
-                'before': '_increment_rework_count'
+                'after': self._on_changes_requested,
+                'before': self._increment_rework_count
             }
         ]
 
-        # Create the state machine
+        # Create the state machine with internal model
         self.machine = Machine(
-            model=self,
+            model=self._model,
             states=states,
             transitions=transitions,
             initial=initial_state.value,
@@ -203,20 +219,13 @@ class ReviewStateMachine:
 
         logger.info(f"ReviewStateMachine initialized for PR {pr_number} in state {initial_state.value}")
 
-    def _increment_rework_count(self, event):
-        """Increment the rework count before requesting changes.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _increment_rework_count(self, event: EventData) -> None:
+        """Increment the rework count before requesting changes."""
         self.rework_count += 1
         logger.info(f"PR {self.pr_number} rework count incremented to {self.rework_count}")
 
-    def _can_rework(self, event) -> bool:
+    def _can_rework(self, event: EventData) -> bool:
         """Check if rework is allowed based on max_rework_cycles.
-
-        Args:
-            event: Transition event data from transitions library
 
         Returns:
             True if rework is allowed, False if max cycles exceeded
@@ -232,12 +241,8 @@ class ReviewStateMachine:
             )
         return can_rework
 
-    def _on_review_started(self, event):
-        """Callback for start_review transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_review_started(self, event: EventData) -> None:
+        """Callback for start_review transition."""
         data = event.kwargs.get('data', {})
         self.last_transition = TransitionResult(
             success=True,
@@ -249,12 +254,8 @@ class ReviewStateMachine:
         )
         logger.info(f"Review started for PR {self.pr_number}")
 
-    def _on_approved(self, event):
-        """Callback for approve transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_approved(self, event: EventData) -> None:
+        """Callback for approve transition."""
         data = event.kwargs.get('data', {})
         self.last_transition = TransitionResult(
             success=True,
@@ -266,14 +267,10 @@ class ReviewStateMachine:
         )
         logger.info(f"PR {self.pr_number} approved")
 
-    def _on_changes_requested(self, event):
-        """Callback for request_changes transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_changes_requested(self, event: EventData) -> None:
+        """Callback for request_changes transition."""
         data = event.kwargs.get('data', {})
-        from_state = event.transition.source if hasattr(event, 'transition') else ReviewState.IN_REVIEW.value
+        from_state = event.transition.source if hasattr(event, 'transition') and event.transition else ReviewState.IN_REVIEW.value
         self.last_transition = TransitionResult(
             success=True,
             from_state=from_state,
@@ -284,12 +281,8 @@ class ReviewStateMachine:
         )
         logger.info(f"Changes requested for PR {self.pr_number} (rework count: {self.rework_count})")
 
-    def _on_rework_started(self, event):
-        """Callback for start_rework transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_rework_started(self, event: EventData) -> None:
+        """Callback for start_rework transition."""
         data = event.kwargs.get('data', {})
         self.last_transition = TransitionResult(
             success=True,
@@ -301,12 +294,8 @@ class ReviewStateMachine:
         )
         logger.info(f"Rework started for PR {self.pr_number}")
 
-    def _on_rework_completed(self, event):
-        """Callback for complete_rework transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_rework_completed(self, event: EventData) -> None:
+        """Callback for complete_rework transition."""
         data = event.kwargs.get('data', {})
         self.last_transition = TransitionResult(
             success=True,
@@ -318,12 +307,8 @@ class ReviewStateMachine:
         )
         logger.info(f"Rework completed for PR {self.pr_number}")
 
-    def _on_triage_review_started(self, event):
-        """Callback for request_triage_review transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_triage_review_started(self, event: EventData) -> None:
+        """Callback for request_triage_review transition."""
         data = event.kwargs.get('data', {})
         self.last_transition = TransitionResult(
             success=True,
@@ -335,12 +320,8 @@ class ReviewStateMachine:
         )
         logger.info(f"triage review requested for PR {self.pr_number}")
 
-    def _on_triage_reviewed(self, event):
-        """Callback for triage_reviewed transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_triage_reviewed(self, event: EventData) -> None:
+        """Callback for triage_reviewed transition."""
         data = event.kwargs.get('data', {})
         self.last_transition = TransitionResult(
             success=True,
@@ -352,14 +333,10 @@ class ReviewStateMachine:
         )
         logger.info(f"triage review completed for PR {self.pr_number}")
 
-    def _on_merged(self, event):
-        """Callback for merge transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_merged(self, event: EventData) -> None:
+        """Callback for merge transition."""
         data = event.kwargs.get('data', {})
-        from_state = event.transition.source if hasattr(event, 'transition') else ReviewState.APPROVED.value
+        from_state = event.transition.source if hasattr(event, 'transition') and event.transition else ReviewState.APPROVED.value
         self.last_transition = TransitionResult(
             success=True,
             from_state=from_state,
@@ -370,14 +347,10 @@ class ReviewStateMachine:
         )
         logger.info(f"PR {self.pr_number} merged (after {self.rework_count} rework cycles)")
 
-    def _on_closed(self, event):
-        """Callback for close transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_closed(self, event: EventData) -> None:
+        """Callback for close transition."""
         data = event.kwargs.get('data', {})
-        from_state = event.transition.source if hasattr(event, 'transition') else ReviewState.PENDING.value
+        from_state = event.transition.source if hasattr(event, 'transition') and event.transition else ReviewState.PENDING.value
         self.last_transition = TransitionResult(
             success=True,
             from_state=from_state,
@@ -388,14 +361,11 @@ class ReviewStateMachine:
         )
         logger.info(f"PR {self.pr_number} closed without merging")
 
-    def _on_escalated(self, event):
+    def _on_escalated(self, event: EventData) -> None:
         """Callback for escalate transition.
 
         This is called when the rework limit has been exceeded and the
         review needs human intervention to proceed.
-
-        Args:
-            event: Transition event data from transitions library
         """
         data = event.kwargs.get('data', {})
         self.last_transition = TransitionResult(
@@ -433,12 +403,12 @@ class ReviewStateMachine:
         Returns:
             True if the transition is valid, False otherwise
         """
-        trigger_func = getattr(self, f'may_{trigger}', None)
+        trigger_func = getattr(self._model, f'may_{trigger}', None)
         if trigger_func and callable(trigger_func):
             return bool(trigger_func())
         return False
 
-    def get_rework_info(self) -> dict:
+    def get_rework_info(self) -> dict[str, Any]:
         """Get rework information for this review.
 
         Returns:
@@ -466,3 +436,69 @@ class ReviewStateMachine:
         if self.max_rework_cycles is None:
             return False
         return self.rework_count > self.max_rework_cycles
+
+    # -------------------------------------------------------------------------
+    # Typed transition methods (quarantine transitions' dynamic surface)
+    # -------------------------------------------------------------------------
+
+    def _invoke(self, name: str, **kwargs: Any) -> None:
+        """Invoke a transitions-injected trigger on the internal model.
+
+        This quarantines transitions' dynamic surface area inside the wrapper.
+        """
+        try:
+            fn = getattr(self._model, name)
+            fn(**kwargs)
+        except MachineError as e:
+            raise InvalidStateTransition(str(e)) from e
+        finally:
+            # Keep backward-compatible `state` attribute in sync
+            self.state = self._model.state
+
+    def start_review(self, **kwargs: Any) -> None:
+        """Start the review."""
+        self._invoke('start_review', **kwargs)
+
+    def approve(self, **kwargs: Any) -> None:
+        """Approve the review."""
+        self._invoke('approve', **kwargs)
+
+    def request_changes(self, **kwargs: Any) -> None:
+        """Request changes on the review."""
+        self._invoke('request_changes', **kwargs)
+
+    def queue_rework(self, **kwargs: Any) -> None:
+        """Queue the review for rework."""
+        self._invoke('queue_rework', **kwargs)
+
+    def escalate(self, **kwargs: Any) -> None:
+        """Escalate the review."""
+        self._invoke('escalate', **kwargs)
+
+    def start_rework(self, **kwargs: Any) -> None:
+        """Start rework on the review."""
+        self._invoke('start_rework', **kwargs)
+
+    def complete_rework(self, **kwargs: Any) -> None:
+        """Complete rework on the review."""
+        self._invoke('complete_rework', **kwargs)
+
+    def request_triage_review(self, **kwargs: Any) -> None:
+        """Request triage review."""
+        self._invoke('request_triage_review', **kwargs)
+
+    def triage_reviewed(self, **kwargs: Any) -> None:
+        """Mark triage review as completed."""
+        self._invoke('triage_reviewed', **kwargs)
+
+    def merge(self, **kwargs: Any) -> None:
+        """Merge the PR."""
+        self._invoke('merge', **kwargs)
+
+    def close(self, **kwargs: Any) -> None:
+        """Close the PR."""
+        self._invoke('close', **kwargs)
+
+    def request_changes_after_triage(self, **kwargs: Any) -> None:
+        """Request changes after triage."""
+        self._invoke('request_changes_after_triage', **kwargs)

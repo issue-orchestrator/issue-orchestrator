@@ -21,6 +21,7 @@ from .github_issue import GitHubIssue
 
 if TYPE_CHECKING:
     from ..domain.issue_key import IssueKey, GitHubIssueKey
+    from ..ports.issue import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class GitHubAdapter:
         milestone: str | None = None,
         state: str = "open",
         limit: int = 100,
-    ) -> list[GitHubIssue]:
+    ) -> "list[Issue]":
         """List issues matching the given criteria.
 
         Args:
@@ -102,7 +103,7 @@ class GitHubAdapter:
             logger.error(f"Failed to list issues: {e}")
             return []
 
-    def get_issue(self, issue_number: int) -> GitHubIssue | None:
+    def get_issue(self, issue_number: int) -> "Issue | None":
         """Get a specific issue by number.
 
         Args:
@@ -137,17 +138,17 @@ class GitHubAdapter:
             logger.error(f"Unexpected error getting issue {issue_number}: {e}")
             return None
 
-    def get_issue_by_key(self, key: "IssueKey") -> GitHubIssue | None:
+    def get_issue_by_key(self, key: "IssueKey") -> "Issue | None":
         """Get an issue by its IssueKey.
 
-        This is the reverse lookup: IssueKey -> GitHubIssue.
+        This is the reverse lookup: IssueKey -> Issue.
         For GitHubIssueKey, extracts the issue number and fetches.
 
         Args:
             key: The IssueKey to look up.
 
         Returns:
-            The GitHubIssue if found, None otherwise.
+            The Issue if found, None otherwise.
         """
         from ..domain.issue_key import GitHubIssueKey
 

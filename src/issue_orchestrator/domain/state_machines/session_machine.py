@@ -11,11 +11,12 @@ TraceEvents via EventSink.
 import logging
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
-from transitions import Machine
+from transitions import MachineError, EventData, Machine
 
 from .transition_result import TransitionResult
+from .errors import InvalidStateTransition
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,20 @@ class SessionState(Enum):
     TIMED_OUT = "timed_out"
     BLOCKED = "blocked"
     NEEDS_HUMAN = "needs_human"
+
+
+# NOTE:
+# This class is the mutation target for `transitions.Machine`.
+# It must remain a simple data object with no logic or recursion.
+class _Model:
+    """Internal transitions model.
+
+    transitions injects trigger methods onto this object. The outer SessionStateMachine
+    wrapper exposes a typed/stable API and prevents dynamic methods from leaking.
+    """
+
+    def __init__(self, initial_state: str) -> None:
+        self.state = initial_state
 
 
 class SessionStateMachine:
@@ -79,7 +94,8 @@ class SessionStateMachine:
         """
         self.session_id = session_id
         self.issue_number = issue_number
-        self.state = initial_state
+        self._model = _Model(initial_state.value)
+        self.state = self._model.state
         self.started_at: Optional[datetime] = None
         self.timeout_minutes = timeout_minutes
         self.last_transition: Optional[TransitionResult] = None
@@ -94,69 +110,69 @@ class SessionStateMachine:
                 'trigger': 'launch',
                 'source': SessionState.PENDING.value,
                 'dest': SessionState.STARTING.value,
-                'after': '_on_launched'
+                'after': self._on_launched
             },
             # Session successfully started
             {
                 'trigger': 'started',
                 'source': SessionState.STARTING.value,
                 'dest': SessionState.RUNNING.value,
-                'after': '_on_started'
+                'after': self._on_started
             },
             # Mark a running session as slow
             {
                 'trigger': 'mark_slow',
                 'source': SessionState.RUNNING.value,
                 'dest': SessionState.SLOW.value,
-                'after': '_on_slow'
+                'after': self._on_slow
             },
             # Complete a running or slow session
             {
                 'trigger': 'complete',
                 'source': [SessionState.RUNNING.value, SessionState.SLOW.value],
                 'dest': SessionState.COMPLETED.value,
-                'after': '_on_completed'
+                'after': self._on_completed
             },
             # Session failed during startup, running, or slow states
             {
                 'trigger': 'fail',
                 'source': [SessionState.STARTING.value, SessionState.RUNNING.value, SessionState.SLOW.value],
                 'dest': SessionState.FAILED.value,
-                'after': '_on_failed'
+                'after': self._on_failed
             },
             # Session timed out
             {
                 'trigger': 'timeout',
                 'source': [SessionState.RUNNING.value, SessionState.SLOW.value],
                 'dest': SessionState.TIMED_OUT.value,
-                'after': '_on_timed_out'
+                'after': self._on_timed_out
             },
             # Session blocked
             {
                 'trigger': 'block',
                 'source': SessionState.RUNNING.value,
                 'dest': SessionState.BLOCKED.value,
-                'after': '_on_blocked'
+                'after': self._on_blocked
             },
             # Session needs human intervention
             {
                 'trigger': 'needs_human',
                 'source': SessionState.RUNNING.value,
                 'dest': SessionState.NEEDS_HUMAN.value,
-                'after': '_on_needs_human'
+                'after': self._on_needs_human
             },
             # Resume from blocked or needs_human states
             {
                 'trigger': 'resume',
                 'source': [SessionState.BLOCKED.value, SessionState.NEEDS_HUMAN.value],
                 'dest': SessionState.RUNNING.value,
-                'after': '_on_resumed'
+                'after': self._on_resumed
             }
         ]
 
-        # Create the state machine
+        # Create the state machine with internal model
         self.machine = Machine(
-            model=self,
+            model=self._model,
             states=states,
             transitions=transitions,
             initial=initial_state.value,
@@ -166,12 +182,8 @@ class SessionStateMachine:
 
         logger.info(f"SessionStateMachine initialized for session {session_id} in state {initial_state.value}")
 
-    def _on_launched(self, event):
-        """Callback for launch transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_launched(self, event: EventData) -> None:
+        """Callback for launch transition."""
         data = event.kwargs.get('data', {})
         transition_data = {**data, 'session_id': self.session_id}
 
@@ -185,12 +197,8 @@ class SessionStateMachine:
         )
         logger.info(f"Session {self.session_id} launched for issue {self.issue_number}")
 
-    def _on_started(self, event):
-        """Callback for started transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_started(self, event: EventData) -> None:
+        """Callback for started transition."""
         self.started_at = datetime.now()
         data = event.kwargs.get('data', {})
         transition_data = {**data, 'session_id': self.session_id, 'started_at': self.started_at.isoformat()}
@@ -205,12 +213,8 @@ class SessionStateMachine:
         )
         logger.info(f"Session {self.session_id} started for issue {self.issue_number}")
 
-    def _on_slow(self, event):
-        """Callback for mark_slow transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_slow(self, event: EventData) -> None:
+        """Callback for mark_slow transition."""
         data = event.kwargs.get('data', {})
         runtime = self._get_runtime_minutes()
         transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
@@ -225,15 +229,11 @@ class SessionStateMachine:
         )
         logger.warning(f"Session {self.session_id} marked as slow (runtime: {runtime} minutes)")
 
-    def _on_completed(self, event):
-        """Callback for complete transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_completed(self, event: EventData) -> None:
+        """Callback for complete transition."""
         data = event.kwargs.get('data', {})
         runtime = self._get_runtime_minutes()
-        from_state = event.transition.source if hasattr(event, 'transition') else SessionState.RUNNING.value
+        from_state = event.transition.source if hasattr(event, 'transition') and event.transition else SessionState.RUNNING.value
         transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
 
         self.last_transition = TransitionResult(
@@ -246,15 +246,11 @@ class SessionStateMachine:
         )
         logger.info(f"Session {self.session_id} completed (runtime: {runtime} minutes)")
 
-    def _on_failed(self, event):
-        """Callback for fail transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_failed(self, event: EventData) -> None:
+        """Callback for fail transition."""
         data = event.kwargs.get('data', {})
         runtime = self._get_runtime_minutes()
-        from_state = event.transition.source if hasattr(event, 'transition') else SessionState.RUNNING.value
+        from_state = event.transition.source if hasattr(event, 'transition') and event.transition else SessionState.RUNNING.value
         transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
 
         self.last_transition = TransitionResult(
@@ -267,15 +263,11 @@ class SessionStateMachine:
         )
         logger.error(f"Session {self.session_id} failed (runtime: {runtime} minutes)")
 
-    def _on_timed_out(self, event):
-        """Callback for timeout transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_timed_out(self, event: EventData) -> None:
+        """Callback for timeout transition."""
         data = event.kwargs.get('data', {})
         runtime = self._get_runtime_minutes()
-        from_state = event.transition.source if hasattr(event, 'transition') else SessionState.RUNNING.value
+        from_state = event.transition.source if hasattr(event, 'transition') and event.transition else SessionState.RUNNING.value
         transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
 
         self.last_transition = TransitionResult(
@@ -288,12 +280,8 @@ class SessionStateMachine:
         )
         logger.error(f"Session {self.session_id} timed out (runtime: {runtime} minutes)")
 
-    def _on_blocked(self, event):
-        """Callback for block transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_blocked(self, event: EventData) -> None:
+        """Callback for block transition."""
         data = event.kwargs.get('data', {})
         transition_data = {**data, 'session_id': self.session_id}
 
@@ -307,12 +295,8 @@ class SessionStateMachine:
         )
         logger.warning(f"Session {self.session_id} blocked")
 
-    def _on_needs_human(self, event):
-        """Callback for needs_human transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
+    def _on_needs_human(self, event: EventData) -> None:
+        """Callback for needs_human transition."""
         data = event.kwargs.get('data', {})
         transition_data = {**data, 'session_id': self.session_id}
 
@@ -326,13 +310,9 @@ class SessionStateMachine:
         )
         logger.warning(f"Session {self.session_id} needs human intervention")
 
-    def _on_resumed(self, event):
-        """Callback for resume transition.
-
-        Args:
-            event: Transition event data from transitions library
-        """
-        from_state = event.transition.source if hasattr(event, 'transition') else SessionState.BLOCKED.value
+    def _on_resumed(self, event: EventData) -> None:
+        """Callback for resume transition."""
+        from_state = event.transition.source if hasattr(event, 'transition') and event.transition else SessionState.BLOCKED.value
 
         self.last_transition = TransitionResult(
             success=True,
@@ -379,7 +359,7 @@ class SessionStateMachine:
                     f"Session {self.session_id} exceeded timeout "
                     f"({runtime:.1f} > {self.timeout_minutes} minutes)"
                 )
-                self.timeout(data={'runtime_minutes': runtime, 'timeout_minutes': self.timeout_minutes})  # type: ignore[attr-defined]
+                self.timeout(data={'runtime_minutes': runtime, 'timeout_minutes': self.timeout_minutes})
                 return True
 
         return False
@@ -401,12 +381,12 @@ class SessionStateMachine:
         Returns:
             True if the transition is valid, False otherwise
         """
-        trigger_func = getattr(self, f'may_{trigger}', None)
+        trigger_func = getattr(self._model, f'may_{trigger}', None)
         if trigger_func and callable(trigger_func):
             return bool(trigger_func())
         return False
 
-    def get_runtime_info(self) -> dict:
+    def get_runtime_info(self) -> dict[str, Any]:
         """Get runtime information for this session.
 
         Returns:
@@ -427,3 +407,57 @@ class SessionStateMachine:
             'timeout_minutes': self.timeout_minutes,
             'is_timed_out': is_timed_out
         }
+
+    # -------------------------------------------------------------------------
+    # Typed transition methods (quarantine transitions' dynamic surface)
+    # -------------------------------------------------------------------------
+
+    def _invoke(self, name: str, **kwargs: Any) -> None:
+        """Invoke a transitions-injected trigger on the internal model.
+
+        This quarantines transitions' dynamic surface area inside the wrapper.
+        """
+        try:
+            fn = getattr(self._model, name)
+            fn(**kwargs)
+        except MachineError as e:
+            raise InvalidStateTransition(str(e)) from e
+        finally:
+            # Keep backward-compatible `state` attribute in sync
+            self.state = self._model.state
+
+    def launch(self, **kwargs: Any) -> None:
+        """Launch the session."""
+        self._invoke('launch', **kwargs)
+
+    def started(self, **kwargs: Any) -> None:
+        """Mark session as started."""
+        self._invoke('started', **kwargs)
+
+    def mark_slow(self, **kwargs: Any) -> None:
+        """Mark session as running slow."""
+        self._invoke('mark_slow', **kwargs)
+
+    def complete(self, **kwargs: Any) -> None:
+        """Mark session as completed."""
+        self._invoke('complete', **kwargs)
+
+    def fail(self, **kwargs: Any) -> None:
+        """Mark session as failed."""
+        self._invoke('fail', **kwargs)
+
+    def timeout(self, **kwargs: Any) -> None:
+        """Mark session as timed out."""
+        self._invoke('timeout', **kwargs)
+
+    def block(self, **kwargs: Any) -> None:
+        """Mark session as blocked."""
+        self._invoke('block', **kwargs)
+
+    def needs_human(self, **kwargs: Any) -> None:
+        """Mark session as needing human."""
+        self._invoke('needs_human', **kwargs)
+
+    def resume(self, **kwargs: Any) -> None:
+        """Resume a blocked session."""
+        self._invoke('resume', **kwargs)

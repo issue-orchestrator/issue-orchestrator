@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ..ports import RepositoryHost, SessionRunner
 
 from ..config import Config
+from ..events import EventName
 from ..models import Session, SessionStatus
 from ..ports import EventSink, TraceEvent, NullEventSink
 from .. import labels
@@ -149,8 +150,8 @@ class SessionObserver:
         completion_path = session.worktree_path / session.completion_path
         if completion_path.exists():
             # Validate the JSON is complete (not partially written)
+            import json
             try:
-                import json
                 with open(completion_path) as f:
                     data = json.load(f)
                 # Check for required terminator fields
@@ -160,8 +161,8 @@ class SessionObserver:
                     )
                     # Emit event for observability
                     self.events.publish(TraceEvent(
-                        name="observation.completion_detected",
-                        data={
+                        EventName.OBSERVATION_COMPLETION_DETECTED,
+                        {
                             "issue_number": session.issue.number,
                             "session_name": session.tmux_session_name,
                             "outcome": data.get("outcome"),
@@ -207,8 +208,8 @@ class SessionObserver:
         # Emit observation result for debugging (only for non-running sessions)
         if result.observation != SessionObservation.RUNNING:
             self.events.publish(TraceEvent(
-                name="observation.result",
-                data={
+                EventName.OBSERVATION_RESULT,
+                {
                     "issue_number": session.issue.number,
                     "session_name": session.tmux_session_name,
                     "observation": result.observation.value,

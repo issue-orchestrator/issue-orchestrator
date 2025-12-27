@@ -28,8 +28,12 @@ install:
 PYRIGHT ?= .venv/bin/pyright --pythonpath .venv/bin/python
 PYTEST ?= .venv/bin/pytest
 
+# Two-pass typecheck: strict for core (domain/ports/control), standard for rest
 typecheck:
-	$(PYRIGHT) src/
+	@echo "Running pyright (standard mode, excluding core)..."
+	$(PYRIGHT) --project pyrightconfig.json
+	@echo "Running pyright (strict mode, core only)..."
+	$(PYRIGHT) --project pyrightconfig.strict.json
 
 LINT_IMPORTS ?= .venv/bin/lint-imports
 
@@ -88,7 +92,7 @@ validate:
 		$(PYTEST) tests/integration -x -q --tb=short > .validate/integration.log 2>&1 && echo "✓ integration tests passed" || (echo "✗ integration tests FAILED (see .validate/integration.log)" && exit 1) \
 	) & pid4=$$!; \
 	( \
-		$(PYTEST) tests/e2e -v -s --tb=short > .validate/e2e.log 2>&1 && echo "✓ e2e tests passed" || (echo "✗ e2e tests FAILED (see .validate/e2e.log)" && exit 1) \
+		$(PYTEST) tests/e2e -v -s --tb=short -x > .validate/e2e.log 2>&1 && echo "✓ e2e tests passed" || (echo "✗ e2e tests FAILED (see .validate/e2e.log)" && exit 1) \
 	) & pid5=$$!; \
 	wait $$pid1 && wait $$pid2 && wait $$pid3 && wait $$pid4 && wait $$pid5 || (echo "Validation failed - check .validate/*.log" && exit 1)
 	@echo "All validations passed!"

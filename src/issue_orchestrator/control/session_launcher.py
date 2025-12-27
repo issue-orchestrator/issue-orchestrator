@@ -119,7 +119,7 @@ class SessionLauncher:
         get_issue_machine: Callable[["IssueProtocol"], "IssueStateMachine"],
         get_session_machine: Callable[[str, int, int], "SessionStateMachine"],
         get_review_machine: Callable[[int, int], "ReviewStateMachine"],
-        refresh_issue_fn: Optional[Callable[[int], Optional[Issue]]] = None,
+        refresh_issue_fn: Optional[Callable[[int], Optional["IssueProtocol"]]] = None,
         dependency_evaluator: Optional[object] = None,
     ):
         self.config = config
@@ -137,7 +137,7 @@ class SessionLauncher:
 
     def launch_issue_session(
         self,
-        issue: Issue,
+        issue: "IssueProtocol",
         active_sessions: list[Session],
     ) -> LaunchResult:
         """Launch a session for an issue.

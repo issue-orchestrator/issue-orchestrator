@@ -73,3 +73,8 @@ class PluggySessionRunner:
     def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
         """Get session output via pluggy hook."""
         return self._pm.hook.get_session_output(session_id=session_id, lines=lines)
+
+    def send_to_session(self, session_id: int, text: str) -> bool:
+        """Send text to a session via pluggy hook."""
+        result = self._pm.hook.send_to_session(session_id=session_id, text=text)
+        return result if result is not None else False

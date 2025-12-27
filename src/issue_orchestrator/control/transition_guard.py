@@ -17,8 +17,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
-from transitions import MachineError
-
+from ..domain.state_machines.errors import InvalidStateTransition
 from ..events import EventName
 from ..ports import EventSink, TraceEvent
 
@@ -156,7 +155,7 @@ class TransitionGuard:
             self._emit_applied(result)
             return result
 
-        except MachineError as e:
+        except InvalidStateTransition as e:
             # Transition was invalid (shouldn't happen if may_trigger passed)
             result = TransitionResult(
                 result_type=TransitionResultType.INVALID,

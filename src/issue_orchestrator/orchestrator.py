@@ -7,11 +7,11 @@ from typing import TYPE_CHECKING, Optional, cast
 
 if TYPE_CHECKING:
     from .control.planner import Planner, Plan, OrchestratorSnapshot
-    from .control.session_manager import SessionManager
+    from .control.session_manager import SessionManager, SessionRef
     from .control.label_sync import LabelSync
-    from .control.action_applier import ActionApplier
+    from .control.action_applier import ActionApplier, ActionResult
     from .control.fact_gatherer import FactGatherer
-    from .control.actions import LaunchSessionAction, EscalateToHumanAction
+    from .control.actions import Action, LaunchSessionAction, EscalateToHumanAction
     from .models import TriageFacts
 
 from .events import EventName, EventContext

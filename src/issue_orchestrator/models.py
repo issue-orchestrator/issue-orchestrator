@@ -8,8 +8,9 @@ from typing import Optional, TYPE_CHECKING
 
 from . import labels as label_module  # avoid name collision with 'labels' field
 
+from .domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
+
 if TYPE_CHECKING:
-    from .domain.issue_key import IssueKey
     from .ports.issue import Issue as IssueProtocol
 
 # Marker used in PR bodies to identify orchestrator-generated PRs
@@ -218,15 +219,32 @@ class IssueStatus(Enum):
 
 @dataclass
 class Issue:
-    """A GitHub issue."""
+    """A GitHub issue.
+
+    Note: This class is being deprecated in favor of the Issue Protocol
+    and GitHubIssue implementation. New code should use ports.issue.Issue
+    and execution.github_issue.GitHubIssue.
+    """
     number: int
     title: str
     labels: list[str]
     state: str = "open"  # "open" or "closed"
+    repo: str = ""  # Repository in owner/repo format
     milestone: Optional[str] = None
     body: Optional[str] = None
     milestone_number: Optional[int] = None
     milestone_due_on: Optional[str] = None  # ISO date string
+
+    @property
+    def key(self) -> IssueKey:
+        """Stable identity for this issue.
+
+        Uses external ID from title prefix (e.g., [M1-011]) if present,
+        otherwise falls back to the issue number as a string.
+        """
+        parsed = parse_external_id(self.title)
+        external_id = parsed.external_id or str(self.number)
+        return GitHubIssueKey(repo=self.repo, external_id=external_id)
 
     @property
     def agent_type(self) -> Optional[str]:

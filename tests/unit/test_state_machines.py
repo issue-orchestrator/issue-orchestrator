@@ -2,19 +2,15 @@
 
 import pytest
 from datetime import datetime, timedelta
-from transitions import MachineError
 
-from issue_orchestrator.domain.state_machines.issue_machine import (
+from issue_orchestrator.domain.state_machines import (
     IssueStateMachine,
     IssueState,
-)
-from issue_orchestrator.domain.state_machines.session_machine import (
     SessionStateMachine,
     SessionState,
-)
-from issue_orchestrator.domain.state_machines.review_machine import (
     ReviewStateMachine,
     ReviewState,
+    InvalidStateTransition,
 )
 from issue_orchestrator.models import Issue
 
@@ -155,11 +151,11 @@ class TestIssueStateMachine:
         assert machine.get_state() == IssueState.IN_PROGRESS
 
     def test_invalid_transition_raises_error(self):
-        """Test that invalid transitions raise MachineError."""
+        """Test that invalid transitions raise InvalidStateTransition."""
         machine = IssueStateMachine(issue=Issue(number=123, title="Test", labels=[]))
 
         # Can't start from available state
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.start()
 
     def test_invalid_claim_from_in_progress(self):
@@ -170,7 +166,7 @@ class TestIssueStateMachine:
         machine.start()
 
         # Can't claim from in_progress
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.claim()
 
     def test_cannot_release_from_completed(self):
@@ -184,7 +180,7 @@ class TestIssueStateMachine:
         assert machine.get_state() == IssueState.COMPLETED
 
         # Can't release from completed
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.release()
 
     def test_cannot_release_from_pr_pending(self):
@@ -197,7 +193,7 @@ class TestIssueStateMachine:
         assert machine.get_state() == IssueState.PR_PENDING
 
         # Can't release from pr_pending
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.release()
 
     def test_transition_result_on_claim(self):
@@ -740,18 +736,18 @@ class TestSessionStateMachine:
         assert info["is_timed_out"] is False
 
     def test_invalid_transitions_raise_error(self):
-        """Test that invalid transitions raise MachineError."""
+        """Test that invalid transitions raise InvalidStateTransition."""
         machine = SessionStateMachine(
             session_id="session-123",
             issue_number=456
         )
 
         # Can't start from PENDING
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.started()
 
         # Can't complete from PENDING
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.complete()
 
 
@@ -924,13 +920,13 @@ class TestReviewStateMachine:
         assert machine.can_transition('queue_rework') is False
         assert machine.has_exceeded_rework_limit() is True
 
-        # Attempting queue_rework when conditions aren't met raises MachineError
+        # Attempting queue_rework when conditions aren't met raises InvalidStateTransition
         # The transition won't execute because _can_rework() condition returns False
         try:
             machine.queue_rework()
             # If it didn't raise, verify state didn't change
             assert machine.get_state() == ReviewState.CHANGES_REQUESTED
-        except MachineError:
+        except InvalidStateTransition:
             # This is also acceptable - some versions of transitions raise on failed conditions
             pass
 
@@ -994,7 +990,7 @@ class TestReviewStateMachine:
         assert machine.get_state() == ReviewState.MERGED
 
         # Can't close from merged
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.close()
 
     def test_transition_result_on_review_started(self):
@@ -1252,7 +1248,7 @@ class TestReviewStateMachine:
         assert machine.get_state() == ReviewState.ESCALATED
 
         # Cannot close from escalated - needs human intervention
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.close()
 
     def test_escalated_state_is_terminal(self):
@@ -1278,16 +1274,16 @@ class TestReviewStateMachine:
         assert machine.can_transition('merge') is False
 
     def test_invalid_transitions_raise_error(self):
-        """Test that invalid transitions raise MachineError."""
+        """Test that invalid transitions raise InvalidStateTransition."""
         machine = ReviewStateMachine(
             pr_number=123,
             issue_number=456
         )
 
         # Can't approve from PENDING
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.approve()
 
         # Can't merge from PENDING
-        with pytest.raises(MachineError):
+        with pytest.raises(InvalidStateTransition):
             machine.merge()

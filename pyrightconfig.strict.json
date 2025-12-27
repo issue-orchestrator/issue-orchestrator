@@ -1,0 +1,21 @@
+{
+  "include": [
+    "src/issue_orchestrator/domain",
+    "src/issue_orchestrator/ports",
+    "src/issue_orchestrator/control",
+    "src/issue_orchestrator/events"
+  ],
+  "pythonVersion": "3.11",
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "strict",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "reportUnknownMemberType": false,
+  "reportUnknownVariableType": false,
+  "reportUnknownArgumentType": false,
+  "reportUnknownParameterType": false,
+  "reportUnknownLambdaType": false,
+  "reportUnusedImport": "warning",
+  "reportUnusedVariable": "warning"
+}
