@@ -6,6 +6,7 @@
 repo: BruceBGordon/issue-orchestrator
 
 filter_label: test-data
+e2e_pr_labels: ["test-data"]
 
 dangerous:
   skip_verification: true

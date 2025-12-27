@@ -98,6 +98,9 @@ class Config:
     filter_issue: Optional[int] = None  # Only process this specific issue number
     issue_fetch_limit: int = 100  # Max issues to fetch per API call (gh default is 30)
 
+    # E2E test configuration
+    e2e_pr_labels: list[str] = field(default_factory=list)  # Labels to apply to PRs created during e2e tests
+
     # Comment headings for structured worker comments
     comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
 
@@ -225,6 +228,7 @@ class Config:
             "filter_label": self.filter_label,
             "filter_milestone": self.filter_milestone,
             "filter_issue": self.filter_issue,
+            "e2e_pr_labels": self.e2e_pr_labels,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "session_timeout_minutes": self.session_timeout_minutes,
             "max_issues_to_start": self.max_issues_to_start,
@@ -372,6 +376,7 @@ class Config:
         config.filter_label = data.get("filter_label")
         config.filter_milestone = data.get("filter_milestone")
         config.issue_fetch_limit = data.get("issue_fetch_limit", 100)
+        config.e2e_pr_labels = data.get("e2e_pr_labels", [])
 
         # UI mode
         config.ui_mode = data.get("ui_mode", "web")

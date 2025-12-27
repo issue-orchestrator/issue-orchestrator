@@ -894,3 +894,72 @@ agents:
 
         assert "Configuration errors" in str(exc_info.value)
         assert "prompt file not found" in str(exc_info.value)
+
+
+class TestE2EPRLabelsConfig:
+    """Tests for e2e_pr_labels configuration."""
+
+    def test_e2e_pr_labels_defaults_to_empty_list(self):
+        """e2e_pr_labels should default to empty list."""
+        config = Config()
+        assert config.e2e_pr_labels == []
+
+    def test_e2e_pr_labels_loaded_from_yaml(self, tmp_path):
+        """e2e_pr_labels should be loaded correctly from YAML."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+
+e2e_pr_labels:
+  - test-data
+  - e2e-test
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.e2e_pr_labels == ["test-data", "e2e-test"]
+
+    def test_e2e_pr_labels_inline_yaml_syntax(self, tmp_path):
+        """e2e_pr_labels should work with inline YAML list syntax."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+
+e2e_pr_labels: ["test-data"]
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.e2e_pr_labels == ["test-data"]
+
+    def test_e2e_pr_labels_included_in_to_event_dict(self):
+        """e2e_pr_labels should be included in to_event_dict output."""
+        config = Config()
+        config.e2e_pr_labels = ["test-data", "cleanup"]
+
+        result = config.to_event_dict()
+
+        assert result["e2e_pr_labels"] == ["test-data", "cleanup"]
+
+    def test_e2e_pr_labels_not_specified_defaults_to_empty(self, tmp_path):
+        """e2e_pr_labels should default to empty list when not in YAML."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.e2e_pr_labels == []

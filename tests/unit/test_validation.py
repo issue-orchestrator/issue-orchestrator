@@ -482,8 +482,12 @@ class TestPublishGate:
         assert result.record.timed_out is True
         assert "timed out" in result.reason.lower()
 
-    def test_gate_caches_failure(self, temp_worktree):
-        """Test gate caches failed validation results."""
+    def test_gate_reruns_on_cached_failure(self, temp_worktree):
+        """Test gate re-runs validation on cached failure (flaky test resilience).
+
+        Failures are NOT trusted from cache because they might be due to flaky
+        tests or transient issues. Only passes are cached and trusted.
+        """
         gate = PublishGate(temp_worktree, command="exit 1", timeout_seconds=10)
 
         # First call fails
@@ -491,10 +495,10 @@ class TestPublishGate:
         assert result1.allowed is False
         assert result1.cache_hit is False
 
-        # Second call should hit cache with failure
+        # Second call should re-run, not trust cached failure
         result2 = gate.check()
         assert result2.allowed is False
-        assert result2.cache_hit is True
+        assert result2.cache_hit is False  # Re-ran validation, didn't trust cache
 
 
 class TestAgentGate:

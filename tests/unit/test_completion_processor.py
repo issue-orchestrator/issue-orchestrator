@@ -273,6 +273,59 @@ class TestCompletionProcessorPRActions:
         assert call_args.kwargs["title"] == "#123: Add feature"
         assert call_args.kwargs["head"] == "issue-123"
 
+    def test_create_pr_with_labels_applies_labels_to_pr(
+        self, processor, mock_pr_adapter, mock_label_adapter, worktree_with_completion
+    ):
+        """PR labels from completion record should be applied to the created PR.
+
+        This is critical for e2e test cleanup - PRs must be labeled so they
+        can be identified and cleaned up by the test fixture.
+        """
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            summary="Implemented feature",
+            implementation="Added the feature",
+            pr_labels=["test-data", "e2e-test"],  # Labels to apply to PR
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Add feature")
+
+        assert result.success
+        # PR was created with number 42 (from mock)
+        assert result.pr_url == "https://github.com/owner/repo/pull/42"
+        # Labels should be applied to the PR (number 42), not the issue (123)
+        label_calls = mock_label_adapter.add_label.call_args_list
+        assert len(label_calls) == 2
+        assert label_calls[0] == ((42, "test-data"),)
+        assert label_calls[1] == ((42, "e2e-test"),)
+
+    def test_create_pr_without_labels_does_not_add_labels(
+        self, processor, mock_pr_adapter, mock_label_adapter, worktree_with_completion
+    ):
+        """PR creation without pr_labels should not call add_label."""
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            summary="Implemented feature",
+            implementation="Added the feature",
+            # No pr_labels field
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Add feature")
+
+        assert result.success
+        # No labels should be added (no add_label calls)
+        mock_label_adapter.add_label.assert_not_called()
+
     def test_post_comment_action_with_body(
         self, processor, mock_pr_adapter, worktree_with_completion
     ):

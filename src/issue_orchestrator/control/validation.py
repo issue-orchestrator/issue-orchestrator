@@ -462,25 +462,20 @@ class PublishGate:
                 reason="Cannot determine HEAD SHA",
             )
 
-        # Check cache - command matching ensures we only reuse results from same command
+        # Check cache - only trust cached passes, not failures
+        # Failures might be due to flaky tests or transient issues, so always re-run
         cached = self.cache.lookup(head_sha, self.command)
-        if cached is not None:
-            if cached.passed:
-                logger.info("Publish gate: cache hit (passed) for %s", head_sha[:8])
-                return PublishGateResult(
-                    allowed=True,
-                    reason=f"Cached validation passed for {head_sha[:8]}",
-                    record=cached,
-                    cache_hit=True,
-                )
-            else:
-                logger.info("Publish gate: cache hit (failed) for %s", head_sha[:8])
-                return PublishGateResult(
-                    allowed=False,
-                    reason=f"Cached validation failed for {head_sha[:8]}",
-                    record=cached,
-                    cache_hit=True,
-                )
+        if cached is not None and cached.passed:
+            logger.info("Publish gate: cache hit (passed) for %s", head_sha[:8])
+            return PublishGateResult(
+                allowed=True,
+                reason=f"Cached validation passed for {head_sha[:8]}",
+                record=cached,
+                cache_hit=True,
+            )
+        elif cached is not None:
+            # Cached failure - log it but re-run validation
+            logger.info("Publish gate: cached failure for %s, re-running validation", head_sha[:8])
 
         # Run validation
         logger.info("Publish gate: running validation for %s", head_sha[:8])

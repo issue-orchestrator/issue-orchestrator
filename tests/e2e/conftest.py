@@ -321,7 +321,8 @@ def cleanup_stale_prs_at_session_start():
     repo = get_test_repo()
     labels_to_cleanup = [DEFAULT_E2E_FILTER_LABEL, "needs-code-review", "code-reviewed"]
     # Branch patterns that indicate e2e test PRs (from crashed runs)
-    e2e_branch_patterns = ["-e2e-", "-test-"]
+    # Match "e2e-" anywhere in branch name (covers: 123-e2e-foo, e2e-test, etc.)
+    e2e_branch_patterns = ["e2e-", "-test-"]
     closed_prs: list[dict] = []
     closed_pr_nums: set[int] = set()
 

@@ -235,10 +235,10 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         completion_path = get_completion_path(issue.agent_type)
-        # Build environment variables for agent
         env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        if self.config.filter_label:
-            env_vars += f" ORCHESTRATOR_FILTER_LABEL='{self.config.filter_label}'"
+        if self.config.e2e_pr_labels:
+            labels_str = ",".join(self.config.e2e_pr_labels)
+            env_vars += f" E2E_PR_LABELS='{labels_str}'"
         command = f"{env_vars} {base_command}"
 
         # Create terminal session
@@ -328,10 +328,7 @@ class SessionLauncher:
             pr_number=review.pr_number,
         )
         completion_path = get_completion_path(agent_label)
-        # Build environment variables for agent
         env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        if self.config.filter_label:
-            env_vars += f" ORCHESTRATOR_FILTER_LABEL='{self.config.filter_label}'"
         command = f"{env_vars} {base_command}"
 
         # Create session
@@ -424,10 +421,7 @@ class SessionLauncher:
             pr_number=pr_number,
         )
         completion_path = get_completion_path(rework.agent_type)
-        # Build environment variables for agent
         env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        if self.config.filter_label:
-            env_vars += f" ORCHESTRATOR_FILTER_LABEL='{self.config.filter_label}'"
         command = f"{env_vars} {base_command}"
 
         # Create session
