@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from ..emit import emit_event
 
@@ -45,12 +45,12 @@ class ValidationRecord:
     stdout_path: Optional[str] = None  # Path to stdout file (relative to worktree)
     stderr_path: Optional[str] = None  # Path to stderr file (relative to worktree)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ValidationRecord":
+    def from_dict(cls, data: dict[str, Any]) -> "ValidationRecord":
         """Create from dictionary (JSON deserialization)."""
         return cls(**data)
 
@@ -90,7 +90,7 @@ class ValidationRecordStore:
         self.worktree = worktree
         self.base_dir = worktree / self.VALIDATION_DIR
 
-    def _get_record_path(self, sha: str) -> Path:
+    def get_record_path(self, sha: str) -> Path:
         """Get the path for a validation record (one per SHA)."""
         return self.base_dir / f"{sha}.json"
 
@@ -107,7 +107,7 @@ class ValidationRecordStore:
         Returns:
             Path to the written file
         """
-        path = self._get_record_path(record.head_sha)
+        path = self.get_record_path(record.head_sha)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(path, "w") as f:
@@ -125,7 +125,7 @@ class ValidationRecordStore:
         Returns:
             ValidationRecord if found, None otherwise
         """
-        path = self._get_record_path(sha)
+        path = self.get_record_path(sha)
 
         if not path.exists():
             return None
@@ -600,7 +600,7 @@ class AgentGate:
         )
 
         # Get the path where the record was written
-        record_path = str(self.store._get_record_path(head_sha))
+        record_path = str(self.store.get_record_path(head_sha))
 
         if record.passed:
             return AgentGateResult(

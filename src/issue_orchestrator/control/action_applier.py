@@ -190,6 +190,7 @@ class ActionApplier:
     def _apply_add_comment(self, action: Action) -> ActionResult:
         """Add a comment to an issue or PR."""
         assert isinstance(action, AddCommentAction)
+        assert self.repository_host is not None, "repository_host required for add_comment"
 
         try:
             self.repository_host.add_comment(action.number, action.comment)

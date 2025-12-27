@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from .control.fact_gatherer import FactGatherer
     from .control.actions import Action, LaunchSessionAction, EscalateToHumanAction
     from .models import TriageFacts
+    from .ports.session_runner import DiscoveredSession
 
 from .events import EventName, EventContext
 
@@ -157,7 +158,7 @@ class Orchestrator:
     @property
     def _session_launcher(self) -> SessionLauncher:
         if self._session_launcher_instance is None:
-            self._session_launcher_instance = SessionLauncher(self.config, self.events, self.repository_host, self.session_manager, self.worktree_manager,
+            self._session_launcher_instance = SessionLauncher(self.config, self.events, self.repository_host, self._sm, self._wm,
                 self._session_exists, self._create_session, self._get_issue_machine, self._get_session_machine,
                 self._get_review_machine, self._refresh_issue, getattr(self.scheduler, 'dependency_evaluator', None))
         return self._session_launcher_instance
@@ -165,7 +166,7 @@ class Orchestrator:
     @property
     def _cleanup_manager(self) -> CleanupManager:
         if self._cleanup_manager_instance is None:
-            self._cleanup_manager_instance = CleanupManager(self.config, self.repository_host, self.worktree_manager, self._kill_session,
+            self._cleanup_manager_instance = CleanupManager(self.config, self.repository_host, self._wm, self._kill_session,
                 self._session_exists, self._get_worktree_path, self._get_session_name)
         return self._cleanup_manager_instance
 
@@ -183,6 +184,31 @@ class Orchestrator:
     @property
     def _state_machines(self) -> StateMachineManager:
         assert self.state_machine_manager is not None; return self.state_machine_manager
+
+    @property
+    def _sm(self) -> "SessionManager":
+        """Session manager accessor (always initialized after __post_init__)."""
+        assert self.session_manager is not None; return self.session_manager
+
+    @property
+    def _aa(self) -> "ActionApplier":
+        """Action applier accessor (always initialized after __post_init__)."""
+        assert self.action_applier is not None; return self.action_applier
+
+    @property
+    def _fg(self) -> "FactGatherer":
+        """Fact gatherer accessor (always initialized after __post_init__)."""
+        assert self.fact_gatherer is not None; return self.fact_gatherer
+
+    @property
+    def _planner(self) -> "Planner":
+        """Planner accessor (always initialized after __post_init__)."""
+        assert self.planner is not None; return self.planner
+
+    @property
+    def _wm(self) -> WorktreeManager:
+        """Worktree manager accessor (must be injected)."""
+        assert self.worktree_manager is not None, "WorktreeManager must be injected"; return self.worktree_manager
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str:
         if session_type not in ("issue", "review", "rework"): raise ValueError(f"Invalid session_type: {session_type}")
@@ -218,7 +244,7 @@ class Orchestrator:
     def _get_session_machine(self, name: str, n: int, timeout: int) -> SessionStateMachine: return self._state_machines.get_session_machine(name, n, timeout)
     def _get_review_machine(self, pr: int, issue: int) -> ReviewStateMachine: return self._state_machines.get_review_machine(pr, issue)
 
-    async def _restore_running_sessions(self, running: list[dict]) -> None:
+    def _restore_running_sessions(self, running: list["DiscoveredSession"]) -> None:
         self.state.active_sessions.extend(self._session_restorer.restore_sessions(running, self.state.active_sessions))
 
     def _parse_session_ref(self, session_name: str, operation: str) -> "SessionRef":
@@ -228,10 +254,10 @@ class Orchestrator:
 
     def _create_session(self, name: str, cmd: str, wd: Path, title: str | None = None) -> bool:
         from .control.session_manager import SessionContext
-        return self.session_manager.start(SessionContext(ref=self._parse_session_ref(name, "create"), command=cmd, working_dir=wd, title=title))
+        return self._sm.start(SessionContext(ref=self._parse_session_ref(name, "create"), command=cmd, working_dir=wd, title=title))
 
-    def _session_exists(self, name: str) -> bool: return self.session_manager.exists(self._parse_session_ref(name, "exists"))
-    def _kill_session(self, name: str) -> None: self.session_manager.stop(self._parse_session_ref(name, "kill"))
+    def _session_exists(self, name: str) -> bool: return self._sm.exists(self._parse_session_ref(name, "exists"))
+    def _kill_session(self, name: str) -> None: self._sm.stop(self._parse_session_ref(name, "kill"))
 
     def _refresh_issue(self, n: int) -> Optional[Issue]:
         try: return self.repository_host.get_issue(n)
@@ -269,7 +295,7 @@ class Orchestrator:
         # Generate and apply failure handling actions (proper architecture)
         failure_actions = self._generate_completion_actions(session, status)
         if failure_actions:
-            self.action_applier.apply_all(failure_actions)
+            self._aa.apply_all(failure_actions)
 
         # Observer handles session-level cleanup (kill sessions, close tabs)
         self.observer.handle_completion(session, status)
@@ -434,7 +460,7 @@ class Orchestrator:
             filtered = [i for i in all_issues if i.number not in exclude]
             self.state.cached_queue_issues = [i for i in filtered if i.number == self.config.filter_issue] if self.config.filter_issue else filtered
 
-        snapshot = self.fact_gatherer.create_snapshot(self.state, self.state.cached_queue_issues)
+        snapshot = self._fg.create_snapshot(self.state, self.state.cached_queue_issues)
 
         # Emit facts.gathered
         self.events.publish(TraceEvent(
@@ -447,7 +473,7 @@ class Orchestrator:
             }),
         ))
 
-        plan = self.planner.plan(snapshot)
+        plan = self._planner.plan(snapshot)
 
         # Emit plan.computed
         self.events.publish(TraceEvent(
@@ -582,7 +608,7 @@ class Orchestrator:
             if self.state.paused:
                 break
             try:
-                result = self.action_applier.apply(action)
+                result = self._aa.apply(action)
                 if result.success:
                     self._update_state_after_action(action, result)
                     applied_count += 1
@@ -659,7 +685,7 @@ class Orchestrator:
     def _fetch_all_issues(self) -> list[Issue]:
         """Fetch all issues from GitHub - delegates to FactGatherer."""
         base_labels = [self.config.filter_label] if self.config.filter_label else []
-        return self.fact_gatherer.fetch_issues(base_labels, self._get_milestone_filter())
+        return self._fg.fetch_issues(base_labels, self._get_milestone_filter())
 
     def update_queue_cache(self) -> None:
         """Update the cached queue issues and emit queue.changed event if changed.

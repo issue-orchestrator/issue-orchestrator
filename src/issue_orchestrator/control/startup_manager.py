@@ -31,6 +31,7 @@ from ..models import (
 )
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost
+from ..ports.session_runner import DiscoveredSession
 
 if TYPE_CHECKING:
     from .hook_verifier import HookVerifier
@@ -53,7 +54,7 @@ class StartupManager:
         runner: SessionRunner,
         repository_host: RepositoryHost,
         session_exists_fn: Callable[[str], bool],
-        restore_sessions_fn: Callable[[list[dict]], None],
+        restore_sessions_fn: Callable[[list[DiscoveredSession]], None],
         launch_session_fn: Callable[[Issue], Optional[Session]],
         update_queue_cache_fn: Callable[[], None],
     ):
@@ -118,7 +119,7 @@ class StartupManager:
         if running:
             logger.info("Found %d running sessions to restore tracking", len(running))
             print(f"  Found {len(running)} running sessions to restore tracking")
-            await self._restore_sessions(running)
+            self._restore_sessions(running)
 
         # Step 5: Check in-progress issues and determine action
         state.startup_message = "Scanning local branches..."
@@ -230,6 +231,8 @@ class StartupManager:
         state.startup_message = "Checking PRs needing code review..."
         print("\nChecking for PRs needing code review...")
 
+        # Caller ensures code_review_label is set before calling this method
+        assert self.config.code_review_label is not None
         prs = self.repository_host.get_prs_with_label(self.config.code_review_label)
         for pr in prs:
             pr_number = pr.number
@@ -263,6 +266,8 @@ class StartupManager:
         state.startup_message = "Checking for pending triage review issues..."
         print("\nChecking for pending triage review issues...")
 
+        # Caller ensures triage_review_agent is set before calling this method
+        assert self.config.triage_review_agent is not None
         triage_issues = self.repository_host.list_issues(
             labels=[self.config.triage_review_agent],
             limit=20,

@@ -6,7 +6,7 @@ is not enabled, startup will be blocked.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,11 +21,7 @@ class HookVerificationResult:
     """Result of hook verification."""
     success: bool
     message: str
-    unsupported_agents: list[tuple[str, str]] = None  # [(agent_type, reason)]
-
-    def __post_init__(self):
-        if self.unsupported_agents is None:
-            self.unsupported_agents = []
+    unsupported_agents: list[tuple[str, str]] = field(default_factory=list)  # [(agent_type, reason)]
 
 
 class HookVerifier:

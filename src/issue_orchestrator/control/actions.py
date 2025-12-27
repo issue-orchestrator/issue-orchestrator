@@ -287,7 +287,7 @@ class ActionResult:
         return self.result_type == ActionResultType.SUCCESS
 
     @classmethod
-    def ok(cls, action: Action, **details) -> "ActionResult":
+    def ok(cls, action: Action, **details: str | int | bool | list[str] | None) -> "ActionResult":
         """Create a successful result."""
         return cls(
             action=action,
@@ -296,7 +296,7 @@ class ActionResult:
         )
 
     @classmethod
-    def fail(cls, action: Action, error: str, **details) -> "ActionResult":
+    def fail(cls, action: Action, error: str, **details: str | int | bool | list[str] | None) -> "ActionResult":
         """Create a failed result."""
         return cls(
             action=action,

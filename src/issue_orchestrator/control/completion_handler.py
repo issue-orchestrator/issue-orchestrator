@@ -347,6 +347,8 @@ class CompletionHandler:
                 )
 
         if should_defer:
+            # should_defer is only True if pr_number and pr_url are set (line 337)
+            assert pr_number is not None and pr_url is not None
             pending_cleanup = PendingCleanup(
                 issue=session.issue,
                 pr_number=pr_number,
