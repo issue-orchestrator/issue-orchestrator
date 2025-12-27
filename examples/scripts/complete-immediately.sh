@@ -23,7 +23,8 @@ git commit -m "E2E test: verify orchestrator lifecycle"
 git push --no-verify -u origin "$BRANCH"
 
 # Create PR (simple body to avoid escaping issues)
-gh pr create --title "#${ISSUE_NUMBER}: E2E test" --body "Closes #${ISSUE_NUMBER} - E2E test" --base main
+# Add test-data label so e2e cleanup can find it
+gh pr create --title "#${ISSUE_NUMBER}: E2E test" --body "Closes #${ISSUE_NUMBER} - E2E test" --base main --label test-data
 
 # Signal completion
 agent-done completed --implementation "E2E test completed successfully" --problems "None"

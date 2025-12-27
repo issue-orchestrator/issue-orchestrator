@@ -267,6 +267,8 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
         checks_needed=args.checks_needed if status == AgentStatus.CHANGES_REQUESTED else None,
         # Comment to post
         comment_body=comment_body,
+        # PR labels
+        pr_labels=getattr(args, 'pr_labels', None),
     )
 
 
@@ -468,6 +470,13 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     parser.add_argument("--risk", choices=["low", "medium", "high"], help="Risk level")
     parser.add_argument("--checks", nargs="+", help="Checks that passed")
     parser.add_argument("--checks-needed", nargs="+", help="Checks that need to be done")
+
+    # PR options
+    parser.add_argument(
+        "--pr-labels",
+        nargs="+",
+        help="Extra labels to add to the PR (e.g., --pr-labels test-data needs-review)",
+    )
 
     # Meta options
     parser.add_argument("--dry-run", action="store_true", help="Show what would be written")

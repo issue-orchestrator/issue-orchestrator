@@ -355,6 +355,13 @@ class CompletionProcessor:
                     actions_taken.append(f"Created PR #{pr.number}")
                     logger.info("Created PR #%d for issue #%d: %s", pr.number, issue_number, pr_url)
 
+                    # Apply extra labels to the PR if specified
+                    if record.pr_labels:
+                        for label in record.pr_labels:
+                            self.label_adapter.add_label(pr.number, label)
+                            logger.info("Added label '%s' to PR #%d", label, pr.number)
+                        actions_taken.append(f"Added labels to PR: {record.pr_labels}")
+
                 elif action == RequestedAction.POST_COMMENT:
                     if record.comment_body:
                         # Use label_target (PR for reviews, issue otherwise)

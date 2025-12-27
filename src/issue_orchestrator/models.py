@@ -116,6 +116,9 @@ class CompletionRecord:
     # Comment body to post (if POST_COMMENT in requested_actions)
     comment_body: Optional[str] = None
 
+    # Extra labels to add to the PR (if CREATE_PR in requested_actions)
+    pr_labels: Optional[list[str]] = None
+
     # Validation reference (if agent_gate was run)
     validation_record_path: Optional[str] = None  # Path to validation record JSON
 
@@ -143,6 +146,7 @@ class CompletionRecord:
             "checks_passed": self.checks_passed,
             "checks_needed": self.checks_needed,
             "comment_body": self.comment_body,
+            "pr_labels": self.pr_labels,
             "validation_record_path": self.validation_record_path,
         }
 
@@ -193,6 +197,7 @@ class CompletionRecord:
             checks_passed=data.get("checks_passed"),
             checks_needed=data.get("checks_needed"),
             comment_body=data.get("comment_body"),
+            pr_labels=data.get("pr_labels"),
             validation_record_path=data.get("validation_record_path"),
         )
 
