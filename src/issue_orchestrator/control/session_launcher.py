@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine, IssueState
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine, ReviewState
+    from .dependency_evaluator import DependencyEvaluator
 
 from ..config import Config, AgentConfig
 from ..events import EventName
@@ -41,7 +42,7 @@ def log_transition(
     from_state: str,
     to_state: str,
     reason: str,
-    extra: dict | None = None,
+    extra: dict[str, str | int | bool | None] | None = None,
 ) -> None:
     """Log a state transition in a consistent, searchable format."""
     msg = f"[TRANSITION] {entity_type} #{number}: {from_state} → {to_state} ({reason})"
@@ -120,7 +121,7 @@ class SessionLauncher:
         get_session_machine: Callable[[str, int, int], "SessionStateMachine"],
         get_review_machine: Callable[[int, int], "ReviewStateMachine"],
         refresh_issue_fn: Optional[Callable[[int], Optional["IssueProtocol"]]] = None,
-        dependency_evaluator: Optional[object] = None,
+        dependency_evaluator: Optional["DependencyEvaluator"] = None,
     ):
         self.config = config
         self.events = events
@@ -459,7 +460,7 @@ class SessionLauncher:
         except Exception:
             pass
 
-        return LaunchResult(session, True, pr_number=pr_number)
+        return LaunchResult(session, True)
 
     def _run_setup_commands(self, worktree_path: Path) -> None:
         """Run setup commands in worktree."""

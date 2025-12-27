@@ -13,7 +13,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Callable
+from typing import TYPE_CHECKING, Any, Optional, Callable
 
 if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -117,7 +117,7 @@ class CompletionHandler:
         self,
         session: Session,
         status: SessionStatus,
-    ) -> tuple[Optional[str], Optional[int], Optional[list[dict]]]:
+    ) -> tuple[Optional[str], Optional[int], Optional[list[dict[str, Any]]]]:
         """Fetch PR info for a completed session.
 
         Returns:

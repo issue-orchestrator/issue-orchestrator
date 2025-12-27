@@ -12,6 +12,9 @@ from datetime import datetime
 from typing import Optional, Protocol
 
 from ..models import Issue, AgentConfig
+
+# Sort keys can contain floats (timestamps/inf), ints (numbers), or strings (names)
+SortKey = tuple[float | int | str, ...]
 from ..config import Config
 from .. import labels
 from .dependency_evaluator import DependencyEvaluator
@@ -32,7 +35,7 @@ BUILTIN_STRATEGIES = {
 class MilestoneSortStrategy(Protocol):
     """Protocol for milestone sorting strategies."""
 
-    def get_sort_key(self, issue: Issue) -> tuple:
+    def get_sort_key(self, issue: Issue) -> SortKey:
         """Get the sort key for an issue based on milestone.
 
         Returns a tuple where the first element is the milestone sort key,
@@ -44,7 +47,7 @@ class MilestoneSortStrategy(Protocol):
 class DueDateStrategy:
     """Sort by milestone due date (ascending), nulls last."""
 
-    def get_sort_key(self, issue: Issue) -> tuple:
+    def get_sort_key(self, issue: Issue) -> SortKey:
         """Get sort key based on milestone due date."""
         if issue.milestone_due_on:
             try:
@@ -60,7 +63,7 @@ class DueDateStrategy:
 class NumberStrategy:
     """Sort by milestone number (ascending), nulls last."""
 
-    def get_sort_key(self, issue: Issue) -> tuple:
+    def get_sort_key(self, issue: Issue) -> SortKey:
         """Get sort key based on milestone number."""
         if issue.milestone_number is not None:
             return (issue.milestone_number,)
@@ -79,7 +82,7 @@ class PatternStrategy:
         """
         self.pattern = re.compile(pattern)
 
-    def get_sort_key(self, issue: Issue) -> tuple:
+    def get_sort_key(self, issue: Issue) -> SortKey:
         """Get sort key by extracting number from milestone name."""
         if issue.milestone:
             match = self.pattern.search(issue.milestone)
@@ -95,7 +98,7 @@ class PatternStrategy:
 class NameStrategy:
     """Sort alphabetically by milestone name, nulls last."""
 
-    def get_sort_key(self, issue: Issue) -> tuple:
+    def get_sort_key(self, issue: Issue) -> SortKey:
         """Get sort key based on milestone name."""
         if issue.milestone:
             return (issue.milestone,)
@@ -247,7 +250,7 @@ class Scheduler:
         Returns:
             Sorted list of issues.
         """
-        def sort_key(issue: Issue) -> tuple:
+        def sort_key(issue: Issue) -> SortKey:
             # Get milestone sort key from strategy
             milestone_key = self.milestone_strategy.get_sort_key(issue)
 

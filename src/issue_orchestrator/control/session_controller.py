@@ -17,7 +17,7 @@ Example flows:
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .completion_processor import CompletionProcessor, ProcessingResult
@@ -227,6 +227,6 @@ class SessionController:
             reason=f"Processed completion record with outcome: {record.outcome.value}",
         )
 
-    def _emit_event(self, event_type: EventName, data: dict) -> None:
+    def _emit_event(self, event_type: EventName, data: dict[str, Any]) -> None:
         """Emit a trace event."""
         self.events.publish(TraceEvent(event_type, data))

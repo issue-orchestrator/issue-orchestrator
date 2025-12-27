@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 from ..models import Issue, Session
 from ..ports import RepositoryHost
+from ..ports.session_runner import DiscoveredSession
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class SessionRestorer:
 
     def restore_sessions(
         self,
-        running: list[dict],
+        running: list[DiscoveredSession],
         already_tracked: list[Session],
     ) -> list[Session]:
         """Restore tracking for sessions that are still running after restart.

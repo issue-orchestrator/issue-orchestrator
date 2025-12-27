@@ -7,7 +7,15 @@ run. The orchestrator calls these methods without knowing the implementation
 This abstraction keeps terminal backend details out of the core.
 """
 
-from typing import Protocol
+from typing import Protocol, TypedDict
+
+
+class DiscoveredSession(TypedDict):
+    """Session info discovered during orchestrator restart recovery."""
+
+    issue_number: int
+    tab_name: str
+    is_review: bool
 
 
 class SessionRunner(Protocol):
@@ -56,11 +64,11 @@ class SessionRunner(Protocol):
         """
         ...
 
-    def discover_running_sessions(self) -> list[dict]:
+    def discover_running_sessions(self) -> list[DiscoveredSession]:
         """Discover sessions that survived an orchestrator restart.
 
         Returns:
-            List of dicts with session info (issue_number, tab_name, is_review).
+            List of session info dicts (issue_number, tab_name, is_review).
         """
         ...
 
@@ -115,7 +123,7 @@ class NullSessionRunner:
     def kill_session(self, session_id: int) -> None:
         pass
 
-    def discover_running_sessions(self) -> list[dict]:
+    def discover_running_sessions(self) -> list[DiscoveredSession]:
         return []
 
     def cleanup_idle_sessions(self) -> int:

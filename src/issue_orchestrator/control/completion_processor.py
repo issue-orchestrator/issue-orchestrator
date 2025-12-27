@@ -19,7 +19,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, runtime_checkable
 
 from ..models import (
     CompletionRecord,
@@ -125,7 +125,7 @@ class CompletionProcessor:
         self,
         event_type: SessionEvent,
         issue_number: int,
-        data: dict | None = None,
+        data: dict[str, Any] | None = None,
     ) -> None:
         """Emit an event if event_bus is configured."""
         if self.event_bus:
