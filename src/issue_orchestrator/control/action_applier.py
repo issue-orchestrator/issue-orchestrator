@@ -26,9 +26,9 @@ Usage:
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Sequence, TYPE_CHECKING
+from typing import Callable, Optional, Sequence
 
 from ..events import EventName
 from ..ports import EventSink, TraceEvent
@@ -40,17 +40,13 @@ from ..models import Session
 from .actions import (
     Action,
     ActionResult,
-    ActionResultType,
     ActionType,
     AddLabelAction,
     RemoveLabelAction,
     SyncLabelsAction,
     LaunchSessionAction,
     StopSessionAction,
-    TransitionAction,
     QueueReviewAction,
-    QueueReworkAction,
-    QueueTriageAction,
     EscalateToHumanAction,
     AddCommentAction,
     CreateTriageIssueAction,
@@ -58,12 +54,6 @@ from .actions import (
     RemoveWorktreeAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
-from .reconciliation import (
-    ExternalSnapshot,
-    ExpectedState,
-    ReconciliationRequired,
-    check_reconciliation,
-)
 
 logger = logging.getLogger(__name__)
 

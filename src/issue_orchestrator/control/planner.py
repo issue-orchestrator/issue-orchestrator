@@ -37,7 +37,6 @@ from ..models import (
     DiscoveredFailure,
     TriageFacts,
     CleanupFacts,
-    ReadyCleanup,
 )
 
 if TYPE_CHECKING:
