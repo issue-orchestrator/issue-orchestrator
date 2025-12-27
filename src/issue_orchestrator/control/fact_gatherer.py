@@ -27,8 +27,8 @@ from ..ports.repository_host import RepositoryHost
 from ..ports import EventSink, TraceEvent
 
 if TYPE_CHECKING:
+    from ..ports.issue import Issue
     from ..models import (
-        Issue,
         OrchestratorState,
         TriageFacts,
         CleanupFacts,
@@ -60,8 +60,7 @@ class FactGatherer:
         Returns:
             List of issues across all agent types
         """
-        from ..models import Issue
-        all_issues: list[Issue] = []
+        all_issues: list["Issue"] = []
         for agent_label in self.config.agents.keys():
             labels = list(labels_for_agent)
             labels.append(agent_label)

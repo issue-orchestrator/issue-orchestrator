@@ -26,7 +26,9 @@ def log_transition(entity_type: str, number: int, from_state: str, to_state: str
 
 
 from .config import Config
-from .models import Issue, Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
+from .ports.issue import Issue
+from .models import Issue as ConcreteIssue  # For instantiation
+from .models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
 from .observation.observer import SessionObserver
 from .control.scheduler import Scheduler
 from .control.dependency_evaluator import DependencyEvaluator
@@ -721,7 +723,7 @@ class Orchestrator:
     def _launch_triage_session(self, triage: PendingTriageReview) -> None:
         agent = self.config.triage_review_agent
         if not agent or agent not in self.config.agents: raise ValueError(f"Invalid triage agent: {agent}")
-        self.launch_session(Issue(triage.issue_number, triage.title, [agent]))
+        self.launch_session(ConcreteIssue(triage.issue_number, triage.title, [agent]))
 
     def process_deferred_cleanups(self) -> None:
         self.state.pending_cleanups = self._cleanup_manager.process_deferred_cleanups(self.state.pending_cleanups)

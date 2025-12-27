@@ -1250,7 +1250,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     from .control.dependency_evaluator import DependencyEvaluator
     from .domain.dependencies import parse_dependencies
     from .config import Config
-    from .models import Issue, AgentConfig
+    from .models import Issue, AgentConfig  # Issue used for demo mock creation
 
     console = Console()
 

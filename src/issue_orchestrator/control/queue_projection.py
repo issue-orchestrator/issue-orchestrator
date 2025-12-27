@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..events import EventName
-from ..models import Issue, OrchestratorState
+from ..ports.issue import Issue
+from ..models import OrchestratorState
 from ..ports.event_sink import EventSink, TraceEvent
 
 if TYPE_CHECKING:

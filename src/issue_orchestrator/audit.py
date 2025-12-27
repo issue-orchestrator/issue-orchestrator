@@ -16,7 +16,8 @@ if TYPE_CHECKING:
 from .analysis import analyze_issue, get_issue_branches
 from .config import Config
 from .domain.dependencies import DependencyReport, parse_dependencies
-from .models import Issue, OrchestratorState
+from .ports.issue import Issue
+from .models import OrchestratorState
 from .control.scheduler import Scheduler
 
 

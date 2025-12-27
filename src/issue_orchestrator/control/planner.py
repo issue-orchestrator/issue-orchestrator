@@ -25,8 +25,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Sequence
 
 from ..config import Config
+from ..ports.issue import Issue
 from ..models import (
-    Issue,
     Session,
     PendingReview,
     PendingRework,

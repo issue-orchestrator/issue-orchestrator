@@ -10,6 +10,8 @@ Naming convention:
 - The prefix itself carries semantic meaning
 """
 
+from typing import Iterable, Sequence
+
 # =============================================================================
 # Label Constants - use these instead of string literals
 # =============================================================================
@@ -52,17 +54,17 @@ def is_blocking(label: str) -> bool:
     return False
 
 
-def is_blocking_any(labels: list[str]) -> bool:
+def is_blocking_any(labels: Sequence[str]) -> bool:
     """Check if any label in the list blocks processing."""
     return any(is_blocking(label) for label in labels)
 
 
-def get_blocking_labels(labels: list[str]) -> list[str]:
+def get_blocking_labels(labels: Sequence[str]) -> list[str]:
     """Return all blocking labels from a list."""
     return [label for label in labels if is_blocking(label)]
 
 
-def is_in_progress(labels: list[str]) -> bool:
+def is_in_progress(labels: Sequence[str]) -> bool:
     """Check if issue is marked as in-progress."""
     return IN_PROGRESS in labels
 
@@ -72,7 +74,7 @@ def requires_human(label: str) -> bool:
     return label in (BLOCKED_NEEDS_HUMAN, LEGACY_NEEDS_HUMAN)
 
 
-def requires_human_any(labels: list[str]) -> bool:
+def requires_human_any(labels: Sequence[str]) -> bool:
     """Check if any label requires human intervention."""
     return any(requires_human(label) for label in labels)
 

@@ -8,7 +8,7 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .ports.pull_request_tracker import PullRequestTracker
 
-from .models import Issue
+from .ports.issue import Issue
 
 
 @dataclass

@@ -9,9 +9,10 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Sequence
 
-from ..models import Issue, AgentConfig
+from ..ports.issue import Issue
+from ..models import AgentConfig
 
 # Sort keys can contain floats (timestamps/inf), ints (numbers), or strings (names)
 SortKey = tuple[float | int | str, ...]
@@ -191,7 +192,7 @@ class Scheduler:
 
     def get_available_issues(
         self,
-        all_issues: list[Issue],
+        all_issues: Sequence[Issue],
         check_dependencies: bool = True,
     ) -> tuple[list[Issue], list[tuple[Issue, str]]]:
         """Filter to issues that can be worked on (not blocked, not in-progress).
@@ -235,7 +236,7 @@ class Scheduler:
 
         return available, dependency_blocked
 
-    def sort_by_priority(self, issues: list[Issue]) -> list[Issue]:
+    def sort_by_priority(self, issues: Sequence[Issue]) -> list[Issue]:
         """Sort issues by milestone, priority tier, sequence, then issue number.
 
         Sort order (from naming standard):

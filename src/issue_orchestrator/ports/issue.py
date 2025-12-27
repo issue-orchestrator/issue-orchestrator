@@ -75,6 +75,16 @@ class Issue(Protocol):
         ...
 
     @property
+    def milestone_number(self) -> int | None:
+        """Milestone number in the backing store, if any."""
+        ...
+
+    @property
+    def milestone_due_on(self) -> str | None:
+        """Milestone due date as ISO string, if any."""
+        ...
+
+    @property
     def agent_type(self) -> str | None:
         """Agent type label (e.g., 'agent:developer'), if any."""
         ...
