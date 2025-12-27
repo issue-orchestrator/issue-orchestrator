@@ -10,7 +10,7 @@ This is the ONLY place pluggy is used for session management.
 import logging
 from typing import TYPE_CHECKING
 
-from ..ports.session_runner import SessionRunner
+from ..ports.session_runner import SessionRunner, DiscoveredSession
 
 if TYPE_CHECKING:
     import pluggy
@@ -60,7 +60,7 @@ class PluggySessionRunner:
         """Kill session via pluggy hook."""
         self._pm.hook.kill_session(session_id=session_id)
 
-    def discover_running_sessions(self) -> list[dict]:
+    def discover_running_sessions(self) -> list[DiscoveredSession]:
         """Discover running sessions via pluggy hook."""
         result = self._pm.hook.discover_running_sessions()
         return result if result is not None else []
