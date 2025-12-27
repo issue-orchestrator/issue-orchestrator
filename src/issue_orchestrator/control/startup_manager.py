@@ -16,7 +16,7 @@ The startup sequence:
 import logging
 import re
 import time
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Callable, Optional
 
 from ..analysis import analyze_issue, get_issue_branches
 from ..config import Config

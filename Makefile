@@ -29,11 +29,12 @@ PYRIGHT ?= .venv/bin/pyright --pythonpath .venv/bin/python
 PYTEST ?= .venv/bin/pytest
 
 # Two-pass typecheck: strict for core (domain/ports/control), standard for rest
+# --warnings ensures 0 warnings required (exit code 1 if warnings reported)
 typecheck:
 	@echo "Running pyright (standard mode, excluding core)..."
-	$(PYRIGHT) --project pyrightconfig.json
+	$(PYRIGHT) --project pyrightconfig.json --warnings
 	@echo "Running pyright (strict mode, core only)..."
-	$(PYRIGHT) --project pyrightconfig.strict.json
+	$(PYRIGHT) --project pyrightconfig.strict.json --warnings
 
 LINT_IMPORTS ?= .venv/bin/lint-imports
 
