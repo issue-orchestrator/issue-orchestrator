@@ -5,6 +5,7 @@ These fixtures create real GitHub issues and run the orchestrator.
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Generator, AsyncGenerator, Callable, TypeVar
 
 import pytest
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -308,25 +311,82 @@ def kill_stale_orchestrators():
     yield
 
 
-@pytest.fixture(scope="session", autouse=True)
-def cleanup_stale_prs_at_session_start():
-    """Clean up stale PRs with review labels or e2e branch patterns at session start.
+def _cleanup_local_worktrees():
+    """Clean up local e2e worktrees."""
+    worktree_base = Path("/tmp/e2e-worktrees")
+    if worktree_base.exists():
+        import shutil
+        count = 0
+        for item in worktree_base.iterdir():
+            if item.is_dir():
+                try:
+                    shutil.rmtree(item)
+                    count += 1
+                except Exception as e:
+                    logger.warning("Failed to remove worktree %s: %s", item, e)
+        if count > 0:
+            logger.info("[E2E CLEANUP] Removed %d local worktrees", count)
+    return 0
 
-    This runs once at the beginning of the e2e test session to ensure
-    old PRs with needs-code-review or code-reviewed labels don't block
-    new test runs by consuming orchestrator capacity.
 
-    Also cleans up PRs from crashed e2e test runs by matching branch patterns.
-    """
-    repo = get_test_repo()
+def _cleanup_tmux_sessions():
+    """Clean up tmux sessions from previous e2e runs."""
+    # Kill orchestrator tmux session if it exists
+    result = subprocess.run(
+        ["tmux", "kill-session", "-t", "orchestrator"],
+        capture_output=True
+    )
+    if result.returncode == 0:
+        logger.info("[E2E CLEANUP] Killed stale orchestrator tmux session")
+
+
+def _cleanup_remote_branches(repo: str) -> int:
+    """Clean up remote branches matching e2e patterns (orphaned from crashed runs)."""
+    # Patterns for e2e test branches: numeric prefix (issue number) + e2e keywords
+    e2e_patterns = ["e2e-", "-e2e-", "-test-"]
+
+    # List all remote branches
+    result = subprocess.run(
+        ["git", "ls-remote", "--heads", f"https://github.com/{repo}.git"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return 0
+
+    branches_deleted = 0
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        # Format: sha\trefs/heads/branch-name
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        ref = parts[1]
+        if not ref.startswith("refs/heads/"):
+            continue
+        branch = ref.replace("refs/heads/", "")
+
+        # Check if branch matches e2e patterns
+        if any(pattern in branch.lower() for pattern in e2e_patterns):
+            logger.info("[E2E CLEANUP] Deleting orphan branch: %s", branch)
+            delete_result = subprocess.run(
+                ["gh", "api", "-X", "DELETE",
+                 f"/repos/{repo}/git/refs/heads/{branch}"],
+                capture_output=True
+            )
+            if delete_result.returncode == 0:
+                branches_deleted += 1
+
+    return branches_deleted
+
+
+def _cleanup_prs(repo: str) -> int:
+    """Clean up PRs with test labels or e2e branch patterns."""
     labels_to_cleanup = [DEFAULT_E2E_FILTER_LABEL, "needs-code-review", "code-reviewed"]
-    # Branch patterns that indicate e2e test PRs (from crashed runs)
-    # Match "e2e-" anywhere in branch name (covers: 123-e2e-foo, e2e-test, etc.)
     e2e_branch_patterns = ["e2e-", "-test-"]
     closed_prs: list[dict] = []
     closed_pr_nums: set[int] = set()
-
-    print(f"\n[E2E SETUP] Checking for stale PRs in {repo}...")
 
     # First, clean up PRs with specific labels
     for label in labels_to_cleanup:
@@ -344,9 +404,7 @@ def cleanup_stale_prs_at_session_start():
             for pr in prs:
                 pr_num = pr["number"]
                 if pr_num not in closed_pr_nums:
-                    print(f"[E2E SETUP] Closing stale PR #{pr_num}: {pr['title']}")
-                    print(f"[E2E SETUP]   Branch: {pr['headRefName']}, Created: {pr['createdAt']}")
-                    print(f"[E2E SETUP]   Matched label: {label}")
+                    logger.info("[E2E CLEANUP] Closing PR #%d: %s (label: %s)", pr_num, pr['title'], label)
                     subprocess.run(
                         ["gh", "pr", "close", str(pr_num),
                          "--repo", repo,
@@ -356,7 +414,7 @@ def cleanup_stale_prs_at_session_start():
                     closed_prs.append(pr)
                     closed_pr_nums.add(pr_num)
 
-    # Second, clean up PRs with e2e branch patterns (from crashed test runs)
+    # Second, clean up PRs with e2e branch patterns
     result = subprocess.run(
         ["gh", "pr", "list",
          "--repo", repo,
@@ -371,11 +429,8 @@ def cleanup_stale_prs_at_session_start():
             pr_num = pr["number"]
             branch = pr.get("headRefName", "")
             if pr_num not in closed_pr_nums:
-                # Check if branch matches e2e patterns
                 if any(pattern in branch.lower() for pattern in e2e_branch_patterns):
-                    print(f"[E2E SETUP] Closing stale PR #{pr_num}: {pr['title']}")
-                    print(f"[E2E SETUP]   Branch: {branch}, Created: {pr['createdAt']}")
-                    print(f"[E2E SETUP]   Matched branch pattern")
+                    logger.info("[E2E CLEANUP] Closing PR #%d: %s (branch pattern)", pr_num, pr['title'])
                     subprocess.run(
                         ["gh", "pr", "close", str(pr_num),
                          "--repo", repo,
@@ -385,10 +440,69 @@ def cleanup_stale_prs_at_session_start():
                     closed_prs.append(pr)
                     closed_pr_nums.add(pr_num)
 
-    if closed_prs:
-        print(f"[E2E SETUP] Cleaned up {len(closed_prs)} stale PRs total")
-    else:
-        print("[E2E SETUP] No stale PRs found")
+    return len(closed_prs)
+
+
+def _cleanup_issues(repo: str) -> int:
+    """Close test issues with test-data label."""
+    result = subprocess.run(
+        ["gh", "issue", "list",
+         "--repo", repo,
+         "--label", DEFAULT_E2E_FILTER_LABEL,
+         "--state", "open",
+         "--json", "number,title"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return 0
+
+    issues = json.loads(result.stdout)
+    for issue in issues:
+        logger.info("[E2E CLEANUP] Closing issue #%d: %s", issue['number'], issue['title'])
+        subprocess.run(
+            ["gh", "issue", "close", str(issue["number"]),
+             "--repo", repo],
+            capture_output=True
+        )
+
+    return len(issues)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def e2e_reconciliation_at_session_start():
+    """Comprehensive e2e test reconciliation - clean slate before running tests.
+
+    This runs once at the beginning of the e2e test session and cleans up ALL
+    artifacts from previous (possibly crashed) test runs:
+
+    1. Local worktrees in /tmp/e2e-worktrees/
+    2. Stale tmux sessions
+    3. Remote branches matching e2e patterns (orphaned from crashes)
+    4. Open PRs with test labels or e2e branch patterns
+    5. Open issues with test-data label
+
+    This ensures deterministic test runs regardless of previous state.
+    """
+    repo = get_test_repo()
+    logger.info("=" * 60)
+    logger.info("[E2E RECONCILIATION] Cleaning up artifacts from previous runs...")
+    logger.info("=" * 60)
+
+    # 1. Local cleanup
+    _cleanup_local_worktrees()
+    _cleanup_tmux_sessions()
+
+    # 2. Remote cleanup (order matters: PRs first, then orphan branches)
+    prs_closed = _cleanup_prs(repo)
+    branches_deleted = _cleanup_remote_branches(repo)
+    issues_closed = _cleanup_issues(repo)
+
+    # Summary
+    logger.info("=" * 60)
+    logger.info("[E2E RECONCILIATION] Summary: PRs=%d, Branches=%d, Issues=%d",
+                prs_closed, branches_deleted, issues_closed)
+    logger.info("=" * 60)
 
     yield
 
