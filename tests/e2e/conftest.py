@@ -380,7 +380,7 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
     config.repo = repo_name
     config.repo_root = e2e_project_root
     config.ui_mode = "tmux"
-    config.max_concurrent_sessions = 2  # Allow some concurrency
+    config.max_concurrent_sessions = 4  # Allow more concurrency for saturation testing
     config.filter_label = "test-data"
 
     # Configure e2e-test agent

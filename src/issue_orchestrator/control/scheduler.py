@@ -213,6 +213,8 @@ class Scheduler:
                 continue
             if labels.is_in_progress(issue.labels):
                 continue
+            if labels.is_pr_pending(issue.labels):
+                continue
             if labels.is_blocking_any(issue.labels):
                 continue
 

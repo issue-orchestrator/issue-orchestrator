@@ -19,6 +19,9 @@ from typing import Iterable, Sequence
 # Ownership label - orchestrator is actively working on this
 IN_PROGRESS = "in-progress"
 
+# PR pending - session completed with PR, awaiting merge
+PR_PENDING = "pr-pending"
+
 # Blocking labels
 BLOCKED = "blocked"                      # generic blocking (deps, external, etc.)
 BLOCKED_FAILED = "blocked-failed"        # session crashed/failed/timed out
@@ -67,6 +70,11 @@ def get_blocking_labels(labels: Sequence[str]) -> list[str]:
 def is_in_progress(labels: Sequence[str]) -> bool:
     """Check if issue is marked as in-progress."""
     return IN_PROGRESS in labels
+
+
+def is_pr_pending(labels: Sequence[str]) -> bool:
+    """Check if issue has a PR pending merge."""
+    return PR_PENDING in labels
 
 
 def requires_human(label: str) -> bool:

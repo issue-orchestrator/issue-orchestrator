@@ -54,6 +54,7 @@ from .workflows import (
 from .actions import (
     Action,
     ActionType,
+    AddLabelAction,
     LaunchSessionAction,
     QueueReviewAction,
     QueueReworkAction,
@@ -62,6 +63,7 @@ from .actions import (
     EscalateToHumanAction,
     CleanupSessionAction,
 )
+from .. import labels
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +354,12 @@ class Planner:
 
         for review in snapshot.discovered_reviews:
             if review.pr_number not in queued_pr_numbers:
+                # Add pr-pending label to prevent issue re-pickup while awaiting merge
+                actions.append(AddLabelAction(
+                    issue_number=review.issue_number,
+                    label=labels.PR_PENDING,
+                    reason=f"session completed with PR #{review.pr_number} - awaiting merge",
+                ))
                 actions.append(QueueReviewAction(
                     issue_number=review.issue_number,
                     pr_number=review.pr_number,
