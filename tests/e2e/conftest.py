@@ -15,6 +15,13 @@ from typing import Generator, AsyncGenerator, Callable, TypeVar
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Default label for e2e test data - used to identify and clean up test artifacts
+DEFAULT_E2E_FILTER_LABEL = "test-data"
+
 
 # ---------------------------------------------------------------------------
 # Timing Infrastructure
@@ -312,7 +319,7 @@ def cleanup_stale_prs_at_session_start():
     Also cleans up PRs from crashed e2e test runs by matching branch patterns.
     """
     repo = get_test_repo()
-    labels_to_cleanup = ["test-data", "needs-code-review", "code-reviewed"]
+    labels_to_cleanup = [DEFAULT_E2E_FILTER_LABEL, "needs-code-review", "code-reviewed"]
     # Branch patterns that indicate e2e test PRs (from crashed runs)
     e2e_branch_patterns = ["-e2e-", "-test-"]
     closed_prs: list[dict] = []
@@ -598,7 +605,7 @@ def filter_label() -> str:
         E2E_FILTER=run-a pytest tests/e2e/
         E2E_FILTER=run-b pytest tests/e2e/  # parallel, no interference
     """
-    return os.environ.get("E2E_FILTER", "test-data")
+    return os.environ.get("E2E_FILTER", DEFAULT_E2E_FILTER_LABEL)
 
 
 @pytest.fixture

@@ -6,6 +6,9 @@ set -ex  # -x for debugging
 # Ensure common tools are in PATH (homebrew, git, gh)
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
+# E2E filter label - passed from orchestrator config, used to tag PRs for cleanup
+E2E_FILTER_LABEL="${ORCHESTRATOR_FILTER_LABEL}"
+
 # Add agent-done to PATH (derive from script location)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -19,14 +22,17 @@ echo "E2E test completed at $(date)" > e2e-test-output.txt
 git add e2e-test-output.txt
 git commit -m "E2E test: verify orchestrator lifecycle"
 
-# Push the branch
-git push --no-verify -u origin "$BRANCH"
-
-# Create PR (simple body to avoid escaping issues)
-# Add test-data label so e2e cleanup can find it
-gh pr create --title "#${ISSUE_NUMBER}: E2E test" --body "Closes #${ISSUE_NUMBER} - E2E test" --base main --label test-data
-
-# Signal completion
-agent-done completed --implementation "E2E test completed successfully" --problems "None"
+# Signal completion - orchestrator will push branch and create PR
+# Pass --pr-labels if filter label is configured (for e2e cleanup)
+if [[ -n "$ORCHESTRATOR_FILTER_LABEL" ]]; then
+    agent-done completed \
+        --implementation "E2E test completed successfully" \
+        --problems "None" \
+        --pr-labels "$ORCHESTRATOR_FILTER_LABEL"
+else
+    agent-done completed \
+        --implementation "E2E test completed successfully" \
+        --problems "None"
+fi
 
 exit 0
