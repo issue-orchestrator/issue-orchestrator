@@ -160,7 +160,7 @@ class TestLaunchSessionAction:
         """Test launching session via callback."""
         # Create a mock session launcher callback
         mock_session = MagicMock()
-        mock_session.tmux_session_name = "issue-123"
+        mock_session.terminal_id = "issue-123"
         mock_session.issue.number = 123
 
         callback = MagicMock(return_value=mock_session)

@@ -20,6 +20,8 @@ from issue_orchestrator.models import (
     Issue, AgentConfig, Session, OrchestratorState, SessionStatus,
     CommentHeadings
 )
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 # Import MockGitHubAdapter from conftest (it's available as fixture)
 
 
@@ -291,7 +293,7 @@ class TestObserverWiring:
 
         # Mock the session runner to report session not exists
         mock_runner = MagicMock()
-        mock_runner.session_exists.return_value = False
+        mock_runner.session_exists_by_name.return_value = False
 
         # Mock repository host for PR lookup
         mock_repo_host = MagicMock()
@@ -305,14 +307,18 @@ class TestObserverWiring:
             repository_host=mock_repo_host,
         )
 
+        issue = Issue(number=789, title="Test", labels=["agent:test"])
+        issue_key = FakeIssueKey(name="789")
+        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
         session = Session(
-            issue=Issue(number=789, title="Test", labels=["agent:test"]),
+            key=session_key,
+            issue=issue,
             agent_config=AgentConfig(
                 prompt_path=Path("test.md"),
                 worktree_base=Path(".."),
                 timeout_minutes=60
             ),
-            tmux_session_name="orchestrator",
+            terminal_id="orchestrator",
             worktree_path=Path("/fake"),
             branch_name="789-test",
             started_at=datetime.now(),
@@ -333,18 +339,22 @@ class TestObserverWiring:
 
         # Mock the session runner to report session exists
         mock_runner = MagicMock()
-        mock_runner.session_exists.return_value = True
+        mock_runner.session_exists_by_name.return_value = True
 
         observer = SessionObserver(config, session_runner=mock_runner)
 
+        issue = Issue(number=101, title="Test", labels=["agent:test"])
+        issue_key = FakeIssueKey(name="101")
+        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
         session = Session(
-            issue=Issue(number=101, title="Test", labels=["agent:test"]),
+            key=session_key,
+            issue=issue,
             agent_config=AgentConfig(
                 prompt_path=Path("test.md"),
                 worktree_base=Path(".."),
                 timeout_minutes=60
             ),
-            tmux_session_name="orchestrator",
+            terminal_id="orchestrator",
             worktree_path=Path("/fake"),
             branch_name="101-test",
             started_at=datetime.now(),

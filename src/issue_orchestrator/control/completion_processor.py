@@ -162,7 +162,7 @@ class CompletionProcessor:
         record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
 
         if not record_path.exists():
-            logger.debug(f"No completion record found at {record_path}")
+            logger.info("No completion record found at %s", record_path)
             return None
 
         try:
@@ -170,8 +170,10 @@ class CompletionProcessor:
                 data = json.load(f)
             record = CompletionRecord.from_dict(data)
             logger.info(
-                f"Read completion record: {record.outcome.value} "
-                f"(session: {record.session_id})"
+                "Read completion record: outcome=%s session=%s path=%s",
+                record.outcome.value,
+                record.session_id,
+                record_path,
             )
             return record
         except json.JSONDecodeError as e:
@@ -312,6 +314,12 @@ class CompletionProcessor:
 
         # Get branch name for PR operations
         branch = self.git_adapter.get_current_branch(worktree)
+        logger.info(
+            "Completion worktree state: issue=%s branch=%s worktree=%s",
+            issue_number,
+            branch,
+            worktree,
+        )
 
         # Log what actions were requested
         logger.info(
@@ -411,6 +419,14 @@ class CompletionProcessor:
             RequestedAction.PUSH_BRANCH in record.requested_actions
             and "Pushed branch to remote" in actions_taken
         )
+        logger.info(
+            "Completion result: issue=%s success=%s actions=%s errors=%s pr_url=%s",
+            issue_number,
+            success,
+            actions_taken,
+            errors,
+            pr_url,
+        )
 
         # Build result message and emit events
         if success:
@@ -435,6 +451,15 @@ class CompletionProcessor:
                     "errors": errors,
                 },
             )
+
+        # Clean up the completion record after processing to prevent re-processing
+        # This is critical because review sessions reuse the same worktree
+        record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
+        existed_before = record_path.exists()
+        self.cleanup_record(worktree, completion_path)
+        exists_after = record_path.exists()
+        logger.warning("CLEANUP: issue=%d path=%s existed_before=%s exists_after=%s",
+                      issue_number, record_path, existed_before, exists_after)
 
         return ProcessingResult(
             success=success,
@@ -480,16 +505,17 @@ class CompletionProcessor:
 
         return "\n".join(parts)
 
-    def cleanup_record(self, worktree: Path) -> bool:
+    def cleanup_record(self, worktree: Path, completion_path: str | None = None) -> bool:
         """Remove the completion record after processing.
 
         Args:
             worktree: Path to the worktree.
+            completion_path: Agent-specific path to completion.json (optional).
 
         Returns:
             True if successfully removed, False otherwise.
         """
-        record_path = worktree / COMPLETION_RECORD_PATH
+        record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
         try:
             if record_path.exists():
                 record_path.unlink()

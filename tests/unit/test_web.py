@@ -16,6 +16,8 @@ from issue_orchestrator.models import (
     SessionStatus,
 )
 from issue_orchestrator.config import Config
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
 
 # Helper functions
@@ -83,10 +85,13 @@ def create_session(issue, worktree_path="/tmp/worktree-1", branch_name="feature/
         model="sonnet",
         timeout_minutes=45,
     )
+    issue_key = FakeIssueKey(name=str(issue.number))
+    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
     return Session(
+        key=session_key,
         issue=issue,
         agent_config=agent_config,
-        tmux_session_name=f"issue-{issue.number}",
+        terminal_id=f"issue-{issue.number}",
         worktree_path=Path(worktree_path),
         branch_name=branch_name,
     )

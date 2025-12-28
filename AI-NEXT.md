@@ -1,5 +1,135 @@
 # AI Next Steps
 
+## Current Work: SessionKey Implementation (2025-12-28)
+
+### Problem
+E2E test bug "Can't trigger event approve from state approved!" - state machine error caused by session identity being conflated with terminal naming and GitHub issue numbers.
+
+### Solution: SessionKey Abstraction
+Proper domain identity for sessions: `SessionKey = (IssueKey, TaskKind)`
+
+**Plan file:** `~/.claude/plans/curious-floating-hoare.md`
+
+### Status
+
+**Phase 1: Domain Layer** ✅ COMPLETE
+- Created `src/issue_orchestrator/domain/session_key.py` with TaskKind enum and SessionKey dataclass
+- Created `tests/unit/test_session_key.py` with 20 tests
+
+**Phase 2: Session Model Update** ✅ COMPLETE
+- Renamed `tmux_session_name` → `terminal_id` across all files
+- Added `key: SessionKey` field to Session model
+- Updated all Session creation sites:
+  - `session_launcher.py`: CODE, REVIEW, REWORK task types
+  - `session_restorer.py`: CODE and REVIEW based on is_review flag
+  - `cli.py`: Adopted sessions as CODE
+  - All test files use `FakeIssueKey` for test isolation
+
+**Phase 3: Ports/Adapters** ✅ COMPLETE
+- Added `session_exists_by_name()` and `send_to_session_by_name()` to SessionRunner port
+- Updated hookspec, adapters, and tmux plugin
+
+**Phase 4: Control Layer Bug Fixes** ✅ COMPLETE
+- Fixed observer.py to use `terminal_id` instead of `issue.number` for lookups
+- Fixed orchestrator.py session removal to use `terminal_id`
+
+**Phase 5: Reconciliation Logic** ⏳ NOT STARTED
+- Update `control/session_restorer.py` to use SessionKey for matching orphans
+- Parse terminal_id → extract SessionKey in adapter layer
+- Implement mismatch policy: work persisted → safe to kill; not persisted → quarantine
+
+**Phase 6: Draft PR Policy** ⏳ NOT STARTED
+- Create PRs with `--draft` flag
+- Orchestrator promotes to ready after review passes
+- Handle reconciliation for reviewed issues with draft PRs still open
+
+### Test Status
+- Unit tests: 1591 pass ✅
+- Integration tests: 60 pass ✅
+- E2E tests: **FAILING** - agent sessions dying quickly (see below)
+
+### E2E Test Infrastructure Improvements (2025-12-28)
+Added these improvements to `tests/e2e/conftest.py`:
+
+1. **Persistent Log File** - Survives Ctrl+C
+   - Logs to `/tmp/e2e-orchestrator-logs/e2e-{timestamp}.log`
+   - All orchestrator output captured (not just filtered keywords)
+   - Keeps last 10 log files, auto-cleans older ones
+
+2. **Debug Paths Printed at Startup**
+   ```
+   [E2E DEBUG PATHS]
+     Orchestrator log: /tmp/e2e-orchestrator-logs/e2e-20251228-021610.log
+     Worktrees:        /tmp/e2e-worktrees
+     Claude logs:      ~/.claude/logs
+   ```
+
+3. **Early Failure Detection**
+   - Added `FATAL_ERROR_PATTERNS` - stops polling immediately on:
+     - `"Traceback (most recent call last):"`
+     - `"Can't trigger event"` (state machine errors)
+     - `"FATAL:"`, `"panic:"`, `"RecursionError:"`
+   - Raises `RuntimeError` with log file path
+
+4. **Progress Indicators**
+   - Every 10 seconds during waits:
+     ```
+     ... waiting for label 'completed' on issue #123 (30s elapsed, 90s remaining)
+     ```
+
+5. **Faster Polling**
+   - Reduced default interval from 5s to 2s
+
+6. **Fixed permission_mode**
+   - Added `permission_mode="bypassPermissions"` to e2e agent config
+   - Required for non-interactive Claude Code execution
+
+### E2E Test Current Issue
+Agent sessions are failing after ~14 seconds without completing:
+- Sessions show "bypass permissions on" (correct - permissions bypassing works)
+- Claude appears to run but doesn't call `agent-done`
+- Some sessions timeout after 15 min (agent runs but doesn't complete)
+- Other sessions fail quickly (~14 sec)
+
+**Possible causes to investigate:**
+1. Agent prompt timing - Claude might need more time to process
+2. Hook blocking - PreToolUse hooks might be interfering
+3. Worktree setup - something in the worktree might cause issues
+
+### Next Step
+Debug why agent sessions fail quickly:
+1. Check Claude Code logs: `~/.claude/logs/`
+2. Check worktree session logs: `/tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/session.log`
+3. Try running agent manually in a worktree to see what happens
+
+---
+
+## Previous Work: E2E Test Reliability (2025-12-27)
+
+### Problem
+E2E tests failing because issues created mid-test weren't picked up by orchestrator. Root cause: `queue_refresh_seconds` defaults to 600s (10 min).
+
+### Solution: Control API (Orthogonal to UI Mode)
+Created `control_api.py` - a lightweight HTTP API that runs in ALL modes (tmux, iterm2, web), not just web mode.
+
+**Files:**
+- `src/issue_orchestrator/control_api.py` (NEW) - FastAPI app on port 19080
+- `src/issue_orchestrator/config.py` - Added `control_api_port: int = 19080`
+- `src/issue_orchestrator/cli.py` - Added `--api-port` flag, starts API in all modes
+
+**Endpoints:** `/api/refresh`, `/api/pause`, `/api/resume`, `/api/status`, `/api/shutdown`, `/api/health`
+
+**E2E test updates:**
+- `tests/e2e/conftest.py` - `trigger_refresh(port=19080)` uses control API
+- `tests/e2e/test_full_pipeline.py` - Calls `trigger_refresh()` after creating issues
+
+### Status
+- [x] Control API implementation complete
+- [x] E2E tests updated to use control API
+- [ ] Run full e2e test to completion (last run showed all 3 issues processed, interrupted before assertions)
+
+---
+
 ## Priority: Architectural Improvements (from feedback1.rtf)
 
 These are the "calling card" level improvements that turn layer disconnects into deliberate design.

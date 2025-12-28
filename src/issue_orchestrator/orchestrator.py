@@ -290,10 +290,12 @@ class Orchestrator:
         from .control.actions import AddLabelAction, RemoveLabelAction, AddCommentAction
         from . import labels
 
-        name = session.tmux_session_name
+        name = session.terminal_id
         entity = "review" if name.startswith("review-") else ("rework" if name.startswith("rework-") else "issue")
         log_transition(entity, session.issue.number, "ACTIVE", status.value.upper(), f"runtime={session.runtime_minutes}min")
-        self.state.active_sessions = [s for s in self.state.active_sessions if s.issue.number != session.issue.number]
+        # Remove by session name, NOT issue number - multiple sessions can share an issue number
+        # (e.g., issue session and review session for the same issue)
+        self.state.active_sessions = [s for s in self.state.active_sessions if s.terminal_id != session.terminal_id]
 
         # Generate and apply failure handling actions (proper architecture)
         failure_actions = self._generate_completion_actions(session, status)
@@ -343,7 +345,7 @@ class Orchestrator:
                 comment=f"⏱️ **Session Timed Out**\n\n"
                         f"The agent session exceeded the {timeout_mins} minute timeout limit.\n\n"
                         f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
-                        f"- Session: `{session.tmux_session_name}`\n\n"
+                        f"- Session: `{session.terminal_id}`\n\n"
                         f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
                         f"Remove the label to allow reprocessing.",
                 reason="Notify about session timeout",
@@ -371,7 +373,7 @@ class Orchestrator:
                 comment=f"❌ **Session Failed**\n\n"
                         f"The agent session ended without creating a PR or status update.\n\n"
                         f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
-                        f"- Session: `{session.tmux_session_name}`\n\n"
+                        f"- Session: `{session.terminal_id}`\n\n"
                         f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
                         f"Remove the label to allow reprocessing.",
                 reason="Notify about session failure",
@@ -402,13 +404,21 @@ class Orchestrator:
         if status == SessionStatus.COMPLETED and (self.config.cleanup.without_triage.close_ai_session_tabs or not self.config.code_review_agent):
             try: self.worktree_manager.remove(session.worktree_path) if self.worktree_manager else None
             except: pass
-        try: self._kill_session(session.tmux_session_name)
+        try: self._kill_session(session.terminal_id)
         except: pass
 
     def tick(self) -> bool:
         self._loop_iteration += 1
         self._event_context.tick_id = self._loop_iteration
-        logger.info("[LOOP] Iteration %d - active=%d, paused=%s", self._loop_iteration, len(self.state.active_sessions), self.state.paused)
+        logger.info(
+            "[LOOP] Iteration %d - active=%d paused=%s pending_reviews=%d pending_reworks=%d pending_triage=%d",
+            self._loop_iteration,
+            len(self.state.active_sessions),
+            self.state.paused,
+            len(self.state.pending_reviews),
+            len(self.state.pending_reworks),
+            len(self.state.pending_triage_reviews),
+        )
 
         # Emit tick.started
         self.events.publish(TraceEvent(
@@ -454,7 +464,7 @@ class Orchestrator:
             obs = self.observer.observe_session(session)
             if obs.observation == SessionObservation.RUNNING: continue
             decision = self._session_controller.decide_outcome(obs, session.worktree_path, session.issue.number,
-                session.issue.title, session.tmux_session_name, session.completion_path)
+                session.issue.title, session.terminal_id, session.completion_path)
             self.handle_session_completion(session, decision.status)
 
     def _run_planning_cycle(self) -> None:
@@ -577,8 +587,8 @@ class Orchestrator:
         if force:
             logger.info("Force shutdown - killing %d session(s)", len(active))
             for s in active:
-                try: self._kill_session(s.tmux_session_name)
-                except Exception as e: logger.warning("Failed to kill session %s: %s", s.tmux_session_name, e)
+                try: self._kill_session(s.terminal_id)
+                except Exception as e: logger.warning("Failed to kill session %s: %s", s.terminal_id, e)
             self.state.active_sessions = []
         else:
             logger.info("Shutdown requested - waiting for %d session(s)", len(active))
@@ -775,8 +785,24 @@ class Orchestrator:
 
     def launch_review_session(self, review: PendingReview) -> Optional[Session]:
         result = self._session_launcher.launch_review_session(review, self.state.active_sessions)
+        # Always remove from pending after attempting launch
         self.state.pending_reviews = [r for r in self.state.pending_reviews if r.pr_number != review.pr_number]
-        if result.success and result.session: self.state.active_sessions.append(result.session)
+        if result.success and result.session:
+            self.state.active_sessions.append(result.session)
+        elif result.keep_queued:
+            # Terminal exists but we can't track it - try to restore/adopt it
+            # This happens when a session survives a restart but wasn't restored at startup
+            session_name = f"review-{review.pr_number}"
+            restored = self._session_restorer.restore_sessions(
+                running=[{"issue_number": review.issue_number, "tab_name": session_name, "is_review": True}],
+                already_tracked=self.state.active_sessions,
+            )
+            if restored:
+                self.state.active_sessions.extend(restored)
+                logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
+            else:
+                # Couldn't restore - the terminal might be stale, let it be cleaned up
+                logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
         return result.session if result.success else None
 
     def _launch_triage_session(self, triage: PendingTriageReview) -> None:
@@ -792,7 +818,7 @@ class Orchestrator:
 
     def scan_needs_code_review_prs(self) -> None:
         from .models import DiscoveredReview
-        for r in self._pr_scanner.scan_for_reviews(self.state.pending_reviews, [s.tmux_session_name for s in self.state.active_sessions]):
+        for r in self._pr_scanner.scan_for_reviews(self.state.pending_reviews, [s.terminal_id for s in self.state.active_sessions]):
             self.state.discovered_reviews.append(DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name))
 
     def scan_needs_rework_prs(self) -> None:
@@ -807,8 +833,23 @@ class Orchestrator:
 
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]:
         result = self._session_launcher.launch_rework_session(rework, self.state.active_sessions)
+        # Always remove from pending after attempting launch
         self.state.pending_reworks = [r for r in self.state.pending_reworks if r.issue_key != rework.issue_key]
-        if result.success and result.session: self.state.active_sessions.append(result.session)
+        if result.success and result.session:
+            self.state.active_sessions.append(result.session)
+        elif result.keep_queued:
+            # Terminal exists but we can't track it - try to restore/adopt it
+            issue_number = int(rework.issue_key.stable_id())
+            session_name = f"rework-{issue_number}"
+            restored = self._session_restorer.restore_sessions(
+                running=[{"issue_number": issue_number, "tab_name": session_name, "is_review": False}],
+                already_tracked=self.state.active_sessions,
+            )
+            if restored:
+                self.state.active_sessions.extend(restored)
+                logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
+            else:
+                logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
         return result.session if result.success else None
 
 async def run_orchestrator(config_path: Optional[Path] = None) -> None:

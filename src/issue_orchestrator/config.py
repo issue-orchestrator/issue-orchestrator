@@ -107,6 +107,7 @@ class Config:
     # UI mode: "web" (default, browser dashboard), "tmux", "iterm2" (Mac iTerm2 tabs)
     ui_mode: str = "web"
     web_port: int = 8080  # Port for web dashboard
+    control_api_port: int = 19080  # Port for control API (always available, 0 = disabled)
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
 
     # Terminal adapter (optional - overrides ui_mode if set)
@@ -381,6 +382,7 @@ class Config:
         # UI mode
         config.ui_mode = data.get("ui_mode", "web")
         config.web_port = data.get("web_port", 8080)
+        config.control_api_port = data.get("control_api_port", 19080)
         config.queue_refresh_seconds = data.get("queue_refresh_seconds", 600)
 
         # Terminal adapter (overrides ui_mode if set)

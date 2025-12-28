@@ -15,6 +15,7 @@ from rich.table import Table
 from .logging_config import setup_logging
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 # Re-export LOG_FILE for backward compatibility (e.g., --show-logs command)
 LOG_FILE = Path.home() / ".issue-orchestrator.log"
@@ -101,7 +102,6 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     try:
         from .bootstrap import build_orchestrator
-        from .dashboard import run_with_dashboard
 
         config = _load_config(args)
 
@@ -113,6 +113,42 @@ def cmd_start(args: argparse.Namespace) -> int:
                 console.print(f"  [red]• {error}[/red]")
                 logging.error(f"Config validation: {error}")
             return 1
+
+        logger.info(
+            "Effective config: repo=%s config_path=%s filter_label=%s ui_mode=%s web_port=%s api_port=%s "
+            "max_sessions=%s session_timeout=%s queue_refresh=%s",
+            config.repo,
+            config.config_path,
+            config.filter_label,
+            config.ui_mode,
+            config.web_port,
+            config.control_api_port,
+            config.max_concurrent_sessions,
+            config.session_timeout_minutes,
+            config.queue_refresh_seconds,
+        )
+        logger.debug(
+            "CLI args: label=%s milestone=%s issue=%s no_dashboard=%s ui_mode=%s port=%s api_port=%s test_mode=%s",
+            getattr(args, "label", None),
+            getattr(args, "milestone", None),
+            getattr(args, "issue", None),
+            getattr(args, "no_dashboard", None),
+            getattr(args, "ui_mode", None),
+            getattr(args, "port", None),
+            getattr(args, "api_port", None),
+            getattr(args, "test_mode", None),
+        )
+        for label, agent in config.agents.items():
+            logger.debug(
+                "Agent config: label=%s prompt=%s worktree_base=%s model=%s timeout=%s command=%s permission_mode=%s",
+                label,
+                agent.prompt_path,
+                agent.worktree_base,
+                agent.model,
+                agent.timeout_minutes,
+                agent.command,
+                agent.permission_mode,
+            )
 
     except FileNotFoundError as e:
         logging.error(f"Config not found: {e}")
@@ -385,15 +421,40 @@ end tell'''
     if getattr(args, 'adopt_sessions', False) and config.ui_mode == "iterm2":
         _adopt_iterm2_sessions(orchestrator, config)
 
-    # Run startup to clean up stale issues (skip for web mode - it runs startup in background)
-    if config.ui_mode != "web":
-        asyncio.run(orchestrator.startup())
+    # Get control API port (CLI --api-port overrides config)
+    api_port = getattr(args, 'api_port', None) or config.control_api_port
 
     try:
         if args.no_dashboard:
             # Run orchestrator without dashboard (useful for CI/debugging)
             console.print("[dim]Running without dashboard UI[/dim]")
-            asyncio.run(orchestrator.run_loop())
+            if api_port:
+                console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
+
+            async def run_with_control_api():
+                from .control_api import ControlAPIServer
+
+                # Start control API FIRST so it's available during startup
+                # This allows e2e tests to trigger refresh immediately
+                control_api = None
+                if api_port:
+                    control_api = ControlAPIServer(orchestrator, port=api_port)
+                    try:
+                        await control_api.start()
+                    except OSError as exc:
+                        logging.warning("Control API failed to start on port %s: %s", api_port, exc)
+                        control_api = None
+
+                try:
+                    # Run startup (cleans up stale issues, restores sessions)
+                    await orchestrator.startup()
+                    # Then run the main loop
+                    await orchestrator.run_loop()
+                finally:
+                    if control_api:
+                        await control_api.stop()
+
+            asyncio.run(run_with_control_api())
         elif config.ui_mode == "web":
             # Run with web dashboard in browser
             from .web import run_with_web_dashboard
@@ -427,7 +488,29 @@ end tell'''
             asyncio.run(run_with_signals())
         else:
             # Run with interactive TUI dashboard (tmux or iterm2 mode)
-            should_attach = asyncio.run(run_with_dashboard(orchestrator, config.ui_mode))
+            if api_port:
+                console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
+
+            async def run_tui_with_control_api():
+                from .control_api import ControlAPIServer
+                from .dashboard import run_with_dashboard
+
+                # Start control API FIRST so it's available during startup
+                control_api = None
+                if api_port:
+                    control_api = ControlAPIServer(orchestrator, port=api_port)
+                    await control_api.start()
+
+                try:
+                    # Run startup (cleans up stale issues, restores sessions)
+                    await orchestrator.startup()
+                    # Then run the dashboard with orchestrator
+                    return await run_with_dashboard(orchestrator, config.ui_mode)
+                finally:
+                    if control_api:
+                        await control_api.stop()
+
+            should_attach = asyncio.run(run_tui_with_control_api())
             if should_attach:
                 # User pressed 1-9 to attach to a session - already in tmux for iterm2 mode
                 if config.ui_mode != "iterm2":
@@ -882,11 +965,19 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
         )
         branch_name = branch_result.stdout.strip() if branch_result.returncode == 0 else f"{issue_num}-unknown"
 
-        # Create Session object
+        # Create session with domain identity (CODE task type for adopted sessions)
+        from .domain.session_key import SessionKey, TaskKind
+        from .domain.issue_key import GitHubIssueKey
+        if not config.repo:
+            console.print(f"  [yellow]#{issue_num}: No repo configured, skipping[/yellow]")
+            continue
+        issue_key = GitHubIssueKey(repo=config.repo, external_id=str(issue_num))
+        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
         session = Session(
+            key=session_key,
             issue=issue,
             agent_config=agent_config,
-            tmux_session_name=f"issue-{issue_num}",  # Convention for phase detection
+            terminal_id=f"issue-{issue_num}",  # Convention for phase detection
             worktree_path=worktree_path,
             branch_name=branch_name,
             started_at=datetime.now(),  # We don't know real start time
@@ -1492,6 +1583,13 @@ def main() -> int:
         type=int,
         default=8080,
         help="Port for web dashboard (default: 8080)"
+    )
+    start_parser.add_argument(
+        "--api-port",
+        type=int,
+        default=None,
+        dest="api_port",
+        help="Port for control API (default: 19080, 0=disabled). Control API is always available regardless of UI mode."
     )
     start_parser.add_argument(
         "--queue-refresh",

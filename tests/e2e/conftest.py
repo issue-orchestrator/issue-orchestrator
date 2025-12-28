@@ -10,6 +10,7 @@ import os
 import signal
 import subprocess
 import time
+import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Generator, AsyncGenerator, Callable, TypeVar
@@ -19,20 +20,221 @@ import pytest
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Pytest Configuration - Fail fast for e2e tests
+# ---------------------------------------------------------------------------
+
+def pytest_configure(config):
+    """Configure pytest for e2e tests - fail fast by default."""
+    # Only apply if we're in the e2e test directory
+    if any("e2e" in str(arg) for arg in config.args):
+        # Set maxfail=1 if not explicitly overridden
+        if config.option.maxfail == 0:  # 0 means unlimited
+            config.option.maxfail = 1
+            logger.info("[E2E] Fail-fast enabled (maxfail=1)")
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 # Default label for e2e test data - used to identify and clean up test artifacts
 DEFAULT_E2E_FILTER_LABEL = "test-data"
 
+# Persistent log directory - survives test cancellation
+E2E_LOG_DIR = Path("/tmp/e2e-orchestrator-logs")
+E2E_LOG_DIR.mkdir(exist_ok=True)
+E2E_PROGRESS_LOG = E2E_LOG_DIR / "pytest-progress.log"
+E2E_CURRENT_TEST = E2E_LOG_DIR / "pytest-current-test.txt"
+E2E_SNAPSHOT_LOG = E2E_LOG_DIR / "pytest-abort-snapshot.log"
+
+
+def _write_progress(event: str, nodeid: str = "", extra: str = "") -> None:
+    """Persist pytest progress so aborted runs still have breadcrumbs."""
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{timestamp} {event}"
+    if nodeid:
+        line += f" {nodeid}"
+    if extra:
+        line += f" {extra}"
+    try:
+        with E2E_PROGRESS_LOG.open("a") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _keep_artifacts() -> bool:
+    """Return True if e2e cleanup should be skipped."""
+    return os.environ.get("E2E_KEEP_ARTIFACTS") == "1"
+
+
+def _tail_lines(path: Path, limit: int = 200) -> list[str]:
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return []
+    lines = text.splitlines()
+    return lines[-limit:]
+
+
+def _find_recent_worktrees(limit: int = 3) -> list[Path]:
+    """Find recent e2e worktrees for snapshotting."""
+    candidates: list[Path] = []
+    tmp_root = Path("/tmp/e2e-worktrees")
+    if tmp_root.exists():
+        candidates.extend([p for p in tmp_root.iterdir() if p.is_dir()])
+
+    # pytest tmp worktrees live under /private/var/folders/*/*/T/pytest-of-*/.../worktrees/*
+    tmp_parent = Path("/private/var/folders")
+    if tmp_parent.exists():
+        for pytest_dir in tmp_parent.glob("*/*/T/pytest-of-*"):
+            for worktree_root in pytest_dir.glob("**/worktrees"):
+                try:
+                    for worktree in worktree_root.iterdir():
+                        if worktree.is_dir():
+                            candidates.append(worktree)
+                except OSError:
+                    continue
+
+    candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    return candidates[:limit]
+
+
+def _claude_project_dir_for(worktree: Path) -> Path:
+    escaped = "-" + str(worktree).lstrip("/").replace("/", "-")
+    return Path.home() / ".claude" / "projects" / escaped
+
+
+def _snapshot_logs(reason: str) -> None:
+    """Persist tail snapshots of the latest logs for aborted/failed sessions."""
+    try:
+        latest_orch = max(E2E_LOG_DIR.glob("orchestrator-*.log"), key=lambda p: p.stat().st_mtime, default=None)
+        latest_e2e = max(E2E_LOG_DIR.glob("e2e-*.log"), key=lambda p: p.stat().st_mtime, default=None)
+    except OSError:
+        latest_orch = None
+        latest_e2e = None
+
+    try:
+        with E2E_SNAPSHOT_LOG.open("a") as handle:
+            handle.write("=" * 60 + "\n")
+            handle.write(f"SNAPSHOT reason={reason}\n")
+            if latest_e2e:
+                handle.write(f"[E2E] {latest_e2e}\n")
+                for line in _tail_lines(latest_e2e):
+                    handle.write(line + "\n")
+            if latest_orch:
+                handle.write(f"[ORCH] {latest_orch}\n")
+                for line in _tail_lines(latest_orch):
+                    handle.write(line + "\n")
+            # Tmux context can explain stuck sessions
+            try:
+                handle.write("[TMUX] list-windows\n")
+                tmux_list = subprocess.run(
+                    ["tmux", "list-windows", "-t", "orchestrator"],
+                    capture_output=True,
+                    text=True,
+                )
+                if tmux_list.returncode == 0:
+                    handle.write(tmux_list.stdout.strip() + "\n")
+                else:
+                    handle.write(f"(tmux list-windows failed: {tmux_list.stderr.strip()})\n")
+            except OSError:
+                handle.write("(tmux not available)\n")
+
+            # Capture recent pane output for each window to aid debugging
+            try:
+                tmux_windows = []
+                if tmux_list.returncode == 0:
+                    for line in tmux_list.stdout.splitlines():
+                        window_id = line.split(":")[0].strip()
+                        if window_id:
+                            tmux_windows.append(window_id)
+                for window_id in tmux_windows:
+                    handle.write(f"[TMUX] capture-pane window={window_id}\n")
+                    cap = subprocess.run(
+                        ["tmux", "capture-pane", "-t", f"orchestrator:{window_id}", "-p", "-S", "-200"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if cap.returncode == 0:
+                        handle.write(cap.stdout.strip() + "\n")
+                    else:
+                        handle.write(f"(capture-pane failed: {cap.stderr.strip()})\n")
+            except OSError:
+                handle.write("(tmux capture-pane not available)\n")
+
+            # Snapshot recent worktree artifacts
+            for worktree in _find_recent_worktrees():
+                handle.write(f"[WORKTREE] {worktree}\n")
+                session_dir = worktree / ".issue-orchestrator"
+                if session_dir.exists():
+                    for identity in session_dir.glob("session-identity-*.json"):
+                        handle.write(f"[IDENTITY] {identity}\n")
+                        for line in _tail_lines(identity):
+                            handle.write(line + "\n")
+                    for completion in session_dir.glob("completion-*.json"):
+                        handle.write(f"[COMPLETION] {completion}\n")
+                        for line in _tail_lines(completion):
+                            handle.write(line + "\n")
+                    session_log = session_dir / "session.log"
+                    if session_log.exists():
+                        handle.write(f"[SESSION_LOG] {session_log}\n")
+                        for line in _tail_lines(session_log):
+                            handle.write(line + "\n")
+
+                claude_dir = _claude_project_dir_for(worktree)
+                handle.write(f"[CLAUDE] {claude_dir}\n")
+                if claude_dir.exists():
+                    jsonl_files = sorted(claude_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    if jsonl_files:
+                        recent = jsonl_files[0]
+                        handle.write(f"[CLAUDE_JSONL] {recent}\n")
+                        for line in _tail_lines(recent):
+                            handle.write(line + "\n")
+    except OSError:
+        pass
+
+
+def pytest_sessionstart(session):
+    _write_progress("SESSION_START")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    _write_progress("SESSION_FINISH", extra=f"exitstatus={exitstatus}")
+    if exitstatus != 0:
+        _snapshot_logs(f"exitstatus={exitstatus}")
+
+
+def pytest_runtest_logstart(nodeid, location):
+    try:
+        E2E_CURRENT_TEST.write_text(nodeid)
+    except OSError:
+        pass
+    _write_progress("TEST_START", nodeid=nodeid)
+
+
+def pytest_runtest_logreport(report):
+    if report.when != "call":
+        return
+    status = "PASSED"
+    if report.failed:
+        status = "FAILED"
+    elif report.skipped:
+        status = "SKIPPED"
+    _write_progress("TEST_END", nodeid=report.nodeid, extra=f"status={status}")
+
 
 # ---------------------------------------------------------------------------
 # Timing Infrastructure
 # ---------------------------------------------------------------------------
 
+from contextlib import contextmanager
+
+
 @dataclass
-class TestTiming:
-    """Track timing for a single test."""
+class Phase:
+    """Track timing for a phase within a test."""
     name: str
     start: float = 0.0
     end: float = 0.0
@@ -43,38 +245,96 @@ class TestTiming:
 
 
 @dataclass
+class TestTiming:
+    """Track timing for a single test, including phases."""
+    name: str
+    start: float = 0.0
+    end: float = 0.0
+    phases: list[Phase] = field(default_factory=list)
+    status: str = "running"  # running, passed, failed
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start if self.end else time.time() - self.start
+
+    def start_phase(self, name: str) -> Phase:
+        phase = Phase(name=name, start=time.time())
+        self.phases.append(phase)
+        return phase
+
+    def end_phase(self, phase: Phase) -> None:
+        phase.end = time.time()
+
+    def print_phases(self, indent: str = "    ") -> None:
+        """Print phase breakdown for this test."""
+        if not self.phases:
+            return
+        for p in self.phases:
+            pct = (p.duration / self.duration * 100) if self.duration > 0 else 0
+            print(f"{indent}├─ {p.name}: {p.duration:.1f}s ({pct:.0f}%)")
+
+
+@dataclass
 class E2ETimingStats:
     """Track timing for the entire e2e test session."""
     session_start: float = field(default_factory=time.time)
     test_timings: list[TestTiming] = field(default_factory=list)
     current_test: TestTiming | None = None
+    detailed: bool = True  # Always show phase breakdown by default
 
     def start_test(self, name: str) -> None:
         self.current_test = TestTiming(name=name, start=time.time())
 
-    def end_test(self) -> TestTiming | None:
+    def end_test(self, status: str = "passed") -> TestTiming | None:
         if self.current_test:
             self.current_test.end = time.time()
+            self.current_test.status = status
             self.test_timings.append(self.current_test)
             result = self.current_test
             self.current_test = None
             return result
         return None
 
+    @contextmanager
+    def phase(self, name: str):
+        """Context manager to track a phase within the current test.
+
+        Usage:
+            with e2e_timing_stats.phase("Creating issue"):
+                issue = create_issue(...)
+        """
+        if self.current_test:
+            p = self.current_test.start_phase(name)
+            try:
+                yield
+            finally:
+                self.current_test.end_phase(p)
+        else:
+            yield  # No-op if not in a test
+
     @property
     def total_duration(self) -> float:
         return time.time() - self.session_start
 
-    def print_summary(self) -> None:
+    def print_summary(self, detailed: bool | None = None) -> None:
+        """Print timing summary. Use detailed=True for phase breakdown."""
+        show_detailed = detailed if detailed is not None else self.detailed
         print("\n" + "=" * 70)
         print("E2E TEST TIMING SUMMARY")
         print("=" * 70)
         for t in self.test_timings:
-            status = "✓" if t.duration < 120 else "⚠"  # Warn if > 2 min
-            print(f"  {status} {t.name}: {t.duration:.1f}s")
+            if t.status == "passed":
+                status = "✓" if t.duration < 120 else "⚠"
+            else:
+                status = "✗"
+            print(f"  {status} {t.name}: {t.duration:.1f}s [{t.status}]")
+            if show_detailed and t.phases:
+                t.print_phases()
         print("-" * 70)
+        passed = sum(1 for t in self.test_timings if t.status == "passed")
+        failed = sum(1 for t in self.test_timings if t.status == "failed")
         print(f"  TOTAL: {self.total_duration:.1f}s ({self.total_duration/60:.1f} min)")
-        print(f"  Tests: {len(self.test_timings)}")
+        print(f"  Tests: {len(self.test_timings)} ({passed} passed, {failed} failed)")
         if self.test_timings:
             avg = sum(t.duration for t in self.test_timings) / len(self.test_timings)
             print(f"  Average: {avg:.1f}s per test")
@@ -102,9 +362,24 @@ def track_test_timing(request, e2e_timing_stats):
 
     yield
 
-    timing = e2e_timing_stats.end_test()
+    # Determine pass/fail status
+    status = "passed"
+    if hasattr(request.node, "rep_call") and request.node.rep_call.failed:
+        status = "failed"
+
+    timing = e2e_timing_stats.end_test(status)
     if timing:
-        print(f"⏱️  [{test_name}] Completed in {timing.duration:.1f}s")
+        print(f"⏱️  [{test_name}] Completed in {timing.duration:.1f}s [{status}]")
+        if timing.phases:
+            timing.print_phases(indent="    ")
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Store test result on the node for access in fixtures."""
+    outcome = yield
+    rep = outcome.get_result()
+    setattr(item, f"rep_{rep.when}", rep)
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -112,6 +387,11 @@ def pytest_sessionfinish(session, exitstatus):
     global _timing_stats
     if _timing_stats and _timing_stats.test_timings:
         _timing_stats.print_summary()
+    # Always print log directory for debugging (even on interrupt)
+    print(f"\n  [E2E] Log files directory: {E2E_LOG_DIR}", flush=True)
+    log_files = sorted(E2E_LOG_DIR.glob("e2e-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if log_files:
+        print(f"  [E2E] Latest log: {log_files[0]}", flush=True)
 
 from issue_orchestrator.config import Config, AgentConfig
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
@@ -128,43 +408,86 @@ from issue_orchestrator.test_data import (
 T = TypeVar("T")
 
 
+# Error patterns that indicate immediate failure (no point waiting)
+FATAL_ERROR_PATTERNS = [
+    "Traceback (most recent call last):",
+    "FATAL:",
+    "panic:",
+    "Can't trigger event",  # State machine errors
+    "RecursionError:",
+    "MemoryError:",
+]
+
+
 def wait_with_process_check(
     condition_fn: Callable[[], T | None],
     timeout: int,
     orchestrator: "OrchestratorProcess | None" = None,
-    interval: int = 5,
+    interval: int = 2,  # Reduced from 5s for faster feedback
     description: str = "condition",
+    show_progress: bool = True,
 ) -> T | None:
-    """Wait for a condition with optional orchestrator health checks.
+    """Wait for a condition with orchestrator health checks and progress.
 
     Args:
         condition_fn: Function that returns truthy value when condition is met, None otherwise
         timeout: Maximum time to wait in seconds
-        orchestrator: If provided, fails fast if process crashes
+        orchestrator: If provided, fails fast if process crashes or logs errors
         interval: Polling interval in seconds
-        description: Description for error messages
+        description: Description for error messages and progress
+        show_progress: If True, print progress every 10 seconds
 
     Returns:
         The truthy return value from condition_fn, or None on timeout
 
     Raises:
-        RuntimeError: If orchestrator process crashes
+        RuntimeError: If orchestrator process crashes or logs fatal errors
     """
     start = time.time()
+    last_progress = start
+    poll_count = 0
+
     while time.time() - start < timeout:
+        elapsed = time.time() - start
+        poll_count += 1
+
         # Fast failure detection: check if orchestrator crashed
-        if orchestrator is not None and not orchestrator.is_running():
-            stdout, stderr = orchestrator.stop()
-            raise RuntimeError(
-                f"Orchestrator process crashed while waiting for {description}.\n"
-                f"stdout: {stdout[:1000] if stdout else '(empty)'}\n"
-                f"stderr: {stderr[:1000] if stderr else '(empty)'}"
-            )
+        if orchestrator is not None:
+            if not orchestrator.is_running():
+                stdout, stderr = orchestrator.stop()
+                raise RuntimeError(
+                    f"Orchestrator crashed while waiting for {description}.\n"
+                    f"Log file: {orchestrator.log_path}\n"
+                    f"stdout tail: {stdout[-1000:] if stdout else '(empty)'}\n"
+                    f"stderr tail: {stderr[-1000:] if stderr else '(empty)'}"
+                )
+
+            # Check for fatal errors in recent log output
+            recent_logs = "\n".join(orchestrator._output_lines[-20:])
+            for pattern in FATAL_ERROR_PATTERNS:
+                if pattern in recent_logs:
+                    raise RuntimeError(
+                        f"Fatal error detected while waiting for {description}:\n"
+                        f"Pattern: {pattern}\n"
+                        f"Log file: {orchestrator.log_path}\n"
+                        f"Recent output:\n{recent_logs[-500:]}"
+                    )
 
         result = condition_fn()
         if result:
             return result
+
+        # Show progress every 10 seconds
+        if show_progress and time.time() - last_progress >= 10:
+            remaining = timeout - elapsed
+            print(f"    ... waiting for {description} ({elapsed:.0f}s elapsed, {remaining:.0f}s remaining)", flush=True)
+            last_progress = time.time()
+
         time.sleep(interval)
+
+    # Timeout - provide helpful debug info
+    if orchestrator and orchestrator.log_path:
+        print(f"    [TIMEOUT] {description} after {timeout}s. Check: {orchestrator.log_path}", flush=True)
     return None
 
 
@@ -240,10 +563,37 @@ def is_rate_limit_error(error_message: str) -> bool:
     return any(indicator.lower() in error_lower for indicator in rate_limit_indicators)
 
 
+def is_github_connection_error(error_message: str) -> bool:
+    """Check if an error message indicates a GitHub connectivity problem."""
+    indicators = [
+        "error connecting to api.github.com",
+        "could not resolve host",
+        "network is unreachable",
+        "connection timed out",
+        "connect: connection refused",
+    ]
+    error_lower = error_message.lower()
+    return any(indicator in error_lower for indicator in indicators)
+
+
 def is_claude_available() -> bool:
     """Check if claude CLI is available."""
     import shutil
     return shutil.which("claude") is not None
+
+
+def is_github_reachable() -> bool:
+    """Check that GitHub API is reachable for live e2e tests."""
+    try:
+        result = subprocess.run(
+            ["gh", "api", "rate_limit"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def get_repo_from_git() -> str:
@@ -293,6 +643,10 @@ pytestmark = [
         reason="GitHub CLI not authenticated"
     ),
     pytest.mark.skipif(
+        not is_github_reachable(),
+        reason="GitHub API not reachable"
+    ),
+    pytest.mark.skipif(
         not is_claude_available(),
         reason="Claude CLI not available"
     ),
@@ -306,8 +660,35 @@ def kill_stale_orchestrators():
     # Kill any orchestrator processes from previous interrupted runs
     subprocess.run(
         ["pkill", "-f", "issue-orchestrator.*start"],
-        capture_output=True
+        capture_output=True,
     )
+
+    # Fallback: explicitly scan and terminate matching processes
+    try:
+        ps_result = subprocess.run(
+            ["ps", "ax", "-o", "pid=,command="],
+            capture_output=True,
+            text=True,
+        )
+    except PermissionError as exc:
+        logger.info("[E2E CLEANUP] Skipping ps scan (permission denied): %s", exc)
+        ps_result = None
+
+    if ps_result and ps_result.returncode == 0:
+        for line in ps_result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            pid_str, cmd = parts
+            if "issue-orchestrator" in cmd and " start " in f" {cmd} ":
+                try:
+                    subprocess.run(["kill", pid_str], capture_output=True)
+                    logger.info("[E2E CLEANUP] Killed stale orchestrator pid=%s", pid_str)
+                except Exception:
+                    pass
     yield
 
 
@@ -344,51 +725,77 @@ def _cleanup_remote_branches(repo: str) -> int:
     """Clean up remote branches matching e2e patterns (orphaned from crashed runs)."""
     # Patterns for e2e test branches: numeric prefix (issue number) + e2e keywords
     e2e_patterns = ["e2e-", "-e2e-", "-test-"]
+    branches_deleted = 0
 
-    # List all remote branches
+    # 1. Delete branches for ALL e2e PRs (including closed) - prevents "PR already exists" error
+    # GitHub keeps closed PRs and won't let you create a new PR for the same branch
+    result = subprocess.run(
+        ["gh", "pr", "list",
+         "--repo", repo,
+         "--state", "all",  # Include closed PRs!
+         "--limit", "100",
+         "--json", "number,headRefName,state"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        prs = json.loads(result.stdout)
+        for pr in prs:
+            branch = pr.get("headRefName", "")
+            if any(pattern in branch.lower() for pattern in e2e_patterns):
+                # Try to delete the branch (may not exist if already deleted)
+                delete_result = subprocess.run(
+                    ["gh", "api", "-X", "DELETE",
+                     f"/repos/{repo}/git/refs/heads/{branch}"],
+                    capture_output=True
+                )
+                if delete_result.returncode == 0:
+                    logger.info("[E2E CLEANUP] Deleted branch for PR #%d: %s", pr["number"], branch)
+                    branches_deleted += 1
+
+    # 2. Also check for orphan branches not associated with any PR
     result = subprocess.run(
         ["git", "ls-remote", "--heads", f"https://github.com/{repo}.git"],
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
-        return 0
+    if result.returncode == 0:
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split("\t")
+            if len(parts) != 2:
+                continue
+            ref = parts[1]
+            if not ref.startswith("refs/heads/"):
+                continue
+            branch = ref.replace("refs/heads/", "")
 
-    branches_deleted = 0
-    for line in result.stdout.strip().split("\n"):
-        if not line:
-            continue
-        # Format: sha\trefs/heads/branch-name
-        parts = line.split("\t")
-        if len(parts) != 2:
-            continue
-        ref = parts[1]
-        if not ref.startswith("refs/heads/"):
-            continue
-        branch = ref.replace("refs/heads/", "")
-
-        # Check if branch matches e2e patterns
-        if any(pattern in branch.lower() for pattern in e2e_patterns):
-            logger.info("[E2E CLEANUP] Deleting orphan branch: %s", branch)
-            delete_result = subprocess.run(
-                ["gh", "api", "-X", "DELETE",
-                 f"/repos/{repo}/git/refs/heads/{branch}"],
-                capture_output=True
-            )
-            if delete_result.returncode == 0:
-                branches_deleted += 1
+            # Check if branch matches e2e patterns
+            if any(pattern in branch.lower() for pattern in e2e_patterns):
+                logger.info("[E2E CLEANUP] Deleting orphan branch: %s", branch)
+                delete_result = subprocess.run(
+                    ["gh", "api", "-X", "DELETE",
+                     f"/repos/{repo}/git/refs/heads/{branch}"],
+                    capture_output=True
+                )
+                if delete_result.returncode == 0:
+                    branches_deleted += 1
 
     return branches_deleted
 
 
 def _cleanup_prs(repo: str) -> int:
-    """Clean up PRs with test labels or e2e branch patterns."""
+    """Clean up PRs with test labels or e2e branch patterns.
+
+    Also handles closed PRs whose branches weren't deleted.
+    """
     labels_to_cleanup = [DEFAULT_E2E_FILTER_LABEL, "needs-code-review", "code-reviewed"]
-    e2e_branch_patterns = ["e2e-", "-test-"]
+    e2e_branch_patterns = ["e2e-", "-test-", "-concurrent-"]
     closed_prs: list[dict] = []
     closed_pr_nums: set[int] = set()
 
-    # First, clean up PRs with specific labels
+    # First, clean up OPEN PRs with specific labels
     for label in labels_to_cleanup:
         result = subprocess.run(
             ["gh", "pr", "list",
@@ -414,7 +821,7 @@ def _cleanup_prs(repo: str) -> int:
                     closed_prs.append(pr)
                     closed_pr_nums.add(pr_num)
 
-    # Second, clean up PRs with e2e branch patterns
+    # Second, clean up OPEN PRs with e2e branch patterns
     result = subprocess.run(
         ["gh", "pr", "list",
          "--repo", repo,
@@ -439,6 +846,34 @@ def _cleanup_prs(repo: str) -> int:
                     )
                     closed_prs.append(pr)
                     closed_pr_nums.add(pr_num)
+
+    # Third, clean up branches from CLOSED/MERGED PRs that match e2e patterns
+    # This handles cases where PRs were closed but branches weren't deleted
+    result = subprocess.run(
+        ["gh", "pr", "list",
+         "--repo", repo,
+         "--state", "all",  # Include closed and merged
+         "--limit", "100",  # Recent PRs only
+         "--json", "number,state,headRefName"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        prs = json.loads(result.stdout)
+        for pr in prs:
+            if pr.get("state") in ("CLOSED", "MERGED"):
+                branch = pr.get("headRefName", "")
+                if any(pattern in branch.lower() for pattern in e2e_branch_patterns):
+                    # Try to delete the branch directly
+                    del_result = subprocess.run(
+                        ["gh", "api", "-X", "DELETE",
+                         f"/repos/{repo}/git/refs/heads/{branch}"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if del_result.returncode == 0:
+                        logger.info("[E2E CLEANUP] Deleted orphan branch: %s (from closed PR #%d)",
+                                  branch, pr["number"])
 
     return len(closed_prs)
 
@@ -488,6 +923,11 @@ def e2e_reconciliation_at_session_start():
     logger.info("=" * 60)
     logger.info("[E2E RECONCILIATION] Cleaning up artifacts from previous runs...")
     logger.info("=" * 60)
+
+    if _keep_artifacts():
+        logger.info("[E2E RECONCILIATION] Skipping cleanup (E2E_KEEP_ARTIFACTS=1)")
+        yield
+        return
 
     # 1. Local cleanup
     _cleanup_local_worktrees()
@@ -540,16 +980,53 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
     config.ui_mode = "tmux"
     config.max_concurrent_sessions = 4  # Allow more concurrency for saturation testing
     config.filter_label = "test-data"
+    config.queue_refresh_seconds = 5
+    config.control_api_port = 0
+    config.e2e_pr_labels = ["test-data"]
+    config.code_review_agent = "agent:script-review"
+    config.code_review_label = "needs-code-review"
+    config.code_reviewed_label = "code-reviewed"
+    config.max_rework_cycles = 2
+    config.triage_review_agent = "agent:triage-investigator"
+    config.triage_review_threshold = 2
 
-    # Configure e2e-test agent
+    # Configure e2e-test agent (scripted for deterministic e2e)
     config.agents = {
         "agent:e2e-test": AgentConfig(
-            prompt_path=e2e_project_root / "examples" / "prompts" / "e2e-test.md",
+            prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
             worktree_base=e2e_session_tmp / "worktrees",
             timeout_minutes=3,
             model="sonnet",
+            command="bash {prompt}",
+            permission_mode="bypassPermissions",
         )
+        ,
+        "agent:script-completes": AgentConfig(
+            prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
+            worktree_base=e2e_session_tmp / "worktrees",
+            timeout_minutes=3,
+            model="sonnet",
+            command="bash {prompt}",
+            permission_mode="bypassPermissions",
+        ),
+        "agent:script-review": AgentConfig(
+            prompt_path=e2e_project_root / "examples" / "scripts" / "review-decider.sh",
+            worktree_base=e2e_session_tmp / "worktrees",
+            timeout_minutes=3,
+            model="sonnet",
+            command="PR_NUMBER={pr_number} bash {prompt}",
+            permission_mode="bypassPermissions",
+        ),
+        "agent:triage-investigator": AgentConfig(
+            prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
+            worktree_base=e2e_session_tmp / "worktrees",
+            timeout_minutes=3,
+            model="sonnet",
+            command="bash {prompt}",
+            permission_mode="bypassPermissions",
+        ),
     }
+    config.dangerous.skip_verification = True
 
     config.session_timeout_minutes = 3
 
@@ -558,6 +1035,12 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
         agent_gate=ValidationGateConfig(cmd="make typecheck", timeout_seconds=120),
         publish_gate=ValidationGateConfig(cmd="make typecheck", timeout_seconds=120),
     )
+    if _keep_artifacts():
+        config.cleanup.with_triage.close_ai_session_tabs = False
+        config.cleanup.with_triage.remove_worktrees = False
+        config.cleanup.without_triage.close_ai_session_tabs = False
+        config.cleanup.without_triage.remove_worktrees = False
+    os.environ["E2E_CONTROL_API_PORT"] = str(config.control_api_port)
 
     return config
 
@@ -627,23 +1110,50 @@ def e2e_orchestrator(
     proc.stop()
 
 
-def trigger_refresh(port: int = 8080, timeout: int = 5) -> bool:
-    """Trigger orchestrator to refresh issues immediately.
+def trigger_refresh(port: int | None = None, timeout: int = 5) -> bool:
+    """Trigger orchestrator to refresh issues immediately via control API.
+
+    Args:
+        port: Control API port (defaults to Config.control_api_port)
+        timeout: Request timeout in seconds
 
     Returns True if refresh was requested successfully.
     """
     import urllib.request
     import urllib.error
+    import time as _time
+    from issue_orchestrator.config import Config
 
-    try:
-        req = urllib.request.Request(
-            f"http://localhost:{port}/api/refresh",
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, TimeoutError):
+    # Retry a few times with backoff - the control API might still be starting
+    max_retries = 5
+    if port is None:
+        env_port = os.environ.get("E2E_CONTROL_API_PORT")
+        port = int(env_port) if env_port is not None else Config().control_api_port
+    if port <= 0:
+        logger.info("[E2E] Control API disabled; relying on queue refresh")
         return False
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(
+                f"http://localhost:{port}/api/refresh",
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    logger.info("[E2E] Refresh triggered successfully")
+                    return True
+                return False
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < max_retries - 1:
+                wait = 1 * (attempt + 1)  # 1s, 2s, 3s, 4s backoff
+                logger.info("[E2E] Refresh attempt %d failed (%s), retrying in %ds...",
+                           attempt + 1, e, wait)
+                _time.sleep(wait)
+            else:
+                logger.warning("[E2E] Failed to trigger refresh after %d attempts: %s",
+                              max_retries, e)
+                return False
+    return False
 
 
 def inflight_create(
@@ -651,22 +1161,22 @@ def inflight_create(
     title: str,
     labels: list[str],
     body: str = "Created mid-test.",
-    port: int = 8080,
 ) -> IssueKey:
     """Create an issue while orchestrator is running.
+
+    Note: Caller should call trigger_refresh() after creating all issues
+    to notify the orchestrator to pick them up.
 
     Args:
         repo: GitHub repo in owner/repo format
         title: Issue title
         labels: Labels to apply
         body: Issue body
-        port: Dashboard port for refresh API
 
     Returns:
         IssueKey for the created issue
     """
     issue_number = create_issue(repo, title, labels, body)
-    trigger_refresh(port)
     return GitHubIssueKey(repo=repo, external_id=str(issue_number))
 
 
@@ -674,7 +1184,7 @@ def inflight_update(
     issue: IssueKey,
     add_labels: list[str] | None = None,
     remove_labels: list[str] | None = None,
-    port: int = 8080,
+    port: int | None = None,
 ) -> None:
     """Update an issue while orchestrator is running.
 
@@ -682,7 +1192,7 @@ def inflight_update(
         issue: The issue to update
         add_labels: Labels to add
         remove_labels: Labels to remove
-        port: Dashboard port for refresh API
+        port: Control API port for refresh (defaults to Config.control_api_port)
     """
     issue_number = int(issue.stable_id())
     update_issue(issue.scope(), issue_number, add_labels, remove_labels)
@@ -692,14 +1202,14 @@ def inflight_update(
 def inflight_close(
     issue: IssueKey,
     comment: str | None = None,
-    port: int = 8080,
+    port: int | None = None,
 ) -> None:
     """Close an issue while orchestrator is running.
 
     Args:
         issue: The issue to close
         comment: Optional comment when closing
-        port: Dashboard port for refresh API
+        port: Control API port for refresh (defaults to Config.control_api_port)
     """
     issue_number = int(issue.stable_id())
     close_issue(issue.scope(), issue_number, comment)
@@ -738,7 +1248,12 @@ def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
         labels = [filter_label, "agent:e2e-test", test_label]
         if extra_labels:
             labels.extend(extra_labels)
-        issue_num = create_issue(repo_name, title, labels)
+        try:
+            issue_num = create_issue(repo_name, title, labels)
+        except RuntimeError as exc:
+            if is_github_connection_error(str(exc)):
+                pytest.skip("GitHub API not reachable for live e2e tests")
+            raise
         return GitHubIssueKey(repo=repo_name, external_id=str(issue_num))
 
     return create
@@ -756,15 +1271,17 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config
     config.max_concurrent_sessions = 1
     config.filter_label = "test-data"
 
-    # Configure e2e-test agent
+    # Configure e2e-test agent (scripted for deterministic e2e)
     config.agents = {
         "agent:e2e-test": AgentConfig(
-            prompt_path=e2e_project_root / "examples" / "prompts" / "e2e-test.md",
+            prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
             worktree_base=tmp_path / "worktrees",
             timeout_minutes=3,
             model="sonnet",
+            command="bash {prompt}",
         )
     }
+    config.dangerous.skip_verification = True
 
     # Short timeouts for tests
     config.session_timeout_minutes = 3
@@ -781,6 +1298,11 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config
             timeout_seconds=120,
         ),
     )
+    if _keep_artifacts():
+        config.cleanup.with_triage.close_ai_session_tabs = False
+        config.cleanup.with_triage.remove_worktrees = False
+        config.cleanup.without_triage.close_ai_session_tabs = False
+        config.cleanup.without_triage.remove_worktrees = False
 
     return config
 
@@ -907,6 +1429,81 @@ class OrchestratorProcess:
         self._output_lines: list[str] = []
         self._log_thread: "threading.Thread | None" = None
         self._stop_logging = False
+        self._log_file: Path | None = None
+        self._log_handle: "open | None" = None
+        self._config_path: Path | None = None
+
+    def _write_e2e_config(self) -> Path:
+        """Write an ephemeral config file so the CLI uses the e2e config."""
+        config_path = self.project_root / ".issue-orchestrator.e2e.yaml"
+        data = {
+            "repo": self.config.repo,
+            "filter_label": self.config.filter_label,
+            "ui_mode": self.config.ui_mode,
+            "web_port": self.config.web_port,
+            "control_api_port": self.config.control_api_port,
+            "queue_refresh_seconds": self.config.queue_refresh_seconds,
+            "e2e_pr_labels": self.config.e2e_pr_labels,
+            "concurrency": {
+                "max_concurrent_sessions": self.config.max_concurrent_sessions,
+                "session_timeout_minutes": self.config.session_timeout_minutes,
+            },
+            "agents": {
+                label: {
+                    "prompt": str(cfg.prompt_path),
+                    "worktree_base": str(cfg.worktree_base),
+                    "model": cfg.model,
+                    "timeout_minutes": cfg.timeout_minutes,
+                    "permission_mode": cfg.permission_mode,
+                    "command": cfg.command,
+                    "repo_root": str(self.config.repo_root),
+                }
+                for label, cfg in self.config.agents.items()
+            },
+            "validation": {
+                "agent_gate": {
+                    "cmd": self.config.validation.agent_gate.cmd,
+                    "timeout_seconds": self.config.validation.agent_gate.timeout_seconds,
+                },
+                "publish_gate": {
+                    "cmd": self.config.validation.publish_gate.cmd,
+                    "timeout_seconds": self.config.validation.publish_gate.timeout_seconds,
+                },
+            },
+            "validation_policy": {
+                "publish_requires": self.config.validation_policy.publish_requires,
+                "agent_runs": self.config.validation_policy.agent_runs,
+            },
+            "review": {
+                "code_review_agent": self.config.code_review_agent,
+                "code_review_label": self.config.code_review_label,
+                "code_reviewed_label": self.config.code_reviewed_label,
+                "max_rework_cycles": self.config.max_rework_cycles,
+                "triage_review_agent": self.config.triage_review_agent,
+                "triage_review_label": self.config.triage_review_label,
+                "triage_reviewed_label": self.config.triage_reviewed_label,
+                "triage_review_threshold": self.config.triage_review_threshold,
+                "triage_review_on_failure": self.config.triage_review_on_failure,
+            },
+            "cleanup": {
+                "with_triage": {
+                    "close_ai_session_tabs": self.config.cleanup.with_triage.close_ai_session_tabs,
+                    "remove_worktrees": self.config.cleanup.with_triage.remove_worktrees,
+                },
+                "without_triage": {
+                    "wait_for_code_review": self.config.cleanup.without_triage.wait_for_code_review,
+                    "close_ai_session_tabs": self.config.cleanup.without_triage.close_ai_session_tabs,
+                    "remove_worktrees": self.config.cleanup.without_triage.remove_worktrees,
+                },
+            },
+            "dangerous": {
+                "skip_verification": self.config.dangerous.skip_verification,
+                "allow_unsupported_agents": self.config.dangerous.allow_unsupported_agents,
+            },
+        }
+        config_path.write_text(yaml.safe_dump(data, sort_keys=False))
+        self._config_path = config_path
+        return config_path
 
     def _log_reader(self) -> None:
         """Background thread to read and print orchestrator output."""
@@ -925,7 +1522,11 @@ class OrchestratorProcess:
                     if line:
                         text = line.decode('utf-8', errors='replace').rstrip()
                         self._output_lines.append(text)
-                        # Print orchestrator events with prefix
+                        # Always write to persistent log file
+                        if self._log_handle:
+                            self._log_handle.write(f"{text}\n")
+                            self._log_handle.flush()
+                        # Print orchestrator events with prefix (filtered for readability)
                         if any(kw in text for kw in ['[EVENT]', 'Session', 'Issue', 'PR', 'Review', 'launch', 'complet', 'start', 'ERROR', 'WARN']):
                             print(f"  [ORCH] {text}", file=sys.stderr, flush=True)
 
@@ -933,15 +1534,60 @@ class OrchestratorProcess:
         """Start the orchestrator process."""
         import sys
         import threading
+        from datetime import datetime
 
-        # Use sys.executable to find the venv's issue-orchestrator
-        venv_bin = Path(sys.executable).parent / "issue-orchestrator"
+        # Create persistent log file (survives Ctrl+C)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self._log_file = E2E_LOG_DIR / f"e2e-{timestamp}.log"
+        orchestrator_log_file = E2E_LOG_DIR / f"orchestrator-{timestamp}.log"
+        self._log_handle = open(self._log_file, "w")
+
+        # Clean up old log files (keep last 10)
+        log_files = sorted(E2E_LOG_DIR.glob("e2e-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old_log in log_files[10:]:
+            old_log.unlink()
+
+        # Print debug paths upfront for troubleshooting
+        worktree_dir = Path("/tmp/e2e-worktrees")  # E2E worktree location
+        claude_logs = Path.home() / ".claude" / "logs"
+        print(f"\n  {'='*60}", flush=True)
+        print(f"  [E2E DEBUG PATHS]", flush=True)
+        print(f"    Orchestrator log: {self._log_file}", flush=True)
+        print(f"    Orchestrator file: {orchestrator_log_file}", flush=True)
+        print(f"    Worktrees:        {worktree_dir}", flush=True)
+        print(f"    Claude logs:      {claude_logs}", flush=True)
+        print(f"    Keep artifacts:   {_keep_artifacts()}", flush=True)
+        if os.environ.get("E2E_CLAUDE_ARGS"):
+            print(f"    E2E_CLAUDE_ARGS:  {os.environ.get('E2E_CLAUDE_ARGS')}", flush=True)
+        if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
+            print(f"    E2E_PROMPT_MODE:  {os.environ.get('E2E_CLAUDE_PROMPT_MODE')}", flush=True)
+        print(f"  {'='*60}\n", flush=True)
+
+        # Write header to log file
+        self._log_handle.write(f"E2E Test Run: {timestamp}\n")
+        self._log_handle.write(f"Orchestrator file: {orchestrator_log_file}\n")
+        self._log_handle.write(f"Worktrees: {worktree_dir}\n")
+        self._log_handle.write(f"Claude logs: {claude_logs}\n")
+        self._log_handle.write(f"Keep artifacts: {_keep_artifacts()}\n")
+        self._log_handle.write(f"E2E_KEEP_ARTIFACTS: {os.environ.get('E2E_KEEP_ARTIFACTS', '')}\n")
+        self._log_handle.write(f"E2E_CONTROL_API_PORT: {os.environ.get('E2E_CONTROL_API_PORT', '')}\n")
+        if os.environ.get("E2E_CLAUDE_ARGS"):
+            self._log_handle.write(f"E2E_CLAUDE_ARGS: {os.environ.get('E2E_CLAUDE_ARGS')}\n")
+        if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
+            self._log_handle.write(f"E2E_CLAUDE_PROMPT_MODE: {os.environ.get('E2E_CLAUDE_PROMPT_MODE')}\n")
+        self._log_handle.write("=" * 60 + "\n\n")
+        self._log_handle.flush()
+
+        # Prefer project .venv (has e2e deps like fastapi); fall back to pytest venv
+        preferred_bin = self.project_root / ".venv" / "bin" / "issue-orchestrator"
+        venv_bin = preferred_bin if preferred_bin.exists() else Path(sys.executable).parent / "issue-orchestrator"
 
         # Allow UI mode override via env var for interactive debugging
         ui_mode = os.environ.get("E2E_UI_MODE", "tmux")
 
+        config_path = self._write_e2e_config()
         cmd = [
-            str(venv_bin), "start",
+            str(venv_bin), "--config", str(config_path), "start",
             "--label", "test-data",
             "--max-issues", str(max_issues),
             "--ui-mode", ui_mode,
@@ -965,12 +1611,19 @@ class OrchestratorProcess:
         env["ORCHESTRATOR_PUBLISH_GATE_CMD"] = "echo 'e2e publish gate validation'"
         env["ORCHESTRATOR_PUBLISH_GATE_TIMEOUT"] = "30"
         # Enable verbose logging and ensure unbuffered output
-        env["ORCHESTRATOR_LOG_LEVEL"] = "INFO"
+        env["ORCHESTRATOR_LOG_LEVEL"] = "DEBUG"
+        env["ORCHESTRATOR_LOG_FILE"] = str(orchestrator_log_file)
         env["PYTHONUNBUFFERED"] = "1"
         # Enable event logging to stderr (works with --no-dashboard)
         env["ORCHESTRATOR_LOG_TO_STDERR"] = "1"
+        if os.environ.get("E2E_CLAUDE_ARGS"):
+            env["ORCHESTRATOR_CLAUDE_ARGS"] = os.environ["E2E_CLAUDE_ARGS"]
+        if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
+            env["ORCHESTRATOR_CLAUDE_PROMPT_MODE"] = os.environ["E2E_CLAUDE_PROMPT_MODE"]
 
         print(f"  [E2E] Starting orchestrator: {' '.join(cmd)}", flush=True)
+        self._log_handle.write(f"Command: {' '.join(cmd)}\n\n")
+        self._log_handle.flush()
 
         self.process = subprocess.Popen(
             cmd,
@@ -1005,6 +1658,7 @@ class OrchestratorProcess:
         try:
             stdout, stderr = self.process.communicate(timeout=5)
             self._cleanup_tmux_sessions()
+            self._close_log_file()
             print(f"  [E2E] Orchestrator stopped gracefully", flush=True)
             return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
         except subprocess.TimeoutExpired:
@@ -1014,6 +1668,7 @@ class OrchestratorProcess:
             try:
                 stdout, stderr = self.process.communicate(timeout=5)
                 self._cleanup_tmux_sessions()
+                self._close_log_file()
                 print(f"  [E2E] Orchestrator stopped after second SIGTERM", flush=True)
                 return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
             except subprocess.TimeoutExpired:
@@ -1022,8 +1677,28 @@ class OrchestratorProcess:
                 self.process.kill()
                 stdout, stderr = self.process.communicate()
                 self._cleanup_tmux_sessions()
+                self._close_log_file()
                 print(f"  [E2E] Orchestrator killed", flush=True)
                 return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
+
+    @property
+    def log_path(self) -> Path | None:
+        """Get the path to the persistent log file."""
+        return self._log_file
+
+    def _close_log_file(self) -> None:
+        """Close log file and print location for debugging."""
+        if self._log_handle:
+            self._log_handle.write(f"\n{'='*60}\nOrchestrator stopped at {time.strftime('%H:%M:%S')}\n")
+            self._log_handle.close()
+            self._log_handle = None
+        if self._log_file:
+            print(f"  [E2E] Full log saved to: {self._log_file}", flush=True)
+        if self._config_path and self._config_path.exists():
+            try:
+                self._config_path.unlink()
+            except OSError:
+                pass
 
     def _cleanup_tmux_sessions(self) -> None:
         """Clean up any tmux windows created by e2e tests.
@@ -1031,6 +1706,8 @@ class OrchestratorProcess:
         E2E test windows have names like '#123 [E2E-TEST]...'
         We kill these to prevent zombie accumulation.
         """
+        if _keep_artifacts():
+            return
         try:
             # Get list of windows in orchestrator session
             result = subprocess.run(
@@ -1059,6 +1736,13 @@ class OrchestratorProcess:
         if self.process is None:
             return False
         return self.process.poll() is None
+
+    def request_refresh(self) -> bool:
+        """Request the orchestrator to refresh issues on next tick via control API.
+
+        Returns True if request succeeded.
+        """
+        return trigger_refresh()
 
 
 @pytest.fixture
@@ -1093,6 +1777,11 @@ def wait_for_issue_label(
         if result.returncode == 0:
             data = json.loads(result.stdout)
             labels = [l["name"] for l in data.get("labels", [])]
+            # Fail fast if the session already failed/blocked.
+            if any(lbl in labels for lbl in ("blocked-failed", "blocked-needs-human", "failed")):
+                raise RuntimeError(
+                    f"Issue #{issue_number} entered failure state: {sorted(labels)}"
+                )
             if label in labels:
                 return True
         return None

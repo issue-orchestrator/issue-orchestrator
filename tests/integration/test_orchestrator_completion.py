@@ -29,6 +29,8 @@ from issue_orchestrator.ports import TraceEvent, NullEventSink
 from issue_orchestrator.control.session_controller import SessionController, SessionDecision
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
 
 def make_completion_record(
@@ -160,9 +162,12 @@ def session_with_worktree(tmp_path):
             worktree_base=tmp_path,
             timeout_minutes=30,
         )
+        issue_key = FakeIssueKey(name=str(issue_number))
+        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
         return Session(
+            key=session_key,
             issue=issue,
-            tmux_session_name=f"issue-{issue_number}",
+            terminal_id=f"issue-{issue_number}",
             branch_name=f"issue-{issue_number}",
             worktree_path=worktree,
             agent_config=agent_config,
@@ -188,7 +193,7 @@ class TestSessionControllerDecision:
             worktree_path=session.worktree_path,
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            session_name=session.tmux_session_name,
+            session_name=session.terminal_id,
         )
 
         assert decision.status == SessionStatus.FAILED
@@ -218,7 +223,7 @@ class TestSessionControllerDecision:
             worktree_path=session.worktree_path,
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            session_name=session.tmux_session_name,
+            session_name=session.terminal_id,
         )
 
         assert decision.status == SessionStatus.COMPLETED
@@ -249,7 +254,7 @@ class TestSessionControllerDecision:
             worktree_path=session.worktree_path,
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            session_name=session.tmux_session_name,
+            session_name=session.terminal_id,
         )
 
         assert decision.status == SessionStatus.BLOCKED
@@ -277,7 +282,7 @@ class TestSessionControllerDecision:
             worktree_path=session.worktree_path,
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            session_name=session.tmux_session_name,
+            session_name=session.terminal_id,
         )
 
         assert decision.status == SessionStatus.NEEDS_HUMAN
@@ -307,7 +312,7 @@ class TestSessionControllerDecision:
             worktree_path=session.worktree_path,
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            session_name=session.tmux_session_name,
+            session_name=session.terminal_id,
         )
 
         assert decision.status == SessionStatus.COMPLETED
@@ -338,7 +343,7 @@ class TestSessionControllerDecision:
             worktree_path=session.worktree_path,
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            session_name=session.tmux_session_name,
+            session_name=session.terminal_id,
         )
 
         assert decision.status == SessionStatus.COMPLETED  # Review session completed its job
@@ -369,7 +374,7 @@ class TestEventEmission:
             worktree_path=session.worktree_path,
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            session_name=session.tmux_session_name,
+            session_name=session.terminal_id,
         )
 
         events = mock_event_sink.events
@@ -398,7 +403,7 @@ class TestEventEmission:
             worktree_path=session.worktree_path,
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            session_name=session.tmux_session_name,
+            session_name=session.terminal_id,
         )
 
         events = mock_event_sink.events
@@ -422,7 +427,7 @@ class TestEventEmission:
             worktree_path=session.worktree_path,
             issue_number=session.issue.number,
             issue_title=session.issue.title,
-            session_name=session.tmux_session_name,
+            session_name=session.terminal_id,
         )
 
         events = mock_event_sink.events

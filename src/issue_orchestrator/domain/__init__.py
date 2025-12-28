@@ -17,6 +17,10 @@ from .issue_key import (
     ParsedTitle,
     parse_external_id,
 )
+from .session_key import (
+    TaskKind,
+    SessionKey,
+)
 
 __all__ = [
     # Events
@@ -40,4 +44,7 @@ __all__ = [
     "IssueHandle",
     "ParsedTitle",
     "parse_external_id",
+    # Session identity
+    "TaskKind",
+    "SessionKey",
 ]

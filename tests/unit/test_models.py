@@ -11,6 +11,14 @@ from issue_orchestrator.models import (
     AgentConfig,
     OrchestratorState,
 )
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+
+
+def _make_session_key(issue_number: int = 1, task: TaskKind = TaskKind.CODE) -> SessionKey:
+    """Helper to create a SessionKey for testing."""
+    issue_key = FakeIssueKey(name=str(issue_number))
+    return SessionKey(issue=issue_key, task=task)
 
 
 class TestIssue:
@@ -158,16 +166,17 @@ class TestSession:
         """Test basic session creation."""
         issue = sample_issues[0]
         session = Session(
+            key=_make_session_key(issue.number),
             issue=issue,
             agent_config=sample_agent_config,
-            tmux_session_name="test-session",
+            terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
         )
 
         assert session.issue == issue
         assert session.agent_config == sample_agent_config
-        assert session.tmux_session_name == "test-session"
+        assert session.terminal_id == "test-session"
         assert session.worktree_path == Path("/tmp/worktree")
         assert session.branch_name == "feature/test"
         assert session.status == SessionStatus.RUNNING
@@ -179,9 +188,10 @@ class TestSession:
         past = now - timedelta(minutes=30)
 
         session = Session(
+            key=_make_session_key(issue.number),
             issue=issue,
             agent_config=sample_agent_config,
-            tmux_session_name="test-session",
+            terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
             started_at=past,
@@ -198,9 +208,10 @@ class TestSession:
         recent = now - timedelta(minutes=10)
 
         session = Session(
+            key=_make_session_key(issue.number),
             issue=issue,
             agent_config=sample_agent_config,
-            tmux_session_name="test-session",
+            terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
             started_at=recent,
@@ -221,9 +232,10 @@ class TestSession:
         old = now - timedelta(minutes=60)  # 60 minutes ago
 
         session = Session(
+            key=_make_session_key(issue.number),
             issue=issue,
             agent_config=config,
-            tmux_session_name="test-session",
+            terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
             started_at=old,
@@ -235,9 +247,10 @@ class TestSession:
         """Test session status transitions."""
         issue = sample_issues[0]
         session = Session(
+            key=_make_session_key(issue.number),
             issue=issue,
             agent_config=sample_agent_config,
-            tmux_session_name="test-session",
+            terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
         )
@@ -292,9 +305,10 @@ class TestOrchestratorState:
     def test_orchestrator_state_with_data(self, sample_agent_config, sample_issues):
         """Test orchestrator state with populated data."""
         session1 = Session(
+            key=_make_session_key(sample_issues[0].number),
             issue=sample_issues[0],
             agent_config=sample_agent_config,
-            tmux_session_name="session-1",
+            terminal_id="session-1",
             worktree_path=Path("/tmp/work1"),
             branch_name="feature/1",
         )

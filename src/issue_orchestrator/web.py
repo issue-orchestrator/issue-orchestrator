@@ -131,7 +131,7 @@ async def dashboard(
                 runtime = session.runtime_minutes
 
                 # Determine phase: coding (issue-*) or reviewing (review-*)
-                tmux_name = session.tmux_session_name or ""
+                tmux_name = session.terminal_id or ""
                 is_review = tmux_name.startswith("review-")
                 phase = "Reviewing" if is_review else "Coding"
 
@@ -384,7 +384,7 @@ async def kill_session(issue_number: int) -> JSONResponse:
 
     # Kill the session
     try:
-        _orchestrator._kill_session(session.tmux_session_name)
+        _orchestrator._kill_session(session.terminal_id)
     except Exception as e:
         return JSONResponse({"error": f"Failed to kill session: {e}"}, status_code=500)
 

@@ -82,6 +82,9 @@ def setup_logging(
     if _logging_configured:
         return
 
+    env_log_file = os.environ.get("ORCHESTRATOR_LOG_FILE")
+    if log_file is None and env_log_file:
+        log_file = Path(env_log_file)
     log_file = log_file or DEFAULT_LOG_FILE
     log_level = getattr(logging, level.upper(), logging.INFO)
 
@@ -98,11 +101,24 @@ def setup_logging(
     # Simpler format for stderr
     stderr_format = "[%(process)d] %(name)s: %(message)s"
 
-    # File handler - always enabled
-    file_handler = logging.FileHandler(log_file, mode="a")
-    file_handler.setLevel(log_level)
-    file_handler.setFormatter(ContextFormatter(human_format))
-    root_logger.addHandler(file_handler)
+    # File handler - preferred but can fall back if not writable
+    file_handler = None
+    fallback_used = False
+    try:
+        file_handler = logging.FileHandler(log_file, mode="a")
+    except OSError:
+        fallback_path = Path("/tmp/issue-orchestrator.log")
+        try:
+            file_handler = logging.FileHandler(fallback_path, mode="a")
+            log_file = fallback_path
+            fallback_used = True
+        except OSError:
+            file_handler = None
+
+    if file_handler:
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(ContextFormatter(human_format))
+        root_logger.addHandler(file_handler)
 
     # Stderr handler - conditional
     if console_output or os.environ.get("ORCHESTRATOR_LOG_TO_STDERR") == "1":
@@ -118,6 +134,10 @@ def setup_logging(
     _logging_configured = True
 
     # Log startup marker
+    if fallback_used:
+        logging.warning("Log file not writable, using fallback: %s", log_file)
+    if not file_handler:
+        logging.warning("Log file unavailable, logging to stderr only")
     logging.info("=" * 50)
     logging.info("issue-orchestrator logging initialized (level=%s)", level)
 

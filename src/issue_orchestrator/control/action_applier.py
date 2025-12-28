@@ -393,7 +393,7 @@ class ActionApplier:
             if session:
                 return ActionResult.ok(
                     action,
-                    session_name=session.tmux_session_name,
+                    session_name=session.terminal_id,
                     issue_number=session.issue.number,
                 )
             else:

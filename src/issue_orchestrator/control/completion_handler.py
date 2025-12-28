@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 from ..config import Config
 from ..events import EventName
+from ..logging_config import log_context
 from ..models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
 
@@ -81,6 +82,17 @@ class CompletionHandler:
         Returns:
             CompletionResult with history entry and cleanup decision
         """
+        issue_key = session.key.issue.stable_id()
+        logger.info(
+            "Processing completion: issue=%s session=%s status=%s branch=%s worktree=%s",
+            session.issue.number,
+            session.terminal_id,
+            status.value,
+            session.branch_name,
+            session.worktree_path,
+            extra=log_context(issue_key=issue_key, session_id=session.terminal_id),
+        )
+
         # Fetch PR info if completed
         pr_url, pr_number, _prs = self._fetch_pr_info(session, status)
 
@@ -103,7 +115,7 @@ class CompletionHandler:
         # Determine if we should queue code review
         should_queue_review = self._should_queue_review(session, status, pr_url)
 
-        return CompletionResult(
+        result = CompletionResult(
             history_entry=history_entry,
             pr_url=pr_url,
             pr_number=pr_number,
@@ -111,6 +123,17 @@ class CompletionHandler:
             should_queue_review=should_queue_review,
             pending_cleanup=pending_cleanup,
         )
+        logger.info(
+            "Completion processed: issue=%s session=%s status=%s pr_number=%s queue_review=%s defer_cleanup=%s",
+            session.issue.number,
+            session.terminal_id,
+            status.value,
+            pr_number,
+            should_queue_review,
+            should_defer,
+            extra=log_context(issue_key=issue_key, session_id=session.terminal_id),
+        )
+        return result
 
     def _fetch_pr_info(
         self,
@@ -183,14 +206,14 @@ class CompletionHandler:
         if status == SessionStatus.COMPLETED:
             self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, {
                 "issue_number": session.issue.number,
-                "session_id": session.tmux_session_name,
+                "session_id": session.terminal_id,
                 "pr_url": pr_url,
                 "runtime_minutes": session.runtime_minutes,
             }))
         elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
             self.events.publish(TraceEvent(EventName.SESSION_FAILED, {
                 "issue_number": session.issue.number,
-                "session_id": session.tmux_session_name,
+                "session_id": session.terminal_id,
                 "error": status_reason,
                 "runtime_minutes": session.runtime_minutes,
             }))
@@ -221,7 +244,7 @@ class CompletionHandler:
         }
         status_reason = status_reasons.get(status, "Unknown")
 
-        logger.debug(f"[STATE_MACHINE] Triggering transitions for session {session.tmux_session_name}")
+        logger.debug(f"[STATE_MACHINE] Triggering transitions for session {session.terminal_id}")
 
         # 1. Update session state machine
         self._update_session_machine(session, status, status_reason)
@@ -230,7 +253,7 @@ class CompletionHandler:
         self._update_issue_machine(session, status, pr_url)
 
         # 3. Update review state machine (if this is a review session)
-        is_review = session.tmux_session_name.startswith("review-")
+        is_review = session.terminal_id.startswith("review-")
         if is_review and status == SessionStatus.COMPLETED:
             self._update_review_machine(session)
 
@@ -241,26 +264,26 @@ class CompletionHandler:
         status_reason: str,
     ) -> None:
         """Update the session state machine."""
-        session_machine = self._get_session_machine(session.tmux_session_name)
+        session_machine = self._get_session_machine(session.terminal_id)
         if session_machine:
-            logger.debug(f"[STATE_MACHINE] Found session machine for {session.tmux_session_name}")
+            logger.debug(f"[STATE_MACHINE] Found session machine for {session.terminal_id}")
             if status == SessionStatus.COMPLETED:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> COMPLETED")
+                logger.info(f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> COMPLETED")
                 session_machine.complete()  # type: ignore[attr-defined]
             elif status == SessionStatus.FAILED:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> FAILED (reason: {status_reason})")
+                logger.info(f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> FAILED (reason: {status_reason})")
                 session_machine.fail(data={'reason': status_reason})  # type: ignore[attr-defined]
             elif status == SessionStatus.TIMED_OUT:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> TIMED_OUT")
+                logger.info(f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> TIMED_OUT")
                 session_machine.timeout()  # type: ignore[attr-defined]
             elif status == SessionStatus.BLOCKED:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> BLOCKED")
+                logger.info(f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> BLOCKED")
                 session_machine.block()  # type: ignore[attr-defined]
             elif status == SessionStatus.NEEDS_HUMAN:
-                logger.info(f"[STATE_MACHINE] Session {session.tmux_session_name}: RUNNING -> NEEDS_HUMAN")
+                logger.info(f"[STATE_MACHINE] Session {session.terminal_id}: RUNNING -> NEEDS_HUMAN")
                 session_machine.needs_human()  # type: ignore[attr-defined]
         else:
-            logger.debug(f"[STATE_MACHINE] No session machine found for {session.tmux_session_name} (may be restored session)")
+            logger.debug(f"[STATE_MACHINE] No session machine found for {session.terminal_id} (may be restored session)")
 
     def _update_issue_machine(
         self,
@@ -272,7 +295,10 @@ class CompletionHandler:
         issue_machine = self._get_issue_machine(session.issue)
         if issue_machine:
             logger.debug(f"[STATE_MACHINE] Found issue machine for issue #{session.issue.number}")
-            if status == SessionStatus.COMPLETED and pr_url:
+            # Only trigger pr_created for issue sessions (not review/rework sessions)
+            # Review/rework sessions work on issues that already have PRs
+            is_issue_session = session.terminal_id.startswith("issue-")
+            if status == SessionStatus.COMPLETED and pr_url and is_issue_session:
                 logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> PR_PENDING (PR: {pr_url})")
                 issue_machine.pr_created(data={'pr_url': pr_url})  # type: ignore[attr-defined]
             elif status == SessionStatus.BLOCKED:
@@ -287,7 +313,7 @@ class CompletionHandler:
     def _update_review_machine(self, session: Session) -> None:
         """Update the review state machine for a completed review session."""
         # Extract PR number from review session name (e.g., "review-123")
-        match = re.match(r"review-(\d+)", session.tmux_session_name)
+        match = re.match(r"review-(\d+)", session.terminal_id)
         if not match:
             return
 
@@ -329,7 +355,7 @@ class CompletionHandler:
         Returns:
             Tuple of (should_defer, pending_cleanup)
         """
-        is_work_session = not session.tmux_session_name.startswith(("review-", "rework-"))
+        is_work_session = not session.terminal_id.startswith(("review-", "rework-"))
         should_defer = False
         pending_cleanup = None
 
@@ -353,7 +379,7 @@ class CompletionHandler:
                 pr_number=pr_number,
                 pr_url=pr_url,
                 branch_name=session.branch_name,
-                terminal_session_name=session.tmux_session_name,
+                terminal_session_name=session.terminal_id,
                 worktree_path=session.worktree_path,
             )
             logger.info(f"[CLEANUP] Deferred cleanup for #{session.issue.number} until review completes")
@@ -367,13 +393,13 @@ class CompletionHandler:
         pr_url: Optional[str],
     ) -> bool:
         """Determine if code review should be queued for this session."""
-        is_review_session = session.tmux_session_name.startswith("review-")
+        is_review_session = session.terminal_id.startswith("review-")
 
         if pr_url and self.config.code_review_agent and not session.agent_config.skip_review and not is_review_session:
             logger.info(f"[REVIEW] Session #{session.issue.number} completed with PR, queuing code review")
             return True
         elif pr_url and is_review_session:
-            logger.info(f"[REVIEW] Review session {session.tmux_session_name} completed - no re-queue needed")
+            logger.info(f"[REVIEW] Review session {session.terminal_id} completed - no re-queue needed")
         elif pr_url and not self.config.code_review_agent:
             logger.info(f"[REVIEW] Session #{session.issue.number} completed but code review not configured")
         elif pr_url and session.agent_config.skip_review:

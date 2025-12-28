@@ -1,5 +1,6 @@
 """Data models for issue-orchestrator."""
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -9,6 +10,7 @@ from typing import Optional, TYPE_CHECKING
 from . import labels as label_module  # avoid name collision with 'labels' field
 
 from .domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
+from .domain.session_key import SessionKey, TaskKind
 
 if TYPE_CHECKING:
     from .ports.issue import Issue as IssueProtocol
@@ -311,7 +313,7 @@ class AgentConfig:
     # Skip code review for this agent (e.g., domain-expert agents that don't produce code)
     skip_review: bool = False
     # Command template - {initial_prompt} is passed as positional arg to claude
-    command: str = "claude --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
+    command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit."
 
     def get_command(
@@ -341,6 +343,7 @@ class AgentConfig:
             "worktree": worktree,
             "model": self.model,
             "permission_mode": self.permission_mode,
+            "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),
         }
         if pr_number is not None:
             format_kwargs["pr_number"] = pr_number
@@ -357,15 +360,36 @@ class AgentConfig:
 
         # Then render the full command with the prompt included
         format_kwargs["initial_prompt"] = escaped_prompt
+
+        prompt_mode = os.environ.get("ORCHESTRATOR_CLAUDE_PROMPT_MODE", "arg").strip().lower()
+        if prompt_mode == "stdin":
+            template = (
+                "printf '%s' '{initial_prompt}' | "
+                "claude {claude_args} --input-format text "
+                "--permission-mode {permission_mode} --model {model} "
+                "--append-system-prompt 'Read {prompt} for your instructions.'"
+            )
+            return template.format(**format_kwargs)
+
         return self.command.format(**format_kwargs)
 
 
 @dataclass
 class Session:
-    """A running Claude session working on an issue."""
+    """A running Claude session working on an issue.
+
+    The `key` field is the domain identity (SessionKey) used for:
+    - Duplicate prevention at launch
+    - Lookup in active sessions
+    - Removal when done
+    - State machine lookup
+
+    The `terminal_id` is an opaque handle that only the terminal adapter interprets.
+    """
+    key: SessionKey  # Domain identity - (IssueKey, TaskKind)
     issue: "IssueProtocol"
     agent_config: AgentConfig
-    tmux_session_name: str
+    terminal_id: str  # Opaque handle - only terminal adapter interprets this
     worktree_path: Path
     branch_name: str
     completion_path: str = COMPLETION_RECORD_PATH  # Agent-specific path to completion.json

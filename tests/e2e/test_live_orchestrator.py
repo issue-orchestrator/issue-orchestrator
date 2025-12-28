@@ -72,13 +72,17 @@ class TestLiveOrchestratorLifecycle:
             assert "e2e" in pr["title"].lower() or str(issue_number) in pr["headRefName"], \
                 "PR should reference the test issue"
 
-            # Check for completion comment
-            comments = get_issue_comments(repo_name, issue_number)
+            # Check for completion comment (with retry for GitHub API propagation)
             implementation_comment = None
-            for comment in comments:
-                body = comment.get("body", "")
-                if "## Implementation" in body or "E2E test completed" in body:
-                    implementation_comment = comment
+            for attempt in range(5):
+                time.sleep(2)  # Wait for GitHub API propagation
+                comments = get_issue_comments(repo_name, issue_number)
+                for comment in comments:
+                    body = comment.get("body", "")
+                    if "## Implementation" in body or "E2E test completed" in body:
+                        implementation_comment = comment
+                        break
+                if implementation_comment:
                     break
 
             assert implementation_comment is not None, \

@@ -15,6 +15,7 @@ from issue_orchestrator.models import (
     OrchestratorState,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
@@ -125,7 +126,7 @@ def create_issue(number, title="Test Issue", labels=None, milestone=None):
     )
 
 
-def create_session(issue, worktree_path="/tmp/worktree", branch_name="feature/test"):
+def create_session(issue, worktree_path="/tmp/worktree", branch_name="feature/test", task=TaskKind.CODE):
     """Helper to create Session objects for testing."""
     agent_config = AgentConfig(
         prompt_path=Path("/tmp/prompt.txt"),
@@ -133,10 +134,13 @@ def create_session(issue, worktree_path="/tmp/worktree", branch_name="feature/te
         model="sonnet",
         timeout_minutes=45,
     )
+    issue_key = FakeIssueKey(name=str(issue.number))
+    session_key = SessionKey(issue=issue_key, task=task)
     return Session(
+        key=session_key,
         issue=issue,
         agent_config=agent_config,
-        tmux_session_name=f"issue-{issue.number}",
+        terminal_id=f"issue-{issue.number}",
         worktree_path=Path(worktree_path),
         branch_name=branch_name,
     )
@@ -504,7 +508,7 @@ class TestLaunchSession:
 
         assert isinstance(session, Session)
         assert session.issue == issue
-        assert session.tmux_session_name == "issue-1"
+        assert session.terminal_id == "issue-1"
         assert session.worktree_path == Path("/tmp/worktree")
         assert session.branch_name == "feature/issue-1"
 
@@ -740,7 +744,7 @@ class TestHandleSessionCompletion:
             orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
             # Verify _kill_session was called with the session name
-            mock_kill.assert_called_once_with(session.tmux_session_name)
+            mock_kill.assert_called_once_with(session.terminal_id)
 
     def test_handle_completion_closes_session_on_failure(
         self,
@@ -758,7 +762,7 @@ class TestHandleSessionCompletion:
             orchestrator.handle_session_completion(session, SessionStatus.FAILED)
 
             # Session should still be closed to prevent accumulation
-            mock_kill.assert_called_once_with(session.tmux_session_name)
+            mock_kill.assert_called_once_with(session.terminal_id)
 
     def test_handle_completion_closes_session_gracefully_on_error(
         self,
@@ -2323,15 +2327,20 @@ class TestSessionExistsDetection:
     and prevents duplicate launches, which was previously handled by lock files.
     """
 
-    def test_review_with_active_session_removed_from_pending(
+    def test_review_with_active_terminal_restored_to_active_sessions(
         self,
         sample_config,
     ):
-        """Test that reviews with active sessions are removed from pending queue."""
+        """Test that reviews with active terminal sessions are restored to active_sessions.
+
+        When a terminal session exists but isn't tracked in active_sessions,
+        the session should be restored via SessionRestorer. This prevents infinite
+        loops because the session is now actively tracked.
+        """
         from issue_orchestrator.models import PendingReview
 
         runner = MockSessionRunner()
-        runner.plugin.session_exists_override = True  # Session already running
+        runner.plugin.session_exists_override = True  # Terminal session exists (but not tracked)
 
         sample_config.code_review_agent = "agent:web"
 
@@ -2345,12 +2354,15 @@ class TestSessionExistsDetection:
         orchestrator = create_test_orchestrator(sample_config, runner=runner)
         orchestrator.state.pending_reviews.append(review)
 
-        # Launch should fail and remove from pending
+        # Launch should fail (terminal exists) but session should be restored
         result = orchestrator.launch_review_session(review)
 
         assert result is None
-        # Review should be removed from pending queue (not stuck in infinite loop)
+        # Review is removed from pending (processed)
         assert len(orchestrator.state.pending_reviews) == 0
+        # Session is restored to active_sessions (prevents infinite loop)
+        assert len(orchestrator.state.active_sessions) == 1
+        assert orchestrator.state.active_sessions[0].terminal_id == "review-42"
 
     def test_review_tracked_in_active_sessions_removed_from_pending(
         self,
@@ -2373,7 +2385,7 @@ class TestSessionExistsDetection:
 
         # Simulate session already tracked in active_sessions
         existing_session = create_session(create_issue(42))
-        existing_session.tmux_session_name = "review-123"
+        existing_session.terminal_id = "review-123"
         orchestrator.state.active_sessions.append(existing_session)
 
         result = orchestrator.launch_review_session(review)
@@ -2382,17 +2394,22 @@ class TestSessionExistsDetection:
         # Should be removed from pending (session exists in active_sessions)
         assert len(orchestrator.state.pending_reviews) == 0
 
-    def test_rework_with_active_session_removed_from_pending(
+    def test_rework_with_active_terminal_restored_to_active_sessions(
         self,
         sample_config,
         mock_repository_host,
     ):
-        """Test that reworks with active sessions are removed from pending queue."""
+        """Test that reworks with active terminal sessions are restored to active_sessions.
+
+        When a terminal session exists but isn't tracked in active_sessions,
+        the session should be restored via SessionRestorer. This prevents infinite
+        loops because the session is now actively tracked.
+        """
         from issue_orchestrator.models import PendingRework
         from issue_orchestrator.domain.issue_key import FakeIssueKey
 
         runner = MockSessionRunner()
-        runner.plugin.session_exists_override = True  # Session already running
+        runner.plugin.session_exists_override = True  # Terminal session exists (but not tracked)
         mock_repository_host.issues = [create_issue(42)]
 
         sample_config.code_review_agent = "agent:web"
@@ -2409,8 +2426,10 @@ class TestSessionExistsDetection:
         result = orchestrator.launch_rework_session(rework)
 
         assert result is None
-        # Should be removed from pending
+        # Rework is removed from pending (processed)
         assert len(orchestrator.state.pending_reworks) == 0
+        # Session is restored to active_sessions (prevents infinite loop)
+        assert len(orchestrator.state.active_sessions) == 1
 
 
 class TestStateMachineTransitions:

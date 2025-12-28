@@ -21,9 +21,16 @@ git commit -m "E2E test: verify orchestrator lifecycle"
 
 # Signal completion - orchestrator will push branch and create PR
 # If E2E_PR_LABELS is set (from config), pass labels for PR tagging
+LABELS=""
 if [[ -n "$E2E_PR_LABELS" ]]; then
     # Convert comma-separated to space-separated for --pr-labels
     LABELS=$(echo "$E2E_PR_LABELS" | tr ',' ' ')
+fi
+if [[ -n "$ORCHESTRATOR_AGENT_LABEL" ]]; then
+    LABELS="${LABELS} ${ORCHESTRATOR_AGENT_LABEL}"
+fi
+
+if [[ -n "$LABELS" ]]; then
     agent-done completed \
         --implementation "E2E test completed successfully" \
         --problems "None" \

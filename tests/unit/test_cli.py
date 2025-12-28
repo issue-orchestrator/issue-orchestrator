@@ -64,9 +64,9 @@ class TestCmdStart:
 
                         result = cmd_start(args)
 
-                        # Verify asyncio.run was called at least twice
-                        # (once for startup, once for run_with_dashboard)
-                        assert mock_asyncio.run.call_count >= 2
+                        # Verify asyncio.run was called once
+                        # (startup + run_with_dashboard combined in single event loop)
+                        assert mock_asyncio.run.call_count >= 1
 
     def test_cmd_start_no_dashboard_calls_run_loop(self):
         """Verify run_loop() is called when --no-dashboard is set."""
@@ -98,8 +98,8 @@ class TestCmdStart:
 
                     result = cmd_start(args)
 
-                    # Should call asyncio.run twice: startup + run_loop
-                    assert mock_asyncio.run.call_count == 2
+                    # Should call asyncio.run once (startup + run_loop combined in single event loop)
+                    assert mock_asyncio.run.call_count == 1
 
     def test_cmd_start_dry_run_does_not_create_orchestrator(self):
         """Verify dry-run mode doesn't create orchestrator."""

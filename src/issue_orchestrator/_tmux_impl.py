@@ -128,9 +128,20 @@ class TmuxManager:
         windows = self.session.windows.filter(window_name=f"issue-{issue_number}")
         return windows[0] if windows else None
 
+    def _find_window_by_name(self, session_name: str) -> Optional[libtmux.Window]:
+        """Find window by its full session name (issue-N, review-N, rework-N, etc)."""
+        if self.session is None:
+            return None
+        windows = self.session.windows.filter(window_name=session_name)
+        return windows[0] if windows else None
+
     def window_exists(self, issue_number: int) -> bool:
         """Check if a window exists for the given issue."""
         return self._find_issue_window(issue_number) is not None
+
+    def window_exists_by_name(self, session_name: str) -> bool:
+        """Check if a window exists by its full name (e.g., 'review-456')."""
+        return self._find_window_by_name(session_name) is not None
 
     def get_window(self, issue_number: int) -> Optional[libtmux.Window]:
         """Get the window for an issue, or None if it doesn't exist."""
@@ -139,6 +150,12 @@ class TmuxManager:
     def kill_window(self, issue_number: int) -> None:
         """Kill the window for an issue."""
         window = self.get_window(issue_number)
+        if window:
+            window.kill()
+
+    def kill_window_by_name(self, session_name: str) -> None:
+        """Kill the window by its full name."""
+        window = self._find_window_by_name(session_name)
         if window:
             window.kill()
 
@@ -230,6 +247,29 @@ class TmuxManager:
         else:
             pane.send_keys(keys, enter=False)
 
+    def send_keys_by_name(self, session_name: str, keys: str, enter: bool = True) -> bool:
+        """Send keys to a window by its full name.
+
+        Args:
+            session_name: Full window name (e.g., 'review-456')
+            keys: Keys/text to send
+            enter: Whether to press enter after sending
+
+        Returns:
+            True if keys were sent, False if window not found
+        """
+        window = self._find_window_by_name(session_name)
+        if window is None:
+            return False
+        pane = window.active_pane
+        if pane is None:
+            return False
+        if enter:
+            pane.send_keys(keys)
+        else:
+            pane.send_keys(keys, enter=False)
+        return True
+
     def kill_session(self) -> None:
         """Kill the entire orchestrator session."""
         if self.session:
@@ -267,27 +307,26 @@ def create_session(session_name: str, command: str, working_dir: Path, title: st
 def session_exists(session_name: str) -> bool:
     """Check if a window exists for the session name (backward-compatible wrapper).
 
-    Handles issue-N, review-N, and rework-N session names.
+    Handles issue-N, review-N, rework-N, and triage-N session names.
     """
     import re
-    match = re.match(r"(issue|review|rework)-(\d+)", session_name)
+    match = re.match(r"(issue|review|rework|triage)-(\d+)", session_name)
     if not match:
         return False
 
-    # For now, all session types use issue-based windows
-    # The number is issue_number for issue/rework, pr_number for review
-    number = int(match.group(2))
     manager = get_manager()
-    return manager.window_exists(number)
+    # Use the new by_name lookup that handles all session types
+    return manager.window_exists_by_name(session_name)
 
 
 def kill_session(session_name: str) -> None:
     """Kill a window (backward-compatible wrapper)."""
-    if not session_name.startswith("issue-"):
+    import re
+    match = re.match(r"(issue|review|rework|triage)-(\d+)", session_name)
+    if not match:
         return
-    issue_number = int(session_name.replace("issue-", ""))
     manager = get_manager()
-    manager.kill_window(issue_number)
+    manager.kill_window_by_name(session_name)
 
 
 def list_sessions() -> list[str]:
@@ -302,17 +341,17 @@ def attach_session(session_name: str) -> None:
     os.execvp("tmux", ["tmux", "attach-session", "-t", SESSION_NAME])
 
 
-def send_keys(session_name: str, keys: str, enter: bool = True) -> None:
-    """Send keys to a session's pane (backward-compatible wrapper)."""
-    if not session_name.startswith("issue-"):
-        return
-    issue_number = int(session_name.replace("issue-", ""))
+def send_keys(session_name: str, keys: str, enter: bool = True) -> bool:
+    """Send keys to a session's pane (backward-compatible wrapper).
+
+    Handles issue-N, review-N, rework-N, and triage-N session names.
+
+    Returns:
+        True if keys were sent, False if session not found.
+    """
+    import re
+    match = re.match(r"(issue|review|rework|triage)-(\d+)", session_name)
+    if not match:
+        return False
     manager = get_manager()
-    window = manager.get_window(issue_number)
-    if window:
-        pane = window.active_pane
-        if pane is not None:
-            if enter:
-                pane.send_keys(keys)
-            else:
-                pane.send_keys(keys, enter=False)
+    return manager.send_keys_by_name(session_name, keys, enter)

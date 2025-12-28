@@ -17,6 +17,7 @@ from issue_orchestrator.models import (
     PendingTriageReview,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.ports import PRInfo
 
 
@@ -82,10 +83,13 @@ class TestFactGathererCreateSnapshot:
         self, fact_gatherer, sample_state, sample_issues, sample_agent_config, tmp_path
     ):
         """Test snapshot includes active sessions."""
+        issue_key = FakeIssueKey(name=str(sample_issues[0].number))
+        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
         session = Session(
+            key=session_key,
             issue=sample_issues[0],
             agent_config=sample_agent_config,
-            tmux_session_name="issue-1",
+            terminal_id="issue-1",
             worktree_path=tmp_path / "worktree",
             branch_name="1-issue-1",
         )

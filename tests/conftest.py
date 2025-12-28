@@ -4,11 +4,12 @@ import pytest
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, PropertyMock, patch
-from issue_orchestrator.models import AgentConfig, Issue
+from issue_orchestrator.models import AgentConfig, Issue, Session
 from issue_orchestrator.config import Config, DangerousConfig
 from issue_orchestrator.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
 
 class MockGitHubAdapter:
@@ -535,6 +536,7 @@ def sample_agent_config(tmp_path):
 def sample_config(sample_agent_config, tmp_path):
     """Create a sample Config object for testing."""
     config = Config()
+    config.repo = "test/repo"  # Required for session launching
     config.agents["agent:web"] = sample_agent_config
     config.max_concurrent_sessions = 3
     config.session_timeout_minutes = 45
@@ -612,6 +614,62 @@ def sample_issues():
             body="Currently being worked on",
         ),
     ]
+
+
+@pytest.fixture
+def make_session(sample_agent_config, tmp_path):
+    """Factory fixture to create Session objects with proper SessionKey.
+
+    Usage:
+        def test_something(make_session):
+            session = make_session(issue_number=123)
+            session = make_session(issue_number=456, task=TaskKind.REVIEW)
+    """
+    def _make_session(
+        issue_number: int = 123,
+        issue_title: str = "Test Issue",
+        issue_labels: list[str] | None = None,
+        task: TaskKind = TaskKind.CODE,
+        repo: str = "test/repo",
+        terminal_id: str | None = None,
+        branch_name: str | None = None,
+        worktree_path: Path | None = None,
+        agent_config: AgentConfig | None = None,
+    ) -> Session:
+        issue = Issue(
+            number=issue_number,
+            title=issue_title,
+            labels=issue_labels or [],
+        )
+        issue_key = FakeIssueKey(name=str(issue_number))
+        session_key = SessionKey(issue=issue_key, task=task)
+
+        # Generate defaults based on task type
+        if terminal_id is None:
+            if task == TaskKind.REVIEW:
+                terminal_id = f"review-{issue_number}"
+            elif task == TaskKind.REWORK:
+                terminal_id = f"rework-{issue_number}"
+            else:
+                terminal_id = f"issue-{issue_number}"
+
+        if branch_name is None:
+            branch_name = f"issue-{issue_number}"
+
+        if worktree_path is None:
+            worktree_path = tmp_path / f"worktree-{issue_number}"
+            worktree_path.mkdir(parents=True, exist_ok=True)
+
+        return Session(
+            key=session_key,
+            issue=issue,
+            agent_config=agent_config or sample_agent_config,
+            terminal_id=terminal_id,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+        )
+
+    return _make_session
 
 
 @pytest.fixture

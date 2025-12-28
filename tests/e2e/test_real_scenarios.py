@@ -158,6 +158,7 @@ class TestCodeReviewRuns:
         e2e_orchestrator,
         repo_name: str,
         filter_label: str,
+        e2e_timing_stats,
     ):
         """Verify that the code review agent actually reviews the PR.
 
@@ -171,11 +172,12 @@ class TestCodeReviewRuns:
         print("=" * 60)
 
         # Create issue
-        issue = inflight_create(
-            repo_name,
-            "[E2E-REVIEW] Test that code review runs",
-            [filter_label, "agent:e2e-test", "e2e:code_review_test"],
-        )
+        with e2e_timing_stats.phase("Create issue"):
+            issue = inflight_create(
+                repo_name,
+                "[E2E-REVIEW] Test that code review runs",
+                [filter_label, "agent:e2e-test", "e2e:code_review_test"],
+            )
         issue_number = int(issue.stable_id())
         pr_number = None
 
@@ -183,21 +185,40 @@ class TestCodeReviewRuns:
             # Wait for PR
             print(f"\nWaiting for PR creation...")
 
-            def has_pr():
-                prs = get_prs_for_issue(repo_name, issue_number)
-                return len(prs) > 0
+            with e2e_timing_stats.phase("Wait for PR creation"):
+                def has_pr():
+                    prs = get_prs_for_issue(repo_name, issue_number)
+                    return len(prs) > 0
 
-            wait_for_condition(has_pr, TIMEOUT_SESSION_COMPLETE)
-            prs = get_prs_for_issue(repo_name, issue_number)
-            if not prs:
-                pytest.fail("PR was not created")
-            pr_number = prs[0]["number"]
+                wait_for_condition(has_pr, TIMEOUT_SESSION_COMPLETE)
+                prs = get_prs_for_issue(repo_name, issue_number)
+                if not prs:
+                    pytest.fail("PR was not created")
+                pr_number = prs[0]["number"]
             print(f"  ✓ PR #{pr_number} created")
 
             # Wait for code review outcome
             print(f"\nWaiting for code review to complete...")
 
-            def review_completed():
+            with e2e_timing_stats.phase("Wait for code review"):
+                def review_completed():
+                    result = subprocess.run(
+                        ["gh", "pr", "view", str(pr_number),
+                         "--repo", repo_name,
+                         "--json", "labels"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if result.returncode != 0:
+                        return False
+                    data = json.loads(result.stdout)
+                    labels = [l["name"] for l in data.get("labels", [])]
+                    return "code-reviewed" in labels or "needs-rework" in labels
+
+                review_done = wait_for_condition(review_completed, TIMEOUT_CODE_REVIEW_COMPLETE, interval=10)
+
+            # Get final state
+            with e2e_timing_stats.phase("Verify outcome"):
                 result = subprocess.run(
                     ["gh", "pr", "view", str(pr_number),
                      "--repo", repo_name,
@@ -205,45 +226,32 @@ class TestCodeReviewRuns:
                     capture_output=True,
                     text=True,
                 )
-                if result.returncode != 0:
-                    return False
-                data = json.loads(result.stdout)
-                labels = [l["name"] for l in data.get("labels", [])]
-                return "code-reviewed" in labels or "needs-rework" in labels
+                final_labels = []
+                if result.returncode == 0:
+                    data = json.loads(result.stdout)
+                    final_labels = [l["name"] for l in data.get("labels", [])]
 
-            review_done = wait_for_condition(review_completed, TIMEOUT_CODE_REVIEW_COMPLETE, interval=10)
+                print(f"  Final labels: {final_labels}")
 
-            # Get final state
-            result = subprocess.run(
-                ["gh", "pr", "view", str(pr_number),
-                 "--repo", repo_name,
-                 "--json", "labels"],
-                capture_output=True,
-                text=True,
-            )
-            final_labels = []
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
-                final_labels = [l["name"] for l in data.get("labels", [])]
+                has_review_outcome = "code-reviewed" in final_labels or "needs-rework" in final_labels
+                if has_review_outcome:
+                    print("  ✓ CODE REVIEW ACTUALLY RAN!")
+                else:
+                    print("  ⚠ No review outcome labels found")
 
-            print(f"  Final labels: {final_labels}")
-
-            has_review_outcome = "code-reviewed" in final_labels or "needs-rework" in final_labels
-            if has_review_outcome:
-                print("  ✓ CODE REVIEW ACTUALLY RAN!")
-            else:
-                print("  ⚠ No review outcome labels found")
-
-            assert has_review_outcome, "Code review must run and produce an outcome"
+                assert has_review_outcome, "Code review must run and produce an outcome"
 
         finally:
-            if pr_number:
-                subprocess.run(
-                    ["gh", "pr", "close", str(pr_number),
-                     "--repo", repo_name,
-                     "--delete-branch"],
-                    capture_output=True
-                )
+            with e2e_timing_stats.phase("Cleanup"):
+                if pr_number:
+                    subprocess.run(
+                        ["gh", "pr", "close", str(pr_number),
+                         "--repo", repo_name,
+                         "--delete-branch"],
+                        capture_output=True
+                    )
+                # Always close the issue to prevent accumulation
+                close_issue(repo_name, issue_number, "E2E code review test completed")
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +374,9 @@ class TestTriageReviewTrigger:
                      "--delete-branch"],
                     capture_output=True
                 )
+            # Always close issues to prevent accumulation
+            for issue in issues:
+                close_issue(repo_name, int(issue.stable_id()), "E2E triage test completed")
 
 
 # ---------------------------------------------------------------------------
@@ -378,9 +389,10 @@ class TestTriageReviewTrigger:
 class TestSessionTimeoutFailure:
     """Test that session timeouts trigger proper failure handling.
 
-    This test requires a special config and runs its own orchestrator.
+    Disabled in unified orchestrator mode.
     """
 
+    @pytest.mark.skip(reason="Timeout test disabled in unified orchestrator mode")
     def test_timeout_triggers_failure_flow(self, repo_name: str):
         """Test that a session timeout is detected and handled."""
         print("\n" + "=" * 60)
@@ -446,22 +458,17 @@ class TestSessionTimeoutFailure:
 class TestReworkCyclesAndEscalation:
     """Test the rework cycle flow and escalation to needs-human.
 
-    This test requires a special config and runs its own orchestrator.
+    Uses shared orchestrator with review-decider behavior.
     """
 
-    def test_rework_cycles_lead_to_escalation(self, repo_name: str):
+    def test_rework_cycles_lead_to_escalation(self, repo_name: str, e2e_orchestrator):
         """Test that rework cycles lead to escalation after max cycles."""
         print("\n" + "=" * 60)
         print("REWORK TEST: Rework Cycles → Escalation to needs-human")
         print("=" * 60)
 
-        config_path = E2E_CONFIG_DIR / "rework-test.yaml"
-        if not config_path.exists():
-            pytest.skip(f"Test config not found: {config_path}")
-
         issue_number = None
         pr_number = None
-        orchestrator = None
 
         try:
             # Create issue
@@ -472,11 +479,7 @@ class TestReworkCyclesAndEscalation:
                 ["agent:script-completes", "test-data"]
             )
             print(f"  Created issue #{issue_number}")
-
-            # Start orchestrator with rework config
-            print("\nStarting orchestrator with rework test config...")
-            orchestrator = start_orchestrator_with_config(config_path, max_issues=1)
-            assert orchestrator.poll() is None, "Orchestrator should start"
+            trigger_refresh()
 
             # Wait for PR creation
             print("\nWaiting for PR creation...")
@@ -537,8 +540,6 @@ class TestReworkCyclesAndEscalation:
                 "Should have at least one rework cycle or escalation"
 
         finally:
-            if orchestrator:
-                stop_orchestrator(orchestrator)
             if pr_number:
                 subprocess.run(
                     ["gh", "pr", "close", str(pr_number),

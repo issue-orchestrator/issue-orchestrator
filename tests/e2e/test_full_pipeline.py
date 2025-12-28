@@ -98,6 +98,13 @@ class TestConcurrentPipeline:
 
             issue_numbers = [int(i.stable_id()) for i in issues]
 
+            # Trigger refresh so orchestrator picks up newly created issues
+            print("Triggering issue refresh...")
+            if trigger_refresh():
+                print("  ✓ Refresh triggered")
+            else:
+                print("  ⚠ Could not trigger refresh (will rely on scheduled refresh)")
+
             # Phase 1: Wait for all sessions to start (in-progress labels)
             print("\nPhase 1: Waiting for all sessions to start...")
             sessions_started = {}

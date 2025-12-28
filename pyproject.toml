@@ -64,6 +64,9 @@ packages = ["src/issue_orchestrator"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(message)s"
 markers = [
     "e2e: End-to-end tests with real GitHub (requires gh auth and E2E_TEST_REPO)",
     "live: Tests that require network access and external services",

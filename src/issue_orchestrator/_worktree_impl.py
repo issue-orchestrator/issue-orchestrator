@@ -323,11 +323,13 @@ def find_worktree_for_branch(repo_root: Path, branch_name: str) -> Path | None:
     Returns:
         Path to the worktree if found, None otherwise
     """
+    logger.debug("Searching for worktree: repo=%s branch=%s", repo_root, branch_name)
     result = subprocess.run(
         ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
         capture_output=True, text=True, check=False
     )
     if result.returncode != 0:
+        logger.debug("worktree list failed: repo=%s returncode=%s", repo_root, result.returncode)
         return None
 
     # Parse porcelain output:
@@ -342,6 +344,7 @@ def find_worktree_for_branch(repo_root: Path, branch_name: str) -> Path | None:
         elif line.startswith("branch refs/heads/"):
             current_branch = line.split("refs/heads/", 1)[1]
             if current_branch == branch_name and current_worktree:
+                logger.info("Found existing worktree for branch %s: %s", branch_name, current_worktree)
                 return current_worktree
 
     return None
@@ -375,6 +378,13 @@ def create_worktree(
         WorktreeError: If worktree creation fails
     """
     repo_root = Path(repo_root).resolve()
+    logger.info(
+        "Create worktree requested: repo=%s issue=%s branch=%s base=%s",
+        repo_root,
+        issue_number,
+        branch_name or "(auto)",
+        worktree_base,
+    )
 
     if not (repo_root / ".git").exists():
         raise WorktreeError(f"Not a git repository: {repo_root}")
@@ -390,6 +400,13 @@ def create_worktree(
     # Use provided branch name or generate one
     if branch_name is None:
         branch_name = generate_branch_name(issue_number, issue_title)
+    logger.info(
+        "Resolved worktree target: repo=%s issue=%s branch=%s base=%s",
+        repo_root,
+        issue_number,
+        branch_name,
+        worktree_base,
+    )
 
     # Get repo name for worktree directory
     repo_name = repo_root.name
@@ -398,9 +415,22 @@ def create_worktree(
     worktree_path = worktree_base / f"{repo_name}-{issue_number}"
 
     # Prune stale worktrees (handles case where directory was deleted but git still has it registered)
-    subprocess.run(
+    prune_result = subprocess.run(
         ["git", "-C", str(repo_root), "worktree", "prune"],
         capture_output=True, check=False
+    )
+    if prune_result.stderr:
+        if isinstance(prune_result.stderr, bytes):
+            prune_stderr = prune_result.stderr.decode("utf-8", errors="replace")
+        else:
+            prune_stderr = str(prune_result.stderr)
+    else:
+        prune_stderr = ""
+    logger.debug(
+        "Worktree prune: repo=%s returncode=%s stderr=%s",
+        repo_root,
+        prune_result.returncode,
+        prune_stderr,
     )
 
     # If a specific branch was requested, check if it's already checked out in another worktree
@@ -408,7 +438,7 @@ def create_worktree(
     if branch_name:
         existing_worktree = find_worktree_for_branch(repo_root, branch_name)
         if existing_worktree and existing_worktree.exists():
-            logger.info("Branch '%s' already checked out at %s - reusing", branch_name, existing_worktree)
+            logger.info("Reusing existing worktree for branch=%s path=%s", branch_name, existing_worktree)
             # Pull latest changes (best effort)
             subprocess.run(
                 ["git", "-C", str(existing_worktree), "pull", "--rebase"],
@@ -417,6 +447,7 @@ def create_worktree(
             # Reinstall hooks if needed
             if enforce_hooks:
                 install_hooks(existing_worktree, pre_push_hook)
+            logger.info("Worktree reuse complete: path=%s branch=%s", existing_worktree, branch_name)
             return existing_worktree, branch_name
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
@@ -425,7 +456,7 @@ def create_worktree(
         git_dir = worktree_path / ".git"
         if git_dir.exists():
             # Valid worktree - reuse it by pulling latest changes
-            logger.info("Reusing existing worktree at %s", worktree_path)
+            logger.info("Reusing existing worktree by path: %s", worktree_path)
             # Try to get current branch
             branch_result = subprocess.run(
                 ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -433,6 +464,7 @@ def create_worktree(
             )
             if branch_result.returncode == 0:
                 existing_branch = branch_result.stdout.strip()
+                logger.info("Existing worktree branch: path=%s branch=%s", worktree_path, existing_branch)
                 # Pull latest changes (best effort)
                 subprocess.run(
                     ["git", "-C", str(worktree_path), "pull", "--rebase"],
@@ -441,6 +473,7 @@ def create_worktree(
                 # Reinstall hooks (ensures latest hook chaining logic is applied)
                 if enforce_hooks:
                     install_hooks(worktree_path, pre_push_hook)
+                logger.info("Worktree reuse complete: path=%s branch=%s", worktree_path, existing_branch)
                 return worktree_path, existing_branch
         # Invalid worktree directory - remove it
         logger.warning("Removing invalid worktree directory at %s", worktree_path)
@@ -453,6 +486,12 @@ def create_worktree(
             capture_output=True, text=True, check=False
         )
         branch_exists = branch_check.returncode == 0
+        logger.debug(
+            "Branch exists check: repo=%s branch=%s exists=%s",
+            repo_root,
+            branch_name,
+            branch_exists,
+        )
 
         if branch_exists:
             # Use existing branch
@@ -461,11 +500,18 @@ def create_worktree(
             # Create new branch
             cmd = ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), "-b", branch_name]
 
+        logger.info("Creating worktree: path=%s branch=%s", worktree_path, branch_name)
         result = subprocess.run(
             cmd, capture_output=True, text=True, check=False
         )
 
         if result.returncode != 0:
+            logger.error(
+                "Worktree creation failed: path=%s branch=%s stderr=%s",
+                worktree_path,
+                branch_name,
+                result.stderr.strip(),
+            )
             raise WorktreeError(
                 f"Failed to create worktree: {result.stderr}"
             )
@@ -480,6 +526,7 @@ def create_worktree(
         # Symlink .venv so agent has access to dev tools for validation
         install_venv_symlink(worktree_path, repo_root)
 
+        logger.info("Worktree created: path=%s branch=%s", worktree_path, branch_name)
         return worktree_path, branch_name
 
     except Exception as e:
@@ -499,6 +546,7 @@ def remove_worktree(worktree_path: Path) -> None:
         WorktreeError: If removal fails
     """
     worktree_path = Path(worktree_path)
+    logger.info("Removing worktree: path=%s", worktree_path)
 
     if not worktree_path.exists():
         raise WorktreeError(f"Worktree does not exist at {worktree_path}")
@@ -511,6 +559,11 @@ def remove_worktree(worktree_path: Path) -> None:
         )
 
         if result.returncode != 0:
+            logger.error(
+                "Worktree removal failed: path=%s stderr=%s",
+                worktree_path,
+                result.stderr.strip(),
+            )
             raise WorktreeError(
                 f"Failed to remove worktree: {result.stderr}"
             )
@@ -527,6 +580,7 @@ def remove_worktree(worktree_path: Path) -> None:
             if result.returncode != 0:
                 # Log but don't fail if branch deletion fails
                 pass
+        logger.info("Worktree removed: path=%s branch=%s", worktree_path, branch_name or "(unknown)")
 
     except Exception as e:
         if isinstance(e, WorktreeError):

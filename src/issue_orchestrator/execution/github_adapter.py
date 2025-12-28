@@ -413,7 +413,10 @@ class GitHubAdapter:
     def create_pr(
         self, title: str, body: str, head: str, base: str = "main"
     ) -> PRInfo:
-        """Create a new pull request.
+        """Create a new pull request, or return existing PR if one exists for the branch.
+
+        This operation is idempotent - if a PR already exists for the given branch,
+        it returns that PR instead of failing.
 
         Args:
             title: The title for the new PR.
@@ -422,15 +425,23 @@ class GitHubAdapter:
             base: The base branch name (target branch).
 
         Returns:
-            A PRInfo object representing the newly created PR.
+            A PRInfo object representing the created or existing PR.
 
         Raises:
-            github.GitHubError: If there's an error creating the PR.
+            github.GitHubError: If there's an error creating the PR and no existing PR found.
         """
+        # First, check if a PR already exists for this branch
+        existing_prs = self.get_prs_for_branch(head)
+        if existing_prs:
+            existing_pr = existing_prs[0]
+            logger.info(f"PR already exists for branch {head}: #{existing_pr.number}")
+            return existing_pr
+
         try:
             # Create the PR (gh pr create doesn't support --json)
             args = ["pr", "create", "--title", title, "--body", body,
                    "--head", head, "--base", base]
+            logger.info("Creating PR via gh: repo=%s head=%s base=%s", self.repo, head, base)
             result = github._run_gh(args, self.repo)
 
             # Parse the URL from the output (gh pr create prints the PR URL)
@@ -460,8 +471,15 @@ class GitHubAdapter:
                 return pr_info
             else:
                 raise github.GitHubError("Failed to parse PR view response")
-        except github.GitHubError:
-            logger.error(f"Failed to create PR: {title}")
+        except github.GitHubError as e:
+            # Check if the error is "PR already exists" - this can happen in race conditions
+            if "already exists" in str(e).lower():
+                # Try to find the existing PR
+                existing_prs = self.get_prs_for_branch(head)
+                if existing_prs:
+                    logger.info(f"PR exists (race condition): #{existing_prs[0].number}")
+                    return existing_prs[0]
+            logger.error("Failed to create PR: title=%s head=%s base=%s error=%s", title, head, base, e)
             raise
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
