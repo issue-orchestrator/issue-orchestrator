@@ -1,10 +1,9 @@
 """Sandbox verification for agent sessions.
 
 This module provides verification that an agent session is properly sandboxed:
-1. GitHub CLI authentication is not available (gh auth status fails)
-2. Git push fails fast (no credentials to push)
-3. Forbidden environment variables are absent
-4. HOME is isolated to the worktree
+1. Git push fails fast (no credentials to push)
+2. Forbidden environment variables are absent
+3. HOME is isolated to the worktree
 
 This verification should run at the start of each agent session to ensure
 the agent cannot perform privileged operations.
@@ -49,48 +48,6 @@ class SandboxVerificationResult:
         else:
             failures = [r.name for r in self.results if not r.passed and r.critical]
             return f"Sandbox verification failed: {', '.join(failures)}"
-
-
-def verify_gh_auth_unavailable() -> VerificationResult:
-    """Verify that GitHub CLI authentication is not available."""
-    try:
-        result = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-
-        if result.returncode != 0:
-            return VerificationResult(
-                name="gh_auth_unavailable",
-                passed=True,
-                message="GitHub CLI not authenticated (expected)",
-            )
-        else:
-            return VerificationResult(
-                name="gh_auth_unavailable",
-                passed=False,
-                message="GitHub CLI is authenticated - agent could bypass guardrails",
-            )
-    except FileNotFoundError:
-        return VerificationResult(
-            name="gh_auth_unavailable",
-            passed=True,
-            message="GitHub CLI not installed (acceptable)",
-        )
-    except subprocess.TimeoutExpired:
-        return VerificationResult(
-            name="gh_auth_unavailable",
-            passed=False,
-            message="gh auth status timed out",
-        )
-    except Exception as e:
-        return VerificationResult(
-            name="gh_auth_unavailable",
-            passed=False,
-            message=f"Error checking gh auth: {e}",
-        )
 
 
 def verify_git_push_fails(worktree: Path) -> VerificationResult:
@@ -178,16 +135,12 @@ def verify_home_isolated(worktree: Path) -> VerificationResult:
 
 def verify_sandbox(
     worktree: Optional[Path] = None,
-    check_gh_auth: bool = True,
     check_git_push: bool = True,
     check_env_vars: bool = True,
     check_home: bool = True,
 ) -> SandboxVerificationResult:
     """Run all sandbox verification checks."""
     results: list[VerificationResult] = []
-
-    if check_gh_auth:
-        results.append(verify_gh_auth_unavailable())
 
     if check_git_push and worktree:
         results.append(verify_git_push_fails(worktree))

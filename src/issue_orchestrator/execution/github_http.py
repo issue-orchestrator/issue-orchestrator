@@ -558,9 +558,6 @@ def resolve_github_token(
         token = os.environ.get(env_name)
         if token:
             return token
-    token = _read_gh_auth_token()
-    if token:
-        return token
     token = _read_gh_hosts_token()
     if token:
         return token
@@ -568,22 +565,6 @@ def resolve_github_token(
     if token:
         return token
     raise GitHubAuthError("GitHub token not configured")
-
-
-def _read_gh_auth_token() -> str | None:
-    try:
-        result = subprocess.run(
-            ["gh", "auth", "token"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, ValueError):
-        return None
-    if result.returncode != 0:
-        return None
-    token = result.stdout.strip()
-    return token or None
 
 
 def _read_gh_hosts_token() -> str | None:

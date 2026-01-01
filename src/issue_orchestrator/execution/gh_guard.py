@@ -24,8 +24,6 @@ def install_gh_guard() -> None:
     def _guarded_run(*args, **kwargs):
         cmd = args[0] if args else kwargs.get("args")
         if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "gh":
-            if list(cmd[1:3]) == ["auth", "token"]:
-                return _ORIGINAL_SUBPROCESS_RUN(*args, **kwargs)
             raise RuntimeError(
                 "Direct gh invocation is forbidden; use GitHubHttpClient/GitHubAdapter"
             )
