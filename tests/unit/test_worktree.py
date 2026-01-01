@@ -605,7 +605,7 @@ branch refs/heads/456-bugfix
         mock_run.return_value = MagicMock(returncode=0, stdout=mock_output, stderr="")
 
         # Execute
-        worktrees = list_worktrees()
+        worktrees = list_worktrees(Path("/tmp/repo"))
 
         # Verify
         assert len(worktrees) == 3
@@ -623,7 +623,7 @@ branch refs/heads/main
         mock_run.return_value = MagicMock(returncode=0, stdout=mock_output, stderr="")
 
         # Execute
-        worktrees = list_worktrees()
+        worktrees = list_worktrees(Path("/tmp/repo"))
 
         # Verify
         assert len(worktrees) == 1
@@ -639,7 +639,7 @@ branch refs/heads/main
 
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Failed to list worktrees"):
-            list_worktrees()
+            list_worktrees(Path("/tmp/repo"))
 
     @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_list_worktrees_subprocess_exception(self, mock_run):
@@ -649,7 +649,7 @@ branch refs/heads/main
 
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Error listing worktrees"):
-            list_worktrees()
+            list_worktrees(Path("/tmp/repo"))
 
 
 class TestWorktreeExists:
@@ -665,7 +665,7 @@ class TestWorktreeExists:
         ]
 
         # Execute
-        result = worktree_exists(Path("/path/to/worktree-123"))
+        result = worktree_exists(Path("/path/to/worktree-123"), Path("/tmp/repo"))
 
         # Verify
         assert result is True
@@ -680,7 +680,7 @@ class TestWorktreeExists:
         ]
 
         # Execute
-        result = worktree_exists(Path("/path/to/worktree-999"))
+        result = worktree_exists(Path("/path/to/worktree-999"), Path("/tmp/repo"))
 
         # Verify
         assert result is False
@@ -693,7 +693,7 @@ class TestWorktreeExists:
 
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Failed to list"):
-            worktree_exists(Path("/path/to/worktree"))
+            worktree_exists(Path("/path/to/worktree"), Path("/tmp/repo"))
 
 
 class TestHasUncommittedChanges:

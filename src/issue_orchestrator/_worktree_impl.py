@@ -405,6 +405,23 @@ def _detach_worktree_branch(worktree_path: Path, branch_name: str) -> None:
         )
 
 
+def _resolve_repo_root_from_worktree(worktree_path: Path) -> Path | None:
+    worktree_path = Path(worktree_path)
+    git_entry = worktree_path / ".git"
+    if not git_entry.exists():
+        return None
+    if git_entry.is_dir():
+        return worktree_path
+    try:
+        content = git_entry.read_text().strip()
+    except OSError:
+        return None
+    if not content.startswith("gitdir:"):
+        return None
+    git_dir = Path(content.split(":", 1)[1].strip()).resolve()
+    return git_dir.parent.parent
+
+
 def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
     logger.info("Removing existing worktree path for fresh create: %s", worktree_path)
     result = subprocess.run(
@@ -647,8 +664,12 @@ def remove_worktree(worktree_path: Path) -> None:
         raise WorktreeError(f"Worktree does not exist at {worktree_path}")
 
     try:
+        repo_root = _resolve_repo_root_from_worktree(worktree_path)
+        if repo_root is None:
+            raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
+
         # Remove the worktree
-        cmd = ["git", "worktree", "remove", str(worktree_path)]
+        cmd = ["git", "-C", str(repo_root), "worktree", "remove", str(worktree_path)]
         result = subprocess.run(
             cmd, capture_output=True, text=True, check=False
         )
@@ -667,7 +688,7 @@ def remove_worktree(worktree_path: Path) -> None:
         branch_name = _get_worktree_branch(worktree_path)
         if branch_name:
             # Delete the branch
-            cmd = ["git", "branch", "-D", branch_name]
+            cmd = ["git", "-C", str(repo_root), "branch", "-D", branch_name]
             result = subprocess.run(
                 cmd, capture_output=True, text=True, check=False
             )
@@ -683,7 +704,7 @@ def remove_worktree(worktree_path: Path) -> None:
         raise WorktreeError(f"Error removing worktree: {e}")
 
 
-def list_worktrees() -> list[Path]:
+def list_worktrees(repo_root: Path) -> list[Path]:
     """
     List all git worktree paths.
 
@@ -694,7 +715,7 @@ def list_worktrees() -> list[Path]:
         WorktreeError: If listing fails
     """
     try:
-        cmd = ["git", "worktree", "list", "--porcelain"]
+        cmd = ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"]
         result = subprocess.run(
             cmd, capture_output=True, text=True, check=False
         )
@@ -718,7 +739,7 @@ def list_worktrees() -> list[Path]:
         raise WorktreeError(f"Error listing worktrees: {e}")
 
 
-def worktree_exists(worktree_path: Path) -> bool:
+def worktree_exists(worktree_path: Path, repo_root: Path) -> bool:
     """
     Check if a worktree exists.
 
@@ -732,7 +753,7 @@ def worktree_exists(worktree_path: Path) -> bool:
         WorktreeError: If the check fails
     """
     try:
-        worktrees = list_worktrees()
+        worktrees = list_worktrees(repo_root)
         worktree_path = Path(worktree_path)
         return worktree_path in worktrees
 
