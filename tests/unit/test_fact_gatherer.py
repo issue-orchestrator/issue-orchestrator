@@ -1,7 +1,7 @@
 """Unit tests for FactGatherer."""
 
 import pytest
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, call
 from pathlib import Path
 
 from issue_orchestrator.control.fact_gatherer import FactGatherer
@@ -263,6 +263,7 @@ class TestFactGathererCleanupFacts:
 
         assert result is None
 
+
     def test_cleanup_facts_returns_none_when_no_review_workflow(
         self, fact_gatherer, sample_state, mock_config
     ):
@@ -370,3 +371,54 @@ class TestFactGathererCleanupFacts:
         result = fact_gatherer.gather_cleanup_facts(sample_state)
 
         assert result is None
+
+
+class TestFactGathererFetchIssues:
+    """Tests for fetch_issues method."""
+
+    def test_fetch_issues_multiple_milestones_dedupes(
+        self, mock_config, mock_repository_host
+    ):
+        """Fetch across multiple milestones, deduping overlapping issues."""
+        mock_config.agents = {"agent:web": Mock()}
+        mock_config.filter_milestones = ["M1", "M2"]
+        mock_config.filter_milestone = None
+        mock_config.issue_fetch_limit = 100
+
+        issue_1 = Issue(number=1, title="Issue 1", labels=["agent:web"])
+        issue_2 = Issue(number=2, title="Issue 2", labels=["agent:web"])
+        mock_repository_host.list_issues.side_effect = [
+            [issue_1],
+            [issue_1, issue_2],
+        ]
+
+        gatherer = FactGatherer(config=mock_config, repository_host=mock_repository_host)
+        results = gatherer.fetch_issues(labels_for_agent=["test-label"])
+
+        assert [issue.number for issue in results] == [1, 2]
+        assert mock_repository_host.list_issues.call_args_list == [
+            call(labels=["test-label", "agent:web"], milestone="M1", limit=100),
+            call(labels=["test-label", "agent:web"], milestone="M2", limit=100),
+        ]
+
+    def test_fetch_issues_uses_milestone_param_when_unfiltered(
+        self, mock_config, mock_repository_host
+    ):
+        """Use explicit milestone when config has no filter."""
+        mock_config.agents = {"agent:web": Mock()}
+        mock_config.filter_milestones = []
+        mock_config.filter_milestone = None
+        mock_config.issue_fetch_limit = 50
+
+        issue_1 = Issue(number=1, title="Issue 1", labels=["agent:web"])
+        mock_repository_host.list_issues.return_value = [issue_1]
+
+        gatherer = FactGatherer(config=mock_config, repository_host=mock_repository_host)
+        results = gatherer.fetch_issues(labels_for_agent=["test-label"], milestone="M3")
+
+        assert [issue.number for issue in results] == [1]
+        mock_repository_host.list_issues.assert_called_once_with(
+            labels=["test-label", "agent:web"],
+            milestone="M3",
+            limit=50,
+        )

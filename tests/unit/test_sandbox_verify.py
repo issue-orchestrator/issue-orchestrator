@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import subprocess
 
-from issue_orchestrator.control.sandbox_verify import (
+from issue_orchestrator.execution.sandbox_verify import (
     VerificationResult,
     SandboxVerificationResult,
     verify_gh_auth_unavailable,

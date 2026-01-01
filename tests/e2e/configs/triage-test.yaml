@@ -1,0 +1,57 @@
+# E2E Test Config: Triage Review Trigger
+#
+# Runs code reviews and batch triage reviews in isolation from shared suite.
+
+repo: BruceBGordon/issue-orchestrator
+
+filter_label: test-data
+queue_refresh_seconds: 600
+gh_audit_enabled: true
+gh_audit_events: true
+gh_audit_file: /tmp/e2e-orchestrator-logs/gh-audit-{pid}.json
+control_api_port: 19081
+e2e_pr_labels: ["test-data"]
+
+agents:
+  "agent:e2e-test":
+    prompt: "examples/scripts/complete-immediately.sh"
+    model: sonnet
+    timeout_minutes: 3
+    worktree_base: "/tmp/e2e-worktrees"
+    repo_root: "../../../"
+    command: "bash {prompt}"
+    meta_agent: "claude-code"
+    permission_mode: bypassPermissions
+  "agent:script-review":
+    prompt: "examples/scripts/review-decider.sh"
+    model: sonnet
+    timeout_minutes: 3
+    worktree_base: "/tmp/e2e-worktrees"
+    repo_root: "../../../"
+    command: "PR_NUMBER={pr_number} bash {prompt}"
+    meta_agent: "claude-code"
+    permission_mode: bypassPermissions
+  "agent:triage-investigator":
+    prompt: "examples/scripts/complete-immediately.sh"
+    model: sonnet
+    timeout_minutes: 3
+    worktree_base: "/tmp/e2e-worktrees"
+    repo_root: "../../../"
+    command: "bash {prompt}"
+    meta_agent: "claude-code"
+    permission_mode: bypassPermissions
+
+concurrency:
+  max_concurrent_sessions: 4
+  session_timeout_minutes: 3
+
+review:
+  code_review_agent: "agent:script-review"
+  code_review_label: "needs-code-review"
+  code_reviewed_label: "code-reviewed"
+  triage_review_agent: "agent:triage-investigator"
+  triage_review_label: "needs-triage-review"
+  triage_reviewed_label: "triage-reviewed"
+  triage_review_threshold: 2
+  triage_review_on_failure: false
+  max_rework_cycles: 2

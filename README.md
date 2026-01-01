@@ -145,12 +145,12 @@ For details, see [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
 ## Architecture Guardrails
 
-This repo enforces import boundaries with **import-linter** to prevent architecture drift.
+This repo enforces architecture guardrails with **import-linter + AST checks** to prevent drift.
 
 ```bash
 # Run locally
 pip install import-linter
-lint-imports
+make lint-arch
 ```
 
 See [`.github/workflows/architecture-guardrails.yml`](.github/workflows/architecture-guardrails.yml) for CI enforcement.

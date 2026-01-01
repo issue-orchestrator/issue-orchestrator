@@ -1,12 +1,10 @@
 """Issue state analysis - shared between dry-run and startup."""
-
-import subprocess
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .ports.pull_request_tracker import PullRequestTracker
+    from .ports.issue_tracker import IssueTracker
 
 from .ports.issue import Issue
 
@@ -64,31 +62,18 @@ class IssueState:
         return "available"
 
 
-def get_issue_branches(repo_root: Path) -> dict[int, str]:
-    """Get branches that match issue pattern (e.g., '5-some-title').
-
-    Args:
-        repo_root: Path to the git repository root
-
-    Returns:
-        Dict mapping issue number to branch name
-    """
-    try:
-        result = subprocess.run(
-            ["git", "branch", "-r", "--list", "origin/*"],
-            capture_output=True, text=True, cwd=repo_root
-        )
-        branches = {}
-        for line in result.stdout.strip().split("\n"):
-            branch = line.strip().replace("origin/", "")
-            # Match pattern: {issue_number}-{slug}
-            if branch and branch[0].isdigit():
-                parts = branch.split("-", 1)
-                if parts[0].isdigit():
-                    branches[int(parts[0])] = branch
-        return branches
-    except Exception:
-        return {}
+def extract_issue_branches(branches: list[str]) -> dict[int, str]:
+    """Extract issue-numbered branches from a list of branch names."""
+    issue_branches: dict[int, str] = {}
+    for raw in branches:
+        branch = raw.strip()
+        if branch.startswith("origin/"):
+            branch = branch[len("origin/"):]
+        if branch and branch[0].isdigit():
+            parts = branch.split("-", 1)
+            if parts[0].isdigit():
+                issue_branches[int(parts[0])] = branch
+    return issue_branches
 
 
 def analyze_issue(
@@ -134,7 +119,7 @@ def analyze_issue(
 def analyze_all_issues(
     issues: list[Issue],
     repo: Optional[str],
-    repo_root: Path,
+    issue_branches: dict[int, str],
     check_session_fn,
     pr_tracker: Optional["PullRequestTracker"] = None,
 ) -> list[IssueState]:
@@ -143,16 +128,15 @@ def analyze_all_issues(
     Args:
         issues: List of Issues to analyze
         repo: GitHub repo (owner/repo format)
-        repo_root: Path to git repository
+        issue_branches: Dict of issue number -> branch name
         check_session_fn: Function to check if tmux session exists
         pr_tracker: Optional PullRequestTracker for checking open PRs
 
     Returns:
         List of IssueState objects
     """
-    branches = get_issue_branches(repo_root)
     return [
-        analyze_issue(issue, repo, branches, check_session_fn, pr_tracker)
+        analyze_issue(issue, repo, issue_branches, check_session_fn, pr_tracker)
         for issue in issues
     ]
 
@@ -187,7 +171,10 @@ def analyze_orphan_branches(
     issue_branches: dict[int, str],
     in_progress_issue_numbers: set[int],
     repo: Optional[str],
-    repo_root: Path,
+    issue_tracker: "IssueTracker | None" = None,
+    pr_tracker: "PullRequestTracker | None" = None,
+    commits_ahead_fn: Callable[[str], int] | None = None,
+    last_commit_date_fn: Callable[[str], Optional[str]] | None = None,
 ) -> list[OrphanBranchState]:
     """Analyze branches that exist but aren't marked in-progress.
 
@@ -195,13 +182,12 @@ def analyze_orphan_branches(
         issue_branches: Dict of issue number -> branch name
         in_progress_issue_numbers: Set of issue numbers currently marked in-progress
         repo: GitHub repo (owner/repo format)
-        repo_root: Path to git repository
+        commits_ahead_fn: Optional function to get commits ahead for a branch
+        last_commit_date_fn: Optional function to get last commit date for a branch
 
     Returns:
         List of OrphanBranchState objects
     """
-    import json
-
     orphans = []
     for issue_num, branch_name in issue_branches.items():
         if issue_num in in_progress_issue_numbers:
@@ -212,56 +198,36 @@ def analyze_orphan_branches(
             branch_name=branch_name,
         )
 
-        # Get commits ahead of main
-        try:
-            result = subprocess.run(
-                ["git", "rev-list", "--count", f"origin/main..origin/{branch_name}"],
-                capture_output=True, text=True, cwd=repo_root
-            )
-            if result.returncode == 0:
-                state.commits_ahead = int(result.stdout.strip())
-        except Exception:
-            pass
-
-        # Get last commit date
-        try:
-            result = subprocess.run(
-                ["git", "log", "-1", "--format=%cr", f"origin/{branch_name}"],
-                capture_output=True, text=True, cwd=repo_root
-            )
-            if result.returncode == 0:
-                state.last_commit_date = result.stdout.strip()
-        except Exception:
-            pass
-
-        # Check issue state via gh CLI
-        if repo:
+        if commits_ahead_fn:
             try:
-                result = subprocess.run(
-                    ["gh", "issue", "view", str(issue_num), "--repo", repo,
-                     "--json", "state,title"],
-                    capture_output=True, text=True
-                )
-                if result.returncode == 0:
-                    data = json.loads(result.stdout)
-                    state.issue_state = data.get("state", "").lower()
-                    state.issue_title = data.get("title")
+                state.commits_ahead = commits_ahead_fn(branch_name)
             except Exception:
                 pass
 
-            # Check for closed PRs on this branch
+        if last_commit_date_fn:
             try:
-                result = subprocess.run(
-                    ["gh", "pr", "list", "--head", branch_name, "--repo", repo,
-                     "--state", "all", "--json", "number,state,url"],
-                    capture_output=True, text=True
-                )
-                if result.returncode == 0:
-                    prs = json.loads(result.stdout)
-                    closed_prs = [p for p in prs if p.get("state") in ("CLOSED", "MERGED")]
-                    if closed_prs:
-                        state.has_closed_pr = True
-                        state.closed_pr_url = closed_prs[0].get("url")
+                state.last_commit_date = last_commit_date_fn(branch_name)
+            except Exception:
+                pass
+
+        # Check issue state via IssueTracker (if provided)
+        if issue_tracker:
+            try:
+                issue = issue_tracker.get_issue(issue_num)
+                if issue:
+                    state.issue_state = str(issue.state).lower()
+                    state.issue_title = issue.title
+            except Exception:
+                pass
+
+        # Check for closed PRs on this branch
+        if pr_tracker:
+            try:
+                prs = pr_tracker.get_prs_for_branch(branch_name, state="all")
+                closed_prs = [p for p in prs if p.state.lower() in ("closed", "merged")]
+                if closed_prs:
+                    state.has_closed_pr = True
+                    state.closed_pr_url = closed_prs[0].url
             except Exception:
                 pass
 

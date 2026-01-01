@@ -9,15 +9,23 @@ Control API endpoints:
 - POST /api/pause - Pause orchestrator
 - POST /api/resume - Resume orchestrator
 - GET /api/status - Get orchestrator status
+    - GET /api/events - Stream structured events (SSE)
+    - GET /api/events_since - Fetch buffered events since an event id
+- POST /api/gh_audit_report - Emit GH audit report to disk
+- GET /api/snapshot - Fetch snapshot for test resync
 - POST /api/shutdown - Request graceful shutdown
 """
 
 import asyncio
+import json
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
+
+from . import gh_audit
 
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
@@ -91,6 +99,121 @@ async def status() -> JSONResponse:
         "completed_today": len(state.completed_today),
         "issues_in_queue": len(state.cached_queue_issues),
     })
+
+
+@control_app.get("/api/events")
+async def events(request: Request):
+    """Server-Sent Events endpoint for test automation."""
+    if _orchestrator is None or _orchestrator.event_hub is None:
+        return JSONResponse({"error": "Event hub not initialized"}, status_code=503)
+
+    event_hub = _orchestrator.event_hub
+    logger.info("[SSE] Client connected (subscribers=%d, last_event_id=%s)",
+                event_hub.stats().get("subscribers"),
+                event_hub.last_event_id)
+
+    async def event_generator():
+        subscription = event_hub.subscribe()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(subscription.queue.get(), timeout=30.0)
+                    yield {
+                        "event": event.type,
+                        "data": json.dumps({
+                            "event_id": event.event_id,
+                            "type": event.type,
+                            "issue_key": event.issue_key,
+                            "payload": event.payload,
+                        }),
+                    }
+                except asyncio.TimeoutError:
+                    yield {"comment": "keepalive"}
+        finally:
+            event_hub.unsubscribe(subscription)
+            logger.info("[SSE] Client disconnected (subscribers=%d)", event_hub.stats().get("subscribers"))
+
+    return EventSourceResponse(event_generator())
+
+
+@control_app.get("/api/events_since")
+async def events_since(after: int = Query(0, alias="after")) -> JSONResponse:
+    """Return buffered events since the provided event id."""
+    if _orchestrator is None or _orchestrator.event_hub is None:
+        return JSONResponse({"error": "Event hub not initialized"}, status_code=503)
+
+    event_hub = _orchestrator.event_hub
+    events = event_hub.get_since(after)
+    stats = event_hub.stats()
+    logger.info(
+        "[SSE] Replay request after=%d events=%d oldest=%s newest=%s",
+        after,
+        len(events),
+        stats.get("oldest_event_id"),
+        stats.get("newest_event_id"),
+    )
+    payload = [
+        {
+            "event_id": event.event_id,
+            "type": event.type,
+            "issue_key": event.issue_key,
+            "payload": event.payload,
+        }
+        for event in events
+    ]
+    return JSONResponse({
+        "events": payload,
+        "last_event_id": event_hub.last_event_id,
+        "stats": stats,
+    })
+
+
+@control_app.get("/api/events_stats")
+async def events_stats() -> JSONResponse:
+    """Return event buffer and replay statistics."""
+    if _orchestrator is None or _orchestrator.event_hub is None:
+        return JSONResponse({"error": "Event hub not initialized"}, status_code=503)
+
+    return JSONResponse({"stats": _orchestrator.event_hub.stats()})
+
+
+@control_app.post("/api/gh_audit_report")
+async def gh_audit_report() -> JSONResponse:
+    """Emit the GH audit report to disk and return the path."""
+    if not gh_audit.enabled():
+        return JSONResponse({"error": "GH audit not enabled"}, status_code=400)
+    path = gh_audit.emit_report()
+    return JSONResponse({"status": "ok", "path": path})
+
+
+@control_app.get("/api/snapshot")
+async def snapshot() -> JSONResponse:
+    """Fetch a snapshot of orchestrator state for test resync."""
+    if _orchestrator is None:
+        return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
+
+    if _orchestrator.event_hub is None:
+        return JSONResponse({"error": "Event hub not initialized"}, status_code=503)
+
+    from .control.snapshot_builder import SnapshotBuilder
+
+    builder = SnapshotBuilder(config=_orchestrator.config, repository_host=_orchestrator.repository_host)
+    snapshot_id = _orchestrator.event_hub.last_event_id
+    last_tick_id = _orchestrator._event_context.tick_id
+
+    try:
+        data = await asyncio.to_thread(
+            builder.build_snapshot,
+            _orchestrator.state,
+            snapshot_id,
+            last_tick_id,
+        )
+        return JSONResponse(data)
+    except Exception as exc:
+        logger.exception("Control API snapshot failed: %s", exc)
+        return JSONResponse({"error": "snapshot_failed", "detail": str(exc)}, status_code=500)
 
 
 @control_app.post("/api/shutdown")

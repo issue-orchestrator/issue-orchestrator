@@ -1,20 +1,20 @@
-.PHONY: help install typecheck lint-imports test test-unit test-unit-cov test-integration test-e2e test-e2e-one validate validate-quick validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-integration test-e2e test-e2e-one validate validate-quick validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # Default target
 help:
 	@echo "Available targets:"
 	@echo "  install             Install dev dependencies"
 	@echo "  typecheck           Run pyright type checking"
-	@echo "  lint-imports        Check import architecture contracts"
+	@echo "  lint-arch           Run import-linter + AST guardrails"
 	@echo "  test-unit           Run unit tests"
 	@echo "  test-unit-cov       Run unit tests with coverage report"
 	@echo "  test-integration    Run integration tests"
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test                Run all tests"
-	@echo "  validate            Full validation (parallel: pyright + lint-imports + unit + integration + e2e)"
+	@echo "  validate            Full validation (parallel: pyright + lint-arch + unit + integration + e2e)"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
-	@echo "  validate-before-push Pre-push gate (typecheck + unit + integration, NO e2e)"
+	@echo "  validate-before-push Pre-push gate (typecheck + lint-arch + unit + integration, NO e2e)"
 	@echo "  demo                Run demo showing orchestrator features"
 	@echo "  issues-validate     Check issue naming conventions"
 	@echo "  issues-fix          Apply issue name fixes"
@@ -38,8 +38,9 @@ typecheck:
 
 LINT_IMPORTS ?= .venv/bin/lint-imports
 
-lint-imports:
+lint-arch:
 	$(LINT_IMPORTS)
+	$(PYTHON) tools/check_arch_guardrails.py src
 
 test-unit:
 	$(PYTEST) tests/unit -x -q --tb=short
@@ -75,16 +76,16 @@ test:
 # Quick validation for agent_gate (~45s)
 validate-quick: typecheck test-unit
 
-# Full validation - runs pyright, lint-imports, unit, integration, and e2e all in parallel
+# Full validation - runs pyright, lint-arch, unit, integration, and e2e all in parallel
 # Logs to .validate/*.log, fails if any component fails
 validate:
 	@mkdir -p .validate
-	@echo "Starting parallel validation (pyright + lint-imports + unit + integration + e2e)..."
+	@echo "Starting parallel validation (pyright + lint-arch + unit + integration + e2e)..."
 	@( \
 		$(PYRIGHT) src/ > .validate/pyright.log 2>&1 && echo "✓ pyright passed" || (echo "✗ pyright FAILED (see .validate/pyright.log)" && exit 1) \
 	) & pid1=$$!; \
 	( \
-		$(LINT_IMPORTS) > .validate/lint-imports.log 2>&1 && echo "✓ lint-imports passed" || (echo "✗ lint-imports FAILED (see .validate/lint-imports.log)" && exit 1) \
+		$(LINT_IMPORTS) > .validate/lint-arch.log 2>&1 && $(PYTHON) tools/check_arch_guardrails.py src >> .validate/lint-arch.log 2>&1 && echo "✓ lint-arch passed" || (echo "✗ lint-arch FAILED (see .validate/lint-arch.log)" && exit 1) \
 	) & pid2=$$!; \
 	( \
 		$(PYTEST) tests/unit -x -q --tb=short > .validate/unit.log 2>&1 && echo "✓ unit tests passed" || (echo "✗ unit tests FAILED (see .validate/unit.log)" && exit 1) \
@@ -99,7 +100,7 @@ validate:
 	@echo "All validations passed!"
 
 # Pre-push validation - NO e2e (too slow for hooks)
-validate-before-push: typecheck lint-imports
+validate-before-push: typecheck lint-arch
 	$(PYTEST) tests/unit tests/integration -x -q --tb=short
 
 # Demo - show orchestrator features with mock data

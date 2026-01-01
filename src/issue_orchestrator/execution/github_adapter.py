@@ -1,23 +1,32 @@
 """GitHub adapter implementing platform port interfaces.
 
 This module provides a GitHubAdapter class that implements the IssueTracker,
-LabelSet, and PullRequestTracker protocols using the GitHub CLI (gh).
-
-The adapter wraps existing github.py functions and provides a unified interface
-for all GitHub operations required by the application.
+LabelSet, and PullRequestTracker protocols using the GitHub HTTP API.
 
 Naming: This is an execution-layer adapter that talks to an external platform.
 """
 
 import logging
+import random
 import re
-from typing import TYPE_CHECKING
+import threading
+import time
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
 
+from ..config import Config
 from ..ports.issue_tracker import IssueTracker
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PRInfo, PullRequestTracker
-from .. import _github_impl as github
+from .. import gh_audit
 from .github_issue import GitHubIssue
+from .github_http import (
+    GitHubHttpClient,
+    GitHubHttpConfig,
+    GitHubHttpError,
+    resolve_github_token,
+)
+from .github_repo import get_repo_from_git, GitRepoError
 
 if TYPE_CHECKING:
     from ..domain.issue_key import IssueKey, GitHubIssueKey
@@ -27,13 +36,13 @@ logger = logging.getLogger(__name__)
 
 
 class GitHubAdapter:
-    """Adapter for GitHub operations via gh CLI.
+    """Adapter for GitHub operations via HTTP API.
 
     This adapter implements the IssueTracker, LabelSet, and PullRequestTracker
     protocols, providing a unified interface for GitHub operations.
 
-    The adapter uses the existing github.py module functions and handles errors
-    gracefully by returning None or empty lists on failure.
+    The adapter uses a shared GitHubHttpClient and handles errors gracefully by
+    returning None or empty lists on failure.
 
     Args:
         repo: Repository in owner/repo format (e.g., "owner/repo").
@@ -46,14 +55,149 @@ class GitHubAdapter:
         >>> pr = adapter.create_pr("Fix bug", "This fixes the bug", "feature-branch")
     """
 
-    def __init__(self, repo: str | None = None):
+    def __init__(self, repo: str | None = None, config: Config | None = None):
         """Initialize the GitHub adapter.
 
         Args:
             repo: Repository in owner/repo format. If None, uses current repo.
         """
-        self.repo = repo or github.get_repo()
+        if repo:
+            self.repo = repo
+        else:
+            try:
+                self.repo = get_repo_from_git()
+            except GitRepoError as exc:
+                raise GitHubHttpError(f"Failed to resolve repo: {exc}") from exc
+        token = resolve_github_token(
+            configured_token=getattr(config, "github_token", None) if config else None,
+            configured_env=getattr(config, "github_token_env", None) if config else None,
+        )
+        self._client = GitHubHttpClient(
+            GitHubHttpConfig(
+                repo=self.repo,
+                token=token,
+                base_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
+                timeout_seconds=float(getattr(config, "github_http_timeout_seconds", 20.0)) if config else 20.0,
+            )
+        )
+        self._verify_writes = True
+        self._verify_timeout_seconds = config.gh_write_verify_timeout_seconds if config else 20
+        self._verify_initial_delay_ms = config.gh_write_verify_initial_delay_ms if config else 250
+        self._verify_max_delay_ms = config.gh_write_verify_max_delay_ms if config else 2000
+        self._verify_backoff = config.gh_write_verify_backoff if config else 1.5
+        self._verify_jitter_ms = config.gh_write_verify_jitter_ms if config else 0
+        self._label_cache_ttl_seconds = max(0, int(getattr(config, "queue_refresh_seconds", 0))) if config else 0
+        self._label_cache: dict[int, tuple[float, list[str]]] = {}
+        self._issue_pr_cache: dict[int, PRInfo] = {}
+        self._branch_pr_cache: dict[str, PRInfo] = {}
+        self._cache_lock = threading.Lock()
+        self._cache_wait_count = 0
+        self._cache_wait_count_lock = threading.Lock()
         logger.info(f"GitHubAdapter initialized for repo: {self.repo}")
+
+    @contextmanager
+    def _cache_guard(self, action: str):
+        acquired = self._cache_lock.acquire(blocking=False)
+        if not acquired:
+            self._increment_cache_waits(action)
+            self._cache_lock.acquire()
+        try:
+            yield
+        finally:
+            self._cache_lock.release()
+
+    def _increment_cache_waits(self, action: str) -> None:
+        with self._cache_wait_count_lock:
+            self._cache_wait_count += 1
+            wait_count = self._cache_wait_count
+        logger.debug("Cache lock contention while %s; wait_count=%d", action, wait_count)
+
+    def update_label_cache(self, issue_number: int, labels: list[str]) -> None:
+        if self._label_cache_ttl_seconds <= 0:
+            return
+        with self._cache_guard("update_label_cache"):
+            self._label_cache[issue_number] = (time.monotonic(), list(labels))
+        self._update_pr_cache_labels(issue_number, labels)
+
+    def _update_pr_cache_labels(self, issue_number: int, labels: list[str]) -> None:
+        with self._cache_guard("update_pr_cache_labels"):
+            cached = self._issue_pr_cache.get(issue_number)
+            if not cached:
+                return
+            cached.labels = list(labels)
+            if cached.branch:
+                self._branch_pr_cache[cached.branch] = cached
+
+
+    def _cache_pr_info(self, pr_info: PRInfo) -> None:
+        issue_number = self._extract_issue_number(pr_info.branch, pr_info.title)
+        with self._cache_guard("cache_pr_info"):
+            if issue_number is not None:
+                self._issue_pr_cache[issue_number] = pr_info
+            if pr_info.branch:
+                self._branch_pr_cache[pr_info.branch] = pr_info
+
+    def _extract_issue_number(self, branch: str | None, title: str | None) -> int | None:
+        if branch:
+            match = re.match(r"^(\d+)-", branch)
+            if match:
+                return int(match.group(1))
+        if title:
+            match = re.match(r"^#(\d+):", title)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _verify_write(self, description: str, predicate, detail_fn=None) -> None:
+        if not self._verify_writes:
+            return
+        start = time.monotonic()
+        deadline = start + self._verify_timeout_seconds
+        delay = self._verify_initial_delay_ms / 1000.0
+        max_delay = self._verify_max_delay_ms / 1000.0
+        attempt = 0
+        last_error: Exception | None = None
+
+        while True:
+            attempt += 1
+            try:
+                if predicate():
+                    if attempt > 1:
+                        logger.info(
+                            "Verified %s after %.2fs (%d attempts)",
+                            description,
+                            time.monotonic() - start,
+                            attempt,
+                        )
+                    return
+            except Exception as e:
+                last_error = e
+
+            if time.monotonic() >= deadline:
+                break
+
+            sleep_for = min(delay, max_delay)
+            if self._verify_jitter_ms > 0:
+                sleep_for += random.uniform(0, self._verify_jitter_ms / 1000.0)
+            time.sleep(sleep_for)
+            delay = min(delay * self._verify_backoff, max_delay)
+
+        detail = ""
+        if detail_fn:
+            try:
+                detail = f" last_state={detail_fn()}"
+            except Exception:
+                detail = " last_state=<unavailable>"
+        if last_error:
+            logger.warning(
+                "Write verification timed out for %s:%s error=%s",
+                description,
+                detail,
+                last_error,
+            )
+        else:
+            logger.warning("Write verification timed out for %s:%s", description, detail)
+        raise GitHubHttpError(f"Timed out verifying write: {description}")
 
     # IssueRepository implementation
 
@@ -76,31 +220,32 @@ class GitHubAdapter:
             List of GitHubIssue objects matching the criteria. Returns empty list on error.
         """
         try:
-            # Get raw issues from github module (returns old Issue type)
-            raw_issues = github.list_issues(
-                repo=self.repo,
+            raw_issues = self._client.list_issues(
                 labels=labels,
                 state=state,
                 milestone=milestone,
                 limit=limit,
             )
-            # Convert to GitHubIssue (frozen, with key-based equality)
             return [
                 GitHubIssue(
-                    number=issue.number,
+                    number=item["number"],
                     repo=self.repo,
-                    title=issue.title,
-                    labels=tuple(issue.labels),
-                    state=issue.state,
-                    body=issue.body,
-                    milestone=issue.milestone,
-                    milestone_number=issue.milestone_number,
-                    milestone_due_on=issue.milestone_due_on,
+                    title=item.get("title", ""),
+                    labels=tuple(label["name"] for label in item.get("labels", [])),
+                    state=str(item.get("state", "open")).lower(),
+                    body=item.get("body"),
+                    milestone=(item.get("milestone") or {}).get("title"),
+                    milestone_number=(item.get("milestone") or {}).get("number"),
+                    milestone_due_on=(item.get("milestone") or {}).get("due_on"),
                 )
-                for issue in raw_issues
+                for item in raw_issues
+                if isinstance(item, dict)
             ]
-        except github.GitHubError as e:
-            logger.error(f"Failed to list issues: {e}")
+        except GitHubHttpError as e:
+            logger.error("Failed to list issues: %s", e)
+            return []
+        except Exception as e:
+            logger.error("Unexpected error listing issues: %s", e)
             return []
 
     def get_issue(self, issue_number: int) -> "Issue | None":
@@ -113,29 +258,26 @@ class GitHubAdapter:
             The GitHubIssue object if found, None otherwise.
         """
         try:
-            # Use gh issue view to get a specific issue
-            args = ["issue", "view", str(issue_number), "--json", "number,title,labels,state,body,milestone"]
-            output = github._run_gh_json(args, self.repo)
-
+            output = self._client.get_issue(issue_number)
             if isinstance(output, dict):
-                milestone_obj = output.get("milestone")
+                milestone_obj = output.get("milestone") or {}
                 return GitHubIssue(
-                    number=output["number"],
+                    number=output.get("number", issue_number),
                     repo=self.repo,
-                    title=output["title"],
+                    title=output.get("title", ""),
                     labels=tuple(label["name"] for label in output.get("labels", [])),
-                    state=output.get("state", "open"),
+                    state=str(output.get("state", "open")).lower(),
                     body=output.get("body"),
-                    milestone=milestone_obj.get("title") if milestone_obj else None,
-                    milestone_number=milestone_obj.get("number") if milestone_obj else None,
-                    milestone_due_on=milestone_obj.get("dueOn") if milestone_obj else None,
+                    milestone=milestone_obj.get("title"),
+                    milestone_number=milestone_obj.get("number"),
+                    milestone_due_on=milestone_obj.get("due_on"),
                 )
             return None
-        except github.GitHubError as e:
-            logger.error(f"Failed to get issue {issue_number}: {e}")
+        except GitHubHttpError as e:
+            logger.error("Failed to get issue %s: %s", issue_number, e)
             return None
         except Exception as e:
-            logger.error(f"Unexpected error getting issue {issue_number}: {e}")
+            logger.error("Unexpected error getting issue %s: %s", issue_number, e)
             return None
 
     def get_issue_by_key(self, key: "IssueKey") -> "Issue | None":
@@ -174,10 +316,36 @@ class GitHubAdapter:
             List of label names. Returns empty list on error or if issue not found.
         """
         try:
-            return github.get_issue_labels(self.repo, issue_number)
+            cached = self._get_cached_labels(issue_number)
+            if cached is not None:
+                return cached
+            return self._get_issue_labels_fresh(issue_number)
         except Exception as e:
             logger.error(f"Failed to get labels for issue {issue_number}: {e}")
             return []
+
+    def _get_cached_labels(self, issue_number: int) -> list[str] | None:
+        if self._label_cache_ttl_seconds <= 0:
+            return None
+        with self._cache_guard("get_cached_labels"):
+            entry = self._label_cache.get(issue_number)
+            if not entry:
+                return None
+            fetched_at, labels = entry
+            if (time.monotonic() - fetched_at) > self._label_cache_ttl_seconds:
+                self._label_cache.pop(issue_number, None)
+                return None
+            return list(labels)
+
+    def _get_issue_labels_fresh(self, issue_number: int) -> list[str]:
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.GH_READ,
+            issue_key=str(issue_number),
+            scope=gh_audit.AuditScope.UNKNOWN,
+        ):
+            labels = self._client.get_issue_labels(issue_number)
+        self.update_label_cache(issue_number, list(labels))
+        return labels
 
     # LabelManager implementation
 
@@ -189,14 +357,33 @@ class GitHubAdapter:
             label: The label name to add.
 
         Raises:
-            github.GitHubError: If the operation fails.
+            GitHubHttpError: If the operation fails.
         """
         try:
-            github.add_label(repo=self.repo, issue_number=issue_number, label=label)
+            with gh_audit.context(
+                reason=gh_audit.AuditReason.GH_WRITE,
+                issue_key=str(issue_number),
+                scope=gh_audit.AuditScope.UNKNOWN,
+            ):
+                self._client.add_label(issue_number, label)
             logger.debug(f"Added label '{label}' to issue {issue_number}")
-        except github.GitHubError:
+            last_labels: list[str] = []
+
+            def _check() -> bool:
+                nonlocal last_labels
+                last_labels = self._get_issue_labels_fresh(issue_number)
+                return label in last_labels
+
+            self._verify_write(
+                f"label add #{issue_number}:{label}",
+                _check,
+                detail_fn=lambda: {"labels": last_labels},
+            )
+        except GitHubHttpError:
             logger.error(f"Failed to add label '{label}' to issue {issue_number}")
             raise
+        finally:
+            pass
 
     def remove_label(self, issue_number: int, label: str) -> None:
         """Remove a label from an issue.
@@ -206,14 +393,33 @@ class GitHubAdapter:
             label: The label name to remove.
 
         Raises:
-            github.GitHubError: If the operation fails.
+            GitHubHttpError: If the operation fails.
         """
         try:
-            github.remove_label(repo=self.repo, issue_number=issue_number, label=label)
+            with gh_audit.context(
+                reason=gh_audit.AuditReason.GH_WRITE,
+                issue_key=str(issue_number),
+                scope=gh_audit.AuditScope.UNKNOWN,
+            ):
+                self._client.remove_label(issue_number, label)
             logger.debug(f"Removed label '{label}' from issue {issue_number}")
-        except github.GitHubError:
+            last_labels: list[str] = []
+
+            def _check() -> bool:
+                nonlocal last_labels
+                last_labels = self._get_issue_labels_fresh(issue_number)
+                return label not in last_labels
+
+            self._verify_write(
+                f"label remove #{issue_number}:{label}",
+                _check,
+                detail_fn=lambda: {"labels": last_labels},
+            )
+        except GitHubHttpError:
             logger.error(f"Failed to remove label '{label}' from issue {issue_number}")
             raise
+        finally:
+            pass
 
     def has_label(self, issue_number: int, label: str) -> bool:
         """Check if an issue has a specific label.
@@ -245,29 +451,22 @@ class GitHubAdapter:
             List of PRInfo objects. Returns empty list on error.
         """
         try:
-            args = ["pr", "list", "--head", branch, "--state", state,
-                   "--json", "number,title,url,headRefName,body,state,labels"]
-            output = github._run_gh_json(args, self.repo)
-
+            with self._cache_guard("get_prs_for_branch_cache"):
+                cached = self._branch_pr_cache.get(branch)
+                if cached and (state == "all" or cached.state.lower() == state.lower()):
+                    return [cached]
+            output = self._client.get_prs_for_branch(branch, state=state)
             if isinstance(output, list):
-                return [
-                    PRInfo(
-                        number=pr["number"],
-                        title=pr["title"],
-                        url=pr["url"],
-                        branch=pr["headRefName"],
-                        body=pr.get("body", ""),
-                        state=pr["state"],
-                        labels=[label["name"] for label in pr.get("labels", [])],
-                    )
-                    for pr in output
-                ]
+                prs = [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
+                for pr_info in prs:
+                    self._cache_pr_info(pr_info)
+                return prs
             return []
-        except github.GitHubError as e:
-            logger.error(f"Failed to get PRs for branch '{branch}': {e}")
+        except GitHubHttpError as e:
+            logger.error("Failed to get PRs for branch '%s': %s", branch, e)
             return []
         except Exception as e:
-            logger.error(f"Unexpected error getting PRs for branch '{branch}': {e}")
+            logger.error("Unexpected error getting PRs for branch '%s': %s", branch, e)
             return []
 
     def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
@@ -281,29 +480,18 @@ class GitHubAdapter:
             List of PRInfo objects. Returns empty list on error.
         """
         try:
-            args = ["pr", "list", "--label", label, "--state", state,
-                   "--json", "number,title,url,headRefName,body,state,labels"]
-            output = github._run_gh_json(args, self.repo)
-
-            if isinstance(output, list):
-                return [
-                    PRInfo(
-                        number=pr["number"],
-                        title=pr["title"],
-                        url=pr["url"],
-                        branch=pr["headRefName"],
-                        body=pr.get("body", ""),
-                        state=pr["state"],
-                        labels=[label["name"] for label in pr.get("labels", [])],
-                    )
-                    for pr in output
-                ]
-            return []
-        except github.GitHubError as e:
-            logger.error(f"Failed to get PRs with label '{label}': {e}")
+            output = self._client.get_prs_with_label(label, state=state)
+            prs: list[PRInfo] = []
+            for item in output:
+                pr_info = self._fetch_pr_info_from_search(item)
+                if pr_info:
+                    prs.append(pr_info)
+            return prs
+        except GitHubHttpError as e:
+            logger.error("Failed to get PRs with label '%s': %s", label, e)
             return []
         except Exception as e:
-            logger.error(f"Unexpected error getting PRs with label '{label}': {e}")
+            logger.error("Unexpected error getting PRs with label '%s': %s", label, e)
             return []
 
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
@@ -321,25 +509,29 @@ class GitHubAdapter:
             List of PRInfo objects. Returns empty list on error.
         """
         try:
-            # Use the existing github.get_prs_for_issue function
-            prs = github.get_prs_for_issue(repo=self.repo, issue_number=issue_number)
-            return [
-                PRInfo(
-                    number=pr["number"],
-                    title=pr["title"],
-                    url=pr.get("url", ""),
-                    branch=pr.get("headRefName", ""),
-                    body=pr.get("body", ""),
-                    state=pr.get("state", "OPEN"),
-                    labels=[label["name"] for label in pr.get("labels", [])],
-                )
-                for pr in prs
-            ]
-        except github.GitHubError as e:
-            logger.error(f"Failed to get PRs for issue {issue_number}: {e}")
+            with self._cache_guard("get_prs_for_issue_cache"):
+                cached = self._issue_pr_cache.get(issue_number)
+                if cached and (state == "all" or cached.state.lower() == state.lower()):
+                    return [cached]
+            with gh_audit.context(
+                reason=gh_audit.AuditReason.GH_READ,
+                issue_key=str(issue_number),
+                scope=gh_audit.AuditScope.UNKNOWN,
+            ):
+                prs = self._client.get_prs_for_issue(issue_number)
+            pr_infos: list[PRInfo] = []
+            for pr in prs:
+                pr_info = self._fetch_pr_info_from_search(pr)
+                if pr_info:
+                    pr_infos.append(pr_info)
+            for pr_info in pr_infos:
+                self._cache_pr_info(pr_info)
+            return pr_infos
+        except GitHubHttpError as e:
+            logger.error("Failed to get PRs for issue %s: %s", issue_number, e)
             return []
         except Exception as e:
-            logger.error(f"Unexpected error getting PRs for issue {issue_number}: {e}")
+            logger.error("Unexpected error getting PRs for issue %s: %s", issue_number, e)
             return []
 
     def get_pr(self, pr_number: int) -> PRInfo | None:
@@ -352,26 +544,15 @@ class GitHubAdapter:
             The PRInfo object if found, None otherwise.
         """
         try:
-            args = ["pr", "view", str(pr_number),
-                   "--json", "number,title,url,headRefName,body,state,labels"]
-            output = github._run_gh_json(args, self.repo)
-
+            output = self._client.get_pr(pr_number)
             if isinstance(output, dict):
-                return PRInfo(
-                    number=output["number"],
-                    title=output["title"],
-                    url=output["url"],
-                    branch=output["headRefName"],
-                    body=output.get("body", ""),
-                    state=output["state"],
-                    labels=[label["name"] for label in output.get("labels", [])],
-                )
+                return self._pr_info_from_api(output)
             return None
-        except github.GitHubError as e:
-            logger.error(f"Failed to get PR {pr_number}: {e}")
+        except GitHubHttpError as e:
+            logger.error("Failed to get PR %s: %s", pr_number, e)
             return None
         except Exception as e:
-            logger.error(f"Unexpected error getting PR {pr_number}: {e}")
+            logger.error("Unexpected error getting PR %s: %s", pr_number, e)
             return None
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
@@ -385,29 +566,15 @@ class GitHubAdapter:
             List of PRInfo objects. Returns empty list on error.
         """
         try:
-            args = ["pr", "list", "--state", state, "--limit", str(limit),
-                   "--json", "number,title,url,headRefName,body,state,labels"]
-            output = github._run_gh_json(args, self.repo)
-
+            output = self._client.list_prs(state=state, limit=limit)
             if isinstance(output, list):
-                return [
-                    PRInfo(
-                        number=pr["number"],
-                        title=pr["title"],
-                        url=pr["url"],
-                        branch=pr["headRefName"],
-                        body=pr.get("body", ""),
-                        state=pr["state"],
-                        labels=[label["name"] for label in pr.get("labels", [])],
-                    )
-                    for pr in output
-                ]
+                return [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
             return []
-        except github.GitHubError as e:
-            logger.error(f"Failed to list PRs: {e}")
+        except GitHubHttpError as e:
+            logger.error("Failed to list PRs: %s", e)
             return []
         except Exception as e:
-            logger.error(f"Unexpected error listing PRs: {e}")
+            logger.error("Unexpected error listing PRs: %s", e)
             return []
 
     def create_pr(
@@ -428,57 +595,41 @@ class GitHubAdapter:
             A PRInfo object representing the created or existing PR.
 
         Raises:
-            github.GitHubError: If there's an error creating the PR and no existing PR found.
+            GitHubHttpError: If there's an error creating the PR and no existing PR found.
         """
         # First, check if a PR already exists for this branch
         existing_prs = self.get_prs_for_branch(head)
         if existing_prs:
             existing_pr = existing_prs[0]
             logger.info(f"PR already exists for branch {head}: #{existing_pr.number}")
+            self._cache_pr_info(existing_pr)
             return existing_pr
 
         try:
-            # Create the PR (gh pr create doesn't support --json)
-            args = ["pr", "create", "--title", title, "--body", body,
-                   "--head", head, "--base", base]
-            logger.info("Creating PR via gh: repo=%s head=%s base=%s", self.repo, head, base)
-            result = github._run_gh(args, self.repo)
-
-            # Parse the URL from the output (gh pr create prints the PR URL)
-            pr_url = result.strip()
-            if not pr_url.startswith("https://"):
-                raise github.GitHubError(f"Unexpected output from gh pr create: {result}")
-
-            # Extract PR number from URL (https://github.com/owner/repo/pull/123)
-            pr_number = int(pr_url.split("/")[-1])
-
-            # Fetch full PR info using gh pr view
-            view_args = ["pr", "view", str(pr_number),
-                        "--json", "number,title,url,headRefName,body,state,labels"]
-            output = github._run_gh_json(view_args, self.repo)
-
+            logger.info("Creating PR via GitHub API: repo=%s head=%s base=%s", self.repo, head, base)
+            output = self._client.create_pr(title=title, body=body, head=head, base=base)
             if isinstance(output, dict):
-                pr_info = PRInfo(
-                    number=output["number"],
-                    title=output["title"],
-                    url=output["url"],
-                    branch=output["headRefName"],
-                    body=output.get("body", ""),
-                    state=output["state"],
-                    labels=[label["name"] for label in output.get("labels", [])],
+                pr_info = self._pr_info_from_api(output)
+                logger.info("Created PR #%s: %s", pr_info.number, pr_info.title)
+                self._cache_pr_info(pr_info)
+                last_pr: PRInfo | None = pr_info
+
+                def _check() -> bool:
+                    nonlocal last_pr
+                    last_pr = self.get_pr(pr_info.number)
+                    return last_pr is not None
+
+                self._verify_write(
+                    f"pr create #{pr_info.number}:{head}",
+                    _check,
+                    detail_fn=lambda: {
+                        "number": last_pr.number if last_pr else None,
+                        "branch": last_pr.branch if last_pr else None,
+                    },
                 )
-                logger.info(f"Created PR #{pr_info.number}: {pr_info.title}")
                 return pr_info
-            else:
-                raise github.GitHubError("Failed to parse PR view response")
-        except github.GitHubError as e:
-            # Check if the error is "PR already exists" - this can happen in race conditions
-            if "already exists" in str(e).lower():
-                # Try to find the existing PR
-                existing_prs = self.get_prs_for_branch(head)
-                if existing_prs:
-                    logger.info(f"PR exists (race condition): #{existing_prs[0].number}")
-                    return existing_prs[0]
+            raise GitHubHttpError("Failed to parse PR create response")
+        except GitHubHttpError as e:
             logger.error("Failed to create PR: title=%s head=%s base=%s error=%s", title, head, base, e)
             raise
 
@@ -493,28 +644,32 @@ class GitHubAdapter:
             The URL of the created comment.
 
         Raises:
-            github.GitHubError: If there's an error adding the comment.
+            GitHubHttpError: If there's an error adding the comment.
         """
         try:
-            # The gh CLI doesn't return the comment URL directly from 'issue comment'
-            # So we add the comment and then get the latest comment to retrieve its URL
-            github.add_comment(repo=self.repo, issue_number=issue_or_pr_number, body=body)
+            with gh_audit.context(
+                reason=gh_audit.AuditReason.GH_WRITE,
+                issue_key=str(issue_or_pr_number),
+                scope=gh_audit.AuditScope.UNKNOWN,
+            ):
+                comment_url = self._client.add_comment(issue_or_pr_number, body)
             logger.debug(f"Added comment to issue/PR {issue_or_pr_number}")
 
-            # Fetch the latest comment to get its URL
-            # This is a workaround since gh issue comment doesn't output JSON
-            args = ["issue", "view", str(issue_or_pr_number), "--json", "comments"]
-            output = github._run_gh_json(args, self.repo)
+            last_comments: list[dict] = []
 
-            if isinstance(output, dict):
-                comments = output.get("comments", [])
-                if comments:
-                    # Return the URL of the last comment (the one we just added)
-                    return comments[-1].get("url", f"https://github.com/{self.repo}/issues/{issue_or_pr_number}")
+            def _check() -> bool:
+                nonlocal last_comments
+                last_comments = self._client.get_issue_comments(issue_or_pr_number)
+                return any(c.get("body") == body for c in last_comments)
 
-            # Fallback to issue URL if we can't get the comment URL
-            return f"https://github.com/{self.repo}/issues/{issue_or_pr_number}"
-        except github.GitHubError:
+            self._verify_write(
+                f"comment add #{issue_or_pr_number}",
+                _check,
+                detail_fn=lambda: {"comment_count": len(last_comments)},
+            )
+
+            return comment_url
+        except GitHubHttpError:
             logger.error(f"Failed to add comment to issue/PR {issue_or_pr_number}")
             raise
 
@@ -533,20 +688,28 @@ class GitHubAdapter:
         """
         target_repo = repo or self.repo
         try:
-            # Use gh issue view to get the issue state
-            args = ["issue", "view", str(issue_number), "--json", "state"]
-            output = github._run_gh_json(args, target_repo)
+            if target_repo != self.repo:
+                temp_client = GitHubHttpClient(
+                    GitHubHttpConfig(
+                        repo=target_repo,
+                        token=self._client._config.token,
+                        base_url=self._client._config.base_url,
+                        timeout_seconds=self._client._config.timeout_seconds,
+                    )
+                )
+                output = temp_client.get_issue(issue_number)
+                temp_client.close()
+            else:
+                output = self._client.get_issue(issue_number)
 
             if isinstance(output, dict):
                 return output.get("state")
             return None
-        except github.GitHubError as e:
-            # 404 or permission error - issue is missing
-            logger.debug(f"Issue {issue_number} in {target_repo} not found: {e}")
+        except GitHubHttpError as e:
+            logger.debug("Issue %s in %s not found: %s", issue_number, target_repo, e)
             return None
         except Exception as e:
-            # Re-raise unexpected errors for UNKNOWN state handling
-            logger.debug(f"Error checking issue {issue_number} in {target_repo}: {e}")
+            logger.debug("Error checking issue %s in %s: %s", issue_number, target_repo, e)
             raise
 
     def create_issue_key(self, issue_number: int) -> "GitHubIssueKey":
@@ -594,9 +757,64 @@ class GitHubAdapter:
         Returns:
             Issue number if created, None on failure
         """
-        return github.create_issue(
-            repo=self.repo,
-            title=title,
-            body=body,
+        issue_number = self._client.create_issue(title=title, body=body, labels=labels)
+        if issue_number is None:
+            return None
+        if labels:
+            last_labels: list[str] = []
+
+            def _check() -> bool:
+                nonlocal last_labels
+                last_labels = self._get_issue_labels_fresh(issue_number)
+                return all(label in last_labels for label in labels)
+
+            self._verify_write(
+                f"issue create #{issue_number}",
+                _check,
+                detail_fn=lambda: {"labels": last_labels},
+            )
+        return issue_number
+
+    def get_rate_limit_snapshot(self) -> dict[str, Any] | None:
+        snapshot = self._client.get_rate_limit_snapshot()
+        return snapshot.to_payload() if snapshot else None
+
+    def get_token_scopes(self) -> list[str]:
+        return self._client.get_token_scopes()
+
+    def _pr_info_from_api(self, pr: dict[str, Any]) -> PRInfo:
+        raw_number = pr.get("number")
+        if raw_number is None:
+            number = 0
+        else:
+            try:
+                number = int(raw_number)
+            except (TypeError, ValueError):
+                number = 0
+        labels: list[str] = []
+        for label in pr.get("labels", []):
+            if not isinstance(label, dict):
+                continue
+            name = label.get("name")
+            if isinstance(name, str):
+                labels.append(name)
+        return PRInfo(
+            number=number,
+            title=pr.get("title", ""),
+            url=pr.get("html_url") or pr.get("url", ""),
+            branch=(pr.get("head") or {}).get("ref", pr.get("headRefName", "")),
+            body=pr.get("body", "") or "",
+            state=str(pr.get("state", "open")).lower(),
             labels=labels,
         )
+
+    def _fetch_pr_info_from_search(self, pr: dict[str, Any]) -> PRInfo | None:
+        if not isinstance(pr, dict):
+            return None
+        pr_number = pr.get("number")
+        if not pr_number:
+            return None
+        full = self._client.get_pr(pr_number)
+        if not isinstance(full, dict):
+            return None
+        return self._pr_info_from_api(full)

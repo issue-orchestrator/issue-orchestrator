@@ -89,6 +89,7 @@ class TestWaitWithProcessCheck:
 
         orchestrator = MagicMock()
         orchestrator.is_running.return_value = True
+        orchestrator.last_log_age_seconds.return_value = 0
 
         result = wait_with_process_check(
             condition,

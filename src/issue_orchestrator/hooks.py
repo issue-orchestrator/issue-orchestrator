@@ -655,7 +655,14 @@ def detect_agents_from_config(config) -> dict[str, MetaAgentType]:
     """
     result = {}
     for label, agent_config in config.agents.items():
-        command = getattr(agent_config, 'command', None) or ''
+        meta_agent = getattr(agent_config, "meta_agent", None)
+        if meta_agent:
+            try:
+                result[label] = MetaAgentType(meta_agent)
+                continue
+            except ValueError:
+                logger.warning("Unknown meta_agent override for %s: %s", label, meta_agent)
+        command = getattr(agent_config, "command", None) or ""
         result[label] = detect_meta_agent(command)
     return result
 

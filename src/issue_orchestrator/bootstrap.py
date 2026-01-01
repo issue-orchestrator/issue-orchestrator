@@ -22,7 +22,10 @@ from .execution import (
     PluggySessionRunner,
     LifecycleSSEPlugin,
     GitHubAdapter,
+    CompositeEventSink,
 )
+from .execution.gh_guard import install_gh_guard
+from .events import EventHub, SequencedEventSink
 from .control import (
     Planner,
     Scheduler,
@@ -34,8 +37,10 @@ from .control.fact_gatherer import FactGatherer
 from .execution import GitHubIssueResolver
 from .execution.worktree_adapter import GitWorktreeManager
 from .execution.git_working_copy import GitWorkingCopy
+from .execution.command_runner import LocalCommandRunner
 from .control.dependency_evaluator import DependencyEvaluator
 from .control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
+from . import gh_audit
 
 if TYPE_CHECKING:
     from .orchestrator import Orchestrator
@@ -82,6 +87,8 @@ def build_orchestrator(
     # Import here to avoid circular imports
     from .orchestrator import Orchestrator
 
+    install_gh_guard()
+
     # Create the pluggy plugin manager (knows about terminal backend)
     pm = create_plugin_manager(
         terminal_plugin=config.terminal_adapter,
@@ -98,13 +105,37 @@ def build_orchestrator(
             logger.warning("Failed to register SSE plugin: %s", e)
 
     # Create port adapters
-    events = PluggyEventSink(pm)
+    base_events = PluggyEventSink(pm)
     runner = PluggySessionRunner(pm)
 
     # Create GitHub adapter if repo is configured
     github = None
     if config.repo:
-        github = GitHubAdapter(config.repo)
+        github = GitHubAdapter(config.repo, config=config)
+
+    event_hub = EventHub() if github else None
+    if event_hub:
+        events = CompositeEventSink(base_events, event_hub)
+    else:
+        events = base_events
+    events = SequencedEventSink(events)
+    gh_audit.set_event_sink(events)
+    if github:
+        gh_audit.set_rate_limit_fetcher(github.get_rate_limit_snapshot)
+    gh_audit.configure(
+        enabled=config.gh_audit_enabled,
+        include_events=config.gh_audit_events,
+        audit_path=config.gh_audit_file,
+    )
+    gh_audit.configure_rate_limit(
+        every_calls=config.gh_rate_limit_every_calls,
+        warn_fraction=config.gh_rate_limit_warn_fraction,
+        warn_remaining=config.gh_rate_limit_warn_remaining,
+    )
+    if config.gh_rate_limit_startup:
+        gh_audit.check_rate_limit("startup")
+    if github:
+        _check_github_token_scopes(config, github)
 
     # Create control plane components
     scheduler = Scheduler(config=config)
@@ -145,6 +176,7 @@ def build_orchestrator(
     # Create adapters for IO operations
     worktree_manager = GitWorktreeManager()
     working_copy = GitWorkingCopy()
+    command_runner = LocalCommandRunner()
 
     # Create ActionApplier (IO boundary)
     action_applier = ActionApplier(
@@ -161,6 +193,7 @@ def build_orchestrator(
     fact_gatherer = FactGatherer(
         config=config,
         repository_host=github,
+        events=events,
     ) if github else None
 
     # Create PRScanner (for orphaned review/rework discovery)
@@ -176,6 +209,7 @@ def build_orchestrator(
     session_restorer = SessionRestorer(
         config=config,
         repository_host=github,
+        working_copy=working_copy,
     ) if github else None
 
     # Create StateMachineManager (centralized state machine management)
@@ -210,11 +244,15 @@ def build_orchestrator(
     ) if completion_processor else None
 
     # Build the orchestrator with injected dependencies
+    from .execution.hook_verifier import ExecutionHookVerifier
+    hook_verifier = ExecutionHookVerifier(config)
+
     return Orchestrator(
         config=config,
         events=events,
         runner=runner,
         _repository_host=github,
+        event_hub=event_hub,
         planner=planner,
         session_manager=session_manager,
         label_sync=label_sync,
@@ -224,10 +262,35 @@ def build_orchestrator(
         session_restorer=session_restorer,
         worktree_manager=worktree_manager,
         working_copy=working_copy,
+        hook_verifier=hook_verifier,
+        command_runner=command_runner,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
     )
+
+
+def _check_github_token_scopes(config: Config, github: GitHubAdapter) -> None:
+    required = {scope.strip() for scope in (config.github_required_scopes or []) if scope.strip()}
+    allowed = {scope.strip() for scope in (config.github_allowed_scopes or []) if scope.strip()}
+    try:
+        scopes = set(github.get_token_scopes())
+    except Exception as exc:
+        logger.warning("Failed to fetch GitHub token scopes: %s", exc)
+        return
+
+    if required and not required.issubset(scopes):
+        missing = sorted(required - scopes)
+        raise ValueError(f"GitHub token missing required scopes: {missing}")
+
+    if allowed and not scopes.issubset(allowed):
+        extra = sorted(scopes - allowed)
+        raise ValueError(f"GitHub token has disallowed scopes: {extra}")
+
+    if scopes:
+        logger.info("GitHub token scopes: %s", ", ".join(sorted(scopes)))
+    else:
+        logger.info("GitHub token scopes unavailable (fine-grained token or missing header)")
 
 
 def build_orchestrator_for_testing(
@@ -257,8 +320,11 @@ def build_orchestrator_for_testing(
     """
     from .orchestrator import Orchestrator
 
+    install_gh_guard()
+
     events = events or NullEventSink()
     runner = runner or NullSessionRunner()
+    events = SequencedEventSink(events)
 
     # Create default planner if not provided
     if planner is None:
@@ -275,6 +341,7 @@ def build_orchestrator_for_testing(
     # Create adapters for IO operations
     worktree_manager = GitWorktreeManager()
     working_copy = GitWorkingCopy()
+    command_runner = LocalCommandRunner()
 
     # Create default action applier if github is available and none provided
     if action_applier is None and github is not None:
@@ -295,6 +362,9 @@ def build_orchestrator_for_testing(
             repository_host=github,
         )
 
+    from .execution.hook_verifier import ExecutionHookVerifier
+    hook_verifier = ExecutionHookVerifier(config)
+
     return Orchestrator(
         config=config,
         events=events,
@@ -306,6 +376,6 @@ def build_orchestrator_for_testing(
         fact_gatherer=fact_gatherer,
         worktree_manager=worktree_manager,
         working_copy=working_copy,
+        hook_verifier=hook_verifier,
+        command_runner=command_runner,
     )
-
-

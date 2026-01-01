@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from issue_orchestrator.control.prepush_check import (
+from issue_orchestrator.prepush_check import (
     load_publish_gate_config,
     run_prepush_check,
 )

@@ -395,7 +395,15 @@ def run_agent_gate(worktree: Path, verbose: bool = False) -> Optional[AgentGateR
     if verbose:
         print(f"Running agent gate validation: {cmd}")
 
-    gate = AgentGate(worktree, command=cmd, timeout_seconds=timeout)
+    from .execution import LocalCommandRunner, GitWorkingCopy
+
+    gate = AgentGate(
+        worktree,
+        command_runner=LocalCommandRunner(),
+        working_copy=GitWorkingCopy(),
+        command=cmd,
+        timeout_seconds=timeout,
+    )
     result = gate.run()
 
     if verbose:

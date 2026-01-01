@@ -16,7 +16,6 @@ the orchestrator focused on coordination and main loop logic.
 import json
 import logging
 import os
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +32,14 @@ from ..events import EventName
 from ..models import Issue, Session, PendingReview, PendingRework, get_completion_path, SessionKey, TaskKind
 from ..domain.issue_key import GitHubIssueKey
 from ..logging_config import log_context
-from ..ports import EventSink, TraceEvent, RepositoryHost, Issue as IssueProtocol
+from ..ports import (
+    EventSink,
+    TraceEvent,
+    RepositoryHost,
+    Issue as IssueProtocol,
+    WorkingCopy,
+    CommandRunner,
+)
 from ..ports.worktree_manager import WorktreeManager
 from .session_manager import SessionManager
 
@@ -55,33 +61,22 @@ def log_transition(
         logger.debug(f"[TRANSITION] #{number} extra: {extra}")
 
 
-def detect_existing_work(worktree_path: Path) -> Optional[str]:
+def detect_existing_work(worktree_path: Path, working_copy: WorkingCopy) -> Optional[str]:
     """Check if worktree has commits ahead of main and return context for agent."""
     try:
-        result = subprocess.run(
-            ["git", "-C", str(worktree_path), "log", "--oneline", "main..HEAD"],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode != 0 or not result.stdout.strip():
+        commits = working_copy.get_commits_ahead_of_main(worktree_path)
+        if not commits:
             return None
 
-        commits = result.stdout.strip().split('\n')
-        num_commits = len(commits)
-        if num_commits == 0:
-            return None
-
-        branch_result = subprocess.run(
-            ["git", "-C", str(worktree_path), "branch", "--show-current"],
-            capture_output=True, text=True, timeout=5
+        branch = working_copy.get_current_branch(worktree_path) or "unknown"
+        commit_list = "\n".join(
+            f"  - {c.short_sha} {c.message}" for c in commits[:10]
         )
-        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
-
-        commit_list = '\n'.join(f"  - {c}" for c in commits[:10])
-        if num_commits > 10:
-            commit_list += f"\n  ... and {num_commits - 10} more"
+        if len(commits) > 10:
+            commit_list += f"\n  ... and {len(commits) - 10} more"
 
         return (
-            f"This worktree has {num_commits} existing commit(s) from a previous session. "
+            f"This worktree has {len(commits)} existing commit(s) from a previous session. "
             f"Branch: {branch}. Commits: {commit_list}. "
             f"EVALUATE this existing work BEFORE starting fresh."
         )
@@ -126,6 +121,8 @@ class SessionLauncher:
         repository_host: RepositoryHost,
         session_manager: SessionManager,
         worktree_manager: WorktreeManager,
+        working_copy: WorkingCopy,
+        command_runner: CommandRunner,
         session_exists_fn: Callable[[str], bool],
         create_session_fn: Callable[[str, str, Path, str | None], bool],
         get_issue_machine: Callable[["IssueProtocol"], "IssueStateMachine"],
@@ -139,6 +136,8 @@ class SessionLauncher:
         self.repository_host = repository_host
         self.session_manager = session_manager
         self._worktree_manager = worktree_manager
+        self._working_copy = working_copy
+        self._command_runner = command_runner
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -252,11 +251,20 @@ class SessionLauncher:
         repo_root = agent_config.repo_root or self.config.repo_root
         step_start = time.time()
         logger.info("[launch] Creating worktree for issue #%d...", issue.number)
+        worktree_base = agent_config.worktree_base
+        if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
+            base_root = Path(worktree_base) if worktree_base else repo_root.parent
+            worktree_base = base_root / session_name
+            logger.info(
+                "[launch] Per-session worktree base: session=%s base=%s",
+                session_name,
+                worktree_base,
+            )
         worktree_info = self._worktree_manager.create(
             repo_root=repo_root,
             issue_number=issue.number,
             issue_title=issue.title,
-            worktree_base=agent_config.worktree_base,
+            worktree_base=worktree_base,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
         )
@@ -300,12 +308,22 @@ class SessionLauncher:
 
         # Add in-progress label
         step_start = time.time()
-        self.repository_host.add_label(issue.number, self.config.get_label_in_progress())
+        in_progress_label = self.config.get_label_in_progress()
+        self.repository_host.add_label(issue.number, in_progress_label)
+        self.events.publish(TraceEvent(
+            EventName.ISSUE_LABELS_CHANGED,
+            {
+                "issue_number": issue.number,
+                "issue_key": issue.key.stable_id(),
+                "added": [in_progress_label],
+                "removed": [],
+            },
+        ))
         label_time = time.time() - step_start
         logger.info("[launch] Label added in %.1fs", label_time)
 
         # Check for existing work
-        existing_work = detect_existing_work(worktree_path)
+        existing_work = detect_existing_work(worktree_path, self._working_copy)
         if existing_work:
             logger.info("[launch] Found existing work - agent will evaluate before starting fresh")
 
@@ -432,11 +450,21 @@ class SessionLauncher:
 
         # Create worktree
         repo_root = agent_config.repo_root or self.config.repo_root
+        worktree_base = agent_config.worktree_base
+        if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
+            base_root = Path(worktree_base) if worktree_base else repo_root.parent
+            worktree_base = base_root / session_name
+            logger.info(
+                "[launch] Per-session worktree base: session=%s base=%s",
+                session_name,
+                worktree_base,
+            )
         worktree_info = self._worktree_manager.create(
             repo_root=repo_root,
             issue_number=review.issue_number,
             issue_title=f"Review PR #{review.pr_number}",
             branch_name=review.branch_name,
+            worktree_base=worktree_base,
             enforce_hooks=False,
         )
         worktree_path = worktree_info.path
@@ -553,7 +581,7 @@ class SessionLauncher:
         issue_number = int(issue_key.stable_id())
 
         # Try to find PR details
-        prs = self.repository_host.get_prs_for_branch(f"{issue_number}-")
+        prs = self.repository_host.get_prs_for_issue(issue_number)
         if not prs:
             branch_name = f"{issue_number}-rework"
             pr_number = issue_number
@@ -596,11 +624,21 @@ class SessionLauncher:
 
         # Create worktree
         repo_root = agent_config.repo_root or self.config.repo_root
+        worktree_base = agent_config.worktree_base
+        if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
+            base_root = Path(worktree_base) if worktree_base else repo_root.parent
+            worktree_base = base_root / session_name
+            logger.info(
+                "[launch] Per-session worktree base: session=%s base=%s",
+                session_name,
+                worktree_base,
+            )
         worktree_info = self._worktree_manager.create(
             repo_root=repo_root,
             issue_number=issue_number,
             issue_title=f"Rework #{pr_number}",
             branch_name=branch_name,
+            worktree_base=worktree_base,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
         )
@@ -702,11 +740,17 @@ class SessionLauncher:
         }))
 
         # Update rework cycle label
-        self._update_rework_cycle_label(pr_number, rework.rework_cycle)
+        self._update_rework_cycle_label(pr_number, issue_number, rework.rework_cycle)
 
         # Remove needs-rework label
         try:
             self.repository_host.remove_label(pr_number, self.config.get_label_needs_rework())
+            self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
+                "pr_number": pr_number,
+                "issue_number": issue_number,
+                "issue_key": str(issue_number),
+                "removed": [self.config.get_label_needs_rework()],
+            }))
         except Exception:
             pass
 
@@ -718,16 +762,16 @@ class SessionLauncher:
         for cmd in self.config.setup_worktree:
             logger.debug("Running setup command: %s", cmd)
             logger.info("[launch] Running setup: %s", cmd)
-            result = subprocess.run(
+            result = self._command_runner.run(
                 cmd,
                 shell=True,
-                cwd=str(worktree_path),
-                capture_output=True,
-                text=True,
+                cwd=worktree_path,
             )
             if result.returncode != 0:
                 logger.warning("Setup command failed: %s\n%s", cmd, result.stderr)
                 logger.warning("[launch] Setup command failed: %s", cmd)
+            if result.timed_out:
+                logger.warning("[launch] Setup command timed out: %s", cmd)
         setup_time = time.time() - step_start
         logger.info("[launch] Setup completed in %.1fs", setup_time)
 
@@ -763,14 +807,25 @@ class SessionLauncher:
             logger.debug(f"[STATE_MACHINE] PR #{pr_number}: PENDING -> IN_REVIEW")
             review_machine.start_review()
 
-    def _update_rework_cycle_label(self, pr_number: int, cycle: int) -> None:
+    def _update_rework_cycle_label(self, pr_number: int, issue_number: int, cycle: int) -> None:
         """Update the rework cycle label on a PR."""
+        removed: list[str] = []
         try:
             for i in range(1, cycle):
                 try:
-                    self.repository_host.remove_label(pr_number, f"rework-{i}")
+                    label = f"rework-cycle-{i}"
+                    self.repository_host.remove_label(pr_number, label)
+                    removed.append(label)
                 except Exception:
                     pass
-            self.repository_host.add_label(pr_number, f"rework-{cycle}")
+            added_label = f"rework-cycle-{cycle}"
+            self.repository_host.add_label(pr_number, added_label)
+            self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
+                "pr_number": pr_number,
+                "issue_number": issue_number,
+                "issue_key": str(issue_number),
+                "added": [added_label],
+                "removed": removed,
+            }))
         except Exception as e:
             logger.warning("Failed to update rework label on PR #%d: %s", pr_number, e)

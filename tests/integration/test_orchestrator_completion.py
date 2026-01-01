@@ -67,7 +67,7 @@ def test_config(tmp_path):
     config.code_review_label = "needs-code-review"
     config.ui_mode = "tmux"
     config.max_concurrent_sessions = 1
-    config.dangerous = DangerousConfig(skip_verification=True, allow_unsupported_agents=True)
+    config.dangerous = DangerousConfig(allow_unsupported_agents=True)
     return config
 
 

@@ -17,6 +17,7 @@ as untrusted input.
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -270,6 +271,7 @@ class CompletionProcessor:
         Returns:
             ProcessingResult with success status and details.
         """
+        start_time = time.monotonic()
         # For review sessions, label operations target the PR
         label_target = pr_number if pr_number else issue_number
         actions_taken: list[str] = []
@@ -331,6 +333,7 @@ class CompletionProcessor:
 
         # Execute requested actions in order
         for action in record.requested_actions:
+            action_start = time.monotonic()
             logger.info("Executing action: %s for issue #%d", action.value, issue_number)
             try:
                 if action == RequestedAction.PUSH_BRANCH:
@@ -412,6 +415,14 @@ class CompletionProcessor:
                     e,
                 )
                 errors.append(f"{action.value}: {e}")
+            finally:
+                action_duration = time.monotonic() - action_start
+                logger.info(
+                    "Action finished: %s for issue #%d in %.2fs",
+                    action.value,
+                    issue_number,
+                    action_duration,
+                )
 
         # Determine overall success
         success = len(errors) == 0 or (
@@ -426,6 +437,12 @@ class CompletionProcessor:
             actions_taken,
             errors,
             pr_url,
+        )
+        total_duration = time.monotonic() - start_time
+        logger.info(
+            "Completion processing duration: issue=%s elapsed=%.2fs",
+            issue_number,
+            total_duration,
         )
 
         # Build result message and emit events

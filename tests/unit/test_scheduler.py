@@ -1213,6 +1213,8 @@ class TestLaunchSessionDependencyCAS:
             orch._repository_host = mock_repository_host  # Add repository host
             orch.session_manager = MagicMock()  # Add session manager
             orch.worktree_manager = MagicMock()  # Add worktree manager
+            orch.working_copy = MagicMock()
+            orch.command_runner = MagicMock()
             # Initialize cached instance variables
             orch._session_launcher_instance = None
             orch._cleanup_manager_instance = None
@@ -1281,6 +1283,8 @@ class TestLaunchSessionDependencyCAS:
             orch._repository_host = mock_repository_host  # Add repository host
             orch.session_manager = MagicMock()  # Add session manager
             orch.worktree_manager = mock_worktree_manager  # Add worktree manager
+            orch.working_copy = MagicMock()
+            orch.command_runner = MagicMock()
             # Initialize cached instance variables
             orch._session_launcher_instance = None
             orch._cleanup_manager_instance = None

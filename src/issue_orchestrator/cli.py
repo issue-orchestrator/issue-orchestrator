@@ -2,12 +2,14 @@ import argparse
 import asyncio
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .config import Config
     from .orchestrator import Orchestrator
+    from .execution.github_http import GitHubHttpClient
 
 from rich.console import Console
 from rich.table import Table
@@ -21,37 +23,73 @@ logger = logging.getLogger(__name__)
 LOG_FILE = Path.home() / ".issue-orchestrator.log"
 
 
-def _run_test_setup(repo: str) -> bool:
+def _resolve_repo(config: "Config") -> str:
+    from .execution.github_repo import get_repo_from_git
+
+    return config.repo or get_repo_from_git()
+
+
+def _github_client_for_config(config: "Config") -> "GitHubHttpClient | None":
+    from .execution.github_http import GitHubHttpClient, GitHubHttpConfig, resolve_github_token
+
+    try:
+        repo = _resolve_repo(config)
+    except Exception as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        return None
+    if not repo:
+        console.print("[red]Error: repo must be set in config[/red]")
+        return None
+    token = resolve_github_token(
+        configured_token=config.github_token,
+        configured_env=config.github_token_env,
+    )
+    return GitHubHttpClient(
+        GitHubHttpConfig(
+            repo=repo,
+            token=token,
+            base_url=config.github_api_url,
+            timeout_seconds=float(config.github_http_timeout_seconds),
+        )
+    )
+
+
+def _run_test_setup(config: "Config") -> bool:
     """Run test teardown and setup. Returns True on success."""
-    import subprocess
+    client = _github_client_for_config(config)
+    if client is None:
+        return False
+    try:
+        repo = _resolve_repo(config)
+    except Exception as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        return False
 
     console.print("[cyan]Test mode: Cleaning up old test issues...[/cyan]")
 
-    # Teardown
-    result = subprocess.run(
-        ["gh", "issue", "list", "--repo", repo, "--label", "test-data",
-         "--state", "open", "--json", "number"],
-        capture_output=True, text=True
-    )
-    if result.returncode == 0:
-        import json
-        issues = json.loads(result.stdout)
+    try:
+        issues = client.list_issues(labels=["test-data"], state="open", limit=100)
         for issue in issues:
-            subprocess.run(
-                ["gh", "issue", "close", str(issue["number"]), "--repo", repo,
-                 "--comment", "Closed by test mode startup."],
-                capture_output=True
-            )
-            console.print(f"  Closed #{issue['number']}")
+            issue_number = issue.get("number")
+            if not issue_number:
+                continue
+            client.add_comment(issue_number, "Closed by test mode startup.")
+            client.update_issue_state(issue_number, "closed")
+            console.print(f"  Closed #{issue_number}")
+    except Exception as exc:
+        logger.warning("Test setup cleanup failed: %s", exc)
 
     console.print("[cyan]Test mode: Creating fresh test issues...[/cyan]")
 
     # Create test-data label if missing
-    subprocess.run(
-        ["gh", "label", "create", "test-data", "--repo", repo, "--force",
-         "--description", "Test data for integration tests"],
-        capture_output=True
-    )
+    try:
+        client.create_label(
+            "test-data",
+            description="Test data for integration tests",
+            force=True,
+        )
+    except Exception as exc:
+        logger.warning("Failed to ensure test-data label: %s", exc)
 
     # Create 5 test issues (matches scripts/setup_test_issues.py)
     test_issues = [
@@ -63,27 +101,22 @@ def _run_test_setup(repo: str) -> bool:
     ]
 
     for title, agent_label, priority_label in test_issues:
-        # Create labels if needed
-        labels_to_create = [agent_label]
+        labels = ["test-data", agent_label]
         if priority_label:
-            labels_to_create.append(priority_label)
-        for label in labels_to_create:
-            subprocess.run(
-                ["gh", "label", "create", label, "--repo", repo, "--force"],
-                capture_output=True
+            labels.append(priority_label)
+        try:
+            client.create_label(agent_label, force=True)
+            if priority_label:
+                client.create_label(priority_label, force=True)
+            issue_number = client.create_issue(
+                title=title,
+                body="Test issue for orchestrator.\n\nExpected: Agent completes.",
+                labels=labels,
             )
-
-        # Build issue create command
-        cmd = ["gh", "issue", "create", "--repo", repo, "--title", title,
-               "--body", f"Test issue for orchestrator.\n\nExpected: Agent completes.",
-               "--label", "test-data", "--label", agent_label]
-        if priority_label:
-            cmd.extend(["--label", priority_label])
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0:
-            issue_url = result.stdout.strip()
-            console.print(f"  Created: {issue_url}")
+            if issue_number:
+                console.print(f"  Created: https://github.com/{repo}/issues/{issue_number}")
+        except Exception as exc:
+            logger.warning("Failed to create test issue '%s': %s", title, exc)
 
     return True
 
@@ -116,7 +149,10 @@ def cmd_start(args: argparse.Namespace) -> int:
 
         logger.info(
             "Effective config: repo=%s config_path=%s filter_label=%s ui_mode=%s web_port=%s api_port=%s "
-            "max_sessions=%s session_timeout=%s queue_refresh=%s",
+            "max_sessions=%s session_timeout=%s queue_refresh=%s "
+            "gh_write_verify_timeout=%s gh_write_verify_initial_ms=%s gh_write_verify_max_ms=%s "
+            "gh_write_verify_backoff=%s gh_write_verify_jitter_ms=%s "
+            "gh_audit=%s gh_audit_events=%s gh_audit_file=%s",
             config.repo,
             config.config_path,
             config.filter_label,
@@ -126,11 +162,20 @@ def cmd_start(args: argparse.Namespace) -> int:
             config.max_concurrent_sessions,
             config.session_timeout_minutes,
             config.queue_refresh_seconds,
+            config.gh_write_verify_timeout_seconds,
+            config.gh_write_verify_initial_delay_ms,
+            config.gh_write_verify_max_delay_ms,
+            config.gh_write_verify_backoff,
+            config.gh_write_verify_jitter_ms,
+            config.gh_audit_enabled,
+            config.gh_audit_events,
+            config.gh_audit_file,
         )
         logger.debug(
-            "CLI args: label=%s milestone=%s issue=%s no_dashboard=%s ui_mode=%s port=%s api_port=%s test_mode=%s",
+            "CLI args: label=%s milestone=%s milestones=%s issue=%s no_dashboard=%s ui_mode=%s port=%s api_port=%s test_mode=%s",
             getattr(args, "label", None),
             getattr(args, "milestone", None),
+            getattr(args, "milestones", None),
             getattr(args, "issue", None),
             getattr(args, "no_dashboard", None),
             getattr(args, "ui_mode", None),
@@ -138,6 +183,9 @@ def cmd_start(args: argparse.Namespace) -> int:
             getattr(args, "api_port", None),
             getattr(args, "test_mode", None),
         )
+        override_pairs = getattr(args, "set", None) or []
+        if override_pairs:
+            logger.debug("CLI overrides: %s", override_pairs)
         for label, agent in config.agents.items():
             logger.debug(
                 "Agent config: label=%s prompt=%s worktree_base=%s model=%s timeout=%s command=%s permission_mode=%s",
@@ -165,13 +213,19 @@ def cmd_start(args: argparse.Namespace) -> int:
         if not config.repo:
             console.print("[red]Error: repo must be set in config for test mode[/red]")
             return 1
-        _run_test_setup(config.repo)
+        _run_test_setup(config)
         config.filter_label = "test-data"
         console.print("[cyan]Test mode: filter_label set to 'test-data'[/cyan]")
 
     # Handle milestone override
-    if hasattr(args, 'milestone') and args.milestone:
+    if hasattr(args, "milestones") and args.milestones:
+        milestones = [m.strip() for m in args.milestones.split(",") if m.strip()]
+        config.filter_milestones = milestones
+        config.filter_milestone = None
+        console.print(f"[cyan]Filtering by milestones: {', '.join(milestones)}[/cyan]")
+    elif hasattr(args, 'milestone') and args.milestone:
         config.filter_milestone = args.milestone
+        config.filter_milestones = []
         console.print(f"[cyan]Filtering by milestone: {args.milestone}[/cyan]")
 
     # Handle label override
@@ -193,6 +247,14 @@ def cmd_start(args: argparse.Namespace) -> int:
     if hasattr(args, 'queue_refresh') and args.queue_refresh is not None:
         config.queue_refresh_seconds = args.queue_refresh
 
+    # Handle GH audit overrides
+    if hasattr(args, 'gh_audit') and args.gh_audit:
+        config.gh_audit_enabled = True
+    if hasattr(args, 'gh_audit_events') and args.gh_audit_events:
+        config.gh_audit_events = True
+    if hasattr(args, 'gh_audit_file') and args.gh_audit_file is not None:
+        config.gh_audit_file = args.gh_audit_file
+
     # Handle max_issues override
     if hasattr(args, 'max_issues') and args.max_issues is not None:
         config.max_issues_to_start = args.max_issues
@@ -213,38 +275,49 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     # Handle dry-run mode
     if hasattr(args, 'dry_run') and args.dry_run:
-        from ._github_impl import list_issues
         from .control.scheduler import Scheduler
         from ._tmux_impl import get_manager
-        from .analysis import analyze_all_issues, get_issue_branches
+        from .analysis import analyze_all_issues, extract_issue_branches
+        from .execution.github_adapter import GitHubAdapter
+        from .execution.git_working_copy import GitWorkingCopy
 
         console.print("\n[cyan]DRY RUN - showing what would be processed:[/cyan]\n")
 
         scheduler = Scheduler(config)
         tmux_mgr = get_manager()
+        github = GitHubAdapter(config.repo, config=config) if config.repo else None
+        working_copy = GitWorkingCopy()
         all_issues = []
+
+        milestones = config.get_filter_milestones()
+        if not milestones:
+            milestones = [None]
 
         for agent_label in config.agents.keys():
             labels = [agent_label]
             if config.filter_label:
                 labels.append(config.filter_label)
-            issues = list_issues(
-                config.repo,
-                labels=labels,
-                milestone=config.filter_milestone,
-                limit=config.issue_fetch_limit,
-            )
-            all_issues.extend(issues)
+            for milestone in milestones:
+                if github:
+                    issues = github.list_issues(
+                        labels=labels,
+                        milestone=milestone,
+                        limit=config.issue_fetch_limit,
+                    )
+                    all_issues.extend(issues)
 
         if not all_issues:
             console.print("[yellow]No matching issues found.[/yellow]")
             return 0
 
         # Analyze all issues using shared logic
+        issue_branches = extract_issue_branches(
+            working_copy.list_remote_branches(config.repo_root)
+        )
         states = analyze_all_issues(
             issues=all_issues,
             repo=config.repo,
-            repo_root=config.repo_root,
+            issue_branches=issue_branches,
             check_session_fn=tmux_mgr.window_exists,
         )
 
@@ -313,10 +386,18 @@ def cmd_start(args: argparse.Namespace) -> int:
 
         # Show issues with branches but not in-progress (might be abandoned PRs)
         from .analysis import analyze_orphan_branches
-        issue_branches = get_issue_branches(config.repo_root)
+        issue_branches = extract_issue_branches(
+            working_copy.list_remote_branches(config.repo_root)
+        )
         in_progress_nums = {s.issue.number for s in states if s.issue.is_in_progress}
         orphan_states = analyze_orphan_branches(
-            issue_branches, in_progress_nums, config.repo, config.repo_root
+            issue_branches,
+            in_progress_nums,
+            config.repo,
+            issue_tracker=github,
+            pr_tracker=github,
+            commits_ahead_fn=lambda b: working_copy.get_commits_ahead_count(config.repo_root, b),
+            last_commit_date_fn=lambda b: working_copy.get_last_commit_date(config.repo_root, b),
         )
         if orphan_states:
             console.print(f"\n[yellow]⚠ {len(orphan_states)} orphan branch(es) found:[/yellow]")
@@ -539,7 +620,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         console.print(f"  Agents: {', '.join(config.agents.keys())}")
         if config.filter_label:
             console.print(f"  Filter label: {config.filter_label}")
-        if config.filter_milestone:
+        if config.filter_milestones:
+            console.print(f"  Filter milestones: {', '.join(config.filter_milestones)}")
+        elif config.filter_milestone:
             console.print(f"  Filter milestone: {config.filter_milestone}")
 
         console.print(f"\n[bold]Active Sessions ({len(our_sessions)}):[/bold]")
@@ -781,8 +864,6 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
 def cmd_init(args: argparse.Namespace) -> int:
     """Initialize required GitHub labels."""
-    import subprocess
-
     try:
         config = _load_config(args)
     except FileNotFoundError as e:
@@ -790,12 +871,20 @@ def cmd_init(args: argparse.Namespace) -> int:
         console.print("Create a .issue-orchestrator.yaml config file first.")
         return 1
 
-    repo = config.repo
+    try:
+        repo = _resolve_repo(config)
+    except Exception as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        return 1
     if not repo:
         console.print("[red]Error: repo must be set in config[/red]")
         return 1
 
     console.print(f"[cyan]Initializing labels for {repo}...[/cyan]\n")
+    client = _github_client_for_config(config)
+    if client is None:
+        console.print("[red]Error: Unable to create GitHub client[/red]")
+        return 1
 
     # Collect all labels to create
     labels = [
@@ -812,22 +901,19 @@ def cmd_init(args: argparse.Namespace) -> int:
     created = 0
     updated = 0
     failed = 0
+    existing = {label.get("name") for label in client.list_labels() if isinstance(label, dict)}
 
     for label in labels:
-        result = subprocess.run(
-            ["gh", "label", "create", label, "--repo", repo, "--force"],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            # Check if it was created or updated
-            if "already exists" in result.stderr.lower() or result.stderr:
+        try:
+            client.create_label(label, force=True)
+            if label in existing:
                 console.print(f"  [yellow]↻[/yellow] {label}")
                 updated += 1
             else:
                 console.print(f"  [green]✓[/green] {label}")
                 created += 1
-        else:
-            console.print(f"  [red]✗[/red] {label}: {result.stderr.strip()}")
+        except Exception as exc:
+            console.print(f"  [red]✗[/red] {label}: {exc}")
             failed += 1
 
     # Print summary
@@ -837,7 +923,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     console.print(f"  Failed: {failed}")
 
     if failed > 0:
-        console.print("\n[yellow]Some labels failed to create. Check your gh CLI auth.[/yellow]")
+        console.print("\n[yellow]Some labels failed to create. Check your GitHub token/auth.[/yellow]")
         return 1
 
     console.print("\n[green]✓ Label initialization complete![/green]")
@@ -900,8 +986,7 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
     from ._iterm2_impl import discover_issue_tabs, get_iterm_manager
     from .models import Session, Issue
     from datetime import datetime
-    import subprocess
-    import json
+    from .execution.github_adapter import GitHubAdapter
 
     console.print("[cyan]Discovering existing iTerm2 sessions...[/cyan]")
 
@@ -916,6 +1001,8 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
     iterm_mgr = get_iterm_manager()
 
     adopted = 0
+    github = GitHubAdapter(config.repo, config=config) if config.repo else None
+
     for issue_num in issue_numbers:
         # Try to find the worktree
         repo_name = config.repo_root.name
@@ -925,22 +1012,14 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
             console.print(f"  [yellow]#{issue_num}: No worktree found, skipping[/yellow]")
             continue
 
-        # Try to get issue info from GitHub using gh CLI
+        # Try to get issue info from GitHub
         try:
-            gh_args = ["gh", "issue", "view", str(issue_num), "--json", "title,labels,state"]
-            if config.repo:
-                gh_args.extend(["--repo", config.repo])
-            gh_result = subprocess.run(gh_args, capture_output=True, text=True)
-            if gh_result.returncode == 0:
-                issue_data = json.loads(gh_result.stdout)
-                issue = Issue(
-                    number=issue_num,
-                    title=issue_data.get("title", f"Issue #{issue_num}"),
-                    labels=[lbl["name"] for lbl in issue_data.get("labels", [])],
-                    state=issue_data.get("state", "open"),
-                )
+            if github:
+                issue = github.get_issue(issue_num)
             else:
-                raise RuntimeError(gh_result.stderr)
+                issue = None
+            if not issue:
+                raise RuntimeError("issue not found")
         except Exception as e:
             console.print(f"  [yellow]#{issue_num}: Couldn't fetch issue: {e}[/yellow]")
             issue = Issue(number=issue_num, title=f"Issue #{issue_num}", labels=[])
@@ -1012,14 +1091,16 @@ def _load_config(args: argparse.Namespace) -> "Config":
     """
     from .config import Config
 
+    overrides = getattr(args, "set", None) or []
     if hasattr(args, 'config') and args.config:
         config_path = Path(args.config)
-        config = Config.load(config_path)
-        # Set repo_root to config file's parent directory
-        config.repo_root = config_path.parent.resolve()
+        config = Config.load(config_path, overrides=overrides)
+        if not config.repo_root_from_yaml:
+            # Set repo_root to config file's parent directory
+            config.repo_root = config_path.parent.resolve()
         return config
     else:
-        return Config.find_and_load()
+        return Config.find_and_load(overrides=overrides)
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
@@ -1027,16 +1108,14 @@ def cmd_audit(args: argparse.Namespace) -> int:
     from .audit import audit_queue, print_audit
     from .config import Config
     from .execution.github_adapter import GitHubAdapter
+    from .execution.git_working_copy import GitWorkingCopy
+    from .analysis import extract_issue_branches
 
     console.print("[bold]Queue Audit[/bold]\n")
 
     # Load config
     try:
-        if hasattr(args, 'config') and args.config:
-            config = Config.load(args.config)
-            config.repo_root = args.config.parent.resolve()
-        else:
-            config = Config.find_and_load()
+        config = _load_config(args)
     except FileNotFoundError as e:
         console.print(f"[red]Error: {e}[/red]")
         return 1
@@ -1046,7 +1125,16 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
     # Run audit (no state = fresh start, no session history)
     issue_tracker = GitHubAdapter()
-    entries = audit_queue(config, state=None, issue_tracker=issue_tracker)
+    working_copy = GitWorkingCopy()
+    issue_branches = extract_issue_branches(
+        working_copy.list_remote_branches(config.repo_root)
+    )
+    entries = audit_queue(
+        config,
+        state=None,
+        issue_tracker=issue_tracker,
+        issue_branches=issue_branches,
+    )
     print_audit(entries)
 
     return 0
@@ -1055,7 +1143,6 @@ def cmd_audit(args: argparse.Namespace) -> int:
 def cmd_verify(args: argparse.Namespace) -> int:
     """Verify the orchestrator setup works correctly."""
     import subprocess
-    import shutil
 
     console.print("[bold cyan]Orchestrator Setup Verification[/bold cyan]\n")
 
@@ -1089,24 +1176,23 @@ def cmd_verify(args: argparse.Namespace) -> int:
         console.print(f"  [red]✗[/red] Not a git repository: {config.repo_root}")
         errors.append("Not a git repository")
 
-    # 3. Check GitHub CLI
-    console.print("\n[bold]3. GitHub CLI[/bold]")
-    gh_path = shutil.which("gh")
-    if gh_path:
-        console.print(f"  [green]✓[/green] gh CLI found: {gh_path}")
-        # Check authentication
-        auth_check = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True, text=True
-        )
-        if auth_check.returncode == 0:
-            console.print(f"  [green]✓[/green] gh authenticated")
+    # 3. Check GitHub API auth
+    console.print("\n[bold]3. GitHub API Auth[/bold]")
+    try:
+        client = _github_client_for_config(config)
+        if client is None:
+            console.print("  [red]✗[/red] GitHub client could not be created")
+            errors.append("GitHub token missing or invalid")
         else:
-            console.print(f"  [red]✗[/red] gh not authenticated")
-            errors.append("GitHub CLI not authenticated - run 'gh auth login'")
-    else:
-        console.print(f"  [red]✗[/red] gh CLI not found")
-        errors.append("GitHub CLI not installed")
+            snapshot = client.get_rate_limit_snapshot()
+            if snapshot:
+                console.print("  [green]✓[/green] GitHub token authenticated")
+            else:
+                console.print("  [yellow]![/yellow] GitHub token not verified (no response)")
+                warnings.append("GitHub token could not be verified")
+    except Exception as exc:
+        console.print(f"  [red]✗[/red] GitHub auth failed: {exc}")
+        errors.append("GitHub token missing or invalid")
 
     # 4. Check hooks setup
     console.print("\n[bold]4. Git Hooks[/bold]")
@@ -1526,6 +1612,11 @@ def main() -> int:
         default=None,
         help="Path to config file (default: search for .issue-orchestrator.yaml)"
     )
+    parser.add_argument(
+        "--set",
+        action="append",
+        help="Override config value (path=value). Use YAML/JSON for lists or dicts.",
+    )
     subparsers: Any = parser.add_subparsers(
         dest="command", required=True
     )
@@ -1549,6 +1640,12 @@ def main() -> int:
         type=str,
         default=None,
         help="Filter issues by milestone name"
+    )
+    start_parser.add_argument(
+        "--milestones",
+        type=str,
+        default=None,
+        help="Filter issues by milestone names (comma-separated)"
     )
     start_parser.add_argument(
         "--label",
@@ -1596,6 +1693,22 @@ def main() -> int:
         type=int,
         default=None,
         help="Seconds between queue refreshes from GitHub (default: 600, 0=manual only)"
+    )
+    start_parser.add_argument(
+        "--gh-audit",
+        action="store_true",
+        help="Enable GH audit reporting (overrides config)"
+    )
+    start_parser.add_argument(
+        "--gh-audit-events",
+        action="store_true",
+        help="Emit GH audit events to the event stream (overrides config)"
+    )
+    start_parser.add_argument(
+        "--gh-audit-file",
+        type=str,
+        default=None,
+        help="Path for GH audit report output (supports {pid})"
     )
     start_parser.add_argument(
         "--max-issues",

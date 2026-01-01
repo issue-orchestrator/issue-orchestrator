@@ -2,7 +2,7 @@
 
 These tests create real GitHub issues and run the full orchestrator lifecycle.
 They require:
-- `gh` CLI authenticated
+- GitHub token configured with write access
 - `claude` CLI available
 - Network access to GitHub
 

@@ -97,6 +97,9 @@ class EventName(str, Enum):
     SESSION_TIMEOUT = "session.timeout"
     SESSION_BLOCKED = "session.blocked"
     SESSION_RESUMED = "session.resumed"
+    SESSION_NO_OUTPUT = "session.no_output"
+    GH_RATE_LIMIT = "gh.rate_limit"
+    GH_RATE_LIMIT_WARNING = "gh.rate_limit_warning"
 
     # =========================================================================
     # Completion lookup (agent-done processing)
@@ -189,6 +192,8 @@ class EventName(str, Enum):
     # Labels
     # =========================================================================
     LABELS_SYNCED = "labels.synced"
+    ISSUE_LABELS_CHANGED = "issue.labels_changed"
+    PR_VIEW_CHANGED = "pr.view_changed"
 
     # =========================================================================
     # Transitions (state machine)

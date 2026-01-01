@@ -166,6 +166,7 @@ class ActionApplier:
 
         try:
             self.labels.add_label(action.issue_number, action.label)
+            self._emit_issue_labels_changed(action.issue_number, [action.label], [])
             return ActionResult.ok(
                 action,
                 issue_number=action.issue_number,
@@ -183,6 +184,7 @@ class ActionApplier:
 
         try:
             self.labels.remove_label(action.issue_number, action.label)
+            self._emit_issue_labels_changed(action.issue_number, [], [action.label])
             return ActionResult.ok(
                 action,
                 issue_number=action.issue_number,
@@ -371,6 +373,11 @@ class ActionApplier:
         if errors:
             return ActionResult.fail(action, "; ".join(errors))
 
+        self._emit_issue_labels_changed(
+            action.issue_number,
+            list(action.add_labels),
+            list(action.remove_labels),
+        )
         return ActionResult.ok(
             action,
             issue_number=action.issue_number,
@@ -493,18 +500,29 @@ class ActionApplier:
 
         errors = []
 
+        added_labels: list[str] = []
+        removed_labels: list[str] = []
+
         # Add needs-human label
         try:
             self.labels.add_label(action.pr_number, action.needs_human_label)
+            added_labels.append(action.needs_human_label)
         except Exception as e:
             errors.append(f"add label: {e}")
 
         # Remove needs-rework label
         try:
             self.labels.remove_label(action.pr_number, action.needs_rework_label)
+            removed_labels.append(action.needs_rework_label)
         except Exception as e:
             # Not a hard failure - label may already be removed
             logger.debug("Failed to remove needs-rework label: %s", e)
+        self._emit_pr_view_changed(
+            pr_number=action.pr_number,
+            issue_number=action.issue_number,
+            added=added_labels,
+            removed=removed_labels,
+        )
 
         # Post explanatory comment
         if self.repository_host:
@@ -593,6 +611,12 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             try:
                 self.labels.add_label(action.pr_number, action.code_review_label)
                 logger.info("Added '%s' label to PR #%d", action.code_review_label, action.pr_number)
+                self._emit_pr_view_changed(
+                    pr_number=action.pr_number,
+                    issue_number=action.issue_number,
+                    added=[action.code_review_label],
+                    removed=[],
+                )
             except Exception as e:
                 logger.warning("Failed to add review label to PR #%d: %s", action.pr_number, e)
 
@@ -600,6 +624,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             "pr_number": action.pr_number,
             "issue_number": action.issue_number,
             "pr_url": action.pr_url,
+            "code_review_label": action.code_review_label,
         }))
 
         return ActionResult.ok(
@@ -632,6 +657,11 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     "[APPLIER] Created triage issue #%d for %d PRs",
                     issue_number, action.pr_count
                 )
+                self._emit_issue_labels_changed(
+                    issue_number,
+                    list(action.labels),
+                    [],
+                )
                 self.events.publish(TraceEvent(EventName.TRIAGE_ISSUE_CREATED, {
                     "issue_number": issue_number,
                     "pr_count": action.pr_count,
@@ -641,8 +671,13 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     issue_number=issue_number,
                     pr_count=action.pr_count,
                 )
-            else:
-                return ActionResult.fail(action, "Issue creation returned None")
+
+            logger.warning(
+                "[APPLIER] Triage issue creation returned None (title=%s labels=%s)",
+                action.title,
+                list(action.labels),
+            )
+            return ActionResult.fail(action, "Issue creation returned None")
 
         except Exception as e:
             logger.exception("Failed to create triage issue")
@@ -730,3 +765,40 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             return ActionResult.ok(action, worktree_path=action.worktree_path)
         except Exception as e:
             return ActionResult.fail(action, str(e))
+
+    def _emit_issue_labels_changed(
+        self,
+        issue_number: int,
+        added: list[str],
+        removed: list[str],
+    ) -> None:
+        if not added and not removed:
+            return
+        self.events.publish(TraceEvent(
+            EventName.ISSUE_LABELS_CHANGED,
+            {
+                "issue_number": issue_number,
+                "issue_key": str(issue_number),
+                "added": added,
+                "removed": removed,
+            },
+        ))
+
+    def _emit_pr_view_changed(
+        self,
+        pr_number: int,
+        issue_number: int | None,
+        added: list[str],
+        removed: list[str],
+    ) -> None:
+        if not added and not removed:
+            return
+        payload: dict[str, int | list[str] | str] = {
+            "pr_number": pr_number,
+            "added": added,
+            "removed": removed,
+        }
+        if issue_number is not None:
+            payload["issue_number"] = issue_number
+            payload["issue_key"] = str(issue_number)
+        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))

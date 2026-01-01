@@ -6,11 +6,8 @@
 repo: BruceBGordon/issue-orchestrator
 
 filter_label: test-data
+control_api_port: 19083
 e2e_pr_labels: ["test-data"]
-
-# Skip hook verification for e2e tests
-dangerous:
-  skip_verification: true
 
 agents:
   # Agent that does nothing - will timeout

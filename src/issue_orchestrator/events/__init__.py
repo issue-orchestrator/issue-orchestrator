@@ -8,5 +8,13 @@ This module provides:
 
 from .catalog import EventName
 from .context import EventContext
+from .stream import EventHub, SequencedEventSink, StreamEvent, EventSubscription
 
-__all__ = ["EventName", "EventContext"]
+__all__ = [
+    "EventName",
+    "EventContext",
+    "EventHub",
+    "SequencedEventSink",
+    "StreamEvent",
+    "EventSubscription",
+]

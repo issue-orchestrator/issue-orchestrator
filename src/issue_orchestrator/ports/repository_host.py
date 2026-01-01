@@ -79,3 +79,10 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
             Issue number if created, None on failure
         """
         ...
+
+    def update_label_cache(self, issue_number: int, labels: list[str]) -> None:
+        """Update cached labels for an issue.
+
+        Adapters may implement a local cache to avoid repeated GH reads.
+        """
+        ...

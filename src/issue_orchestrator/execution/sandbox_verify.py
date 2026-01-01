@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .isolation import verify_env_scrubbed
+from ..control.isolation import verify_env_scrubbed
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +52,7 @@ class SandboxVerificationResult:
 
 
 def verify_gh_auth_unavailable() -> VerificationResult:
-    """Verify that GitHub CLI authentication is not available.
-
-    The gh CLI should fail with "not logged in" when gh auth status is run.
-    This confirms the agent cannot use gh to perform privileged operations.
-
-    Returns:
-        VerificationResult indicating pass/fail
-    """
+    """Verify that GitHub CLI authentication is not available."""
     try:
         result = subprocess.run(
             ["gh", "auth", "status"],
@@ -69,21 +62,18 @@ def verify_gh_auth_unavailable() -> VerificationResult:
         )
 
         if result.returncode != 0:
-            # gh auth status failed - good, not authenticated
             return VerificationResult(
                 name="gh_auth_unavailable",
                 passed=True,
                 message="GitHub CLI not authenticated (expected)",
             )
         else:
-            # gh auth status succeeded - bad, we're authenticated
             return VerificationResult(
                 name="gh_auth_unavailable",
                 passed=False,
                 message="GitHub CLI is authenticated - agent could bypass guardrails",
             )
     except FileNotFoundError:
-        # gh not installed - also acceptable
         return VerificationResult(
             name="gh_auth_unavailable",
             passed=True,
@@ -104,19 +94,8 @@ def verify_gh_auth_unavailable() -> VerificationResult:
 
 
 def verify_git_push_fails(worktree: Path) -> VerificationResult:
-    """Verify that git push fails fast (no credentials).
-
-    Runs git push --dry-run to verify that pushing would fail.
-    This confirms the agent cannot push code directly.
-
-    Args:
-        worktree: Path to the worktree to check
-
-    Returns:
-        VerificationResult indicating pass/fail
-    """
+    """Verify that git push fails fast (no credentials)."""
     try:
-        # Use GIT_TERMINAL_PROMPT=0 to ensure git doesn't prompt for credentials
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_ASKPASS"] = "/bin/false"
@@ -131,26 +110,23 @@ def verify_git_push_fails(worktree: Path) -> VerificationResult:
         )
 
         if result.returncode != 0:
-            # Push failed - good, no credentials
             return VerificationResult(
                 name="git_push_fails",
                 passed=True,
                 message="git push fails (no credentials - expected)",
             )
         else:
-            # Push would succeed - bad
             return VerificationResult(
                 name="git_push_fails",
                 passed=False,
                 message="git push --dry-run succeeded - agent could push directly",
             )
     except subprocess.TimeoutExpired:
-        # Timeout might indicate credential prompt - treat as warning
         return VerificationResult(
             name="git_push_fails",
             passed=False,
             message="git push --dry-run timed out (may be prompting for credentials)",
-            critical=False,  # Warning, not critical failure
+            critical=False,
         )
     except Exception as e:
         return VerificationResult(
@@ -161,11 +137,7 @@ def verify_git_push_fails(worktree: Path) -> VerificationResult:
 
 
 def verify_env_vars_absent() -> VerificationResult:
-    """Verify that forbidden environment variables are absent.
-
-    Returns:
-        VerificationResult indicating pass/fail
-    """
+    """Verify that forbidden environment variables are absent."""
     env_status = verify_env_scrubbed()
     present_vars = [var for var, absent in env_status.items() if not absent]
 
@@ -184,14 +156,7 @@ def verify_env_vars_absent() -> VerificationResult:
 
 
 def verify_home_isolated(worktree: Path) -> VerificationResult:
-    """Verify that HOME is set to the worktree.
-
-    Args:
-        worktree: Path to the expected HOME directory
-
-    Returns:
-        VerificationResult indicating pass/fail
-    """
+    """Verify that HOME is set to the worktree."""
     current_home = Path(os.environ.get("HOME", ""))
     worktree_resolved = worktree.resolve()
     home_resolved = current_home.resolve() if current_home.exists() else current_home
@@ -207,7 +172,7 @@ def verify_home_isolated(worktree: Path) -> VerificationResult:
             name="home_isolated",
             passed=False,
             message=f"HOME ({current_home}) is not worktree ({worktree})",
-            critical=False,  # Warning - some setups may not use HOME isolation
+            critical=False,
         )
 
 
@@ -218,19 +183,8 @@ def verify_sandbox(
     check_env_vars: bool = True,
     check_home: bool = True,
 ) -> SandboxVerificationResult:
-    """Run all sandbox verification checks.
-
-    Args:
-        worktree: Path to the worktree (required for git push and HOME checks)
-        check_gh_auth: Whether to check gh auth status
-        check_git_push: Whether to check git push
-        check_env_vars: Whether to check environment variables
-        check_home: Whether to check HOME isolation
-
-    Returns:
-        SandboxVerificationResult with all check results
-    """
-    results = []
+    """Run all sandbox verification checks."""
+    results: list[VerificationResult] = []
 
     if check_gh_auth:
         results.append(verify_gh_auth_unavailable())
@@ -244,76 +198,38 @@ def verify_sandbox(
     if check_home and worktree:
         results.append(verify_home_isolated(worktree))
 
-    # Collect failures
     critical_failures = [r.name for r in results if not r.passed and r.critical]
     warnings = [r.name for r in results if not r.passed and not r.critical]
+    all_passed = len(critical_failures) == 0
 
-    all_critical_passed = len(critical_failures) == 0
-
-    result = SandboxVerificationResult(
-        all_passed=all_critical_passed,
+    return SandboxVerificationResult(
+        all_passed=all_passed,
         results=results,
         critical_failures=critical_failures,
         warnings=warnings,
     )
 
-    # Log results
-    for r in results:
-        if r.passed:
-            logger.debug("Sandbox check %s: PASS - %s", r.name, r.message)
-        elif r.critical:
-            logger.error("Sandbox check %s: FAIL - %s", r.name, r.message)
-        else:
-            logger.warning("Sandbox check %s: WARN - %s", r.name, r.message)
-
-    return result
-
-
-def run_verification_cli() -> int:
-    """Run sandbox verification as a CLI command.
-
-    This can be called from agent sessions to verify sandbox.
-
-    Returns:
-        Exit code (0 = passed, 1 = failed)
-    """
-    # Get worktree from current directory
-    worktree = Path.cwd()
-
-    # Find git root
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            worktree = Path(result.stdout.strip())
-    except Exception:
-        pass
-
-    print("Running sandbox verification...")
-    print()
-
-    verification = verify_sandbox(worktree=worktree)
-
-    for r in verification.results:
-        status = "✓" if r.passed else ("⚠" if not r.critical else "✗")
-        print(f"{status} {r.name}: {r.message}")
-
-    print()
-
-    if verification.all_passed:
-        print("All sandbox checks passed.")
-        return 0
-    else:
-        print(f"Sandbox verification failed: {', '.join(verification.critical_failures)}")
-        if verification.warnings:
-            print(f"Warnings: {', '.join(verification.warnings)}")
-        return 1
-
 
 def main() -> None:
-    """CLI entry point for verify-agent-sandbox command."""
-    import sys
-    sys.exit(run_verification_cli())
+    """Entry point for running sandbox verification."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Verify agent sandbox isolation")
+    parser.add_argument("--worktree", type=Path, help="Worktree path for git/home checks")
+    args = parser.parse_args()
+
+    verification = verify_sandbox(worktree=args.worktree)
+    if verification.all_passed:
+        print("✅ " + verification.summary)
+        if verification.warnings:
+            print("Warnings: " + ", ".join(verification.warnings))
+        raise SystemExit(0)
+    else:
+        print("❌ " + verification.summary)
+        if verification.warnings:
+            print("Warnings: " + ", ".join(verification.warnings))
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

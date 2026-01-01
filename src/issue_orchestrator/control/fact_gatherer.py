@@ -60,24 +60,44 @@ class FactGatherer:
         Returns:
             List of issues across all agent types
         """
+        milestones = self.config.get_filter_milestones()
+        if not milestones:
+            milestones = [milestone]
+
         all_issues: list["Issue"] = []
+        seen: set[int] = set()
         for agent_label in self.config.agents.keys():
             labels = list(labels_for_agent)
             labels.append(agent_label)
-            issues = self.repository_host.list_issues(
-                labels=labels,
-                milestone=milestone,
-                limit=self.config.issue_fetch_limit,
-            )
-            all_issues.extend(issues)
-            if self.events:
-                self.events.publish(TraceEvent(EventName.ISSUES_FETCHED, {
-                    "agent": agent_label,
-                    "labels": labels,
-                    "milestone": milestone,
-                    "count": len(issues),
-                    "issue_numbers": [i.number for i in issues],
-                }))
+            for milestone_name in milestones:
+                issues = self.repository_host.list_issues(
+                    labels=labels,
+                    milestone=milestone_name,
+                    limit=self.config.issue_fetch_limit,
+                )
+                for issue in issues:
+                    if issue.number in seen:
+                        continue
+                    seen.add(issue.number)
+                    all_issues.append(issue)
+                if self.events:
+                    self.events.publish(TraceEvent(EventName.ISSUES_FETCHED, {
+                        "agent": agent_label,
+                        "labels": labels,
+                        "milestone": milestone_name,
+                        "count": len(issues),
+                        "issue_numbers": [i.number for i in issues],
+                    }))
+                    for issue in issues:
+                        self.events.publish(TraceEvent(
+                            EventName.ISSUE_LABELS_CHANGED,
+                            {
+                                "issue_number": issue.number,
+                                "issue_key": issue.key.stable_id(),
+                                "labels": list(issue.labels),
+                                "state": issue.state,
+                            },
+                        ))
         return all_issues
 
     def create_snapshot(

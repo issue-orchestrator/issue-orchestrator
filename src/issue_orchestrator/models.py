@@ -314,6 +314,8 @@ class AgentConfig:
     skip_review: bool = False
     # Command template - {initial_prompt} is passed as positional arg to claude
     command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
+    # Optional override for hook verification meta-agent (e.g., "claude-code")
+    meta_agent: Optional[str] = None
     initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit."
 
     def get_command(
@@ -396,6 +398,12 @@ class Session:
     started_at: datetime = field(default_factory=datetime.now)
     status: SessionStatus = SessionStatus.RUNNING
     exit_sent: bool = False  # Track if we've already sent /exit
+    last_output_monotonic: float | None = None
+    last_output_at: float | None = None
+    last_log_mtime: float | None = None
+    last_log_size: int | None = None
+    last_output_tail: str | None = None
+    last_no_output_monotonic: float | None = None
 
     @property
     def runtime_minutes(self) -> int:

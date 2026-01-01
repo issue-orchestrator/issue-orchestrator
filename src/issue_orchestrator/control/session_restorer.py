@@ -11,7 +11,6 @@ Called during startup to restore tracking for sessions that survived a restart.
 """
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -21,7 +20,7 @@ if TYPE_CHECKING:
 from ..domain.issue_key import GitHubIssueKey
 from ..domain.session_key import SessionKey, TaskKind
 from ..models import Issue, Session
-from ..ports import RepositoryHost
+from ..ports import RepositoryHost, WorkingCopy
 from ..ports.session_runner import DiscoveredSession
 
 logger = logging.getLogger(__name__)
@@ -39,9 +38,11 @@ class SessionRestorer:
         self,
         config: "Config",
         repository_host: RepositoryHost,
+        working_copy: WorkingCopy,
     ):
         self.config = config
         self.repository_host = repository_host
+        self.working_copy = working_copy
 
     def restore_sessions(
         self,
@@ -184,19 +185,13 @@ class SessionRestorer:
     def _get_branch_name(self, worktree_path: Path) -> str:
         """Get the current branch name for a worktree.
 
-        Uses git command to get branch name.
-        TODO: Consider using a WorkingCopy abstraction instead.
+        Uses WorkingCopy to get branch name.
         """
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(worktree_path), "branch", "--show-current"],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-        except Exception as e:
-            logger.warning("Failed to get branch name for %s: %s", worktree_path, e)
-        return "unknown"
+        branch = self.working_copy.get_current_branch(worktree_path)
+        if not branch:
+            logger.warning("Failed to get branch name for %s", worktree_path)
+            return "unknown"
+        return branch
 
     def _cleanup_orphaned_issue(self, issue_number: int) -> None:
         """Clean up an orphaned issue by removing the in-progress label.

@@ -22,7 +22,6 @@ from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
-from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 
 
 class MockWorktreeManager:
@@ -96,7 +95,11 @@ def create_test_orchestrator(config, repository_host=None, worktree_manager=None
 
     repo_host = repository_host or MagicMock()
     wt_manager = worktree_manager or MockWorktreeManager()
-    wc = working_copy or GitWorkingCopy()
+    if working_copy is None:
+        wc = MagicMock()
+        wc.list_remote_branches.return_value = []
+    else:
+        wc = working_copy
 
     # Create mock adapters (test implementations of ports)
     events = MockEventSink()
@@ -255,17 +258,14 @@ class TestStartup:
     """Test the startup method."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_startup_checks_in_progress_issues(
         self,
         mock_analyze,
-        mock_get_branches,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup checks for in-progress issues."""
-        mock_get_branches.return_value = {}
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
@@ -278,17 +278,14 @@ class TestStartup:
         assert sample_config.get_label_in_progress() in call["labels"]
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_startup_clears_orphaned_labels(
         self,
         mock_analyze,
-        mock_get_branches,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup clears orphaned in-progress labels."""
-        mock_get_branches.return_value = {}
 
         issue = create_issue(1, labels=["agent:web", "in-progress"])
         mock_repository_host.issues = [issue]
@@ -308,17 +305,14 @@ class TestStartup:
         assert (1, sample_config.get_label_in_progress()) in mock_repository_host.remove_label_calls
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_startup_reconciles_issues_with_open_prs(
         self,
         mock_analyze,
-        mock_get_branches,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup adds pr-pending and removes in-progress for issues with open PRs (S2 crash recovery)."""
-        mock_get_branches.return_value = {}
 
         issue = create_issue(1, labels=["agent:web", "in-progress"])
         mock_repository_host.issues = [issue]
@@ -340,17 +334,14 @@ class TestStartup:
         assert mock_repository_host.remove_label_calls[0] == (1, "in-progress")
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_startup_resumes_partial_work(
         self,
         mock_analyze,
-        mock_get_branches,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup resumes work for partial work (branch but no session)."""
-        mock_get_branches.return_value = {}
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False  # No existing session, allow launch
 
@@ -375,17 +366,14 @@ class TestStartup:
         assert orchestrator.state.active_sessions[0].issue.number == 1
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_startup_skips_blocked_issues(
         self,
         mock_analyze,
-        mock_get_branches,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup skips issues that are blocked (waiting for human)."""
-        mock_get_branches.return_value = {}
 
         # Issue has both in-progress AND blocked labels
         issue = create_issue(1, labels=["agent:web", "in-progress", "blocked"])
@@ -2009,15 +1997,12 @@ class TestStartupPendingReviews:
     """Test startup recovery for pending code reviews."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     async def test_startup_scans_for_pending_reviews(
         self,
-        mock_get_branches,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup scans for PRs with code_review_label."""
-        mock_get_branches.return_value = {}
         mock_repository_host.issues = []
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
@@ -2040,15 +2025,12 @@ class TestStartupPendingReviews:
         assert orchestrator.state.pending_reviews[1].pr_number == 456
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     async def test_startup_skips_reviews_already_in_progress(
         self,
-        mock_get_branches,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup skips PRs with active review sessions."""
-        mock_get_branches.return_value = {}
         mock_repository_host.issues = []
 
         sample_config.code_review_agent = "agent:reviewer"
@@ -2074,15 +2056,12 @@ class TestStartupPendingReviews:
         assert orchestrator.state.pending_reviews[0].pr_number == 456
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     async def test_startup_does_not_scan_without_code_review_config(
         self,
-        mock_get_branches,
         sample_config,
         mock_repository_host,
     ):
         """Test that startup doesn't scan for reviews without config."""
-        mock_get_branches.return_value = {}
         mock_repository_host.issues = []
 
         sample_config.code_review_agent = None
@@ -2330,6 +2309,7 @@ class TestSessionExistsDetection:
     def test_review_with_active_terminal_restored_to_active_sessions(
         self,
         sample_config,
+        tmp_path,
     ):
         """Test that reviews with active terminal sessions are restored to active_sessions.
 
@@ -2351,11 +2331,18 @@ class TestSessionExistsDetection:
             branch_name="feature/issue-42",
         )
 
+        worktree_path = tmp_path / "repo-42"
+        worktree_path.mkdir(parents=True, exist_ok=True)
+
         orchestrator = create_test_orchestrator(sample_config, runner=runner)
         orchestrator.state.pending_reviews.append(review)
 
         # Launch should fail (terminal exists) but session should be restored
-        result = orchestrator.launch_review_session(review)
+        with patch(
+            "issue_orchestrator.control.session_restorer.SessionRestorer._find_worktree",
+            return_value=(worktree_path, "issue-42"),
+        ):
+            result = orchestrator.launch_review_session(review)
 
         assert result is None
         # Review is removed from pending (processed)
@@ -2398,6 +2385,7 @@ class TestSessionExistsDetection:
         self,
         sample_config,
         mock_repository_host,
+        tmp_path,
     ):
         """Test that reworks with active terminal sessions are restored to active_sessions.
 
@@ -2420,10 +2408,17 @@ class TestSessionExistsDetection:
             rework_cycle=1,
         )
 
+        worktree_path = tmp_path / "repo-42"
+        worktree_path.mkdir(parents=True, exist_ok=True)
+
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, runner=runner)
         orchestrator.state.pending_reworks.append(rework)
 
-        result = orchestrator.launch_rework_session(rework)
+        with patch(
+            "issue_orchestrator.control.session_restorer.SessionRestorer._find_worktree",
+            return_value=(worktree_path, "issue-42"),
+        ):
+            result = orchestrator.launch_rework_session(rework)
 
         assert result is None
         # Rework is removed from pending (processed)
@@ -3042,12 +3037,12 @@ class TestReworkEscalation:
         sample_config.max_rework_cycles = 2
         sample_config.code_review_agent = "agent:code-reviewer"
 
-        # Simulate a PR that has gone through 2 rework cycles (labels show rework-2)
+        # Simulate a PR that has gone through 2 rework cycles (labels show rework-cycle-2)
         mock_repository_host.prs["issue-456-feature"] = [
             create_pr_info(
                 123,
                 "PR 123",
-                labels=["needs-rework", "rework-2", "agent:code-reviewer"],
+                labels=["needs-rework", "rework-cycle-2", "agent:code-reviewer"],
                 branch="issue-456-feature",
             ),
         ]
@@ -3059,7 +3054,7 @@ class TestReworkEscalation:
         assert len(orchestrator.state.discovered_escalations) == 1
         escalation = orchestrator.state.discovered_escalations[0]
         assert escalation.pr_number == 123
-        assert escalation.rework_cycle == 3  # rework-2 means next cycle is 3
+        assert escalation.rework_cycle == 3  # rework-cycle-2 means next cycle is 3
 
         # Should NOT have added to pending_reworks queue (Planner decides)
         assert len(orchestrator.state.pending_reworks) == 0
@@ -3120,14 +3115,14 @@ class TestReworkEscalation:
         labels = ["needs-rework", "test-data"]
         assert scanner._get_rework_cycle_from_labels(labels) == 1
 
-        # rework-1 label - next is cycle 2
-        labels = ["needs-rework", "rework-1"]
+        # rework-cycle-1 label - next is cycle 2
+        labels = ["needs-rework", "rework-cycle-1"]
         assert scanner._get_rework_cycle_from_labels(labels) == 2
 
-        # rework-2 label - next is cycle 3
-        labels = ["rework-2", "needs-rework"]
+        # rework-cycle-2 label - next is cycle 3
+        labels = ["rework-cycle-2", "needs-rework"]
         assert scanner._get_rework_cycle_from_labels(labels) == 3
 
-        # rework-5 label - next is cycle 6
-        labels = ["rework-5"]
+        # rework-cycle-5 label - next is cycle 6
+        labels = ["rework-cycle-5"]
         assert scanner._get_rework_cycle_from_labels(labels) == 6

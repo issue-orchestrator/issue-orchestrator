@@ -35,6 +35,15 @@ Without hooks, agents will find ways around conventions and the system breaks.
 
 ## Hook Inventory
 
+### Repo Guardrails (local development)
+
+These are optional local hooks you can install to enforce architecture guardrails.
+
+| Hook | Type | Location | Purpose |
+|------|------|----------|---------|
+| Pre-commit | Git | `.git/hooks/pre-commit` | Runs import-linter + AST guardrails |
+| Pre-push | Git | `.git/hooks/pre-push` | Runs pyright + guardrails before push |
+
 ### Orchestrator-Installed Hooks (per worktree)
 
 These are installed automatically by issue-orchestrator when creating worktrees.
@@ -190,13 +199,12 @@ signature: sha256(verified_at + hooks_hash + secret)
 
 ### Startup Behavior
 
-| Marker State | `skip_verification` | Behavior |
-|--------------|---------------------|----------|
-| Missing | false (default) | Auto-run verify, block if fails |
-| Valid | false (default) | ✅ Start normally |
-| Stale (hooks changed) | false (default) | Auto-run verify |
-| Invalid signature | false (default) | Auto-run verify |
-| Any | true | ⚠️ Start with constant warnings |
+| Marker State | Behavior |
+|--------------|----------|
+| Missing | Auto-run verify, block if fails |
+| Valid | ✅ Start normally |
+| Stale (hooks changed) | Auto-run verify |
+| Invalid signature | Auto-run verify |
 
 ## Configuration
 
@@ -209,14 +217,8 @@ verify:
 
 # Dangerous overrides (NOT RECOMMENDED)
 dangerous:
-  skip_verification: true      # Skip verify check on startup
   allow_unsupported_agents: true  # Allow meta-agents without hooks
 ```
-
-If `skip_verification: true`, the orchestrator will:
-- Start anyway
-- Print warnings every 10 minutes
-- Never stop nagging until you run verify
 
 ## Setup Flow
 

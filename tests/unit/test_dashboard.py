@@ -405,7 +405,8 @@ class TestDashboardApp:
         app = DashboardApp(orchestrator)
 
         # Mock the refresh task
-        app._refresh_task = AsyncMock()
+        app._refresh_task = MagicMock()
+        app._refresh_task.cancel = MagicMock()
 
         with patch.object(app, 'exit') as mock_exit:
             await app.action_quit()

@@ -2,6 +2,8 @@
 
 import json
 import logging
+import os
+import os
 import re
 import shutil
 import subprocess
@@ -176,26 +178,31 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     )
     custom_hooks_path = hooks_path_result.stdout.strip() if hooks_path_result.returncode == 0 else None
 
+    # Always set per-worktree hooksPath so hooks live with the worktree.
+    subprocess.run(
+        ["git", "-C", str(worktree_path), "config", "extensions.worktreeConfig", "true"],
+        capture_output=True, check=False
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree_path), "config", "--worktree", "core.hooksPath", str(hooks_dir)],
+        capture_output=True, check=False
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree_path), "config", "--worktree", "core.worktree", str(worktree_path)],
+        capture_output=True, check=False
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree_path), "config", "--worktree", "core.bare", "false"],
+        capture_output=True, check=False
+    )
+    logger.info("Overriding core.hooksPath to %s for this worktree only", hooks_dir)
+
     # Find the project's pre-push hook
     project_hook = None
     if custom_hooks_path:
         # Project uses custom hooksPath (e.g., .githooks/)
         # Resolve relative to MAIN repo root (not worktree)
         project_hook = main_repo_root.parent / custom_hooks_path / "pre-push"
-
-        # Override hooksPath for this worktree only (not repo-wide)
-        # Using --worktree flag stores config in worktree-specific config file
-        # This allows our chained hooks to run while preserving project hooks
-        # First enable worktree config extension (required for --worktree flag)
-        subprocess.run(
-            ["git", "-C", str(worktree_path), "config", "extensions.worktreeConfig", "true"],
-            capture_output=True, check=False
-        )
-        subprocess.run(
-            ["git", "-C", str(worktree_path), "config", "--worktree", "core.hooksPath", str(hooks_dir)],
-            capture_output=True, check=False
-        )
-        logger.info("Overriding core.hooksPath to %s for this worktree only", hooks_dir)
     else:
         # Standard hooks location in main repo
         # The gitdir is like /repo/.git/worktrees/name, so main repo is gitdir.parent.parent
@@ -225,15 +232,22 @@ audit() {{
     echo "[orchestrator] $1"
 }}
 
+total_start=$(date +%s)
 audit "Pre-push hook started (commit: $(git rev-parse --short HEAD))"
 
 # Run project's pre-push hook first (lint, tests, etc.)
 if [ -x "$HOOKS_DIR/pre-push.project" ]; then
     audit "Running project pre-push hook..."
+    project_start=$(date +%s)
     if "$HOOKS_DIR/pre-push.project" "$@"; then
-        audit "Project hook PASSED"
+        project_end=$(date +%s)
+        project_duration=$((project_end - project_start))
+        audit "Project hook PASSED (duration=${{project_duration}}s)"
     else
-        audit "Project hook FAILED (exit $?)"
+        project_exit=$?
+        project_end=$(date +%s)
+        project_duration=$((project_end - project_start))
+        audit "Project hook FAILED (exit ${{project_exit}} duration=${{project_duration}}s)"
         exit 1
     fi
 else
@@ -243,17 +257,25 @@ fi
 # Then run orchestrator's trailer validation
 if [ -x "$HOOKS_DIR/pre-push.orchestrator" ]; then
     audit "Running orchestrator pre-push hook..."
+    orch_start=$(date +%s)
     if "$HOOKS_DIR/pre-push.orchestrator" "$@"; then
-        audit "Orchestrator hook PASSED"
+        orch_end=$(date +%s)
+        orch_duration=$((orch_end - orch_start))
+        audit "Orchestrator hook PASSED (duration=${{orch_duration}}s)"
     else
-        audit "Orchestrator hook FAILED (exit $?)"
+        orch_exit=$?
+        orch_end=$(date +%s)
+        orch_duration=$((orch_end - orch_start))
+        audit "Orchestrator hook FAILED (exit ${{orch_exit}} duration=${{orch_duration}}s)"
         exit 1
     fi
 else
     audit "No orchestrator hook found"
 fi
 
-audit "Pre-push hook completed successfully"
+total_end=$(date +%s)
+total_duration=$((total_end - total_start))
+audit "Pre-push hook completed successfully (total_duration=${{total_duration}}s)"
 """
         dst_hook.write_text(wrapper_content)
         dst_hook.chmod(0o755)
@@ -350,6 +372,56 @@ def find_worktree_for_branch(repo_root: Path, branch_name: str) -> Path | None:
     return None
 
 
+def _detach_worktree_branch(worktree_path: Path, branch_name: str) -> None:
+    logger.info(
+        "Detaching worktree branch to free branch: path=%s branch=%s",
+        worktree_path,
+        branch_name,
+    )
+    env = None
+    cmd = ["git", "-C", str(worktree_path), "checkout", "--detach"]
+    git_file = worktree_path / ".git"
+    if git_file.exists():
+        content = git_file.read_text().strip()
+        if content.startswith("gitdir:"):
+            git_dir = content.split(":", 1)[1].strip()
+            env = os.environ.copy()
+            env["GIT_DIR"] = git_dir
+            env["GIT_WORK_TREE"] = str(worktree_path)
+            cmd = ["git", "checkout", "--detach"]
+            logger.info("Detaching with explicit GIT_DIR for worktree: %s", worktree_path)
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    if result.returncode != 0:
+        raise WorktreeError(
+            "Failed to detach worktree branch: "
+            f"path={worktree_path} branch={branch_name} stderr={result.stderr}"
+        )
+
+
+def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
+    logger.info("Removing existing worktree path for fresh create: %s", worktree_path)
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "worktree", "remove", "--force", str(worktree_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        logger.warning(
+            "Failed to remove worktree via git, deleting directory: path=%s stderr=%s",
+            worktree_path,
+            result.stderr.strip(),
+        )
+        shutil.rmtree(worktree_path, ignore_errors=True)
+
+
 def create_worktree(
     repo_root: Path,
     issue_number: int,
@@ -414,6 +486,8 @@ def create_worktree(
     # Worktree path: {base}/{repo_name}-{issue_number}
     worktree_path = worktree_base / f"{repo_name}-{issue_number}"
 
+    disable_reuse = os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
+
     # Prune stale worktrees (handles case where directory was deleted but git still has it registered)
     prune_result = subprocess.run(
         ["git", "-C", str(repo_root), "worktree", "prune"],
@@ -432,10 +506,18 @@ def create_worktree(
         prune_result.returncode,
         prune_stderr,
     )
+    if disable_reuse:
+        logger.info("Worktree reuse disabled (ORCHESTRATOR_DISABLE_WORKTREE_REUSE=1)")
+        if worktree_path.exists():
+            _remove_existing_worktree_path(repo_root, worktree_path)
+        if branch_name:
+            existing_worktree = find_worktree_for_branch(repo_root, branch_name)
+            if existing_worktree and existing_worktree.exists():
+                _detach_worktree_branch(existing_worktree, branch_name)
 
     # If a specific branch was requested, check if it's already checked out in another worktree
     # This is common when reviewing PRs - the branch may still be checked out from the work session
-    if branch_name:
+    if branch_name and not disable_reuse:
         existing_worktree = find_worktree_for_branch(repo_root, branch_name)
         if existing_worktree and existing_worktree.exists():
             logger.info("Reusing existing worktree for branch=%s path=%s", branch_name, existing_worktree)
@@ -451,7 +533,7 @@ def create_worktree(
             return existing_worktree, branch_name
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
-    if worktree_path.exists():
+    if worktree_path.exists() and not disable_reuse:
         # Verify it's a valid git worktree
         git_dir = worktree_path / ".git"
         if git_dir.exists():
@@ -497,8 +579,21 @@ def create_worktree(
             # Use existing branch
             cmd = ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), branch_name]
         else:
-            # Create new branch
-            cmd = ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), "-b", branch_name]
+            # Try to fetch remote branch (for review/rework sessions)
+            fetch_result = subprocess.run(
+                ["git", "-C", str(repo_root), "fetch", "origin", branch_name],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if fetch_result.returncode == 0:
+                cmd = [
+                    "git", "-C", str(repo_root), "worktree", "add",
+                    str(worktree_path), "-b", branch_name, f"origin/{branch_name}"
+                ]
+            else:
+                # Create new branch from current HEAD
+                cmd = ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), "-b", branch_name]
 
         logger.info("Creating worktree: path=%s branch=%s", worktree_path, branch_name)
         result = subprocess.run(

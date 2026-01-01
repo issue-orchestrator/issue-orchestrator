@@ -42,6 +42,7 @@ from .lifecycle_sse import LifecycleSSEPlugin
 from .event_sink_adapter import PluggyEventSink, CompositeEventSink, LoggingEventSink
 from .session_runner_adapter import PluggySessionRunner
 from .github_issue_resolver import GitHubIssueResolver
+from .command_runner import LocalCommandRunner
 
 __all__ = [
     # Main interface (internal, used by composition root)
@@ -66,6 +67,8 @@ __all__ = [
     "GitHubIssueResolver",
     # Local VCS adapters
     "GitWorkingCopy",
+    # Local command runner
+    "LocalCommandRunner",
     # Session stores
     "JsonSessionStore",
 ]

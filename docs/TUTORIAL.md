@@ -502,7 +502,6 @@ and push code without running pre-push tests/checks.
 Options:
   1. Run 'issue-orchestrator setup-hooks' to install hooks
   2. Run 'issue-orchestrator verify' to diagnose issues
-  3. Set 'dangerous.skip_verification: true' in config (NOT RECOMMENDED)
 ```
 
 ---

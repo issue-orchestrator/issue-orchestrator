@@ -38,7 +38,6 @@ class DangerousConfig:
     These options should only be used for testing or in environments
     where you understand the risks.
     """
-    skip_verification: bool = False  # Skip hook verification on startup
     allow_unsupported_agents: bool = False  # Allow agents without hook support
 
 
@@ -90,11 +89,19 @@ class Config:
     # Paths
     state_file: Path = Path(".issue-orchestrator/state.json")
     repo_root: Path = field(default_factory=Path.cwd)  # Root of the git repository
+    repo_root_from_yaml: bool = False  # Internal: YAML explicitly set repo_root
 
     # GitHub settings
     repo: Optional[str] = None  # owner/repo, or None to auto-detect
+    github_token: Optional[str] = None  # Explicit GitHub token (prefer env)
+    github_token_env: Optional[str] = None  # Env var name for token (overrides defaults)
+    github_api_url: str = "https://api.github.com"
+    github_http_timeout_seconds: float = 20.0
+    github_required_scopes: list[str] = field(default_factory=list)
+    github_allowed_scopes: list[str] = field(default_factory=list)
     filter_label: Optional[str] = None  # Only consider issues with this label (e.g., "test-data")
     filter_milestone: Optional[str] = None  # Only consider issues in this milestone
+    filter_milestones: list[str] = field(default_factory=list)  # Optional list of milestone filters
     filter_issue: Optional[int] = None  # Only process this specific issue number
     issue_fetch_limit: int = 100  # Max issues to fetch per API call (gh default is 30)
 
@@ -109,6 +116,22 @@ class Config:
     web_port: int = 8080  # Port for web dashboard
     control_api_port: int = 19080  # Port for control API (always available, 0 = disabled)
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
+    session_no_output_seconds: int = 120  # Emit session_no_output after this many seconds idle
+    session_no_output_tail_lines: int = 50  # Max tail lines to include in session_no_output
+    session_no_output_max_bytes: int = 10000  # Max bytes of tail content
+    session_no_output_repeat_seconds: int = 120  # Minimum gap between session_no_output events
+    gh_write_verify_timeout_seconds: int = 20
+    gh_write_verify_initial_delay_ms: int = 250
+    gh_write_verify_max_delay_ms: int = 2000
+    gh_write_verify_backoff: float = 1.5
+    gh_write_verify_jitter_ms: int = 0
+    gh_rate_limit_startup: bool = True  # Log GH rate limits at startup
+    gh_rate_limit_every_calls: int = 500  # Check GH rate limits every N calls (0 = disabled)
+    gh_rate_limit_warn_fraction: float = 0.1  # Warn when remaining below fraction of limit
+    gh_rate_limit_warn_remaining: int = 100  # Warn when remaining below this count
+    gh_audit_enabled: bool = False  # Enable GH audit reporting
+    gh_audit_events: bool = False  # Emit GH audit events to event stream
+    gh_audit_file: Optional[str] = None  # Path for GH audit report (supports {pid})
 
     # Terminal adapter (optional - overrides ui_mode if set)
     # Can be "builtin:tmux", "builtin:iterm2", or a full class path
@@ -216,6 +239,14 @@ class Config:
             return self.validation.agent_gate
         return None
 
+    def get_filter_milestones(self) -> list[str]:
+        """Return a list of milestone filters (supports legacy single filter)."""
+        if self.filter_milestones:
+            return list(self.filter_milestones)
+        if self.filter_milestone:
+            return [self.filter_milestone]
+        return []
+
     def to_event_dict(self) -> dict:
         """Convert config to a dict for event emission.
 
@@ -224,15 +255,38 @@ class Config:
         """
         return {
             "repo": self.repo,
+            "github_token_env": self.github_token_env,
+            "github_api_url": self.github_api_url,
+            "github_http_timeout_seconds": self.github_http_timeout_seconds,
+            "github_required_scopes": list(self.github_required_scopes),
+            "github_allowed_scopes": list(self.github_allowed_scopes),
             "repo_root": str(self.repo_root),
             "config_path": str(self.config_path) if self.config_path else None,
             "filter_label": self.filter_label,
             "filter_milestone": self.filter_milestone,
+            "filter_milestones": list(self.filter_milestones),
             "filter_issue": self.filter_issue,
             "e2e_pr_labels": self.e2e_pr_labels,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "session_timeout_minutes": self.session_timeout_minutes,
             "max_issues_to_start": self.max_issues_to_start,
+            "queue_refresh_seconds": self.queue_refresh_seconds,
+            "session_no_output_seconds": self.session_no_output_seconds,
+            "session_no_output_tail_lines": self.session_no_output_tail_lines,
+            "session_no_output_max_bytes": self.session_no_output_max_bytes,
+            "session_no_output_repeat_seconds": self.session_no_output_repeat_seconds,
+            "gh_write_verify_timeout_seconds": self.gh_write_verify_timeout_seconds,
+            "gh_write_verify_initial_delay_ms": self.gh_write_verify_initial_delay_ms,
+            "gh_write_verify_max_delay_ms": self.gh_write_verify_max_delay_ms,
+            "gh_write_verify_backoff": self.gh_write_verify_backoff,
+            "gh_write_verify_jitter_ms": self.gh_write_verify_jitter_ms,
+            "gh_rate_limit_startup": self.gh_rate_limit_startup,
+            "gh_rate_limit_every_calls": self.gh_rate_limit_every_calls,
+            "gh_rate_limit_warn_fraction": self.gh_rate_limit_warn_fraction,
+            "gh_rate_limit_warn_remaining": self.gh_rate_limit_warn_remaining,
+            "gh_audit_enabled": self.gh_audit_enabled,
+            "gh_audit_events": self.gh_audit_events,
+            "gh_audit_file": self.gh_audit_file,
             "ui_mode": self.ui_mode,
             "terminal_adapter": self.terminal_adapter,
             "agents": {
@@ -241,6 +295,7 @@ class Config:
                     "worktree_base": str(cfg.worktree_base),
                     "model": cfg.model,
                     "timeout_minutes": cfg.timeout_minutes,
+                    "meta_agent": cfg.meta_agent,
                 }
                 for label, cfg in self.agents.items()
             },
@@ -286,24 +341,32 @@ class Config:
             },
             "dangerous": {
                 "allow_unsupported_agents": self.dangerous.allow_unsupported_agents,
-                "skip_verification": self.dangerous.skip_verification,
             },
         }
 
     @classmethod
-    def load(cls, config_path: Path) -> "Config":
+    def load(cls, config_path: Path, overrides: Optional[list[str]] = None) -> "Config":
         """Load configuration from YAML file."""
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
 
         with open(config_path) as f:
             data = yaml.safe_load(f)
+        if data is None:
+            data = {}
+        _apply_yaml_overrides(data, overrides or [])
 
         config = cls()
         config.config_path = config_path.resolve()
         # Default repo_root to config file's parent directory
         # (can be overridden in find_and_load or by YAML settings)
         config.repo_root = config_path.parent.resolve()
+        if data.get("repo_root"):
+            repo_root = Path(data["repo_root"])
+            if not repo_root.is_absolute():
+                repo_root = (config_path.parent / repo_root).resolve()
+            config.repo_root = repo_root
+            config.repo_root_from_yaml = True
 
         # Parse agents
         for label, agent_data in data.get("agents", {}).items():
@@ -348,6 +411,7 @@ class Config:
                 "timeout_minutes": agent_data.get("timeout_minutes", 45),
                 "permission_mode": agent_data.get("permission_mode", "default"),
                 "skip_review": agent_data.get("skip_review", False),
+                "meta_agent": agent_data.get("meta_agent"),
             }
             if "command" in agent_data:
                 agent_kwargs["command"] = agent_data["command"]
@@ -374,8 +438,26 @@ class Config:
 
         # GitHub settings
         config.repo = data.get("repo")
+        config.github_token = data.get("github_token")
+        config.github_token_env = data.get("github_token_env")
+        config.github_api_url = data.get("github_api_url", "https://api.github.com")
+        config.github_http_timeout_seconds = data.get("github_http_timeout_seconds", 20.0)
+        required_scopes = data.get("github_required_scopes", []) or []
+        allowed_scopes = data.get("github_allowed_scopes", []) or []
+        if isinstance(required_scopes, str):
+            required_scopes = [s.strip() for s in required_scopes.split(",") if s.strip()]
+        if isinstance(allowed_scopes, str):
+            allowed_scopes = [s.strip() for s in allowed_scopes.split(",") if s.strip()]
+        config.github_required_scopes = list(required_scopes)
+        config.github_allowed_scopes = list(allowed_scopes)
         config.filter_label = data.get("filter_label")
         config.filter_milestone = data.get("filter_milestone")
+        raw_milestones = data.get("filter_milestones") or []
+        if isinstance(raw_milestones, str):
+            raw_milestones = [m.strip() for m in raw_milestones.split(",") if m.strip()]
+        if not isinstance(raw_milestones, list):
+            raise ValueError("filter_milestones must be a list or comma-separated string")
+        config.filter_milestones = [str(m).strip() for m in raw_milestones if str(m).strip()]
         config.issue_fetch_limit = data.get("issue_fetch_limit", 100)
         config.e2e_pr_labels = data.get("e2e_pr_labels", [])
 
@@ -384,6 +466,22 @@ class Config:
         config.web_port = data.get("web_port", 8080)
         config.control_api_port = data.get("control_api_port", 19080)
         config.queue_refresh_seconds = data.get("queue_refresh_seconds", 600)
+        config.session_no_output_seconds = data.get("session_no_output_seconds", 120)
+        config.session_no_output_tail_lines = data.get("session_no_output_tail_lines", 50)
+        config.session_no_output_max_bytes = data.get("session_no_output_max_bytes", 10000)
+        config.session_no_output_repeat_seconds = data.get("session_no_output_repeat_seconds", 120)
+        config.gh_write_verify_timeout_seconds = data.get("gh_write_verify_timeout_seconds", 20)
+        config.gh_write_verify_initial_delay_ms = data.get("gh_write_verify_initial_delay_ms", 250)
+        config.gh_write_verify_max_delay_ms = data.get("gh_write_verify_max_delay_ms", 2000)
+        config.gh_write_verify_backoff = data.get("gh_write_verify_backoff", 1.5)
+        config.gh_write_verify_jitter_ms = data.get("gh_write_verify_jitter_ms", 0)
+        config.gh_rate_limit_startup = data.get("gh_rate_limit_startup", True)
+        config.gh_rate_limit_every_calls = data.get("gh_rate_limit_every_calls", 500)
+        config.gh_rate_limit_warn_fraction = data.get("gh_rate_limit_warn_fraction", 0.1)
+        config.gh_rate_limit_warn_remaining = data.get("gh_rate_limit_warn_remaining", 100)
+        config.gh_audit_enabled = data.get("gh_audit_enabled", False)
+        config.gh_audit_events = data.get("gh_audit_events", False)
+        config.gh_audit_file = data.get("gh_audit_file")
 
         # Terminal adapter (overrides ui_mode if set)
         config.terminal_adapter = data.get("terminal_adapter")
@@ -466,7 +564,6 @@ class Config:
         dangerous_data = data.get("dangerous", {})
         if dangerous_data:
             config.dangerous = DangerousConfig(
-                skip_verification=dangerous_data.get("skip_verification", False),
                 allow_unsupported_agents=dangerous_data.get("allow_unsupported_agents", False),
             )
 
@@ -504,7 +601,9 @@ class Config:
         return config
 
     @classmethod
-    def find_and_load(cls, start_path: Optional[Path] = None) -> "Config":
+    def find_and_load(
+        cls, start_path: Optional[Path] = None, overrides: Optional[list[str]] = None
+    ) -> "Config":
         """Find config file in current or parent directories and load it."""
         config_file = find_config_file(start_path)
         if not config_file:
@@ -512,13 +611,14 @@ class Config:
                 "No .issue-orchestrator.yaml found in current or parent directories"
             )
 
-        config = cls.load(config_file)
+        config = cls.load(config_file, overrides=overrides)
         # Set repo_root to the directory containing the config file
         # (or parent if config is in .issue-orchestrator/)
-        if config_file.parent.name == ".issue-orchestrator":
-            config.repo_root = config_file.parent.parent.resolve()
-        else:
-            config.repo_root = config_file.parent.resolve()
+        if not config.repo_root_from_yaml:
+            if config_file.parent.name == ".issue-orchestrator":
+                config.repo_root = config_file.parent.parent.resolve()
+            else:
+                config.repo_root = config_file.parent.resolve()
         return config
 
     def validate(self) -> list[str]:
@@ -642,6 +742,27 @@ def find_config_file(start_path: Optional[Path] = None) -> Optional[Path]:
             return config_file
 
     return None
+
+
+def _apply_yaml_overrides(data: dict, overrides: list[str]) -> None:
+    """Apply CLI overrides (path=value) to YAML data in-place."""
+    for override in overrides:
+        if "=" not in override:
+            raise ValueError(f"Invalid override (expected key=value): {override}")
+        path, raw_value = override.split("=", 1)
+        if not path:
+            raise ValueError(f"Invalid override (empty key): {override}")
+        try:
+            value = yaml.safe_load(raw_value)
+        except Exception:
+            value = raw_value
+        cursor = data
+        keys = path.split(".")
+        for key in keys[:-1]:
+            if key not in cursor or not isinstance(cursor[key], dict):
+                cursor[key] = {}
+            cursor = cursor[key]
+        cursor[keys[-1]] = value
 
 
 def load_validation_config(

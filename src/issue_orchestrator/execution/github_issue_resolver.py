@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from ..domain.issue_key import IssueKey, IssueHandle, GitHubIssueKey, parse_external_id
 from ..events import EventName
 from ..ports import IssueTracker, EventSink, TraceEvent
+from .. import gh_audit
 
 if TYPE_CHECKING:
     from ..models import Issue
@@ -87,7 +88,11 @@ class GitHubIssueResolver:
         logger.info("Building issue resolution index for %s", self.repo)
 
         # Fetch all relevant issues (open + recently closed)
-        issues = self.issue_tracker.list_issues(state="all", limit=500)
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.EXTERNAL_ID_RESOLVE,
+            scope=gh_audit.AuditScope.ON_DEMAND,
+        ):
+            issues = self.issue_tracker.list_issues(state="all", limit=500)
 
         new_cache: dict[str, int] = {}
         new_duplicates: dict[str, list[int]] = {}

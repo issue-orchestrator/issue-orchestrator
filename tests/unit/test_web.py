@@ -1,7 +1,6 @@
 """Unit tests for the FastAPI web module."""
 
 import pytest
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch, Mock
 from fastapi.testclient import TestClient
@@ -107,14 +106,11 @@ class TestDashboardEndpoint:
 
         web._orchestrator = mock_orch
         try:
-            with patch("issue_orchestrator._github_impl.list_issues") as mock_list_issues:
-                mock_list_issues.return_value = []
+            client = TestClient(app)
+            response = client.get("/")
 
-                client = TestClient(app)
-                response = client.get("/")
-
-                assert response.status_code == 200
-                assert "text/html" in response.headers["content-type"]
+            assert response.status_code == 200
+            assert "text/html" in response.headers["content-type"]
         finally:
             web._orchestrator = None
 
@@ -130,15 +126,12 @@ class TestDashboardEndpoint:
 
         web._orchestrator = mock_orch
         try:
-            with patch("issue_orchestrator._github_impl.list_issues") as mock_list_issues:
-                mock_list_issues.return_value = []
+            client = TestClient(app)
+            response = client.get("/")
 
-                client = TestClient(app)
-                response = client.get("/")
-
-                assert response.status_code == 200
-                assert "Active Issue" in response.text
-                assert "#1" in response.text
+            assert response.status_code == 200
+            assert "Active Issue" in response.text
+            assert "#1" in response.text
         finally:
             web._orchestrator = None
 
@@ -177,15 +170,12 @@ class TestDashboardEndpoint:
 
         web._orchestrator = mock_orch
         try:
-            with patch("issue_orchestrator._github_impl.list_issues") as mock_list_issues:
-                mock_list_issues.return_value = []
+            client = TestClient(app)
+            response = client.get("/")
 
-                client = TestClient(app)
-                response = client.get("/")
-
-                assert response.status_code == 200
-                # The template should handle paused state
-                assert response.status_code == 200
+            assert response.status_code == 200
+            # The template should handle paused state
+            assert response.status_code == 200
         finally:
             web._orchestrator = None
 
@@ -207,14 +197,11 @@ class TestDashboardEndpoint:
 
         web._orchestrator = mock_orch
         try:
-            with patch("issue_orchestrator._github_impl.list_issues") as mock_list_issues:
-                mock_list_issues.return_value = []
+            client = TestClient(app)
+            response = client.get("/")
 
-                client = TestClient(app)
-                response = client.get("/")
-
-                assert response.status_code == 200
-                assert "Completed Issue" in response.text
+            assert response.status_code == 200
+            assert "Completed Issue" in response.text
         finally:
             web._orchestrator = None
 

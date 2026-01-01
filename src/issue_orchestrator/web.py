@@ -88,7 +88,6 @@ async def dashboard(
     import time
     request_start = time.time()
 
-    from ._github_impl import list_issues
     from .control.scheduler import Scheduler
 
     # Get query params
@@ -810,6 +809,7 @@ async def get_debug() -> JSONResponse:
         "test_mode": config.filter_label == "test-data",  # Inferred from filter
         "filter_label": config.filter_label,
         "filter_milestone": config.filter_milestone,
+        "filter_milestones": config.get_filter_milestones(),
         "max_sessions": config.max_concurrent_sessions,
     }
 

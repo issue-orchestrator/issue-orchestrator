@@ -328,11 +328,32 @@ agents:
         config = Config.load(config_file)
 
         assert config.filter_milestone == "v1.0"
+        assert config.get_filter_milestones() == ["v1.0"]
+
+    def test_config_with_filter_milestones(self, tmp_path):
+        """Test config with filter_milestones specified."""
+        config_content = """
+filter_milestones:
+  - "M1"
+  - "M2"
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.filter_milestones == ["M1", "M2"]
+        assert config.get_filter_milestones() == ["M1", "M2"]
 
     def test_config_filter_milestone_default(self):
         """Test default filter_milestone is None."""
         config = Config()
         assert config.filter_milestone is None
+        assert config.filter_milestones == []
+        assert config.get_filter_milestones() == []
 
     def test_label_prefix_not_configured(self):
         """Test that labels are not prefixed when label_prefix is not set."""
@@ -461,10 +482,69 @@ agents:
         config = Config()
         assert config.queue_refresh_seconds == 600
 
+    def test_github_write_verify_defaults(self):
+        """Test that gh write-verify defaults are set."""
+        config = Config()
+        assert config.github_token is None
+        assert config.github_token_env is None
+        assert config.github_api_url == "https://api.github.com"
+        assert config.github_http_timeout_seconds == 20.0
+        assert config.github_required_scopes == []
+        assert config.github_allowed_scopes == []
+        assert config.gh_write_verify_timeout_seconds == 20
+        assert config.gh_write_verify_initial_delay_ms == 250
+        assert config.gh_write_verify_max_delay_ms == 2000
+        assert config.gh_write_verify_backoff == 1.5
+        assert config.gh_write_verify_jitter_ms == 0
+
     def test_max_issues_to_start_default(self):
         """Test that max_issues_to_start defaults to 0 (unlimited)."""
         config = Config()
         assert config.max_issues_to_start == 0
+
+    def test_yaml_overrides_apply_to_nested_keys(self, tmp_path):
+        """Test CLI overrides apply to nested YAML settings."""
+        config_content = """
+labels:
+  in_progress: in-progress
+review:
+  code_review_agent: "agent:reviewer"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(
+            config_file,
+            overrides=[
+                "labels.in_progress=claimed",
+                "review.code_review_agent=agent:code-review",
+                "queue_refresh_seconds=120",
+                "filter_milestones=[\"M1\", \"M2\"]",
+            ],
+        )
+
+        assert config.get_label_in_progress() == "claimed"
+        assert config.code_review_agent == "agent:code-review"
+        assert config.queue_refresh_seconds == 120
+        assert config.filter_milestones == ["M1", "M2"]
+
+    def test_github_scopes_parse_from_strings(self, tmp_path):
+        config_content = """
+repo: owner/repo
+github_required_scopes: "repo, read:org"
+github_allowed_scopes: "repo, read:org, read:user"
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.github_required_scopes == ["repo", "read:org"]
+        assert config.github_allowed_scopes == ["repo", "read:org", "read:user"]
 
     def test_queue_refresh_seconds_from_yaml(self, tmp_path):
         """Test loading queue_refresh_seconds from YAML."""
@@ -481,6 +561,38 @@ agents:
         config = Config.load(config_file)
 
         assert config.queue_refresh_seconds == 300
+
+    def test_session_output_settings_from_yaml(self, tmp_path):
+        """Test loading session output settings from YAML."""
+        config_content = """
+session_no_output_seconds: 180
+session_no_output_tail_lines: 25
+session_no_output_max_bytes: 5000
+session_no_output_repeat_seconds: 300
+gh_write_verify_timeout_seconds: 30
+gh_write_verify_initial_delay_ms: 300
+gh_write_verify_max_delay_ms: 2500
+gh_write_verify_backoff: 1.8
+gh_write_verify_jitter_ms: 50
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.session_no_output_seconds == 180
+        assert config.session_no_output_tail_lines == 25
+        assert config.session_no_output_max_bytes == 5000
+        assert config.session_no_output_repeat_seconds == 300
+        assert config.gh_write_verify_timeout_seconds == 30
+        assert config.gh_write_verify_initial_delay_ms == 300
+        assert config.gh_write_verify_max_delay_ms == 2500
+        assert config.gh_write_verify_backoff == 1.8
+        assert config.gh_write_verify_jitter_ms == 50
 
     def test_max_issues_to_start_from_yaml(self, tmp_path):
         """Test loading max_issues_to_start from YAML."""

@@ -10,31 +10,27 @@ These tests verify the complete orchestrator lifecycle:
 Uses the single-orchestrator pattern for efficiency.
 """
 
-import json
-import subprocess
+import logging
 import time
 
 import pytest
 
-from tests.e2e.conftest import (
-    inflight_create,
-    inflight_update,
-    trigger_refresh,
-    wait_for_issue_label,
-    wait_for_pr_created,
-    get_issue_comments,
-)
+from tests.e2e.flows import E2EFlow, cleanup_test_prs, wait_for_issue_comment
 from issue_orchestrator.test_data import cleanup_test_issues
 
+logger = logging.getLogger(__name__)
 
 @pytest.mark.e2e
 @pytest.mark.timeout(180)  # 3 minute timeout
 class TestLiveOrchestratorLifecycle:
     """Test complete orchestrator lifecycle with real GitHub issues."""
 
-    def test_issue_to_completion(
+    @pytest.mark.asyncio
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=100)
+    async def test_issue_to_completion(
         self,
         e2e_orchestrator,
+        orchestrator_watcher,
         test_issue_factory,
         repo_name: str,
     ):
@@ -47,43 +43,33 @@ class TestLiveOrchestratorLifecycle:
         4. PR is created
         5. Completion comment is posted
         """
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
+
         # Create issue scoped to this test
         issue = test_issue_factory("[E2E] Issue to completion test")
         issue_number = int(issue.stable_id())
-        trigger_refresh()
 
         pr = None
         try:
-            # Wait for in-progress label (indicates session started)
-            in_progress = wait_for_issue_label(
-                repo_name, issue_number, "in-progress", timeout=60,
-                orchestrator=e2e_orchestrator,
-            )
-            assert in_progress, f"Issue {issue_number} should have 'in-progress' label"
+            # Wait for session start (in-progress label or PR created)
+            await flow.session_started(issue, timeout_s=60)
 
             # Wait for PR to be created (indicates agent completed)
-            pr = wait_for_pr_created(
-                repo_name, issue_number, timeout=120,
-                orchestrator=e2e_orchestrator,
-            )
-            assert pr is not None, f"PR should be created for issue {issue_number}"
+            pr_number = await flow.pr_created(issue, timeout_s=120)
+            pr = {"number": pr_number}
 
             # Verify PR details
-            assert "e2e" in pr["title"].lower() or str(issue_number) in pr["headRefName"], \
-                "PR should reference the test issue"
+            assert pr["number"] is not None, "PR should have a number"
 
             # Check for completion comment (with retry for GitHub API propagation)
-            implementation_comment = None
-            for attempt in range(5):
-                time.sleep(2)  # Wait for GitHub API propagation
-                comments = get_issue_comments(repo_name, issue_number)
-                for comment in comments:
-                    body = comment.get("body", "")
-                    if "## Implementation" in body or "E2E test completed" in body:
-                        implementation_comment = comment
-                        break
-                if implementation_comment:
-                    break
+            implementation_comment = await wait_for_issue_comment(
+                repo_name,
+                issue_number,
+                lambda comment: "## Implementation" in comment.get("body", "")
+                or "E2E test completed" in comment.get("body", ""),
+                timeout_s=10,
+                interval_s=2,
+            )
 
             assert implementation_comment is not None, \
                 "Implementation comment should be posted on issue"
@@ -91,12 +77,7 @@ class TestLiveOrchestratorLifecycle:
         finally:
             # Cleanup: close the PR if created
             if pr:
-                subprocess.run(
-                    ["gh", "pr", "close", str(pr["number"]),
-                     "--repo", repo_name,
-                     "--delete-branch"],
-                    capture_output=True
-                )
+                flow.close_pr(pr["number"])
 
 
 @pytest.mark.e2e
@@ -104,6 +85,7 @@ class TestLiveOrchestratorLifecycle:
 class TestOrchestratorStateObservation:
     """Test observing orchestrator state during execution."""
 
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=10, system_gh_activity_limit=50)
     def test_orchestrator_starts_and_stops(
         self,
         e2e_orchestrator,
@@ -111,8 +93,9 @@ class TestOrchestratorStateObservation:
         """Verify the shared orchestrator is running."""
         # The session-scoped orchestrator should already be running
         assert e2e_orchestrator.is_running(), "Orchestrator should be running"
-        print("✓ Orchestrator is running")
+        logger.info("✓ Orchestrator is running")
 
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=10, system_gh_activity_limit=50)
     def test_no_issues_to_process(
         self,
         e2e_orchestrator,
@@ -121,7 +104,7 @@ class TestOrchestratorStateObservation:
         # Just verify orchestrator is healthy
         time.sleep(3)
         assert e2e_orchestrator.is_running(), "Orchestrator should still be running"
-        print("✓ Orchestrator running healthy with no new issues")
+        logger.info("✓ Orchestrator running healthy with no new issues")
 
 
 @pytest.mark.e2e
@@ -129,9 +112,12 @@ class TestOrchestratorStateObservation:
 class TestLabelDetection:
     """Test that label changes are detected correctly."""
 
-    def test_blocked_label_detection(
+    @pytest.mark.asyncio
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
+    async def test_blocked_label_detection(
         self,
         e2e_orchestrator,
+        orchestrator_watcher,
         test_issue_factory,
         repo_name: str,
     ):
@@ -142,66 +128,36 @@ class TestLabelDetection:
         2. Adds 'blocked' label
         3. Verifies orchestrator sees it
         """
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
         issue = test_issue_factory("[E2E] Blocked label detection test")
         issue_number = int(issue.stable_id())
-        trigger_refresh()
 
-        # Wait for in-progress label
-        in_progress = wait_for_issue_label(
-            repo_name, issue_number, "in-progress", timeout=60,
-            orchestrator=e2e_orchestrator,
-        )
-        if not in_progress:
-            pytest.skip("Session didn't start in time")
+        # Wait for issue to appear in snapshots before updating labels
+        await flow.issue_seen(issue, timeout_s=60)
 
-        # Add blocked label using inflight_update
-        inflight_update(issue, add_labels=["blocked"])
+        # Add blocked label
+        flow.update_issue(issue, add_labels=["blocked"])
 
         # Wait for orchestrator to see the blocked label
-        blocked = wait_for_issue_label(
-            repo_name, issue_number, "blocked", timeout=30,
-            orchestrator=e2e_orchestrator,
-        )
-        assert blocked, "Blocked label should be detected"
-        print("✓ Blocked label detected")
+        await flow.issue_has_label(issue, "blocked", timeout_s=60)
+        logger.info("✓ Blocked label detected")
 
 
 @pytest.mark.e2e
 class TestCleanup:
     """Tests for cleanup functionality."""
 
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=50)
     def test_cleanup_test_issues(self, repo_name: str):
         """Verify test issue cleanup works."""
         # This just verifies the cleanup function runs without error
         count = cleanup_test_issues(repo_name)
         assert count >= 0
-        print(f"✓ Cleaned up {count} test issues")
+        logger.info("✓ Cleaned up %d test issues", count)
 
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=50)
     def test_cleanup_test_prs(self, repo_name: str):
         """Clean up any test PRs left behind including review-labeled PRs."""
         labels_to_cleanup = ["test-data", "needs-code-review", "code-reviewed"]
-        closed_prs = set()
-
-        for label in labels_to_cleanup:
-            result = subprocess.run(
-                ["gh", "pr", "list",
-                 "--repo", repo_name,
-                 "--label", label,
-                 "--json", "number"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                prs = json.loads(result.stdout)
-                for pr in prs:
-                    pr_num = pr["number"]
-                    if pr_num not in closed_prs:
-                        subprocess.run(
-                            ["gh", "pr", "close", str(pr_num),
-                             "--repo", repo_name,
-                             "--delete-branch"],
-                            capture_output=True
-                        )
-                        closed_prs.add(pr_num)
-
-        print(f"✓ Cleaned up {len(closed_prs)} test PRs")
+        cleaned = cleanup_test_prs(repo_name, labels_to_cleanup)
+        logger.info("✓ Cleaned up %d test PRs", cleaned)

@@ -11,6 +11,7 @@ Components that act are named Adapters.
 """
 
 import logging
+import time
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -218,6 +219,7 @@ class SessionObserver:
                 session_exists=exists,
             )
         elif exists:
+            self._emit_no_output_if_stale(session)
             result = SessionObservationResult.running(runtime_minutes=runtime)
         else:
             result = SessionObservationResult.terminated(runtime_minutes=runtime)
@@ -239,6 +241,71 @@ class SessionObserver:
             ))
 
         return result
+
+    def _emit_no_output_if_stale(self, session: Session) -> None:
+        """Emit a session_no_output event if the session log is idle too long."""
+        log_path = session.worktree_path / ".issue-orchestrator" / "session.log"
+        if not log_path.exists():
+            return
+
+        try:
+            stat = log_path.stat()
+        except OSError:
+            return
+
+        changed = (
+            session.last_log_mtime is None
+            or session.last_log_size is None
+            or stat.st_mtime != session.last_log_mtime
+            or stat.st_size != session.last_log_size
+        )
+        if changed:
+            session.last_log_mtime = stat.st_mtime
+            session.last_log_size = stat.st_size
+            session.last_output_monotonic = time.monotonic()
+            session.last_output_at = time.time()
+            session.last_output_tail = self._read_log_tail(
+                log_path,
+                self.config.session_no_output_tail_lines,
+                self.config.session_no_output_max_bytes,
+            )
+            session.last_no_output_monotonic = None
+            return
+
+        if session.last_output_monotonic is None:
+            return
+
+        now = time.monotonic()
+        idle_seconds = now - session.last_output_monotonic
+        if idle_seconds < self.config.session_no_output_seconds:
+            return
+
+        if session.last_no_output_monotonic is not None:
+            if now - session.last_no_output_monotonic < self.config.session_no_output_repeat_seconds:
+                return
+
+        session.last_no_output_monotonic = now
+        payload = {
+            "issue_number": session.issue.number,
+            "session_name": session.terminal_id,
+            "idle_seconds": int(idle_seconds),
+            "last_output_at": session.last_output_at,
+            "worktree_path": str(session.worktree_path),
+            "log_path": str(log_path),
+            "tail": session.last_output_tail or "",
+        }
+        self.events.publish(TraceEvent(EventName.SESSION_NO_OUTPUT, payload))
+
+    def _read_log_tail(self, log_path, tail_lines: int, max_bytes: int) -> str:
+        try:
+            content = log_path.read_text()
+        except Exception:
+            return ""
+        lines = content.splitlines()
+        tail = "\n".join(lines[-tail_lines:])
+        if len(tail.encode("utf-8")) > max_bytes:
+            tail = tail.encode("utf-8")[-max_bytes:].decode("utf-8", errors="replace")
+        return tail
 
     def check_session(self, session: Session) -> SessionStatus:
         """Check the status of a session.

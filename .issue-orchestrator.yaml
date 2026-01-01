@@ -60,3 +60,5 @@ validation:
 
 validation_policy:
   publish_requires: publish_gate  # Enforce validation on push
+
+github_token_env: GITHUB_TOKEN

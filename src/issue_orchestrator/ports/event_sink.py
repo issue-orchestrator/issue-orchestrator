@@ -33,11 +33,21 @@ class TraceEvent:
     event_type: "EventName"
     data: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
+    event_id: int | None = None
 
     @property
     def name(self) -> str:
         """Get the event name string for serialization."""
         return str(self.event_type)
+
+    def with_event_id(self, event_id: int) -> "TraceEvent":
+        """Return a copy of this event with an assigned event_id."""
+        return TraceEvent(
+            event_type=self.event_type,
+            data=dict(self.data),
+            timestamp=self.timestamp,
+            event_id=event_id,
+        )
 
 
 class EventSink(Protocol):

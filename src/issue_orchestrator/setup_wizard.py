@@ -85,19 +85,18 @@ class DetectedState:
     prompt_candidates: list[Path] = field(default_factory=list)
 
 
-def run_gh(args: list[str], cwd: Path | None = None) -> tuple[bool, str]:
-    """Run gh CLI command, return (success, output)."""
-    try:
-        result = subprocess.run(
-            ["gh"] + args,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=cwd,
+def _github_client(repo: str):
+    from .execution.github_http import GitHubHttpClient, GitHubHttpConfig, resolve_github_token
+
+    token = resolve_github_token(configured_token=None, configured_env=None)
+    return GitHubHttpClient(
+        GitHubHttpConfig(
+            repo=repo,
+            token=token,
+            base_url="https://api.github.com",
+            timeout_seconds=20.0,
         )
-        return result.returncode == 0, result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False, ""
+    )
 
 
 def run_git(args: list[str], cwd: Path | None = None) -> tuple[bool, str]:
@@ -123,13 +122,14 @@ def check_prerequisites() -> dict[str, bool]:
     ok, _ = run_git(["--version"])
     checks["git"] = ok
 
-    # gh CLI
-    ok, _ = run_gh(["--version"])
-    checks["gh"] = ok
+    # GitHub token
+    try:
+        from .execution.github_http import resolve_github_token
 
-    # gh auth
-    ok, _ = run_gh(["auth", "status"])
-    checks["gh_auth"] = ok
+        resolve_github_token(configured_token=None, configured_env=None)
+        checks["github_auth"] = True
+    except Exception:
+        checks["github_auth"] = False
 
     # claude CLI
     try:
@@ -168,16 +168,17 @@ def detect_repo(cwd: Path | None = None) -> str | None:
 
 def fetch_github_labels(repo: str) -> list[str]:
     """Fetch all labels from GitHub repo."""
-    ok, output = run_gh(["label", "list", "--repo", repo, "--limit", "100", "--json", "name"])
-    if not ok:
-        return []
-
-    import json
-
     try:
-        labels = json.loads(output)
-        return [label["name"] for label in labels]
-    except (json.JSONDecodeError, KeyError):
+        labels = _github_client(repo).list_labels()
+        names: list[str] = []
+        for label in labels:
+            if not isinstance(label, dict):
+                continue
+            name = label.get("name")
+            if isinstance(name, str):
+                names.append(name)
+        return names
+    except Exception:
         return []
 
 
@@ -367,17 +368,17 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     # Create agent labels on GitHub
     prompter.print("--- Agent Labels ---")
     if prompter.yes_no("Create agent labels on GitHub now?"):
+        client = _github_client(str(config["repo"]))
         for agent_name in config["agents"].keys():
-            ok, _ = run_gh([
-                "label", "create", agent_name,
-                "--repo", config["repo"],
-                "--color", "1D76DB",
-                "--description", f"Issues for {agent_name.split(':')[-1]} agent",
-                "--force",
-            ])
-            if ok:
+            try:
+                client.create_label(
+                    agent_name,
+                    color="1D76DB",
+                    description=f"Issues for {agent_name.split(':')[-1]} agent",
+                    force=True,
+                )
                 prompter.print(f"  ✓ {agent_name}")
-            else:
+            except Exception:
                 prompter.print(f"  ✗ {agent_name} (may already exist)")
 
     # Concurrency
@@ -638,23 +639,17 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                 prompter.print(f"    - {label}")
             if prompter.yes_no("Create missing labels on GitHub?"):
                 repo = str(config["repo"])
+                client = _github_client(repo)
                 for label in missing_labels:
-                    ok, _ = run_gh(
-                        [
-                            "label",
-                            "create",
+                    try:
+                        client.create_label(
                             label,
-                            "--repo",
-                            repo,
-                            "--color",
-                            "1D76DB",
-                            "--description",
-                            f"Issues for {label.split(':')[-1]} agent",
-                        ]
-                    )
-                    if ok:
+                            color="1D76DB",
+                            description=f"Issues for {label.split(':')[-1]} agent",
+                            force=True,
+                        )
                         prompter.print(f"  ✓ Created {label}")
-                    else:
+                    except Exception:
                         prompter.print(f"  ✗ Failed to create {label}")
 
     # Ensure we have concurrency settings
@@ -1196,8 +1191,8 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
 
     if not all_ok:
         prompter.print("\n⚠ Some prerequisites are missing. Install them before continuing.")
-        if not prereqs["gh_auth"]:
-            prompter.print("  Run: gh auth login")
+        if not prereqs["github_auth"]:
+            prompter.print("  Set a GitHub token (GITHUB_TOKEN or config)")
         if not prereqs["claude"]:
             prompter.print("  Install Claude Code CLI")
         if not prompter.yes_no("Continue anyway?", default=False):
@@ -1372,14 +1367,14 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
                 prompter.print(f"  • {name} - {desc}")
 
             if prompter.yes_no(f"\nCreate these {len(missing_labels)} labels on GitHub?"):
+                client = _github_client(repo)
                 for name, color, desc in missing_labels:
-                    run_gh([
-                        "label", "create", name,
-                        "--repo", repo,
-                        "--color", color,
-                        "--description", desc,
-                        "--force",
-                    ])
+                    client.create_label(
+                        name,
+                        color=color,
+                        description=desc,
+                        force=True,
+                    )
                 prompter.print("  ✓ Labels created")
 
 

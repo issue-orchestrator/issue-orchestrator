@@ -4,7 +4,7 @@ Live tests that create real GitHub issues and run the full orchestrator.
 
 ## Prerequisites
 
-- `gh` CLI authenticated with write access
+- GitHub token configured with write access
 - `claude` CLI available
 - Network access to GitHub
 

@@ -10,12 +10,24 @@ import os
 import signal
 import subprocess
 import time
+import threading
 import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Generator, AsyncGenerator, Callable, TypeVar
+import socket
 
 import pytest
+
+from issue_orchestrator.config import find_config_file
+from issue_orchestrator.execution.github_http import GitHubHttpClient, GitHubHttpConfig, resolve_github_token
+from issue_orchestrator.testing.asyncdsl import (
+    OrchestratorWatcher,
+    SSEEventStream,
+    HTTPSnapshotProvider,
+    HTTPReplayProvider,
+    WatcherConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +45,81 @@ def pytest_configure(config):
             logger.info("[E2E] Fail-fast enabled (maxfail=1)")
 
 
+def _find_free_port() -> int:
+    """Find an available localhost port for the control API."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+_github_client_cache: dict[str, GitHubHttpClient] = {}
+
+
+def _github_client(repo: str) -> GitHubHttpClient:
+    client = _github_client_cache.get(repo)
+    if client is None:
+        token = resolve_github_token(configured_token=None)
+        client = GitHubHttpClient(GitHubHttpConfig(repo=repo, token=token))
+        _github_client_cache[repo] = client
+    return client
+
+
+@pytest.fixture(scope="session", autouse=True)
+def gh_audit_session() -> Generator[None, None, None]:
+    """Enable gh audit for e2e runs with a per-session file prefix."""
+    from issue_orchestrator import gh_audit
+
+    run_id = str(int(time.time()))
+    gh_audit.configure(
+        enabled=True,
+        include_events=True,
+        audit_path=str(E2E_LOG_DIR / f"gh-audit-{{pid}}-{run_id}.json"),
+    )
+    gh_audit.reset_stats()
+    yield
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 # Default label for e2e test data - used to identify and clean up test artifacts
 DEFAULT_E2E_FILTER_LABEL = "test-data"
+E2E_TEST_LABEL_PREFIX = "e2e:"
+_CLEANUP_CMD_TIMEOUT_SECONDS: int | None = None
+
+
+def e2e_label(logical: str) -> str:
+    """Apply the e2e label prefix to a logical test label."""
+    if logical.startswith(E2E_TEST_LABEL_PREFIX):
+        return logical
+    return f"{E2E_TEST_LABEL_PREFIX}{logical}"
+
+
+def _cleanup_command_timeout_seconds() -> int:
+    global _CLEANUP_CMD_TIMEOUT_SECONDS
+    if _CLEANUP_CMD_TIMEOUT_SECONDS is not None:
+        return _CLEANUP_CMD_TIMEOUT_SECONDS
+
+    default_timeout = 120
+    timeout = default_timeout
+    config_path = Path.cwd() / ".issue-orchestrator.e2e.yaml"
+    if not config_path.exists():
+        config_path = find_config_file(Path.cwd())
+    if config_path and config_path.exists():
+        try:
+            with open(config_path) as handle:
+                data = yaml.safe_load(handle) or {}
+            e2e_config = data.get("e2e", {}) if isinstance(data, dict) else {}
+            raw_timeout = e2e_config.get("cleanup_command_timeout_seconds", default_timeout)
+            timeout = int(raw_timeout)
+        except Exception:
+            timeout = default_timeout
+
+    if timeout < 1:
+        timeout = 1
+    _CLEANUP_CMD_TIMEOUT_SECONDS = timeout
+    return timeout
 
 # Persistent log directory - survives test cancellation
 E2E_LOG_DIR = Path("/tmp/e2e-orchestrator-logs")
@@ -67,6 +148,19 @@ def _write_progress(event: str, nodeid: str = "", extra: str = "") -> None:
 def _keep_artifacts() -> bool:
     """Return True if e2e cleanup should be skipped."""
     return os.environ.get("E2E_KEEP_ARTIFACTS") == "1"
+
+
+def _env_token_name() -> str | None:
+    if os.environ.get("GITHUB_TOKEN"):
+        return "GITHUB_TOKEN"
+    if os.environ.get("GH_TOKEN"):
+        return "GH_TOKEN"
+    return None
+
+
+def _keep_remote_artifacts() -> bool:
+    """Return True if remote cleanup (PRs/branches/issues) should be skipped."""
+    return os.environ.get("E2E_KEEP_REMOTE_ARTIFACTS") == "1"
 
 
 def _tail_lines(path: Path, limit: int = 200) -> list[str]:
@@ -416,6 +510,12 @@ FATAL_ERROR_PATTERNS = [
     "Can't trigger event",  # State machine errors
     "RecursionError:",
     "MemoryError:",
+    "session.failed",
+    "session.start_failed",
+    "ended without completion",
+    "Terminated without completion record",
+    "Timed out without completion record",
+    "No completion record found",
 ]
 
 
@@ -445,6 +545,7 @@ def wait_with_process_check(
     """
     start = time.time()
     last_progress = start
+    last_snapshot = start
     poll_count = 0
 
     while time.time() - start < timeout:
@@ -472,6 +573,9 @@ def wait_with_process_check(
                         f"Log file: {orchestrator.log_path}\n"
                         f"Recent output:\n{recent_logs[-500:]}"
                     )
+            if orchestrator.last_log_age_seconds() > 20 and (time.time() - last_snapshot) > 30:
+                _snapshot_logs(f"stall={description}")
+                last_snapshot = time.time()
 
         result = condition_fn()
         if result:
@@ -492,13 +596,12 @@ def wait_with_process_check(
 
 
 def is_gh_authenticated() -> bool:
-    """Check if gh CLI is authenticated."""
-    result = subprocess.run(
-        ["gh", "auth", "status"],
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
+    """Check if GitHub auth is available."""
+    try:
+        resolve_github_token(configured_token=None)
+        return True
+    except Exception:
+        return False
 
 
 class GitHubRateLimitError(Exception):
@@ -515,23 +618,15 @@ def check_github_rate_limit() -> dict:
     Raises:
         GitHubRateLimitError: If rate limit is exceeded
     """
-    result = subprocess.run(
-        ["gh", "api", "rate_limit"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        # If we can't check rate limit, assume it's ok
-        return {"remaining": -1, "limit": -1, "reset_at": "unknown"}
-
     try:
-        data = json.loads(result.stdout)
-        core = data.get("resources", {}).get("core", {})
+        data = _github_client(get_test_repo()).get_rate_limit_snapshot()
+        if data is None:
+            return {"remaining": -1, "limit": -1, "reset_at": "unknown"}
+        core = data.to_payload().get("core", {})
         remaining = core.get("remaining", 0)
         limit = core.get("limit", 5000)
         reset_timestamp = core.get("reset", 0)
 
-        # Convert unix timestamp to readable time
         import datetime
         reset_at = datetime.datetime.fromtimestamp(reset_timestamp).strftime("%H:%M:%S") if reset_timestamp else "unknown"
 
@@ -546,7 +641,7 @@ def check_github_rate_limit() -> dict:
             )
 
         return {"remaining": remaining, "limit": limit, "reset_at": reset_at}
-    except json.JSONDecodeError:
+    except Exception:
         return {"remaining": -1, "limit": -1, "reset_at": "unknown"}
 
 
@@ -585,15 +680,10 @@ def is_claude_available() -> bool:
 def is_github_reachable() -> bool:
     """Check that GitHub API is reachable for live e2e tests."""
     try:
-        result = subprocess.run(
-            ["gh", "api", "rate_limit"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        snapshot = _github_client(get_test_repo()).get_rate_limit_snapshot()
+        return snapshot is not None
+    except Exception:
         return False
-    return result.returncode == 0
 
 
 def get_repo_from_git() -> str:
@@ -721,67 +811,118 @@ def _cleanup_tmux_sessions():
         logger.info("[E2E CLEANUP] Killed stale orchestrator tmux session")
 
 
+def _run_cleanup_step(name: str, fn, timeout_s: int) -> int:
+    """Run a cleanup step with a hard wall-clock timeout."""
+    start = time.monotonic()
+    result: dict[str, int] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = int(fn())
+        except Exception:
+            result["value"] = 0
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        logger.warning("[E2E CLEANUP] %s timed out after %ds; skipping", name, timeout_s)
+        return 0
+    elapsed = time.monotonic() - start
+    logger.info("[E2E CLEANUP] %s completed in %.1fs", name, elapsed)
+    return result.get("value", 0)
+
+
+def _verify_cleanup_items(
+    name: str,
+    items: list,
+    check_fn,
+    retries: int = 1,
+    retry_delay_s: float = 2.0,
+) -> int:
+    """Verify cleanup items, retrying once to allow eventual consistency."""
+    remaining = list(items)
+    for attempt in range(retries + 1):
+        if not remaining:
+            return 0
+        still = []
+        for item in remaining:
+            if check_fn(item):
+                continue
+            still.append(item)
+        if not still:
+            return 0
+        remaining = still
+        if attempt < retries:
+            logger.info(
+                "[E2E CLEANUP] %s verify pending=%d; retrying in %.1fs",
+                name,
+                len(remaining),
+                retry_delay_s,
+            )
+            time.sleep(retry_delay_s)
+    logger.warning("[E2E CLEANUP] %s verify incomplete; remaining=%d", name, len(remaining))
+    return len(remaining)
+
+
 def _cleanup_remote_branches(repo: str) -> int:
     """Clean up remote branches matching e2e patterns (orphaned from crashed runs)."""
     # Patterns for e2e test branches: numeric prefix (issue number) + e2e keywords
     e2e_patterns = ["e2e-", "-e2e-", "-test-"]
     branches_deleted = 0
+    branches_attempted: list[str] = []
+    deadline = time.monotonic() + 30
 
     # 1. Delete branches for ALL e2e PRs (including closed) - prevents "PR already exists" error
     # GitHub keeps closed PRs and won't let you create a new PR for the same branch
-    result = subprocess.run(
-        ["gh", "pr", "list",
-         "--repo", repo,
-         "--state", "all",  # Include closed PRs!
-         "--limit", "100",
-         "--json", "number,headRefName,state"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        prs = json.loads(result.stdout)
+    try:
+        prs = _github_client(repo).list_prs(state="all", limit=100)
         for pr in prs:
-            branch = pr.get("headRefName", "")
+            branch = (pr.get("head") or {}).get("ref", "")
             if any(pattern in branch.lower() for pattern in e2e_patterns):
-                # Try to delete the branch (may not exist if already deleted)
-                delete_result = subprocess.run(
-                    ["gh", "api", "-X", "DELETE",
-                     f"/repos/{repo}/git/refs/heads/{branch}"],
-                    capture_output=True
-                )
-                if delete_result.returncode == 0:
-                    logger.info("[E2E CLEANUP] Deleted branch for PR #%d: %s", pr["number"], branch)
+                if time.monotonic() > deadline:
+                    logger.warning("[E2E CLEANUP] Branch cleanup time budget exceeded; stopping early")
+                    return branches_deleted
+                try:
+                    _github_client(repo).delete_branch(branch)
+                    branches_attempted.append(branch)
+                    logger.info("[E2E CLEANUP] Deleted branch for PR #%d: %s", pr.get("number"), branch)
                     branches_deleted += 1
+                except Exception:
+                    logger.warning("[E2E CLEANUP] Failed deleting branch for PR #%s: %s", pr.get("number"), branch)
+    except Exception as exc:
+        logger.warning("[E2E CLEANUP] Failed to list PRs for branch cleanup: %s", exc)
 
     # 2. Also check for orphan branches not associated with any PR
-    result = subprocess.run(
-        ["git", "ls-remote", "--heads", f"https://github.com/{repo}.git"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        for line in result.stdout.strip().split("\n"):
-            if not line:
-                continue
-            parts = line.split("\t")
-            if len(parts) != 2:
-                continue
-            ref = parts[1]
-            if not ref.startswith("refs/heads/"):
-                continue
-            branch = ref.replace("refs/heads/", "")
-
-            # Check if branch matches e2e patterns
+    try:
+        for branch in _github_client(repo).list_branches():
             if any(pattern in branch.lower() for pattern in e2e_patterns):
                 logger.info("[E2E CLEANUP] Deleting orphan branch: %s", branch)
-                delete_result = subprocess.run(
-                    ["gh", "api", "-X", "DELETE",
-                     f"/repos/{repo}/git/refs/heads/{branch}"],
-                    capture_output=True
-                )
-                if delete_result.returncode == 0:
+                if time.monotonic() > deadline:
+                    logger.warning("[E2E CLEANUP] Branch cleanup time budget exceeded; stopping early")
+                    return branches_deleted
+                try:
+                    _github_client(repo).delete_branch(branch)
+                    branches_attempted.append(branch)
                     branches_deleted += 1
+                except Exception:
+                    logger.warning("[E2E CLEANUP] Failed deleting orphan branch: %s", branch)
+    except Exception as exc:
+        logger.warning("[E2E CLEANUP] Failed to list remote branches: %s", exc)
 
+    def _branch_gone(branch: str) -> bool:
+        try:
+            return not _github_client(repo).branch_exists(branch)
+        except Exception:
+            return True
+
+    _verify_cleanup_items(
+        "Branch cleanup",
+        branches_attempted,
+        _branch_gone,
+        retries=1,
+        retry_delay_s=3.0,
+    )
     return branches_deleted
 
 
@@ -794,112 +935,168 @@ def _cleanup_prs(repo: str) -> int:
     e2e_branch_patterns = ["e2e-", "-test-", "-concurrent-"]
     closed_prs: list[dict] = []
     closed_pr_nums: set[int] = set()
+    branches_attempted: list[str] = []
 
     # First, clean up OPEN PRs with specific labels
     for label in labels_to_cleanup:
-        result = subprocess.run(
-            ["gh", "pr", "list",
-             "--repo", repo,
-             "--label", label,
-             "--state", "open",
-             "--json", "number,title,createdAt,headRefName"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            prs = json.loads(result.stdout)
-            for pr in prs:
-                pr_num = pr["number"]
-                if pr_num not in closed_pr_nums:
-                    logger.info("[E2E CLEANUP] Closing PR #%d: %s (label: %s)", pr_num, pr['title'], label)
-                    subprocess.run(
-                        ["gh", "pr", "close", str(pr_num),
-                         "--repo", repo,
-                         "--delete-branch"],
-                        capture_output=True
-                    )
-                    closed_prs.append(pr)
-                    closed_pr_nums.add(pr_num)
+        try:
+            items = _github_client(repo).get_prs_with_label(label, state="open")
+            for item in items:
+                pr_num = item.get("number")
+                if not pr_num or pr_num in closed_pr_nums:
+                    continue
+                pr = _github_client(repo).get_pr(pr_num) or {}
+                title = pr.get("title", "")
+                logger.info("[E2E CLEANUP] Closing PR #%d: %s (label: %s)", pr_num, title, label)
+                _github_client(repo).close_pr(pr_num)
+                branch = (pr.get("head") or {}).get("ref", "")
+                if branch:
+                    try:
+                        _github_client(repo).delete_branch(branch)
+                    except Exception:
+                        pass
+                    branches_attempted.append(branch)
+                closed_prs.append(pr)
+                closed_pr_nums.add(pr_num)
+        except Exception as exc:
+            logger.warning("[E2E CLEANUP] Failed listing PRs for label '%s': %s", label, exc)
 
     # Second, clean up OPEN PRs with e2e branch patterns
-    result = subprocess.run(
-        ["gh", "pr", "list",
-         "--repo", repo,
-         "--state", "open",
-         "--json", "number,title,createdAt,headRefName"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        prs = json.loads(result.stdout)
+    try:
+        prs = _github_client(repo).list_prs(state="open", limit=100)
         for pr in prs:
-            pr_num = pr["number"]
-            branch = pr.get("headRefName", "")
-            if pr_num not in closed_pr_nums:
-                if any(pattern in branch.lower() for pattern in e2e_branch_patterns):
-                    logger.info("[E2E CLEANUP] Closing PR #%d: %s (branch pattern)", pr_num, pr['title'])
-                    subprocess.run(
-                        ["gh", "pr", "close", str(pr_num),
-                         "--repo", repo,
-                         "--delete-branch"],
-                        capture_output=True
-                    )
-                    closed_prs.append(pr)
-                    closed_pr_nums.add(pr_num)
+            pr_num = pr.get("number")
+            branch = (pr.get("head") or {}).get("ref", "")
+            if not pr_num or pr_num in closed_pr_nums:
+                continue
+            if any(pattern in branch.lower() for pattern in e2e_branch_patterns):
+                logger.info("[E2E CLEANUP] Closing PR #%d: %s (branch pattern)", pr_num, pr.get("title", ""))
+                _github_client(repo).close_pr(pr_num)
+                if branch:
+                    try:
+                        _github_client(repo).delete_branch(branch)
+                    except Exception:
+                        pass
+                    branches_attempted.append(branch)
+                closed_prs.append(pr)
+                closed_pr_nums.add(pr_num)
+    except Exception as exc:
+        logger.warning("[E2E CLEANUP] Failed to list open PRs: %s", exc)
 
     # Third, clean up branches from CLOSED/MERGED PRs that match e2e patterns
     # This handles cases where PRs were closed but branches weren't deleted
-    result = subprocess.run(
-        ["gh", "pr", "list",
-         "--repo", repo,
-         "--state", "all",  # Include closed and merged
-         "--limit", "100",  # Recent PRs only
-         "--json", "number,state,headRefName"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        prs = json.loads(result.stdout)
+    try:
+        prs = _github_client(repo).list_prs(state="all", limit=100)
         for pr in prs:
-            if pr.get("state") in ("CLOSED", "MERGED"):
-                branch = pr.get("headRefName", "")
+            if str(pr.get("state", "")).lower() in ("closed", "merged"):
+                branch = (pr.get("head") or {}).get("ref", "")
                 if any(pattern in branch.lower() for pattern in e2e_branch_patterns):
-                    # Try to delete the branch directly
-                    del_result = subprocess.run(
-                        ["gh", "api", "-X", "DELETE",
-                         f"/repos/{repo}/git/refs/heads/{branch}"],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if del_result.returncode == 0:
-                        logger.info("[E2E CLEANUP] Deleted orphan branch: %s (from closed PR #%d)",
-                                  branch, pr["number"])
+                    try:
+                        _github_client(repo).delete_branch(branch)
+                        branches_attempted.append(branch)
+                        logger.info(
+                            "[E2E CLEANUP] Deleted orphan branch: %s (from closed PR #%d)",
+                            branch,
+                            pr.get("number"),
+                        )
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.warning("[E2E CLEANUP] Failed to list PRs for branch cleanup: %s", exc)
+
+    pr_numbers = list(closed_pr_nums)
+
+    def _pr_closed(pr_number: int) -> bool:
+        try:
+            pr = _github_client(repo).get_pr(pr_number)
+            if not pr:
+                return True
+            state = str(pr.get("state", "")).upper()
+            return state in {"CLOSED", "MERGED"}
+        except Exception:
+            return True
+
+    def _branch_gone(branch: str) -> bool:
+        try:
+            return not _github_client(repo).branch_exists(branch)
+        except Exception:
+            return True
+
+    _verify_cleanup_items(
+        "PR cleanup",
+        pr_numbers,
+        _pr_closed,
+        retries=1,
+        retry_delay_s=3.0,
+    )
+    _verify_cleanup_items(
+        "PR branch cleanup",
+        branches_attempted,
+        _branch_gone,
+        retries=1,
+        retry_delay_s=3.0,
+    )
 
     return len(closed_prs)
 
 
+def _ensure_pr_label(repo: str, label: str) -> None:
+    """Ensure a PR label exists (noop if already created)."""
+    try:
+        _github_client(repo).create_label(label, force=True)
+    except Exception:
+        logger.warning("[E2E CLEANUP] Failed ensuring label: %s", label)
+
+
+def _ensure_required_pr_labels(repo: str) -> None:
+    """Ensure required PR labels exist for e2e workflows."""
+    labels = [
+        "needs-code-review",
+        "code-reviewed",
+        "needs-rework",
+        "rework-cycle-1",
+        "rework-cycle-2",
+        "triage-reviewed",
+        "agent:triage-investigator",
+        "agent:script-review",
+        "agent:script-completes",
+        "agent:e2e-test",
+    ]
+    for label in labels:
+        _ensure_pr_label(repo, label)
+
+
 def _cleanup_issues(repo: str) -> int:
     """Close test issues with test-data label."""
-    result = subprocess.run(
-        ["gh", "issue", "list",
-         "--repo", repo,
-         "--label", DEFAULT_E2E_FILTER_LABEL,
-         "--state", "open",
-         "--json", "number,title"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
+    try:
+        issues = _github_client(repo).list_issues(labels=[DEFAULT_E2E_FILTER_LABEL], state="open", limit=100)
+    except Exception:
         return 0
-
-    issues = json.loads(result.stdout)
+    closed_issues: list[int] = []
     for issue in issues:
-        logger.info("[E2E CLEANUP] Closing issue #%d: %s", issue['number'], issue['title'])
-        subprocess.run(
-            ["gh", "issue", "close", str(issue["number"]),
-             "--repo", repo],
-            capture_output=True
-        )
+        logger.info("[E2E CLEANUP] Closing issue #%d: %s", issue['number'], issue.get('title', ''))
+        try:
+            _github_client(repo).update_issue_state(issue["number"], "closed")
+            closed_issues.append(issue["number"])
+        except Exception:
+            logger.warning("[E2E CLEANUP] Timeout closing issue #%d", issue["number"])
+
+    def _issue_closed(issue_number: int) -> bool:
+        try:
+            issue = _github_client(repo).get_issue(issue_number)
+            if not issue:
+                return True
+            return str(issue.get("state", "")).upper() == "CLOSED"
+        except Exception:
+            return True
+
+    _verify_cleanup_items(
+        "Issue cleanup",
+        closed_issues,
+        _issue_closed,
+        retries=1,
+        retry_delay_s=3.0,
+    )
 
     return len(issues)
 
@@ -925,24 +1122,34 @@ def e2e_reconciliation_at_session_start():
     logger.info("=" * 60)
 
     if _keep_artifacts():
-        logger.info("[E2E RECONCILIATION] Skipping cleanup (E2E_KEEP_ARTIFACTS=1)")
-        yield
-        return
+        logger.info("[E2E RECONCILIATION] Skipping local cleanup (E2E_KEEP_ARTIFACTS=1)")
+    else:
+        # 1. Local cleanup
+        _cleanup_local_worktrees()
+        _cleanup_tmux_sessions()
 
-    # 1. Local cleanup
-    _cleanup_local_worktrees()
-    _cleanup_tmux_sessions()
-
+    if _keep_remote_artifacts():
+        logger.info("[E2E RECONCILIATION] Skipping remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
+        prs_closed = 0
+        branches_deleted = 0
+        issues_closed = 0
+        _ensure_required_pr_labels(repo)
+    else:
     # 2. Remote cleanup (order matters: PRs first, then orphan branches)
-    prs_closed = _cleanup_prs(repo)
-    branches_deleted = _cleanup_remote_branches(repo)
-    issues_closed = _cleanup_issues(repo)
+        prs_closed = _run_cleanup_step("PR cleanup", lambda: _cleanup_prs(repo), timeout_s=120)
+        branches_deleted = _run_cleanup_step("Branch cleanup", lambda: _cleanup_remote_branches(repo), timeout_s=120)
+        issues_closed = _run_cleanup_step("Issue cleanup", lambda: _cleanup_issues(repo), timeout_s=120)
+        _ensure_required_pr_labels(repo)
 
     # Summary
     logger.info("=" * 60)
     logger.info("[E2E RECONCILIATION] Summary: PRs=%d, Branches=%d, Issues=%d",
                 prs_closed, branches_deleted, issues_closed)
     logger.info("=" * 60)
+    try:
+        cache_path.write_text(json.dumps({"last_run": now}))
+    except Exception:
+        pass
 
     yield
 
@@ -980,15 +1187,20 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
     config.ui_mode = "tmux"
     config.max_concurrent_sessions = 4  # Allow more concurrency for saturation testing
     config.filter_label = "test-data"
-    config.queue_refresh_seconds = 5
-    config.control_api_port = 0
+    config.github_token_env = _env_token_name()
+    config.queue_refresh_seconds = 600
+    env_port = os.environ.get("E2E_CONTROL_API_PORT")
+    config.control_api_port = int(env_port) if env_port else _find_free_port()
     config.e2e_pr_labels = ["test-data"]
     config.code_review_agent = "agent:script-review"
     config.code_review_label = "needs-code-review"
     config.code_reviewed_label = "code-reviewed"
     config.max_rework_cycles = 2
-    config.triage_review_agent = "agent:triage-investigator"
+    config.triage_review_agent = None
     config.triage_review_threshold = 2
+    config.gh_audit_enabled = True
+    config.gh_audit_events = True
+    config.gh_audit_file = str(E2E_LOG_DIR / "gh-audit-{pid}.json")
 
     # Configure e2e-test agent (scripted for deterministic e2e)
     config.agents = {
@@ -998,6 +1210,7 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
+            meta_agent="claude-code",
             permission_mode="bypassPermissions",
         )
         ,
@@ -1007,6 +1220,7 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
+            meta_agent="claude-code",
             permission_mode="bypassPermissions",
         ),
         "agent:script-review": AgentConfig(
@@ -1015,6 +1229,7 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
             timeout_minutes=3,
             model="sonnet",
             command="PR_NUMBER={pr_number} bash {prompt}",
+            meta_agent="claude-code",
             permission_mode="bypassPermissions",
         ),
         "agent:triage-investigator": AgentConfig(
@@ -1023,12 +1238,16 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
+            meta_agent="claude-code",
             permission_mode="bypassPermissions",
         ),
     }
-    config.dangerous.skip_verification = True
 
     config.session_timeout_minutes = 3
+
+    # Default review timeout: code agent + review agent timeouts (seconds)
+    from tests.e2e.flows import review_timeout_from_config
+    os.environ["E2E_REVIEW_TIMEOUT_S"] = str(review_timeout_from_config(config))
 
     # Fast validation for e2e
     config.validation = ValidationConfig(
@@ -1091,7 +1310,8 @@ def e2e_orchestrator(
     Tests create their own issues via test_issue_factory or inflight_create.
     """
     proc = OrchestratorProcess(e2e_session_config, e2e_project_root)
-    proc.start(max_issues=5, extra_args=["--label", filter_label])
+    max_issues = int(os.environ.get("E2E_MAX_ISSUES", "50"))
+    proc.start(max_issues=max_issues, extra_args=["--label", filter_label])
 
     # Wait for orchestrator to be ready
     time.sleep(2)
@@ -1108,6 +1328,35 @@ def e2e_orchestrator(
 
     print(f"\n[E2E TEARDOWN] Stopping orchestrator...")
     proc.stop()
+
+
+@pytest.fixture
+async def orchestrator_watcher(
+    e2e_orchestrator: "OrchestratorProcess",
+) -> AsyncGenerator[OrchestratorWatcher, None]:
+    """Async watcher wired to the control API SSE stream."""
+    from issue_orchestrator.config import Config
+
+    env_port = os.environ.get("E2E_CONTROL_API_PORT")
+    port = int(env_port) if env_port is not None else Config().control_api_port
+    if port <= 0:
+        pytest.skip("Control API disabled; async watcher unavailable")
+
+    stream = SSEEventStream(f"http://localhost:{port}/api/events")
+    await stream.start()
+    snapshot_provider = HTTPSnapshotProvider(f"http://localhost:{port}/api/snapshot")
+    replay_provider = HTTPReplayProvider(f"http://localhost:{port}/api/events_since")
+    watcher = await OrchestratorWatcher.create(
+        event_stream=stream,
+        snapshot_provider=snapshot_provider,
+        replay_provider=replay_provider,
+        config=WatcherConfig(),
+    )
+    try:
+        yield watcher
+    finally:
+        await watcher.close()
+        await stream.close()
 
 
 def trigger_refresh(port: int | None = None, timeout: int = 5) -> bool:
@@ -1154,6 +1403,282 @@ def trigger_refresh(port: int | None = None, timeout: int = 5) -> bool:
                               max_retries, e)
                 return False
     return False
+
+
+class _InflightRefreshTracker:
+    def __init__(self) -> None:
+        self._pending: set[str] = set()
+
+    def reset(self) -> None:
+        self._pending.clear()
+
+    def register(self, issue_key: str) -> None:
+        self._pending.add(issue_key)
+
+    def ensure_refreshed(self, port: int | None) -> None:
+        if not self._pending:
+            return
+        pending = set(self._pending)
+        self._pending.clear()
+        logger.info("[E2E] Triggering refresh for %d inflight issue(s)", len(pending))
+        if not trigger_refresh(port):
+            self._pending.update(pending)
+
+
+_inflight_refresh_tracker = _InflightRefreshTracker()
+
+
+def register_inflight_issue(issue: IssueKey) -> None:
+    """Record an inflight issue that requires a refresh when waiting."""
+    _inflight_refresh_tracker.register(issue.stable_id())
+
+
+def ensure_inflight_refresh(port: int | None) -> None:
+    """Trigger a single refresh if inflight issues are pending."""
+    _inflight_refresh_tracker.ensure_refreshed(port)
+
+
+@pytest.fixture(autouse=True)
+def e2e_inflight_refresh_guard() -> None:
+    """Reset refresh tracking per test so inflight issues don't leak."""
+    _inflight_refresh_tracker.reset()
+    yield
+
+
+def _control_api_port() -> int | None:
+    env_port = os.environ.get("E2E_CONTROL_API_PORT")
+    if env_port is not None:
+        return int(env_port)
+    return None
+
+
+def _fetch_gh_audit_report(port: int | None) -> dict | None:
+    if port is None or port <= 0:
+        return None
+    import urllib.request
+    import urllib.error
+    import time as _time
+    import threading
+
+    for attempt in range(3):
+        try:
+            payload: dict | None = None
+            error: Exception | None = None
+
+            def _fetch() -> None:
+                nonlocal payload, error
+                try:
+                    req = urllib.request.Request(
+                        f"http://localhost:{port}/api/gh_audit_report",
+                        data=b"{}",
+                        method="POST",
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        payload = json.loads(resp.read().decode("utf-8"))
+                except Exception as exc:
+                    error = exc
+
+            thread = threading.Thread(target=_fetch, daemon=True)
+            thread.start()
+            thread.join(timeout=6)
+            if thread.is_alive():
+                logger.info("[E2E] GH audit report fetch timed out (hard)")
+                if attempt == 2:
+                    return None
+                _time.sleep(1 + attempt)
+                continue
+            if error:
+                raise error
+            if payload is None:
+                raise RuntimeError("Empty GH audit payload")
+            break
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
+            logger.info("[E2E] GH audit report fetch failed: %s", exc)
+            if attempt == 2:
+                return None
+            _time.sleep(1 + attempt)
+
+    path = payload.get("path") if isinstance(payload, dict) else None
+    if not path:
+        return None
+    try:
+        return json.loads(Path(path).read_text())
+    except OSError as exc:
+        logger.info("[E2E] GH audit report read failed: %s", exc)
+        return None
+
+
+def _usage_units_from_report(report: dict) -> int:
+    return int(report.get("usage_units", 0))
+
+
+def _calls_from_report(report: dict) -> int:
+    return int(report.get("total_calls", 0))
+
+
+def _scope_usage(report: dict, scope: str) -> int:
+    totals = report.get("by_scope_totals") or {}
+    entry = totals.get(scope) or {}
+    return int(entry.get("usage_units", 0))
+
+
+def _scope_calls(report: dict, scope: str) -> int:
+    totals = report.get("by_scope_totals") or {}
+    entry = totals.get(scope) or {}
+    return int(entry.get("calls", 0))
+
+
+def _delta_counts(before: dict | None, after: dict | None, key: str) -> dict[str, int]:
+    before_map = (before or {}).get(key) or {}
+    after_map = (after or {}).get(key) or {}
+    deltas: dict[str, int] = {}
+    for name, count in after_map.items():
+        try:
+            after_count = int(count)
+        except (TypeError, ValueError):
+            after_count = 0
+        try:
+            before_count = int(before_map.get(name, 0))
+        except (TypeError, ValueError):
+            before_count = 0
+        delta = after_count - before_count
+        if delta:
+            deltas[str(name)] = delta
+    return deltas
+
+
+def _log_top_deltas(label: str, deltas: dict[str, int], limit: int = 5) -> None:
+    if not deltas:
+        return
+    top = sorted(deltas.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    logger.info("[E2E] GH activity %s: %s", label, top)
+
+
+@pytest.fixture(autouse=True)
+def e2e_gh_activity_guard(request) -> None:
+    marker = request.node.get_closest_marker("gh_activity_limit")
+    if marker is None:
+        if request.node.get_closest_marker("e2e") is not None:
+            pytest.fail("Missing gh_activity_limit marker on e2e test")
+        yield
+        return
+
+    if marker.kwargs:
+        unexpected = set(marker.kwargs.keys()) - {"test_gh_activity_limit", "system_gh_activity_limit"}
+        if unexpected:
+            pytest.fail(
+                "gh_activity_limit only accepts test_gh_activity_limit and system_gh_activity_limit, "
+                f"got: {sorted(unexpected)}"
+            )
+    missing = {"test_gh_activity_limit", "system_gh_activity_limit"} - set(marker.kwargs.keys())
+    if missing:
+        pytest.fail(f"gh_activity_limit requires {sorted(missing)} to be specified")
+    port = _control_api_port()
+    before = _fetch_gh_audit_report(port)
+    yield
+    after = _fetch_gh_audit_report(port)
+    if not before or not after:
+        return
+
+    delta_usage = _usage_units_from_report(after) - _usage_units_from_report(before)
+    delta_calls = _calls_from_report(after) - _calls_from_report(before)
+    delta_startup_usage = _scope_usage(after, "startup") - _scope_usage(before, "startup")
+    delta_periodic_usage = _scope_usage(after, "periodic") - _scope_usage(before, "periodic")
+    delta_startup_calls = _scope_calls(after, "startup") - _scope_calls(before, "startup")
+    delta_periodic_calls = _scope_calls(after, "periodic") - _scope_calls(before, "periodic")
+    charged_usage = delta_usage - delta_startup_usage - delta_periodic_usage
+    charged_calls = delta_calls - delta_startup_calls - delta_periodic_calls
+
+    max_test_usage = marker.kwargs.get("test_gh_activity_limit")
+    max_system_usage = marker.kwargs.get("system_gh_activity_limit")
+
+    system_usage = delta_startup_usage + delta_periodic_usage
+    logger.info(
+        "[E2E] GH activity usage: test=%d system=%d total=%d",
+        charged_usage,
+        system_usage,
+        delta_usage,
+    )
+    _log_top_deltas("by_issue", _delta_counts(before, after, "by_issue"))
+    _log_top_deltas("by_caller", _delta_counts(before, after, "by_caller"))
+    _log_top_deltas("by_command", _delta_counts(before, after, "by_command"))
+    if max_test_usage is not None and charged_usage > int(max_test_usage):
+        pytest.fail(f"Test GH activity exceeded limit: {charged_usage} > {max_test_usage}")
+    if max_system_usage is not None and system_usage > int(max_system_usage):
+        pytest.fail(f"System GH activity exceeded limit: {system_usage} > {max_system_usage}")
+
+    snapshot = after.get("last_rate_limit") or {}
+    core = snapshot.get("core") or {}
+    remaining = core.get("remaining")
+    if isinstance(remaining, int) and remaining <= 0:
+        logger.warning("[E2E] GitHub rate limit exceeded (core.remaining <= 0)")
+async def wait_for_issue_seen(
+    watcher: "OrchestratorWatcher",
+    issue_key: str,
+    timeout_s: float,
+) -> None:
+    """Wait for an issue to appear in snapshots (resyncing as needed)."""
+    deadline = time.monotonic() + timeout_s
+    last_resync = 0.0
+    min_resync_interval_s = 600.0
+    while time.monotonic() < deadline:
+        if issue_key in watcher.view.issues:
+            return
+        now = time.monotonic()
+        if now - last_resync >= min_resync_interval_s:
+            await watcher.resync_snapshot()
+            last_resync = now
+        try:
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        watcher._notify.clear()
+    raise TimeoutError(f"Timed out waiting for issue {issue_key} to appear in snapshot")
+
+
+async def wait_for_session_started(
+    watcher: "OrchestratorWatcher",
+    issue_key: str,
+    timeout_s: float,
+) -> None:
+    """Wait until a session starts (in-progress label or PR created)."""
+    deadline = time.monotonic() + timeout_s
+    last_resync = 0.0
+    min_resync_interval_s = 600.0
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now - last_resync >= min_resync_interval_s:
+            await watcher.resync_snapshot()
+            last_resync = now
+        issue_view = watcher.view.issues.get(issue_key)
+        if issue_view:
+            if "in-progress" in issue_view.labels or issue_view.pr.number is not None:
+                return
+        await asyncio.sleep(1)
+    raise TimeoutError(f"Timed out waiting for session start or PR for {issue_key}")
+
+
+async def wait_for_issue_label_snapshot(
+    watcher: "OrchestratorWatcher",
+    issue_key: str,
+    label: str,
+    timeout_s: float,
+) -> None:
+    """Wait for a label to appear on an issue (resyncing as needed)."""
+    deadline = time.monotonic() + timeout_s
+    last_resync = 0.0
+    min_resync_interval_s = 600.0
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now - last_resync >= min_resync_interval_s:
+            await watcher.resync_snapshot()
+            last_resync = now
+        issue_view = watcher.view.issues.get(issue_key)
+        if issue_view and label in issue_view.labels:
+            return
+        await asyncio.sleep(1)
+    raise TimeoutError(f"Timed out waiting for label {label} on {issue_key}")
 
 
 def inflight_create(
@@ -1219,7 +1744,7 @@ def inflight_close(
 @pytest.fixture
 def test_label(request) -> str:
     """Generate unique label from test name for isolation."""
-    return f"e2e:{request.node.name}"
+    return request.node.name
 
 
 @pytest.fixture(scope="session")
@@ -1241,11 +1766,11 @@ def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
     then provides a factory to create fresh issues.
     """
     # Cleanup stale issues from this specific test
-    cleanup_issues_by_label(repo_name, test_label)
+    cleanup_issues_by_label(repo_name, e2e_label(test_label))
 
     def create(title: str, extra_labels: list[str] | None = None) -> IssueKey:
         """Create an issue scoped to this test."""
-        labels = [filter_label, "agent:e2e-test", test_label]
+        labels = [filter_label, "agent:e2e-test", e2e_label(test_label)]
         if extra_labels:
             labels.extend(extra_labels)
         try:
@@ -1254,7 +1779,9 @@ def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
             if is_github_connection_error(str(exc)):
                 pytest.skip("GitHub API not reachable for live e2e tests")
             raise
-        return GitHubIssueKey(repo=repo_name, external_id=str(issue_num))
+        issue = GitHubIssueKey(repo=repo_name, external_id=str(issue_num))
+        register_inflight_issue(issue)
+        return issue
 
     return create
 
@@ -1270,6 +1797,7 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config
     config.ui_mode = "tmux"
     config.max_concurrent_sessions = 1
     config.filter_label = "test-data"
+    config.github_token_env = _env_token_name()
 
     # Configure e2e-test agent (scripted for deterministic e2e)
     config.agents = {
@@ -1279,12 +1807,16 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
+            meta_agent="claude-code",
         )
     }
-    config.dangerous.skip_verification = True
 
     # Short timeouts for tests
     config.session_timeout_minutes = 3
+
+    # Default review timeout: code agent + review agent timeouts (seconds)
+    from tests.e2e.flows import review_timeout_from_config
+    os.environ["E2E_REVIEW_TIMEOUT_S"] = str(review_timeout_from_config(config))
 
     # Lightweight validation for e2e tests - typecheck only (not full test suite)
     # This prevents the 10+ minute publish_gate from blocking e2e tests
@@ -1347,12 +1879,11 @@ def _create_test_issue(repo_name: str, index: int = 0) -> dict:
 
 def _cleanup_test_issue(repo_name: str, issue_number: int) -> None:
     """Close a test issue."""
-    subprocess.run(
-        ["gh", "issue", "close", str(issue_number),
-         "--repo", repo_name,
-         "--comment", "Closed by e2e test cleanup."],
-        capture_output=True
-    )
+    try:
+        _github_client(repo_name).add_comment(issue_number, "Closed by e2e test cleanup.")
+        _github_client(repo_name).update_issue_state(issue_number, "closed")
+    except Exception:
+        pass
 
 
 @pytest.fixture
@@ -1412,10 +1943,10 @@ def concurrent_test_run(repo_name: str, request) -> Generator[dict, None, None]:
     for issue in issues:
         _cleanup_test_issue(repo_name, issue["number"])
 
-    subprocess.run(
-        ["gh", "label", "delete", run_label, "--repo", repo_name, "--yes"],
-        capture_output=True
-    )
+    try:
+        _github_client(repo_name).delete_label(run_label)
+    except Exception:
+        pass
 
 
 class OrchestratorProcess:
@@ -1430,20 +1961,34 @@ class OrchestratorProcess:
         self._log_thread: "threading.Thread | None" = None
         self._stop_logging = False
         self._log_file: Path | None = None
+        self._orchestrator_log_file: Path | None = None
         self._log_handle: "open | None" = None
         self._config_path: Path | None = None
+        self._last_log_time: float | None = None
 
     def _write_e2e_config(self) -> Path:
         """Write an ephemeral config file so the CLI uses the e2e config."""
-        config_path = self.project_root / ".issue-orchestrator.e2e.yaml"
+        config_dir = Path("/tmp/e2e-orchestrator-configs")
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_path = config_dir / f"issue-orchestrator.e2e.{os.getpid()}.yaml"
         data = {
             "repo": self.config.repo,
+            "repo_root": str(self.config.repo_root),
             "filter_label": self.config.filter_label,
+            "github_token_env": self.config.github_token_env,
             "ui_mode": self.config.ui_mode,
             "web_port": self.config.web_port,
             "control_api_port": self.config.control_api_port,
             "queue_refresh_seconds": self.config.queue_refresh_seconds,
             "e2e_pr_labels": self.config.e2e_pr_labels,
+            "gh_write_verify_timeout_seconds": self.config.gh_write_verify_timeout_seconds,
+            "gh_write_verify_initial_delay_ms": self.config.gh_write_verify_initial_delay_ms,
+            "gh_write_verify_max_delay_ms": self.config.gh_write_verify_max_delay_ms,
+            "gh_write_verify_backoff": self.config.gh_write_verify_backoff,
+            "gh_write_verify_jitter_ms": self.config.gh_write_verify_jitter_ms,
+            "gh_audit_enabled": self.config.gh_audit_enabled,
+            "gh_audit_events": self.config.gh_audit_events,
+            "gh_audit_file": self.config.gh_audit_file,
             "concurrency": {
                 "max_concurrent_sessions": self.config.max_concurrent_sessions,
                 "session_timeout_minutes": self.config.session_timeout_minutes,
@@ -1456,6 +2001,7 @@ class OrchestratorProcess:
                     "timeout_minutes": cfg.timeout_minutes,
                     "permission_mode": cfg.permission_mode,
                     "command": cfg.command,
+                    "meta_agent": cfg.meta_agent,
                     "repo_root": str(self.config.repo_root),
                 }
                 for label, cfg in self.config.agents.items()
@@ -1497,7 +2043,6 @@ class OrchestratorProcess:
                 },
             },
             "dangerous": {
-                "skip_verification": self.config.dangerous.skip_verification,
                 "allow_unsupported_agents": self.config.dangerous.allow_unsupported_agents,
             },
         }
@@ -1518,16 +2063,20 @@ class OrchestratorProcess:
             if self.process.stderr:
                 readable, _, _ = select.select([self.process.stderr], [], [], 0.5)
                 if readable:
-                    line = self.process.stderr.readline()
+                    try:
+                        line = self.process.stderr.readline()
+                    except ValueError:
+                        break
                     if line:
                         text = line.decode('utf-8', errors='replace').rstrip()
                         self._output_lines.append(text)
+                        self._last_log_time = time.time()
                         # Always write to persistent log file
                         if self._log_handle:
                             self._log_handle.write(f"{text}\n")
                             self._log_handle.flush()
                         # Print orchestrator events with prefix (filtered for readability)
-                        if any(kw in text for kw in ['[EVENT]', 'Session', 'Issue', 'PR', 'Review', 'launch', 'complet', 'start', 'ERROR', 'WARN']):
+                        if any(kw in text for kw in ['[EVENT]', 'Session', 'Issue', 'PR', 'Review', 'launch', 'complet', 'start', 'ERROR', 'WARN', 'failed', 'timeout']):
                             print(f"  [ORCH] {text}", file=sys.stderr, flush=True)
 
     def start(self, max_issues: int = 1, extra_args: list[str] | None = None) -> None:
@@ -1540,6 +2089,7 @@ class OrchestratorProcess:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         self._log_file = E2E_LOG_DIR / f"e2e-{timestamp}.log"
         orchestrator_log_file = E2E_LOG_DIR / f"orchestrator-{timestamp}.log"
+        self._orchestrator_log_file = orchestrator_log_file
         self._log_handle = open(self._log_file, "w")
 
         # Clean up old log files (keep last 10)
@@ -1557,6 +2107,7 @@ class OrchestratorProcess:
         print(f"    Worktrees:        {worktree_dir}", flush=True)
         print(f"    Claude logs:      {claude_logs}", flush=True)
         print(f"    Keep artifacts:   {_keep_artifacts()}", flush=True)
+        print(f"    Keep remote:      {_keep_remote_artifacts()}", flush=True)
         if os.environ.get("E2E_CLAUDE_ARGS"):
             print(f"    E2E_CLAUDE_ARGS:  {os.environ.get('E2E_CLAUDE_ARGS')}", flush=True)
         if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
@@ -1569,7 +2120,9 @@ class OrchestratorProcess:
         self._log_handle.write(f"Worktrees: {worktree_dir}\n")
         self._log_handle.write(f"Claude logs: {claude_logs}\n")
         self._log_handle.write(f"Keep artifacts: {_keep_artifacts()}\n")
+        self._log_handle.write(f"Keep remote: {_keep_remote_artifacts()}\n")
         self._log_handle.write(f"E2E_KEEP_ARTIFACTS: {os.environ.get('E2E_KEEP_ARTIFACTS', '')}\n")
+        self._log_handle.write(f"E2E_KEEP_REMOTE_ARTIFACTS: {os.environ.get('E2E_KEEP_REMOTE_ARTIFACTS', '')}\n")
         self._log_handle.write(f"E2E_CONTROL_API_PORT: {os.environ.get('E2E_CONTROL_API_PORT', '')}\n")
         if os.environ.get("E2E_CLAUDE_ARGS"):
             self._log_handle.write(f"E2E_CLAUDE_ARGS: {os.environ.get('E2E_CLAUDE_ARGS')}\n")
@@ -1620,6 +2173,8 @@ class OrchestratorProcess:
             env["ORCHESTRATOR_CLAUDE_ARGS"] = os.environ["E2E_CLAUDE_ARGS"]
         if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
             env["ORCHESTRATOR_CLAUDE_PROMPT_MODE"] = os.environ["E2E_CLAUDE_PROMPT_MODE"]
+        env["ORCHESTRATOR_WORKTREE_PER_SESSION"] = os.environ.get("E2E_WORKTREE_PER_SESSION", "1")
+        env["ORCHESTRATOR_DISABLE_WORKTREE_REUSE"] = os.environ.get("E2E_DISABLE_WORKTREE_REUSE", "1")
 
         print(f"  [E2E] Starting orchestrator: {' '.join(cmd)}", flush=True)
         self._log_handle.write(f"Command: {' '.join(cmd)}\n\n")
@@ -1658,6 +2213,7 @@ class OrchestratorProcess:
         try:
             stdout, stderr = self.process.communicate(timeout=5)
             self._cleanup_tmux_sessions()
+            self._cleanup_log_tailers()
             self._close_log_file()
             print(f"  [E2E] Orchestrator stopped gracefully", flush=True)
             return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
@@ -1668,6 +2224,7 @@ class OrchestratorProcess:
             try:
                 stdout, stderr = self.process.communicate(timeout=5)
                 self._cleanup_tmux_sessions()
+                self._cleanup_log_tailers()
                 self._close_log_file()
                 print(f"  [E2E] Orchestrator stopped after second SIGTERM", flush=True)
                 return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
@@ -1677,6 +2234,7 @@ class OrchestratorProcess:
                 self.process.kill()
                 stdout, stderr = self.process.communicate()
                 self._cleanup_tmux_sessions()
+                self._cleanup_log_tailers()
                 self._close_log_file()
                 print(f"  [E2E] Orchestrator killed", flush=True)
                 return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
@@ -1685,6 +2243,16 @@ class OrchestratorProcess:
     def log_path(self) -> Path | None:
         """Get the path to the persistent log file."""
         return self._log_file
+
+    def orchestrator_log_path(self) -> Path | None:
+        """Get the path to the orchestrator log file."""
+        return self._orchestrator_log_file
+
+    def last_log_age_seconds(self) -> float:
+        """Return seconds since last orchestrator stderr log line."""
+        if not self._last_log_time:
+            return 0.0
+        return time.time() - self._last_log_time
 
     def _close_log_file(self) -> None:
         """Close log file and print location for debugging."""
@@ -1731,6 +2299,34 @@ class OrchestratorProcess:
         except Exception:
             pass  # Best effort cleanup
 
+    def _cleanup_log_tailers(self) -> None:
+        """Stop lingering session.log tail processes from tmux pipe-pane."""
+        if _keep_artifacts():
+            return
+        try:
+            result = subprocess.run(
+                ["ps", "-ax", "-o", "pid=,command="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return
+        for line in result.stdout.splitlines():
+            if "cat >>" not in line or ".issue-orchestrator/session.log" not in line:
+                continue
+            parts = line.strip().split(None, 1)
+            if not parts:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                continue
+
     def is_running(self) -> bool:
         """Check if process is still running."""
         if self.process is None:
@@ -1767,23 +2363,14 @@ def wait_for_issue_label(
     If orchestrator is provided, fails fast if the process crashes.
     """
     def check_label():
-        result = subprocess.run(
-            ["gh", "issue", "view", str(issue_number),
-             "--repo", repo,
-             "--json", "labels"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            labels = [l["name"] for l in data.get("labels", [])]
-            # Fail fast if the session already failed/blocked.
-            if any(lbl in labels for lbl in ("blocked-failed", "blocked-needs-human", "failed")):
-                raise RuntimeError(
-                    f"Issue #{issue_number} entered failure state: {sorted(labels)}"
-                )
-            if label in labels:
-                return True
+        labels = _github_client(repo).get_issue_labels(issue_number)
+        # Fail fast if the session already failed/blocked.
+        if any(lbl in labels for lbl in ("blocked-failed", "blocked-needs-human", "failed")):
+            raise RuntimeError(
+                f"Issue #{issue_number} entered failure state: {sorted(labels)}"
+            )
+        if label in labels:
+            return True
         return None
 
     return wait_with_process_check(
@@ -1807,20 +2394,11 @@ def wait_for_pr_created(
     def check_pr():
         # Search for PRs by head branch starting with issue number
         # (PRs don't have the test-data label, issues do)
-        result = subprocess.run(
-            ["gh", "pr", "list",
-             "--repo", repo,
-             "--json", "number,title,url,headRefName"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            prs = json.loads(result.stdout)
-            for pr in prs:
-                # Check if PR branch starts with issue number (format: {issue_number}-{slug})
-                head_ref = pr.get("headRefName", "")
-                if head_ref.startswith(f"{issue_number}-"):
-                    return pr
+        prs = _github_client(repo).list_prs(state="open", limit=100)
+        for pr in prs:
+            head_ref = (pr.get("head") or {}).get("ref", "")
+            if head_ref.startswith(f"{issue_number}-"):
+                return pr
         return None
 
     return wait_with_process_check(
@@ -1833,14 +2411,4 @@ def wait_for_pr_created(
 
 def get_issue_comments(repo: str, issue_number: int) -> list[dict]:
     """Get comments on an issue."""
-    result = subprocess.run(
-        ["gh", "issue", "view", str(issue_number),
-         "--repo", repo,
-         "--json", "comments"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        data = json.loads(result.stdout)
-        return data.get("comments", [])
-    return []
+    return _github_client(repo).get_issue_comments(issue_number)

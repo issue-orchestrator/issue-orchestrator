@@ -133,11 +133,12 @@ class TestCreateWorktree:
 
         worktree_base = tmp_path / "worktrees"
 
-        # Mock: prune, find existing worktree, check if branch exists, create worktree
+        # Mock: prune, find existing worktree, check if branch exists, fetch, create worktree
         mock_run.side_effect = [
             MagicMock(returncode=0, stderr=""),  # prune succeeds
             MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch (no match)
             MagicMock(returncode=1, stderr=""),  # branch doesn't exist
+            MagicMock(returncode=1, stderr=""),  # fetch fails (branch not on remote)
             MagicMock(returncode=0, stderr=""),  # worktree create succeeds
         ]
 
@@ -151,7 +152,7 @@ class TestCreateWorktree:
         assert worktree_path == worktree_base / "repo-123"
 
         # Check git commands were called correctly
-        assert mock_run.call_count == 4
+        assert mock_run.call_count == 5
 
         # First call: prune stale worktrees
         prune_cmd = mock_run.call_args_list[0][0][0]
@@ -167,8 +168,13 @@ class TestCreateWorktree:
         assert branch_check_cmd[:3] == ["git", "-C", str(repo_root)]
         assert "rev-parse" in branch_check_cmd
 
-        # Fourth call: create worktree with new branch (-b flag)
-        worktree_cmd = mock_run.call_args_list[3][0][0]
+        # Fourth call: fetch remote branch (fails, so create local)
+        fetch_cmd = mock_run.call_args_list[3][0][0]
+        assert fetch_cmd[:3] == ["git", "-C", str(repo_root)]
+        assert fetch_cmd[3] == "fetch"
+
+        # Fifth call: create worktree with new branch (-b flag)
+        worktree_cmd = mock_run.call_args_list[4][0][0]
         assert worktree_cmd[0] == "git"
         assert worktree_cmd[3] == "worktree"
         assert worktree_cmd[4] == "add"
@@ -266,6 +272,102 @@ class TestCreateWorktree:
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Failed to create worktree"):
             create_worktree(repo_root, 123, "Test")
+
+    @patch("issue_orchestrator._worktree_impl.install_venv_symlink")
+    @patch("issue_orchestrator._worktree_impl.install_claude_settings")
+    @patch("issue_orchestrator._worktree_impl.install_hooks")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
+    def test_create_worktree_detaches_when_branch_in_use(
+        self,
+        mock_run,
+        mock_install_hooks,
+        mock_install_claude_settings,
+        mock_install_venv_symlink,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Detach existing worktree branch when reuse is disabled."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        existing_worktree = tmp_path / "worktrees" / "issue-123" / "repo-123"
+        existing_worktree.mkdir(parents=True)
+
+        monkeypatch.setenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", "1")
+
+        worktree_list_output = (
+            f"worktree {existing_worktree}\n"
+            "HEAD abc123\n"
+            "branch refs/heads/123-test\n\n"
+        )
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # prune succeeds
+            MagicMock(returncode=0, stdout=worktree_list_output, stderr=""),  # find_worktree_for_branch
+            MagicMock(returncode=0, stderr=""),  # checkout --detach
+            MagicMock(returncode=0, stderr=""),  # branch exists
+            MagicMock(returncode=0, stderr=""),  # worktree add
+        ]
+
+        create_worktree(repo_root, 123, "Test")
+
+        assert any(
+            call_args[0][0][:4] == ["git", "-C", str(existing_worktree), "checkout"]
+            and "--detach" in call_args[0][0]
+            for call_args in mock_run.call_args_list
+        )
+        assert any(
+            call_args[0][0][:4] == ["git", "-C", str(repo_root), "worktree"]
+            for call_args in mock_run.call_args_list
+        )
+
+        mock_install_hooks.assert_called_once()
+        mock_install_claude_settings.assert_called_once()
+        mock_install_venv_symlink.assert_called_once()
+
+    @patch("issue_orchestrator._worktree_impl.install_venv_symlink")
+    @patch("issue_orchestrator._worktree_impl.install_claude_settings")
+    @patch("issue_orchestrator._worktree_impl.install_hooks")
+    @patch("issue_orchestrator._worktree_impl.subprocess.run")
+    def test_create_worktree_removes_existing_path_when_reuse_disabled(
+        self,
+        mock_run,
+        mock_install_hooks,
+        mock_install_claude_settings,
+        mock_install_venv_symlink,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Remove existing worktree path when reuse is disabled."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        existing_path = worktree_base / "repo-123"
+        existing_path.mkdir()
+
+        monkeypatch.setenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", "1")
+
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # prune succeeds
+            MagicMock(returncode=0, stderr=""),  # worktree remove --force
+            MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch
+            MagicMock(returncode=1, stderr=""),  # branch doesn't exist
+            MagicMock(returncode=1, stderr=""),  # fetch origin fails
+            MagicMock(returncode=0, stderr=""),  # worktree add
+        ]
+
+        create_worktree(repo_root, 123, "Test", worktree_base=worktree_base)
+
+        assert any(
+            call_args[0][0][:5] == ["git", "-C", str(repo_root), "worktree", "remove"]
+            for call_args in mock_run.call_args_list
+        )
+
+        mock_install_hooks.assert_called_once()
+        mock_install_claude_settings.assert_called_once()
+        mock_install_venv_symlink.assert_called_once()
 
     @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_create_worktree_creates_base_directory(self, mock_run, tmp_path):

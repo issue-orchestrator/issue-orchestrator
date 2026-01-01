@@ -11,6 +11,7 @@ The orchestrator calls this to handle the complex state updates when a session c
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Callable
 
@@ -82,6 +83,7 @@ class CompletionHandler:
         Returns:
             CompletionResult with history entry and cleanup decision
         """
+        start_time = time.monotonic()
         issue_key = session.key.issue.stable_id()
         logger.info(
             "Processing completion: issue=%s session=%s status=%s branch=%s worktree=%s",
@@ -94,7 +96,9 @@ class CompletionHandler:
         )
 
         # Fetch PR info if completed
-        pr_url, pr_number, _prs = self._fetch_pr_info(session, status)
+        pr_url, pr_number, pr_infos = self._fetch_pr_info(session, status)
+        if pr_infos:
+            self._emit_pr_view_changed(pr_infos[0], session.issue.number)
 
         # Create history entry
         history_entry = self._create_history_entry(
@@ -123,14 +127,16 @@ class CompletionHandler:
             should_queue_review=should_queue_review,
             pending_cleanup=pending_cleanup,
         )
+        total_duration = time.monotonic() - start_time
         logger.info(
-            "Completion processed: issue=%s session=%s status=%s pr_number=%s queue_review=%s defer_cleanup=%s",
+            "Completion processed: issue=%s session=%s status=%s pr_number=%s queue_review=%s defer_cleanup=%s elapsed=%.2fs",
             session.issue.number,
             session.terminal_id,
             status.value,
             pr_number,
             should_queue_review,
             should_defer,
+            total_duration,
             extra=log_context(issue_key=issue_key, session_id=session.terminal_id),
         )
         return result
@@ -139,7 +145,7 @@ class CompletionHandler:
         self,
         session: Session,
         status: SessionStatus,
-    ) -> tuple[Optional[str], Optional[int], Optional[list[dict[str, Any]]]]:
+    ) -> tuple[Optional[str], Optional[int], Optional[list[Any]]]:
         """Fetch PR info for a completed session.
 
         Returns:
@@ -151,12 +157,20 @@ class CompletionHandler:
 
         if status == SessionStatus.COMPLETED:
             logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
+            start = time.monotonic()
             pr_infos = self.repository_host.get_prs_for_branch(session.branch_name)
+            duration = time.monotonic() - start
+            logger.info(
+                "Fetched PRs for branch in %.2fs: branch=%s count=%d",
+                duration,
+                session.branch_name,
+                len(pr_infos),
+                extra=log_context(issue_key=session.key.issue.stable_id(), session_id=session.terminal_id),
+            )
             if pr_infos:
                 pr_url = pr_infos[0].url
                 pr_number = pr_infos[0].number
-                # Convert PRInfo to dict for backward compatibility
-                prs = [{"url": pi.url, "number": pi.number, "title": pi.title} for pi in pr_infos]
+                prs = list(pr_infos)
 
         return pr_url, pr_number, prs
 
@@ -299,8 +313,19 @@ class CompletionHandler:
             # Review/rework sessions work on issues that already have PRs
             is_issue_session = session.terminal_id.startswith("issue-")
             if status == SessionStatus.COMPLETED and pr_url and is_issue_session:
-                logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> PR_PENDING (PR: {pr_url})")
-                issue_machine.pr_created(data={'pr_url': pr_url})  # type: ignore[attr-defined]
+                if issue_machine.can_transition("pr_created"):
+                    logger.info(
+                        "[STATE_MACHINE] Issue #%d: IN_PROGRESS -> PR_PENDING (PR: %s)",
+                        session.issue.number,
+                        pr_url,
+                    )
+                    issue_machine.pr_created(data={'pr_url': pr_url})  # type: ignore[attr-defined]
+                else:
+                    logger.warning(
+                        "[STATE_MACHINE] Issue #%d pr_created ignored (state=%s)",
+                        session.issue.number,
+                        issue_machine.get_state().value,
+                    )
             elif status == SessionStatus.BLOCKED:
                 logger.info(f"[STATE_MACHINE] Issue #{session.issue.number}: IN_PROGRESS -> BLOCKED")
                 issue_machine.block()  # type: ignore[attr-defined]
@@ -329,19 +354,52 @@ class CompletionHandler:
         try:
             pr_info = self.repository_host.get_pr(pr_number_review)
             if pr_info:
+                self._emit_pr_view_changed(pr_info, session.issue.number)
                 labels = pr_info.labels
                 if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
                     # Review was approved
                     logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: IN_REVIEW -> APPROVED")
-                    review_machine.approve()  # type: ignore[attr-defined]
+                    if review_machine.can_transition("approve"):
+                        review_machine.approve()  # type: ignore[attr-defined]
+                    else:
+                        logger.warning(
+                            "[STATE_MACHINE] PR #%d approve ignored (state=%s)",
+                            pr_number_review,
+                            review_machine.get_state().value,
+                        )
                 elif self.config.get_label_needs_rework() in labels:
                     # Changes requested
                     logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: IN_REVIEW -> CHANGES_REQUESTED")
-                    review_machine.request_changes()  # type: ignore[attr-defined]
-                    logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: CHANGES_REQUESTED -> REWORK_PENDING")
-                    review_machine.queue_rework()  # type: ignore[attr-defined]
+                    if review_machine.can_transition("request_changes"):
+                        review_machine.request_changes()  # type: ignore[attr-defined]
+                    else:
+                        logger.warning(
+                            "[STATE_MACHINE] PR #%d request_changes ignored (state=%s)",
+                            pr_number_review,
+                            review_machine.get_state().value,
+                        )
+                    if review_machine.can_transition("queue_rework"):
+                        logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: CHANGES_REQUESTED -> REWORK_PENDING")
+                        review_machine.queue_rework()  # type: ignore[attr-defined]
+                    else:
+                        logger.warning(
+                            "[STATE_MACHINE] PR #%d queue_rework ignored (state=%s)",
+                            pr_number_review,
+                            review_machine.get_state().value,
+                        )
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
+
+    def _emit_pr_view_changed(self, pr_info: Any, issue_number: int | None) -> None:
+        payload = {
+            "pr_number": pr_info.number,
+            "labels": list(getattr(pr_info, "labels", []) or []),
+            "pr_url": getattr(pr_info, "url", None),
+        }
+        if issue_number is not None:
+            payload["issue_number"] = issue_number
+            payload["issue_key"] = str(issue_number)
+        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
 
     def _determine_cleanup_strategy(
         self,

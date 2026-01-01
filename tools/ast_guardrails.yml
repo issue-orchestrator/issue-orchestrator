@@ -1,0 +1,35 @@
+# AST Guardrails Configuration (Option A: small, high-signal)
+
+allow_prefixes:
+  - src/issue_orchestrator/execution
+  - src/issue_orchestrator/adapters
+  - src/issue_orchestrator/cli.py
+  - src/issue_orchestrator/_iterm2_impl.py
+  - src/issue_orchestrator/_worktree_impl.py
+  - src/issue_orchestrator/hooks.py
+  - src/issue_orchestrator/setup_wizard.py
+  - src/issue_orchestrator/web.py
+  - src/issue_orchestrator/control/scheduler.py
+
+deny_imports:
+  - subprocess
+  - httpx
+  - issue_orchestrator._github_impl
+
+deny_dynamic_imports:
+  - subprocess
+  - httpx
+  - issue_orchestrator._github_impl
+
+deny_dynamic_any:
+  - __import__
+  - importlib.import_module
+
+deny_calls:
+  - subprocess.run
+  - subprocess.Popen
+  - subprocess.call
+  - subprocess.check_call
+  - subprocess.check_output
+
+deny_os_system_like: true

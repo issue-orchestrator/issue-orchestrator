@@ -29,6 +29,7 @@ dependencies = [
     "sse-starlette>=1.6",  # Server-Sent Events for real-time updates
     "pluggy>=1.3",     # Plugin architecture (same as pytest uses)
     "transitions>=0.9",  # Lightweight state machine library
+    "httpx>=0.27",     # GitHub HTTP client
 ]
 
 [project.optional-dependencies]
@@ -46,7 +47,7 @@ dev = [
 issue-orchestrator = "issue_orchestrator.cli:main"
 agent-done = "issue_orchestrator.agent_done:main"
 verify-agent-sandbox = "issue_orchestrator.control.sandbox_verify:main"
-prepush-check = "issue_orchestrator.control.prepush_check:main"
+prepush-check = "issue_orchestrator.prepush_check:main"
 
 # Plugin entry points - third-party packages can add their own
 [project.entry-points."issue_orchestrator.plugins"]
@@ -69,7 +70,9 @@ log_cli_level = "INFO"
 log_cli_format = "%(message)s"
 markers = [
     "e2e: End-to-end tests with real GitHub (requires gh auth and E2E_TEST_REPO)",
+    "integration: Integration tests that may exercise external adapters",
     "live: Tests that require network access and external services",
+    "gh_activity_limit: Enforce GH API activity limits per test (test_gh_activity_limit, system_gh_activity_limit)",
 ]
 
 [tool.pyright]
@@ -141,4 +144,32 @@ forbidden_modules = [
 # This is the only allowed path to execution - via the composition root
 ignore_imports = [
   "issue_orchestrator.orchestrator -> issue_orchestrator.bootstrap",
+]
+
+[[tool.importlinter.contracts]]
+name = "Legacy GitHub CLI impl is forbidden"
+type = "forbidden"
+source_modules = ["issue_orchestrator"]
+forbidden_modules = ["issue_orchestrator._github_impl"]
+
+[[tool.importlinter.contracts]]
+name = "Core layers must not import subprocess"
+type = "forbidden"
+source_modules = [
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.ports",
+]
+forbidden_modules = ["subprocess"]
+
+[[tool.importlinter.contracts]]
+name = "Only execution may import httpx"
+type = "forbidden"
+source_modules = [
+  "issue_orchestrator",
+]
+forbidden_modules = ["httpx"]
+ignore_imports = [
+  "issue_orchestrator.execution.github_http -> httpx",
+  "issue_orchestrator.cli -> httpx",
 ]

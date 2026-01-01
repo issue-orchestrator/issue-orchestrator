@@ -99,6 +99,18 @@ class MockGitHubAdapter:
                     result.append(pr)
         return result
 
+    def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
+        """Get PRs for an issue by matching branch prefix or title."""
+        prefix = f"{issue_number}-"
+        result: list[PRInfo] = []
+        for branch, prs in self.prs.items():
+            for pr in prs:
+                if state != "all" and pr.state.lower() != state.lower():
+                    continue
+                if branch.startswith(prefix) or f"#{issue_number}" in pr.title:
+                    result.append(pr)
+        return result
+
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List all PRs."""
         result = []
@@ -398,6 +410,7 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
     from issue_orchestrator.control.completion_processor import CompletionProcessor
     from issue_orchestrator.control.pr_scanner import PRScanner
     from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+    from unittest.mock import MagicMock, AsyncMock
 
     working_copy = GitWorkingCopy()
 
@@ -431,6 +444,9 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
         repository=repo_host,
         events=events,
     )
+    hook_verifier = MagicMock()
+    hook_verifier.verify = AsyncMock(return_value=MagicMock(success=True, message="ok"))
+    hook_verifier.raise_on_failure = MagicMock()
     # Create action_applier without session_launcher callback - it will be set in __post_init__
     action_applier = ActionApplier(
         labels=repo_host,
@@ -455,6 +471,7 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
         'pr_scanner': pr_scanner,
         'worktree_manager': worktree_manager,
         'working_copy': working_copy,
+        'hook_verifier': hook_verifier,
     }
 
 
@@ -543,8 +560,8 @@ def sample_config(sample_agent_config, tmp_path):
     config.ui_mode = "tmux"  # Avoid iTerm2 detection during tests
     # Use temp directory for state file to isolate tests
     config.state_file = tmp_path / ".issue-orchestrator" / "state.json"
-    # Skip hook verification in tests (tests are not testing hook enforcement)
-    config.dangerous = DangerousConfig(skip_verification=True, allow_unsupported_agents=True)
+    # Tests are not exercising hook enforcement.
+    config.dangerous = DangerousConfig(allow_unsupported_agents=True)
     return config
 
 

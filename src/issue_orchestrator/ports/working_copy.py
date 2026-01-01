@@ -144,6 +144,52 @@ class WorkingCopy(Protocol):
         """
         ...
 
+    def list_remote_branches(self, repo_root: Path, remote: str = "origin") -> list[str]:
+        """List remote branches.
+
+        Args:
+            repo_root: Path to the git repository root.
+            remote: Remote name to list branches from.
+
+        Returns:
+            List of branch names (may include remote prefix).
+        """
+        ...
+
+    def get_commits_ahead_count(
+        self,
+        repo_root: Path,
+        branch: str,
+        base: str = "origin/main",
+    ) -> int:
+        """Count commits ahead of base for a remote branch.
+
+        Args:
+            repo_root: Path to the git repository root.
+            branch: Branch name (without remote prefix).
+            base: Base ref to compare against.
+
+        Returns:
+            Commit count ahead of base, or 0 on error.
+        """
+        ...
+
+    def get_last_commit_date(
+        self,
+        repo_root: Path,
+        branch: str,
+    ) -> str | None:
+        """Get last commit date (relative) for a remote branch.
+
+        Args:
+            repo_root: Path to the git repository root.
+            branch: Branch name (without remote prefix).
+
+        Returns:
+            Relative date string, or None on error.
+        """
+        ...
+
     def rebase_on_branch(
         self, worktree: Path, target: str = "origin/main"
     ) -> RebaseResult:

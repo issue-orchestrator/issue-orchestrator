@@ -151,12 +151,14 @@ class TmuxManager:
         """Kill the window for an issue."""
         window = self.get_window(issue_number)
         if window:
+            self._stop_pipe(window)
             window.kill()
 
     def kill_window_by_name(self, session_name: str) -> None:
         """Kill the window by its full name."""
         window = self._find_window_by_name(session_name)
         if window:
+            self._stop_pipe(window)
             window.kill()
 
     def select_window(self, issue_number: int) -> bool:
@@ -208,6 +210,19 @@ class TmuxManager:
                 except ValueError:
                     pass
         return issue_numbers
+
+    def _stop_pipe(self, window: libtmux.Window) -> None:
+        """Stop tmux pipe-pane logging so subprocesses don't linger."""
+        try:
+            pane = window.active_pane
+        except Exception:
+            return
+        if pane is None:
+            return
+        try:
+            pane.cmd("pipe-pane")
+        except Exception:
+            pass
 
     def capture_pane_output(self, issue_number: int, lines: int = 20) -> Optional[str]:
         """Capture recent output from an issue's pane.

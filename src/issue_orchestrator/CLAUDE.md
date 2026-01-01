@@ -190,6 +190,10 @@ exists = self._session_runner.session_exists(session.terminal_id)  # ✅ Proper 
 
 This codebase follows hexagonal (ports & adapters) architecture. **Respect layer boundaries.**
 
+## GitHub Adapter Guardrail
+
+All GitHub API calls must go through `execution/github_adapter.py` / `execution/github_http.py`. Direct gh CLI usage and imports of `_github_impl` are forbidden. This enforces caching, auditing, and rate-limit discipline in one place.
+
 ### Layer Responsibilities
 
 | Layer | Location | Knows About | Never Knows About |

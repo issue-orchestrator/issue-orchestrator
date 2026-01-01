@@ -2,6 +2,11 @@
 
 ## Current Work: SessionKey Implementation (2025-12-28)
 
+## Let's Try Everything (Prioritized)
+1. **New worktree per session** (no reuse): issue/review/rework each get a fresh worktree (branch is source of truth).
+2. **Unified e2e config**: single orchestrator config covers review + rework + triage flows.
+3. **Claude `-p` mode**: run non-interactive for deterministic output and improved logging.
+
 ### Problem
 E2E test bug "Can't trigger event approve from state approved!" - state machine error caused by session identity being conflated with terminal naming and GitHub issue numbers.
 
@@ -371,3 +376,14 @@ bootstrap.py → build_orchestrator() → wires all adapters and controllers
 ### Rate Limit Detection
 - GitHub returns rate limit in response headers
 - Could add awareness without extra API calls
+
+## Notes for Restart (e2e debugging)
+- Root cause of rework e2e failures: worktree reuse disabled but existing worktree paths and branch locks caused git worktree add to fail. Fixes in `src/issue_orchestrator/_worktree_impl.py` now:
+  - If `ORCHESTRATOR_DISABLE_WORKTREE_REUSE=1`, remove existing worktree path via `git worktree remove --force` (fallback to rmtree).
+  - If branch already checked out elsewhere, detach that worktree (`git checkout --detach`) to free branch.
+- Rework session PR detection bug: `launch_rework_session` used `get_prs_for_branch(f"{issue_number}-")` (too broad) → could pick wrong PR/branch. Fixed to `get_prs_for_issue(issue_number)`.
+- Rework cycle labels were inconsistent: session launcher wrote `rework-N` but workflow/scanner expects `rework-cycle-N`. Fixed `_update_rework_cycle_label` to add/remove `rework-cycle-N`, and updated PR scanner to parse `rework-cycle-N`.
+- E2E label setup: ensure `rework-cycle-1` and `rework-cycle-2` labels exist in `tests/e2e/conftest.py`.
+- Added unit tests in `tests/unit/test_worktree.py` for new behavior: detaching branch + removing existing path when reuse disabled.
+- Reran e2e rework test: `tests/e2e/test_real_scenarios.py::TestReworkCyclesAndEscalation::test_rework_cycles_lead_to_escalation` now PASSED (took ~12-22 min). Full e2e suite not rerun (command was rejected by user due to permissions).
+- Pending: run full e2e suite under unlimited permissions.
