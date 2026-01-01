@@ -1117,6 +1117,7 @@ agents:
 
         with patch('issue_orchestrator.config.Config.load') as mock_load:
             mock_config = Mock()
+            mock_config.repo_root_from_yaml = False
             mock_load.return_value = mock_config
 
             args = argparse.Namespace(config=str(config_file))

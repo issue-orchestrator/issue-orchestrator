@@ -419,7 +419,11 @@ def _resolve_repo_root_from_worktree(worktree_path: Path) -> Path | None:
     if not content.startswith("gitdir:"):
         return None
     git_dir = Path(content.split(":", 1)[1].strip()).resolve()
-    return git_dir.parent.parent
+    if git_dir.name == ".git":
+        return git_dir.parent
+    if git_dir.parent.name == "worktrees":
+        return git_dir.parent.parent.parent
+    return git_dir.parent
 
 
 def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:

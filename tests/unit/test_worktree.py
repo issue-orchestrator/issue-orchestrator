@@ -435,8 +435,14 @@ class TestRemoveWorktree:
     def test_remove_worktree_success(self, mock_run, mock_get_branch, tmp_path):
         """Test successful worktree removal."""
         # Setup
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
+        (worktree_path / ".git").write_text(
+            f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
+        )
 
         # Mock branch name
         mock_get_branch.return_value = "123-test-branch"
@@ -453,16 +459,20 @@ class TestRemoveWorktree:
         # First call: remove worktree
         first_call = mock_run.call_args_list[0][0][0]
         assert first_call[0] == "git"
-        assert first_call[1] == "worktree"
-        assert first_call[2] == "remove"
-        assert first_call[3] == str(worktree_path)
+        assert first_call[1] == "-C"
+        assert first_call[2] == str(repo_root)
+        assert first_call[3] == "worktree"
+        assert first_call[4] == "remove"
+        assert first_call[5] == str(worktree_path)
 
         # Second call: delete branch
         second_call = mock_run.call_args_list[1][0][0]
         assert second_call[0] == "git"
-        assert second_call[1] == "branch"
-        assert second_call[2] == "-D"
-        assert second_call[3] == "123-test-branch"
+        assert second_call[1] == "-C"
+        assert second_call[2] == str(repo_root)
+        assert second_call[3] == "branch"
+        assert second_call[4] == "-D"
+        assert second_call[5] == "123-test-branch"
 
     @patch("issue_orchestrator._worktree_impl.subprocess.run")
     def test_remove_worktree_not_exists(self, mock_run, tmp_path):
@@ -482,8 +492,14 @@ class TestRemoveWorktree:
     def test_remove_worktree_git_fails(self, mock_run, mock_get_branch, tmp_path):
         """Test error when git worktree remove fails."""
         # Setup
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
+        (worktree_path / ".git").write_text(
+            f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
+        )
 
         # Mock failed git command
         mock_run.return_value = MagicMock(
@@ -501,8 +517,14 @@ class TestRemoveWorktree:
     ):
         """Test that branch deletion failures don't raise errors."""
         # Setup
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
+        (worktree_path / ".git").write_text(
+            f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
+        )
 
         mock_get_branch.return_value = "123-test-branch"
 
@@ -523,8 +545,14 @@ class TestRemoveWorktree:
     def test_remove_worktree_no_branch_name(self, mock_run, mock_get_branch, tmp_path):
         """Test removal when branch name cannot be determined."""
         # Setup
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
         worktree_path = tmp_path / "worktree-123"
         worktree_path.mkdir()
+        (worktree_path / ".git").write_text(
+            f"gitdir: {repo_root / '.git' / 'worktrees' / 'worktree-123'}"
+        )
 
         mock_get_branch.return_value = None
 
@@ -913,6 +941,9 @@ class TestIntegrationScenarios:
 
         # Check for uncommitted changes (should be clean)
         worktree_path.mkdir(parents=True, exist_ok=True)  # Create for existence check
+        (worktree_path / ".git").write_text(
+            f"gitdir: {repo_root / '.git' / 'worktrees' / worktree_path.name}"
+        )
         result = has_uncommitted_changes(worktree_path)
         assert result is False
 
