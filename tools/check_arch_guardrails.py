@@ -64,9 +64,23 @@ def load_rules(rules_path: Path) -> dict:
     return data
 
 
+def _is_git_subprocess_call(node: ast.Call) -> bool:
+    m, a = get_attr_call(node.func)
+    if not (m and a) or m != "subprocess":
+        return False
+    if a not in {"run", "Popen", "call", "check_call", "check_output"}:
+        return False
+    if not node.args:
+        return False
+    arg0 = node.args[0]
+    if not isinstance(arg0, (ast.List, ast.Tuple)) or not arg0.elts:
+        return False
+    first = arg0.elts[0]
+    return isinstance(first, ast.Constant) and first.value == "git"
+
+
 def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[Violation]:
-    if is_allowed(path, allow_prefixes):
-        return []
+    allow_general = is_allowed(path, allow_prefixes)
 
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
@@ -79,17 +93,20 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
     deny_calls = set(tuple(x.split(".", 1)) for x in (rules.get("deny_calls", []) or []))
     deny_os_calls = bool(rules.get("deny_os_system_like", True))
     deny_dynamic_any = set(rules.get("deny_dynamic_any", []) or [])
+    deny_git_subprocess = bool(rules.get("deny_git_subprocess", False))
+    allow_git_prefixes = rules.get("allow_git_subprocess_prefixes", []) or []
+    allow_git_subprocess = is_allowed(path, allow_git_prefixes)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if base_mod(alias.name) in deny_imports:
+                if not allow_general and base_mod(alias.name) in deny_imports:
                     violations.append(
                         Violation(path.as_posix(), node.lineno, node.col_offset, "import", f"import {alias.name}")
                     )
 
         if isinstance(node, ast.ImportFrom):
-            if node.module and base_mod(node.module) in deny_imports:
+            if not allow_general and node.module and base_mod(node.module) in deny_imports:
                 violations.append(
                     Violation(
                         path.as_posix(),
@@ -100,10 +117,14 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
                     )
                 )
 
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "__import__":
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "__import__"
+        ):
             if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                 mod = base_mod(node.args[0].value)
-                if mod in deny_dynamic_imports or mod in deny_imports:
+                if not allow_general and (mod in deny_dynamic_imports or mod in deny_imports):
                     violations.append(
                         Violation(
                             path.as_posix(),
@@ -113,7 +134,7 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
                             f'__import__("{node.args[0].value}")',
                         )
                     )
-            elif "__import__" in deny_dynamic_any:
+            elif not allow_general and "__import__" in deny_dynamic_any:
                 violations.append(
                     Violation(path.as_posix(), node.lineno, node.col_offset, "dynamic-import", "__import__(...)")
                 )
@@ -123,7 +144,7 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
             if (m, a) == ("importlib", "import_module"):
                 if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     mod = base_mod(node.args[0].value)
-                    if mod in deny_dynamic_imports or mod in deny_imports:
+                    if not allow_general and (mod in deny_dynamic_imports or mod in deny_imports):
                         violations.append(
                             Violation(
                                 path.as_posix(),
@@ -133,7 +154,7 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
                                 f'importlib.import_module("{node.args[0].value}")',
                             )
                         )
-                elif "importlib.import_module" in deny_dynamic_any:
+                elif not allow_general and "importlib.import_module" in deny_dynamic_any:
                     violations.append(
                         Violation(
                             path.as_posix(),
@@ -144,14 +165,19 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
                         )
                     )
 
-            if m and a and (m, a) in deny_calls:
+            if not allow_general and m and a and (m, a) in deny_calls:
                 violations.append(
                     Violation(path.as_posix(), node.lineno, node.col_offset, "call", f"{m}.{a}(...)")
                 )
 
-            if deny_os_calls and m == "os" and a in {"system", "popen"}:
+            if not allow_general and deny_os_calls and m == "os" and a in {"system", "popen"}:
                 violations.append(
                     Violation(path.as_posix(), node.lineno, node.col_offset, "call", f"os.{a}(...)")
+                )
+
+            if deny_git_subprocess and not allow_git_subprocess and _is_git_subprocess_call(node):
+                violations.append(
+                    Violation(path.as_posix(), node.lineno, node.col_offset, "git-subprocess", "subprocess.*(['git', ...])")
                 )
 
     return violations

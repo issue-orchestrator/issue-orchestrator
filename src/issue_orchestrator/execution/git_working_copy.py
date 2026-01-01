@@ -181,6 +181,23 @@ class GitWorkingCopy:
             logger.warning("Failed to list remote branches in %s: %s", repo_root, e)
             return []
 
+    def is_git_repo(self, repo_root: Path) -> bool:
+        """Check if the path is a git repository."""
+        try:
+            self._run_git(repo_root, ["rev-parse", "--git-dir"])
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def get_config_value(self, repo_root: Path, key: str) -> str | None:
+        """Fetch a git config value from the repository."""
+        try:
+            result = self._run_git(repo_root, ["config", "--get", key])
+            value = result.stdout.strip()
+            return value or None
+        except subprocess.CalledProcessError:
+            return None
+
     def get_commits_ahead_count(
         self,
         repo_root: Path,

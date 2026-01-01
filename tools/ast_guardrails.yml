@@ -11,6 +11,13 @@ allow_prefixes:
   - src/issue_orchestrator/web.py
   - src/issue_orchestrator/control/scheduler.py
 
+deny_git_subprocess: true
+allow_git_subprocess_prefixes:
+  - src/issue_orchestrator/execution
+  - src/issue_orchestrator/_worktree_impl.py
+  - src/issue_orchestrator/hooks.py
+  - src/issue_orchestrator/setup_wizard.py
+
 deny_imports:
   - subprocess
   - httpx

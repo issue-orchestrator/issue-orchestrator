@@ -1037,12 +1037,9 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
         agent_config = config.agents[agent_type]
 
         # Get branch name from worktree
-        import subprocess
-        branch_result = subprocess.run(
-            ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True
-        )
-        branch_name = branch_result.stdout.strip() if branch_result.returncode == 0 else f"{issue_num}-unknown"
+        from .execution.git_working_copy import GitWorkingCopy
+        working_copy = GitWorkingCopy()
+        branch_name = working_copy.get_current_branch(worktree_path) or f"{issue_num}-unknown"
 
         # Create session with domain identity (CODE task type for adopted sessions)
         from .domain.session_key import SessionKey, TaskKind
@@ -1166,11 +1163,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     # 2. Check git repository
     console.print("\n[bold]2. Git Repository[/bold]")
-    git_check = subprocess.run(
-        ["git", "-C", str(config.repo_root), "rev-parse", "--git-dir"],
-        capture_output=True, text=True
-    )
-    if git_check.returncode == 0:
+    from .execution.git_working_copy import GitWorkingCopy
+    working_copy = GitWorkingCopy()
+    if working_copy.is_git_repo(config.repo_root):
         console.print(f"  [green]✓[/green] Valid git repository")
     else:
         console.print(f"  [red]✗[/red] Not a git repository: {config.repo_root}")
@@ -1206,12 +1201,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
         errors.append("Bundled pre-push hook not found")
 
     # Check if project uses custom hooksPath
-    hooks_path_check = subprocess.run(
-        ["git", "-C", str(config.repo_root), "config", "--get", "core.hooksPath"],
-        capture_output=True, text=True
-    )
-    if hooks_path_check.returncode == 0:
-        custom_path = hooks_path_check.stdout.strip()
+    custom_path = working_copy.get_config_value(config.repo_root, "core.hooksPath")
+    if custom_path:
         console.print(f"  [cyan]ℹ[/cyan] Project uses custom hooksPath: {custom_path}")
         project_hook = config.repo_root / custom_path / "pre-push"
         if project_hook.exists():

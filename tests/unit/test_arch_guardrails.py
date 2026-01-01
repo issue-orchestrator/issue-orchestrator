@@ -50,3 +50,8 @@ def test_blocks_dynamic_import(tmp_path: Path) -> None:
 def test_blocks_forbidden_call(tmp_path: Path) -> None:
     code = "import subprocess\nsubprocess.run(['echo','hi'])\n"
     assert _run(tmp_path, code, "src/issue_orchestrator/ports/x.py") == 2
+
+
+def test_blocks_git_subprocess_outside_allowed(tmp_path: Path) -> None:
+    code = "import subprocess\nsubprocess.run(['git','status'])\n"
+    assert _run(tmp_path, code, "src/issue_orchestrator/control/x.py") == 2
