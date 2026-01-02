@@ -47,10 +47,10 @@ dev = [
 ]
 
 [project.scripts]
-issue-orchestrator = "issue_orchestrator.cli:main"
-agent-done = "issue_orchestrator.agent_done:main"
+issue-orchestrator = "issue_orchestrator.entrypoints.cli:main"
+agent-done = "issue_orchestrator.entrypoints.cli_tools.agent_done:main"
 verify-agent-sandbox = "issue_orchestrator.control.sandbox_verify:main"
-prepush-check = "issue_orchestrator.prepush_check:main"
+prepush-check = "issue_orchestrator.entrypoints.cli_tools.prepush_check:main"
 
 # Plugin entry points - third-party packages can add their own
 [project.entry-points."issue_orchestrator.plugins"]

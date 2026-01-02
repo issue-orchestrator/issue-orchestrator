@@ -91,7 +91,7 @@ def _github_adapter(repo: str):
     All GitHub access in setup wizard is routed through the adapter for
     consistent auditing and rate-limit handling.
     """
-    from .adapters.github import GitHubAdapter
+    from ...adapters.github import GitHubAdapter
 
     return GitHubAdapter(repo=repo)
 
@@ -121,7 +121,7 @@ def check_prerequisites() -> dict[str, bool]:
 
     # GitHub token
     try:
-        from .adapters.github.http_client import resolve_github_token
+        from ...adapters.github.http_client import resolve_github_token
 
         resolve_github_token(configured_token=None, configured_env=None)
         checks["github_auth"] = True

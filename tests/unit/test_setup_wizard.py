@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, Mock
 
-from issue_orchestrator.setup_wizard import (
+from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     create_starter_prompt,
     create_triage_review_prompt,
     detect_repo,
@@ -190,7 +190,7 @@ class TestCreateTriageReviewPrompt:
 class TestDetectRepo:
     """Test the detect_repo function."""
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_detect_https_url(self, mock_run_git):
         """Test detecting repo from HTTPS URL."""
         mock_run_git.return_value = (True, "https://github.com/owner/repo.git")
@@ -199,7 +199,7 @@ class TestDetectRepo:
 
         assert repo == "owner/repo"
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_detect_ssh_url(self, mock_run_git):
         """Test detecting repo from SSH URL."""
         mock_run_git.return_value = (True, "git@github.com:owner/repo.git")
@@ -208,7 +208,7 @@ class TestDetectRepo:
 
         assert repo == "owner/repo"
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_detect_https_without_git_suffix(self, mock_run_git):
         """Test detecting repo from HTTPS URL without .git suffix."""
         mock_run_git.return_value = (True, "https://github.com/owner/repo")
@@ -217,7 +217,7 @@ class TestDetectRepo:
 
         assert repo == "owner/repo"
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_returns_none_on_failure(self, mock_run_git):
         """Test that None is returned when git command fails."""
         mock_run_git.return_value = (False, "")
@@ -226,7 +226,7 @@ class TestDetectRepo:
 
         assert repo is None
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_returns_none_for_non_github(self, mock_run_git):
         """Test that None is returned for non-GitHub remotes."""
         mock_run_git.return_value = (True, "https://gitlab.com/owner/repo.git")
@@ -239,7 +239,7 @@ class TestDetectRepo:
 class TestCheckPrerequisites:
     """Test the check_prerequisites function."""
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
     @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
     def test_all_prerequisites_met(self, mock_token, mock_subprocess, mock_git):
@@ -254,7 +254,7 @@ class TestCheckPrerequisites:
         assert checks["github_auth"] is True
         assert checks["claude"] is True
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
     @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
     def test_missing_git(self, mock_token, mock_subprocess, mock_git):
@@ -268,7 +268,7 @@ class TestCheckPrerequisites:
         assert checks["git"] is False
         assert checks["github_auth"] is True
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
     @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
     def test_github_not_authenticated(self, mock_token, mock_subprocess, mock_git):
@@ -285,7 +285,7 @@ class TestCheckPrerequisites:
 class TestFetchGithubLabels:
     """Test the fetch_github_labels function."""
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_fetches_labels(self, mock_client_factory):
         """Test successful label fetching."""
         mock_client = Mock()
@@ -296,7 +296,7 @@ class TestFetchGithubLabels:
 
         assert labels == ["bug", "agent:web"]
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_returns_empty_on_failure(self, mock_client_factory):
         """Test that empty list is returned on failure."""
         mock_client_factory.side_effect = RuntimeError("boom")
@@ -305,7 +305,7 @@ class TestFetchGithubLabels:
 
         assert labels == []
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_returns_empty_on_invalid_payload(self, mock_client_factory):
         """Test that empty list is returned for invalid payload."""
         mock_client = Mock()
@@ -368,10 +368,10 @@ class TestFindExistingConfig:
 class TestScanExistingRepo:
     """Test the scan_existing_repo function."""
 
-    @patch("issue_orchestrator.setup_wizard.find_prompt_candidates")
-    @patch("issue_orchestrator.setup_wizard.find_existing_config")
-    @patch("issue_orchestrator.setup_wizard.fetch_github_labels")
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.find_prompt_candidates")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.find_existing_config")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     def test_scans_repo(self, mock_repo, mock_labels, mock_config, mock_prompts, tmp_path):
         """Test scanning an existing repo."""
         mock_repo.return_value = "owner/repo"
@@ -385,10 +385,10 @@ class TestScanExistingRepo:
         assert state.agent_labels == ["agent:web", "agent:backend"]
         assert len(state.github_labels) == 3
 
-    @patch("issue_orchestrator.setup_wizard.find_prompt_candidates")
-    @patch("issue_orchestrator.setup_wizard.find_existing_config")
-    @patch("issue_orchestrator.setup_wizard.fetch_github_labels")
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.find_prompt_candidates")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.find_existing_config")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     def test_handles_no_repo(self, mock_repo, mock_labels, mock_config, mock_prompts, tmp_path):
         """Test scanning when repo detection fails."""
         mock_repo.return_value = None
@@ -405,8 +405,8 @@ class TestScanExistingRepo:
 class TestWizardNewProject:
     """Test the wizard_new_project function."""
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_creates_basic_config(self, mock_client_factory, mock_detect_repo):
         """Test creating a basic config with one agent."""
         mock_detect_repo.return_value = "owner/repo"
@@ -441,8 +441,8 @@ class TestWizardNewProject:
         assert config["concurrency"]["max_concurrent_sessions"] == 3
         assert config["ui_mode"] == "web"
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_adds_agent_prefix_when_missing(self, mock_client_factory, mock_detect_repo):
         """Test that agent: prefix is added when user confirms."""
         mock_detect_repo.return_value = None
@@ -472,8 +472,8 @@ class TestWizardNewProject:
         assert "agent:backend" in config["agents"]
         assert "backend" not in config["agents"]
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_multiple_agents(self, mock_client_factory, mock_detect_repo):
         """Test creating config with multiple agents."""
         mock_detect_repo.return_value = "owner/repo"
@@ -516,8 +516,8 @@ class TestWizardNewProject:
         assert config["agents"]["agent:frontend"]["model"] == "sonnet"
         assert config["agents"]["agent:backend"]["model"] == "opus"
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_custom_agent_command(self, mock_client_factory, mock_detect_repo):
         """Test creating config with a custom agent command."""
         mock_detect_repo.return_value = "owner/repo"
@@ -549,8 +549,8 @@ class TestWizardNewProject:
         # Custom agents don't get permission_mode since it's Claude-specific
         assert "permission_mode" not in agent_cfg
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_review_workflow_enabled(self, mock_client_factory, mock_detect_repo):
         """Test enabling two-stage review workflow."""
         mock_detect_repo.return_value = "owner/repo"
@@ -594,8 +594,8 @@ class TestWizardNewProject:
         assert config["triage_reviewed_label"] == "triage-reviewed"
         assert config["triage_review_threshold"] == 5
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_requires_at_least_one_agent(self, mock_client_factory, mock_detect_repo):
         """Test that wizard requires at least one agent."""
         mock_detect_repo.return_value = "owner/repo"
@@ -632,7 +632,7 @@ class TestWizardNewProject:
 class TestWizardExistingProject:
     """Test the wizard_existing_project function."""
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_basic_existing_project(self, mock_client_factory):
         """Test onboarding an existing project."""
         mock_client_factory.return_value = Mock()
@@ -668,7 +668,7 @@ class TestWizardExistingProject:
         assert "agent:web" in config["agents"]
         assert config["concurrency"]["max_concurrent_sessions"] == 3
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_preserves_existing_config(self, mock_client_factory):
         """Test that existing config is preserved when updating."""
         mock_client_factory.return_value = Mock()
@@ -727,7 +727,7 @@ class TestWizardExistingProject:
         # Existing settings preserved
         assert config["ui_mode"] == "tmux"
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_creates_missing_github_labels(self, mock_client_factory):
         """Test creating missing labels on GitHub."""
         mock_client = Mock()
@@ -770,7 +770,7 @@ class TestWizardExistingProject:
 
         assert mock_client.create_label.called
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_fresh_config_when_declined(self, mock_client_factory):
         """Test starting fresh when declining to update existing config."""
         mock_client_factory.return_value = Mock()
@@ -817,7 +817,7 @@ class TestWizardExistingProject:
         # New agent should be
         assert "agent:web" in config["agents"]
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_prompts_for_repo_when_not_detected(self, mock_client_factory):
         """Test that repo is prompted when not in state or config."""
         mock_client_factory.return_value = Mock()
@@ -850,9 +850,9 @@ class TestWizardExistingProject:
 class TestRunWizard:
     """Test the run_wizard function."""
 
-    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
-    @patch("issue_orchestrator.setup_wizard.scan_existing_repo")
-    @patch("issue_orchestrator.setup_wizard.write_config")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.scan_existing_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.write_config")
     @patch("os.chdir")
     def test_new_project_flow(self, mock_chdir, mock_write, mock_scan, mock_prereqs, tmp_path):
         """Test the full wizard flow for a new project."""
@@ -891,14 +891,14 @@ class TestRunWizard:
             False,                  # don't create missing GitHub labels
         ])
 
-        with patch("issue_orchestrator.setup_wizard.detect_repo", return_value="owner/repo"):
-            with patch("issue_orchestrator.setup_wizard._github_adapter", return_value=Mock()):
+        with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
+            with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter", return_value=Mock()):
                 run_wizard(target_path=target, prompter=prompter)
 
         # Verify config was written
         assert mock_write.called
 
-    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
     @patch("os.chdir")
     def test_aborts_when_config_not_saved(self, mock_chdir, mock_prereqs, tmp_path):
         """Test that wizard aborts when user doesn't save config."""
@@ -929,12 +929,12 @@ class TestRunWizard:
             False,                  # DON'T save config (exits here)
         ])
 
-        with patch("issue_orchestrator.setup_wizard.detect_repo", return_value="owner/repo"):
-            with patch("issue_orchestrator.setup_wizard._github_adapter", return_value=Mock()):
+        with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
+            with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter", return_value=Mock()):
                 with pytest.raises(SystemExit):
                     run_wizard(target_path=target, prompter=prompter)
 
-    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
     @patch("os.chdir")
     def test_warns_on_missing_prerequisites(self, mock_chdir, mock_prereqs, tmp_path):
         """Test that wizard warns when prerequisites are missing."""
@@ -959,7 +959,7 @@ class TestRunWizard:
         assert any("prerequisites" in msg.lower() or "missing" in msg.lower()
                   for msg in prompter.printed)
 
-    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
     @patch("os.chdir")
     def test_continues_despite_missing_prerequisites(self, mock_chdir, mock_prereqs, tmp_path):
         """Test that wizard can continue despite missing prerequisites."""
@@ -995,7 +995,7 @@ class TestRunWizard:
             False,                  # Don't save - exits here
         ])
 
-        with patch("issue_orchestrator.setup_wizard.detect_repo", return_value=None):
-            with patch("issue_orchestrator.setup_wizard._github_adapter", return_value=Mock()):
+        with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value=None):
+            with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter", return_value=Mock()):
                 with pytest.raises(SystemExit):
                     run_wizard(target_path=target, prompter=prompter)

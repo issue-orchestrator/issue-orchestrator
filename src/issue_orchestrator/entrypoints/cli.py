@@ -7,14 +7,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .config import Config
-    from .orchestrator import Orchestrator
-    from .adapters.github import GitHubAdapter
+    from ..config import Config
+    from ..orchestrator import Orchestrator
+    from ..adapters.github import GitHubAdapter
 
 from rich.console import Console
 from rich.table import Table
 
-from .infra.logging_config import setup_logging
+from ..infra.logging_config import setup_logging
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ LOG_FILE = Path.home() / ".issue-orchestrator.log"
 
 
 def _resolve_repo(config: "Config") -> str:
-    from .adapters.github.repo import get_repo_from_git
+    from ..adapters.github.repo import get_repo_from_git
 
     return config.repo or get_repo_from_git()
 
@@ -35,7 +35,7 @@ def _github_adapter_for_config(config: "Config") -> "GitHubAdapter | None":
     All GitHub access in CLI is routed through the adapter for
     consistent auditing and rate-limit handling.
     """
-    from .adapters.github import GitHubAdapter
+    from ..adapters.github import GitHubAdapter
 
     try:
         repo = _resolve_repo(config)
@@ -267,11 +267,11 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     # Handle dry-run mode
     if hasattr(args, 'dry_run') and args.dry_run:
-        from .control.scheduler import Scheduler
-        from .adapters.terminal._tmux import get_manager
-        from .infra.analysis import analyze_all_issues, extract_issue_branches
-        from .adapters.github import GitHubAdapter
-        from .execution.git_working_copy import GitWorkingCopy
+        from ..control.scheduler import Scheduler
+        from ..adapters.terminal._tmux import get_manager
+        from ..infra.analysis import analyze_all_issues, extract_issue_branches
+        from ..adapters.github import GitHubAdapter
+        from ..execution.git_working_copy import GitWorkingCopy
 
         console.print("\n[cyan]DRY RUN - showing what would be processed:[/cyan]\n")
 
@@ -377,7 +377,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             console.print("[dim]  • Resume from branch: orchestrator will checkout existing branch if present[/dim]")
 
         # Show issues with branches but not in-progress (might be abandoned PRs)
-        from .infra.analysis import analyze_orphan_branches
+        from ..infra.analysis import analyze_orphan_branches
         issue_branches = extract_issue_branches(
             working_copy.list_remote_branches(config.repo_root)
         )
@@ -447,7 +447,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     # For iterm2 mode, run directly (no tmux wrapper) - agent sessions become iTerm2 tabs
     if config.ui_mode == "iterm2":
         import subprocess
-        from .adapters.terminal._iterm2 import is_running_in_iterm2
+        from ..adapters.terminal._iterm2 import is_running_in_iterm2
 
         # If not in iTerm2, launch iTerm2 with our command
         if not is_running_in_iterm2():
@@ -597,7 +597,7 @@ end tell'''
 def cmd_status(args: argparse.Namespace) -> int:
     """Show current status."""
     try:
-        from .adapters.terminal._tmux import list_sessions
+        from ..adapters.terminal._tmux import list_sessions
 
         config = _load_config(args)
 
@@ -633,7 +633,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_attach(args: argparse.Namespace) -> int:
     """Attach to the orchestrator tmux session."""
-    from .adapters.terminal._tmux import attach_session, get_manager
+    from ..adapters.terminal._tmux import attach_session, get_manager
 
     manager = get_manager()
     if not manager.has_session():
@@ -651,7 +651,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
 def cmd_switch(args: argparse.Namespace) -> int:
     """Switch to a specific issue window (when inside tmux)."""
-    from .adapters.terminal._tmux import get_manager
+    from ..adapters.terminal._tmux import get_manager
 
     manager = get_manager()
     if not manager.has_session():
@@ -669,7 +669,7 @@ def cmd_switch(args: argparse.Namespace) -> int:
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
     """Switch to the dashboard window (when inside tmux)."""
-    from .adapters.terminal._tmux import get_manager
+    from ..adapters.terminal._tmux import get_manager
 
     manager = get_manager()
     if not manager.has_session():
@@ -686,7 +686,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 def cmd_output(args: argparse.Namespace) -> int:
     """Show recent output from an issue's session."""
-    from .adapters.terminal._tmux import get_manager
+    from ..adapters.terminal._tmux import get_manager
 
     manager = get_manager()
     issue_number: int = args.issue_number
@@ -847,7 +847,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     """Run the interactive setup wizard."""
     from pathlib import Path
 
-    from .setup_wizard import run_wizard
+    from .cli_tools.setup_wizard import run_wizard
 
     target_path = Path(args.path).expanduser().resolve() if args.path else None
     run_wizard(target_path)
@@ -930,11 +930,11 @@ def cmd_test_reset(args: argparse.Namespace) -> int:
 
     console.print("[bold]Test Reset: Clean slate for integration testing[/bold]\n")
 
-    # Find the scripts directory
-    scripts_dir = Path(__file__).parent.parent.parent / "scripts"
+    # Find the scripts directory (4 levels up from entrypoints/cli.py)
+    scripts_dir = Path(__file__).parent.parent.parent.parent / "scripts"
     if not scripts_dir.exists():
         # Try installed package location
-        scripts_dir = Path(__file__).parent / "scripts"
+        scripts_dir = Path(__file__).parent.parent / "scripts"
 
     if not scripts_dir.exists():
         console.print("[red]Error: scripts directory not found[/red]")
@@ -975,10 +975,10 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
     This allows restarting the orchestrator without losing track of
     running Claude sessions.
     """
-    from .adapters.terminal._iterm2 import discover_issue_tabs, get_iterm_manager
-    from .models import Session, Issue
+    from ..adapters.terminal._iterm2 import discover_issue_tabs, get_iterm_manager
+    from ..models import Session, Issue
     from datetime import datetime
-    from .adapters.github import GitHubAdapter
+    from ..adapters.github import GitHubAdapter
 
     console.print("[cyan]Discovering existing iTerm2 sessions...[/cyan]")
 
@@ -1029,13 +1029,13 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
         agent_config = config.agents[agent_type]
 
         # Get branch name from worktree
-        from .execution.git_working_copy import GitWorkingCopy
+        from ..execution.git_working_copy import GitWorkingCopy
         working_copy = GitWorkingCopy()
         branch_name = working_copy.get_current_branch(worktree_path) or f"{issue_num}-unknown"
 
         # Create session with domain identity (CODE task type for adopted sessions)
-        from .domain.session_key import SessionKey, TaskKind
-        from .domain.issue_key import GitHubIssueKey
+        from ..domain.session_key import SessionKey, TaskKind
+        from ..domain.issue_key import GitHubIssueKey
         if not config.repo:
             console.print(f"  [yellow]#{issue_num}: No repo configured, skipping[/yellow]")
             continue
@@ -1078,7 +1078,7 @@ def _load_config(args: argparse.Namespace) -> "Config":
     Raises:
         FileNotFoundError: If config file not found
     """
-    from .config import Config
+    from ..config import Config
 
     overrides = getattr(args, "set", None) or []
     if hasattr(args, 'config') and args.config:
@@ -1094,11 +1094,11 @@ def _load_config(args: argparse.Namespace) -> "Config":
 
 def cmd_audit(args: argparse.Namespace) -> int:
     """Audit the queue - show why issues are queued or skipped."""
-    from .infra.audit import audit_queue, print_audit
-    from .config import Config
-    from .adapters.github import GitHubAdapter
-    from .execution.git_working_copy import GitWorkingCopy
-    from .infra.analysis import extract_issue_branches
+    from ..infra.audit import audit_queue, print_audit
+    from ..config import Config
+    from ..adapters.github import GitHubAdapter
+    from ..execution.git_working_copy import GitWorkingCopy
+    from ..infra.analysis import extract_issue_branches
 
     console.print("[bold]Queue Audit[/bold]\n")
 
@@ -1155,7 +1155,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     # 2. Check git repository
     console.print("\n[bold]2. Git Repository[/bold]")
-    from .execution.git_working_copy import GitWorkingCopy
+    from ..execution.git_working_copy import GitWorkingCopy
     working_copy = GitWorkingCopy()
     if working_copy.is_git_repo(config.repo_root):
         console.print(f"  [green]✓[/green] Valid git repository")
@@ -1183,7 +1183,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     # 4. Check hooks setup
     console.print("\n[bold]4. Git Hooks[/bold]")
-    from .adapters.worktree._worktree import HOOKS_DIR
+    from ..adapters.worktree._worktree import HOOKS_DIR
 
     bundled_hook = HOOKS_DIR / "pre-push"
     if bundled_hook.exists():
@@ -1251,7 +1251,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     # 7. Verify AI meta-agent hooks
     console.print("\n[bold]7. AI Meta-Agent Hooks[/bold]")
-    from .hooks import (
+    from ..hooks import (
         detect_agents_from_config,
         get_adapter,
         UnsupportedMetaAgentError,
@@ -1329,7 +1329,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 def cmd_setup_hooks(args: argparse.Namespace) -> int:
     """Install AI meta-agent hooks for the target project."""
-    from .hooks import (
+    from ..hooks import (
         detect_agents_from_config,
         get_adapter,
         UnsupportedMetaAgentError,
@@ -1422,7 +1422,7 @@ def cmd_auth(args: argparse.Namespace) -> int:
 
 def _cmd_auth_store(args: argparse.Namespace, console) -> int:
     """Store GitHub token in OS keychain."""
-    from .adapters.github.http_client import store_keyring_token
+    from ..adapters.github.http_client import store_keyring_token
     import getpass
 
     token = getattr(args, "token", None)
@@ -1453,7 +1453,7 @@ def _cmd_auth_store(args: argparse.Namespace, console) -> int:
 
 def _cmd_auth_clear(args: argparse.Namespace, console) -> int:
     """Clear GitHub token from OS keychain."""
-    from .adapters.github.http_client import clear_keyring_token
+    from ..adapters.github.http_client import clear_keyring_token
 
     if clear_keyring_token():
         console.print("[green]✓ Token cleared from OS keychain[/green]")
@@ -1465,7 +1465,7 @@ def _cmd_auth_clear(args: argparse.Namespace, console) -> int:
 def _cmd_auth_doctor(args: argparse.Namespace, console) -> int:
     """Check GitHub authentication status."""
     import os
-    from .adapters.github.http_client import (
+    from ..adapters.github.http_client import (
         resolve_github_token,
         _read_keyring_token,
         KEYRING_SERVICE,
@@ -1537,11 +1537,11 @@ def cmd_demo(args: argparse.Namespace) -> int:
     from rich.panel import Panel
     from pathlib import Path
 
-    from .control.scheduler import Scheduler
-    from .control.dependency_evaluator import DependencyEvaluator
-    from .domain.dependencies import parse_dependencies
-    from .config import Config
-    from .models import Issue, AgentConfig  # Issue used for demo mock creation
+    from ..control.scheduler import Scheduler
+    from ..control.dependency_evaluator import DependencyEvaluator
+    from ..domain.dependencies import parse_dependencies
+    from ..config import Config
+    from ..models import Issue, AgentConfig  # Issue used for demo mock creation
 
     console = Console()
 

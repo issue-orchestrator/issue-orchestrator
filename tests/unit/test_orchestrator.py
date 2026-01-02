@@ -1394,7 +1394,7 @@ class TestRunOrchestrator:
     """Test the run_orchestrator entry point."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_loads_config_from_path(
@@ -1420,7 +1420,7 @@ class TestRunOrchestrator:
         mock_config_load.assert_called_once_with(config_path)
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.find_and_load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_finds_config_when_no_path(
@@ -1443,7 +1443,7 @@ class TestRunOrchestrator:
         mock_config_find.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.find_and_load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_calls_startup(
@@ -1466,7 +1466,7 @@ class TestRunOrchestrator:
         mock_orch.startup.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.find_and_load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_calls_run_loop(
@@ -1489,7 +1489,7 @@ class TestRunOrchestrator:
         mock_orch.run_loop.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
     @patch("issue_orchestrator.orchestrator.Config.find_and_load")
     @patch("issue_orchestrator.orchestrator.signal.signal")
     async def test_run_orchestrator_sets_up_signal_handlers(

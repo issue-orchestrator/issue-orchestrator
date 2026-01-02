@@ -17,7 +17,7 @@ from sse_starlette.sse import EventSourceResponse
 from jinja2 import Environment, FileSystemLoader
 
 if TYPE_CHECKING:
-    from .orchestrator import Orchestrator
+    from ..orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +67,8 @@ def trigger_server_shutdown():
         _server.should_exit = True
 
 
-# Template directory
-TEMPLATE_DIR = Path(__file__).parent / "templates"
+# Template directory (templates are in parent package, not entrypoints)
+TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
 
 
 def get_templates() -> Environment:
@@ -88,7 +88,7 @@ async def dashboard(
     import time
     request_start = time.time()
 
-    from .control.scheduler import Scheduler
+    from ..control.scheduler import Scheduler
 
     # Get query params
     queue_page = int(request.query_params.get("page", 1))
@@ -173,7 +173,7 @@ async def dashboard(
             logger.info("[dashboard] Using %d cached queue issues", queue_total)
 
             # Get dependency info for queue issues
-            from .infra.audit import get_issue_dependencies
+            from ..infra.audit import get_issue_dependencies
             dependency_info = get_issue_dependencies(queue_issues, config)
 
             start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
@@ -437,13 +437,13 @@ async def focus_session(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
 
     # Use AppleScript to focus the iTerm2 tab
-    from .adapters.terminal._iterm2 import select_tab_by_name
+    from ..adapters.terminal._iterm2 import select_tab_by_name
 
     if select_tab_by_name(f"#{issue_number}"):
         return JSONResponse({"status": "focused", "issue_number": issue_number})
     else:
         # Try tmux as fallback
-        from .adapters.terminal._tmux import get_manager
+        from ..adapters.terminal._tmux import get_manager
         manager = get_manager()
         if manager.select_window(issue_number):
             return JSONResponse({"status": "focused", "issue_number": issue_number})
@@ -720,7 +720,7 @@ async def create_test_issues() -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from .testing.support.test_data import create_test_issues as _create_test_issues
+    from ..testing.support.test_data import create_test_issues as _create_test_issues
 
     config = _orchestrator.config
     if not config.repo:
@@ -740,7 +740,7 @@ async def cleanup_test_issues() -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from .testing.support.test_data import cleanup_test_issues as _cleanup_test_issues
+    from ..testing.support.test_data import cleanup_test_issues as _cleanup_test_issues
 
     config = _orchestrator.config
     if not config.repo:

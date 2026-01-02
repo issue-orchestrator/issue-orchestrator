@@ -357,7 +357,7 @@ class Orchestrator:
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]: return _launch_rework_session(rework, self.state, self._session_launcher, self._session_restorer)
 
 async def run_orchestrator(config_path: Optional[Path] = None) -> None:
-    from .bootstrap import build_orchestrator
+    from .entrypoints.bootstrap import build_orchestrator
     config = Config.load(config_path) if config_path else Config.find_and_load()
     orchestrator = build_orchestrator(config)
     signal.signal(signal.SIGINT, lambda s, f: _handle_signal(orchestrator, s, f))

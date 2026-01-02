@@ -134,7 +134,7 @@ class TestCLIWiring:
         Note: cmd_start has lazy imports and uses asyncio.run(),
         so we test at a simpler level.
         """
-        from issue_orchestrator.cli import cmd_start
+        from issue_orchestrator.entrypoints.cli import cmd_start
 
         # Patch at config module level since it's imported inside cmd_start
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_config:
@@ -153,7 +153,7 @@ class TestCLIWiring:
                 mock_orch_class.return_value = mock_orch
 
                 # Patch dashboard module
-                with patch('issue_orchestrator.dashboard.run_with_dashboard', new_callable=AsyncMock):
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard', new_callable=AsyncMock):
                     with patch('asyncio.run') as mock_asyncio_run:
                         mock_asyncio_run.return_value = None
 
@@ -170,7 +170,7 @@ class TestCLIWiring:
 
     def test_cmd_status_returns_without_error(self):
         """Verify cmd_status can execute without error."""
-        from issue_orchestrator.cli import cmd_status
+        from issue_orchestrator.entrypoints.cli import cmd_status
 
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_config:
             mock_cfg = MagicMock()
@@ -249,7 +249,7 @@ class TestDashboardWiring:
     @pytest.mark.asyncio
     async def test_dashboard_pause_updates_orchestrator_state(self):
         """Verify pressing pause in dashboard actually updates orchestrator state."""
-        from issue_orchestrator.dashboard import Dashboard
+        from issue_orchestrator.entrypoints.dashboard import Dashboard
 
         # Create a mock orchestrator
         mock_orch = MagicMock()
@@ -270,7 +270,7 @@ class TestDashboardWiring:
     @pytest.mark.asyncio
     async def test_dashboard_resume_updates_orchestrator_state(self):
         """Verify pressing resume in dashboard actually updates orchestrator state."""
-        from issue_orchestrator.dashboard import Dashboard
+        from issue_orchestrator.entrypoints.dashboard import Dashboard
 
         mock_orch = MagicMock()
         mock_orch.state = OrchestratorState()

@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 import pytest
 
-from issue_orchestrator.agent_done import (
+from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     AgentStatus,
     REQUIRED_FIELDS,
     STATUS_TO_OUTCOME,
@@ -460,7 +460,7 @@ class TestBuildCompletionRecord:
             implementation="Added user auth",
             problems="None",
         )
-        with patch("issue_orchestrator.agent_done.get_session_id", return_value="test-session"):
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="test-session"):
             record = build_completion_record(AgentStatus.COMPLETED, args)
 
         assert record.session_id == "test-session"
@@ -478,7 +478,7 @@ class TestBuildCompletionRecord:
             blocked_by=[123],
             when_unblocked="Implement auth",
         )
-        with patch("issue_orchestrator.agent_done.get_session_id", return_value="test-session"):
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="test-session"):
             record = build_completion_record(AgentStatus.BLOCKED, args)
 
         assert record.outcome == CompletionOutcome.BLOCKED
@@ -496,7 +496,7 @@ class TestBuildCompletionRecord:
             options=["A", "B"],
             default="A",
         )
-        with patch("issue_orchestrator.agent_done.get_session_id", return_value="test-session"):
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="test-session"):
             record = build_completion_record(AgentStatus.NEEDS_HUMAN, args)
 
         assert record.outcome == CompletionOutcome.NEEDS_HUMAN
@@ -513,7 +513,7 @@ class TestBuildCompletionRecord:
             risk="low",
             checks=["tests_added"],
         )
-        with patch("issue_orchestrator.agent_done.get_session_id", return_value="test-session"):
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="test-session"):
             record = build_completion_record(AgentStatus.APPROVED, args)
 
         assert record.outcome == CompletionOutcome.REVIEW_APPROVED
@@ -529,7 +529,7 @@ class TestBuildCompletionRecord:
             risk="high",
             checks_needed=["tests_added", "error_handling"],
         )
-        with patch("issue_orchestrator.agent_done.get_session_id", return_value="test-session"):
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="test-session"):
             record = build_completion_record(AgentStatus.CHANGES_REQUESTED, args)
 
         assert record.outcome == CompletionOutcome.REVIEW_CHANGES_REQUESTED
@@ -627,7 +627,7 @@ class TestMain:
             '--problems', 'None',
             '--dry-run'
         ]):
-            with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+            with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                 main()
 
                 captured = capsys.readouterr()
@@ -642,7 +642,7 @@ class TestMain:
             '--attempted', 'Checked env vars',
             '--dry-run'
         ]):
-            with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+            with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                 main()
 
                 captured = capsys.readouterr()
@@ -656,7 +656,7 @@ class TestMain:
             '--question', 'Which approach?',
             '--dry-run'
         ]):
-            with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+            with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                 main()
 
                 captured = capsys.readouterr()
@@ -671,7 +671,7 @@ class TestMain:
             '--risk', 'low',
             '--dry-run'
         ]):
-            with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+            with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                 main()
 
                 captured = capsys.readouterr()
@@ -686,7 +686,7 @@ class TestMain:
             '--risk', 'medium',
             '--dry-run'
         ]):
-            with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+            with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                 main()
 
                 captured = capsys.readouterr()
@@ -738,7 +738,7 @@ class TestMain:
                 '--implementation', 'Added feature',
                 '--problems', 'None',
             ]):
-                with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+                with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                     main()
 
             # Check file was written
@@ -767,7 +767,7 @@ class TestMain:
                 '--reason', 'Need API',
                 '--attempted', 'Checked env',
             ]):
-                with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+                with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                     main()
 
             # Check marker file was written
@@ -790,7 +790,7 @@ class TestShortFlags:
             '-p', 'No problems',
             '--dry-run'
         ]):
-            with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+            with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                 main()
 
                 captured = capsys.readouterr()
@@ -804,7 +804,7 @@ class TestShortFlags:
             '-a', 'Attempted text',
             '--dry-run'
         ]):
-            with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+            with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                 main()
 
                 captured = capsys.readouterr()
@@ -818,7 +818,7 @@ class TestShortFlags:
             '-c', 'Context text',
             '--dry-run'
         ]):
-            with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+            with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                 main()
 
                 captured = capsys.readouterr()
@@ -848,7 +848,7 @@ class TestCompletionRecordSerialization:
             checks_needed=None,
         )
 
-        with patch("issue_orchestrator.agent_done.get_session_id", return_value="test-session"):
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="test-session"):
             record = build_completion_record(AgentStatus.COMPLETED, args)
 
         # Serialize and deserialize
@@ -881,7 +881,7 @@ class TestCompletionRecordSerialization:
             checks_needed=None,
         )
 
-        with patch("issue_orchestrator.agent_done.get_session_id", return_value="test-session"):
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="test-session"):
             record = build_completion_record(AgentStatus.BLOCKED, args)
 
         data = record.to_dict()
@@ -932,7 +932,7 @@ validation_policy:
                 '--problems', 'None',
                 '--verbose'
             ]):
-                with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+                with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                     main()
 
             captured = capsys.readouterr()
@@ -977,7 +977,7 @@ validation_policy:
                 '--problems', 'None',
                 '--verbose'
             ]):
-                with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+                with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                     with pytest.raises(SystemExit) as exc_info:
                         main()
                     # Should exit with error code 1
@@ -1028,7 +1028,7 @@ validation_policy:
                 '--problems', 'None',
                 '--skip-validation'
             ]):
-                with patch('issue_orchestrator.agent_done.get_session_id', return_value='test-123'):
+                with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                     main()
 
             captured = capsys.readouterr()

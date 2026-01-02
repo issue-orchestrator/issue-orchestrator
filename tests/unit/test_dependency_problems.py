@@ -300,7 +300,7 @@ class TestDependencyProblemsAPI:
     def app_client(self):
         """Create test client with mocked orchestrator."""
         from fastapi.testclient import TestClient
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         from issue_orchestrator.config import Config
 
         mock_orch = MagicMock()

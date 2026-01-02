@@ -87,7 +87,7 @@ def start_orchestrator_with_config(config_path: Path, max_issues: int = 1) -> su
         ]
     else:
         cmd = [
-            sys.executable, "-m", "issue_orchestrator.cli",
+            sys.executable, "-m", "issue_orchestrator.entrypoints.cli",
             "--config", str(config_path),
             "start",
             "--max-issues", str(max_issues),

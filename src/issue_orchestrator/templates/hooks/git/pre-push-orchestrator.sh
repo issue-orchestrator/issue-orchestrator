@@ -17,7 +17,7 @@ set -euo pipefail
 # Uses cache to avoid redundant validation runs
 if command -v python3 &> /dev/null; then
     # Prefer module invocation to avoid stale console script entry points.
-    if python3 -m issue_orchestrator.prepush_check -v 2>/dev/null; then
+    if python3 -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v 2>/dev/null; then
         : # Validation passed or not configured
     elif [ $? -eq 1 ]; then
         echo "ERROR: Publish gate validation failed." >&2

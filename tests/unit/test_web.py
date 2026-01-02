@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, Mock
 from fastapi.testclient import TestClient
 
-from issue_orchestrator.web import app, get_orchestrator
+from issue_orchestrator.entrypoints.web import app, get_orchestrator
 from issue_orchestrator.models import (
     Issue,
     Session,
@@ -101,7 +101,7 @@ class TestDashboardEndpoint:
 
     def test_dashboard_returns_html(self):
         """Test that dashboard returns HTML response."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         web._orchestrator = mock_orch
@@ -116,7 +116,7 @@ class TestDashboardEndpoint:
 
     def test_dashboard_with_active_sessions(self):
         """Test dashboard displays active sessions."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         # Add an active session
@@ -137,7 +137,7 @@ class TestDashboardEndpoint:
 
     def test_dashboard_with_queue_pagination(self):
         """Test dashboard queue pagination."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         # Create 25 issues to trigger pagination (page size is 20)
@@ -164,7 +164,7 @@ class TestDashboardEndpoint:
 
     def test_dashboard_when_paused(self):
         """Test dashboard shows paused state."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         mock_orch.state.paused = True
 
@@ -181,7 +181,7 @@ class TestDashboardEndpoint:
 
     def test_dashboard_with_session_history(self):
         """Test dashboard displays session history."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         # Add a history entry
@@ -211,7 +211,7 @@ class TestApiStatusEndpoint:
 
     def test_status_returns_json(self):
         """Test that status endpoint returns JSON."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -224,7 +224,7 @@ class TestApiStatusEndpoint:
 
     def test_status_includes_basic_info(self):
         """Test status includes basic orchestrator info."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -242,7 +242,7 @@ class TestApiStatusEndpoint:
 
     def test_status_with_active_sessions(self):
         """Test status includes active session details."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         issue = create_issue(1, "Test Issue")
@@ -263,7 +263,7 @@ class TestApiStatusEndpoint:
 
     def test_status_when_orchestrator_not_running(self):
         """Test status returns 503 when orchestrator not initialized."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         web._orchestrator = None
 
         client = TestClient(app)
@@ -278,7 +278,7 @@ class TestPauseResumeEndpoints:
 
     def test_pause_endpoint(self):
         """Test pause endpoint calls orchestrator.pause()."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -291,7 +291,7 @@ class TestPauseResumeEndpoints:
 
     def test_resume_endpoint(self):
         """Test resume endpoint calls orchestrator.resume()."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -304,7 +304,7 @@ class TestPauseResumeEndpoints:
 
     def test_pause_when_orchestrator_not_running(self):
         """Test pause returns 503 when orchestrator not initialized."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         web._orchestrator = None
 
         client = TestClient(app)
@@ -315,7 +315,7 @@ class TestPauseResumeEndpoints:
 
     def test_resume_when_orchestrator_not_running(self):
         """Test resume returns 503 when orchestrator not initialized."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         web._orchestrator = None
 
         client = TestClient(app)
@@ -330,7 +330,7 @@ class TestFocusSessionEndpoint:
 
     def test_focus_session_success(self):
         """Test successful session focus."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         issue = create_issue(1)
@@ -353,7 +353,7 @@ class TestFocusSessionEndpoint:
 
     def test_focus_session_falls_back_to_tmux(self):
         """Test focus falls back to tmux if iTerm2 fails."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         issue = create_issue(1)
@@ -379,7 +379,7 @@ class TestFocusSessionEndpoint:
 
     def test_focus_session_not_found(self):
         """Test focus returns 404 when session not found."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -391,7 +391,7 @@ class TestFocusSessionEndpoint:
 
     def test_focus_session_fails(self):
         """Test focus returns 500 when both iTerm2 and tmux fail."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         issue = create_issue(1)
@@ -419,7 +419,7 @@ class TestFinderEndpoint:
 
     def test_open_in_finder_success(self):
         """Test successful Finder open on macOS."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         issue = create_issue(1)
@@ -448,7 +448,7 @@ class TestFinderEndpoint:
 
     def test_open_in_finder_session_not_found(self):
         """Test Finder open returns 404 when session not found."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -460,7 +460,7 @@ class TestFinderEndpoint:
 
     def test_open_in_finder_worktree_not_found(self):
         """Test Finder open returns 404 when worktree doesn't exist."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         issue = create_issue(1)
@@ -481,7 +481,7 @@ class TestFinderEndpoint:
 
     def test_open_in_finder_not_macos(self):
         """Test Finder open returns 400 when not on macOS."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         issue = create_issue(1)
@@ -508,7 +508,7 @@ class TestPromptEndpoint:
 
     def test_open_agent_prompt_success(self):
         """Test successful prompt file opening."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -533,7 +533,7 @@ class TestPromptEndpoint:
 
     def test_open_agent_prompt_with_agent_prefix(self):
         """Test opening prompt with 'agent:' prefix."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -554,7 +554,7 @@ class TestPromptEndpoint:
 
     def test_open_agent_prompt_not_found(self):
         """Test opening prompt for unknown agent type."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -566,7 +566,7 @@ class TestPromptEndpoint:
 
     def test_open_agent_prompt_file_not_found(self):
         """Test opening prompt when file doesn't exist."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -588,7 +588,7 @@ class TestShutdownEndpoint:
 
     def test_shutdown_success(self):
         """Test successful shutdown request."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -601,7 +601,7 @@ class TestShutdownEndpoint:
 
     def test_shutdown_when_orchestrator_not_running(self):
         """Test shutdown returns 503 when orchestrator not initialized."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         web._orchestrator = None
 
         client = TestClient(app)
@@ -616,7 +616,7 @@ class TestInfoEndpoint:
 
     def test_get_info_success(self):
         """Test successful info retrieval."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         # Add some active sessions
@@ -640,7 +640,7 @@ class TestInfoEndpoint:
 
     def test_get_info_when_orchestrator_not_running(self):
         """Test info returns 503 when orchestrator not initialized."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         web._orchestrator = None
 
         client = TestClient(app)
@@ -655,13 +655,13 @@ class TestConfigEndpoint:
 
     def test_get_config_success(self):
         """Test successful config file retrieval."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         config_content = "agents:\n  agent:web:\n    model: sonnet"
 
-        with patch("issue_orchestrator.web.Path.exists") as mock_exists:
-            with patch("issue_orchestrator.web.Path.read_text") as mock_read:
+        with patch("issue_orchestrator.entrypoints.web.Path.exists") as mock_exists:
+            with patch("issue_orchestrator.entrypoints.web.Path.read_text") as mock_read:
                 mock_exists.return_value = True
                 mock_read.return_value = config_content
 
@@ -675,7 +675,7 @@ class TestConfigEndpoint:
 
     def test_get_config_file_not_found(self):
         """Test config endpoint when file doesn't exist."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         mock_orch.config.config_path = None
 
@@ -693,7 +693,7 @@ class TestHistoryEndpoints:
 
     def test_clear_history_success(self):
         """Test clearing all history."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         # Add some history entries
@@ -726,7 +726,7 @@ class TestHistoryEndpoints:
 
     def test_dismiss_history_entry_success(self):
         """Test dismissing a single history entry."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         entry1 = SessionHistoryEntry(
@@ -759,7 +759,7 @@ class TestHistoryEndpoints:
 
     def test_retry_issue_success(self):
         """Test retrying an issue."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         entry = SessionHistoryEntry(
@@ -788,7 +788,7 @@ class TestDebugEndpoint:
 
     def test_get_debug_success(self):
         """Test successful debug info retrieval."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -805,7 +805,7 @@ class TestDebugEndpoint:
 
     def test_get_debug_includes_agents(self):
         """Test debug endpoint includes agent configuration."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -822,7 +822,7 @@ class TestTestDataEndpoints:
 
     def test_create_test_issues_success(self):
         """Test creating test issues."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
@@ -842,7 +842,7 @@ class TestTestDataEndpoints:
 
     def test_create_test_issues_no_repo(self):
         """Test creating test issues without repo configured."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         mock_orch.config.repo = None
         web._orchestrator = mock_orch
@@ -855,7 +855,7 @@ class TestTestDataEndpoints:
 
     def test_cleanup_test_issues_success(self):
         """Test cleaning up test issues."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         # Add test issue to history
@@ -883,7 +883,7 @@ class TestTestDataEndpoints:
 
     def test_cleanup_test_issues_preserves_non_test(self):
         """Test cleanup preserves non-test issues in history."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
         # Add both test and non-test issues to history
@@ -922,7 +922,7 @@ class TestOrchestratorNotInitialized:
 
     def test_endpoints_return_503_when_orchestrator_none(self):
         """Test that all endpoints return 503 when orchestrator is None."""
-        from issue_orchestrator import web
+        from issue_orchestrator.entrypoints import web
         web._orchestrator = None
 
         client = TestClient(app)
@@ -960,7 +960,7 @@ class TestGetTemplates:
 
     def test_get_templates_returns_jinja_environment(self):
         """Test that get_templates returns a Jinja2 Environment."""
-        from issue_orchestrator.web import get_templates
+        from issue_orchestrator.entrypoints.web import get_templates
         from jinja2 import Environment
 
         env = get_templates()
@@ -974,7 +974,7 @@ class TestSSEFunctionality:
     async def test_broadcast_event_to_subscribers(self):
         """Test broadcasting events to subscribers."""
         import asyncio
-        from issue_orchestrator.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
 
         # Create a test queue and add it as a subscriber
         test_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
@@ -996,7 +996,7 @@ class TestSSEFunctionality:
     async def test_broadcast_event_handles_empty_data(self):
         """Test broadcasting events with no data."""
         import asyncio
-        from issue_orchestrator.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
 
         test_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
         _event_subscribers.add(test_queue)
@@ -1014,7 +1014,7 @@ class TestSSEFunctionality:
     async def test_broadcast_event_removes_full_queues(self):
         """Test that full queues are removed from subscribers."""
         import asyncio
-        from issue_orchestrator.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
 
         # Create a queue with size 1 and fill it
         full_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
@@ -1035,7 +1035,7 @@ class TestSSEFunctionality:
     @pytest.mark.asyncio
     async def test_broadcast_event_no_subscribers(self):
         """Test broadcasting when there are no subscribers."""
-        from issue_orchestrator.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
 
         # Ensure no subscribers
         original_subscribers = _event_subscribers.copy()
@@ -1050,7 +1050,7 @@ class TestSSEFunctionality:
 
     def test_events_endpoint_exists(self):
         """Test that /api/events endpoint is registered."""
-        from issue_orchestrator.web import app
+        from issue_orchestrator.entrypoints.web import app
 
         # Check the endpoint is registered by looking at routes
         routes = [route.path for route in app.routes]

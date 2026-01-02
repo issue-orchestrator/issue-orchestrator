@@ -4,7 +4,7 @@ This module provides a CLI command for checking validation cache
 and running validation if needed, for use in pre-push hooks.
 
 Usage:
-    python -m issue_orchestrator.prepush_check
+    python -m issue_orchestrator.entrypoints.cli_tools.prepush_check
 
 Exit codes:
     0 = validation passed (or no validation configured)
@@ -18,8 +18,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .control.validation import PublishGate
-from .execution import GitWorkingCopy, LocalCommandRunner
+from ...control.validation import PublishGate
+from ...execution import GitWorkingCopy, LocalCommandRunner
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def load_publish_gate_config(worktree: Path) -> tuple[Optional[str], int]:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
     import os
-    from .config import load_validation_config
+    from ...config import load_validation_config
 
     # Check for environment variable override (useful for e2e tests)
     env_cmd = os.environ.get("ORCHESTRATOR_PUBLISH_GATE_CMD")

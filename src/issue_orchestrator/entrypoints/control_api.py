@@ -25,10 +25,10 @@ from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from . import gh_audit
+from .. import gh_audit
 
 if TYPE_CHECKING:
-    from .orchestrator import Orchestrator
+    from ..orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,7 @@ async def snapshot() -> JSONResponse:
     if _orchestrator.event_hub is None:
         return JSONResponse({"error": "Event hub not initialized"}, status_code=503)
 
-    from .control.snapshot_builder import SnapshotBuilder
+    from ..control.snapshot_builder import SnapshotBuilder
 
     builder = SnapshotBuilder(config=_orchestrator.config, repository_host=_orchestrator.repository_host)
     snapshot_id = _orchestrator.event_hub.last_event_id

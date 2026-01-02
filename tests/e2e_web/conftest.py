@@ -19,8 +19,8 @@ from issue_orchestrator.models import (
     Session,
     SessionHistoryEntry,
 )
-import issue_orchestrator.web as web_module
-from issue_orchestrator.web import app
+import issue_orchestrator.entrypoints.web as web_module
+from issue_orchestrator.entrypoints.web import app
 
 
 def find_free_port() -> int:

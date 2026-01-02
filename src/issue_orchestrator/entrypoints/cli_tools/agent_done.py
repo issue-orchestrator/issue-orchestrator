@@ -24,14 +24,14 @@ from typing import NoReturn, Optional
 
 import os
 
-from .models import (
+from ...models import (
     CompletionRecord,
     CompletionOutcome,
     RequestedAction,
     COMPLETION_RECORD_PATH,
     get_completion_path,
 )
-from .control.validation import AgentGate, AgentGateResult
+from ...control.validation import AgentGate, AgentGateResult
 
 
 class AgentStatus:
@@ -310,7 +310,7 @@ def write_completion_record(record: CompletionRecord) -> Path:
         json.dump(record.to_dict(), f, indent=2)
 
     # Emit event for debugging - shows where completion was written
-    from .infra.emit import emit_event
+    from ...infra.emit import emit_event
     emit_event("completion.written", {
         "outcome": record.outcome.value,
         "path": str(output_path.resolve()),
@@ -356,7 +356,7 @@ def load_agent_gate_config(worktree: Path) -> tuple[Optional[str], int]:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
     import os
-    from .config import load_validation_config
+    from ...config import load_validation_config
 
     # Check for environment variable override (useful for e2e tests)
     env_cmd = os.environ.get("ORCHESTRATOR_AGENT_GATE_CMD")
@@ -395,7 +395,7 @@ def run_agent_gate(worktree: Path, verbose: bool = False) -> Optional[AgentGateR
     if verbose:
         print(f"Running agent gate validation: {cmd}")
 
-    from .execution import LocalCommandRunner, GitWorkingCopy
+    from ...execution import LocalCommandRunner, GitWorkingCopy
 
     gate = AgentGate(
         worktree,

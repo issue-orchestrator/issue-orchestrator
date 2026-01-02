@@ -19,10 +19,10 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .config import Config
-from .ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner
-from .control.orchestrator_deps import OrchestratorDeps
-from .execution import (
+from ..config import Config
+from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner
+from ..control.orchestrator_deps import OrchestratorDeps
+from ..execution import (
     create_plugin_manager,
     PluggyEventSink,
     PluggySessionRunner,
@@ -30,30 +30,30 @@ from .execution import (
     GitHubAdapter,
     CompositeEventSink,
 )
-from .execution.gh_guard import install_gh_guard
-from .events import EventHub, SequencedEventSink
-from .control import (
+from ..execution.gh_guard import install_gh_guard
+from ..events import EventHub, SequencedEventSink
+from ..control import (
     Planner,
     Scheduler,
     SessionManager,
     LabelSync,
 )
-from .control.action_applier import ActionApplier
-from .control.fact_gatherer import FactGatherer
-from .control.health_gate import HealthGate
-from .execution import GitHubIssueResolver
-from .adapters.github.cache import GitHubCache
-from .execution.verification_service import DefaultVerificationService
-from .ports.verification import VerificationBudget
-from .execution.worktree_adapter import GitWorktreeManager
-from .execution.git_working_copy import GitWorkingCopy
-from .execution.command_runner import LocalCommandRunner
-from .control.dependency_evaluator import DependencyEvaluator
-from .control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
-from . import gh_audit
+from ..control.action_applier import ActionApplier
+from ..control.fact_gatherer import FactGatherer
+from ..control.health_gate import HealthGate
+from ..execution import GitHubIssueResolver
+from ..adapters.github.cache import GitHubCache
+from ..execution.verification_service import DefaultVerificationService
+from ..ports.verification import VerificationBudget
+from ..execution.worktree_adapter import GitWorktreeManager
+from ..execution.git_working_copy import GitWorkingCopy
+from ..execution.command_runner import LocalCommandRunner
+from ..control.dependency_evaluator import DependencyEvaluator
+from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
+from .. import gh_audit
 
 if TYPE_CHECKING:
-    from .orchestrator import Orchestrator
+    from ..orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def build_orchestrator(
         Fully configured Orchestrator instance
     """
     # Import here to avoid circular imports
-    from .orchestrator import Orchestrator
+    from ..orchestrator import Orchestrator
 
     install_gh_guard()
 
@@ -230,7 +230,7 @@ def build_orchestrator(
     ) if github else None
 
     # Create PRScanner (for orphaned review/rework discovery)
-    from .control.pr_scanner import PRScanner
+    from ..control.pr_scanner import PRScanner
     pr_scanner = PRScanner(
         config=config,
         repository=github,
@@ -238,7 +238,7 @@ def build_orchestrator(
     ) if github else None
 
     # Create SessionRestorer (for session recovery after restart)
-    from .control.session_restorer import SessionRestorer
+    from ..control.session_restorer import SessionRestorer
     session_restorer = SessionRestorer(
         config=config,
         repository_host=github,
@@ -246,14 +246,14 @@ def build_orchestrator(
     ) if github else None
 
     # Create StateMachineManager (centralized state machine management)
-    from .control.state_machine_manager import StateMachineManager
+    from ..control.state_machine_manager import StateMachineManager
     state_machine_manager = StateMachineManager(
         config=config,
         events=events,
     )
 
     # Create CompletionProcessor (processes session completion files)
-    from .control.completion_processor import CompletionProcessor
+    from ..control.completion_processor import CompletionProcessor
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
@@ -270,14 +270,14 @@ def build_orchestrator(
     ) if github else None
 
     # Create SessionController (decides session outcomes)
-    from .control.session_controller import SessionController
+    from ..control.session_controller import SessionController
     session_controller_instance = SessionController(
         completion_processor=completion_processor,
         events=events,
     ) if completion_processor else None
 
     # Build the orchestrator with injected dependencies
-    from .execution.hook_verifier import ExecutionHookVerifier
+    from ..execution.hook_verifier import ExecutionHookVerifier
     hook_verifier = ExecutionHookVerifier(config)
 
     # Create HealthGate for system health checks (capacity, rate limits, etc.)
@@ -388,7 +388,7 @@ def build_orchestrator_for_testing(
     Returns:
         Orchestrator configured with test dependencies
     """
-    from .orchestrator import Orchestrator
+    from ..orchestrator import Orchestrator
 
     install_gh_guard()
 
@@ -435,7 +435,7 @@ def build_orchestrator_for_testing(
             events=events,
         )
 
-    from .execution.hook_verifier import ExecutionHookVerifier
+    from ..execution.hook_verifier import ExecutionHookVerifier
     hook_verifier = ExecutionHookVerifier(config)
 
     # Create HealthGate for testing
@@ -445,7 +445,7 @@ def build_orchestrator_for_testing(
     )
 
     # Create PRScanner for testing
-    from .control.pr_scanner import PRScanner
+    from ..control.pr_scanner import PRScanner
     pr_scanner = PRScanner(
         config=config,
         repository=github,
@@ -453,7 +453,7 @@ def build_orchestrator_for_testing(
     )
 
     # Create SessionRestorer for testing
-    from .control.session_restorer import SessionRestorer
+    from ..control.session_restorer import SessionRestorer
     session_restorer = SessionRestorer(
         config=config,
         repository_host=github,
@@ -461,14 +461,14 @@ def build_orchestrator_for_testing(
     )
 
     # Create StateMachineManager for testing
-    from .control.state_machine_manager import StateMachineManager
+    from ..control.state_machine_manager import StateMachineManager
     state_machine_manager = StateMachineManager(
         config=config,
         events=events,
     )
 
     # Create CompletionProcessor for testing
-    from .control.completion_processor import CompletionProcessor
+    from ..control.completion_processor import CompletionProcessor
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
@@ -485,7 +485,7 @@ def build_orchestrator_for_testing(
     )
 
     # Create SessionController for testing
-    from .control.session_controller import SessionController
+    from ..control.session_controller import SessionController
     session_controller = SessionController(
         completion_processor=completion_processor,
         events=events,
