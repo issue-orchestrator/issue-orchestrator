@@ -13,20 +13,20 @@ agents:
     prompt: "examples/prompts/simple-fix.md"
     model: haiku
   "agent:e2e-test":
-    prompt: "examples/prompts/e2e-test.md"
+    prompt: "tests/e2e/fixtures/prompts/e2e-test.md"
     model: haiku
     timeout_minutes: 5  # Agent work (~1 min) + typecheck validation (~2 min)
     worktree_base: /tmp/e2e-worktrees
     permission_mode: bypassPermissions
 
   "agent:e2e-test-timeout":
-    prompt: "examples/prompts/e2e-test-timeout.md"
+    prompt: "tests/e2e/fixtures/prompts/e2e-test-timeout.md"
     model: haiku
     timeout_minutes: 1  # Very short - designed to timeout
     worktree_base: /tmp/e2e-worktrees
 
   "agent:e2e-test-rejects":
-    prompt: "examples/prompts/e2e-test-rejects.md"
+    prompt: "tests/e2e/fixtures/prompts/e2e-test-rejects.md"
     model: haiku
     timeout_minutes: 5
     skip_review: true  # This IS a code reviewer, don't review it
@@ -34,7 +34,7 @@ agents:
     permission_mode: bypassPermissions
 
   "agent:e2e-test-approves":
-    prompt: "examples/prompts/e2e-test-approves.md"
+    prompt: "tests/e2e/fixtures/prompts/e2e-test-approves.md"
     model: haiku
     timeout_minutes: 5
     skip_review: true  # This IS a code reviewer, don't review it

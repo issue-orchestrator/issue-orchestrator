@@ -89,9 +89,9 @@ cat /tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/session.log
 # .issue-orchestrator.yaml
 agents:
   "agent:e2e-test":
-    prompt: "examples/prompts/e2e-test.md"  # Issue work prompt
+    prompt: "tests/e2e/fixtures/prompts/e2e-test.md"  # Issue work prompt
   "agent:e2e-test-approves":
-    prompt: "examples/prompts/e2e-test-approves.md"  # Review prompt
+    prompt: "tests/e2e/fixtures/prompts/e2e-test-approves.md"  # Review prompt
 
 review:
   code_review_agent: "agent:e2e-test-approves"  # Which agent does reviews

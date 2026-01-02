@@ -14,7 +14,7 @@ e2e_pr_labels: ["test-data"]
 
 agents:
   "agent:e2e-test":
-    prompt: "examples/scripts/complete-immediately.sh"
+    prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
     model: sonnet
     timeout_minutes: 3
     worktree_base: "/tmp/e2e-worktrees"
@@ -23,7 +23,7 @@ agents:
     meta_agent: "claude-code"
     permission_mode: bypassPermissions
   "agent:script-review":
-    prompt: "examples/scripts/review-decider.sh"
+    prompt: "tests/e2e/fixtures/scripts/review-decider.sh"
     model: sonnet
     timeout_minutes: 3
     worktree_base: "/tmp/e2e-worktrees"
@@ -32,7 +32,7 @@ agents:
     meta_agent: "claude-code"
     permission_mode: bypassPermissions
   "agent:triage-investigator":
-    prompt: "examples/scripts/complete-immediately.sh"
+    prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
     model: sonnet
     timeout_minutes: 3
     worktree_base: "/tmp/e2e-worktrees"
