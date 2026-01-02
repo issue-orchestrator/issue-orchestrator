@@ -88,7 +88,6 @@ async def dashboard(
     import time
     request_start = time.time()
 
-    from ._github_impl import list_issues
     from .control.scheduler import Scheduler
 
     # Get query params
@@ -131,7 +130,7 @@ async def dashboard(
                 runtime = session.runtime_minutes
 
                 # Determine phase: coding (issue-*) or reviewing (review-*)
-                tmux_name = session.tmux_session_name or ""
+                tmux_name = session.terminal_id or ""
                 is_review = tmux_name.startswith("review-")
                 phase = "Reviewing" if is_review else "Coding"
 
@@ -353,16 +352,36 @@ async def resume() -> JSONResponse:
 
 
 @app.post("/api/refresh")
-async def refresh() -> JSONResponse:
+async def refresh(request: Request) -> JSONResponse:
     """Request an immediate refresh of issues from GitHub.
 
     This triggers the orchestrator to fetch issues on the next loop iteration,
     bypassing the queue_refresh_seconds interval. Also resets the timer for
     the next scheduled refresh.
+
+    Optional JSON body:
+        inflight_stable_ids: list[str] - Issue IDs that tests expect to discover.
+            If provided and these issues are not found after a cached refresh,
+            the orchestrator will retry without cache to handle GitHub's
+            eventual consistency.
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-    _orchestrator.request_refresh()
+
+    # Parse optional inflight_stable_ids from request body
+    inflight_stable_ids: set[str] = set()
+    try:
+        body = await request.body()
+        if body:
+            data = json.loads(body)
+            if isinstance(data, dict) and "inflight_stable_ids" in data:
+                ids = data["inflight_stable_ids"]
+                if isinstance(ids, list):
+                    inflight_stable_ids = set(str(i) for i in ids)
+    except (json.JSONDecodeError, ValueError):
+        pass  # Ignore malformed body, proceed with empty set
+
+    _orchestrator.request_refresh(inflight_stable_ids=inflight_stable_ids)
     return JSONResponse({"status": "refresh_requested"})
 
 
@@ -384,7 +403,7 @@ async def kill_session(issue_number: int) -> JSONResponse:
 
     # Kill the session
     try:
-        _orchestrator._kill_session(session.tmux_session_name)
+        _orchestrator._kill_session(session.terminal_id)
     except Exception as e:
         return JSONResponse({"error": f"Failed to kill session: {e}"}, status_code=500)
 
@@ -810,6 +829,7 @@ async def get_debug() -> JSONResponse:
         "test_mode": config.filter_label == "test-data",  # Inferred from filter
         "filter_label": config.filter_label,
         "filter_milestone": config.filter_milestone,
+        "filter_milestones": config.get_filter_milestones(),
         "max_sessions": config.max_concurrent_sessions,
     }
 

@@ -435,18 +435,18 @@ class TestBackwardCompatibleFunctions:
         """Test session_exists returns True when window exists."""
         with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
-            mock_manager.window_exists.return_value = True
+            mock_manager.window_exists_by_name.return_value = True
             mock_get_manager.return_value = mock_manager
 
             result = tmux.session_exists("issue-42")
             assert result is True
-            mock_manager.window_exists.assert_called_once_with(42)
+            mock_manager.window_exists_by_name.assert_called_once_with("issue-42")
 
     def test_session_exists_false(self):
         """Test session_exists returns False when window doesn't exist."""
         with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
-            mock_manager.window_exists.return_value = False
+            mock_manager.window_exists_by_name.return_value = False
             mock_get_manager.return_value = mock_manager
 
             result = tmux.session_exists("issue-42")
@@ -464,7 +464,7 @@ class TestBackwardCompatibleFunctions:
             mock_get_manager.return_value = mock_manager
 
             tmux.kill_session("issue-42")
-            mock_manager.kill_window.assert_called_once_with(42)
+            mock_manager.kill_window_by_name.assert_called_once_with("issue-42")
 
     def test_kill_session_invalid_name(self):
         """Test kill_session does nothing for invalid session name."""
@@ -508,22 +508,22 @@ class TestBackwardCompatibleFunctions:
         """Test send_keys sends keys with enter."""
         with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
-            mock_manager.get_window.return_value = mock_window
+            mock_manager.send_keys_by_name.return_value = True
             mock_get_manager.return_value = mock_manager
 
             tmux.send_keys("issue-42", "echo test", enter=True)
-            mock_window.active_pane.send_keys.assert_called_once_with("echo test")
+            mock_manager.send_keys_by_name.assert_called_once_with("issue-42", "echo test", True)
 
     def test_send_keys_without_enter(self, mock_session, mock_window):
         """Test send_keys sends keys without enter."""
         with patch("issue_orchestrator._tmux_impl.get_manager") as mock_get_manager:
             mock_manager = MagicMock()
-            mock_manager.get_window.return_value = mock_window
+            mock_manager.send_keys_by_name.return_value = True
             mock_get_manager.return_value = mock_manager
 
             tmux.send_keys("issue-42", "echo test", enter=False)
-            mock_window.active_pane.send_keys.assert_called_once_with(
-                "echo test", enter=False
+            mock_manager.send_keys_by_name.assert_called_once_with(
+                "issue-42", "echo test", False
             )
 
     def test_send_keys_no_window(self):

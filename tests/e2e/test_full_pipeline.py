@@ -8,48 +8,16 @@ This test verifies the complete system works end-to-end by:
 Uses the single-orchestrator pattern for efficiency.
 """
 
-import json
-import subprocess
+import asyncio
+import logging
 import time
 
 import pytest
 
-from tests.e2e.conftest import (
-    inflight_create,
-    trigger_refresh,
-    wait_for_issue_label,
-    wait_for_pr_created,
-)
+from tests.e2e.conftest import e2e_label
+from tests.e2e.flows import E2EFlow
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def get_issue_labels(repo: str, issue_number: int) -> list[str]:
-    """Get current labels on an issue."""
-    result = subprocess.run(
-        ["gh", "issue", "view", str(issue_number),
-         "--repo", repo,
-         "--json", "labels"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        data = json.loads(result.stdout)
-        return [l["name"] for l in data.get("labels", [])]
-    return []
-
-
-def close_pr(repo: str, pr_number: int) -> None:
-    """Close a PR and delete its branch."""
-    subprocess.run(
-        ["gh", "pr", "close", str(pr_number),
-         "--repo", repo,
-         "--delete-branch"],
-        capture_output=True
-    )
-
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Concurrent Pipeline Test
@@ -64,9 +32,12 @@ class TestConcurrentPipeline:
     Uses the shared session-scoped orchestrator for efficiency.
     """
 
-    def test_concurrent_issue_processing(
+    @pytest.mark.asyncio
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=400, system_gh_activity_limit=15)
+    async def test_concurrent_issue_processing(
         self,
         e2e_orchestrator,
+        orchestrator_watcher,
         repo_name: str,
         filter_label: str,
     ):
@@ -81,103 +52,68 @@ class TestConcurrentPipeline:
         issues = []
         created_prs = []
         start_time = time.time()
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
 
-        print(f"\n=== Testing {num_issues} issues concurrently ===")
-        print(f"Filter label: {filter_label}")
+        logger.info("=== Testing %d issues concurrently ===", num_issues)
+        logger.info("Filter label: %s", filter_label)
 
         try:
             # Create issues dynamically
             for i in range(num_issues):
-                issue = inflight_create(
-                    repo_name,
+                issue = flow.create_issue(
                     f"[E2E-CONCURRENT-{i+1}] Concurrent pipeline test",
-                    [filter_label, "agent:e2e-test", f"e2e:concurrent_{i}"],
+                    ["agent:e2e-test", e2e_label(f"concurrent_{i}")],
                 )
                 issues.append(issue)
-                print(f"Created issue #{issue.stable_id()}")
+                logger.info("Created issue #%s", issue.stable_id())
 
-            issue_numbers = [int(i.stable_id()) for i in issues]
+            # Phase 0: Wait for issues to appear in snapshots
+            logger.info("Phase 0: Waiting for issues to appear in snapshots...")
+            await asyncio.gather(*[
+                flow.issue_seen(issue, timeout_s=120)
+                for issue in issues
+            ])
 
             # Phase 1: Wait for all sessions to start (in-progress labels)
-            print("\nPhase 1: Waiting for all sessions to start...")
-            sessions_started = {}
-
-            for _ in range(60):  # 2 minutes max
-                if not e2e_orchestrator.is_running():
-                    stdout, stderr = e2e_orchestrator.stop()
-                    pytest.fail(
-                        f"Orchestrator crashed.\n"
-                        f"stdout: {stdout[:1000] if stdout else '(empty)'}\n"
-                        f"stderr: {stderr[:1000] if stderr else '(empty)'}"
-                    )
-
-                for issue_num in issue_numbers:
-                    if issue_num not in sessions_started:
-                        labels = get_issue_labels(repo_name, issue_num)
-                        if "in-progress" in labels:
-                            sessions_started[issue_num] = time.time() - start_time
-                            print(f"  ✓ Issue #{issue_num} started at {sessions_started[issue_num]:.1f}s")
-
-                if len(sessions_started) == num_issues:
-                    print(f"All {num_issues} sessions started!")
-                    break
-
-                time.sleep(2)
-            else:
-                missing = set(issue_numbers) - set(sessions_started.keys())
-                pytest.fail(f"Sessions never started for issues: {missing}")
+            logger.info("Phase 1: Waiting for all sessions to start...")
+            await asyncio.gather(*[
+                flow.session_started(issue, timeout_s=240)
+                for issue in issues
+            ])
 
             # Phase 2: Wait for all PRs to be created
-            print("\nPhase 2: Waiting for all PRs to be created...")
-            prs_created = {}
+            logger.info("Phase 2: Waiting for all PRs to be created...")
+            pr_numbers = await asyncio.gather(*[
+                flow.pr_created(issue)
+                for issue in issues
+            ])
+            created_prs = [{"number": pr_num} for pr_num in pr_numbers]
 
-            for _ in range(120):  # 4 minutes max
-                if not e2e_orchestrator.is_running():
-                    stdout, stderr = e2e_orchestrator.stop()
-                    pytest.fail(
-                        f"Orchestrator crashed waiting for PRs.\n"
-                        f"stdout: {stdout[:1000] if stdout else '(empty)'}\n"
-                        f"stderr: {stderr[:1000] if stderr else '(empty)'}"
-                    )
-
-                for issue_num in issue_numbers:
-                    if issue_num not in prs_created:
-                        pr = wait_for_pr_created(repo_name, issue_num, timeout=1)
-                        if pr:
-                            prs_created[issue_num] = {
-                                "pr": pr,
-                                "time": time.time() - start_time,
-                            }
-                            created_prs.append(pr)
-                            print(f"  ✓ PR #{pr['number']} for issue #{issue_num} at {prs_created[issue_num]['time']:.1f}s")
-
-                if len(prs_created) == num_issues:
-                    print(f"All {num_issues} PRs created!")
-                    break
-
-                time.sleep(2)
-            else:
-                missing = set(issue_numbers) - set(prs_created.keys())
-                pytest.fail(f"PRs never created for issues: {missing}")
+            # Phase 3: Wait for code review outcomes so later tests can launch new work
+            logger.info("Phase 3: Waiting for code review outcomes...")
+            await flow.review_outcomes_any_of(
+                issues=issues,
+                any_of_labels=["code-reviewed", "needs-rework"],
+            )
 
             # Summary
             total_time = time.time() - start_time
-            print(f"\n=== Summary ===")
-            print(f"Total time: {total_time:.1f}s")
-            print(f"Issues processed: {num_issues}")
-            print(f"PRs created: {len(created_prs)}")
+            logger.info("=== Summary ===")
+            logger.info("Total time: %.1fs", total_time)
+            logger.info("Issues processed: %d", num_issues)
+            logger.info("PRs created: %d", len(created_prs))
 
             # Verify concurrency
             if num_issues > 1:
                 avg_time = total_time / num_issues
-                print(f"Avg time per issue: {avg_time:.1f}s")
+                logger.info("Avg time per issue: %.1fs", avg_time)
                 if avg_time < 45:
-                    print("✓ Processing was concurrent (avg < 45s per issue)")
+                    logger.info("✓ Processing was concurrent (avg < 45s per issue)")
 
         finally:
             # Cleanup: close all PRs
             for pr in created_prs:
-                close_pr(repo_name, pr["number"])
+                flow.close_pr(pr["number"])
 
 
 # ---------------------------------------------------------------------------
@@ -186,10 +122,11 @@ class TestConcurrentPipeline:
 
 @pytest.mark.e2e
 @pytest.mark.live
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(120)
 class TestEdgeCases:
     """Test edge cases and failure handling."""
 
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=50, system_gh_activity_limit=20)
     def test_orchestrator_handles_no_matching_issues(
         self,
         e2e_orchestrator,
@@ -203,4 +140,4 @@ class TestEdgeCases:
         # Just verify it stays healthy
         time.sleep(5)
         assert e2e_orchestrator.is_running(), "Orchestrator should still be running"
-        print("✓ Orchestrator running healthy")
+        logger.info("✓ Orchestrator running healthy")

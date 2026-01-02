@@ -88,3 +88,13 @@ class TmuxPlugin:
             return True
         except Exception:
             return False
+
+    @hookimpl
+    def session_exists_by_name(self, session_name: str) -> bool:
+        """Check if a tmux window exists by its full name."""
+        return self._manager.window_exists_by_name(session_name)
+
+    @hookimpl
+    def send_to_session_by_name(self, session_name: str, text: str) -> bool:
+        """Send text to a tmux window by name."""
+        return self._manager.send_keys_by_name(session_name, text)

@@ -9,6 +9,7 @@ Part of the execution layer - performs actions, does not make decisions.
 import logging
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from ..ports.working_copy import (
@@ -168,6 +169,64 @@ class GitWorkingCopy:
             logger.warning("Fetch failed: %s", e)
             return False
 
+    def list_remote_branches(self, repo_root: Path, remote: str = "origin") -> list[str]:
+        """List remote branches for a repository."""
+        try:
+            result = self._run_git(
+                repo_root,
+                ["branch", "-r", "--list", f"{remote}/*"],
+            )
+            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        except subprocess.CalledProcessError as e:
+            logger.warning("Failed to list remote branches in %s: %s", repo_root, e)
+            return []
+
+    def is_git_repo(self, repo_root: Path) -> bool:
+        """Check if the path is a git repository."""
+        try:
+            self._run_git(repo_root, ["rev-parse", "--git-dir"])
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def get_config_value(self, repo_root: Path, key: str) -> str | None:
+        """Fetch a git config value from the repository."""
+        try:
+            result = self._run_git(repo_root, ["config", "--get", key])
+            value = result.stdout.strip()
+            return value or None
+        except subprocess.CalledProcessError:
+            return None
+
+    def get_commits_ahead_count(
+        self,
+        repo_root: Path,
+        branch: str,
+        base: str = "origin/main",
+    ) -> int:
+        """Count commits ahead of base for a remote branch."""
+        try:
+            result = self._run_git(
+                repo_root,
+                ["rev-list", "--count", f"{base}..origin/{branch}"],
+            )
+            return int(result.stdout.strip() or 0)
+        except (subprocess.CalledProcessError, ValueError) as e:
+            logger.warning("Failed to count commits ahead for %s: %s", branch, e)
+            return 0
+
+    def get_last_commit_date(self, repo_root: Path, branch: str) -> str | None:
+        """Get last commit date (relative) for a remote branch."""
+        try:
+            result = self._run_git(
+                repo_root,
+                ["log", "-1", "--format=%cr", f"origin/{branch}"],
+            )
+            return result.stdout.strip() or None
+        except subprocess.CalledProcessError as e:
+            logger.warning("Failed to get last commit date for %s: %s", branch, e)
+            return None
+
     def rebase_on_branch(
         self, worktree: Path, target: str = "origin/main"
     ) -> RebaseResult:
@@ -241,8 +300,17 @@ class GitWorkingCopy:
         if force_with_lease:
             args.append("--force-with-lease")
 
+        start = time.monotonic()
         try:
             result = self._run_git(worktree, args)
+            duration = time.monotonic() - start
+            logger.info(
+                "Push completed in %.2fs: branch=%s remote=%s skip_hooks=%s",
+                duration,
+                branch,
+                remote,
+                skip_hooks,
+            )
             return PushResult(
                 success=True,
                 branch=branch,
@@ -250,7 +318,16 @@ class GitWorkingCopy:
                 message=f"Pushed {branch} to {remote}",
             )
         except subprocess.CalledProcessError as e:
+            duration = time.monotonic() - start
             error_msg = e.stderr if e.stderr else str(e)
+            logger.warning(
+                "Push failed in %.2fs: branch=%s remote=%s skip_hooks=%s error=%s",
+                duration,
+                branch,
+                remote,
+                skip_hooks,
+                error_msg,
+            )
 
             # Determine if retryable
             retryable = True

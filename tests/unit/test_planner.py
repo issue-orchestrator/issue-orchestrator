@@ -26,6 +26,7 @@ from issue_orchestrator.models import (
     AgentConfig,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
 
 def make_config(**kwargs) -> Config:
@@ -54,7 +55,7 @@ def make_issue(number: int, title: str = "Test issue", **kwargs) -> Issue:
     return Issue(**defaults)
 
 
-def make_session(issue: Issue) -> Session:
+def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
     """Create a test session for an issue."""
     from pathlib import Path
     from datetime import datetime
@@ -63,10 +64,13 @@ def make_session(issue: Issue) -> Session:
         prompt_path=Path("/tmp/test.md"),
         worktree_base=Path("/tmp/worktrees"),
     )
+    issue_key = FakeIssueKey(name=str(issue.number))
+    session_key = SessionKey(issue=issue_key, task=task)
     return Session(
+        key=session_key,
         issue=issue,
         agent_config=agent_config,
-        tmux_session_name=f"issue-{issue.number}",
+        terminal_id=f"issue-{issue.number}",
         worktree_path=Path(f"/tmp/worktree-{issue.number}"),
         branch_name=f"issue-{issue.number}",
         started_at=datetime.now(),

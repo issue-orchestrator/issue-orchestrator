@@ -18,7 +18,7 @@ import re
 import time
 from typing import Callable, Optional
 
-from ..analysis import analyze_issue, get_issue_branches
+from ..analysis import analyze_issue
 from ..config import Config
 from ..ports.issue import Issue
 from ..models import (
@@ -29,9 +29,10 @@ from ..models import (
     ORCHESTRATOR_PR_MARKER,
 )
 from ..events import EventName
-from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost
+from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost, HookVerifier
 from ..ports.session_runner import DiscoveredSession
 from .. import labels
+from .. import gh_audit
 
 
 
@@ -51,6 +52,8 @@ class StartupManager:
         events: EventSink,
         runner: SessionRunner,
         repository_host: RepositoryHost,
+        hook_verifier: HookVerifier,
+        issue_branches_fn: Callable[[], dict[int, str]],
         session_exists_fn: Callable[[str], bool],
         restore_sessions_fn: Callable[[list[DiscoveredSession]], None],
         launch_session_fn: Callable[[Issue], Optional[Session]],
@@ -72,6 +75,8 @@ class StartupManager:
         self.events = events
         self.runner = runner
         self.repository_host = repository_host
+        self.hook_verifier = hook_verifier
+        self._issue_branches = issue_branches_fn
         self._session_exists = session_exists_fn
         self._restore_sessions = restore_sessions_fn
         self._launch_session = launch_session_fn
@@ -121,7 +126,7 @@ class StartupManager:
 
         # Step 5: Check in-progress issues and determine action
         state.startup_message = "Scanning local branches..."
-        issue_branches = get_issue_branches(self.config.repo_root)
+        issue_branches = self._issue_branches()
 
         issues_to_resume: list[tuple[Issue, str]] = []
         await self._check_in_progress_issues(state, issue_branches, issues_to_resume)
@@ -143,7 +148,7 @@ class StartupManager:
         # Step 10: Audit and cache the queue
         state.startup_message = "Auditing queue..."
         from ..audit import audit_queue, print_audit
-        audit_entries = audit_queue(self.config, state, self.repository_host)
+        audit_entries = audit_queue(self.config, state, self.repository_host, issue_branches=issue_branches)
         print_audit(audit_entries)
 
         state.startup_message = "Caching queue..."
@@ -158,6 +163,7 @@ class StartupManager:
         self.events.publish(TraceEvent(EventName.ORCHESTRATOR_READY, {
             "filter_label": self.config.filter_label,
             "filter_milestone": self.config.filter_milestone,
+            "filter_milestones": self.config.get_filter_milestones(),
             "agents": list(self.config.agents.keys()),
             "max_concurrent": self.config.max_concurrent_sessions,
             "startup_seconds": round(elapsed, 1),
@@ -165,10 +171,8 @@ class StartupManager:
 
     async def _verify_hooks(self) -> None:
         """Verify AI meta-agent hooks are installed and effective."""
-        from .hook_verifier import HookVerifier
-        verifier = HookVerifier(self.config)
-        result = await verifier.verify()
-        verifier.raise_on_failure(result)
+        result = await self.hook_verifier.verify()
+        self.hook_verifier.raise_on_failure(result)
 
     async def _check_in_progress_issues(
         self,
@@ -187,11 +191,20 @@ class StartupManager:
             state.startup_message = f"Checking in-progress issues for {agent_label}..."
             api_start = time.time()
 
-            issues = self.repository_host.list_issues(
-                labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
-                milestone=self.config.filter_milestone,
-                limit=self.config.issue_fetch_limit,
-            )
+            milestones = self.config.get_filter_milestones()
+            if not milestones:
+                milestones = [None]
+            issues = []
+            for milestone in milestones:
+                with gh_audit.context(
+                    reason=gh_audit.AuditReason.STARTUP_REFRESH,
+                    scope=gh_audit.AuditScope.STARTUP,
+                ):
+                    issues.extend(self.repository_host.list_issues(
+                        labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
+                        milestone=milestone,
+                        limit=self.config.issue_fetch_limit,
+                    ))
 
             elapsed = time.time() - api_start
             logger.debug("Fetched %d in-progress issues for %s in %.1fs", len(issues), agent_label, elapsed)

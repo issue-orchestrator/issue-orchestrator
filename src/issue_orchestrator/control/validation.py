@@ -11,13 +11,13 @@ Storage location: .issue-orchestrator/validation/<suite>/<HEAD_SHA>.json
 
 import json
 import logging
-import subprocess
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from ..emit import emit_event
+from ..ports import CommandRunner, CommandResult, WorkingCopy
 
 logger = logging.getLogger(__name__)
 
@@ -185,13 +185,15 @@ class ValidationRecordStore:
 class ValidationRunner:
     """Runs validation commands and produces records."""
 
-    def __init__(self, store: ValidationRecordStore):
+    def __init__(self, store: ValidationRecordStore, command_runner: CommandRunner):
         """Initialize runner with a record store.
 
         Args:
             store: Store for writing validation records
+            command_runner: Adapter for running commands
         """
         self.store = store
+        self.command_runner = command_runner
 
     def run(
         self,
@@ -227,24 +229,26 @@ class ValidationRunner:
         })
 
         try:
-            result = subprocess.run(
+            result = self.command_runner.run(
                 command,
                 shell=True,
                 cwd=cwd,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
+                timeout_seconds=timeout_seconds,
             )
-            exit_code = result.returncode
-            stdout = result.stdout
-            stderr = result.stderr
-            timed_out = False
-        except subprocess.TimeoutExpired as e:
-            exit_code = -1
-            stdout = e.stdout.decode() if e.stdout else ""
-            stderr = e.stderr.decode() if e.stderr else ""
+        except Exception as exc:
+            logger.exception("Validation command runner failed")
+            result = CommandResult(
+                returncode=-1,
+                stdout="",
+                stderr=f"Validation runner error: {exc}",
+                timed_out=False,
+            )
+        exit_code = result.returncode
+        stdout = result.stdout
+        stderr = result.stderr
+        timed_out = result.timed_out
+        if timed_out:
             stderr += f"\n\n[TIMEOUT after {timeout_seconds}s]"
-            timed_out = True
             logger.warning("Validation command timed out after %ds", timeout_seconds)
 
         ended_at = datetime.now()
@@ -401,6 +405,8 @@ class PublishGate:
     def __init__(
         self,
         worktree: Path,
+        command_runner: CommandRunner,
+        working_copy: WorkingCopy,
         command: Optional[str] = None,
         timeout_seconds: int = 1800,
     ):
@@ -412,26 +418,20 @@ class PublishGate:
             timeout_seconds: Timeout for validation command
         """
         self.worktree = worktree
+        self.command_runner = command_runner
+        self.working_copy = working_copy
         self.command = command
         self.timeout_seconds = timeout_seconds
         self.store = ValidationRecordStore(worktree)
         self.cache = ValidationCache(self.store)
-        self.runner = ValidationRunner(self.store)
+        self.runner = ValidationRunner(self.store, command_runner)
 
     def _get_head_sha(self) -> Optional[str]:
         """Get the current HEAD SHA."""
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=self.worktree,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except Exception as e:
-            logger.warning("Failed to get HEAD SHA: %s", e)
-        return None
+        head_sha = self.working_copy.get_head_sha(self.worktree)
+        if not head_sha:
+            logger.warning("Failed to get HEAD SHA in %s", self.worktree)
+        return head_sha
 
     def check(self) -> PublishGateResult:
         """Check if publishing is allowed.
@@ -527,6 +527,8 @@ class AgentGate:
     def __init__(
         self,
         worktree: Path,
+        command_runner: CommandRunner,
+        working_copy: WorkingCopy,
         command: Optional[str] = None,
         timeout_seconds: int = 1800,
     ):
@@ -538,25 +540,19 @@ class AgentGate:
             timeout_seconds: Timeout for validation command
         """
         self.worktree = worktree
+        self.command_runner = command_runner
+        self.working_copy = working_copy
         self.command = command
         self.timeout_seconds = timeout_seconds
         self.store = ValidationRecordStore(worktree)
-        self.runner = ValidationRunner(self.store)
+        self.runner = ValidationRunner(self.store, command_runner)
 
     def _get_head_sha(self) -> Optional[str]:
         """Get the current HEAD SHA."""
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=self.worktree,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except Exception as e:
-            logger.warning("Failed to get HEAD SHA: %s", e)
-        return None
+        head_sha = self.working_copy.get_head_sha(self.worktree)
+        if not head_sha:
+            logger.warning("Failed to get HEAD SHA in %s", self.worktree)
+        return head_sha
 
     def run(self) -> AgentGateResult:
         """Run the agent gate validation.

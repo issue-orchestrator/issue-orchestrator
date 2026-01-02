@@ -233,7 +233,7 @@ class ITermSessionManager:
         sandbox_check = (
             "if command -v verify-agent-sandbox &> /dev/null; then "
             "verify-agent-sandbox || { echo 'Sandbox verification failed - aborting'; exit 1; }; "
-            "elif python3 -m issue_orchestrator.control.sandbox_verify 2>/dev/null; then :; "
+            "elif python3 -m issue_orchestrator.execution.sandbox_verify 2>/dev/null; then :; "
             "elif [ $? -eq 1 ]; then echo 'Sandbox verification failed - aborting'; exit 1; fi && "
         )
 

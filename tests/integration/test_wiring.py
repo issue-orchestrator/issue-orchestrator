@@ -1,6 +1,6 @@
 """Integration tests that verify component wiring.
 
-These tests mock only at the subprocess boundary (gh, git, tmux commands)
+These tests mock only at the subprocess boundary (git, tmux commands)
 and let the internal Python code actually run. This catches wiring bugs
 that unit tests miss when they mock everything.
 
@@ -20,6 +20,8 @@ from issue_orchestrator.models import (
     Issue, AgentConfig, Session, OrchestratorState, SessionStatus,
     CommentHeadings
 )
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 # Import MockGitHubAdapter from conftest (it's available as fixture)
 
 
@@ -36,6 +38,7 @@ class TestOrchestratorWiring:
     def config(self, temp_repo):
         """Create a minimal config."""
         config = Config()
+        config.repo = "owner/repo"
         config.repo_root = temp_repo
         config.ui_mode = "tmux"  # Use tmux so tests can patch create_session
         config.agents = {
@@ -48,8 +51,8 @@ class TestOrchestratorWiring:
         config.max_concurrent_sessions = 2
         # Use temp directory for state file to isolate tests
         config.state_file = temp_repo / ".issue-orchestrator" / "state.json"
-        # Skip hook verification in tests
-        config.dangerous = DangerousConfig(skip_verification=True, allow_unsupported_agents=True)
+        # Tests are not exercising hook enforcement.
+        config.dangerous = DangerousConfig(allow_unsupported_agents=True)
         return config
 
     @pytest.mark.asyncio
@@ -57,27 +60,31 @@ class TestOrchestratorWiring:
         """Verify startup() queries for in-progress issues."""
         from issue_orchestrator.orchestrator import Orchestrator
         from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
-        from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+        from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
 
-        orchestrator = Orchestrator(
-            config,
-            _repository_host=mock_repository_host,
-            worktree_manager=GitWorktreeManager(),
-            working_copy=GitWorkingCopy(),
+        working_copy = MagicMock()
+        working_copy.list_remote_branches.return_value = []
+
+        events = MockEventSink()
+        runner = MockSessionRunner()
+        worktree_manager = GitWorktreeManager()
+
+        deps = build_test_orchestrator_deps(
+            config, mock_repository_host, events, runner, worktree_manager, working_copy=working_copy
         )
 
-        with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
-            await orchestrator.startup()
+        orchestrator = Orchestrator(config=config, deps=deps)
 
-            # Verify list_issues was called via the adapter
-            assert len(mock_repository_host.list_issues_calls) > 0
+        await orchestrator.startup()
+
+        # Verify list_issues was called via the adapter
+        assert len(mock_repository_host.list_issues_calls) > 0
 
     def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager, mock_repository_host):
         """Verify launch_session actually creates worktree and tmux window."""
         from issue_orchestrator.orchestrator import Orchestrator
         from issue_orchestrator.ports.worktree_manager import WorktreeInfo
-        from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
-
+        from tests.conftest import build_test_orchestrator_deps, MockEventSink
         # Configure mock plugin to allow session creation
         patch_plugin_manager.plugin.session_exists_override = False
 
@@ -88,13 +95,16 @@ class TestOrchestratorWiring:
             branch_name="456-test-feature",
         )
 
-        orchestrator = Orchestrator(
-            config,
-            _repository_host=mock_repository_host,
-            worktree_manager=mock_worktree_manager,
-            working_copy=GitWorkingCopy(),
-            runner=patch_plugin_manager,
+        working_copy = MagicMock()
+        working_copy.list_remote_branches.return_value = []
+
+        events = MockEventSink()
+
+        deps = build_test_orchestrator_deps(
+            config, mock_repository_host, events, patch_plugin_manager, mock_worktree_manager, working_copy=working_copy
         )
+
+        orchestrator = Orchestrator(config=config, deps=deps)
         test_issue = Issue(
             number=456,
             title="Test Feature",
@@ -291,7 +301,7 @@ class TestObserverWiring:
 
         # Mock the session runner to report session not exists
         mock_runner = MagicMock()
-        mock_runner.session_exists.return_value = False
+        mock_runner.session_exists_by_name.return_value = False
 
         # Mock repository host for PR lookup
         mock_repo_host = MagicMock()
@@ -305,14 +315,18 @@ class TestObserverWiring:
             repository_host=mock_repo_host,
         )
 
+        issue = Issue(number=789, title="Test", labels=["agent:test"])
+        issue_key = FakeIssueKey(name="789")
+        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
         session = Session(
-            issue=Issue(number=789, title="Test", labels=["agent:test"]),
+            key=session_key,
+            issue=issue,
             agent_config=AgentConfig(
                 prompt_path=Path("test.md"),
                 worktree_base=Path(".."),
                 timeout_minutes=60
             ),
-            tmux_session_name="orchestrator",
+            terminal_id="orchestrator",
             worktree_path=Path("/fake"),
             branch_name="789-test",
             started_at=datetime.now(),
@@ -333,18 +347,22 @@ class TestObserverWiring:
 
         # Mock the session runner to report session exists
         mock_runner = MagicMock()
-        mock_runner.session_exists.return_value = True
+        mock_runner.session_exists_by_name.return_value = True
 
         observer = SessionObserver(config, session_runner=mock_runner)
 
+        issue = Issue(number=101, title="Test", labels=["agent:test"])
+        issue_key = FakeIssueKey(name="101")
+        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
         session = Session(
-            issue=Issue(number=101, title="Test", labels=["agent:test"]),
+            key=session_key,
+            issue=issue,
             agent_config=AgentConfig(
                 prompt_path=Path("test.md"),
                 worktree_base=Path(".."),
                 timeout_minutes=60
             ),
-            tmux_session_name="orchestrator",
+            terminal_id="orchestrator",
             worktree_path=Path("/fake"),
             branch_name="101-test",
             started_at=datetime.now(),
@@ -362,7 +380,6 @@ class TestSmoke:
         from issue_orchestrator import cli
         from issue_orchestrator import config
         from issue_orchestrator import dashboard
-        from issue_orchestrator import _github_impl as github
         from issue_orchestrator import models
         from issue_orchestrator.observation import observer
         from issue_orchestrator import orchestrator

@@ -2,7 +2,6 @@
 
 import pytest
 from unittest.mock import MagicMock, Mock, AsyncMock, patch
-from pathlib import Path
 
 from issue_orchestrator.control.startup_manager import StartupManager
 from issue_orchestrator.config import Config
@@ -30,7 +29,7 @@ def mock_config(tmp_path):
     config.filter_milestone = None
     config.issue_fetch_limit = 100
     config.dangerous = MagicMock()
-    config.dangerous.skip_verification = True
+    config.dangerous.allow_unsupported_agents = True
     return config
 
 
@@ -59,21 +58,45 @@ def mock_repository_host():
 
 
 @pytest.fixture
+def mock_hook_verifier():
+    """Create a mock HookVerifier."""
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value=MagicMock(success=True, message="ok"))
+    verifier.raise_on_failure = MagicMock()
+    return verifier
+
+
+@pytest.fixture
+def mock_issue_branches_fn():
+    """Create a mock issue branches provider."""
+    return MagicMock(return_value={})
+
+
+@pytest.fixture
 def sample_state():
     """Create a sample orchestrator state."""
     return OrchestratorState()
 
 
 @pytest.fixture
-def startup_manager(mock_config, mock_events, mock_runner, mock_repository_host):
+def startup_manager(
+    mock_config,
+    mock_events,
+    mock_runner,
+    mock_repository_host,
+    mock_hook_verifier,
+    mock_issue_branches_fn,
+):
     """Create a StartupManager with mocks."""
     return StartupManager(
         config=mock_config,
         events=mock_events,
         runner=mock_runner,
         repository_host=mock_repository_host,
+        hook_verifier=mock_hook_verifier,
+        issue_branches_fn=mock_issue_branches_fn,
         session_exists_fn=lambda name: False,
-        restore_sessions_fn=AsyncMock(),
+        restore_sessions_fn=MagicMock(),
         launch_session_fn=lambda issue: None,
         update_queue_cache_fn=lambda: None,
     )
@@ -83,12 +106,8 @@ class TestStartupManagerBasic:
     """Basic tests for StartupManager."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
-    async def test_run_startup_completes(
-        self, mock_get_branches, startup_manager, sample_state
-    ):
+    async def test_run_startup_completes(self, startup_manager, sample_state):
         """Test that startup runs to completion."""
-        mock_get_branches.return_value = {}
 
         await startup_manager.run_startup(sample_state)
 
@@ -96,12 +115,10 @@ class TestStartupManagerBasic:
         assert sample_state.startup_message == ""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     async def test_run_startup_emits_config_event(
-        self, mock_get_branches, startup_manager, sample_state, mock_events
+        self, startup_manager, sample_state, mock_events
     ):
         """Test that startup emits config event."""
-        mock_get_branches.return_value = {}
 
         await startup_manager.run_startup(sample_state)
 
@@ -110,12 +127,10 @@ class TestStartupManagerBasic:
         assert any("config.merged" in str(call) for call in calls)
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     async def test_run_startup_emits_ready_event(
-        self, mock_get_branches, startup_manager, sample_state, mock_events
+        self, startup_manager, sample_state, mock_events
     ):
         """Test that startup emits ready event."""
-        mock_get_branches.return_value = {}
 
         await startup_manager.run_startup(sample_state)
 
@@ -128,12 +143,10 @@ class TestStartupManagerCleanup:
     """Tests for cleanup during startup."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     async def test_cleans_up_idle_sessions(
-        self, mock_get_branches, startup_manager, sample_state, mock_runner
+        self, startup_manager, sample_state, mock_runner
     ):
         """Test that idle sessions are cleaned up."""
-        mock_get_branches.return_value = {}
         mock_runner.cleanup_idle_sessions.return_value = 3
 
         await startup_manager.run_startup(sample_state)
@@ -141,12 +154,10 @@ class TestStartupManagerCleanup:
         mock_runner.cleanup_idle_sessions.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     async def test_discovers_running_sessions(
-        self, mock_get_branches, startup_manager, sample_state, mock_runner
+        self, startup_manager, sample_state, mock_runner
     ):
         """Test that running sessions are discovered."""
-        mock_get_branches.return_value = {}
         mock_runner.discover_running_sessions.return_value = [
             {"session_name": "issue-123", "issue_number": 123}
         ]
@@ -160,19 +171,16 @@ class TestStartupManagerInProgressIssues:
     """Tests for handling in-progress issues."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_clears_orphaned_label(
         self,
         mock_analyze,
-        mock_get_branches,
         startup_manager,
         sample_state,
         mock_repository_host,
         mock_config,
     ):
         """Test that orphaned in-progress labels are cleared."""
-        mock_get_branches.return_value = {}
         mock_config.agents = {"agent:web": MagicMock()}
 
         issue = Issue(number=1, title="Test Issue", labels=["agent:web", "in-progress"])
@@ -191,19 +199,16 @@ class TestStartupManagerInProgressIssues:
         mock_repository_host.remove_label.assert_called_once_with(1, "in-progress")
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_reconciles_issues_with_open_prs(
         self,
         mock_analyze,
-        mock_get_branches,
         startup_manager,
         sample_state,
         mock_repository_host,
         mock_config,
     ):
         """Test that issues with open PRs get pr-pending label and in-progress removed (S2 crash recovery)."""
-        mock_get_branches.return_value = {}
         mock_config.agents = {"agent:web": MagicMock()}
 
         issue = Issue(number=1, title="Test Issue", labels=["agent:web", "in-progress"])
@@ -227,17 +232,14 @@ class TestStartupManagerCodeReviewRecovery:
     """Tests for code review recovery."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     async def test_recovers_pending_reviews(
         self,
-        mock_get_branches,
         startup_manager,
         sample_state,
         mock_repository_host,
         mock_config,
     ):
         """Test that pending code reviews are recovered."""
-        mock_get_branches.return_value = {}
         mock_config.agents = {}
         mock_config.code_review_agent = "agent:reviewer"
         mock_config.code_review_label = "needs-code-review"
@@ -264,17 +266,14 @@ class TestStartupManagerTriageRecovery:
     """Tests for triage review recovery."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     async def test_recovers_pending_triage(
         self,
-        mock_get_branches,
         startup_manager,
         sample_state,
         mock_repository_host,
         mock_config,
     ):
         """Test that pending triage reviews are recovered."""
-        mock_get_branches.return_value = {}
         mock_config.agents = {}
         mock_config.triage_review_agent = "agent:triage"
 
@@ -295,19 +294,18 @@ class TestStartupManagerResumePartialWork:
     """Tests for resuming partial work."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.get_issue_branches")
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_resumes_partial_work(
         self,
         mock_analyze,
-        mock_get_branches,
         startup_manager,
         sample_state,
         mock_repository_host,
         mock_config,
+        mock_issue_branches_fn,
     ):
         """Test that issues with partial work are resumed."""
-        mock_get_branches.return_value = {1: "1-feature"}
+        mock_issue_branches_fn.return_value = {1: "1-feature"}
         mock_config.agents = {"agent:web": MagicMock()}
 
         issue = Issue(number=1, title="Test Issue", labels=["agent:web", "in-progress"])

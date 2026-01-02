@@ -4,7 +4,7 @@ This module provides a CLI command for checking validation cache
 and running validation if needed, for use in pre-push hooks.
 
 Usage:
-    python -m issue_orchestrator.control.prepush_check
+    python -m issue_orchestrator.prepush_check
 
 Exit codes:
     0 = validation passed (or no validation configured)
@@ -14,10 +14,12 @@ Exit codes:
 
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
-from .validation import PublishGate
+from .control.validation import PublishGate
+from .execution import GitWorkingCopy, LocalCommandRunner
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +49,7 @@ def load_publish_gate_config(worktree: Path) -> tuple[Optional[str], int]:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
     import os
-    from ..config import load_validation_config
+    from .config import load_validation_config
 
     # Check for environment variable override (useful for e2e tests)
     env_cmd = os.environ.get("ORCHESTRATOR_PUBLISH_GATE_CMD")
@@ -96,18 +98,31 @@ def run_prepush_check(verbose: bool = False) -> int:
     if verbose:
         print(f"Publish gate configured: {cmd}")
 
-    # Use PublishGate which handles cache lookup automatically
-    gate = PublishGate(worktree, command=cmd, timeout_seconds=timeout)
+    gate = PublishGate(
+        worktree,
+        command_runner=LocalCommandRunner(),
+        working_copy=GitWorkingCopy(),
+        command=cmd,
+        timeout_seconds=timeout,
+    )
+    start = time.monotonic()
     result = gate.check()
+    duration = time.monotonic() - start
+    logger.info(
+        "Pre-push validation completed in %.2fs: allowed=%s cache_hit=%s",
+        duration,
+        result.allowed,
+        result.cache_hit,
+    )
 
     if result.allowed:
         cache_note = " (cached)" if result.cache_hit else ""
         if verbose:
-            print(f"Publish gate passed{cache_note}: {result.reason}")
+            print(f"Publish gate passed{cache_note}: {result.reason} (%.2fs)" % duration)
         return 0
     else:
         if verbose:
-            print(f"Publish gate failed: {result.reason}")
+            print(f"Publish gate failed: {result.reason} (%.2fs)" % duration)
             if result.record and result.record.stderr_path:
                 stderr_path = worktree / result.record.stderr_path
                 if stderr_path.exists():

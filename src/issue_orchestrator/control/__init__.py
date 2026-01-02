@@ -82,20 +82,6 @@ from .isolation import (
     verify_env_scrubbed,
     all_env_scrubbed,
 )
-from .sandbox_verify import (
-    VerificationResult,
-    SandboxVerificationResult,
-    verify_gh_auth_unavailable,
-    verify_git_push_fails,
-    verify_env_vars_absent,
-    verify_home_isolated,
-    verify_sandbox,
-    run_verification_cli,
-)
-from .prepush_check import (
-    run_prepush_check,
-    load_publish_gate_config,
-)
 from .reconciliation import (
     ReconciliationRequired,
     ExternalSnapshot,
@@ -106,6 +92,7 @@ from .reconciliation import (
 )
 from .session_controller import SessionController, SessionDecision
 from .planner import Planner, Plan, OrchestratorSnapshot, SkippedItem
+from .orchestrator_deps import OrchestratorDeps
 
 __all__ = [
     "Scheduler",
@@ -171,17 +158,7 @@ __all__ = [
     "verify_env_scrubbed",
     "all_env_scrubbed",
     # Sandbox verification
-    "VerificationResult",
-    "SandboxVerificationResult",
-    "verify_gh_auth_unavailable",
-    "verify_git_push_fails",
-    "verify_env_vars_absent",
-    "verify_home_isolated",
-    "verify_sandbox",
-    "run_verification_cli",
     # Pre-push check
-    "run_prepush_check",
-    "load_publish_gate_config",
     # Reconciliation
     "ReconciliationRequired",
     "ExternalSnapshot",
@@ -197,4 +174,6 @@ __all__ = [
     "Plan",
     "OrchestratorSnapshot",
     "SkippedItem",
+    # Dependencies container
+    "OrchestratorDeps",
 ]

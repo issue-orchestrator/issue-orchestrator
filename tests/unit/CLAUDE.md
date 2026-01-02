@@ -32,7 +32,7 @@ pytest tests/unit/ --cov           # With coverage
 
 ```python
 # BAD - patching internals
-with patch('issue_orchestrator.github._run_gh'): ...
+with patch('issue_orchestrator.adapters.github.http_client.GitHubHttpClient'): ...
 
 # GOOD - mock the port
 mock_github_adapter.issues = [Issue(...)]

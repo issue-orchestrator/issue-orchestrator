@@ -1205,19 +1205,18 @@ class TestLaunchSessionDependencyCAS:
             orch.config = config
             orch.state = MagicMock()
             orch.state.active_sessions = []
-            orch.events = events
-            orch.runner = MagicMock()
-            orch.runner.session_exists.return_value = False
             orch.scheduler = MagicMock()
             orch.scheduler.dependency_evaluator = evaluator
-            orch._repository_host = mock_repository_host  # Add repository host
-            orch.session_manager = MagicMock()  # Add session manager
-            orch.worktree_manager = MagicMock()  # Add worktree manager
-            # Initialize cached instance variables
-            orch._session_launcher_instance = None
-            orch._cleanup_manager_instance = None
-            orch._completion_handler_instance = None
-            orch._startup_manager_instance = None
+            # Create mock deps with all required attributes
+            orch.deps = MagicMock()
+            orch.deps.events = events
+            orch.deps.runner = MagicMock()
+            orch.deps.runner.session_exists.return_value = False
+            orch.deps.repository_host = mock_repository_host
+            orch.deps.session_manager = MagicMock()
+            orch.deps.worktree_manager = MagicMock()
+            orch.deps.working_copy = MagicMock()
+            orch.deps.command_runner = MagicMock()
 
         # Original issue had no dependencies
         issue = Issue(
@@ -1273,19 +1272,18 @@ class TestLaunchSessionDependencyCAS:
             orch.config = config
             orch.state = MagicMock()
             orch.state.active_sessions = []
-            orch.events = events
-            orch.runner = MagicMock()
-            orch.runner.session_exists.return_value = False
             orch.scheduler = MagicMock()
             orch.scheduler.dependency_evaluator = evaluator
-            orch._repository_host = mock_repository_host  # Add repository host
-            orch.session_manager = MagicMock()  # Add session manager
-            orch.worktree_manager = mock_worktree_manager  # Add worktree manager
-            # Initialize cached instance variables
-            orch._session_launcher_instance = None
-            orch._cleanup_manager_instance = None
-            orch._completion_handler_instance = None
-            orch._startup_manager_instance = None
+            # Create mock deps with all required attributes
+            orch.deps = MagicMock()
+            orch.deps.events = events
+            orch.deps.runner = MagicMock()
+            orch.deps.runner.session_exists.return_value = False
+            orch.deps.repository_host = mock_repository_host
+            orch.deps.session_manager = MagicMock()
+            orch.deps.worktree_manager = mock_worktree_manager
+            orch.deps.working_copy = MagicMock()
+            orch.deps.command_runner = MagicMock()
 
         issue = Issue(
             number=1,

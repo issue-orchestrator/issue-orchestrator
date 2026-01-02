@@ -132,3 +132,8 @@ logger.info("[PLAN] %d action(s)", count, extra=log_context(tick_id=5))
 - Events via `self.events.publish(TraceEvent(...))`, never direct pluggy
 - Session ops via `self.runner.*`, never direct plugin manager
 - All orchestrator dependencies injected via constructor
+
+## GitHub API Discipline
+
+GitHub CLI/API calls are a limited resource. Be mindful of command volume and avoid unnecessary scans or polling. Inefficient usage forces expensive systemic tuning later, so prefer cached data, targeted reads, and minimal refreshes whenever possible.
+Direct `gh` CLI usage from Python is forbidden; token resolution must use explicit config/env or OS keychain/hosts.yml.

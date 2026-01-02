@@ -45,6 +45,8 @@ from issue_orchestrator.ports.session_runner import SessionRunner, NullSessionRu
 from issue_orchestrator.ports.repository_host import RepositoryHost
 from issue_orchestrator.ports.issue_resolver import IssueResolver
 from issue_orchestrator.ports.worktree_manager import WorktreeManager, WorktreeInfo
+from issue_orchestrator.ports.command_runner import CommandRunner, CommandResult, NullCommandRunner
+from issue_orchestrator.ports.hook_verifier import HookVerifier, HookVerificationResult
 
 __all__ = [
     # Issue Protocol (abstract work item)
@@ -81,4 +83,10 @@ __all__ = [
     # Worktree lifecycle management
     "WorktreeManager",
     "WorktreeInfo",
+    # Command execution
+    "CommandRunner",
+    "CommandResult",
+    "NullCommandRunner",
+    "HookVerifier",
+    "HookVerificationResult",
 ]

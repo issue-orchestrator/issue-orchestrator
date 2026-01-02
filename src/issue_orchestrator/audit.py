@@ -7,13 +7,12 @@ should use this module.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .ports.issue_tracker import IssueTracker
 
-from .analysis import analyze_issue, get_issue_branches
+from .analysis import analyze_issue
 from .config import Config
 from .domain.dependencies import DependencyReport, parse_dependencies
 from .ports.issue import Issue
@@ -67,16 +66,21 @@ def fetch_all_issues(
         Deduplicated list of issues sorted by number.
     """
     all_issues: list[Issue] = []
+    milestones = config.get_filter_milestones()
+    if not milestones:
+        milestones = [None]
+
     for agent_label in config.agents.keys():
         labels = [agent_label]
         if config.filter_label:
             labels.append(config.filter_label)
-        fetched = issue_tracker.list_issues(
-            labels=labels,
-            milestone=config.filter_milestone,
-            limit=config.issue_fetch_limit,
-        )
-        all_issues.extend(fetched)
+        for milestone in milestones:
+            fetched = issue_tracker.list_issues(
+                labels=labels,
+                milestone=milestone,
+                limit=config.issue_fetch_limit,
+            )
+            all_issues.extend(fetched)
 
     # Dedupe by issue number
     seen = set()
@@ -140,6 +144,7 @@ def audit_queue(
     config: Config,
     state: Optional[OrchestratorState] = None,
     issue_tracker: Optional["IssueTracker"] = None,
+    issue_branches: Optional[dict[int, str]] = None,
 ) -> list[IssueAuditEntry]:
     """Audit all issues and explain why each is queued or skipped.
 
@@ -163,8 +168,8 @@ def audit_queue(
         history_numbers = {e.issue_number for e in state.session_history}
         active_numbers = {s.issue.number for s in state.active_sessions}
 
-    # Pre-compute issue branches for efficient lookup (used by analyze_issue)
-    issue_branches = get_issue_branches(config.repo_root)
+    if issue_branches is None:
+        issue_branches = {}
 
     # Fetch all issues
     all_issues = fetch_all_issues(config, issue_tracker)

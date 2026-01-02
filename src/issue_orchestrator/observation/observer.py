@@ -11,6 +11,7 @@ Components that act are named Adapters.
 """
 
 import logging
+import time
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -67,6 +68,10 @@ class SessionObserver:
             return int(session_name.replace("issue-", ""))
         elif session_name.startswith("review-"):
             return int(session_name.replace("review-", ""))
+        elif session_name.startswith("rework-"):
+            return int(session_name.replace("rework-", ""))
+        elif session_name.startswith("triage-"):
+            return int(session_name.replace("triage-", ""))
         else:
             raise ValueError(f"Unknown session name format: {session_name}")
 
@@ -75,6 +80,12 @@ class SessionObserver:
         if self._session_runner is None:
             return False
         return self._session_runner.session_exists(session_id)
+
+    def _session_exists_by_name(self, session_name: str) -> bool:
+        """Check if a session exists by its full name (e.g., 'review-456')."""
+        if self._session_runner is None:
+            return False
+        return self._session_runner.session_exists_by_name(session_name)
 
     def _kill_session(self, session_id: int) -> None:
         """Kill a session using the session runner."""
@@ -87,6 +98,12 @@ class SessionObserver:
         if self._session_runner is None:
             return False
         return self._session_runner.send_to_session(session_id, "/exit")
+
+    def _send_exit_to_session_by_name(self, session_name: str) -> bool:
+        """Send /exit command to a session by name."""
+        if self._session_runner is None:
+            return False
+        return self._session_runner.send_to_session_by_name(session_name, "/exit")
 
     def _get_open_prs_for_branch(self, branch: str) -> list:
         """Get open PRs for a branch using the repository host."""
@@ -125,7 +142,7 @@ class SessionObserver:
             - TIMED_OUT: Session exceeded timeout (may or may not exist)
         """
         # Get runtime info
-        machine = self.session_machines.get(session.tmux_session_name)
+        machine = self.session_machines.get(session.terminal_id)
         if machine:
             runtime = machine._get_runtime_minutes()
             timeout = machine.timeout_minutes
@@ -141,8 +158,9 @@ class SessionObserver:
         elif session.is_timed_out:
             timeout_exceeded = True
 
-        # Check if session exists
-        exists = self._session_exists(session.issue.number)
+        # Check if session exists - use session name, not issue number
+        # (review sessions use PR number, not issue number)
+        exists = self._session_exists_by_name(session.terminal_id)
 
         # Check for completion.json - this is the source of truth for agent completion
         # If it exists AND is valid JSON, the agent called agent-done and work is done
@@ -164,7 +182,7 @@ class SessionObserver:
                         EventName.OBSERVATION_COMPLETION_DETECTED,
                         {
                             "issue_number": session.issue.number,
-                            "session_name": session.tmux_session_name,
+                            "session_name": session.terminal_id,
                             "outcome": data.get("outcome"),
                             "session_exists": exists,
                         },
@@ -185,9 +203,9 @@ class SessionObserver:
                 prs = self._get_open_prs_for_branch(session.branch_name)
                 if prs:
                     logger.info(
-                        f"Session #{session.issue.number} has PR but still running - sending /exit"
+                        f"Session {session.terminal_id} has PR but still running - sending /exit"
                     )
-                    if self._send_exit_to_session(session.issue.number):
+                    if self._send_exit_to_session_by_name(session.terminal_id):
                         session.exit_sent = True
             except Exception as e:
                 logger.debug(f"Could not check for PRs: {e}")
@@ -201,6 +219,7 @@ class SessionObserver:
                 session_exists=exists,
             )
         elif exists:
+            self._emit_no_output_if_stale(session)
             result = SessionObservationResult.running(runtime_minutes=runtime)
         else:
             result = SessionObservationResult.terminated(runtime_minutes=runtime)
@@ -211,7 +230,7 @@ class SessionObserver:
                 EventName.OBSERVATION_RESULT,
                 {
                     "issue_number": session.issue.number,
-                    "session_name": session.tmux_session_name,
+                    "session_name": session.terminal_id,
                     "observation": result.observation.value,
                     "session_exists": result.session_exists,
                     "runtime_minutes": result.runtime_minutes,
@@ -222,6 +241,71 @@ class SessionObserver:
             ))
 
         return result
+
+    def _emit_no_output_if_stale(self, session: Session) -> None:
+        """Emit a session_no_output event if the session log is idle too long."""
+        log_path = session.worktree_path / ".issue-orchestrator" / "session.log"
+        if not log_path.exists():
+            return
+
+        try:
+            stat = log_path.stat()
+        except OSError:
+            return
+
+        changed = (
+            session.last_log_mtime is None
+            or session.last_log_size is None
+            or stat.st_mtime != session.last_log_mtime
+            or stat.st_size != session.last_log_size
+        )
+        if changed:
+            session.last_log_mtime = stat.st_mtime
+            session.last_log_size = stat.st_size
+            session.last_output_monotonic = time.monotonic()
+            session.last_output_at = time.time()
+            session.last_output_tail = self._read_log_tail(
+                log_path,
+                self.config.session_no_output_tail_lines,
+                self.config.session_no_output_max_bytes,
+            )
+            session.last_no_output_monotonic = None
+            return
+
+        if session.last_output_monotonic is None:
+            return
+
+        now = time.monotonic()
+        idle_seconds = now - session.last_output_monotonic
+        if idle_seconds < self.config.session_no_output_seconds:
+            return
+
+        if session.last_no_output_monotonic is not None:
+            if now - session.last_no_output_monotonic < self.config.session_no_output_repeat_seconds:
+                return
+
+        session.last_no_output_monotonic = now
+        payload = {
+            "issue_number": session.issue.number,
+            "session_name": session.terminal_id,
+            "idle_seconds": int(idle_seconds),
+            "last_output_at": session.last_output_at,
+            "worktree_path": str(session.worktree_path),
+            "log_path": str(log_path),
+            "tail": session.last_output_tail or "",
+        }
+        self.events.publish(TraceEvent(EventName.SESSION_NO_OUTPUT, payload))
+
+    def _read_log_tail(self, log_path, tail_lines: int, max_bytes: int) -> str:
+        try:
+            content = log_path.read_text()
+        except Exception:
+            return ""
+        lines = content.splitlines()
+        tail = "\n".join(lines[-tail_lines:])
+        if len(tail.encode("utf-8")) > max_bytes:
+            tail = tail.encode("utf-8")[-max_bytes:].decode("utf-8", errors="replace")
+        return tail
 
     def check_session(self, session: Session) -> SessionStatus:
         """Check the status of a session.
@@ -244,10 +328,10 @@ class SessionObserver:
             SessionStatus indicating the current state of the session
         """
         # Check timeout using state machine if available (primary method)
-        machine = self.session_machines.get(session.tmux_session_name)
+        machine = self.session_machines.get(session.terminal_id)
         if machine and machine.check_timeout():
             logger.info(
-                f"[STATE_MACHINE] Session {session.tmux_session_name} timed out "
+                f"[STATE_MACHINE] Session {session.terminal_id} timed out "
                 f"(runtime: {machine._get_runtime_minutes():.1f}m, "
                 f"timeout: {machine.timeout_minutes}m)"
             )
@@ -262,8 +346,9 @@ class SessionObserver:
             )
             return SessionStatus.TIMED_OUT
 
-        # Check if session is still running
-        if self._session_exists(session.issue.number):
+        # Check if session is still running - use session name, not issue number
+        # (review sessions use PR number, not issue number)
+        if self._session_exists_by_name(session.terminal_id):
             # Session still running - but check if it has a PR (meaning it's done but didn't exit)
             # Only send /exit once to avoid spamming
             if not session.exit_sent:
@@ -271,16 +356,16 @@ class SessionObserver:
                     prs = self._get_open_prs_for_branch(session.branch_name)
                     if prs:
                         logger.info(
-                            f"Session #{session.issue.number} has PR but still running - sending /exit"
+                            f"Session {session.terminal_id} has PR but still running - sending /exit"
                         )
-                        if self._send_exit_to_session(session.issue.number):
+                        if self._send_exit_to_session_by_name(session.terminal_id):
                             session.exit_sent = True
                 except Exception as e:
                     logger.debug(f"Could not check for PRs: {e}")
 
             logger.debug(
                 f"Session for issue #{session.issue.number} still running "
-                f"(session: {session.tmux_session_name})"
+                f"(session: {session.terminal_id})"
             )
             return SessionStatus.RUNNING
 
@@ -380,12 +465,12 @@ class SessionObserver:
                 try:
                     self._kill_session(issue_number)
                     logger.info(
-                        f"Killed timed-out session {session.tmux_session_name} "
+                        f"Killed timed-out session {session.terminal_id} "
                         f"for issue #{issue_number}"
                     )
                 except Exception as e:
                     logger.warning(
-                        f"Failed to kill session {session.tmux_session_name}: {e}"
+                        f"Failed to kill session {session.terminal_id}: {e}"
                     )
 
             # Auto-close tab based on config (observer handles terminal cleanup)

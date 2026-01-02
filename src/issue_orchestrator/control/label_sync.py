@@ -14,6 +14,7 @@ from typing import Optional, Set
 
 from ..events import EventName
 from ..ports import EventSink, TraceEvent
+from .. import gh_audit
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PullRequestTracker
 from .label_projection import DesiredLabels, compute_label_changes
@@ -224,7 +225,11 @@ class LabelSync:
         fixed_count = 0
 
         try:
-            prs = self.pr_tracker.list_prs(state="open", limit=100)
+            with gh_audit.context(
+                reason=gh_audit.AuditReason.LABEL_SYNC_SCAN,
+                scope=gh_audit.AuditScope.STARTUP,
+            ):
+                prs = self.pr_tracker.list_prs(state="open", limit=100)
         except Exception as e:
             logger.warning("[LABEL_SYNC] Failed to list PRs for reconciliation: %s", e)
             return 0

@@ -20,6 +20,7 @@ from ..models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..ports import EventSink, TraceEvent
 from ..ports.pull_request_tracker import PRInfo
+from .. import gh_audit
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,11 @@ class PRScanner:
         if not self.config.code_review_agent or not self.config.code_review_label:
             return []
 
-        prs = self.repository.get_prs_with_label(self.config.code_review_label)
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.PR_SCAN,
+            scope=gh_audit.AuditScope.PERIODIC,
+        ):
+            prs = self.repository.get_prs_with_label(self.config.code_review_label)
         results: list[PendingReview] = []
 
         queued_pr_numbers = {r.pr_number for r in already_queued}
@@ -147,7 +152,11 @@ class PRScanner:
             return [], []
 
         rework_label = self.config.get_label_needs_rework()
-        prs = self.repository.get_prs_with_label(rework_label)
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.PR_SCAN,
+            scope=gh_audit.AuditScope.PERIODIC,
+        ):
+            prs = self.repository.get_prs_with_label(rework_label)
         logger.info("[SCANNER] Found %d PRs with '%s' label", len(prs), rework_label)
 
         results: list[PendingRework] = []
@@ -211,12 +220,12 @@ class PRScanner:
         return int(match.group(1)) if match else fallback
 
     def _get_rework_cycle_from_labels(self, labels: list[str]) -> int:
-        """Extract rework cycle count from labels (rework-N).
+        """Extract rework cycle count from labels (rework-cycle-N).
 
-        Returns the NEXT cycle number (e.g., rework-2 means next is cycle 3).
+        Returns the NEXT cycle number (e.g., rework-cycle-2 means next is cycle 3).
         """
         for label in labels:
-            match = re.match(r"rework-(\d+)", label)
+            match = re.match(r"rework-cycle-(\d+)", label)
             if match:
                 return int(match.group(1)) + 1  # Next cycle
         return 1  # First rework

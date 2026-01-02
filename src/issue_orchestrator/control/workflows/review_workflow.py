@@ -103,10 +103,12 @@ class ReviewWorkflow:
         """
         # Check if configured
         if not self.is_configured():
+            logger.info("Review launch skipped: no code_review_agent configured")
             return ReviewDecision.skip("No code_review_agent configured")
 
         # Check if queue is empty
         if not pending_reviews:
+            logger.debug("Review launch skipped: no pending reviews")
             return ReviewDecision.skip("No pending reviews")
 
         # Check if paused
@@ -117,6 +119,7 @@ class ReviewWorkflow:
                     {"reason": "orchestrator_paused"},
                 )
             )
+            logger.info("Review launch skipped: orchestrator paused")
             return ReviewDecision.skip("Orchestrator paused")
 
         # Check capacity
@@ -134,6 +137,11 @@ class ReviewWorkflow:
                     },
                 )
             )
+            logger.info(
+                "Review launch skipped: no capacity (active=%s max=%s)",
+                active_session_count,
+                max_sessions,
+            )
             return ReviewDecision.skip(
                 f"No capacity (active={active_session_count}, max={max_sessions})"
             )
@@ -150,6 +158,12 @@ class ReviewWorkflow:
                     "pending": len(pending_reviews),
                 },
             )
+        )
+        logger.info(
+            "Review launch decision: launching=%s pending=%s capacity=%s",
+            len(reviews_to_launch),
+            len(pending_reviews),
+            available,
         )
 
         return ReviewDecision.launch(reviews_to_launch, available)

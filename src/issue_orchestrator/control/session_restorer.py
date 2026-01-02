@@ -11,15 +11,16 @@ Called during startup to restore tracking for sessions that survived a restart.
 """
 
 import logging
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from ..config import Config
 
+from ..domain.issue_key import GitHubIssueKey
+from ..domain.session_key import SessionKey, TaskKind
 from ..models import Issue, Session
-from ..ports import RepositoryHost
+from ..ports import RepositoryHost, WorkingCopy
 from ..ports.session_runner import DiscoveredSession
 
 logger = logging.getLogger(__name__)
@@ -37,9 +38,11 @@ class SessionRestorer:
         self,
         config: "Config",
         repository_host: RepositoryHost,
+        working_copy: WorkingCopy,
     ):
         self.config = config
         self.repository_host = repository_host
+        self.working_copy = working_copy
 
     def restore_sessions(
         self,
@@ -73,8 +76,8 @@ class SessionRestorer:
                 if session:
                     restored.append(session)
                     logger.info("Restored tracking for session %s (issue #%d)",
-                               session.tmux_session_name, issue_number)
-                    print(f"  Restored: {session.tmux_session_name} (#{issue_number})")
+                               session.terminal_id, issue_number)
+                    print(f"  Restored: {session.terminal_id} (#{issue_number})")
 
             except Exception as e:
                 logger.exception("Failed to restore session for issue #%d: %s", issue_number, e)
@@ -106,7 +109,7 @@ class SessionRestorer:
             session_name = f"issue-{issue_number}"
 
         # Skip if already tracking this session
-        if any(s.tmux_session_name == session_name for s in already_tracked):
+        if any(s.terminal_id == session_name for s in already_tracked):
             logger.info("Session %s already tracked - skipping restore", session_name)
             return None
 
@@ -141,11 +144,19 @@ class SessionRestorer:
             logger.warning("No agent config available for session %s - skipping", session_name)
             return None
 
-        # Create session object
+        if not self.config.repo:
+            logger.warning("No repo configured for session %s - skipping", session_name)
+            return None
+
+        # Create session with domain identity
+        issue_key = GitHubIssueKey(repo=self.config.repo, external_id=str(issue_number))
+        task_kind = TaskKind.REVIEW if is_review else TaskKind.CODE
+        session_key = SessionKey(issue=issue_key, task=task_kind)
         return Session(
+            key=session_key,
             issue=issue_obj,
             agent_config=agent_config,
-            tmux_session_name=session_name,
+            terminal_id=session_name,
             worktree_path=worktree_path,
             branch_name=branch_name,
         )
@@ -174,19 +185,13 @@ class SessionRestorer:
     def _get_branch_name(self, worktree_path: Path) -> str:
         """Get the current branch name for a worktree.
 
-        Uses git command to get branch name.
-        TODO: Consider using a WorkingCopy abstraction instead.
+        Uses WorkingCopy to get branch name.
         """
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(worktree_path), "branch", "--show-current"],
-                capture_output=True, text=True, timeout=5
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-        except Exception as e:
-            logger.warning("Failed to get branch name for %s: %s", worktree_path, e)
-        return "unknown"
+        branch = self.working_copy.get_current_branch(worktree_path)
+        if not branch:
+            logger.warning("Failed to get branch name for %s", worktree_path)
+            return "unknown"
+        return branch
 
     def _cleanup_orphaned_issue(self, issue_number: int) -> None:
         """Clean up an orphaned issue by removing the in-progress label.

@@ -1,40 +1,76 @@
-"""Test data management for development and testing."""
+"""Test data management for development and testing.
 
-import json
-import subprocess
+This module provides functions for creating and managing test data on GitHub.
+All GitHub access is routed through GitHubAdapter for consistent auditing,
+caching, and rate-limit handling.
+"""
+
+import logging
+import random
 import time
 from typing import Optional
 
+from . import gh_audit
+from .config import Config
+from .adapters.github import GitHubAdapter
 
-def _run_gh(args: list[str], check: bool = False) -> subprocess.CompletedProcess:
-    """Run gh CLI command with consistent settings."""
-    return subprocess.run(
-        ["gh"] + args,
-        capture_output=True,
-        text=True,
-        check=check,
-    )
+logger = logging.getLogger(__name__)
+
+_adapter_cache: dict[str, GitHubAdapter] = {}
+
+
+def _adapter_for(repo: str) -> GitHubAdapter:
+    """Get or create a GitHubAdapter for the given repo.
+
+    Uses a cache to reuse adapters across calls within the same process.
+    """
+    adapter = _adapter_cache.get(repo)
+    if adapter is None:
+        adapter = GitHubAdapter(repo=repo)
+        _adapter_cache[repo] = adapter
+    return adapter
 
 
 def _ensure_label(repo: str, label: str) -> None:
     """Create label if it doesn't exist."""
-    _run_gh(["label", "create", label, "--repo", repo, "--force"])
+    with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_LABEL, scope=gh_audit.AuditScope.TEST):
+        _adapter_for(repo).create_label(label, force=True)
 
 
-def _wait_for_issue_visible(repo: str, issue_number: int, timeout: int = 30) -> None:
-    """Wait until issue is visible via GitHub API.
+def _wait_for_issue_visible(
+    repo: str,
+    issue_number: int,
+    labels: list[str] | None = None,
+    timeout: int | None = None,
+) -> None:
+    """Wait until issue is visible via GitHub API and labels are applied.
 
     GitHub has eventual consistency - an issue may not be immediately
     visible in list/view queries after creation.
     """
-    deadline = time.time() + timeout
+    cfg = Config()
+    effective_timeout = timeout if timeout is not None else cfg.gh_write_verify_timeout_seconds
+    deadline = time.time() + effective_timeout
+    delay_s = cfg.gh_write_verify_initial_delay_ms / 1000.0
+    max_delay_s = cfg.gh_write_verify_max_delay_ms / 1000.0
+    backoff = cfg.gh_write_verify_backoff
+    jitter_s = cfg.gh_write_verify_jitter_ms / 1000.0
+    adapter = _adapter_for(repo)
     while time.time() < deadline:
-        result = _run_gh(["issue", "view", str(issue_number), "--repo", repo, "--json", "number"])
-        if result.returncode == 0:
-            return
-        time.sleep(1)
+        with gh_audit.context(reason=gh_audit.AuditReason.GH_READ, scope=gh_audit.AuditScope.TEST):
+            issue = adapter.get_issue(issue_number)
+        if issue is not None:
+            if labels:
+                # GitHubIssue.labels is a tuple of label names
+                if all(label in issue.labels for label in labels):
+                    return
+            else:
+                return
+        if delay_s > 0:
+            time.sleep(delay_s + (random.random() * jitter_s))
+        delay_s = min(delay_s * backoff, max_delay_s)
 
-    raise TimeoutError(f"Issue #{issue_number} not visible after {timeout}s")
+    raise TimeoutError(f"Issue #{issue_number} not visible after {effective_timeout}s")
 
 
 def create_issue(
@@ -43,7 +79,7 @@ def create_issue(
     labels: list[str],
     body: str = "E2E test issue.\n\nExpected: Agent completes.",
     wait_visible: bool = True,
-    timeout: int = 30,
+    timeout: int | None = None,
 ) -> int:
     """Create a single GitHub issue with all constraints honored.
 
@@ -67,32 +103,21 @@ def create_issue(
         RuntimeError: If issue creation fails
         TimeoutError: If issue not visible within timeout
     """
+    adapter = _adapter_for(repo)
+
     # Ensure all labels exist
     for label in labels:
         _ensure_label(repo, label)
 
-    # Build and execute create command
-    cmd = [
-        "issue", "create",
-        "--repo", repo,
-        "--title", title,
-        "--body", body,
-    ]
-    for label in labels:
-        cmd.extend(["--label", label])
+    with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_CREATE, scope=gh_audit.AuditScope.TEST):
+        issue_number = adapter.create_issue(title=title, body=body, labels=labels)
 
-    result = _run_gh(cmd)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to create issue: {result.stderr}")
-
-    # Parse issue number from URL (e.g., "https://github.com/owner/repo/issues/123")
-    issue_url = result.stdout.strip()
-    issue_number = int(issue_url.split("/")[-1])
+    if issue_number is None:
+        raise RuntimeError("Failed to create issue")
 
     # Wait for GitHub eventual consistency
     if wait_visible:
-        _wait_for_issue_visible(repo, issue_number, timeout)
+        _wait_for_issue_visible(repo, issue_number, labels, timeout)
 
     return issue_number
 
@@ -111,15 +136,19 @@ def update_issue(
         add_labels: Labels to add
         remove_labels: Labels to remove
     """
+    adapter = _adapter_for(repo)
+
     if add_labels:
         for label in add_labels:
             _ensure_label(repo, label)
-        _run_gh(["issue", "edit", str(issue_number), "--repo", repo,
-                 "--add-label", ",".join(add_labels)])
+        with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_UPDATE, scope=gh_audit.AuditScope.TEST):
+            for label in add_labels:
+                adapter.add_label(issue_number, label)
 
     if remove_labels:
-        _run_gh(["issue", "edit", str(issue_number), "--repo", repo,
-                 "--remove-label", ",".join(remove_labels)])
+        with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_UPDATE, scope=gh_audit.AuditScope.TEST):
+            for label in remove_labels:
+                adapter.remove_label(issue_number, label)
 
 
 def close_issue(repo: str, issue_number: int, comment: str | None = None) -> None:
@@ -130,10 +159,11 @@ def close_issue(repo: str, issue_number: int, comment: str | None = None) -> Non
         issue_number: The issue number to close
         comment: Optional comment to add when closing
     """
-    cmd = ["issue", "close", str(issue_number), "--repo", repo]
-    if comment:
-        cmd.extend(["--comment", comment])
-    _run_gh(cmd)
+    adapter = _adapter_for(repo)
+    with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_CLOSE, scope=gh_audit.AuditScope.TEST):
+        if comment:
+            adapter.add_comment(issue_number, comment)
+        adapter.update_issue_state(issue_number, "closed")
 
 
 def cleanup_issues_by_label(repo: str, label: str) -> int:
@@ -148,15 +178,13 @@ def cleanup_issues_by_label(repo: str, label: str) -> int:
     Returns:
         Number of issues closed
     """
-    result = _run_gh(["issue", "list", "--repo", repo, "--label", label,
-                      "--state", "open", "--json", "number"])
+    adapter = _adapter_for(repo)
+    with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_LIST, scope=gh_audit.AuditScope.TEST):
+        issues = adapter.list_issues(labels=[label], state="open", limit=100)
 
-    if result.returncode != 0:
-        return 0
-
-    issues = json.loads(result.stdout)
+    gh_audit.update_last_call(items_returned=len(issues))
     for issue in issues:
-        close_issue(repo, issue["number"], f"Cleaned up by test: {label}")
+        close_issue(repo, issue.number, f"Cleaned up by test: {label}")
 
     return len(issues)
 
@@ -170,22 +198,23 @@ def cleanup_test_issues(repo: str) -> int:
     Returns:
         Number of issues closed
     """
+    adapter = _adapter_for(repo)
     count = 0
-    seen = set()
+    seen: set[int] = set()
 
     for label in ["test-data", "agent:e2e-test"]:
-        result = _run_gh(["issue", "list", "--repo", repo, "--label", label,
-                          "--state", "open", "--json", "number"])
+        with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_LIST, scope=gh_audit.AuditScope.TEST):
+            issues = adapter.list_issues(labels=[label], state="open", limit=100)
 
-        if result.returncode == 0:
-            issues = json.loads(result.stdout)
-            for issue in issues:
-                num = issue["number"]
-                if num not in seen:
-                    seen.add(num)
-                    _run_gh(["issue", "close", str(num), "--repo", repo,
-                             "--comment", "Closed by test cleanup."])
-                    count += 1
+        gh_audit.update_last_call(items_returned=len(issues))
+        for issue in issues:
+            num = issue.number
+            if num not in seen:
+                seen.add(num)
+                with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_CLOSE, scope=gh_audit.AuditScope.TEST):
+                    adapter.add_comment(num, "Closed by test cleanup.")
+                    adapter.update_issue_state(num, "closed")
+                count += 1
 
     return count
 

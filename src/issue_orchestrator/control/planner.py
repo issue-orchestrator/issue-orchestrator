@@ -362,16 +362,20 @@ class Planner:
                     reason=f"session completed with PR #{review.pr_number} - awaiting merge",
                     expected=build_expected_for_mutation(),
                 ))
-                actions.append(QueueReviewAction(
-                    issue_number=review.issue_number,
-                    pr_number=review.pr_number,
-                    pr_url=review.pr_url,
-                    branch_name=review.branch_name,
-                    code_review_label=self.config.code_review_label or "",
-                    reason=f"session completed with PR #{review.pr_number}",
-                    expected=build_expected_for_mutation(),
-                ))
-                logger.debug("Planner: queuing review for PR #%d", review.pr_number)
+                # Only queue review if code review agent is configured
+                if self.config.code_review_agent:
+                    actions.append(QueueReviewAction(
+                        issue_number=review.issue_number,
+                        pr_number=review.pr_number,
+                        pr_url=review.pr_url,
+                        branch_name=review.branch_name,
+                        code_review_label=self.config.code_review_label or "",
+                        reason=f"session completed with PR #{review.pr_number}",
+                        expected=build_expected_for_mutation(),
+                    ))
+                    logger.debug("Planner: queuing review for PR #%d", review.pr_number)
+                else:
+                    logger.debug("Planner: no code_review_agent - skipping review queue for PR #%d", review.pr_number)
             else:
                 logger.debug("Planner: PR #%d already queued, skipping", review.pr_number)
 
@@ -595,10 +599,13 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 reason=f"dependency: {reason}",
             ))
 
-        # Filter out issues already being worked on
+        # Filter out issues already being worked on or just completed (with PRs pending review)
+        issues_with_pending_reviews = {r.issue_number for r in snapshot.discovered_reviews}
+        issues_with_pending_reworks = {r.issue_number for r in snapshot.discovered_reworks}
+        excluded_issues = snapshot.active_issue_numbers | issues_with_pending_reviews | issues_with_pending_reworks
         not_active = [
             issue for issue in available
-            if issue.number not in snapshot.active_issue_numbers
+            if issue.number not in excluded_issues
         ]
 
         # Pick next batch based on priority

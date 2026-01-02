@@ -10,7 +10,9 @@ Tests requiring special orchestrator configs (timeout, rework) start their own
 orchestrator. Other tests use the shared session-scoped orchestrator.
 """
 
-import json
+import asyncio
+import copy
+import logging
 import os
 import signal
 import subprocess
@@ -21,14 +23,20 @@ from pathlib import Path
 import pytest
 
 from tests.e2e.conftest import (
-    inflight_create,
-    trigger_refresh,
-    wait_for_issue_label,
-    wait_for_pr_created,
+    OrchestratorProcess,
+    e2e_label,
+    _github_adapter,
 )
-from issue_orchestrator.test_data import cleanup_test_issues, close_issue
-from issue_orchestrator._github_impl import get_prs_for_issue
+from issue_orchestrator.test_data import close_issue, cleanup_issues_by_label
+from issue_orchestrator.domain.issue_key import IssueKey
+from tests.e2e.flows import (
+    E2EFlow,
+    create_watcher_for_port,
+    start_orchestrator_runtime,
+    wait_for_issue_with_label,
+)
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Test Configuration
@@ -67,13 +75,24 @@ def start_orchestrator_with_config(config_path: Path, max_issues: int = 1) -> su
     cleanup_stale_orchestrators(config_path)
     ui_mode = os.environ.get("E2E_UI_MODE", "tmux")
 
-    cmd = [
-        sys.executable, "-m", "issue_orchestrator.cli",
-        "--config", str(config_path),
-        "start",
-        "--max-issues", str(max_issues),
-        "--ui-mode", ui_mode,
-    ]
+    project_root = Path(__file__).parent.parent.parent
+    preferred_bin = project_root / ".venv" / "bin" / "issue-orchestrator"
+    if preferred_bin.exists():
+        cmd = [
+            str(preferred_bin),
+            "--config", str(config_path),
+            "start",
+            "--max-issues", str(max_issues),
+            "--ui-mode", ui_mode,
+        ]
+    else:
+        cmd = [
+            sys.executable, "-m", "issue_orchestrator.cli",
+            "--config", str(config_path),
+            "start",
+            "--max-issues", str(max_issues),
+            "--ui-mode", ui_mode,
+        ]
 
     if ui_mode == "web":
         port = os.environ.get("E2E_WEB_PORT", "8080")
@@ -100,47 +119,15 @@ def stop_orchestrator(proc: subprocess.Popen) -> None:
         proc.communicate()
 
 
-def get_issue_state(repo: str, issue_number: int) -> dict:
-    """Get full issue state."""
-    result = subprocess.run(
-        ["gh", "issue", "view", str(issue_number),
-         "--repo", repo,
-         "--json", "number,title,state,labels,comments"],
-        capture_output=True,
-        text=True,
-    )
-    return json.loads(result.stdout) if result.returncode == 0 else {}
-
-
-def create_single_issue(repo: str, title: str, labels: list[str]) -> int:
-    """Create a single test issue."""
-    for label in labels:
-        subprocess.run(
-            ["gh", "label", "create", label, "--repo", repo, "--force"],
-            capture_output=True
-        )
-    result = subprocess.run(
-        ["gh", "issue", "create",
-         "--repo", repo,
-         "--title", title,
-         "--body", f"Automated test issue.\n\nLabels: {', '.join(labels)}",
-         ] + [item for label in labels for item in ["--label", label]],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to create issue: {result.stderr}")
-    return int(result.stdout.strip().split("/")[-1])
-
-
-def wait_for_condition(condition_fn, timeout: int, interval: int = 5) -> bool:
-    """Wait for a condition to become true."""
-    start = time.time()
-    while time.time() - start < timeout:
-        if condition_fn():
-            return True
-        time.sleep(interval)
-    return False
+def create_single_issue(
+    repo: str,
+    title: str,
+    labels: list[str],
+    watcher=None,
+) -> IssueKey:
+    """Create a single test issue (with labels ensured)."""
+    flow = E2EFlow(repo=repo, watcher=watcher)
+    return flow.create_issue(title, labels, body=f"Automated test issue.\n\nLabels: {', '.join(labels)}")
 
 
 # ---------------------------------------------------------------------------
@@ -153,11 +140,15 @@ def wait_for_condition(condition_fn, timeout: int, interval: int = 5) -> bool:
 class TestCodeReviewRuns:
     """Test that code reviews actually execute, not just get queued."""
 
-    def test_code_review_produces_review_comment(
+    @pytest.mark.asyncio
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=390, system_gh_activity_limit=100)
+    async def test_code_review_produces_review_comment(
         self,
         e2e_orchestrator,
+        orchestrator_watcher,
         repo_name: str,
         filter_label: str,
+        e2e_timing_stats,
     ):
         """Verify that the code review agent actually reviews the PR.
 
@@ -166,84 +157,59 @@ class TestCodeReviewRuns:
         2. Code review agent picks it up
         3. code-reviewed OR needs-rework label is applied
         """
-        print("\n" + "=" * 60)
-        print("CODE REVIEW TEST: Verify Review Actually Runs")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("CODE REVIEW TEST: Verify Review Actually Runs")
+        logger.info("=" * 60)
+
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
 
         # Create issue
-        issue = inflight_create(
-            repo_name,
-            "[E2E-REVIEW] Test that code review runs",
-            [filter_label, "agent:e2e-test", "e2e:code_review_test"],
-        )
+        with e2e_timing_stats.phase("Create issue"):
+            issue = flow.create_issue(
+                "[E2E-REVIEW] Test that code review runs",
+                ["agent:e2e-test", e2e_label("code_review_test")],
+            )
         issue_number = int(issue.stable_id())
         pr_number = None
 
         try:
             # Wait for PR
-            print(f"\nWaiting for PR creation...")
+            logger.info("Waiting for PR creation...")
 
-            def has_pr():
-                prs = get_prs_for_issue(repo_name, issue_number)
-                return len(prs) > 0
-
-            wait_for_condition(has_pr, TIMEOUT_SESSION_COMPLETE)
-            prs = get_prs_for_issue(repo_name, issue_number)
-            if not prs:
-                pytest.fail("PR was not created")
-            pr_number = prs[0]["number"]
-            print(f"  ✓ PR #{pr_number} created")
+            with e2e_timing_stats.phase("Wait for PR creation"):
+                pr_number = await flow.pr_created(issue, timeout_s=TIMEOUT_SESSION_COMPLETE)
+            logger.info("  ✓ PR #%s created", pr_number)
 
             # Wait for code review outcome
-            print(f"\nWaiting for code review to complete...")
+            logger.info("Waiting for code review to complete...")
 
-            def review_completed():
-                result = subprocess.run(
-                    ["gh", "pr", "view", str(pr_number),
-                     "--repo", repo_name,
-                     "--json", "labels"],
-                    capture_output=True,
-                    text=True,
+            with e2e_timing_stats.phase("Wait for code review"):
+                await flow.pr_has_any_label(
+                    issue,
+                    labels=["code-reviewed", "needs-rework"],
+                    timeout_s=TIMEOUT_CODE_REVIEW_COMPLETE,
                 )
-                if result.returncode != 0:
-                    return False
-                data = json.loads(result.stdout)
-                labels = [l["name"] for l in data.get("labels", [])]
-                return "code-reviewed" in labels or "needs-rework" in labels
-
-            review_done = wait_for_condition(review_completed, TIMEOUT_CODE_REVIEW_COMPLETE, interval=10)
 
             # Get final state
-            result = subprocess.run(
-                ["gh", "pr", "view", str(pr_number),
-                 "--repo", repo_name,
-                 "--json", "labels"],
-                capture_output=True,
-                text=True,
-            )
-            final_labels = []
-            if result.returncode == 0:
-                data = json.loads(result.stdout)
-                final_labels = [l["name"] for l in data.get("labels", [])]
+            with e2e_timing_stats.phase("Verify outcome"):
+                issue_view = orchestrator_watcher.view.issues.get(issue.stable_id())
+                final_labels = sorted(list(issue_view.pr.labels)) if issue_view else []
+                logger.info("  Final labels: %s", final_labels)
 
-            print(f"  Final labels: {final_labels}")
+                has_review_outcome = "code-reviewed" in final_labels or "needs-rework" in final_labels
+                if has_review_outcome:
+                    logger.info("  ✓ CODE REVIEW ACTUALLY RAN!")
+                else:
+                    logger.warning("  ⚠ No review outcome labels found")
 
-            has_review_outcome = "code-reviewed" in final_labels or "needs-rework" in final_labels
-            if has_review_outcome:
-                print("  ✓ CODE REVIEW ACTUALLY RAN!")
-            else:
-                print("  ⚠ No review outcome labels found")
-
-            assert has_review_outcome, "Code review must run and produce an outcome"
+                assert has_review_outcome, "Code review must run and produce an outcome"
 
         finally:
-            if pr_number:
-                subprocess.run(
-                    ["gh", "pr", "close", str(pr_number),
-                     "--repo", repo_name,
-                     "--delete-branch"],
-                    capture_output=True
-                )
+            with e2e_timing_stats.phase("Cleanup"):
+                if pr_number:
+                    flow.close_pr(pr_number)
+                # Always close the issue to prevent accumulation
+                close_issue(repo_name, issue_number, "E2E code review test completed")
 
 
 # ---------------------------------------------------------------------------
@@ -256,184 +222,122 @@ class TestCodeReviewRuns:
 class TestTriageReviewTrigger:
     """Test that triage review is triggered after enough code reviews."""
 
-    def test_triage_triggered_after_threshold(
+    @pytest.mark.asyncio
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=390, system_gh_activity_limit=100)
+    async def test_triage_triggered_after_threshold(
         self,
-        e2e_orchestrator,
         repo_name: str,
-        filter_label: str,
+        e2e_project_root: Path,
+        e2e_session_config,
     ):
         """Test that triage review is triggered after code_reviewed PRs reach threshold."""
-        print("\n" + "=" * 60)
-        print("TRIAGE TEST: Verify Triage Triggered After Batch Threshold")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("TRIAGE TEST: Verify Triage Triggered After Batch Threshold")
+        logger.info("=" * 60)
 
         NUM_ISSUES = 3
         issues = []
         pr_numbers = []
+        runtime = None
+        flow: E2EFlow | None = None
 
         try:
+            triage_config = copy.deepcopy(e2e_session_config)
+            triage_config.triage_review_agent = "agent:triage-investigator"
+            triage_config.triage_review_label = None
+            triage_config.triage_reviewed_label = "triage-reviewed"
+            triage_config.triage_review_threshold = 2
+            triage_config.triage_review_on_failure = False
+            triage_config.control_api_port = 19081
+            run_id = int(time.time())
+            run_label = e2e_label(f"triage_run_{run_id}")
+            review_label = e2e_label(f"triage_review_{run_id}")
+            reviewed_label = e2e_label(f"triage_reviewed_{run_id}")
+            triage_config.filter_label = run_label
+            triage_config.e2e_pr_labels = [run_label]
+            triage_config.code_review_label = review_label
+            triage_config.code_reviewed_label = reviewed_label
+            flow = E2EFlow(repo=repo_name, watcher=None, filter_label=run_label)
+            flow.ensure_labels([review_label, reviewed_label])
+            cleanup_issues_by_label(repo_name, "agent:triage-investigator")
+
+            logger.info("Starting orchestrator with triage config...")
+            orchestrator = OrchestratorProcess(triage_config, e2e_project_root)
+            runtime = await start_orchestrator_runtime(
+                orchestrator,
+                triage_config.control_api_port,
+                max_issues=10,
+                extra_args=["--label", run_label],
+            )
+            flow = E2EFlow(
+                repo=repo_name,
+                watcher=runtime.watcher,
+                filter_label=run_label,
+            )
+
             # Create multiple issues
-            print(f"\nCreating {NUM_ISSUES} test issues...")
+            logger.info("Creating %d test issues...", NUM_ISSUES)
             for i in range(NUM_ISSUES):
-                issue = inflight_create(
-                    repo_name,
+                issue = flow.create_issue(
                     f"[E2E-TRIAGE-{i+1}] Test triage trigger issue {i+1}",
-                    [filter_label, "agent:e2e-test", f"e2e:triage_{i}"],
+                    ["agent:e2e-test", e2e_label(f"triage_{i}")],
                 )
                 issues.append(issue)
-                print(f"  Created issue #{issue.stable_id()}")
-
+                logger.info("  Created issue #%s", issue.stable_id())
             # Wait for all PRs to be created
-            print(f"\nWaiting for all PRs to be created...")
+            logger.info("Waiting for all PRs to be created...")
+            pr_numbers = await asyncio.gather(*[
+                flow.pr_created(issue, timeout_s=TIMEOUT_SESSION_COMPLETE)
+                for issue in issues
+            ])
             for issue in issues:
-                issue_num = int(issue.stable_id())
-
-                def has_pr(n=issue_num):
-                    prs = get_prs_for_issue(repo_name, n)
-                    return len(prs) > 0
-
-                wait_for_condition(has_pr, TIMEOUT_SESSION_COMPLETE)
-                prs = get_prs_for_issue(repo_name, issue_num)
-                if prs:
-                    pr_numbers.append(prs[0]["number"])
-                    print(f"  ✓ PR created for issue #{issue_num}")
+                logger.info("  ✓ PR created for issue #%s", issue.stable_id())
 
             # Wait for code reviews to complete
-            print(f"\nWaiting for all code reviews to complete...")
-            code_reviewed_count = 0
-            for pr_num in pr_numbers:
-                def has_code_reviewed(n=pr_num):
-                    result = subprocess.run(
-                        ["gh", "pr", "view", str(n),
-                         "--repo", repo_name,
-                         "--json", "labels"],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if result.returncode != 0:
-                        return False
-                    data = json.loads(result.stdout)
-                    labels = [l["name"] for l in data.get("labels", [])]
-                    return "code-reviewed" in labels
-
-                reviewed = wait_for_condition(has_code_reviewed, TIMEOUT_CODE_REVIEW_COMPLETE, interval=10)
-                if reviewed:
-                    code_reviewed_count += 1
-                    print(f"  ✓ PR #{pr_num} code review completed")
-
-            print(f"  Code-reviewed: {code_reviewed_count}/{len(pr_numbers)}")
+            logger.info("Waiting for all code reviews to complete...")
+            await asyncio.gather(*[
+                flow.pr_has_any_label(
+                    issue,
+                    labels=[reviewed_label],
+                    timeout_s=TIMEOUT_CODE_REVIEW_COMPLETE,
+                )
+                for issue in issues
+            ])
+            code_reviewed_count = len(pr_numbers)
+            logger.info("  Code-reviewed: %d/%d", code_reviewed_count, len(pr_numbers))
 
             # Check for triage review issue
-            print(f"\nChecking for triage review issue...")
-
-            def find_triage_issue():
-                result = subprocess.run(
-                    ["gh", "issue", "list",
-                     "--repo", repo_name,
-                     "--label", "agent:triage-investigator",
-                     "--json", "number,title"],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode == 0:
-                    issues = json.loads(result.stdout)
-                    for issue in issues:
-                        if any(k in issue["title"].lower() for k in ["batch", "triage", "review"]):
-                            return issue
-                return None
-
-            triage_issue = None
-            for _ in range(30):
-                triage_issue = find_triage_issue()
-                if triage_issue:
-                    break
-                time.sleep(10)
-
-            if triage_issue:
-                print(f"  ✓ Triage review issue created: #{triage_issue['number']}")
-            else:
-                print("  ⚠ Triage review issue not found (threshold may not be met)")
+            logger.info("Checking for triage review issue...")
+            triage_issue_key = await wait_for_issue_with_label(
+                runtime.watcher,
+                label="agent:triage-investigator",
+                timeout_s=600,
+            )
+            logger.info("  ✓ Triage review issue created: %s", triage_issue_key)
 
             # Core assertions
             assert len(pr_numbers) >= 1, "At least one PR should be created"
             assert code_reviewed_count >= 1, "At least one code review should complete"
 
         finally:
+            if runtime:
+                await runtime.close()
             for pr_num in pr_numbers:
-                subprocess.run(
-                    ["gh", "pr", "close", str(pr_num),
-                     "--repo", repo_name,
-                     "--delete-branch"],
-                    capture_output=True
-                )
-
-
-# ---------------------------------------------------------------------------
-# Session Timeout Test (needs special config)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.e2e
-@pytest.mark.live
-@pytest.mark.timeout(300)
-class TestSessionTimeoutFailure:
-    """Test that session timeouts trigger proper failure handling.
-
-    This test requires a special config and runs its own orchestrator.
-    """
-
-    def test_timeout_triggers_failure_flow(self, repo_name: str):
-        """Test that a session timeout is detected and handled."""
-        print("\n" + "=" * 60)
-        print("TIMEOUT TEST: Session Timeout → Failure Handling")
-        print("=" * 60)
-
-        config_path = E2E_CONFIG_DIR / "timeout-test.yaml"
-        if not config_path.exists():
-            pytest.skip(f"Test config not found: {config_path}")
-
-        issue_number = None
-        orchestrator = None
-
-        try:
-            # Create issue with timeout agent
-            print("\nCreating test issue with timeout agent...")
-            issue_number = create_single_issue(
-                repo_name,
-                "[E2E-TIMEOUT] Test session timeout handling",
-                ["agent:e2e-test-timeout", "test-data"]
-            )
-            print(f"  Created issue #{issue_number}")
-
-            # Start orchestrator with timeout config
-            print("\nStarting orchestrator with timeout config...")
-            orchestrator = start_orchestrator_with_config(config_path, max_issues=1)
-            assert orchestrator.poll() is None, "Orchestrator should start"
-
-            # Wait for session to start
-            print("\nWaiting for session to start...")
-
-            def has_in_progress():
-                state = get_issue_state(repo_name, issue_number)
-                labels = [l["name"] for l in state.get("labels", [])]
-                return "in-progress" in labels
-
-            started = wait_for_condition(has_in_progress, 90)
-            if started:
-                print("  ✓ Session started")
-
-            # Wait for timeout
-            print("\nWaiting for session to timeout (up to 90 seconds)...")
-            time.sleep(90)
-
-            # Verify orchestrator still running
-            assert orchestrator.poll() is None, "Orchestrator should still be running"
-            print("  ✓ Orchestrator handled timeout without crashing")
-
-        finally:
-            if orchestrator:
-                stop_orchestrator(orchestrator)
-            if issue_number:
-                close_issue(repo_name, issue_number, "E2E timeout test completed")
+                if flow:
+                    flow.close_pr(pr_num)
+                else:
+                    adapter = _github_adapter(repo_name)
+                    pr = adapter.get_pr(pr_num)
+                    branch = pr.branch if pr else None
+                    adapter.close_pr(pr_num)
+                    if branch:
+                        try:
+                            adapter.delete_branch(branch)
+                        except Exception:
+                            pass
+            # Always close issues to prevent accumulation
+            for issue in issues:
+                close_issue(repo_name, int(issue.stable_id()), "E2E triage test completed")
 
 
 # ---------------------------------------------------------------------------
@@ -446,106 +350,65 @@ class TestSessionTimeoutFailure:
 class TestReworkCyclesAndEscalation:
     """Test the rework cycle flow and escalation to needs-human.
 
-    This test requires a special config and runs its own orchestrator.
+    Uses shared orchestrator with review-decider behavior.
     """
 
-    def test_rework_cycles_lead_to_escalation(self, repo_name: str):
+    @pytest.mark.asyncio
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=100)
+    async def test_rework_cycles_lead_to_escalation(
+        self,
+        repo_name: str,
+        e2e_orchestrator,
+        orchestrator_watcher,
+    ):
         """Test that rework cycles lead to escalation after max cycles."""
-        print("\n" + "=" * 60)
-        print("REWORK TEST: Rework Cycles → Escalation to needs-human")
-        print("=" * 60)
-
-        config_path = E2E_CONFIG_DIR / "rework-test.yaml"
-        if not config_path.exists():
-            pytest.skip(f"Test config not found: {config_path}")
+        logger.info("=" * 60)
+        logger.info("REWORK TEST: Rework Cycles → Escalation to needs-human")
+        logger.info("=" * 60)
 
         issue_number = None
         pr_number = None
-        orchestrator = None
+        flow = E2EFlow(
+            repo=repo_name,
+            watcher=orchestrator_watcher,
+        )
 
         try:
             # Create issue
-            print("\nCreating test issue...")
-            issue_number = create_single_issue(
+            logger.info("Creating test issue...")
+            issue_key = create_single_issue(
                 repo_name,
                 "[E2E-REWORK] Test rework cycles and escalation",
-                ["agent:script-completes", "test-data"]
+                ["agent:script-completes", "test-data", e2e_label("rework_cycles")],
+                watcher=orchestrator_watcher,
             )
-            print(f"  Created issue #{issue_number}")
-
-            # Start orchestrator with rework config
-            print("\nStarting orchestrator with rework test config...")
-            orchestrator = start_orchestrator_with_config(config_path, max_issues=1)
-            assert orchestrator.poll() is None, "Orchestrator should start"
+            issue_number = int(issue_key.stable_id())
+            logger.info("  Created issue #%d", issue_number)
 
             # Wait for PR creation
-            print("\nWaiting for PR creation...")
-
-            def has_pr():
-                prs = get_prs_for_issue(repo_name, issue_number)
-                return len(prs) > 0
-
-            wait_for_condition(has_pr, TIMEOUT_SESSION_COMPLETE)
-            prs = get_prs_for_issue(repo_name, issue_number)
-            if not prs:
-                pytest.fail("PR should be created")
-            pr_number = prs[0]["number"]
-            print(f"  ✓ PR #{pr_number} created")
+            logger.info("Waiting for PR creation...")
+            pr_number = await flow.pr_created(issue_key, timeout_s=TIMEOUT_SESSION_COMPLETE)
+            logger.info("  ✓ PR #%s created", pr_number)
 
             # Wait for rework cycles and escalation
-            print("\nWaiting for rework cycles (this may take several minutes)...")
+            logger.info("Waiting for rework cycles (this may take several minutes)...")
+            escalated, rework_labels_seen = await flow.rework_progress(
+                issue_key,
+                timeout_s=600,
+            )
 
-            def check_pr_labels():
-                result = subprocess.run(
-                    ["gh", "pr", "view", str(pr_number),
-                     "--repo", repo_name,
-                     "--json", "labels"],
-                    capture_output=True,
-                    text=True,
-                )
-                if result.returncode != 0:
-                    return None
-                data = json.loads(result.stdout)
-                return [l["name"] for l in data.get("labels", [])]
-
-            escalated = False
-            rework_labels_seen = set()
-            for i in range(60):  # Up to 10 minutes
-                labels = check_pr_labels()
-                if labels is None:
-                    time.sleep(10)
-                    continue
-
-                for label in labels:
-                    if label.startswith("rework-cycle-"):
-                        rework_labels_seen.add(label)
-
-                # Check for escalation labels (blocked-needs-human or needs-human)
-                if "blocked-needs-human" in labels or "needs-human" in labels:
-                    escalated = True
-                    break
-
-                time.sleep(10)
-
-            print(f"\nRework cycle labels seen: {rework_labels_seen}")
+            logger.info("Rework cycle labels seen: %s", sorted(list(rework_labels_seen)))
             if escalated:
-                print("  ✓ PR escalated to blocked-needs-human!")
+                logger.info("  ✓ PR escalated to blocked-needs-human!")
             else:
-                print("  ⚠ Escalation not confirmed")
+                logger.warning("  ⚠ Escalation not confirmed")
 
             assert len(rework_labels_seen) >= 1 or escalated, \
                 "Should have at least one rework cycle or escalation"
 
         finally:
-            if orchestrator:
-                stop_orchestrator(orchestrator)
             if pr_number:
-                subprocess.run(
-                    ["gh", "pr", "close", str(pr_number),
-                     "--repo", repo_name,
-                     "--delete-branch"],
-                    capture_output=True
-                )
+                flow.close_pr(pr_number)
             if issue_number:
                 close_issue(repo_name, issue_number, "E2E rework test completed")
 

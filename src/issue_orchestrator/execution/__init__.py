@@ -34,14 +34,15 @@ Usage:
 from .manager import PluginManager, create_plugin_manager, BUILTIN_PLUGINS
 from .terminal_tmux import TmuxPlugin
 from .terminal_iterm import ITermPlugin
-from .github_adapter import GitHubAdapter
-from .github_issue import GitHubIssue
+from ..adapters.github.github_adapter import GitHubAdapter
+from ..adapters.github.github_issue import GitHubIssue
 from .git_working_copy import GitWorkingCopy
 from .json_store import JsonSessionStore
 from .lifecycle_sse import LifecycleSSEPlugin
 from .event_sink_adapter import PluggyEventSink, CompositeEventSink, LoggingEventSink
 from .session_runner_adapter import PluggySessionRunner
 from .github_issue_resolver import GitHubIssueResolver
+from .command_runner import LocalCommandRunner
 
 __all__ = [
     # Main interface (internal, used by composition root)
@@ -66,6 +67,8 @@ __all__ = [
     "GitHubIssueResolver",
     # Local VCS adapters
     "GitWorkingCopy",
+    # Local command runner
+    "LocalCommandRunner",
     # Session stores
     "JsonSessionStore",
 ]

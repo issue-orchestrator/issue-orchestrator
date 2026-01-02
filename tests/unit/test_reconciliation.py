@@ -310,3 +310,85 @@ class TestHelperFunctions:
 
         assert "custom:needs-reconcile" in expected.forbidden_labels
         assert "io:needs-reconcile" not in expected.forbidden_labels
+
+
+class TestFailureTypeClassification:
+    """Tests for SYSTEMIC vs ISSUE_LOCAL failure classification."""
+
+    def test_systemic_failure_type_on_timeout(self):
+        """Test that verification timeout creates SYSTEMIC failure type."""
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+        from issue_orchestrator.ports.verification import FailureType
+
+        error = GitHubHttpError(
+            "Timed out verifying write",
+            failure_type=FailureType.SYSTEMIC,
+        )
+
+        assert error.is_systemic()
+        assert not error.is_issue_local()
+        assert error.failure_type == FailureType.SYSTEMIC
+
+    def test_issue_local_failure_type_on_predicate_false(self):
+        """Test that predicate false creates ISSUE_LOCAL failure type with issue number."""
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+        from issue_orchestrator.ports.verification import FailureType
+
+        error = GitHubHttpError(
+            "Failed to verify write",
+            failure_type=FailureType.ISSUE_LOCAL,
+            issue_number=42,
+        )
+
+        assert error.is_issue_local()
+        assert not error.is_systemic()
+        assert error.failure_type == FailureType.ISSUE_LOCAL
+        assert error.issue_number == 42
+
+    def test_failure_type_none_by_default(self):
+        """Test that failure_type is None by default (unclassified)."""
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+
+        error = GitHubHttpError("Some error")
+
+        assert not error.is_systemic()
+        assert not error.is_issue_local()
+        assert error.failure_type is None
+
+    def test_systemic_failure_should_trigger_pause(self):
+        """Test that systemic failures are classified for orchestrator pause.
+
+        Per Phase 4 spec: SYSTEMIC -> orchestrator.pause + probe + resume
+        """
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+        from issue_orchestrator.ports.verification import FailureType
+
+        error = GitHubHttpError(
+            "API timeout",
+            failure_type=FailureType.SYSTEMIC,
+        )
+
+        # Systemic failures indicate infrastructure problems
+        # The orchestrator should pause, probe, and resume
+        assert error.is_systemic()
+        # No issue_number because it affects all operations
+        assert error.issue_number is None
+
+    def test_issue_local_failure_should_trigger_needs_reconcile(self):
+        """Test that issue-local failures are classified for needs-reconcile label.
+
+        Per Phase 4 spec: ISSUE_LOCAL -> apply needs-reconcile label for that issue and skip
+        """
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+        from issue_orchestrator.ports.verification import FailureType
+
+        error = GitHubHttpError(
+            "Write didn't take effect",
+            failure_type=FailureType.ISSUE_LOCAL,
+            issue_number=123,
+        )
+
+        # Issue-local failures affect only one issue
+        # The orchestrator should apply needs-reconcile label and skip
+        assert error.is_issue_local()
+        assert error.issue_number == 123

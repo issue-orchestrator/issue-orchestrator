@@ -1,7 +1,8 @@
 """Tests for CLI module."""
 
 import argparse
-from unittest.mock import Mock, patch, AsyncMock, MagicMock, call
+import inspect
+from unittest.mock import Mock, patch, AsyncMock, MagicMock
 import pytest
 
 from issue_orchestrator.cli import (
@@ -9,6 +10,12 @@ from issue_orchestrator.cli import (
     cmd_dashboard, cmd_output, cmd_pause, cmd_resume, cmd_next,
     cmd_test_reset, main, setup_logging, _run_test_setup, _load_config
 )
+
+
+def _run_and_close(coro):
+    if inspect.iscoroutine(coro):
+        coro.close()
+    return None
 
 
 class TestCmdStart:
@@ -52,7 +59,7 @@ class TestCmdStart:
                         mock_build.return_value = mock_orchestrator
 
                         # Mock asyncio.run to return None immediately without executing
-                        mock_asyncio.run.return_value = None
+                        mock_asyncio.run.side_effect = _run_and_close
 
                         args = argparse.Namespace(
                             test_mode=False,
@@ -64,9 +71,9 @@ class TestCmdStart:
 
                         result = cmd_start(args)
 
-                        # Verify asyncio.run was called at least twice
-                        # (once for startup, once for run_with_dashboard)
-                        assert mock_asyncio.run.call_count >= 2
+                        # Verify asyncio.run was called once
+                        # (startup + run_with_dashboard combined in single event loop)
+                        assert mock_asyncio.run.call_count >= 1
 
     def test_cmd_start_no_dashboard_calls_run_loop(self):
         """Verify run_loop() is called when --no-dashboard is set."""
@@ -86,7 +93,7 @@ class TestCmdStart:
                     mock_build.return_value = mock_orchestrator
 
                     # Mock asyncio.run to return None immediately without executing
-                    mock_asyncio.run.return_value = None
+                    mock_asyncio.run.side_effect = _run_and_close
 
                     args = argparse.Namespace(
                         test_mode=False,
@@ -98,18 +105,18 @@ class TestCmdStart:
 
                     result = cmd_start(args)
 
-                    # Should call asyncio.run twice: startup + run_loop
-                    assert mock_asyncio.run.call_count == 2
+                    # Should call asyncio.run once (startup + run_loop combined in single event loop)
+                    assert mock_asyncio.run.call_count == 1
 
     def test_cmd_start_dry_run_does_not_create_orchestrator(self):
         """Verify dry-run mode doesn't create orchestrator."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator._github_impl.list_issues', return_value=[]):
+                with patch('issue_orchestrator.adapters.github.github_adapter.GitHubAdapter.list_issues', return_value=[]):
                     with patch('issue_orchestrator.control.scheduler.Scheduler'):
                         with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
                             with patch('issue_orchestrator.analysis.analyze_all_issues', return_value=[]):
-                                with patch('issue_orchestrator.analysis.get_issue_branches', return_value={}):
+                                with patch('issue_orchestrator.execution.git_working_copy.GitWorkingCopy.list_remote_branches', return_value=[]):
                                     with patch('issue_orchestrator.analysis.analyze_orphan_branches', return_value=[]):
                                         mock_config = Mock()
                                         mock_config.agents = {'agent:test': Mock()}
@@ -117,8 +124,13 @@ class TestCmdStart:
                                         mock_config.repo = 'test/repo'
                                         mock_config.filter_label = None
                                         mock_config.filter_milestone = None
+                                        mock_config.filter_milestones = []
+                                        mock_config.get_filter_milestones.return_value = []
                                         mock_config.repo_root = '/tmp'
                                         mock_config.get_label_in_progress.return_value = 'in-progress'
+                                        mock_config.github_api_url = 'https://api.github.com'
+                                        mock_config.github_http_timeout_seconds = 20.0
+                                        mock_config.queue_refresh_seconds = 0
                                         mock_config.validate.return_value = []  # Pass validation
                                         mock_find.return_value = mock_config
 
@@ -154,6 +166,7 @@ class TestCmdStatus:
                 mock_config.agents = {'agent:web': Mock(), 'agent:mobile': Mock()}
                 mock_config.filter_label = None
                 mock_config.filter_milestone = None
+                mock_config.filter_milestones = []
                 mock_find.return_value = mock_config
 
                 args = argparse.Namespace()
@@ -171,6 +184,7 @@ class TestCmdStatus:
                 mock_config.agents = {'agent:web': Mock()}
                 mock_config.filter_label = None
                 mock_config.filter_milestone = None
+                mock_config.filter_milestones = []
                 mock_find.return_value = mock_config
                 mock_list.return_value = ['issue-123', 'issue-456']
 
@@ -206,14 +220,15 @@ class TestCmdInit:
     def test_cmd_init_missing_repo_returns_error(self):
         """Verify init fails when repo not configured."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            mock_config = Mock()
-            mock_config.repo = None
-            mock_find.return_value = mock_config
+            with patch('issue_orchestrator.cli._resolve_repo', side_effect=RuntimeError("no repo")):
+                mock_config = Mock()
+                mock_config.repo = None
+                mock_find.return_value = mock_config
 
-            args = argparse.Namespace()
-            result = cmd_init(args)
+                args = argparse.Namespace()
+                result = cmd_init(args)
 
-            assert result == 1
+                assert result == 1
 
 
 class TestMain:
@@ -651,38 +666,53 @@ class TestSetupLogging:
                     mock_logger.removeHandler.assert_called_once_with(existing_handler)
 
 
+def _mock_issue(number: int) -> Mock:
+    """Create a mock Issue object with the given number."""
+    issue = Mock()
+    issue.number = number
+    return issue
+
+
 class TestRunTestSetup:
     """Tests for _run_test_setup function."""
 
     def test_run_test_setup_success(self):
         """Verify test setup creates issues successfully."""
-        with patch('subprocess.run') as mock_run:
-            import json
+        config = Mock()
+        config.repo = "owner/repo"
+        config.github_token = None
+        config.github_token_env = None
+        config.github_api_url = "https://api.github.com"
+        config.github_http_timeout_seconds = 20.0
+        with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_adapter_factory:
+            adapter = Mock()
+            adapter.list_issues.return_value = [_mock_issue(1), _mock_issue(2)]
+            adapter.create_issue.return_value = 123
+            mock_adapter_factory.return_value = adapter
 
-            # Mock listing existing test issues
-            mock_run.return_value = Mock(
-                returncode=0,
-                stdout=json.dumps([{"number": 1}, {"number": 2}]),
-                stderr=""
-            )
-
-            result = _run_test_setup('owner/repo')
+            result = _run_test_setup(config)
 
             assert result is True
-            # Should be called multiple times (list, close issues, create labels, create issues)
-            assert mock_run.call_count > 5
+            assert adapter.list_issues.called
+            assert adapter.create_issue.called
 
     def test_run_test_setup_creates_labels(self):
         """Verify test setup creates required labels."""
-        with patch('subprocess.run') as mock_run:
-            mock_run.return_value = Mock(returncode=0, stdout="[]", stderr="")
+        config = Mock()
+        config.repo = "owner/repo"
+        config.github_token = None
+        config.github_token_env = None
+        config.github_api_url = "https://api.github.com"
+        config.github_http_timeout_seconds = 20.0
+        with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_adapter_factory:
+            adapter = Mock()
+            adapter.list_issues.return_value = []
+            mock_adapter_factory.return_value = adapter
 
-            result = _run_test_setup('owner/repo')
+            result = _run_test_setup(config)
 
             assert result is True
-            # Verify label creation calls
-            label_calls = [c for c in mock_run.call_args_list if 'label' in str(c) and 'create' in str(c)]
-            assert len(label_calls) > 0
+            assert adapter.create_label.called
 
 
 class TestCmdStartAdvanced:
@@ -724,7 +754,7 @@ class TestCmdStartAdvanced:
                             mock_find.return_value = mock_config
 
                             mock_test_setup.return_value = True
-                            mock_asyncio.run.return_value = None
+                            mock_asyncio.run.side_effect = _run_and_close
                             mock_build.return_value = Mock()
 
                             args = argparse.Namespace(
@@ -738,7 +768,7 @@ class TestCmdStartAdvanced:
                             result = cmd_start(args)
 
                             # Verify test setup was called
-                            mock_test_setup.assert_called_once_with('test/repo')
+                            mock_test_setup.assert_called_once_with(mock_config)
                             # Verify filter_label was set
                             assert mock_config.filter_label == 'test-data'
 
@@ -756,12 +786,13 @@ class TestCmdStartAdvanced:
                         mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
-                        mock_asyncio.run.return_value = None
+                        mock_asyncio.run.side_effect = _run_and_close
                         mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
                             test_mode=False,
                             milestone='v2.0',
+                            milestones=None,
                             dry_run=False,
                             no_dashboard=False,
                             debug=False,
@@ -770,6 +801,38 @@ class TestCmdStartAdvanced:
                         result = cmd_start(args)
 
                         assert mock_config.filter_milestone == 'v2.0'
+
+    def test_cmd_start_milestones_override(self):
+        """Verify milestones argument overrides config."""
+        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
+                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+                        mock_config = Mock()
+                        mock_config.agents = {'agent:test': Mock()}
+                        mock_config.max_concurrent_sessions = 2
+                        mock_config.ui_mode = 'tmux'
+                        mock_config.filter_milestone = None
+                        mock_config.filter_milestones = []
+                        mock_config.validate.return_value = []  # Pass validation
+                        mock_find.return_value = mock_config
+
+                        mock_asyncio.run.side_effect = _run_and_close
+                        mock_build.return_value = Mock()
+
+                        args = argparse.Namespace(
+                            test_mode=False,
+                            milestone=None,
+                            milestones='M1,M2',
+                            dry_run=False,
+                            no_dashboard=False,
+                            debug=False,
+                        )
+
+                        cmd_start(args)
+
+                        assert mock_config.filter_milestones == ['M1', 'M2']
+                        assert mock_config.filter_milestone is None
 
     def test_cmd_start_ui_mode_override(self):
         """Verify ui_mode argument overrides config."""
@@ -785,7 +848,7 @@ class TestCmdStartAdvanced:
                             mock_config.validate.return_value = []  # Pass validation
                             mock_find.return_value = mock_config
 
-                            mock_asyncio.run.return_value = None
+                            mock_asyncio.run.side_effect = _run_and_close
                             mock_build.return_value = Mock()
                             # Simulate running in iTerm2 to avoid launching it
                             mock_is_iterm2.return_value = True
@@ -817,7 +880,7 @@ class TestCmdStartAdvanced:
                         mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
-                        mock_asyncio.run.return_value = None
+                        mock_asyncio.run.side_effect = _run_and_close
                         mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
@@ -847,7 +910,7 @@ class TestCmdStartAdvanced:
                         mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
-                        mock_asyncio.run.return_value = None
+                        mock_asyncio.run.side_effect = _run_and_close
                         mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
@@ -877,7 +940,7 @@ class TestCmdStartAdvanced:
                         mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
-                        mock_asyncio.run.return_value = None
+                        mock_asyncio.run.side_effect = _run_and_close
                         mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
@@ -908,7 +971,7 @@ class TestCmdStartAdvanced:
                         mock_config.validate.return_value = []  # Pass validation
                         mock_find.return_value = mock_config
 
-                        mock_asyncio.run.return_value = None
+                        mock_asyncio.run.side_effect = _run_and_close
                         mock_build.return_value = Mock()
 
                         args = argparse.Namespace(
@@ -940,7 +1003,15 @@ class TestCmdStartAdvanced:
 
                         mock_build.return_value = Mock()
                         # First call succeeds (startup), second raises KeyboardInterrupt
-                        mock_asyncio.run.side_effect = [None, KeyboardInterrupt()]
+                        call_count = {"count": 0}
+
+                        def _run_with_interrupt(coro):
+                            call_count["count"] += 1
+                            if call_count["count"] == 2:
+                                raise KeyboardInterrupt()
+                            return _run_and_close(coro)
+
+                        mock_asyncio.run.side_effect = _run_with_interrupt
 
                         args = argparse.Namespace(
                             test_mode=False,
@@ -978,38 +1049,46 @@ class TestCmdInitAdvanced:
     def test_cmd_init_creates_all_labels(self):
         """Verify init creates all required labels."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('subprocess.run') as mock_run:
+            with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.agents = {'agent:backend': Mock(), 'agent:frontend': Mock()}
                 mock_config.get_label_in_progress.return_value = 'in-progress'
                 mock_config.get_label_blocked.return_value = 'blocked'
                 mock_config.get_label_needs_human.return_value = 'needs-human'
+                mock_config.github_api_url = 'https://api.github.com'
+                mock_config.github_http_timeout_seconds = 20.0
                 mock_find.return_value = mock_config
 
-                mock_run.return_value = Mock(returncode=0, stderr="")
+                mock_client = Mock()
+                mock_client.list_labels.return_value = []
+                mock_client_factory.return_value = mock_client
 
                 args = argparse.Namespace()
                 result = cmd_init(args)
 
                 assert result == 0
                 # Should create: in-progress, blocked, needs-human, 3 priority labels, 2 agent labels
-                assert mock_run.call_count >= 8
+                assert mock_client.create_label.call_count >= 8
 
     def test_cmd_init_handles_failures(self):
         """Verify init reports failures correctly."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('subprocess.run') as mock_run:
+            with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.agents = {'agent:test': Mock()}
                 mock_config.get_label_in_progress.return_value = 'in-progress'
                 mock_config.get_label_blocked.return_value = 'blocked'
                 mock_config.get_label_needs_human.return_value = 'needs-human'
+                mock_config.github_api_url = 'https://api.github.com'
+                mock_config.github_http_timeout_seconds = 20.0
                 mock_find.return_value = mock_config
 
-                # Simulate some failures
-                mock_run.return_value = Mock(returncode=1, stderr="Error")
+                mock_client = Mock()
+                mock_client.list_labels.return_value = []
+                mock_client.create_label.side_effect = Exception("Error")
+                mock_client_factory.return_value = mock_client
 
                 args = argparse.Namespace()
                 result = cmd_init(args)
@@ -1045,6 +1124,7 @@ agents:
 
         with patch('issue_orchestrator.config.Config.load') as mock_load:
             mock_config = Mock()
+            mock_config.repo_root_from_yaml = False
             mock_load.return_value = mock_config
 
             args = argparse.Namespace(config=str(config_file))
@@ -1168,7 +1248,8 @@ agents:
                 )
 
                 with patch('issue_orchestrator.orchestrator.Orchestrator'):
-                    with patch('issue_orchestrator.cli.asyncio'):
+                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+                        mock_asyncio.run.side_effect = _run_and_close
                         result = cmd_start(args)
 
                 # Config.load should be called, not find_and_load

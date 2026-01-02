@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Install:
+#   cp hooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+
+if command -v lint-imports >/dev/null 2>&1; then
+  lint-imports
+else
+  echo "lint-imports not found. Install: pip install import-linter" >&2
+  exit 1
+fi
+
+python tools/check_arch_guardrails.py src

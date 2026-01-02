@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pre-push hook: Run pyright type checking before pushing
+# Pre-push hook: Run typecheck + architecture guardrails before pushing
 
 echo "Running pyright type check..."
 
@@ -18,4 +18,15 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "✅ Type check passed."
+
+echo "Running architecture guardrails..."
+if command -v lint-imports >/dev/null 2>&1; then
+    lint-imports
+else
+    echo "❌ lint-imports not found. Install: pip install import-linter"
+    exit 1
+fi
+
+python tools/check_arch_guardrails.py src
+echo "✅ Architecture guardrails passed."
 exit 0

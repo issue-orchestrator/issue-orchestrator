@@ -6,10 +6,8 @@
 repo: BruceBGordon/issue-orchestrator
 
 filter_label: test-data
+control_api_port: 19082
 e2e_pr_labels: ["test-data"]
-
-dangerous:
-  skip_verification: true
 
 # Don't install pre-push hooks for script agents (they don't have pyright in PATH)
 enforce_hooks: false
@@ -19,6 +17,7 @@ agents:
   "agent:script-completes":
     command: "exec bash {prompt}"
     prompt: "examples/scripts/complete-immediately.sh"
+    meta_agent: "claude-code"
     timeout_minutes: 1
     worktree_base: "/tmp/e2e-worktrees"
     repo_root: "../../../"
@@ -27,6 +26,7 @@ agents:
   "agent:script-rejects":
     command: "exec bash {prompt}"
     prompt: "examples/scripts/always-reject.sh"
+    meta_agent: "claude-code"
     timeout_minutes: 1
     worktree_base: "/tmp/e2e-worktrees"
     repo_root: "../../../"

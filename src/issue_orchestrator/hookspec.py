@@ -120,6 +120,29 @@ class TerminalSpec:
             True if sent, False if failed, None to defer to next plugin.
         """
 
+    @hookspec(firstresult=True)
+    def session_exists_by_name(self, session_name: str) -> bool | None:
+        """Check if a session exists by its full name.
+
+        Args:
+            session_name: Full session name (e.g., 'issue-123', 'review-456')
+
+        Returns:
+            True if exists, False if not, None to defer to next plugin.
+        """
+
+    @hookspec(firstresult=True)
+    def send_to_session_by_name(self, session_name: str, text: str) -> bool | None:
+        """Send text to a running session by name.
+
+        Args:
+            session_name: Full session name (e.g., 'issue-123', 'review-456')
+            text: Text to send (e.g., "/exit")
+
+        Returns:
+            True if sent, False if failed, None to defer to next plugin.
+        """
+
 
 class TraceEventSpec:
     """Hook specification for trace event broadcasting.

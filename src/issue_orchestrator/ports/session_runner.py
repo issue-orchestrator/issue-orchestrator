@@ -104,6 +104,29 @@ class SessionRunner(Protocol):
         """
         ...
 
+    def session_exists_by_name(self, session_name: str) -> bool:
+        """Check if a session exists by its full name.
+
+        Args:
+            session_name: Full session name (e.g., 'issue-123', 'review-456')
+
+        Returns:
+            True if session exists and is running.
+        """
+        ...
+
+    def send_to_session_by_name(self, session_name: str, text: str) -> bool:
+        """Send text to a running session by name.
+
+        Args:
+            session_name: Full session name (e.g., 'issue-123', 'review-456')
+            text: Text to send (e.g., "/exit")
+
+        Returns:
+            True if sent successfully, False otherwise.
+        """
+        ...
+
 
 class NullSessionRunner:
     """No-op session runner for testing."""
@@ -133,4 +156,10 @@ class NullSessionRunner:
         return None
 
     def send_to_session(self, session_id: int, text: str) -> bool:
+        return False
+
+    def session_exists_by_name(self, session_name: str) -> bool:
+        return False
+
+    def send_to_session_by_name(self, session_name: str, text: str) -> bool:
         return False

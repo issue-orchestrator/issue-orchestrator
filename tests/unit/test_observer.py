@@ -13,6 +13,8 @@ from issue_orchestrator.models import (
 )
 from issue_orchestrator.config import Config
 from issue_orchestrator.ports import PRInfo
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
 
 @pytest.fixture
@@ -36,8 +38,10 @@ def mock_session_runner():
     """Create a mock SessionRunner port."""
     runner = MagicMock()
     runner.session_exists.return_value = False
+    runner.session_exists_by_name.return_value = False
     runner.kill_session.return_value = None
     runner.send_to_session.return_value = False
+    runner.send_to_session_by_name.return_value = False
     return runner
 
 
@@ -82,10 +86,13 @@ def sample_session(sample_agent_config, tmp_path):
         labels=["agent:web"],
         body="Test body",
     )
+    issue_key = FakeIssueKey(name="123")
+    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
     return Session(
+        key=session_key,
         issue=issue,
         agent_config=sample_agent_config,
-        tmux_session_name="issue-123",
+        terminal_id="issue-123",
         worktree_path=tmp_path / "worktree",
         branch_name="issue-123-test",
     )
@@ -212,7 +219,7 @@ class TestCheckSession:
         mock_machine.timeout_minutes = 30
 
         # Add machine to monitor
-        monitor_with_machines.session_machines[sample_session.tmux_session_name] = mock_machine
+        monitor_with_machines.session_machines[sample_session.terminal_id] = mock_machine
 
         status = monitor_with_machines.check_session(sample_session)
 
@@ -224,9 +231,9 @@ class TestCheckSession:
         """Test check_session respects state machine when not timed out."""
         mock_machine = MagicMock()
         mock_machine.check_timeout.return_value = False
-        mock_session_runner.session_exists.return_value = True
+        mock_session_runner.session_exists_by_name.return_value = True
 
-        monitor_with_machines.session_machines[sample_session.tmux_session_name] = mock_machine
+        monitor_with_machines.session_machines[sample_session.terminal_id] = mock_machine
 
         status = monitor_with_machines.check_session(sample_session)
 
@@ -244,19 +251,19 @@ class TestCheckSession:
 
     def test_check_session_still_running(self, monitor, sample_session, mock_session_runner):
         """Test check_session returns RUNNING when session exists."""
-        mock_session_runner.session_exists.return_value = True
+        mock_session_runner.session_exists_by_name.return_value = True
 
         status = monitor.check_session(sample_session)
 
         assert status == SessionStatus.RUNNING
-        mock_session_runner.session_exists.assert_called_with(sample_session.issue.number)
+        mock_session_runner.session_exists_by_name.assert_called_with(sample_session.terminal_id)
 
     def test_check_session_running_with_pr_sends_exit(
         self, monitor, sample_session, mock_session_runner, mock_repository_host
     ):
         """Test check_session sends /exit when session has PR but still running."""
-        mock_session_runner.session_exists.return_value = True
-        mock_session_runner.send_to_session.return_value = True
+        mock_session_runner.session_exists_by_name.return_value = True
+        mock_session_runner.send_to_session_by_name.return_value = True
         mock_repository_host.get_prs_for_branch.return_value = [
             PRInfo(number=1, url="https://...", title="PR", branch="test", labels=[], body="", state="open")
         ]
@@ -265,14 +272,14 @@ class TestCheckSession:
         status = monitor.check_session(sample_session)
 
         assert status == SessionStatus.RUNNING
-        mock_session_runner.send_to_session.assert_called_with(sample_session.issue.number, "/exit")
+        mock_session_runner.send_to_session_by_name.assert_called_with(sample_session.terminal_id, "/exit")
         assert sample_session.exit_sent is True
 
     def test_check_session_running_exit_sent_only_once(
         self, monitor, sample_session, mock_session_runner, mock_repository_host
     ):
         """Test that exit is only sent once."""
-        mock_session_runner.session_exists.return_value = True
+        mock_session_runner.session_exists_by_name.return_value = True
         mock_repository_host.get_prs_for_branch.return_value = [
             PRInfo(number=1, url="https://...", title="PR", branch="test", labels=[], body="", state="open")
         ]
@@ -281,13 +288,13 @@ class TestCheckSession:
         status = monitor.check_session(sample_session)
 
         assert status == SessionStatus.RUNNING
-        mock_session_runner.send_to_session.assert_not_called()
+        mock_session_runner.send_to_session_by_name.assert_not_called()
 
     def test_check_session_completed_with_pr(
         self, monitor, sample_session, mock_session_runner, mock_repository_host
     ):
         """Test check_session returns COMPLETED when PR exists."""
-        mock_session_runner.session_exists.return_value = False
+        mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = [
             PRInfo(number=1, url="https://...", title="PR", branch="test", labels=[], body="", state="open")
         ]
@@ -300,7 +307,7 @@ class TestCheckSession:
         self, monitor, sample_session, mock_session_runner, mock_repository_host
     ):
         """Test check_session returns BLOCKED when issue has blocked label."""
-        mock_session_runner.session_exists.return_value = False
+        mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
         mock_repository_host.get_issue_labels.return_value = ["blocked"]
 
@@ -312,7 +319,7 @@ class TestCheckSession:
         self, monitor, sample_session, mock_session_runner, mock_repository_host
     ):
         """Test check_session returns NEEDS_HUMAN when issue has needs-human label."""
-        mock_session_runner.session_exists.return_value = False
+        mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
         mock_repository_host.get_issue_labels.return_value = ["needs-human"]
 
@@ -324,7 +331,7 @@ class TestCheckSession:
         self, monitor, sample_session, mock_session_runner, mock_repository_host
     ):
         """Test check_session returns FAILED when no success markers."""
-        mock_session_runner.session_exists.return_value = False
+        mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
         mock_repository_host.get_issue_labels.return_value = []
 
@@ -349,10 +356,14 @@ class TestCheckAllSessions:
         mock_session_runner.session_exists.side_effect = [True, False]
 
         session1 = sample_session
+        issue2 = Issue(number=456, title="Issue 2", labels=["agent:web"])
+        issue_key2 = FakeIssueKey(name="456")
+        session_key2 = SessionKey(issue=issue_key2, task=TaskKind.CODE)
         session2 = Session(
-            issue=Issue(number=456, title="Issue 2", labels=["agent:web"]),
+            key=session_key2,
+            issue=issue2,
             agent_config=sample_agent_config,
-            tmux_session_name="issue-456",
+            terminal_id="issue-456",
             worktree_path=tmp_path / "worktree2",
             branch_name="issue-456-test",
         )
@@ -496,7 +507,7 @@ class TestSessionObserverIntegration:
         self, monitor, sample_session, mock_session_runner, mock_repository_host
     ):
         """Test full workflow for completed session."""
-        mock_session_runner.session_exists.return_value = False
+        mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = [
             PRInfo(number=1, url="https://...", title="PR", branch="test", labels=[], body="", state="open")
         ]

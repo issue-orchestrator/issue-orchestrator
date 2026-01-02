@@ -78,8 +78,33 @@ setup_worktree:
 
 # GitHub settings
 # repo: "owner/repo-name"          # Explicit repo (otherwise auto-detected from git remote)
+# github_token_env: "GITHUB_TOKEN" # Override env var name for token (defaults: GITHUB_TOKEN, GH_TOKEN)
+# github_api_url: "https://api.github.com"
+# github_http_timeout_seconds: 20
+# github_required_scopes: []       # Required OAuth scopes (if set, enforced at startup)
+# github_allowed_scopes: []        # Allowed OAuth scopes (if set, token must be subset)
 # filter_label: "test-data"        # Only process issues with this label
 # filter_milestone: "v1.0"         # Only process issues in this milestone
+# session_no_output_seconds: 120   # Emit session_no_output after this many seconds idle
+# session_no_output_tail_lines: 50 # Max tail lines to include in session_no_output
+# session_no_output_max_bytes: 10000  # Max bytes of tail content
+# session_no_output_repeat_seconds: 120  # Minimum gap between session_no_output events
+# gh_rate_limit_startup: true      # Log GH rate limits at startup
+# gh_rate_limit_every_calls: 500   # Check GH rate limits every N calls (0 = disabled)
+# gh_rate_limit_warn_fraction: 0.1 # Warn when remaining below fraction of limit
+# gh_rate_limit_warn_remaining: 100 # Warn when remaining below this count
+# gh_audit_enabled: false          # Enable GH audit reporting
+# gh_audit_events: false           # Emit GH audit events to event stream
+# gh_audit_file: null              # Path for GH audit report (supports {pid})
+# gh_write_verify_timeout_seconds: 20
+# gh_write_verify_initial_delay_ms: 250
+# gh_write_verify_max_delay_ms: 2000
+# gh_write_verify_backoff: 1.5
+# gh_write_verify_jitter_ms: 0
+
+# E2E test harness settings (used by tests/e2e)
+e2e:
+  cleanup_command_timeout_seconds: 120  # Max wait for gh cleanup commands before timing out
 
 # Custom comment headings (for tooling integration)
 comment_headings:

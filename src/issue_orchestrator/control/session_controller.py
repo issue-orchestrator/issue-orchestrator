@@ -108,6 +108,12 @@ class SessionController:
         """
         # If still running, nothing to decide
         if observation.observation == SessionObservation.RUNNING:
+            logger.debug(
+                "Session still running: issue=%s session=%s observation=%s",
+                issue_number,
+                session_name,
+                observation.observation.value,
+            )
             return SessionDecision(
                 status=SessionStatus.RUNNING,
                 reason="Session still running",
@@ -117,6 +123,14 @@ class SessionController:
         # This is the source of truth for agent intent
         # Each agent writes to its own file (based on completion_path)
         full_path = (worktree_path / completion_path).resolve() if completion_path else (worktree_path / ".issue-orchestrator/completion.json").resolve()
+        logger.info(
+            "Session not running: issue=%s session=%s observation=%s worktree=%s completion=%s",
+            issue_number,
+            session_name,
+            observation.observation.value,
+            worktree_path,
+            completion_path or ".issue-orchestrator/completion.json",
+        )
         self._emit_event(EventName.COMPLETION_LOOKUP, {
             "issue_number": issue_number,
             "session_name": session_name,
@@ -125,6 +139,22 @@ class SessionController:
             "full_path": str(full_path),
             "file_exists": full_path.exists(),
         })
+        exists = full_path.exists()
+        size = None
+        if exists:
+            try:
+                size = full_path.stat().st_size
+            except OSError:
+                size = None
+        logger.info(
+            "Completion lookup: session=%s issue=%s worktree=%s completion=%s exists=%s size=%s",
+            session_name,
+            issue_number,
+            worktree_path,
+            full_path,
+            exists,
+            size,
+        )
         record = self.completion_processor.read_completion_record(worktree_path, completion_path)
 
         if record is None:

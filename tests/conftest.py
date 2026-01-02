@@ -4,11 +4,12 @@ import pytest
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, PropertyMock, patch
-from issue_orchestrator.models import AgentConfig, Issue
+from issue_orchestrator.models import AgentConfig, Issue, Session
 from issue_orchestrator.config import Config, DangerousConfig
 from issue_orchestrator.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
 
 class MockGitHubAdapter:
@@ -38,10 +39,12 @@ class MockGitHubAdapter:
         milestone: str | None = None,
         state: str = "open",
         limit: int = 100,
+        required_stable_ids: set[str] | None = None,
     ) -> list[Issue]:
         """Return configured test issues, filtered by labels."""
         self.list_issues_calls.append({
-            "labels": labels, "milestone": milestone, "state": state, "limit": limit
+            "labels": labels, "milestone": milestone, "state": state, "limit": limit,
+            "required_stable_ids": required_stable_ids,
         })
         result = self.issues
         if labels:
@@ -95,6 +98,18 @@ class MockGitHubAdapter:
         for prs in self.prs.values():
             for pr in prs:
                 if label in pr.labels:
+                    result.append(pr)
+        return result
+
+    def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
+        """Get PRs for an issue by matching branch prefix or title."""
+        prefix = f"{issue_number}-"
+        result: list[PRInfo] = []
+        for branch, prs in self.prs.items():
+            for pr in prs:
+                if state != "all" and pr.state.lower() != state.lower():
+                    continue
+                if branch.startswith(prefix) or f"#{issue_number}" in pr.title:
                     result.append(pr)
         return result
 
@@ -371,11 +386,26 @@ def mock_session_runner(mock_terminal_plugin):
     return MockSessionRunner(mock_terminal_plugin)
 
 
-def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_manager):
-    """Factory function to create all Orchestrator dependencies for testing.
+def build_test_orchestrator_deps(
+    config,
+    repo_host,
+    events,
+    runner,
+    worktree_manager,
+    working_copy=None,
+    *,
+    session_controller=None,
+    label_sync=None,
+    fact_gatherer=None,
+    planner=None,
+    session_manager=None,
+    action_applier=None,
+):
+    """Factory function to create OrchestratorDeps for testing.
 
     This creates properly wired control components with injected mocks,
-    enabling explicit dependency injection without relying on __post_init__ fallbacks.
+    enabling explicit dependency injection. Returns an OrchestratorDeps
+    frozen dataclass (no nulls, no optionals).
 
     Args:
         config: Config object
@@ -383,9 +413,16 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
         events: EventSink (MockEventSink or similar)
         runner: SessionRunner (MockSessionRunner or similar)
         worktree_manager: WorktreeManager mock
+        working_copy: Optional WorkingCopy (defaults to GitWorkingCopy)
+        session_controller: Optional override for SessionController (for testing)
+        label_sync: Optional override for LabelSync (for testing)
+        fact_gatherer: Optional override for FactGatherer (for testing)
+        planner: Optional override for Planner (for testing)
+        session_manager: Optional override for SessionManager (for testing)
+        action_applier: Optional override for ActionApplier (for testing)
 
     Returns:
-        Dict of all components needed for Orchestrator constructor
+        OrchestratorDeps with all components wired
     """
     from issue_orchestrator.control.scheduler import Scheduler
     from issue_orchestrator.control.planner import Planner
@@ -396,15 +433,24 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
     from issue_orchestrator.control.session_controller import SessionController
     from issue_orchestrator.control.completion_processor import CompletionProcessor
     from issue_orchestrator.control.pr_scanner import PRScanner
+    from issue_orchestrator.control.health_gate import HealthGate
+    from issue_orchestrator.control.session_restorer import SessionRestorer
+    from issue_orchestrator.control.label_sync import LabelSync
+    from issue_orchestrator.control.orchestrator_deps import OrchestratorDeps
+    from issue_orchestrator.events import EventHub
     from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+    from issue_orchestrator.execution.command_runner import LocalCommandRunner
+    from unittest.mock import MagicMock, AsyncMock
 
-    working_copy = GitWorkingCopy()
+    if working_copy is None:
+        working_copy = GitWorkingCopy()
 
     # Create control components with injected mocks
+    # Use provided overrides or create defaults
     scheduler = Scheduler(config=config)
-    planner = Planner(config=config, scheduler=scheduler)
-    session_manager = SessionManager(runner=runner, events=events, config=config)
-    fact_gatherer = FactGatherer(config=config, repository_host=repo_host)
+    _planner = planner or Planner(config=config, scheduler=scheduler)
+    _session_manager = session_manager or SessionManager(runner=runner, events=events, config=config)
+    _fact_gatherer = fact_gatherer or FactGatherer(config=config, repository_host=repo_host, events=events)
     state_machine_manager = StateMachineManager(config=config, events=events)
 
     completion_processor = CompletionProcessor(
@@ -421,7 +467,7 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
             "in_progress": config.get_label_in_progress(),
         },
     )
-    session_controller = SessionController(
+    _session_controller = session_controller or SessionController(
         completion_processor=completion_processor,
         events=events,
     )
@@ -430,10 +476,13 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
         repository=repo_host,
         events=events,
     )
-    # Create action_applier without session_launcher callback - it will be set in __post_init__
-    action_applier = ActionApplier(
+    hook_verifier = MagicMock()
+    hook_verifier.verify = AsyncMock(return_value=MagicMock(success=True, message="ok"))
+    hook_verifier.raise_on_failure = MagicMock()
+
+    _action_applier = action_applier or ActionApplier(
         labels=repo_host,
-        sessions=session_manager,
+        sessions=_session_manager,
         events=events,
         repository_host=repo_host,
         worktree_manager=worktree_manager,
@@ -441,20 +490,42 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
         reconcile=False,
     )
 
-    return {
-        'events': events,
-        'runner': runner,
-        'planner': planner,
-        'session_manager': session_manager,
-        'action_applier': action_applier,
-        'fact_gatherer': fact_gatherer,
-        'state_machine_manager': state_machine_manager,
-        'completion_processor': completion_processor,
-        'session_controller': session_controller,
-        'pr_scanner': pr_scanner,
-        'worktree_manager': worktree_manager,
-        'working_copy': working_copy,
-    }
+    health_gate = HealthGate(
+        max_concurrent_sessions=config.max_concurrent_sessions,
+        rate_limit_threshold=100,
+    )
+
+    session_restorer = SessionRestorer(
+        config=config,
+        repository_host=repo_host,
+        working_copy=working_copy,
+    )
+
+    _label_sync = label_sync or LabelSync(labels=repo_host, events=events, pr_tracker=repo_host)
+    event_hub = EventHub()
+    command_runner = LocalCommandRunner()
+
+    return OrchestratorDeps(
+        events=events,
+        runner=runner,
+        repository_host=repo_host,
+        event_hub=event_hub,
+        planner=_planner,
+        session_manager=_session_manager,
+        label_sync=_label_sync,
+        action_applier=_action_applier,
+        fact_gatherer=_fact_gatherer,
+        pr_scanner=pr_scanner,
+        session_restorer=session_restorer,
+        worktree_manager=worktree_manager,
+        working_copy=working_copy,
+        hook_verifier=hook_verifier,
+        command_runner=command_runner,
+        state_machine_manager=state_machine_manager,
+        completion_processor=completion_processor,
+        session_controller=_session_controller,
+        health_gate=health_gate,
+    )
 
 
 # NOTE: The autouse patch_orchestrator_dependencies fixture has been removed.
@@ -535,14 +606,15 @@ def sample_agent_config(tmp_path):
 def sample_config(sample_agent_config, tmp_path):
     """Create a sample Config object for testing."""
     config = Config()
+    config.repo = "test/repo"  # Required for session launching
     config.agents["agent:web"] = sample_agent_config
     config.max_concurrent_sessions = 3
     config.session_timeout_minutes = 45
     config.ui_mode = "tmux"  # Avoid iTerm2 detection during tests
     # Use temp directory for state file to isolate tests
     config.state_file = tmp_path / ".issue-orchestrator" / "state.json"
-    # Skip hook verification in tests (tests are not testing hook enforcement)
-    config.dangerous = DangerousConfig(skip_verification=True, allow_unsupported_agents=True)
+    # Tests are not exercising hook enforcement.
+    config.dangerous = DangerousConfig(allow_unsupported_agents=True)
     return config
 
 
@@ -567,14 +639,10 @@ def sample_orchestrator(sample_config, mock_repository_host):
         MockEventSink(),
         runner,
         wt_manager,
+        working_copy=wc,
     )
-    deps['working_copy'] = wc
 
-    return Orchestrator(
-        config=sample_config,
-        _repository_host=mock_repository_host,
-        **deps,
-    )
+    return Orchestrator(config=sample_config, deps=deps)
 
 
 @pytest.fixture
@@ -612,6 +680,62 @@ def sample_issues():
             body="Currently being worked on",
         ),
     ]
+
+
+@pytest.fixture
+def make_session(sample_agent_config, tmp_path):
+    """Factory fixture to create Session objects with proper SessionKey.
+
+    Usage:
+        def test_something(make_session):
+            session = make_session(issue_number=123)
+            session = make_session(issue_number=456, task=TaskKind.REVIEW)
+    """
+    def _make_session(
+        issue_number: int = 123,
+        issue_title: str = "Test Issue",
+        issue_labels: list[str] | None = None,
+        task: TaskKind = TaskKind.CODE,
+        repo: str = "test/repo",
+        terminal_id: str | None = None,
+        branch_name: str | None = None,
+        worktree_path: Path | None = None,
+        agent_config: AgentConfig | None = None,
+    ) -> Session:
+        issue = Issue(
+            number=issue_number,
+            title=issue_title,
+            labels=issue_labels or [],
+        )
+        issue_key = FakeIssueKey(name=str(issue_number))
+        session_key = SessionKey(issue=issue_key, task=task)
+
+        # Generate defaults based on task type
+        if terminal_id is None:
+            if task == TaskKind.REVIEW:
+                terminal_id = f"review-{issue_number}"
+            elif task == TaskKind.REWORK:
+                terminal_id = f"rework-{issue_number}"
+            else:
+                terminal_id = f"issue-{issue_number}"
+
+        if branch_name is None:
+            branch_name = f"issue-{issue_number}"
+
+        if worktree_path is None:
+            worktree_path = tmp_path / f"worktree-{issue_number}"
+            worktree_path.mkdir(parents=True, exist_ok=True)
+
+        return Session(
+            key=session_key,
+            issue=issue,
+            agent_config=agent_config or sample_agent_config,
+            terminal_id=terminal_id,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+        )
+
+    return _make_session
 
 
 @pytest.fixture

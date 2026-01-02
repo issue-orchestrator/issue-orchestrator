@@ -46,6 +46,8 @@ from issue_orchestrator.models import (
     OrchestratorState,
 )
 from issue_orchestrator.config import Config
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
 
 # Helper functions
@@ -69,10 +71,13 @@ def create_session(issue, worktree_path="/tmp/worktree", branch_name="feature/te
         model="sonnet",
         timeout_minutes=45,
     )
+    issue_key = FakeIssueKey(name=str(issue.number))
+    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
     session = Session(
+        key=session_key,
         issue=issue,
         agent_config=agent_config,
-        tmux_session_name=f"issue-{issue.number}",
+        terminal_id=f"issue-{issue.number}",
         worktree_path=Path(worktree_path),
         branch_name=branch_name,
     )
@@ -400,7 +405,8 @@ class TestDashboardApp:
         app = DashboardApp(orchestrator)
 
         # Mock the refresh task
-        app._refresh_task = AsyncMock()
+        app._refresh_task = MagicMock()
+        app._refresh_task.cancel = MagicMock()
 
         with patch.object(app, 'exit') as mock_exit:
             await app.action_quit()

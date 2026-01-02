@@ -7,51 +7,14 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import subprocess
 
-from issue_orchestrator.control.sandbox_verify import (
+from issue_orchestrator.execution.sandbox_verify import (
     VerificationResult,
     SandboxVerificationResult,
-    verify_gh_auth_unavailable,
     verify_git_push_fails,
     verify_env_vars_absent,
     verify_home_isolated,
     verify_sandbox,
 )
-
-
-class TestVerifyGhAuthUnavailable:
-    """Tests for gh auth verification."""
-
-    def test_passes_when_gh_not_authenticated(self):
-        """Test passes when gh auth status fails."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1)
-            result = verify_gh_auth_unavailable()
-            assert result.passed is True
-            assert "not authenticated" in result.message.lower()
-
-    def test_fails_when_gh_authenticated(self):
-        """Test fails when gh auth status succeeds."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-            result = verify_gh_auth_unavailable()
-            assert result.passed is False
-            assert "is authenticated" in result.message.lower()
-
-    def test_passes_when_gh_not_installed(self):
-        """Test passes when gh CLI is not installed."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = FileNotFoundError()
-            result = verify_gh_auth_unavailable()
-            assert result.passed is True
-            assert "not installed" in result.message.lower()
-
-    def test_fails_on_timeout(self):
-        """Test fails when gh auth status times out."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=10)
-            result = verify_gh_auth_unavailable()
-            assert result.passed is False
-            assert "timed out" in result.message.lower()
 
 
 class TestVerifyGitPushFails:
@@ -141,7 +104,7 @@ class TestVerifySandbox:
     def test_all_pass_returns_all_passed(self, temp_worktree):
         """Test all_passed is True when all checks pass."""
         with patch("subprocess.run") as mock_run:
-            # gh auth fails (good), git push fails (good)
+            # git push fails (good)
             mock_run.return_value = MagicMock(returncode=1)
             with patch.dict(os.environ, {"HOME": str(temp_worktree)}, clear=True):
                 result = verify_sandbox(worktree=temp_worktree)
@@ -151,12 +114,12 @@ class TestVerifySandbox:
     def test_critical_failure_returns_not_passed(self, temp_worktree):
         """Test all_passed is False when critical check fails."""
         with patch("subprocess.run") as mock_run:
-            # gh auth succeeds (bad)
+            # git push succeeds (bad)
             mock_run.return_value = MagicMock(returncode=0)
             with patch.dict(os.environ, {}, clear=True):
                 result = verify_sandbox(worktree=temp_worktree)
                 assert result.all_passed is False
-                assert "gh_auth_unavailable" in result.critical_failures
+                assert "git_push_fails" in result.critical_failures
 
     def test_warning_does_not_fail(self, temp_worktree):
         """Test warnings don't cause all_passed to be False."""
@@ -178,7 +141,6 @@ class TestVerifySandbox:
         with patch.dict(os.environ, {}, clear=True):
             result = verify_sandbox(
                 worktree=temp_worktree,
-                check_gh_auth=False,
                 check_git_push=False,
                 check_env_vars=True,
                 check_home=False,
@@ -190,7 +152,7 @@ class TestVerifySandbox:
     def test_summary_includes_failures(self, temp_worktree):
         """Test summary lists failed checks."""
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)  # gh auth succeeds (bad)
+            mock_run.return_value = MagicMock(returncode=0)  # git push succeeds (bad)
             with patch.dict(os.environ, {"GH_TOKEN": "secret"}, clear=True):
                 result = verify_sandbox(
                     worktree=temp_worktree,

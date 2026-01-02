@@ -10,6 +10,7 @@ Cleanup is deferred when:
 """
 
 import logging
+import time
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
@@ -50,6 +51,18 @@ class CleanupManager:
         self._session_exists = session_exists_fn
         self._get_worktree_path = get_worktree_path_fn
         self._get_session_name = get_session_name_fn
+        self._triage_issue_last_failure: float | None = None
+
+    def should_retry_triage_issue(self, cooldown_seconds: int = 60) -> bool:
+        """Throttle triage issue creation failures to avoid tight retry loops."""
+        now = time.time()
+        if self._triage_issue_last_failure is None:
+            return True
+        return (now - self._triage_issue_last_failure) >= cooldown_seconds
+
+    def mark_triage_issue_failure(self) -> None:
+        """Record a triage issue creation failure for throttling."""
+        self._triage_issue_last_failure = time.time()
 
     def process_deferred_cleanups(
         self,

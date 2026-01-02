@@ -3,7 +3,7 @@
 This test file demonstrates the efficient single-orchestrator approach:
 - One orchestrator runs for the entire test session
 - Each test cleans up its own issues (by test-specific label) before creating new ones
-- Tests can create issues dynamically with inflight_create()
+- Tests can create issues dynamically while orchestrator runs
 - Failed test issues persist for debugging, cleaned up on next run
 
 Run with:
@@ -14,49 +14,40 @@ Run in parallel with another session:
     E2E_FILTER=run-b pytest tests/e2e/test_single_orchestrator.py -v  # different terminal
 """
 
-import time
 import pytest
 
-from tests.e2e.conftest import (
-    inflight_create,
-    inflight_update,
-    trigger_refresh,
-    wait_for_issue_label,
-)
-
+from tests.e2e.conftest import e2e_label
+from tests.e2e.flows import E2EFlow
 
 @pytest.mark.e2e
 @pytest.mark.timeout(300)
 class TestSingleOrchestratorBasic:
     """Basic tests using the single-orchestrator pattern."""
 
-    def test_issue_gets_picked_up(
+    @pytest.mark.asyncio
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=100, system_gh_activity_limit=50)
+    async def test_issue_gets_picked_up(
         self,
         e2e_orchestrator,
+        orchestrator_watcher,
         test_issue_factory,
         repo_name,
     ):
         """Test that orchestrator picks up a newly created issue."""
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
+
         # Create issue scoped to this test (cleans up stale ones first)
         issue = test_issue_factory("[E2E] Basic pickup test")
 
-        # Trigger refresh so orchestrator sees it
-        trigger_refresh()
-
         # Wait for orchestrator to pick it up
-        found = wait_for_issue_label(
-            repo_name,
-            int(issue.stable_id()),
-            "in-progress",
-            timeout=60,
-            orchestrator=e2e_orchestrator,
-        )
+        await flow.session_started(issue, timeout_s=60)
 
-        assert found, f"Issue {issue} should have in-progress label"
-
-    def test_inflight_issue_creation(
+    @pytest.mark.asyncio
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=20, system_gh_activity_limit=3)
+    async def test_inflight_issue_creation(
         self,
         e2e_orchestrator,
+        orchestrator_watcher,
         repo_name,
         filter_label,
         test_label,
@@ -64,8 +55,8 @@ class TestSingleOrchestratorBasic:
         """Test creating an issue while orchestrator is running.
 
         This test validates:
-        1. inflight_create() successfully creates an issue mid-session
-        2. trigger_refresh() signals the orchestrator
+        1. Issue creation succeeds mid-session
+        2. Orchestrator observes the new issue
         3. The orchestrator remains healthy after seeing the new issue
 
         Note: The issue may be queued (not in-progress) if concurrency slots
@@ -73,18 +64,18 @@ class TestSingleOrchestratorBasic:
         didn't crash.
         """
         # Create issue dynamically (inflight)
-        issue = inflight_create(
-            repo_name,
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
+        issue = flow.create_issue(
             "[E2E] Inflight creation test",
-            [filter_label, "agent:e2e-test", test_label],
+            ["agent:e2e-test", e2e_label(test_label)],
         )
 
         # Verify issue was created
-        assert issue is not None, "inflight_create should return an IssueKey"
+        assert issue is not None, "create_issue should return an IssueKey"
         assert issue.stable_id(), "Issue should have a valid ID"
 
         # Give orchestrator time to process the refresh and see the issue
-        time.sleep(5)
+        await flow.issue_seen(issue, timeout_s=60)
 
         # Verify orchestrator is still running (didn't crash on new issue)
         assert e2e_orchestrator.is_running(), (
@@ -98,36 +89,24 @@ class TestSingleOrchestratorBasic:
 class TestSingleOrchestratorAdvanced:
     """Advanced tests demonstrating in-flight operations."""
 
-    def test_label_update_detected(
+    @pytest.mark.asyncio
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=150, system_gh_activity_limit=50)
+    async def test_label_update_detected(
         self,
         e2e_orchestrator,
+        orchestrator_watcher,
         test_issue_factory,
         repo_name,
     ):
         """Test that orchestrator detects label changes."""
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
         # Create issue
         issue = test_issue_factory("[E2E] Label update test")
-        trigger_refresh()
-
         # Wait for initial pickup
-        wait_for_issue_label(
-            repo_name,
-            int(issue.stable_id()),
-            "in-progress",
-            timeout=60,
-            orchestrator=e2e_orchestrator,
-        )
+        await flow.issue_seen(issue, timeout_s=60)
 
         # Update labels (add blocked)
-        inflight_update(issue, add_labels=["blocked"])
+        flow.update_issue(issue, add_labels=["blocked"])
 
         # Verify orchestrator sees the blocked label
-        found = wait_for_issue_label(
-            repo_name,
-            int(issue.stable_id()),
-            "blocked",
-            timeout=30,
-            orchestrator=e2e_orchestrator,
-        )
-
-        assert found, f"Issue {issue} should have blocked label after update"
+        await flow.issue_has_label(issue, "blocked", timeout_s=60)
