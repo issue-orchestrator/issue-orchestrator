@@ -1,4 +1,4 @@
-.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-integration test-e2e test-e2e-one validate validate-quick validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-web test-web-headed playwright-install validate validate-quick validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # Default target
 help:
@@ -8,13 +8,17 @@ help:
 	@echo "  lint-arch           Run import-linter + AST guardrails"
 	@echo "  test-unit           Run unit tests"
 	@echo "  test-unit-cov       Run unit tests with coverage report"
+	@echo "  test-unit-cov-html  Run unit tests with HTML coverage (open htmlcov/index.html)"
 	@echo "  test-integration    Run integration tests"
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
+	@echo "  test-web            Run Playwright web UI tests (headless)"
+	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
+	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
 	@echo "  validate            Full validation (parallel: pyright + lint-arch + unit + integration + e2e)"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
-	@echo "  validate-before-push Pre-push gate (typecheck + lint-arch + unit + integration, NO e2e)"
+	@echo "  validate-before-push Pre-push gate (typecheck + lint-arch + unit + integration + web-ui, NO e2e)"
 	@echo "  demo                Run demo showing orchestrator features"
 	@echo "  issues-validate     Check issue naming conventions"
 	@echo "  issues-fix          Apply issue name fixes"
@@ -48,6 +52,10 @@ test-unit:
 test-unit-cov:
 	$(PYTEST) tests/unit --cov=src/issue_orchestrator --cov-report=term-missing -x -q --tb=short
 
+test-unit-cov-html:
+	$(PYTEST) tests/unit --cov=src/issue_orchestrator --cov-report=html -x -q --tb=short
+	@echo "Coverage report: open htmlcov/index.html"
+
 test-integration:
 	$(PYTEST) tests/integration -x -q --tb=short
 
@@ -72,6 +80,16 @@ endif
 
 test:
 	$(PYTEST) tests/ -x -q --tb=short
+
+# Playwright browser tests for web UI
+test-web:
+	$(PYTEST) tests/e2e_web -v --tb=short
+
+test-web-headed:
+	$(PYTEST) tests/e2e_web -v --tb=short --headed
+
+playwright-install:
+	playwright install chromium
 
 # Quick validation for agent_gate (~45s)
 validate-quick: typecheck test-unit
@@ -99,9 +117,9 @@ validate:
 	wait $$pid1 && wait $$pid2 && wait $$pid3 && wait $$pid4 && wait $$pid5 || (echo "Validation failed - check .validate/*.log" && exit 1)
 	@echo "All validations passed!"
 
-# Pre-push validation - NO e2e (too slow for hooks)
+# Pre-push validation - NO e2e (too slow for hooks), but includes web UI tests
 validate-before-push: typecheck lint-arch
-	$(PYTEST) tests/unit tests/integration -x -q --tb=short
+	$(PYTEST) tests/unit tests/integration tests/e2e_web -x -q --tb=short
 
 # Demo - show orchestrator features with mock data
 demo:
