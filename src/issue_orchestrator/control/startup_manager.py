@@ -18,7 +18,7 @@ import re
 import time
 from typing import Callable, Optional
 
-from ..analysis import analyze_issue
+from ..infra.analysis import analyze_issue
 from ..config import Config
 from ..ports.issue import Issue
 from ..models import (
@@ -147,7 +147,7 @@ class StartupManager:
 
         # Step 10: Audit and cache the queue
         state.startup_message = "Auditing queue..."
-        from ..audit import audit_queue, print_audit
+        from ..infra.audit import audit_queue, print_audit
         audit_entries = audit_queue(self.config, state, self.repository_host, issue_branches=issue_branches)
         print_audit(audit_entries)
 

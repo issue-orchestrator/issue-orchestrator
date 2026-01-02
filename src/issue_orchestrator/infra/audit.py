@@ -10,14 +10,14 @@ from enum import Enum
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .ports.issue_tracker import IssueTracker
+    from ..ports.issue_tracker import IssueTracker
 
 from .analysis import analyze_issue
-from .config import Config
-from .domain.dependencies import DependencyReport, parse_dependencies
-from .ports.issue import Issue
-from .models import OrchestratorState
-from .control.scheduler import Scheduler
+from ..config import Config
+from ..domain.dependencies import DependencyReport, parse_dependencies
+from ..ports.issue import Issue
+from ..models import OrchestratorState
+from ..control.scheduler import Scheduler
 
 
 class SkipReason(Enum):

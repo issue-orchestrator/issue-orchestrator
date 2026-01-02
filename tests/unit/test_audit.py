@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock
 
-from issue_orchestrator.audit import (
+from issue_orchestrator.infra.audit import (
     get_issue_dependencies,
     IssueDependencyInfo,
 )

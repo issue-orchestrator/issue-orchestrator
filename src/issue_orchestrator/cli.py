@@ -269,7 +269,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     if hasattr(args, 'dry_run') and args.dry_run:
         from .control.scheduler import Scheduler
         from .adapters.terminal._tmux import get_manager
-        from .analysis import analyze_all_issues, extract_issue_branches
+        from .infra.analysis import analyze_all_issues, extract_issue_branches
         from .adapters.github import GitHubAdapter
         from .execution.git_working_copy import GitWorkingCopy
 
@@ -377,7 +377,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             console.print("[dim]  • Resume from branch: orchestrator will checkout existing branch if present[/dim]")
 
         # Show issues with branches but not in-progress (might be abandoned PRs)
-        from .analysis import analyze_orphan_branches
+        from .infra.analysis import analyze_orphan_branches
         issue_branches = extract_issue_branches(
             working_copy.list_remote_branches(config.repo_root)
         )
@@ -1094,11 +1094,11 @@ def _load_config(args: argparse.Namespace) -> "Config":
 
 def cmd_audit(args: argparse.Namespace) -> int:
     """Audit the queue - show why issues are queued or skipped."""
-    from .audit import audit_queue, print_audit
+    from .infra.audit import audit_queue, print_audit
     from .config import Config
     from .adapters.github import GitHubAdapter
     from .execution.git_working_copy import GitWorkingCopy
-    from .analysis import extract_issue_branches
+    from .infra.analysis import extract_issue_branches
 
     console.print("[bold]Queue Audit[/bold]\n")
 

@@ -173,7 +173,7 @@ async def dashboard(
             logger.info("[dashboard] Using %d cached queue issues", queue_total)
 
             # Get dependency info for queue issues
-            from .audit import get_issue_dependencies
+            from .infra.audit import get_issue_dependencies
             dependency_info = get_issue_dependencies(queue_issues, config)
 
             start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE

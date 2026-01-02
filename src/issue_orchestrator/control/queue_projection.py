@@ -51,7 +51,7 @@ class QueueProjection:
         Returns:
             List of issues available in the queue
         """
-        from ..audit import get_queue_issues
+        from ..infra.audit import get_queue_issues
         return get_queue_issues(self._config, state, issue_tracker=self._repository_host)
 
     def update_and_emit(self, state: OrchestratorState) -> QueueChange | None:

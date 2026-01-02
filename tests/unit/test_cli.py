@@ -115,9 +115,9 @@ class TestCmdStart:
                 with patch('issue_orchestrator.adapters.github.github_adapter.GitHubAdapter.list_issues', return_value=[]):
                     with patch('issue_orchestrator.control.scheduler.Scheduler'):
                         with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-                            with patch('issue_orchestrator.analysis.analyze_all_issues', return_value=[]):
+                            with patch('issue_orchestrator.infra.analysis.analyze_all_issues', return_value=[]):
                                 with patch('issue_orchestrator.execution.git_working_copy.GitWorkingCopy.list_remote_branches', return_value=[]):
-                                    with patch('issue_orchestrator.analysis.analyze_orphan_branches', return_value=[]):
+                                    with patch('issue_orchestrator.infra.analysis.analyze_orphan_branches', return_value=[]):
                                         mock_config = Mock()
                                         mock_config.agents = {'agent:test': Mock()}
                                         mock_config.max_concurrent_sessions = 2

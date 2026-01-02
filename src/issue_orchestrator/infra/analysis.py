@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .ports.pull_request_tracker import PullRequestTracker
-    from .ports.issue_tracker import IssueTracker
+    from ..ports.pull_request_tracker import PullRequestTracker
+    from ..ports.issue_tracker import IssueTracker
 
-from .ports.issue import Issue
+from ..ports.issue import Issue
 
 
 @dataclass
