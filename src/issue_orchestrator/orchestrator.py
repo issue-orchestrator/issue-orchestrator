@@ -2,6 +2,7 @@
 
 import asyncio, logging, signal, time
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, cast
 
@@ -20,6 +21,8 @@ from .control.orchestrator_support import (
     log_transition,
     OrchestratorSupport,
     PlanApplier,
+    run_planning_cycle as _run_planning_cycle_impl,
+    run_tick as _run_tick_impl,
     pause_issue_for_reconciliation,
     clear_discovered_facts as _clear_discovered_facts,
     emit_heartbeat_if_needed as _emit_heartbeat_if_needed,
@@ -75,45 +78,22 @@ from .control.startup_manager import StartupManager
 from .control.state_machine_manager import StateMachineManager
 from .control.reconciliation import ReconciliationRequired, get_pause_label
 from .observation.observation import SessionObservation
-from .ports import (
-    EventSink,
-    SessionRunner,
-    TraceEvent,
-    NullEventSink,
-    NullSessionRunner,
-    RepositoryHost,
-    CommandRunner,
-    NullCommandRunner,
-    HookVerifier,
-)
+from .ports import TraceEvent, RepositoryHost, EventSink, SessionRunner
 from .ports.worktree_manager import WorktreeManager
-from .ports.working_copy import WorkingCopy
 from .control.health_gate import HealthGate, HealthDecision
+from .control.orchestrator_deps import OrchestratorDeps
 
 
 @dataclass
 class Orchestrator:
-    """Main orchestrator - mediates gather → plan → apply cycle. Dependencies injected via bootstrap."""
+    """Main orchestrator - mediates gather → plan → apply cycle.
+
+    All dependencies are injected via OrchestratorDeps - no Optional fields, no Null defaults.
+    Bootstrap is the single source of truth for choosing implementations.
+    """
+
     config: Config
-    events: EventSink = field(default_factory=NullEventSink)
-    runner: SessionRunner = field(default_factory=NullSessionRunner)
-    _repository_host: Optional[RepositoryHost] = field(default=None, repr=False)
-    event_hub: Optional[EventHub] = field(default=None, repr=False)
-    planner: Optional["Planner"] = field(default=None, repr=False)
-    session_manager: Optional["SessionManager"] = field(default=None, repr=False)
-    label_sync: Optional["LabelSync"] = field(default=None, repr=False)
-    action_applier: Optional["ActionApplier"] = field(default=None, repr=False)
-    fact_gatherer: Optional["FactGatherer"] = field(default=None, repr=False)
-    pr_scanner: Optional["PRScanner"] = field(default=None, repr=False)
-    session_restorer: Optional["SessionRestorer"] = field(default=None, repr=False)
-    worktree_manager: Optional[WorktreeManager] = field(default=None, repr=False)
-    working_copy: Optional[WorkingCopy] = field(default=None, repr=False)
-    hook_verifier: Optional[HookVerifier] = field(default=None, repr=False)
-    command_runner: CommandRunner = field(default_factory=NullCommandRunner, repr=False)
-    state_machine_manager: Optional[StateMachineManager] = field(default=None, repr=False)
-    completion_processor: Optional["CompletionProcessor"] = field(default=None, repr=False)
-    session_controller: Optional["SessionController"] = field(default=None, repr=False)
-    health_gate: Optional[HealthGate] = field(default=None, repr=False)
+    deps: OrchestratorDeps  # All dependencies bundled - no nulls, no optionals
     state: OrchestratorState = field(default_factory=OrchestratorState)
     scheduler: Scheduler = field(init=False)
     observer: SessionObserver = field(init=False)
@@ -128,127 +108,95 @@ class Orchestrator:
     _event_context: EventContext = field(default_factory=EventContext, init=False)
 
     def __post_init__(self):
-        if self._repository_host is None:
-            raise ValueError("RepositoryHost must be injected via bootstrap")
-        if self.action_applier is None and self.worktree_manager is None:
-            raise ValueError("Either action_applier or worktree_manager must be injected")
-        if self.hook_verifier is None:
-            raise ValueError("HookVerifier must be injected via bootstrap")
-        if self.working_copy is None:
-            raise ValueError("WorkingCopy must be injected via bootstrap")
-        if self.health_gate is None:
-            raise ValueError("HealthGate must be injected via bootstrap")
-
-        dep_eval = DependencyEvaluator(self._repository_host, self.events)
+        # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
+        # If deps is constructed, all dependencies are present.
+        dep_eval = DependencyEvaluator(self.deps.repository_host, self.deps.events)
         init_orchestrator_components(self, dep_eval)
 
     @property
     def repository_host(self) -> RepositoryHost:
-        assert self._repository_host is not None; return self._repository_host
+        return self.deps.repository_host
+
+    # Convenience accessors for deps - makes call sites shorter
     @property
-    def _completion_processor(self) -> CompletionProcessor:
-        assert self.completion_processor is not None; return self.completion_processor
-    @property
-    def _session_controller(self) -> SessionController:
-        assert self.session_controller is not None; return self.session_controller
-    @property
-    def _pr_scanner(self) -> PRScanner:
-        assert self.pr_scanner is not None; return self.pr_scanner
+    def events(self) -> EventSink:
+        return self.deps.events
 
     @property
-    def _session_launcher(self) -> SessionLauncher:
-        if self._session_launcher_instance is None:
-            if self.working_copy is None:
-                raise ValueError("WorkingCopy must be injected via bootstrap")
-            self._session_launcher_instance = SessionLauncher(
-                self.config,
-                self.events,
-                self.repository_host,
-                self._sm,
-                self._wm,
-                self.working_copy,
-                self.command_runner,
-                self._session_exists,
-                self._create_session,
-                self._get_issue_machine,
-                self._get_session_machine,
-                self._get_review_machine,
-                self._refresh_issue,
-                getattr(self.scheduler, "dependency_evaluator", None),
-            )
-        return self._session_launcher_instance
+    def runner(self) -> SessionRunner:
+        return self.deps.runner
 
     @property
+    def fact_gatherer(self) -> "FactGatherer":
+        return self.deps.fact_gatherer
+
+    @property
+    def label_sync(self) -> "LabelSync":
+        return self.deps.label_sync
+
+    @property
+    def session_controller(self) -> "SessionController":
+        return self.deps.session_controller
+
+    @property
+    def event_hub(self) -> EventHub:
+        return self.deps.event_hub
+
+    @cached_property
     def _cleanup_manager(self) -> CleanupManager:
-        if self._cleanup_manager_instance is None:
-            self._cleanup_manager_instance = CleanupManager(self.config, self.repository_host, self._wm, self._kill_session,
-                self._session_exists, self._get_worktree_path, self._get_session_name)
-        return self._cleanup_manager_instance
+        return CleanupManager(
+            self.config, self.deps.repository_host, self.deps.worktree_manager,
+            lambda name: _kill_session(name, self._sm, self.events),
+            lambda name: _session_exists(name, self._sm, self.events),
+            lambda issue_number, agent_config: get_worktree_path(self.config, issue_number, agent_config),
+            lambda number, session_type="issue": get_session_name(number, session_type),
+        )
 
-    @property
+    @cached_property
     def _completion_handler(self) -> CompletionHandler:
-        if self._completion_handler_instance is None:
-            self._completion_handler_instance = CompletionHandler(self.config, self.events, self.repository_host,
-                lambda issue: self._state_machines.issue_machines.get(issue.number), lambda s: self._state_machines.session_machines.get(s), lambda n: self._state_machines.review_machines.get(n))
-        return self._completion_handler_instance
+        return CompletionHandler(
+            self.config, self.deps.events, self.deps.repository_host,
+            lambda issue: self.deps.state_machine_manager.issue_machines.get(issue.number),
+            lambda s: self.deps.state_machine_manager.session_machines.get(s),
+            lambda n: self.deps.state_machine_manager.review_machines.get(n),
+        )
 
-    @property
+    @cached_property
+    def _session_launcher(self) -> SessionLauncher:
+        return SessionLauncher(
+            self.config, self.deps.events, self.deps.repository_host, self.deps.session_manager,
+            self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner,
+            lambda name: _session_exists(name, self._sm, self.events),
+            self._create_session, self._get_issue_machine, self._get_session_machine,
+            self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),
+        )
+
+    @cached_property
     def _plan_applier(self) -> OrchestratorSupport:
-        if self._plan_applier_instance is None:
-            self._plan_applier_instance = OrchestratorSupport(
-                config=self.config,
-                events=self.events,
-                repository_host=self.repository_host,
-                state=self.state,
-                event_context=self._event_context,
-                session_manager=self._sm,
-                action_applier=self._aa,
-                fact_gatherer=self._fg,
-                planner=self._planner,
-                worktree_manager=self._wm,
-                state_machine_manager=self._state_machines,
-                cleanup_manager=self._cleanup_manager,
-                get_review_machine=self._get_review_machine,
-                kill_session=self._kill_session,
-            )
-        return self._plan_applier_instance
+        return OrchestratorSupport(
+            config=self.config, events=self.deps.events, repository_host=self.deps.repository_host,
+            state=self.state, event_context=self._event_context, session_manager=self.deps.session_manager,
+            action_applier=self.deps.action_applier, fact_gatherer=self.deps.fact_gatherer,
+            planner=self.deps.planner, worktree_manager=self.deps.worktree_manager,
+            state_machine_manager=self.deps.state_machine_manager, cleanup_manager=self._cleanup_manager,
+            get_review_machine=self._get_review_machine,
+            kill_session=lambda name: _kill_session(name, self._sm, self.events),
+        )
 
     @property
     def _session_restorer(self) -> SessionRestorer:
-        if self.session_restorer:
-            return self.session_restorer
-        if self.working_copy is None:
-            raise ValueError("WorkingCopy must be injected via bootstrap")
-        return SessionRestorer(self.config, self.repository_host, self.working_copy)
+        return self.deps.session_restorer
 
     @property
-    def _state_machines(self) -> StateMachineManager:
-        assert self.state_machine_manager is not None; return self.state_machine_manager
-
+    def _state_machines(self) -> StateMachineManager: return self.deps.state_machine_manager
     @property
-    def _sm(self) -> "SessionManager":
-        """Session manager accessor (always initialized after __post_init__)."""
-        assert self.session_manager is not None; return self.session_manager
-
+    def _sm(self) -> "SessionManager": return self.deps.session_manager
     @property
-    def _aa(self) -> "ActionApplier":
-        """Action applier accessor (always initialized after __post_init__)."""
-        assert self.action_applier is not None; return self.action_applier
-
+    def _aa(self) -> "ActionApplier": return self.deps.action_applier
     @property
-    def _fg(self) -> "FactGatherer":
-        """Fact gatherer accessor (always initialized after __post_init__)."""
-        assert self.fact_gatherer is not None; return self.fact_gatherer
-
+    def _fg(self) -> "FactGatherer": return self.deps.fact_gatherer
     @property
-    def _planner(self) -> "Planner":
-        """Planner accessor (always initialized after __post_init__)."""
-        assert self.planner is not None; return self.planner
-
-    @property
-    def _wm(self) -> WorktreeManager:
-        """Worktree manager accessor (must be injected)."""
-        assert self.worktree_manager is not None, "WorktreeManager must be injected"; return self.worktree_manager
+    def _wm(self) -> WorktreeManager: return self.deps.worktree_manager
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str: return get_session_name(number, session_type)
     def _get_worktree_path(self, issue_number: int, agent_config: AgentConfig) -> Path: return get_worktree_path(self.config, issue_number, agent_config)
@@ -272,209 +220,37 @@ class Orchestrator:
 
     def _get_milestone_filter(self) -> str | None: return self.config.filter_milestone
 
-    @property
+    @cached_property
     def _startup_manager(self) -> StartupManager:
-        if self._startup_manager_instance is None:
-            working_copy = self.working_copy
-            hook_verifier = self.hook_verifier
-            if working_copy is None:
-                raise ValueError("WorkingCopy must be injected via bootstrap")
-            if hook_verifier is None:
-                raise ValueError("HookVerifier must be injected via bootstrap")
-            issue_branches_fn = lambda: extract_issue_branches(working_copy, self.config.repo_root)
-
-            self._startup_manager_instance = StartupManager(self.config, self.events, self.runner, self.repository_host,
-                hook_verifier, issue_branches_fn, self._session_exists,
-                lambda r: self._restore_running_sessions(r), self.launch_session, self.update_queue_cache)
-        return self._startup_manager_instance
+        return StartupManager(
+            self.config, self.deps.events, self.deps.runner, self.deps.repository_host,
+            self.deps.hook_verifier,
+            lambda: extract_issue_branches(self.deps.working_copy, self.config.repo_root),
+            lambda name: self._session_exists(name),
+            lambda r: self._restore_running_sessions(r),
+            self.launch_session, self.update_queue_cache,
+        )
 
     async def startup(self) -> None: await self._startup_manager.run_startup(self.state)
 
     def launch_session(self, issue: Issue) -> Optional[Session]: return _launch_session(issue, self.state, self._session_launcher)
-    def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self._aa, self.observer, self.worktree_manager, self._kill_session, self.config)
+    def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self._aa, self.observer, self._wm, self._kill_session, self.config)
 
     def tick(self) -> bool:
-        tick_start = time.monotonic()
-        self._loop_iteration += 1
-        self._event_context.tick_id = self._loop_iteration
-
-        # Prune expired inflight IDs
-        now = time.monotonic()
-        expired = [sid for sid, exp in self._inflight_stable_ids.items() if exp < now]
-        for sid in expired:
-            del self._inflight_stable_ids[sid]
-        if expired:
-            logger.debug("[INFLIGHT] Pruned %d expired IDs: %s", len(expired), expired)
-
-        logger.info(
-            "[LOOP] Iteration %d - active=%d paused=%s pending_reviews=%d pending_reworks=%d pending_triage=%d inflight=%d",
-            self._loop_iteration,
-            len(self.state.active_sessions),
-            self.state.paused,
-            len(self.state.pending_reviews),
-            len(self.state.pending_reworks),
-            len(self.state.pending_triage_reviews),
-            len(self._inflight_stable_ids),
-        )
-
-        # Emit tick.started
-        self.events.publish(TraceEvent(
-            EventName.TICK_STARTED,
-            self._event_context.enrich({}),
-        ))
-
-        if self._shutdown_requested:
-            self.events.publish(TraceEvent(
-                EventName.TICK_COMPLETED,
-                self._event_context.enrich({"idle": True, "reason": "shutdown_requested"}),
-            ))
-            return False
-
-        active_start = time.monotonic()
-        self._process_active_sessions()
-        active_elapsed = time.monotonic() - active_start
-        if active_elapsed > 5:
-            logger.warning(
-                "[LOOP] Active session processing took %.1fs (active=%d)",
-                active_elapsed,
-                len(self.state.active_sessions),
-            )
-
-        # Use HealthGate to check if we can proceed with planning
-        health_decision = self._check_health()
-        if health_decision.can_proceed:
-            plan_start = time.monotonic()
-            self._run_planning_cycle()
-            plan_elapsed = time.monotonic() - plan_start
-            if plan_elapsed > 5:
-                logger.warning("[LOOP] Planning cycle took %.1fs", plan_elapsed)
-        else:
-            # Emit plan.noop when we skip planning
-            self.events.publish(TraceEvent(
-                EventName.PLAN_NOOP,
-                self._event_context.enrich({"reason": health_decision.reason}),
-            ))
-
-        self._emit_heartbeat_if_needed()
-
-        # Emit tick.completed
-        self.events.publish(TraceEvent(
-            EventName.TICK_COMPLETED,
-            self._event_context.enrich({
-                "idle": len(self.state.active_sessions) == 0,
-                "active_sessions": len(self.state.active_sessions),
-            }),
-        ))
-        tick_elapsed = time.monotonic() - tick_start
-        if tick_elapsed > 10:
-            logger.warning("[LOOP] Tick took %.1fs", tick_elapsed)
-        return True
+        self._loop_iteration, cont = _run_tick_impl(self._loop_iteration, self._event_context, self._inflight_stable_ids, self.state, self.events, self._shutdown_requested, self._process_active_sessions, self._check_health, self._run_planning_cycle, self._emit_heartbeat_if_needed)
+        return cont
 
     def _check_health(self) -> HealthDecision:
-        if self.health_gate is None:
-            raise ValueError("HealthGate must be injected via bootstrap")
-        return cast(HealthDecision, _check_health(self.health_gate, len(self.state.active_sessions), self.state.paused))
+        return cast(HealthDecision, _check_health(self.deps.health_gate, len(self.state.active_sessions), self.state.paused))
 
     def _process_active_sessions(self) -> None:
         _process_active_sessions(
-            self.state, self.observer, self._session_controller, self._completion_handler,
-            self._aa, self.worktree_manager, self._kill_session, self.config
+            self.state, self.observer, self.deps.session_controller, self._completion_handler,
+            self._aa, self._wm, self._kill_session, self.config
         )
 
     def _run_planning_cycle(self) -> None:
-        """Fetch issues, create snapshot, plan, and apply."""
-        should_fetch = (time.time() - self._last_issue_fetch >= self.config.queue_refresh_seconds) or self._refresh_requested
-
-        if should_fetch:
-            manual_refresh = self._refresh_requested
-            # Collect required inflight IDs before fetch
-            required_stable_ids = set(self._inflight_stable_ids.keys()) if self._inflight_stable_ids else None
-            if required_stable_ids:
-                logger.info("[FETCH] %s refresh with %d required inflight IDs: %s",
-                           "Manual" if manual_refresh else "Scheduled",
-                           len(required_stable_ids), sorted(required_stable_ids))
-            else:
-                logger.info("[FETCH] %s refresh", "Manual" if manual_refresh else "Scheduled")
-            self._refresh_requested = False
-            from . import gh_audit
-            reason = gh_audit.AuditReason.QUEUE_REFRESH_MANUAL if manual_refresh else gh_audit.AuditReason.QUEUE_REFRESH_SCHEDULED
-            scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
-            with gh_audit.context(reason=reason, scope=scope):
-                all_issues = self._fetch_all_issues(required_stable_ids=required_stable_ids)
-            self._last_issue_fetch = time.time()
-
-            # Remove discovered inflight IDs
-            if required_stable_ids:
-                discovered_ids = {i.key.stable_id() for i in all_issues}
-                found = required_stable_ids & discovered_ids
-                if found:
-                    for sid in found:
-                        self._inflight_stable_ids.pop(sid, None)
-                    logger.info("[INFLIGHT] Discovered %d/%d required IDs: %s",
-                               len(found), len(required_stable_ids), sorted(found))
-                still_missing = required_stable_ids - discovered_ids
-                if still_missing:
-                    logger.warning("[INFLIGHT] Still missing %d required IDs after refresh: %s",
-                                  len(still_missing), sorted(still_missing))
-            for issue in all_issues:
-                try:
-                    self.repository_host.update_label_cache(issue.number, list(issue.labels))
-                except Exception:
-                    logger.debug("Failed to update label cache for issue #%s", issue.number, exc_info=True)
-            self.scan_needs_code_review_prs()
-            self.scan_needs_rework_prs()
-            _, dep_blocked = self.scheduler.get_available_issues(all_issues)
-            self._update_dependency_problems(dep_blocked)
-            exclude = {e.issue_number for e in self.state.session_history} | {s.issue.number for s in self.state.active_sessions}
-            filtered = [i for i in all_issues if i.number not in exclude]
-            new_queue = [i for i in filtered if i.number == self.config.filter_issue] if self.config.filter_issue else filtered
-
-            # Detect queue changes and emit event
-            old_numbers = {i.number for i in self.state.cached_queue_issues}
-            new_numbers = {i.number for i in new_queue}
-            added_numbers = new_numbers - old_numbers
-            removed_numbers = old_numbers - new_numbers
-            if added_numbers or removed_numbers:
-                added = [{"number": i.number, "title": i.title} for i in new_queue if i.number in added_numbers]
-                removed = [{"number": n} for n in removed_numbers]
-                self.events.publish(TraceEvent(
-                    EventName.QUEUE_CHANGED,
-                    {"added": added, "removed": removed, "total": len(new_queue)},
-                ))
-                logger.info("Queue changed: %d added, %d removed, %d total",
-                           len(added), len(removed), len(new_queue))
-
-            self.state.cached_queue_issues = new_queue
-
-        snapshot = self._fg.create_snapshot(self.state, self.state.cached_queue_issues)
-
-        # Emit facts.gathered
-        self.events.publish(TraceEvent(
-            EventName.FACTS_GATHERED,
-            self._event_context.enrich({
-                "issues_count": len(self.state.cached_queue_issues),
-                "active_sessions": len(self.state.active_sessions),
-                "pending_reviews": len(self.state.pending_reviews),
-                "pending_reworks": len(self.state.pending_reworks),
-            }),
-        ))
-
-        plan = self._planner.plan(snapshot)
-
-        # Emit plan.computed
-        self.events.publish(TraceEvent(
-            EventName.PLAN_COMPUTED,
-            self._event_context.enrich({
-                "steps": plan.action_count,
-                "actions": [a.action_type.value for a in plan.actions],
-            }),
-        ))
-
-        if plan.action_count > 0:
-            logger.info("[PLAN] %d action(s): %s", plan.action_count, ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}" for a in plan.actions))
-
-        self._apply_plan(plan)
-        self._clear_discovered_facts()
+        self._last_issue_fetch, self._refresh_requested = _run_planning_cycle_impl(self.config, self.events, self._event_context, self.state, self._fg, self.deps.planner, self.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, self._refresh_requested, self._inflight_stable_ids)
 
     def _clear_discovered_facts(self) -> None: self._plan_applier._clear_discovered_facts()
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier._emit_heartbeat_if_needed()
@@ -570,7 +346,7 @@ class Orchestrator:
     def update_queue_cache(self) -> None: self._plan_applier.update_queue_cache()
     def _update_dependency_problems(self, dep_blocked: list[tuple["Issue", str]]) -> None: self._github_workflow.update_dependency_problems(self.state, dep_blocked)
     @property
-    def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.events, self.repository_host, self._fg, self._pr_scanner, self.label_sync, self._event_context)
+    def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.events, self.repository_host, self._fg, self.deps.pr_scanner, self.deps.label_sync, self._event_context)
     def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self._session_restorer)
     def _launch_triage_session(self, triage: PendingTriageReview) -> None: _launch_triage_session(triage, self.config, self.launch_session)
     def process_deferred_cleanups(self) -> None: self.state.pending_cleanups = self._github_workflow.process_deferred_cleanups(self.state.pending_cleanups, self._cleanup_manager)

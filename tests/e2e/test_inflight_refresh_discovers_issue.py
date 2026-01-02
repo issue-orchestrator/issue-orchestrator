@@ -34,8 +34,8 @@ DISCOVERY_TIMEOUT = 30
 
 @pytest.mark.timeout(120)
 async def test_inflight_refresh_discovers_issue(
-    orchestrator_process,
-    e2e_config,
+    e2e_orchestrator,
+    e2e_session_config,
 ) -> None:
     """Test that inflight-registered issues are discovered via refresh.
 
@@ -51,10 +51,10 @@ async def test_inflight_refresh_discovers_issue(
     5. Asserts the issue appears within bounded time (no sleeps)
     """
     # Get config values
-    control_api_port = e2e_config.control_api_port
-    repo = e2e_config.repo
-    filter_label = e2e_config.filter_label
-    agent_label = list(e2e_config.agents.keys())[0] if e2e_config.agents else "agent:developer"
+    control_api_port = e2e_session_config.control_api_port
+    repo = e2e_session_config.repo
+    filter_label = e2e_session_config.filter_label
+    agent_label = list(e2e_session_config.agents.keys())[0] if e2e_session_config.agents else "agent:developer"
 
     # Create watcher
     watcher, stream = await create_watcher_for_port(control_api_port)
@@ -68,10 +68,11 @@ async def test_inflight_refresh_discovers_issue(
             filter_label=filter_label,
         )
 
-        # Create unique issue with external ID prefix
+        # Create unique issue with external ID prefix (M0-XXX format for tests)
         timestamp = int(time.time())
-        title = f"[INFLIGHT-{timestamp}] Inflight discovery test"
-        labels = [filter_label, agent_label, e2e_label()]
+        unique_suffix = str(timestamp % 1000).zfill(3)  # 3-digit suffix
+        title = f"[M0-{unique_suffix}] Inflight discovery test"
+        labels = [filter_label, agent_label, e2e_label("inflight_refresh_test")]
 
         logger.info("Creating test issue while orchestrator is running...")
 

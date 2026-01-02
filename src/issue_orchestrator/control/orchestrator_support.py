@@ -53,58 +53,25 @@ def init_orchestrator_components(orch: "Orchestrator", dep_eval: "DependencyEval
     """Initialize orchestrator components - moved per method table.
 
     This is the core logic from Orchestrator.__post_init__.
+    All dependencies are now provided via OrchestratorDeps (no fallbacks needed).
+    Helpers are exposed via @cached_property on Orchestrator - no fields set here.
     """
     from ..observation.observer import SessionObserver
-    from .state_machine_manager import StateMachineManager
-    from ..control.planner import Scheduler
 
-    # Initialize components with injected or default values
-    if orch.planner:
-        orch.scheduler = orch.planner.scheduler
-    else:
-        from .planner import Planner as P
-        orch.scheduler = Scheduler(orch.config, dependency_evaluator=dep_eval)
-        orch.planner = P(orch.config, orch.scheduler, dep_eval)
+    # Wire up the scheduler from the planner
+    orch.scheduler = orch.deps.planner.scheduler
 
-    if not orch.session_manager:
-        from .session_manager import SessionManager as S
-        orch.session_manager = S(orch.runner, orch.events, orch.config)
+    # Wire up action_applier's session_launcher callback
+    orch.deps.action_applier.session_launcher = orch._session_launcher_callback
 
-    if not orch.action_applier:
-        from .action_applier import ActionApplier as A
-        orch.action_applier = A(
-            orch.repository_host, orch.session_manager, orch.events,
-            orch.repository_host, orch.worktree_manager, orch.repository_host,
-            True, orch._session_launcher_callback
-        )
-    else:
-        orch.action_applier.session_launcher = orch._session_launcher_callback
-
-    if not orch.fact_gatherer:
-        from .fact_gatherer import FactGatherer as F
-        orch.fact_gatherer = F(orch.config, orch.repository_host, orch.events)
-
+    # Create observer (still created here as it depends on runtime orchestrator state)
     orch.observer = SessionObserver(
         config=orch.config,
-        events=orch.events,
-        session_runner=orch.runner,
-        repository_host=orch._repository_host,
+        events=orch.deps.events,
+        session_runner=orch.deps.runner,
+        repository_host=orch.deps.repository_host,
     )
-
-    if not orch.state_machine_manager:
-        orch.state_machine_manager = StateMachineManager(orch.config, orch.events)
-
-    orch.issue_machines = orch.state_machine_manager.issue_machines
-    orch.session_machines = orch.state_machine_manager.session_machines
-    orch.review_machines = orch.state_machine_manager.review_machines
-    orch.observer.session_machines = orch.session_machines
-
-    # Initialize helper managers (deferred)
-    orch._session_launcher_instance = None
-    orch._cleanup_manager_instance = None
-    orch._completion_handler_instance = None
-    orch._startup_manager_instance = None
-    orch._plan_applier_instance = None
+    orch.observer.session_machines = orch.deps.state_machine_manager.session_machines
 
 
 @dataclass
@@ -467,3 +434,218 @@ def handle_signal(
 
 # Keep PlanApplier for backward compatibility during transition
 PlanApplier = OrchestratorSupport
+
+
+def run_planning_cycle(
+    config: "Config",
+    events: EventSink,
+    event_context: EventContext,
+    state: "OrchestratorState",
+    fact_gatherer: "FactGatherer",
+    planner: "Planner",
+    repository_host: RepositoryHost,
+    scheduler: object,
+    github_workflow: object,
+    apply_plan_fn: Callable[["Plan"], None],
+    clear_discovered_facts_fn: Callable[[], None],
+    last_issue_fetch: float,
+    refresh_requested: bool,
+    inflight_stable_ids: dict[str, float],
+) -> tuple[float, bool]:
+    """Run the planning cycle - extracted from Orchestrator per move map Step 2.
+
+    Returns:
+        Tuple of (updated_last_issue_fetch, updated_refresh_requested)
+    """
+    should_fetch = (time.time() - last_issue_fetch >= config.queue_refresh_seconds) or refresh_requested
+
+    if should_fetch:
+        manual_refresh = refresh_requested
+        # Collect required inflight IDs before fetch
+        required_stable_ids = set(inflight_stable_ids.keys()) if inflight_stable_ids else None
+        if required_stable_ids:
+            logger.info("[FETCH] %s refresh with %d required inflight IDs: %s",
+                       "Manual" if manual_refresh else "Scheduled",
+                       len(required_stable_ids), sorted(required_stable_ids))
+        else:
+            logger.info("[FETCH] %s refresh", "Manual" if manual_refresh else "Scheduled")
+        refresh_requested = False
+        from .. import gh_audit
+        reason = gh_audit.AuditReason.QUEUE_REFRESH_MANUAL if manual_refresh else gh_audit.AuditReason.QUEUE_REFRESH_SCHEDULED
+        scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
+        with gh_audit.context(reason=reason, scope=scope):
+            all_issues = github_workflow.fetch_all_issues(config.filter_milestone, required_stable_ids)
+        last_issue_fetch = time.time()
+
+        # Remove discovered inflight IDs
+        if required_stable_ids:
+            discovered_ids = {i.key.stable_id() for i in all_issues}
+            found = required_stable_ids & discovered_ids
+            if found:
+                for sid in found:
+                    inflight_stable_ids.pop(sid, None)
+                logger.info("[INFLIGHT] Discovered %d/%d required IDs: %s",
+                           len(found), len(required_stable_ids), sorted(found))
+            still_missing = required_stable_ids - discovered_ids
+            if still_missing:
+                logger.warning("[INFLIGHT] Still missing %d required IDs after refresh: %s",
+                              len(still_missing), sorted(still_missing))
+        for issue in all_issues:
+            try:
+                repository_host.update_label_cache(issue.number, list(issue.labels))
+            except Exception:
+                logger.debug("Failed to update label cache for issue #%s", issue.number, exc_info=True)
+        github_workflow.scan_needs_code_review_prs(state)
+        github_workflow.scan_needs_rework_prs(state)
+        _, dep_blocked = scheduler.get_available_issues(all_issues)
+        github_workflow.update_dependency_problems(state, dep_blocked)
+        exclude = {e.issue_number for e in state.session_history} | {s.issue.number for s in state.active_sessions}
+        filtered = [i for i in all_issues if i.number not in exclude]
+        new_queue = [i for i in filtered if i.number == config.filter_issue] if config.filter_issue else filtered
+
+        # Detect queue changes and emit event
+        old_numbers = {i.number for i in state.cached_queue_issues}
+        new_numbers = {i.number for i in new_queue}
+        added_numbers = new_numbers - old_numbers
+        removed_numbers = old_numbers - new_numbers
+        if added_numbers or removed_numbers:
+            added = [{"number": i.number, "title": i.title} for i in new_queue if i.number in added_numbers]
+            removed = [{"number": n} for n in removed_numbers]
+            events.publish(TraceEvent(
+                EventName.QUEUE_CHANGED,
+                {"added": added, "removed": removed, "total": len(new_queue)},
+            ))
+            logger.info("Queue changed: %d added, %d removed, %d total",
+                       len(added), len(removed), len(new_queue))
+
+        state.cached_queue_issues = new_queue
+
+    snapshot = fact_gatherer.create_snapshot(state, state.cached_queue_issues)
+
+    # Emit facts.gathered
+    events.publish(TraceEvent(
+        EventName.FACTS_GATHERED,
+        event_context.enrich({
+            "issues_count": len(state.cached_queue_issues),
+            "active_sessions": len(state.active_sessions),
+            "pending_reviews": len(state.pending_reviews),
+            "pending_reworks": len(state.pending_reworks),
+        }),
+    ))
+
+    plan = planner.plan(snapshot)
+
+    # Emit plan.computed
+    events.publish(TraceEvent(
+        EventName.PLAN_COMPUTED,
+        event_context.enrich({
+            "steps": plan.action_count,
+            "actions": [a.action_type.value for a in plan.actions],
+        }),
+    ))
+
+    if plan.action_count > 0:
+        logger.info("[PLAN] %d action(s): %s", plan.action_count, ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}" for a in plan.actions))
+
+    apply_plan_fn(plan)
+    clear_discovered_facts_fn()
+
+    return last_issue_fetch, refresh_requested
+
+
+# Backwards compatibility - keep PlanningCycleRunner as an alias
+PlanningCycleRunner = run_planning_cycle
+
+
+def run_tick(
+    loop_iteration: int,
+    event_context: EventContext,
+    inflight_stable_ids: dict[str, float],
+    state: "OrchestratorState",
+    events: EventSink,
+    shutdown_requested: bool,
+    process_active_sessions_fn: Callable[[], None],
+    check_health_fn: Callable[[], "HealthDecision"],
+    run_planning_cycle_fn: Callable[[], None],
+    emit_heartbeat_fn: Callable[[], None],
+) -> tuple[int, bool]:
+    """Execute one orchestration tick - extracted from Orchestrator per move map.
+
+    Returns:
+        Tuple of (updated_loop_iteration, should_continue)
+    """
+    tick_start = time.monotonic()
+    loop_iteration += 1
+    event_context.tick_id = loop_iteration
+
+    # Prune expired inflight IDs
+    now = time.monotonic()
+    expired = [sid for sid, exp in inflight_stable_ids.items() if exp < now]
+    for sid in expired:
+        del inflight_stable_ids[sid]
+    if expired:
+        logger.debug("[INFLIGHT] Pruned %d expired IDs: %s", len(expired), expired)
+
+    logger.info(
+        "[LOOP] Iteration %d - active=%d paused=%s pending_reviews=%d pending_reworks=%d pending_triage=%d inflight=%d",
+        loop_iteration,
+        len(state.active_sessions),
+        state.paused,
+        len(state.pending_reviews),
+        len(state.pending_reworks),
+        len(state.pending_triage_reviews),
+        len(inflight_stable_ids),
+    )
+
+    # Emit tick.started
+    events.publish(TraceEvent(
+        EventName.TICK_STARTED,
+        event_context.enrich({}),
+    ))
+
+    if shutdown_requested:
+        events.publish(TraceEvent(
+            EventName.TICK_COMPLETED,
+            event_context.enrich({"idle": True, "reason": "shutdown_requested"}),
+        ))
+        return loop_iteration, False
+
+    active_start = time.monotonic()
+    process_active_sessions_fn()
+    active_elapsed = time.monotonic() - active_start
+    if active_elapsed > 5:
+        logger.warning(
+            "[LOOP] Active session processing took %.1fs (active=%d)",
+            active_elapsed,
+            len(state.active_sessions),
+        )
+
+    # Use HealthGate to check if we can proceed with planning
+    health_decision = check_health_fn()
+    if health_decision.can_proceed:
+        plan_start = time.monotonic()
+        run_planning_cycle_fn()
+        plan_elapsed = time.monotonic() - plan_start
+        if plan_elapsed > 5:
+            logger.warning("[LOOP] Planning cycle took %.1fs", plan_elapsed)
+    else:
+        # Emit plan.noop when we skip planning
+        events.publish(TraceEvent(
+            EventName.PLAN_NOOP,
+            event_context.enrich({"reason": health_decision.reason}),
+        ))
+
+    emit_heartbeat_fn()
+
+    # Emit tick.completed
+    events.publish(TraceEvent(
+        EventName.TICK_COMPLETED,
+        event_context.enrich({
+            "idle": len(state.active_sessions) == 0,
+            "active_sessions": len(state.active_sessions),
+        }),
+    ))
+    tick_elapsed = time.monotonic() - tick_start
+    if tick_elapsed > 10:
+        logger.warning("[LOOP] Tick took %.1fs", tick_elapsed)
+    return loop_iteration, True

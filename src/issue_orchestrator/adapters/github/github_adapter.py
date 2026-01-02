@@ -973,6 +973,8 @@ class GitHubAdapter:
             force: If True, update existing label if it already exists.
         """
         self._client.create_label(name, color=color, description=description, force=force)
+        # Invalidate ETag cache so verification fetches fresh data
+        self._client.invalidate_labels_etag()
         last_labels: list[str] = []
 
         def _check() -> bool:
@@ -994,6 +996,8 @@ class GitHubAdapter:
             name: Label name to delete.
         """
         self._client.delete_label(name)
+        # Invalidate ETag cache so verification fetches fresh data
+        self._client.invalidate_labels_etag()
         last_labels: list[str] = []
 
         def _check() -> bool:
@@ -1110,3 +1114,11 @@ class GitHubAdapter:
             List of label dictionaries with 'name', 'color', 'description' keys.
         """
         return self._client.list_labels()
+
+    def list_all_labels(self) -> list[dict[str, Any]]:
+        """List all labels with pagination (for cleanup operations).
+
+        Returns:
+            List of all label dictionaries across all pages.
+        """
+        return self._client.list_all_labels()

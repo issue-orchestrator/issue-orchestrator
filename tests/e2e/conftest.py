@@ -90,7 +90,10 @@ def gh_audit_session() -> Generator[None, None, None]:
 
 # Default label for e2e test data - used to identify and clean up test artifacts
 DEFAULT_E2E_FILTER_LABEL = "test-data"
-E2E_TEST_LABEL_PREFIX = "e2e:"
+# Namespaced prefixes to avoid collisions in shared/forked repos
+E2E_TEST_LABEL_PREFIX = "io:e2e:"  # For test-specific labels (e.g., io:e2e:triage_review_123)
+E2E_RUN_LABEL_PREFIX = "io:e2e-run-"  # Unique per test run, cleaned up at session start
+E2E_LABEL_CLEANUP_PREFIXES = (E2E_RUN_LABEL_PREFIX, E2E_TEST_LABEL_PREFIX)
 _CLEANUP_CMD_TIMEOUT_SECONDS: int | None = None
 
 
@@ -1077,6 +1080,32 @@ def _ensure_required_pr_labels(repo: str) -> None:
         _ensure_pr_label(repo, label)
 
 
+def _cleanup_e2e_labels(repo: str) -> int:
+    """Delete e2e test labels that accumulate over time.
+
+    Uses E2E_LABEL_CLEANUP_PREFIXES to identify labels to delete.
+    This prevents label accumulation that can cause pagination issues.
+    """
+    adapter = _github_adapter(repo)
+    deleted = 0
+    try:
+        all_labels = adapter.list_all_labels()
+        for label_data in all_labels:
+            name = label_data.get("name", "")
+            if any(name.startswith(prefix) for prefix in E2E_LABEL_CLEANUP_PREFIXES):
+                try:
+                    adapter._client.delete_label(name)  # Skip verification for cleanup
+                    deleted += 1
+                    logger.debug("[E2E CLEANUP] Deleted label: %s", name)
+                except Exception:
+                    pass  # Ignore errors during cleanup
+    except Exception as e:
+        logger.warning("[E2E CLEANUP] Failed listing labels: %s", e)
+    if deleted > 0:
+        logger.info("[E2E CLEANUP] Deleted %d e2e test labels", deleted)
+    return deleted
+
+
 def _cleanup_issues(repo: str) -> int:
     """Close test issues with test-data label."""
     adapter = _github_adapter(repo)
@@ -1147,18 +1176,21 @@ def e2e_reconciliation_at_session_start():
         prs_closed = 0
         branches_deleted = 0
         issues_closed = 0
+        labels_deleted = 0
         _ensure_required_pr_labels(repo)
     else:
-    # 2. Remote cleanup (order matters: PRs first, then orphan branches)
+        # 2. Remote cleanup (order matters: PRs first, then orphan branches)
         prs_closed = _run_cleanup_step("PR cleanup", lambda: _cleanup_prs(repo), timeout_s=120)
         branches_deleted = _run_cleanup_step("Branch cleanup", lambda: _cleanup_remote_branches(repo), timeout_s=120)
         issues_closed = _run_cleanup_step("Issue cleanup", lambda: _cleanup_issues(repo), timeout_s=120)
+        # 3. Clean up accumulated e2e labels before ensuring required ones
+        labels_deleted = _run_cleanup_step("Label cleanup", lambda: _cleanup_e2e_labels(repo), timeout_s=60)
         _ensure_required_pr_labels(repo)
 
     # Summary
     logger.info("=" * 60)
-    logger.info("[E2E RECONCILIATION] Summary: PRs=%d, Branches=%d, Issues=%d",
-                prs_closed, branches_deleted, issues_closed)
+    logger.info("[E2E RECONCILIATION] Summary: PRs=%d, Branches=%d, Issues=%d, Labels=%d",
+                prs_closed, branches_deleted, issues_closed, labels_deleted)
     logger.info("=" * 60)
     try:
         cache_path.write_text(json.dumps({"last_run": now}))
@@ -1950,7 +1982,7 @@ def concurrent_test_run(repo_name: str, request) -> Generator[dict, None, None]:
 
     # Unique label for this test run
     run_id = str(uuid.uuid4())[:8]
-    run_label = f"e2e-run-{run_id}"
+    run_label = f"{E2E_RUN_LABEL_PREFIX}{run_id}"
 
     issues = []
     for i in range(count):

@@ -60,28 +60,20 @@ class TestOrchestratorWiring:
         """Verify startup() queries for in-progress issues."""
         from issue_orchestrator.orchestrator import Orchestrator
         from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
-        from unittest.mock import AsyncMock
+        from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
 
-        hook_verifier = MagicMock()
-        hook_verifier.verify = AsyncMock(return_value=MagicMock(success=True, message="ok"))
-        hook_verifier.raise_on_failure = MagicMock()
         working_copy = MagicMock()
         working_copy.list_remote_branches.return_value = []
 
-        from issue_orchestrator.control.health_gate import HealthGate
-        health_gate = HealthGate(
-            max_concurrent_sessions=config.max_concurrent_sessions,
-            rate_limit_threshold=100,
+        events = MockEventSink()
+        runner = MockSessionRunner()
+        worktree_manager = GitWorktreeManager()
+
+        deps = build_test_orchestrator_deps(
+            config, mock_repository_host, events, runner, worktree_manager, working_copy=working_copy
         )
 
-        orchestrator = Orchestrator(
-            config,
-            _repository_host=mock_repository_host,
-            worktree_manager=GitWorktreeManager(),
-            working_copy=working_copy,
-            hook_verifier=hook_verifier,
-            health_gate=health_gate,
-        )
+        orchestrator = Orchestrator(config=config, deps=deps)
 
         await orchestrator.startup()
 
@@ -92,6 +84,7 @@ class TestOrchestratorWiring:
         """Verify launch_session actually creates worktree and tmux window."""
         from issue_orchestrator.orchestrator import Orchestrator
         from issue_orchestrator.ports.worktree_manager import WorktreeInfo
+        from tests.conftest import build_test_orchestrator_deps, MockEventSink
         # Configure mock plugin to allow session creation
         patch_plugin_manager.plugin.session_exists_override = False
 
@@ -102,30 +95,16 @@ class TestOrchestratorWiring:
             branch_name="456-test-feature",
         )
 
-        hook_verifier = MagicMock()
-        hook_verifier.verify = AsyncMock(return_value=MagicMock(success=True, message="ok"))
-        hook_verifier.raise_on_failure = MagicMock()
         working_copy = MagicMock()
         working_copy.list_remote_branches.return_value = []
 
-        from issue_orchestrator.control.health_gate import HealthGate
-        from issue_orchestrator.control.pr_scanner import PRScanner
-        health_gate = HealthGate(
-            max_concurrent_sessions=config.max_concurrent_sessions,
-            rate_limit_threshold=100,
-        )
-        mock_pr_scanner = MagicMock(spec=PRScanner)
+        events = MockEventSink()
 
-        orchestrator = Orchestrator(
-            config,
-            _repository_host=mock_repository_host,
-            worktree_manager=mock_worktree_manager,
-            working_copy=working_copy,
-            hook_verifier=hook_verifier,
-            runner=patch_plugin_manager,
-            health_gate=health_gate,
-            pr_scanner=mock_pr_scanner,
+        deps = build_test_orchestrator_deps(
+            config, mock_repository_host, events, patch_plugin_manager, mock_worktree_manager, working_copy=working_copy
         )
+
+        orchestrator = Orchestrator(config=config, deps=deps)
         test_issue = Issue(
             number=456,
             title="Test Feature",

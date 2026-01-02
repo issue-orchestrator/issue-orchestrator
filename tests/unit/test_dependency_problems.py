@@ -37,30 +37,47 @@ class TestOrchestratorDependencyProblems:
 
     def test_update_dependency_problems_adds_new(self):
         """New blocked issues are added to state and events emitted."""
+        from pathlib import Path
         from issue_orchestrator.orchestrator import Orchestrator
         from issue_orchestrator.config import Config
-        from issue_orchestrator.ports import EventSink, TraceEvent
+        from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
+        from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 
-        # Create minimal orchestrator with mocked dependencies
+        # Create minimal config with required methods
         config = MagicMock(spec=Config)
         config.repo = "test/repo"
         config.ui_mode = "headless"
+        config.max_concurrent_sessions = 3
+        config.session_timeout_minutes = 45
+        config.label_blocked = "blocked"
+        config.label_needs_human = "needs-human"
+        config.code_reviewed_label = "code-reviewed"
+        config.label_needs_rework = "needs-rework"
+        config.code_review_label = "needs-code-review"
+        config.label_in_progress = "in-progress"
+        config.get_label_blocked = MagicMock(return_value="blocked")
+        config.get_label_needs_human = MagicMock(return_value="needs-human")
+        config.get_label_needs_rework = MagicMock(return_value="needs-rework")
+        config.get_label_in_progress = MagicMock(return_value="in-progress")
+        config.agents = {}
+        config.repo_root = Path("/tmp/test")
+        config.filter_label = None
+        config.filter_milestone = None
+        config.max_sessions_per_agent = {}
+        config.triage_review_label = None
+        config.validation_schema_path = None
+        config.max_rework_cycles = 2
+        config.milestone_sort = "due_date"  # Default strategy
+        config.milestone_sort_config = {}
 
-        events = MagicMock(spec=EventSink)
-        state = OrchestratorState()
+        events = MockEventSink()
+        runner = MockSessionRunner()
+        repo_host = MagicMock()
+        repo_host.list_issues.return_value = []
+        wt_manager = GitWorktreeManager()
 
-        # Create orchestrator and inject dependencies
-        from issue_orchestrator.events import EventContext
-        with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
-            orch = Orchestrator.__new__(Orchestrator)
-            orch.state = state
-            orch.events = events
-            orch.config = config
-            orch._event_context = EventContext()
-            orch._repository_host = MagicMock()
-            orch.fact_gatherer = MagicMock()
-            orch.pr_scanner = MagicMock()
-            orch.label_sync = MagicMock()
+        deps = build_test_orchestrator_deps(config, repo_host, events, runner, wt_manager)
+        orch = Orchestrator(config=config, deps=deps)
 
         # Call update with a blocked issue
         issue = self.make_issue(5, "Blocked Issue")
@@ -74,10 +91,9 @@ class TestOrchestratorDependencyProblems:
         assert orch.state.dependency_problems[5].summary == "Blocked - waiting on: #1"
 
         # Check event was emitted
-        events.publish.assert_called_once()
-        call_args = events.publish.call_args[0][0]
-        assert call_args.name == "dependency.blocked"
-        assert call_args.data["issue_number"] == 5
+        dep_events = events.get_events_by_name("dependency.blocked")
+        assert len(dep_events) == 1
+        assert dep_events[0].data["issue_number"] == 5
 
     def test_update_dependency_problems_removes_resolved(self):
         """Resolved issues are removed from state and events emitted."""
@@ -106,13 +122,15 @@ class TestOrchestratorDependencyProblems:
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
             orch.state = state
-            orch.events = events
             orch.config = config
             orch._event_context = EventContext()
-            orch._repository_host = MagicMock()
-            orch.fact_gatherer = MagicMock()
-            orch.pr_scanner = MagicMock()
-            orch.label_sync = MagicMock()
+            # Create mock deps with events
+            orch.deps = MagicMock()
+            orch.deps.events = events
+            orch.deps.repository_host = MagicMock()
+            orch.deps.fact_gatherer = MagicMock()
+            orch.deps.pr_scanner = MagicMock()
+            orch.deps.label_sync = MagicMock()
 
         # Call update with empty blocked list (issue resolved)
         orch._update_dependency_problems([])
@@ -140,13 +158,15 @@ class TestOrchestratorDependencyProblems:
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
             orch.state = state
-            orch.events = events
             orch.config = config
             orch._event_context = EventContext()
-            orch._repository_host = MagicMock()
-            orch.fact_gatherer = MagicMock()
-            orch.pr_scanner = MagicMock()
-            orch.label_sync = MagicMock()
+            # Create mock deps with events
+            orch.deps = MagicMock()
+            orch.deps.events = events
+            orch.deps.repository_host = MagicMock()
+            orch.deps.fact_gatherer = MagicMock()
+            orch.deps.pr_scanner = MagicMock()
+            orch.deps.label_sync = MagicMock()
 
         # Call update with empty list twice
         orch._update_dependency_problems([])
@@ -182,15 +202,19 @@ class TestQueueChangeEvents:
         state = OrchestratorState()
         state.cached_queue_issues = [self.make_issue(1), self.make_issue(2)]
 
+        plan_applier = MagicMock(spec=OrchestratorSupport)
+        plan_applier.state = state
+
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
             orch.state = state
-            orch.events = events
             orch.config = config
-            orch._repository_host = MagicMock()
-            plan_applier = MagicMock(spec=OrchestratorSupport)
-            plan_applier.state = state
-            orch._plan_applier_instance = plan_applier
+            # Create mock deps
+            orch.deps = MagicMock()
+            orch.deps.events = events
+            orch.deps.repository_host = MagicMock()
+            # Set cached_property directly
+            object.__setattr__(orch, '_plan_applier', plan_applier)
 
         # Call update_queue_cache - it delegates to plan_applier
         orch.update_queue_cache()
@@ -211,15 +235,19 @@ class TestQueueChangeEvents:
         issues = [self.make_issue(1), self.make_issue(2)]
         state.cached_queue_issues = issues
 
+        plan_applier = MagicMock(spec=OrchestratorSupport)
+        plan_applier.state = state
+
         with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
             orch = Orchestrator.__new__(Orchestrator)
             orch.state = state
-            orch.events = events
             orch.config = config
-            orch._repository_host = MagicMock()
-            plan_applier = MagicMock(spec=OrchestratorSupport)
-            plan_applier.state = state
-            orch._plan_applier_instance = plan_applier
+            # Create mock deps
+            orch.deps = MagicMock()
+            orch.deps.events = events
+            orch.deps.repository_host = MagicMock()
+            # Set cached_property directly
+            object.__setattr__(orch, '_plan_applier', plan_applier)
 
         # Call update_queue_cache - it delegates to plan_applier
         orch.update_queue_cache()

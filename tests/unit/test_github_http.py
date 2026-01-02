@@ -163,3 +163,58 @@ def test_list_issues_use_cache_true_sends_etag() -> None:
     # (httpx stores headers as lowercase)
     assert "if-none-match" in requests_seen[1]["headers"]
     assert requests_seen[1]["headers"]["if-none-match"] == "W/cached-etag"
+
+
+def test_invalidate_labels_etag_clears_cache() -> None:
+    """Verify that invalidate_labels_etag clears the ETag cache for labels.
+
+    After a write operation on labels (POST/PATCH/DELETE), the ETag cache
+    should be invalidated so subsequent list_labels() fetches fresh data
+    instead of getting a stale 304.
+    """
+    requests_seen: list[dict] = []
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        requests_seen.append({
+            "method": request.method,
+            "path": request.url.path,
+            "headers": dict(request.headers),
+        })
+        if "if-none-match" in request.headers:
+            # If client sent If-None-Match, return 304
+            return httpx.Response(304, text="")
+        # Otherwise return fresh data with new ETag
+        return httpx.Response(
+            200,
+            json=[{"name": f"label-{call_count}"}],
+            headers={"ETag": f"W/etag-{call_count}"},
+        )
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    # First call - establishes cache
+    first = client.list_labels()
+    assert len(first) == 1
+    assert first[0]["name"] == "label-1"
+    assert len(requests_seen) == 1
+    assert "if-none-match" not in requests_seen[0]["headers"]
+
+    # Second call without invalidation - should send If-None-Match, get 304
+    requests_seen.clear()
+    second = client.list_labels()
+    assert len(second) == 1
+    assert second[0]["name"] == "label-1"  # Cached value from 304
+    assert "if-none-match" in requests_seen[0]["headers"]
+
+    # Invalidate the cache
+    client.invalidate_labels_etag()
+
+    # Third call after invalidation - should NOT send If-None-Match
+    requests_seen.clear()
+    third = client.list_labels()
+    assert len(third) == 1
+    assert third[0]["name"] == "label-3"  # Fresh data, not cached
+    assert "if-none-match" not in requests_seen[0]["headers"]

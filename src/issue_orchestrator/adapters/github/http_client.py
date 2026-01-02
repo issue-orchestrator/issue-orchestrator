@@ -341,6 +341,43 @@ class GitHubHttpClient:
         )
         return payload if isinstance(payload, list) else []
 
+    def list_all_labels(self) -> list[dict[str, Any]]:
+        """Fetch all labels with pagination (for cleanup operations).
+
+        Unlike list_labels() which returns only the first page,
+        this fetches all pages. Does not use ETag caching.
+        """
+        all_labels: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            response = self._client.get(
+                f"/repos/{self._config.repo}/labels",
+                params={"per_page": 100, "page": page},
+            )
+            if response.status_code != 200:
+                break
+            batch = response.json()
+            if not batch:
+                break
+            all_labels.extend(batch)
+            # Check for next page via Link header or empty response
+            if len(batch) < 100:
+                break
+            page += 1
+            if page > 20:  # Safety limit
+                break
+        return all_labels
+
+    def invalidate_labels_etag(self) -> None:
+        """Invalidate ETag cache for the labels endpoint.
+
+        Call after POST/PATCH/DELETE on repo labels to ensure
+        subsequent GETs fetch fresh data.
+        """
+        url = f"/repos/{self._config.repo}/labels"
+        key = self._cache_key("GET", url, {"per_page": 100})  # Match list_labels params
+        self._etag_cache.pop(key, None)
+
     def create_label(
         self,
         name: str,

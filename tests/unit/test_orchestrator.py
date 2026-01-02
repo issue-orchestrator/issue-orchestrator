@@ -67,13 +67,22 @@ class MockWorktreeManager:
         return None
 
 
-def create_test_orchestrator(config, repository_host=None, worktree_manager=None, working_copy=None, runner=None):
+def create_test_orchestrator(
+    config,
+    repository_host=None,
+    worktree_manager=None,
+    working_copy=None,
+    runner=None,
+    *,
+    session_controller=None,
+    label_sync=None,
+):
     """Create an Orchestrator with ALL dependencies explicitly injected.
 
     This is the proper hexagonal architecture test pattern:
     1. Creates MockEventSink and MockSessionRunner (or uses provided runner)
-    2. Uses build_test_orchestrator_deps() to create all control components
-    3. Passes everything explicitly to Orchestrator (no __post_init__ fallbacks)
+    2. Uses build_test_orchestrator_deps() to create OrchestratorDeps
+    3. Passes deps bundle to Orchestrator (no nulls, no optionals)
 
     Args:
         config: Config object
@@ -85,6 +94,8 @@ def create_test_orchestrator(config, repository_host=None, worktree_manager=None
                     runner = MockSessionRunner()
                     runner.plugin.session_exists_override = False
                     orchestrator = create_test_orchestrator(..., runner=runner)
+        session_controller: Optional SessionController override for testing
+        label_sync: Optional LabelSync override for testing
 
     Access mocks via:
         - orchestrator.events (MockEventSink)
@@ -105,15 +116,19 @@ def create_test_orchestrator(config, repository_host=None, worktree_manager=None
     events = MockEventSink()
     runner = runner or MockSessionRunner()
 
-    # Build all dependencies with the mock adapters
-    deps = build_test_orchestrator_deps(config, repo_host, events, runner, wt_manager)
-    deps['working_copy'] = wc
-
-    return Orchestrator(
-        config=config,
-        _repository_host=repo_host,
-        **deps,
+    # Build OrchestratorDeps with all dependencies
+    deps = build_test_orchestrator_deps(
+        config,
+        repo_host,
+        events,
+        runner,
+        wt_manager,
+        working_copy=wc,
+        session_controller=session_controller,
+        label_sync=label_sync,
     )
+
+    return Orchestrator(config=config, deps=deps)
 
 
 # Helper functions
@@ -176,8 +191,8 @@ class TestOrchestratorInit:
         """Test that __post_init__ creates a SessionObserver."""
         assert isinstance(sample_orchestrator.observer, SessionObserver)
         assert sample_orchestrator.observer.config == sample_config
-        # Verify observer has reference to session_machines
-        assert sample_orchestrator.observer.session_machines is sample_orchestrator.session_machines
+        # Verify observer has reference to session_machines from state_machine_manager
+        assert sample_orchestrator.observer.session_machines is sample_orchestrator.deps.state_machine_manager.session_machines
 
     def test_post_init_initializes_state(self, sample_orchestrator):
         """Test that state is initialized to default OrchestratorState."""
@@ -815,38 +830,36 @@ class TestRunLoop:
         from issue_orchestrator.observation.observation import SessionObservationResult
         from issue_orchestrator.control.session_controller import SessionDecision
 
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        # Create mock controller BEFORE orchestrator
+        mock_decision = SessionDecision(
+            status=SessionStatus.COMPLETED,
+            recovered_from_timeout=False,
+            reason="Test",
+        )
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.return_value = mock_decision
+
+        # Pass mock controller via factory
+        orchestrator = create_test_orchestrator(
+            sample_config, mock_repository_host, session_controller=mock_controller
+        )
         orchestrator.state.active_sessions.append(session)
 
         with patch.object(orchestrator.observer, "observe_session") as mock_observe:
             # Mock observe to return TERMINATED (session exited)
             mock_observe.return_value = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-            # Mock the controller to return COMPLETED
-            mock_decision = SessionDecision(
-                status=SessionStatus.COMPLETED,
-                recovered_from_timeout=False,
-                reason="Test",
+            # Run one iteration
+            async def run_one_iteration():
+                await asyncio.sleep(0.01)  # Let loop run once
+                orchestrator.request_shutdown()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
             )
-            mock_controller = MagicMock()
-            mock_controller.decide_outcome.return_value = mock_decision
 
-            with patch.object(
-                Orchestrator, "_session_controller",
-                new_callable=PropertyMock,
-                return_value=mock_controller,
-            ):
-                # Run one iteration
-                async def run_one_iteration():
-                    await asyncio.sleep(0.01)  # Let loop run once
-                    orchestrator.request_shutdown()
-
-                await asyncio.gather(
-                    orchestrator.run_loop(),
-                    run_one_iteration(),
-                )
-
-                mock_observe.assert_called()
+            mock_observe.assert_called()
 
     @pytest.mark.asyncio
     async def test_run_loop_handles_completed_sessions(
@@ -863,41 +876,39 @@ class TestRunLoop:
         issue = create_issue(1)
         session = create_session(issue)
 
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        # Create mock controller BEFORE orchestrator
+        mock_decision = SessionDecision(
+            status=SessionStatus.COMPLETED,
+            recovered_from_timeout=False,
+            reason="Test",
+        )
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.return_value = mock_decision
+
+        # Pass mock controller via factory
+        orchestrator = create_test_orchestrator(
+            sample_config, mock_repository_host, session_controller=mock_controller
+        )
         orchestrator.state.active_sessions.append(session)
 
         with patch.object(orchestrator.observer, "observe_session") as mock_observe:
             # Mock observe to return TERMINATED (session exited)
             mock_observe.return_value = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-            # Mock the controller to return COMPLETED
-            mock_decision = SessionDecision(
-                status=SessionStatus.COMPLETED,
-                recovered_from_timeout=False,
-                reason="Test",
+            # Run one iteration
+            async def run_one_iteration():
+                await asyncio.sleep(0.01)
+                orchestrator.request_shutdown()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
             )
-            mock_controller = MagicMock()
-            mock_controller.decide_outcome.return_value = mock_decision
 
-            with patch.object(
-                Orchestrator, "_session_controller",
-                new_callable=PropertyMock,
-                return_value=mock_controller,
-            ):
-                # Run one iteration
-                async def run_one_iteration():
-                    await asyncio.sleep(0.01)
-                    orchestrator.request_shutdown()
-
-                await asyncio.gather(
-                    orchestrator.run_loop(),
-                    run_one_iteration(),
-                )
-
-                # Verify session was removed from active_sessions after completion
-                assert session not in orchestrator.state.active_sessions
-                # Verify session was added to history
-                assert len(orchestrator.state.session_history) > 0
+            # Verify session was removed from active_sessions after completion
+            assert session not in orchestrator.state.active_sessions
+            # Verify session was added to history
+            assert len(orchestrator.state.session_history) > 0
 
     @pytest.mark.asyncio
     async def test_run_loop_fetches_available_issues_when_not_paused(
@@ -2187,8 +2198,10 @@ class TestReconcileOrphanedPrLabels:
             pr_tracker=mock_repository_host,
         )
 
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        orchestrator.label_sync = label_sync  # Inject label_sync
+        # Pass label_sync via factory
+        orchestrator = create_test_orchestrator(
+            sample_config, mock_repository_host, label_sync=label_sync
+        )
 
         fixed_count = orchestrator.reconcile_orphaned_pr_labels()
 
@@ -2225,8 +2238,10 @@ class TestReconcileOrphanedPrLabels:
             pr_tracker=mock_repository_host,
         )
 
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        orchestrator.label_sync = label_sync  # Inject label_sync
+        # Pass label_sync via factory
+        orchestrator = create_test_orchestrator(
+            sample_config, mock_repository_host, label_sync=label_sync
+        )
 
         fixed_count = orchestrator.reconcile_orphaned_pr_labels()
 
@@ -2263,8 +2278,10 @@ class TestReconcileOrphanedPrLabels:
             pr_tracker=mock_repository_host,
         )
 
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        orchestrator.label_sync = label_sync  # Inject label_sync
+        # Pass label_sync via factory
+        orchestrator = create_test_orchestrator(
+            sample_config, mock_repository_host, label_sync=label_sync
+        )
 
         fixed_count = orchestrator.reconcile_orphaned_pr_labels()
 

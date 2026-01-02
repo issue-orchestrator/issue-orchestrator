@@ -8,6 +8,11 @@ but keeps that knowledge out of the core (orchestrator).
 
 Principle: The orchestrator core imports only Protocols (ports).
            This module imports concrete implementations (adapters).
+
+Principle: "No Nulls in Orchestrator"
+           - Bootstrap is the single source of truth for choosing implementations
+           - Orchestrator has no Optional deps, no Null defaults
+           - Tests explicitly pass fakes/nulls
 """
 
 import logging
@@ -16,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from .config import Config
 from .ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner
+from .control.orchestrator_deps import OrchestratorDeps
 from .execution import (
     create_plugin_manager,
     PluggyEventSink,
@@ -280,11 +286,35 @@ def build_orchestrator(
         rate_limit_threshold=getattr(config, "rate_limit_warn_remaining", 100),
     )
 
-    return Orchestrator(
-        config=config,
+    # Validate all dependencies are present (required for OrchestratorDeps)
+    if github is None:
+        raise ValueError("GitHubAdapter (repository_host) is required")
+    if event_hub is None:
+        raise ValueError("EventHub is required")
+    if planner is None:
+        raise ValueError("Planner is required")
+    if session_manager is None:
+        raise ValueError("SessionManager is required")
+    if label_sync is None:
+        raise ValueError("LabelSync is required")
+    if action_applier is None:
+        raise ValueError("ActionApplier is required")
+    if fact_gatherer is None:
+        raise ValueError("FactGatherer is required")
+    if pr_scanner is None:
+        raise ValueError("PRScanner is required")
+    if session_restorer is None:
+        raise ValueError("SessionRestorer is required")
+    if completion_processor is None:
+        raise ValueError("CompletionProcessor is required")
+    if session_controller_instance is None:
+        raise ValueError("SessionController is required")
+
+    # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
+    deps = OrchestratorDeps(
         events=events,
         runner=runner,
-        _repository_host=github,
+        repository_host=github,
         event_hub=event_hub,
         planner=planner,
         session_manager=session_manager,
@@ -302,6 +332,8 @@ def build_orchestrator(
         session_controller=session_controller_instance,
         health_gate=health_gate,
     )
+
+    return Orchestrator(config=config, deps=deps)
 
 
 def _check_github_token_scopes(config: Config, github: GitHubAdapter) -> None:
@@ -329,9 +361,9 @@ def _check_github_token_scopes(config: Config, github: GitHubAdapter) -> None:
 
 def build_orchestrator_for_testing(
     config: Config,
+    github: GitHubAdapter,  # Required - no more hiding None
     events: EventSink | None = None,
     runner: SessionRunner | None = None,
-    github: GitHubAdapter | None = None,
     planner: Planner | None = None,
     session_manager: SessionManager | None = None,
     action_applier: ActionApplier | None = None,
@@ -339,15 +371,19 @@ def build_orchestrator_for_testing(
 ) -> "Orchestrator":
     """Build an orchestrator for testing with mock dependencies.
 
+    IMPORTANT: github (RepositoryHost) is now REQUIRED. Tests must provide
+    a mock/fake GitHub adapter. This follows the "no nulls" principle -
+    tests explicitly provide their fakes rather than relying on defaults.
+
     Args:
         config: Application configuration
-        events: Optional mock EventSink (defaults to NullEventSink)
-        runner: Optional mock SessionRunner (defaults to NullSessionRunner)
-        github: Optional mock GitHubAdapter
-        planner: Optional mock Planner (defaults to creating one)
-        session_manager: Optional mock SessionManager (defaults to creating one)
-        action_applier: Optional mock ActionApplier (created from github if available)
-        fact_gatherer: Optional mock FactGatherer (created from github if available)
+        github: Mock GitHubAdapter (required - tests must provide)
+        events: Mock EventSink (defaults to NullEventSink - explicit null)
+        runner: Mock SessionRunner (defaults to NullSessionRunner - explicit null)
+        planner: Mock Planner (defaults to creating one with no dependencies)
+        session_manager: Mock SessionManager (defaults to creating one)
+        action_applier: Mock ActionApplier (defaults to creating one from github)
+        fact_gatherer: Mock FactGatherer (defaults to creating one from github)
 
     Returns:
         Orchestrator configured with test dependencies
@@ -356,6 +392,8 @@ def build_orchestrator_for_testing(
 
     install_gh_guard()
 
+    # Tests must explicitly pass NullEventSink/NullSessionRunner if they don't care
+    # We provide sensible defaults but tests should be explicit
     events = events or NullEventSink()
     runner = runner or NullSessionRunner()
     events = SequencedEventSink(events)
@@ -377,8 +415,8 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
 
-    # Create default action applier if github is available and none provided
-    if action_applier is None and github is not None:
+    # Create default action applier
+    if action_applier is None:
         action_applier = ActionApplier(
             labels=github,
             sessions=session_manager,
@@ -389,11 +427,12 @@ def build_orchestrator_for_testing(
             reconcile=False,  # Disable for testing by default
         )
 
-    # Create default fact gatherer if github is available and none provided
-    if fact_gatherer is None and github is not None:
+    # Create default fact gatherer
+    if fact_gatherer is None:
         fact_gatherer = FactGatherer(
             config=config,
             repository_host=github,
+            events=events,
         )
 
     from .execution.hook_verifier import ExecutionHookVerifier
@@ -405,18 +444,80 @@ def build_orchestrator_for_testing(
         rate_limit_threshold=100,
     )
 
-    return Orchestrator(
+    # Create PRScanner for testing
+    from .control.pr_scanner import PRScanner
+    pr_scanner = PRScanner(
+        config=config,
+        repository=github,
+        events=events,
+    )
+
+    # Create SessionRestorer for testing
+    from .control.session_restorer import SessionRestorer
+    session_restorer = SessionRestorer(
+        config=config,
+        repository_host=github,
+        working_copy=working_copy,
+    )
+
+    # Create StateMachineManager for testing
+    from .control.state_machine_manager import StateMachineManager
+    state_machine_manager = StateMachineManager(
         config=config,
         events=events,
+    )
+
+    # Create CompletionProcessor for testing
+    from .control.completion_processor import CompletionProcessor
+    completion_processor = CompletionProcessor(
+        label_adapter=github,
+        pr_adapter=github,
+        git_adapter=working_copy,
+        event_bus=None,
+        label_config={
+            "blocked": config.get_label_blocked(),
+            "needs_human": config.get_label_needs_human(),
+            "code_reviewed": config.code_reviewed_label or "code-reviewed",
+            "needs_rework": config.get_label_needs_rework(),
+            "code_review": config.code_review_label or "needs-code-review",
+            "in_progress": config.get_label_in_progress(),
+        },
+    )
+
+    # Create SessionController for testing
+    from .control.session_controller import SessionController
+    session_controller = SessionController(
+        completion_processor=completion_processor,
+        events=events,
+    )
+
+    # Create LabelSync for testing
+    label_sync = LabelSync(labels=github, events=events, pr_tracker=github)
+
+    # Create EventHub for testing
+    event_hub = EventHub()
+
+    # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
+    deps = OrchestratorDeps(
+        events=events,
         runner=runner,
-        _repository_host=github,
+        repository_host=github,
+        event_hub=event_hub,
         planner=planner,
         session_manager=session_manager,
+        label_sync=label_sync,
         action_applier=action_applier,
         fact_gatherer=fact_gatherer,
+        pr_scanner=pr_scanner,
+        session_restorer=session_restorer,
         worktree_manager=worktree_manager,
         working_copy=working_copy,
         hook_verifier=hook_verifier,
         command_runner=command_runner,
+        state_machine_manager=state_machine_manager,
+        completion_processor=completion_processor,
+        session_controller=session_controller,
         health_gate=health_gate,
     )
+
+    return Orchestrator(config=config, deps=deps)

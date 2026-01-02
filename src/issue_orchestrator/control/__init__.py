@@ -92,6 +92,7 @@ from .reconciliation import (
 )
 from .session_controller import SessionController, SessionDecision
 from .planner import Planner, Plan, OrchestratorSnapshot, SkippedItem
+from .orchestrator_deps import OrchestratorDeps
 
 __all__ = [
     "Scheduler",
@@ -173,4 +174,6 @@ __all__ = [
     "Plan",
     "OrchestratorSnapshot",
     "SkippedItem",
+    # Dependencies container
+    "OrchestratorDeps",
 ]
