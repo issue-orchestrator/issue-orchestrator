@@ -268,7 +268,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     # Handle dry-run mode
     if hasattr(args, 'dry_run') and args.dry_run:
         from .control.scheduler import Scheduler
-        from ._tmux_impl import get_manager
+        from .adapters.terminal._tmux import get_manager
         from .analysis import analyze_all_issues, extract_issue_branches
         from .adapters.github import GitHubAdapter
         from .execution.git_working_copy import GitWorkingCopy
@@ -447,7 +447,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     # For iterm2 mode, run directly (no tmux wrapper) - agent sessions become iTerm2 tabs
     if config.ui_mode == "iterm2":
         import subprocess
-        from ._iterm2_impl import is_running_in_iterm2
+        from .adapters.terminal._iterm2 import is_running_in_iterm2
 
         # If not in iTerm2, launch iTerm2 with our command
         if not is_running_in_iterm2():
@@ -597,7 +597,7 @@ end tell'''
 def cmd_status(args: argparse.Namespace) -> int:
     """Show current status."""
     try:
-        from ._tmux_impl import list_sessions
+        from .adapters.terminal._tmux import list_sessions
 
         config = _load_config(args)
 
@@ -633,7 +633,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_attach(args: argparse.Namespace) -> int:
     """Attach to the orchestrator tmux session."""
-    from ._tmux_impl import attach_session, get_manager
+    from .adapters.terminal._tmux import attach_session, get_manager
 
     manager = get_manager()
     if not manager.has_session():
@@ -651,7 +651,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
 def cmd_switch(args: argparse.Namespace) -> int:
     """Switch to a specific issue window (when inside tmux)."""
-    from ._tmux_impl import get_manager
+    from .adapters.terminal._tmux import get_manager
 
     manager = get_manager()
     if not manager.has_session():
@@ -669,7 +669,7 @@ def cmd_switch(args: argparse.Namespace) -> int:
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
     """Switch to the dashboard window (when inside tmux)."""
-    from ._tmux_impl import get_manager
+    from .adapters.terminal._tmux import get_manager
 
     manager = get_manager()
     if not manager.has_session():
@@ -686,7 +686,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 def cmd_output(args: argparse.Namespace) -> int:
     """Show recent output from an issue's session."""
-    from ._tmux_impl import get_manager
+    from .adapters.terminal._tmux import get_manager
 
     manager = get_manager()
     issue_number: int = args.issue_number
@@ -975,7 +975,7 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
     This allows restarting the orchestrator without losing track of
     running Claude sessions.
     """
-    from ._iterm2_impl import discover_issue_tabs, get_iterm_manager
+    from .adapters.terminal._iterm2 import discover_issue_tabs, get_iterm_manager
     from .models import Session, Issue
     from datetime import datetime
     from .adapters.github import GitHubAdapter
@@ -1183,7 +1183,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     # 4. Check hooks setup
     console.print("\n[bold]4. Git Hooks[/bold]")
-    from ._worktree_impl import HOOKS_DIR
+    from .adapters.worktree._worktree import HOOKS_DIR
 
     bundled_hook = HOOKS_DIR / "pre-push"
     if bundled_hook.exists():

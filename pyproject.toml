@@ -142,10 +142,10 @@ type = "forbidden"
 source_modules = ["issue_orchestrator.orchestrator"]
 forbidden_modules = [
   "issue_orchestrator.execution",
-  "issue_orchestrator._worktree_impl",
+  "issue_orchestrator.adapters.worktree._worktree",
   "issue_orchestrator._github_impl",
-  "issue_orchestrator._tmux_impl",
-  "issue_orchestrator._iterm2_impl",
+  "issue_orchestrator.adapters.terminal._tmux",
+  "issue_orchestrator.adapters.terminal._iterm2",
 ]
 # Allow orchestrator to import bootstrap for run_orchestrator() entry point
 # This is the only allowed path to execution - via the composition root

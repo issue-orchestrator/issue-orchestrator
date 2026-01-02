@@ -180,7 +180,7 @@ class TestCLIWiring:
             mock_config.return_value = mock_cfg
 
             # Patch tmux at the module level
-            with patch('issue_orchestrator._tmux_impl.get_manager') as mock_tmux:
+            with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_tmux:
                 mock_mgr = MagicMock()
                 mock_mgr.list_windows.return_value = []
                 mock_tmux.return_value = mock_mgr
@@ -384,8 +384,8 @@ class TestSmoke:
         from issue_orchestrator.observation import observer
         from issue_orchestrator import orchestrator
         from issue_orchestrator.control import scheduler
-        from issue_orchestrator import _tmux_impl as tmux
-        from issue_orchestrator import _worktree_impl as worktree
+        from issue_orchestrator.adapters.terminal import _tmux as tmux
+        from issue_orchestrator.adapters.worktree import _worktree as worktree
         from issue_orchestrator import execution
 
         # If we get here, all imports succeeded

@@ -215,7 +215,7 @@ class ITermSessionManager:
         # Prepend gh-wrapper directory to PATH to intercept unauthorized gh pr create
         # This blocks agents from bypassing agent-done
         from pathlib import Path
-        from .control.isolation import build_isolation_prefix
+        from ...control.isolation import build_isolation_prefix
         wrapper_dir = Path(__file__).parent / "scripts"
         path_prefix = f'export PATH="{wrapper_dir}:$PATH" && '
 

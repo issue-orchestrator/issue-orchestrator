@@ -12,8 +12,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-# Path to bundled hooks (relative to this module)
-HOOKS_DIR = Path(__file__).parent / "hooks"
+# Path to bundled hooks (in issue_orchestrator/hooks/, 3 levels up from this module)
+HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
 
 # Claude Code settings to enforce agent-done on exit
 # The Stop hook checks for a marker file that agent-done creates

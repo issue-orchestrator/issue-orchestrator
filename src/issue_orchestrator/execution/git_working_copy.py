@@ -351,7 +351,7 @@ class GitWorkingCopy:
         centralized function. Falls back to legacy patterns for externally
         created branches.
         """
-        from .._worktree_impl import extract_issue_number_from_branch
+        from ..adapters.worktree._worktree import extract_issue_number_from_branch
 
         branch = self.get_current_branch(worktree)
         if not branch:

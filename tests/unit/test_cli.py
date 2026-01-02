@@ -114,7 +114,7 @@ class TestCmdStart:
             with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.adapters.github.github_adapter.GitHubAdapter.list_issues', return_value=[]):
                     with patch('issue_orchestrator.control.scheduler.Scheduler'):
-                        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+                        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
                             with patch('issue_orchestrator.analysis.analyze_all_issues', return_value=[]):
                                 with patch('issue_orchestrator.execution.git_working_copy.GitWorkingCopy.list_remote_branches', return_value=[]):
                                     with patch('issue_orchestrator.analysis.analyze_orphan_branches', return_value=[]):
@@ -159,7 +159,7 @@ class TestCmdStatus:
     def test_cmd_status_shows_config(self):
         """Verify status shows configuration."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator._tmux_impl.list_sessions', return_value=[]):
+            with patch('issue_orchestrator.adapters.terminal._tmux.list_sessions', return_value=[]):
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.max_concurrent_sessions = 3
@@ -177,7 +177,7 @@ class TestCmdStatus:
     def test_cmd_status_shows_active_sessions(self):
         """Verify status shows active sessions."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator._tmux_impl.list_sessions') as mock_list:
+            with patch('issue_orchestrator.adapters.terminal._tmux.list_sessions') as mock_list:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.max_concurrent_sessions = 3
@@ -369,7 +369,7 @@ class TestCmdAttach:
 
     def test_cmd_attach_no_session(self):
         """Verify attach fails when no session exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = False
             mock_get_mgr.return_value = mock_mgr
@@ -381,8 +381,8 @@ class TestCmdAttach:
 
     def test_cmd_attach_success(self):
         """Verify attach succeeds when session exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
-            with patch('issue_orchestrator._tmux_impl.attach_session') as mock_attach:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
+            with patch('issue_orchestrator.adapters.terminal._tmux.attach_session') as mock_attach:
                 mock_mgr = Mock()
                 mock_mgr.has_session.return_value = True
                 mock_get_mgr.return_value = mock_mgr
@@ -395,8 +395,8 @@ class TestCmdAttach:
 
     def test_cmd_attach_with_issue_number(self):
         """Verify attach switches to specific issue window."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
-            with patch('issue_orchestrator._tmux_impl.attach_session') as mock_attach:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
+            with patch('issue_orchestrator.adapters.terminal._tmux.attach_session') as mock_attach:
                 mock_mgr = Mock()
                 mock_mgr.has_session.return_value = True
                 mock_mgr.select_window.return_value = True
@@ -414,7 +414,7 @@ class TestCmdSwitch:
 
     def test_cmd_switch_no_session(self):
         """Verify switch fails when no session exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = False
             mock_get_mgr.return_value = mock_mgr
@@ -426,7 +426,7 @@ class TestCmdSwitch:
 
     def test_cmd_switch_window_not_found(self):
         """Verify switch fails when window doesn't exist."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = True
             mock_mgr.select_window.return_value = False
@@ -439,7 +439,7 @@ class TestCmdSwitch:
 
     def test_cmd_switch_success(self):
         """Verify switch succeeds when window exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = True
             mock_mgr.select_window.return_value = True
@@ -457,7 +457,7 @@ class TestCmdDashboard:
 
     def test_cmd_dashboard_no_session(self):
         """Verify dashboard fails when no session exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = False
             mock_get_mgr.return_value = mock_mgr
@@ -469,7 +469,7 @@ class TestCmdDashboard:
 
     def test_cmd_dashboard_not_found(self):
         """Verify dashboard fails when window doesn't exist."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = True
             mock_mgr.select_dashboard.return_value = False
@@ -482,7 +482,7 @@ class TestCmdDashboard:
 
     def test_cmd_dashboard_success(self):
         """Verify dashboard succeeds when window exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = True
             mock_mgr.select_dashboard.return_value = True
@@ -500,7 +500,7 @@ class TestCmdOutput:
 
     def test_cmd_output_window_not_found(self):
         """Verify output fails when window doesn't exist."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.capture_pane_output.return_value = None
             mock_get_mgr.return_value = mock_mgr
@@ -512,7 +512,7 @@ class TestCmdOutput:
 
     def test_cmd_output_success(self):
         """Verify output displays pane content successfully."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.capture_pane_output.return_value = "Sample output\nLine 2"
             mock_get_mgr.return_value = mock_mgr
@@ -525,7 +525,7 @@ class TestCmdOutput:
 
     def test_cmd_output_custom_lines(self):
         """Verify output respects custom line count."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.capture_pane_output.return_value = "Output"
             mock_get_mgr.return_value = mock_mgr
@@ -840,7 +840,7 @@ class TestCmdStartAdvanced:
             with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
-                        with patch('issue_orchestrator._iterm2_impl.is_running_in_iterm2') as mock_is_iterm2:
+                        with patch('issue_orchestrator.adapters.terminal._iterm2.is_running_in_iterm2') as mock_is_iterm2:
                             mock_config = Mock()
                             mock_config.agents = {'agent:test': Mock()}
                             mock_config.max_concurrent_sessions = 2

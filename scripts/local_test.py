@@ -15,8 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from issue_orchestrator.models import Issue, Session, SessionStatus, AgentConfig
-from issue_orchestrator._worktree_impl import create_worktree, remove_worktree, generate_branch_name
-from issue_orchestrator._tmux_impl import create_session, session_exists, kill_session, list_sessions
+from issue_orchestrator.adapters.worktree._worktree import create_worktree, remove_worktree, generate_branch_name
+from issue_orchestrator.adapters.terminal._tmux import create_session, session_exists, kill_session, list_sessions
 
 
 def test_branch_naming():

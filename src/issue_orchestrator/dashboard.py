@@ -266,7 +266,7 @@ class DashboardApp(App):
                     # Check if we're in iterm2 mode
                     if self.orchestrator.config.ui_mode == "iterm2":
                         logger.debug("Using iTerm2 tab switching")
-                        from ._iterm2_impl import select_tab_by_name
+                        from .adapters.terminal._iterm2 import select_tab_by_name
                         if select_tab_by_name(f"#{session.issue.number}"):
                             logger.debug("iTerm2 tab switch succeeded")
                             self.notify(f"Switched to #{session.issue.number}")
@@ -276,7 +276,7 @@ class DashboardApp(App):
                     else:
                         # Default: use tmux to switch to the session window
                         logger.debug("Using default tmux attach")
-                        from ._tmux_impl import get_manager
+                        from .adapters.terminal._tmux import get_manager
                         manager = get_manager()
                         logger.debug("Got tmux manager: %s, session: %s", manager, getattr(manager, 'session', None))
                         if manager and manager.session:
@@ -322,7 +322,7 @@ class Dashboard:
         """Handle attach - select window/tab and mark for attachment after exit."""
         if self.ui_mode == "iterm2":
             # For iterm2 mode, switch to the iTerm2 tab
-            from ._iterm2_impl import select_tab_by_name
+            from .adapters.terminal._iterm2 import select_tab_by_name
             if select_tab_by_name(f"#{issue_number}"):
                 if self._app:
                     self._app.notify(f"Switched to #{issue_number}")
@@ -331,7 +331,7 @@ class Dashboard:
                     self._app.notify(f"Tab for #{issue_number} not found", severity="warning")
         else:
             # For tmux mode, select the window
-            from ._tmux_impl import get_manager
+            from .adapters.terminal._tmux import get_manager
             manager = get_manager()
             if manager and manager.session:
                 manager.select_window(issue_number)

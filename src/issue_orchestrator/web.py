@@ -437,13 +437,13 @@ async def focus_session(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
 
     # Use AppleScript to focus the iTerm2 tab
-    from ._iterm2_impl import select_tab_by_name
+    from .adapters.terminal._iterm2 import select_tab_by_name
 
     if select_tab_by_name(f"#{issue_number}"):
         return JSONResponse({"status": "focused", "issue_number": issue_number})
     else:
         # Try tmux as fallback
-        from ._tmux_impl import get_manager
+        from .adapters.terminal._tmux import get_manager
         manager = get_manager()
         if manager.select_window(issue_number):
             return JSONResponse({"status": "focused", "issue_number": issue_number})
