@@ -10,9 +10,9 @@ import random
 import time
 from typing import Optional
 
-from . import gh_audit
-from .config import Config
-from .adapters.github import GitHubAdapter
+from ... import gh_audit
+from ...config import Config
+from ...adapters.github import GitHubAdapter
 
 logger = logging.getLogger(__name__)
 

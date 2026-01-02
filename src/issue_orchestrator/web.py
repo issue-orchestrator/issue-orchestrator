@@ -720,7 +720,7 @@ async def create_test_issues() -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from .test_data import create_test_issues as _create_test_issues
+    from .testing.support.test_data import create_test_issues as _create_test_issues
 
     config = _orchestrator.config
     if not config.repo:
@@ -740,7 +740,7 @@ async def cleanup_test_issues() -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from .test_data import cleanup_test_issues as _cleanup_test_issues
+    from .testing.support.test_data import cleanup_test_issues as _cleanup_test_issues
 
     config = _orchestrator.config
     if not config.repo:

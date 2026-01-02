@@ -27,7 +27,7 @@ from tests.e2e.conftest import (
     e2e_label,
     _github_adapter,
 )
-from issue_orchestrator.test_data import close_issue, cleanup_issues_by_label
+from issue_orchestrator.testing.support.test_data import close_issue, cleanup_issues_by_label
 from issue_orchestrator.domain.issue_key import IssueKey
 from tests.e2e.flows import (
     E2EFlow,

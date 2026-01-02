@@ -497,7 +497,7 @@ def pytest_sessionfinish(session, exitstatus):
 
 from issue_orchestrator.config import Config, AgentConfig
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
-from issue_orchestrator.test_data import (
+from issue_orchestrator.testing.support.test_data import (
     create_issue,
     create_test_issues,
     cleanup_test_issues,

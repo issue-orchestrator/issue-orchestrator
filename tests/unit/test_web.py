@@ -826,7 +826,7 @@ class TestTestDataEndpoints:
         mock_orch = create_mock_orchestrator()
         web._orchestrator = mock_orch
 
-        with patch("issue_orchestrator.test_data.create_test_issues") as mock_create:
+        with patch("issue_orchestrator.testing.support.test_data.create_test_issues") as mock_create:
             mock_create.return_value = [
                 "https://github.com/owner/repo/issues/1",
                 "https://github.com/owner/repo/issues/2",
@@ -870,7 +870,7 @@ class TestTestDataEndpoints:
 
         web._orchestrator = mock_orch
 
-        with patch("issue_orchestrator.test_data.cleanup_test_issues") as mock_cleanup:
+        with patch("issue_orchestrator.testing.support.test_data.cleanup_test_issues") as mock_cleanup:
             mock_cleanup.return_value = 2
 
             client = TestClient(app)
@@ -905,7 +905,7 @@ class TestTestDataEndpoints:
 
         web._orchestrator = mock_orch
 
-        with patch("issue_orchestrator.test_data.cleanup_test_issues") as mock_cleanup:
+        with patch("issue_orchestrator.testing.support.test_data.cleanup_test_issues") as mock_cleanup:
             mock_cleanup.return_value = 1
 
             client = TestClient(app)
