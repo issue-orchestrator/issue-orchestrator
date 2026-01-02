@@ -18,7 +18,7 @@ from ...config import Config
 from ...ports.issue_tracker import IssueTracker
 from ...ports.label_set import LabelSet
 from ...ports.pull_request_tracker import PRInfo, PullRequestTracker
-from ... import gh_audit
+from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .http_client import (
     GitHubHttpClient,

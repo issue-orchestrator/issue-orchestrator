@@ -470,7 +470,7 @@ def run_planning_cycle(
         else:
             logger.info("[FETCH] %s refresh", "Manual" if manual_refresh else "Scheduled")
         refresh_requested = False
-        from .. import gh_audit
+        from ..infra import gh_audit
         reason = gh_audit.AuditReason.QUEUE_REFRESH_MANUAL if manual_refresh else gh_audit.AuditReason.QUEUE_REFRESH_SCHEDULED
         scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
         with gh_audit.context(reason=reason, scope=scope):

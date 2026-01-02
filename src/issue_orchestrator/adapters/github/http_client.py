@@ -16,7 +16,7 @@ from urllib.parse import quote
 import httpx
 import yaml
 
-from ... import gh_audit
+from ...infra import gh_audit
 from ... import __version__
 
 logger = logging.getLogger(__name__)

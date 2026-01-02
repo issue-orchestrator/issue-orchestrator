@@ -377,9 +377,9 @@ class TestSmoke:
 
     def test_can_import_all_modules(self):
         """Verify all modules can be imported without errors."""
-        from issue_orchestrator import cli
+        from issue_orchestrator.entrypoints import cli
         from issue_orchestrator import config
-        from issue_orchestrator import dashboard
+        from issue_orchestrator.entrypoints import dashboard
         from issue_orchestrator import models
         from issue_orchestrator.observation import observer
         from issue_orchestrator import orchestrator

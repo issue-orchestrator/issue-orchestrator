@@ -10,7 +10,7 @@ import random
 import time
 from typing import Optional
 
-from ... import gh_audit
+from ...infra import gh_audit
 from ...config import Config
 from ...adapters.github import GitHubAdapter
 

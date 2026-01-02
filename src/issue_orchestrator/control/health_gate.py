@@ -184,7 +184,7 @@ def create_health_gate_from_config(config: Config) -> HealthGate:
     Returns:
         Configured HealthGate instance.
     """
-    from .. import gh_audit
+    from ..infra import gh_audit
 
     # gh_audit implements RateLimitProvider protocol
     return HealthGate(

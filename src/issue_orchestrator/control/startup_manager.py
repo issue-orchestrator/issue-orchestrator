@@ -32,7 +32,7 @@ from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost, HookVerifier
 from ..ports.session_runner import DiscoveredSession
 from ..infra import labels
-from .. import gh_audit
+from ..infra import gh_audit
 
 
 

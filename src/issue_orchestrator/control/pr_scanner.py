@@ -20,7 +20,7 @@ from ..models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..ports import EventSink, TraceEvent
 from ..ports.pull_request_tracker import PRInfo
-from .. import gh_audit
+from ..infra import gh_audit
 
 logger = logging.getLogger(__name__)
 

@@ -232,8 +232,8 @@ def check_rate_limit(reason: str) -> dict[str, Any] | None:
 
     if _event_sink is not None:
         try:
-            from .events import EventName
-            from .ports import TraceEvent
+            from ..events import EventName
+            from ..ports import TraceEvent
             _event_sink.publish(TraceEvent(EventName.GH_RATE_LIMIT, {
                 "reason": reason,
                 "snapshot": snapshot,

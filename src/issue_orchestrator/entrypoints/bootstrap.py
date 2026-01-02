@@ -50,7 +50,7 @@ from ..execution.git_working_copy import GitWorkingCopy
 from ..execution.command_runner import LocalCommandRunner
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
-from .. import gh_audit
+from ..infra import gh_audit
 
 if TYPE_CHECKING:
     from ..orchestrator import Orchestrator

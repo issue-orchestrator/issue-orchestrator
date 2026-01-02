@@ -25,7 +25,7 @@ from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from .. import gh_audit
+from ..infra import gh_audit
 
 if TYPE_CHECKING:
     from ..orchestrator import Orchestrator
