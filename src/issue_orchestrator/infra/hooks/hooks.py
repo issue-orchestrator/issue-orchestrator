@@ -25,8 +25,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Location of bundled hook templates
-TEMPLATES_DIR = Path(__file__).parent / "templates" / "hooks"
+# Location of bundled hook templates (3 levels up from infra/hooks/hooks.py)
+TEMPLATES_DIR = Path(__file__).parent.parent.parent / "templates" / "hooks"
 
 
 class MetaAgentType(Enum):

@@ -7,7 +7,7 @@ to SSE subscribers (web dashboard clients).
 import asyncio
 import logging
 
-from ..hookspec import hookimpl
+from ..infra.hooks.hookspec import hookimpl
 
 logger = logging.getLogger(__name__)
 

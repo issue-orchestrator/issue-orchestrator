@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from issue_orchestrator.hooks import (
+from issue_orchestrator.infra.hooks.hooks import (
     MetaAgentType,
     UnsupportedMetaAgentError,
     VerificationResult,

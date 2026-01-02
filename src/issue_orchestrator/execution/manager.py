@@ -9,7 +9,7 @@ from typing import Optional
 
 import pluggy
 
-from ..hookspec import PROJECT_NAME, TerminalSpec, LifecycleSpec
+from ..infra.hooks.hookspec import PROJECT_NAME, TerminalSpec, LifecycleSpec
 
 logger = logging.getLogger(__name__)
 

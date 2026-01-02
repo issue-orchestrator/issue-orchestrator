@@ -279,7 +279,7 @@ class TestLiveVerification:
 
         This spawns Claude and has it try to run the blocked command.
         """
-        from issue_orchestrator.hooks import ClaudeCodeAdapter
+        from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
         success, message = adapter.live_verify(test_repo_with_hooks, timeout=60)
@@ -297,7 +297,7 @@ class TestLiveVerification:
         This is the critical failure-detection test - we need to verify that
         when hooks are NOT installed, the verification reports FAILURE.
         """
-        from issue_orchestrator.hooks import ClaudeCodeAdapter
+        from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
         success, message = adapter.live_verify(test_repo_without_hooks, timeout=60)
@@ -315,7 +315,7 @@ class TestVerificationResult:
 
     def test_verify_hooks_passes_with_hooks(self, test_repo_with_hooks: Path):
         """Test that verify_hooks passes when hooks are properly installed."""
-        from issue_orchestrator.hooks import ClaudeCodeAdapter
+        from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
         result = adapter.verify_hooks(test_repo_with_hooks)
@@ -325,7 +325,7 @@ class TestVerificationResult:
 
     def test_verify_hooks_fails_without_hooks(self, test_repo_without_hooks: Path):
         """Test that verify_hooks fails when hooks are missing."""
-        from issue_orchestrator.hooks import ClaudeCodeAdapter
+        from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
         result = adapter.verify_hooks(test_repo_without_hooks)
@@ -335,14 +335,14 @@ class TestVerificationResult:
 
     def test_is_installed_true_with_hooks(self, test_repo_with_hooks: Path):
         """Test that is_installed returns True when hooks are installed."""
-        from issue_orchestrator.hooks import ClaudeCodeAdapter
+        from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
         assert adapter.is_installed(test_repo_with_hooks)
 
     def test_is_installed_false_without_hooks(self, test_repo_without_hooks: Path):
         """Test that is_installed returns False when hooks are missing."""
-        from issue_orchestrator.hooks import ClaudeCodeAdapter
+        from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
         assert not adapter.is_installed(test_repo_without_hooks)

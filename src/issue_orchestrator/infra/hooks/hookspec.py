@@ -4,7 +4,7 @@ This module defines the interfaces (hook specifications) that plugins can implem
 Plugins register implementations using the @hookimpl decorator.
 
 Usage:
-    from issue_orchestrator.hookspec import hookimpl
+    from issue_orchestrator.infra.hooks.hookspec import hookimpl
 
     class MyTerminalPlugin:
         @hookimpl

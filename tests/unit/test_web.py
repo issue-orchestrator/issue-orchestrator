@@ -1063,7 +1063,7 @@ class TestEmitEventHelper:
     def test_plugin_manager_emit_broadcasts_to_hooks(self):
         """Test that PluginManager.emit() broadcasts to on_trace_event hooks."""
         from issue_orchestrator.execution.manager import PluginManager
-        from issue_orchestrator.hookspec import hookimpl
+        from issue_orchestrator.infra.hooks.hookspec import hookimpl
 
         # Create a test plugin that captures events
         events_received = []
@@ -1087,7 +1087,7 @@ class TestEmitEventHelper:
     def test_plugin_manager_emit_with_empty_data(self):
         """Test that emit() works with no data argument."""
         from issue_orchestrator.execution.manager import PluginManager
-        from issue_orchestrator.hookspec import hookimpl
+        from issue_orchestrator.infra.hooks.hookspec import hookimpl
 
         events_received = []
 

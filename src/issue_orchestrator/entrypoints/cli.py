@@ -1251,7 +1251,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     # 7. Verify AI meta-agent hooks
     console.print("\n[bold]7. AI Meta-Agent Hooks[/bold]")
-    from ..hooks import (
+    from ..infra.hooks.hooks import (
         detect_agents_from_config,
         get_adapter,
         UnsupportedMetaAgentError,
@@ -1329,7 +1329,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 def cmd_setup_hooks(args: argparse.Namespace) -> int:
     """Install AI meta-agent hooks for the target project."""
-    from ..hooks import (
+    from ..infra.hooks.hooks import (
         detect_agents_from_config,
         get_adapter,
         UnsupportedMetaAgentError,

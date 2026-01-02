@@ -15,7 +15,7 @@ class ExecutionHookVerifier:
         self.config = config
 
     async def verify(self) -> HookVerificationResult:
-        from ..hooks import (
+        from ..infra.hooks.hooks import (
             detect_agents_from_config,
             get_adapter,
             check_verification_status,
