@@ -230,7 +230,7 @@ class Issue:
 
     Note: This class is being deprecated in favor of the Issue Protocol
     and GitHubIssue implementation. New code should use ports.issue.Issue
-    and execution.github_issue.GitHubIssue.
+    and adapters.github.GitHubIssue.
     """
     number: int
     title: str

@@ -30,6 +30,7 @@ class IssueTracker(Protocol):
         milestone: str | None = None,
         state: str = "open",
         limit: int = 100,
+        required_stable_ids: set[str] | None = None,
     ) -> list["Issue"]:
         """List issues matching the given criteria.
 
@@ -41,6 +42,8 @@ class IssueTracker(Protocol):
             state: Filter by issue state. Can be "open", "closed", or "all".
                   Defaults to "open".
             limit: Maximum number of issues to return. Defaults to 100.
+            required_stable_ids: Optional set of stable IDs that must be discovered.
+                If provided and missing after cached fetch, retry without cache.
 
         Returns:
             A list of Issue objects matching the criteria.

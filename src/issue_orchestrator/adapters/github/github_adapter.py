@@ -14,23 +14,25 @@ import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
-from ..config import Config
-from ..ports.issue_tracker import IssueTracker
-from ..ports.label_set import LabelSet
-from ..ports.pull_request_tracker import PRInfo, PullRequestTracker
-from .. import gh_audit
+from ...config import Config
+from ...ports.issue_tracker import IssueTracker
+from ...ports.label_set import LabelSet
+from ...ports.pull_request_tracker import PRInfo, PullRequestTracker
+from ... import gh_audit
 from .github_issue import GitHubIssue
-from .github_http import (
+from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
     GitHubHttpError,
     resolve_github_token,
 )
-from .github_repo import get_repo_from_git, GitRepoError
+from .repo import get_repo_from_git, GitRepoError
+from .cache import GitHubCache
+from ...ports.verification import VerificationService
 
 if TYPE_CHECKING:
-    from ..domain.issue_key import IssueKey, GitHubIssueKey
-    from ..ports.issue import Issue
+    from ...domain.issue_key import IssueKey, GitHubIssueKey
+    from ...ports.issue import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +57,21 @@ class GitHubAdapter:
         >>> pr = adapter.create_pr("Fix bug", "This fixes the bug", "feature-branch")
     """
 
-    def __init__(self, repo: str | None = None, config: Config | None = None):
+    def __init__(
+        self,
+        repo: str | None = None,
+        config: Config | None = None,
+        cache: GitHubCache | None = None,
+        verification_service: VerificationService | None = None,
+    ):
         """Initialize the GitHub adapter.
 
         Args:
             repo: Repository in owner/repo format. If None, uses current repo.
+            config: Configuration object.
+            cache: GitHubCache instance for caching API responses. If None, one is created.
+            verification_service: VerificationService for write-verify patterns. If None, one is created.
+                                  The service should be injected to preserve circuit breaker state.
         """
         if repo:
             self.repo = repo
@@ -86,56 +98,100 @@ class GitHubAdapter:
         self._verify_max_delay_ms = config.gh_write_verify_max_delay_ms if config else 2000
         self._verify_backoff = config.gh_write_verify_backoff if config else 1.5
         self._verify_jitter_ms = config.gh_write_verify_jitter_ms if config else 0
-        self._label_cache_ttl_seconds = max(0, int(getattr(config, "queue_refresh_seconds", 0))) if config else 0
-        self._label_cache: dict[int, tuple[float, list[str]]] = {}
-        self._issue_pr_cache: dict[int, PRInfo] = {}
-        self._branch_pr_cache: dict[str, PRInfo] = {}
-        self._cache_lock = threading.Lock()
-        self._cache_wait_count = 0
-        self._cache_wait_count_lock = threading.Lock()
+
+        # Use injected cache or create one with config-based TTL
+        cache_ttl = float(max(0, int(getattr(config, "queue_refresh_seconds", 0)))) if config else 0.0
+        self._cache = cache if cache is not None else GitHubCache(default_ttl=cache_ttl)
+        self._cache_enabled = cache_ttl > 0
+
+        # Use injected verification service or create one with default budget
+        # IMPORTANT: Inject the service to preserve circuit breaker state across calls
+        if verification_service is not None:
+            self._verification_service = verification_service
+        else:
+            from ...execution.verification_service import DefaultVerificationService, VerificationBudget
+            default_budget = VerificationBudget(
+                timeout_seconds=self._verify_timeout_seconds,
+                max_attempts=20,
+                initial_delay_ms=self._verify_initial_delay_ms,
+                max_delay_ms=self._verify_max_delay_ms,
+                backoff_factor=self._verify_backoff,
+                jitter_ms=self._verify_jitter_ms,
+            )
+            self._verification_service = DefaultVerificationService(default_budget=default_budget)
+
         logger.info(f"GitHubAdapter initialized for repo: {self.repo}")
 
-    @contextmanager
-    def _cache_guard(self, action: str):
-        acquired = self._cache_lock.acquire(blocking=False)
-        if not acquired:
-            self._increment_cache_waits(action)
-            self._cache_lock.acquire()
-        try:
-            yield
-        finally:
-            self._cache_lock.release()
-
-    def _increment_cache_waits(self, action: str) -> None:
-        with self._cache_wait_count_lock:
-            self._cache_wait_count += 1
-            wait_count = self._cache_wait_count
-        logger.debug("Cache lock contention while %s; wait_count=%d", action, wait_count)
-
     def update_label_cache(self, issue_number: int, labels: list[str]) -> None:
-        if self._label_cache_ttl_seconds <= 0:
+        """Update cached labels for an issue."""
+        if not self._cache_enabled:
             return
-        with self._cache_guard("update_label_cache"):
-            self._label_cache[issue_number] = (time.monotonic(), list(labels))
+        self._cache.set_issue_labels(issue_number, list(labels))
         self._update_pr_cache_labels(issue_number, labels)
 
-    def _update_pr_cache_labels(self, issue_number: int, labels: list[str]) -> None:
-        with self._cache_guard("update_pr_cache_labels"):
-            cached = self._issue_pr_cache.get(issue_number)
-            if not cached:
-                return
-            cached.labels = list(labels)
-            if cached.branch:
-                self._branch_pr_cache[cached.branch] = cached
+    def invalidate_label_cache(self, issue_number: int) -> None:
+        """Invalidate cached labels for an issue.
 
+        Call this after any write operation that modifies labels.
+        Per architecture: explicit invalidation rules for cache.
+        """
+        self._cache.invalidate_issue_labels(issue_number)
+        logger.debug("Invalidated label cache for issue %d", issue_number)
+
+    def invalidate_pr_cache(self, issue_number: int | None = None, branch: str | None = None) -> None:
+        """Invalidate cached PR info.
+
+        Args:
+            issue_number: Invalidate PR cache for this issue.
+            branch: Invalidate PR cache for this branch.
+        """
+        if issue_number is not None:
+            self._cache.invalidate_pr_by_issue(issue_number)
+            logger.debug("Invalidated PR cache for issue %d", issue_number)
+        if branch is not None:
+            self._cache.invalidate_pr_by_branch(branch)
+            logger.debug("Invalidated PR cache for branch %s", branch)
+
+    def _update_pr_cache_labels(self, issue_number: int, labels: list[str]) -> None:
+        """Update labels on a cached PR."""
+        cached = self._cache.get_pr_by_issue(issue_number)
+        if not cached:
+            return
+        cached["labels"] = list(labels)
+        branch = cached.get("branch")
+        self._cache.set_pr_by_issue(issue_number, cached, branch=branch)
 
     def _cache_pr_info(self, pr_info: PRInfo) -> None:
+        """Cache PR info by issue number and branch."""
         issue_number = self._extract_issue_number(pr_info.branch, pr_info.title)
-        with self._cache_guard("cache_pr_info"):
-            if issue_number is not None:
-                self._issue_pr_cache[issue_number] = pr_info
-            if pr_info.branch:
-                self._branch_pr_cache[pr_info.branch] = pr_info
+        pr_data = {
+            "number": pr_info.number,
+            "branch": pr_info.branch,
+            "title": pr_info.title,
+            "labels": list(pr_info.labels) if pr_info.labels else [],
+            "url": pr_info.url,
+            "body": pr_info.body,
+            "state": pr_info.state,
+            "issue_number": issue_number,
+        }
+        if issue_number is not None:
+            self._cache.set_pr_by_issue(issue_number, pr_data, branch=pr_info.branch)
+        elif pr_info.branch:
+            self._cache.set_pr_by_branch(pr_info.branch, pr_data)
+
+    def _pr_info_from_cache(self, cached: dict[str, Any]) -> PRInfo | None:
+        """Convert cached PR data back to PRInfo."""
+        if not cached:
+            return None
+        return PRInfo(
+            number=cached.get("number", 0),
+            title=cached.get("title", ""),
+            url=cached.get("url", ""),
+            branch=cached.get("branch", ""),
+            body=cached.get("body", ""),
+            state=cached.get("state", "open"),
+            labels=cached.get("labels", []),
+        )
 
     def _extract_issue_number(self, branch: str | None, title: str | None) -> int | None:
         if branch:
@@ -148,56 +204,93 @@ class GitHubAdapter:
                 return int(match.group(1))
         return None
 
-    def _verify_write(self, description: str, predicate, detail_fn=None) -> None:
+    def _verify_write(self, description: str, predicate, detail_fn=None, issue_number: int | None = None) -> None:
+        """Verify a write operation completed successfully.
+
+        Uses the injected VerificationService which maintains circuit breaker
+        state across calls. The service is initialized in __init__.
+
+        Failure classification:
+        - SYSTEMIC: Timeout or API error -> orchestrator should pause, probe, resume
+        - ISSUE_LOCAL: Predicate false after retries -> apply needs-reconcile label
+
+        Args:
+            description: Human-readable description of the write operation.
+            predicate: Callable that returns True if the write is verified.
+            detail_fn: Optional callable that returns the last observed state.
+            issue_number: Optional issue number for issue-local failure classification.
+        """
         if not self._verify_writes:
             return
-        start = time.monotonic()
-        deadline = start + self._verify_timeout_seconds
-        delay = self._verify_initial_delay_ms / 1000.0
-        max_delay = self._verify_max_delay_ms / 1000.0
-        attempt = 0
-        last_error: Exception | None = None
 
-        while True:
-            attempt += 1
+        from ...execution.verification_service import VerificationBudget
+        from ...ports.verification import VerificationResult
+
+        # Create per-call budget (configuration, not state)
+        budget = VerificationBudget(
+            timeout_seconds=self._verify_timeout_seconds,
+            max_attempts=20,  # Allow more attempts within time budget
+            initial_delay_ms=self._verify_initial_delay_ms,
+            max_delay_ms=self._verify_max_delay_ms,
+            backoff_factor=self._verify_backoff,
+            jitter_ms=self._verify_jitter_ms,
+        )
+
+        api_error_occurred = False
+
+        def check() -> tuple[bool, str | None]:
+            """Check predicate and return (success, observed_state)."""
+            nonlocal api_error_occurred
             try:
-                if predicate():
-                    if attempt > 1:
-                        logger.info(
-                            "Verified %s after %.2fs (%d attempts)",
-                            description,
-                            time.monotonic() - start,
-                            attempt,
-                        )
-                    return
-            except Exception as e:
-                last_error = e
-
-            if time.monotonic() >= deadline:
-                break
-
-            sleep_for = min(delay, max_delay)
-            if self._verify_jitter_ms > 0:
-                sleep_for += random.uniform(0, self._verify_jitter_ms / 1000.0)
-            time.sleep(sleep_for)
-            delay = min(delay * self._verify_backoff, max_delay)
-
-        detail = ""
-        if detail_fn:
-            try:
-                detail = f" last_state={detail_fn()}"
+                success = predicate()
+                observed = None
+                if detail_fn:
+                    try:
+                        observed = str(detail_fn())
+                    except Exception:
+                        observed = "<unavailable>"
+                return (success, observed)
+            except GitHubHttpError:
+                # API error during verification -> systemic failure
+                api_error_occurred = True
+                raise
             except Exception:
-                detail = " last_state=<unavailable>"
-        if last_error:
-            logger.warning(
-                "Write verification timed out for %s:%s error=%s",
-                description,
-                detail,
-                last_error,
+                # Re-raise to let the service classify it
+                raise
+
+        # Use the injected service (preserves circuit breaker state)
+        result, last_observed = self._verification_service.verify_condition(
+            operation="write_verify",
+            target=description,
+            check=check,
+            budget=budget,
+        )
+
+        if result == VerificationResult.SUCCESS:
+            return
+
+        # Build error message with last observed state
+        detail = ""
+        if last_observed:
+            detail = f" last_state={last_observed}"
+
+        from ...ports.verification import FailureType
+
+        if result == VerificationResult.TIMED_OUT or api_error_occurred:
+            # SYSTEMIC: Timeout or API error indicates infrastructure problem
+            logger.warning("Write verification timed out (SYSTEMIC) for %s%s", description, detail)
+            raise GitHubHttpError(
+                f"Timed out verifying write: {description}",
+                failure_type=FailureType.SYSTEMIC,
             )
         else:
-            logger.warning("Write verification timed out for %s:%s", description, detail)
-        raise GitHubHttpError(f"Timed out verifying write: {description}")
+            # ISSUE_LOCAL: Predicate returned false - write didn't take effect for this issue
+            logger.warning("Write verification failed (ISSUE_LOCAL) for %s%s", description, detail)
+            raise GitHubHttpError(
+                f"Failed to verify write: {description}",
+                failure_type=FailureType.ISSUE_LOCAL,
+                issue_number=issue_number,
+            )
 
     # IssueRepository implementation
 
@@ -207,6 +300,7 @@ class GitHubAdapter:
         milestone: str | None = None,
         state: str = "open",
         limit: int = 100,
+        required_stable_ids: set[str] | None = None,
     ) -> "list[Issue]":
         """List issues matching the given criteria.
 
@@ -215,17 +309,22 @@ class GitHubAdapter:
             milestone: Filter by milestone title.
             state: Filter by issue state ("open", "closed", or "all").
             limit: Maximum number of issues to return.
+            required_stable_ids: Optional set of stable IDs that must be discovered.
+                If provided and missing after cached fetch, retry without cache.
 
         Returns:
             List of GitHubIssue objects matching the criteria. Returns empty list on error.
         """
-        try:
-            raw_issues = self._client.list_issues(
+        def _fetch(use_cache: bool) -> list[dict]:
+            return self._client.list_issues(
                 labels=labels,
                 state=state,
                 milestone=milestone,
                 limit=limit,
+                use_cache=use_cache,
             )
+
+        def _to_issues(raw_issues: list[dict]) -> "list[Issue]":
             return [
                 GitHubIssue(
                     number=item["number"],
@@ -241,6 +340,37 @@ class GitHubAdapter:
                 for item in raw_issues
                 if isinstance(item, dict)
             ]
+
+        try:
+            # First attempt with cache
+            raw_issues = _fetch(use_cache=True)
+            issues = _to_issues(raw_issues)
+
+            # If required IDs are specified, check if any are missing
+            if required_stable_ids:
+                found_ids = {i.key.stable_id() for i in issues}
+                missing = required_stable_ids - found_ids
+                if missing:
+                    logger.info(
+                        "[INFLIGHT] Missing %d required IDs after cached fetch, retrying without cache: %s",
+                        len(missing), sorted(missing)
+                    )
+                    # Retry without cache to bypass potential stale 304
+                    raw_issues = _fetch(use_cache=False)
+                    issues = _to_issues(raw_issues)
+
+                    # Log final result
+                    found_ids = {i.key.stable_id() for i in issues}
+                    still_missing = required_stable_ids - found_ids
+                    if still_missing:
+                        logger.warning(
+                            "[INFLIGHT] Still missing %d required IDs after uncached fetch: %s",
+                            len(still_missing), sorted(still_missing)
+                        )
+                    else:
+                        logger.info("[INFLIGHT] All required IDs discovered after uncached fetch")
+
+            return issues
         except GitHubHttpError as e:
             logger.error("Failed to list issues: %s", e)
             return []
@@ -292,7 +422,7 @@ class GitHubAdapter:
         Returns:
             The Issue if found, None otherwise.
         """
-        from ..domain.issue_key import GitHubIssueKey
+        from ...domain.issue_key import GitHubIssueKey
 
         if isinstance(key, GitHubIssueKey):
             # If external_id is numeric, it's the issue number
@@ -325,17 +455,10 @@ class GitHubAdapter:
             return []
 
     def _get_cached_labels(self, issue_number: int) -> list[str] | None:
-        if self._label_cache_ttl_seconds <= 0:
+        """Get cached labels for an issue, or None if not cached/stale."""
+        if not self._cache_enabled:
             return None
-        with self._cache_guard("get_cached_labels"):
-            entry = self._label_cache.get(issue_number)
-            if not entry:
-                return None
-            fetched_at, labels = entry
-            if (time.monotonic() - fetched_at) > self._label_cache_ttl_seconds:
-                self._label_cache.pop(issue_number, None)
-                return None
-            return list(labels)
+        return self._cache.get_issue_labels(issue_number)
 
     def _get_issue_labels_fresh(self, issue_number: int) -> list[str]:
         with gh_audit.context(
@@ -378,12 +501,14 @@ class GitHubAdapter:
                 f"label add #{issue_number}:{label}",
                 _check,
                 detail_fn=lambda: {"labels": last_labels},
+                issue_number=issue_number,
             )
         except GitHubHttpError:
             logger.error(f"Failed to add label '{label}' to issue {issue_number}")
             raise
         finally:
-            pass
+            # Invalidate cache after write (per architecture: explicit invalidation)
+            self.invalidate_label_cache(issue_number)
 
     def remove_label(self, issue_number: int, label: str) -> None:
         """Remove a label from an issue.
@@ -414,12 +539,14 @@ class GitHubAdapter:
                 f"label remove #{issue_number}:{label}",
                 _check,
                 detail_fn=lambda: {"labels": last_labels},
+                issue_number=issue_number,
             )
         except GitHubHttpError:
             logger.error(f"Failed to remove label '{label}' from issue {issue_number}")
             raise
         finally:
-            pass
+            # Invalidate cache after write (per architecture: explicit invalidation)
+            self.invalidate_label_cache(issue_number)
 
     def has_label(self, issue_number: int, label: str) -> bool:
         """Check if an issue has a specific label.
@@ -451,10 +578,13 @@ class GitHubAdapter:
             List of PRInfo objects. Returns empty list on error.
         """
         try:
-            with self._cache_guard("get_prs_for_branch_cache"):
-                cached = self._branch_pr_cache.get(branch)
-                if cached and (state == "all" or cached.state.lower() == state.lower()):
-                    return [cached]
+            # Check cache first
+            cached = self._cache.get_pr_by_branch(branch)
+            if cached:
+                pr_info = self._pr_info_from_cache(cached)
+                if pr_info and (state == "all" or pr_info.state.lower() == state.lower()):
+                    return [pr_info]
+            # Fetch from API
             output = self._client.get_prs_for_branch(branch, state=state)
             if isinstance(output, list):
                 prs = [self._pr_info_from_api(pr) for pr in output if isinstance(pr, dict)]
@@ -509,10 +639,13 @@ class GitHubAdapter:
             List of PRInfo objects. Returns empty list on error.
         """
         try:
-            with self._cache_guard("get_prs_for_issue_cache"):
-                cached = self._issue_pr_cache.get(issue_number)
-                if cached and (state == "all" or cached.state.lower() == state.lower()):
-                    return [cached]
+            # Check cache first
+            cached = self._cache.get_pr_by_issue(issue_number)
+            if cached:
+                pr_info = self._pr_info_from_cache(cached)
+                if pr_info and (state == "all" or pr_info.state.lower() == state.lower()):
+                    return [pr_info]
+            # Fetch from API
             with gh_audit.context(
                 reason=gh_audit.AuditReason.GH_READ,
                 issue_key=str(issue_number),
@@ -666,6 +799,7 @@ class GitHubAdapter:
                 f"comment add #{issue_or_pr_number}",
                 _check,
                 detail_fn=lambda: {"comment_count": len(last_comments)},
+                issue_number=issue_or_pr_number,
             )
 
             return comment_url
@@ -729,7 +863,7 @@ class GitHubAdapter:
         Returns:
             A GitHubIssueKey with this adapter's repo and the parsed external_id.
         """
-        from ..domain.issue_key import GitHubIssueKey, parse_external_id
+        from ...domain.issue_key import GitHubIssueKey, parse_external_id
 
         # Try to fetch the issue to get the stable external_id from title
         issue = self.get_issue(issue_number)
@@ -772,6 +906,7 @@ class GitHubAdapter:
                 f"issue create #{issue_number}",
                 _check,
                 detail_fn=lambda: {"labels": last_labels},
+                issue_number=issue_number,
             )
         return issue_number
 
@@ -818,3 +953,160 @@ class GitHubAdapter:
         if not isinstance(full, dict):
             return None
         return self._pr_info_from_api(full)
+
+    # -------------------- Additional Methods for Test Data/E2E --------------------
+
+    def create_label(
+        self,
+        name: str,
+        *,
+        color: str = "ededed",
+        description: str | None = None,
+        force: bool = False,
+    ) -> None:
+        """Create a label in the repository.
+
+        Args:
+            name: Label name.
+            color: Label color (hex without #).
+            description: Optional label description.
+            force: If True, update existing label if it already exists.
+        """
+        self._client.create_label(name, color=color, description=description, force=force)
+        last_labels: list[str] = []
+
+        def _check() -> bool:
+            nonlocal last_labels
+            labels = self._client.list_labels()
+            last_labels = [l.get("name", "") for l in labels]
+            return name in last_labels
+
+        self._verify_write(
+            f"label create {name}",
+            _check,
+            detail_fn=lambda: {"labels": last_labels},
+        )
+
+    def delete_label(self, name: str) -> None:
+        """Delete a label from the repository.
+
+        Args:
+            name: Label name to delete.
+        """
+        self._client.delete_label(name)
+        last_labels: list[str] = []
+
+        def _check() -> bool:
+            nonlocal last_labels
+            labels = self._client.list_labels()
+            last_labels = [l.get("name", "") for l in labels]
+            return name not in last_labels
+
+        self._verify_write(
+            f"label delete {name}",
+            _check,
+            detail_fn=lambda: {"labels": last_labels},
+        )
+
+    def update_issue_state(self, issue_number: int, state: str) -> None:
+        """Update an issue's state (open/closed).
+
+        Args:
+            issue_number: The issue number to update.
+            state: New state ("open" or "closed").
+        """
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.GH_WRITE,
+            issue_key=str(issue_number),
+            scope=gh_audit.AuditScope.UNKNOWN,
+        ):
+            self._client.update_issue_state(issue_number, state)
+        last_state: str | None = None
+
+        def _check() -> bool:
+            nonlocal last_state
+            issue = self.get_issue(issue_number)
+            last_state = issue.state if issue else None
+            return last_state == state.lower()
+
+        self._verify_write(
+            f"issue state #{issue_number}:{state}",
+            _check,
+            detail_fn=lambda: {"state": last_state},
+            issue_number=issue_number,
+        )
+
+    def list_branches(self) -> list[str]:
+        """List all branches in the repository.
+
+        Returns:
+            List of branch names.
+        """
+        return self._client.list_branches()
+
+    def delete_branch(self, branch: str) -> None:
+        """Delete a branch from the repository.
+
+        Args:
+            branch: Branch name to delete.
+        """
+        self._client.delete_branch(branch)
+
+        def _check() -> bool:
+            return not self._client.branch_exists(branch)
+
+        self._verify_write(
+            f"branch delete {branch}",
+            _check,
+            detail_fn=lambda: {"branch": branch, "exists": self._client.branch_exists(branch)},
+        )
+
+    def branch_exists(self, branch: str) -> bool:
+        """Check if a branch exists in the repository.
+
+        Args:
+            branch: Branch name to check.
+
+        Returns:
+            True if the branch exists, False otherwise.
+        """
+        return self._client.branch_exists(branch)
+
+    def close_pr(self, pr_number: int) -> None:
+        """Close a pull request.
+
+        Args:
+            pr_number: The PR number to close.
+        """
+        self._client.close_pr(pr_number)
+        last_pr: PRInfo | None = None
+
+        def _check() -> bool:
+            nonlocal last_pr
+            last_pr = self.get_pr(pr_number)
+            return last_pr is not None and last_pr.state == "closed"
+
+        self._verify_write(
+            f"pr close #{pr_number}",
+            _check,
+            detail_fn=lambda: {"state": last_pr.state if last_pr else None},
+        )
+
+    def get_issue_comments(self, issue_number: int) -> list[dict[str, Any]]:
+        """Get comments on an issue.
+
+        Args:
+            issue_number: The issue number to get comments for.
+
+        Returns:
+            List of comment dictionaries.
+        """
+        return self._client.get_issue_comments(issue_number)
+
+    def list_labels(self) -> list[dict[str, Any]]:
+        """List all labels in the repository.
+
+        Returns:
+            List of label dictionaries with 'name', 'color', 'description' keys.
+        """
+        return self._client.list_labels()

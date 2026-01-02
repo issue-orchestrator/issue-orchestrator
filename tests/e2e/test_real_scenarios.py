@@ -25,7 +25,7 @@ import pytest
 from tests.e2e.conftest import (
     OrchestratorProcess,
     e2e_label,
-    _github_client,
+    _github_adapter,
 )
 from issue_orchestrator.test_data import close_issue, cleanup_issues_by_label
 from issue_orchestrator.domain.issue_key import IssueKey
@@ -124,10 +124,9 @@ def create_single_issue(
     title: str,
     labels: list[str],
     watcher=None,
-    control_api_port: int | None = None,
 ) -> IssueKey:
     """Create a single test issue (with labels ensured)."""
-    flow = E2EFlow(repo=repo, watcher=watcher, control_api_port=control_api_port)
+    flow = E2EFlow(repo=repo, watcher=watcher)
     return flow.create_issue(title, labels, body=f"Automated test issue.\n\nLabels: {', '.join(labels)}")
 
 
@@ -274,7 +273,6 @@ class TestTriageReviewTrigger:
                 repo=repo_name,
                 watcher=runtime.watcher,
                 filter_label=run_label,
-                control_api_port=triage_config.control_api_port,
             )
 
             # Create multiple issues
@@ -328,13 +326,13 @@ class TestTriageReviewTrigger:
                 if flow:
                     flow.close_pr(pr_num)
                 else:
-                    client = _github_client(repo_name)
-                    pr = client.get_pr(pr_num)
-                    branch = (pr.get("head") or {}).get("ref") if pr else None
-                    client.close_pr(pr_num)
+                    adapter = _github_adapter(repo_name)
+                    pr = adapter.get_pr(pr_num)
+                    branch = pr.branch if pr else None
+                    adapter.close_pr(pr_num)
                     if branch:
                         try:
-                            client.delete_branch(branch)
+                            adapter.delete_branch(branch)
                         except Exception:
                             pass
             # Always close issues to prevent accumulation
@@ -370,13 +368,9 @@ class TestReworkCyclesAndEscalation:
 
         issue_number = None
         pr_number = None
-        raw_port = os.environ.get("E2E_CONTROL_API_PORT", "0")
-        control_api_port = int(raw_port) if raw_port.isdigit() else 0
-        control_api_port = control_api_port or None
         flow = E2EFlow(
             repo=repo_name,
             watcher=orchestrator_watcher,
-            control_api_port=control_api_port,
         )
 
         try:
@@ -387,7 +381,6 @@ class TestReworkCyclesAndEscalation:
                 "[E2E-REWORK] Test rework cycles and escalation",
                 ["agent:script-completes", "test-data", e2e_label("rework_cycles")],
                 watcher=orchestrator_watcher,
-                control_api_port=control_api_port,
             )
             issue_number = int(issue_key.stable_id())
             logger.info("  Created issue #%d", issue_number)

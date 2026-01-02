@@ -112,7 +112,7 @@ class TestCmdStart:
         """Verify dry-run mode doesn't create orchestrator."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.execution.github_adapter.GitHubAdapter.list_issues', return_value=[]):
+                with patch('issue_orchestrator.adapters.github.github_adapter.GitHubAdapter.list_issues', return_value=[]):
                     with patch('issue_orchestrator.control.scheduler.Scheduler'):
                         with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
                             with patch('issue_orchestrator.analysis.analyze_all_issues', return_value=[]):
@@ -666,6 +666,13 @@ class TestSetupLogging:
                     mock_logger.removeHandler.assert_called_once_with(existing_handler)
 
 
+def _mock_issue(number: int) -> Mock:
+    """Create a mock Issue object with the given number."""
+    issue = Mock()
+    issue.number = number
+    return issue
+
+
 class TestRunTestSetup:
     """Tests for _run_test_setup function."""
 
@@ -677,17 +684,17 @@ class TestRunTestSetup:
         config.github_token_env = None
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
-        with patch('issue_orchestrator.cli._github_client_for_config') as mock_client_factory:
-            client = Mock()
-            client.list_issues.return_value = [{"number": 1}, {"number": 2}]
-            client.create_issue.return_value = 123
-            mock_client_factory.return_value = client
+        with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_adapter_factory:
+            adapter = Mock()
+            adapter.list_issues.return_value = [_mock_issue(1), _mock_issue(2)]
+            adapter.create_issue.return_value = 123
+            mock_adapter_factory.return_value = adapter
 
             result = _run_test_setup(config)
 
             assert result is True
-            assert client.list_issues.called
-            assert client.create_issue.called
+            assert adapter.list_issues.called
+            assert adapter.create_issue.called
 
     def test_run_test_setup_creates_labels(self):
         """Verify test setup creates required labels."""
@@ -697,15 +704,15 @@ class TestRunTestSetup:
         config.github_token_env = None
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
-        with patch('issue_orchestrator.cli._github_client_for_config') as mock_client_factory:
-            client = Mock()
-            client.list_issues.return_value = []
-            mock_client_factory.return_value = client
+        with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_adapter_factory:
+            adapter = Mock()
+            adapter.list_issues.return_value = []
+            mock_adapter_factory.return_value = adapter
 
             result = _run_test_setup(config)
 
             assert result is True
-            assert client.create_label.called
+            assert adapter.create_label.called
 
 
 class TestCmdStartAdvanced:
@@ -1042,7 +1049,7 @@ class TestCmdInitAdvanced:
     def test_cmd_init_creates_all_labels(self):
         """Verify init creates all required labels."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.cli._github_client_for_config') as mock_client_factory:
+            with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.agents = {'agent:backend': Mock(), 'agent:frontend': Mock()}
@@ -1067,7 +1074,7 @@ class TestCmdInitAdvanced:
     def test_cmd_init_handles_failures(self):
         """Verify init reports failures correctly."""
         with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.cli._github_client_for_config') as mock_client_factory:
+            with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.agents = {'agent:test': Mock()}

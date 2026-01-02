@@ -68,12 +68,19 @@ class TestOrchestratorWiring:
         working_copy = MagicMock()
         working_copy.list_remote_branches.return_value = []
 
+        from issue_orchestrator.control.health_gate import HealthGate
+        health_gate = HealthGate(
+            max_concurrent_sessions=config.max_concurrent_sessions,
+            rate_limit_threshold=100,
+        )
+
         orchestrator = Orchestrator(
             config,
             _repository_host=mock_repository_host,
             worktree_manager=GitWorktreeManager(),
             working_copy=working_copy,
             hook_verifier=hook_verifier,
+            health_gate=health_gate,
         )
 
         await orchestrator.startup()
@@ -101,6 +108,14 @@ class TestOrchestratorWiring:
         working_copy = MagicMock()
         working_copy.list_remote_branches.return_value = []
 
+        from issue_orchestrator.control.health_gate import HealthGate
+        from issue_orchestrator.control.pr_scanner import PRScanner
+        health_gate = HealthGate(
+            max_concurrent_sessions=config.max_concurrent_sessions,
+            rate_limit_threshold=100,
+        )
+        mock_pr_scanner = MagicMock(spec=PRScanner)
+
         orchestrator = Orchestrator(
             config,
             _repository_host=mock_repository_host,
@@ -108,6 +123,8 @@ class TestOrchestratorWiring:
             working_copy=working_copy,
             hook_verifier=hook_verifier,
             runner=patch_plugin_manager,
+            health_gate=health_gate,
+            pr_scanner=mock_pr_scanner,
         )
         test_issue = Issue(
             number=456,

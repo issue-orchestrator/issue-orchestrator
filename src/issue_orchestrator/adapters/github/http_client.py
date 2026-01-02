@@ -16,8 +16,8 @@ from urllib.parse import quote
 import httpx
 import yaml
 
-from .. import gh_audit
-from .. import __version__
+from ... import gh_audit
+from ... import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +33,26 @@ class GitHubHttpError(Exception):
         url: str | None = None,
         status_code: int | None = None,
         response_text: str | None = None,
+        failure_type: "Any | None" = None,  # FailureType enum, imported lazily
+        issue_number: int | None = None,
     ) -> None:
         super().__init__(message)
         self.method = method
         self.url = url
         self.status_code = status_code
         self.response_text = response_text
+        self.failure_type = failure_type  # FailureType enum
+        self.issue_number = issue_number  # Affected issue number if issue_local
+
+    def is_systemic(self) -> bool:
+        """Check if this is a systemic failure."""
+        from ...ports.verification import FailureType
+        return self.failure_type == FailureType.SYSTEMIC
+
+    def is_issue_local(self) -> bool:
+        """Check if this is an issue-local failure."""
+        from ...ports.verification import FailureType
+        return self.failure_type == FailureType.ISSUE_LOCAL
 
 
 class GitHubAuthError(GitHubHttpError):
@@ -91,6 +105,31 @@ class _ETagEntry:
     payload: Any
 
 
+def _extract_rate_limit_headers(response: httpx.Response) -> dict[str, int] | None:
+    """Extract X-RateLimit-* headers from GitHub response.
+
+    Returns a dict with remaining, limit, used, reset if available.
+    """
+    remaining = response.headers.get("X-RateLimit-Remaining")
+    limit = response.headers.get("X-RateLimit-Limit")
+    used = response.headers.get("X-RateLimit-Used")
+    reset = response.headers.get("X-RateLimit-Reset")
+
+    if remaining is None and limit is None:
+        return None
+
+    result: dict[str, int] = {}
+    if remaining is not None:
+        result["remaining"] = int(remaining)
+    if limit is not None:
+        result["limit"] = int(limit)
+    if used is not None:
+        result["used"] = int(used)
+    if reset is not None:
+        result["reset"] = int(reset)
+    return result if result else None
+
+
 class GitHubHttpClient:
     """Minimal GitHub REST client for issue-orchestrator."""
 
@@ -140,6 +179,8 @@ class GitHubHttpClient:
         response_text = ""
         status_code = None
         payload: Any = None
+        was_304 = False
+        rate_limit_info: dict[str, int] | None = None
         try:
             response = self._client.request(
                 method,
@@ -150,10 +191,13 @@ class GitHubHttpClient:
             )
             status_code = response.status_code
             response_text = response.text
+            # Extract rate limit headers from every response
+            rate_limit_info = _extract_rate_limit_headers(response)
             if status_code == 304 and use_cache:
                 cached = self._etag_cache.get(cache_key)
                 if cached is not None:
                     payload = cached.payload
+                    was_304 = True
                     return payload
             if status_code >= 400:
                 error = f"{status_code} {response_text.strip()}"
@@ -175,6 +219,8 @@ class GitHubHttpClient:
             return payload
         finally:
             duration_ms = int((time.monotonic() - start) * 1000)
+            # 304 Not Modified: no data was transferred, so items_returned=0
+            items_count = 0 if was_304 else _count_items(payload)
             gh_audit.record(
                 args=[method.upper(), url],
                 repo=self._config.repo,
@@ -182,8 +228,9 @@ class GitHubHttpClient:
                 error=error,
                 caller=caller,
                 bytes_returned=len(response_text.encode("utf-8")) if response_text else 0,
-                items_returned=_count_items(payload),
+                items_returned=items_count,
                 full_scan=_is_full_scan(method, path),
+                rate_limit=rate_limit_info,
             )
 
     # -------------------- Issues --------------------
@@ -195,7 +242,18 @@ class GitHubHttpClient:
         state: str = "open",
         milestone: str | None = None,
         limit: int = 100,
+        use_cache: bool = True,
     ) -> list[dict[str, Any]]:
+        """List issues matching the given criteria.
+
+        Args:
+            labels: Filter by issues that have all of these labels.
+            state: Filter by issue state. Can be "open", "closed", or "all".
+            milestone: Filter by milestone title.
+            limit: Maximum number of issues to return.
+            use_cache: If True (default), use ETag cache. If False, bypass cache
+                and force a fresh request (used when required IDs are missing).
+        """
         params: dict[str, Any] = {
             "state": state,
             "per_page": min(100, max(1, limit)),
@@ -211,6 +269,7 @@ class GitHubHttpClient:
             f"/repos/{self._config.repo}/issues",
             params=params,
             caller="list_issues",
+            use_cache=use_cache,
         )
         if not isinstance(payload, list):
             return []
@@ -548,88 +607,97 @@ def resolve_github_token(
     configured_token: str | None,
     configured_env: str | None = None,
 ) -> str:
+    """Resolve GitHub token from multiple sources.
+
+    Priority order (per ADR-0014):
+    1. Explicitly configured token (from config file)
+    2. Custom env var (if configured_env is set)
+    3. ISSUE_ORCH_GITHUB_TOKEN env var (primary)
+    4. GITHUB_TOKEN env var (fallback)
+    5. GH_TOKEN env var (fallback)
+    6. OS keychain via keyring library (optional convenience)
+
+    Not supported: gh hosts.yml and gh keychain formats.
+    """
     if configured_token:
         return configured_token
     if configured_env:
         token = os.environ.get(configured_env)
         if token:
             return token
-    for env_name in ("GITHUB_TOKEN", "GH_TOKEN"):
+    # Primary env var per ADR-0014
+    for env_name in ("ISSUE_ORCH_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
         token = os.environ.get(env_name)
         if token:
             return token
-    token = _read_gh_hosts_token()
+    # Optional keychain via keyring library
+    token = _read_keyring_token()
     if token:
         return token
-    token = _read_gh_keychain_token()
-    if token:
-        return token
-    raise GitHubAuthError("GitHub token not configured")
+    raise GitHubAuthError(
+        "GitHub token not configured. Set ISSUE_ORCH_GITHUB_TOKEN or run: "
+        "issue-orchestrator auth store"
+    )
 
 
-def _read_gh_hosts_token() -> str | None:
-    candidates = [
-        Path.home() / ".config" / "gh" / "hosts.yml",
-        Path.home() / "Library" / "Application Support" / "gh" / "hosts.yml",
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        host = payload.get("github.com", {})
-        if isinstance(host, dict):
-            token = host.get("oauth_token") or host.get("token")
-            if token:
-                return str(token)
-    return None
+# Keyring service/username constants for token storage
+KEYRING_SERVICE = "issue-orchestrator"
+KEYRING_USERNAME = "github-token"
 
 
-def _read_gh_hosts_user() -> str | None:
-    candidates = [
-        Path.home() / ".config" / "gh" / "hosts.yml",
-        Path.home() / "Library" / "Application Support" / "gh" / "hosts.yml",
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        host = payload.get("github.com") or {}
-        if isinstance(host, dict):
-            user = host.get("user")
-            if user:
-                return str(user)
-    return None
+def _read_keyring_token() -> str | None:
+    """Read GitHub token from OS keychain via keyring library.
 
+    Uses the cross-platform keyring library which supports:
+    - macOS Keychain
+    - Windows Credential Locker
+    - Linux Secret Service (GNOME Keyring, KWallet)
 
-def _read_gh_keychain_token() -> str | None:
-    if sys.platform != "darwin":
-        return None
-    user = _read_gh_hosts_user()
-    if not user:
+    Returns None if keyring is not available or no token is stored.
+    """
+    try:
+        import keyring
+    except ImportError:
         return None
     try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-s", "gh:github.com", "-a", user, "-w"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except (OSError, ValueError):
+        token = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        return token if token else None
+    except Exception:
+        # Keyring can fail for various reasons (no backend, locked, etc.)
         return None
-    if result.returncode != 0:
-        return None
-    token = result.stdout.strip()
-    return token or None
+
+
+def store_keyring_token(token: str) -> None:
+    """Store GitHub token in OS keychain via keyring library.
+
+    Args:
+        token: The GitHub token to store
+
+    Raises:
+        ImportError: If keyring library is not installed
+        Exception: If keyring storage fails
+    """
+    import keyring
+    keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, token)
+
+
+def clear_keyring_token() -> bool:
+    """Remove GitHub token from OS keychain.
+
+    Returns:
+        True if token was deleted, False if no token was stored
+    """
+    try:
+        import keyring
+    except ImportError:
+        return False
+    try:
+        keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
+        return True
+    except keyring.errors.PasswordDeleteError:  # type: ignore[attr-defined]
+        return False
+    except Exception:
+        return False
 
 
 def _search_items(payload: Any) -> list[dict[str, Any]]:

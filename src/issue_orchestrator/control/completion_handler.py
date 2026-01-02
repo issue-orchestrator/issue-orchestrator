@@ -19,12 +19,17 @@ if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
+    from ..models import PendingReview, PendingRework, PendingTriageReview
+    from .state_machine_manager import StateMachineManager
 
 from ..config import Config
 from ..events import EventName
 from ..logging_config import log_context
 from ..models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
+from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
+from .reconciliation import build_expected_for_mutation
+from .. import labels
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,7 @@ class CompletionResult:
     should_defer_cleanup: bool = False
     should_queue_review: bool = False
     pending_cleanup: Optional[PendingCleanup] = None
+    actions: tuple[Action, ...] = ()
 
 
 class CompletionHandler:
@@ -119,6 +125,9 @@ class CompletionHandler:
         # Determine if we should queue code review
         should_queue_review = self._should_queue_review(session, status, pr_url)
 
+        # Generate actions for label/comment changes (policy logic)
+        completion_actions = self.generate_completion_actions(session, status)
+
         result = CompletionResult(
             history_entry=history_entry,
             pr_url=pr_url,
@@ -126,6 +135,7 @@ class CompletionHandler:
             should_defer_cleanup=should_defer,
             should_queue_review=should_queue_review,
             pending_cleanup=pending_cleanup,
+            actions=completion_actions,
         )
         total_duration = time.monotonic() - start_time
         logger.info(
@@ -466,3 +476,130 @@ class CompletionHandler:
             logger.info(f"[REVIEW] Session #{session.issue.number} completed but no PR found")
 
         return False
+
+    def generate_completion_actions(
+        self,
+        session: Session,
+        status: SessionStatus,
+    ) -> tuple[Action, ...]:
+        """Generate label/comment actions for session completion.
+
+        This encapsulates the POLICY logic for what labels to add/remove
+        when a session completes with various statuses.
+
+        Args:
+            session: The completed session
+            status: The completion status
+
+        Returns:
+            Tuple of actions to apply
+        """
+        actions: list[Action] = []
+        issue_number = session.issue.number
+        in_progress_label = self.config.get_label_in_progress()
+        expected = build_expected_for_mutation()
+
+        if status == SessionStatus.TIMED_OUT:
+            # POLICY: Timeout → blocked-failed + comment + release claim
+            actions.append(AddLabelAction(
+                issue_number=issue_number,
+                label=labels.BLOCKED_FAILED,
+                reason=f"Session timed out after {session.runtime_minutes} minutes",
+                expected=expected,
+            ))
+            timeout_mins = session.agent_config.timeout_minutes if session.agent_config else "unknown"
+            actions.append(AddCommentAction(
+                number=issue_number,
+                comment=f"⏱️ **Session Timed Out**\n\n"
+                        f"The agent session exceeded the {timeout_mins} minute timeout limit.\n\n"
+                        f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                        f"- Session: `{session.terminal_id}`\n\n"
+                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                        f"Remove the label to allow reprocessing.",
+                reason="Notify about session timeout",
+                expected=expected,
+            ))
+            actions.append(RemoveLabelAction(
+                issue_number=issue_number,
+                label=in_progress_label,
+                reason="Session timed out - releasing claim",
+                expected=expected,
+            ))
+
+        elif status == SessionStatus.FAILED:
+            # POLICY: Failure → blocked-failed + comment + release claim
+            actions.append(AddLabelAction(
+                issue_number=issue_number,
+                label=labels.BLOCKED_FAILED,
+                reason="Session failed without completing",
+                expected=expected,
+            ))
+            actions.append(AddCommentAction(
+                number=issue_number,
+                comment=f"❌ **Session Failed**\n\n"
+                        f"The agent session ended without creating a PR or status update.\n\n"
+                        f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                        f"- Session: `{session.terminal_id}`\n\n"
+                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                        f"Remove the label to allow reprocessing.",
+                reason="Notify about session failure",
+                expected=expected,
+            ))
+            actions.append(RemoveLabelAction(
+                issue_number=issue_number,
+                label=in_progress_label,
+                reason="Session failed - releasing claim",
+                expected=expected,
+            ))
+
+        elif status == SessionStatus.COMPLETED:
+            # POLICY: Completion → release in-progress (claim maintained via pr-pending)
+            actions.append(RemoveLabelAction(
+                issue_number=issue_number,
+                label=in_progress_label,
+                reason="Session completed successfully",
+                expected=expected,
+            ))
+
+        # Note: BLOCKED and NEEDS_HUMAN keep in-progress label to maintain ownership claim
+        # This is intentional policy - the issue is still being worked on
+
+        return tuple(actions)
+
+
+def launch_review_by_number(
+    n: int,
+    pending_reviews: list["PendingReview"],
+    launch_review_session_fn: Callable[["PendingReview"], Optional["Session"]],
+) -> Optional["Session"]:
+    """Launch review session by number - moved per method table."""
+    r = next((r for r in pending_reviews if r.pr_number == n), None)
+    return launch_review_session_fn(r) if r else None
+
+
+def launch_rework_by_number(
+    n: int,
+    pending_reworks: list["PendingRework"],
+    launch_rework_session_fn: Callable[["PendingRework"], Optional["Session"]],
+) -> Optional["Session"]:
+    """Launch rework session by number - moved per method table."""
+    r = next((r for r in pending_reworks if int(r.issue_key.stable_id()) == n), None)
+    return launch_rework_session_fn(r) if r else None
+
+
+def get_review_machine(pr: int, issue: int, state_machines: "StateMachineManager") -> Optional["ReviewStateMachine"]:
+    """Get review state machine - moved per method table."""
+    return state_machines.get_review_machine(pr, issue)
+
+
+def launch_triage_by_number(
+    n: int,
+    pending_triage_reviews: list["PendingTriageReview"],
+    active_sessions: list["Session"],
+    launch_triage_session_fn: Callable[["PendingTriageReview"], None],
+) -> Optional["Session"]:
+    """Launch triage session by number - moved per method table."""
+    t = next((t for t in pending_triage_reviews if t.issue_number == n), None)
+    if t:
+        launch_triage_session_fn(t)
+    return next((s for s in active_sessions if s.issue.number == n), None)

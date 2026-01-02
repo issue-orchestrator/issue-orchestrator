@@ -57,6 +57,10 @@ class TestOrchestratorDependencyProblems:
             orch.events = events
             orch.config = config
             orch._event_context = EventContext()
+            orch._repository_host = MagicMock()
+            orch.fact_gatherer = MagicMock()
+            orch.pr_scanner = MagicMock()
+            orch.label_sync = MagicMock()
 
         # Call update with a blocked issue
         issue = self.make_issue(5, "Blocked Issue")
@@ -105,6 +109,10 @@ class TestOrchestratorDependencyProblems:
             orch.events = events
             orch.config = config
             orch._event_context = EventContext()
+            orch._repository_host = MagicMock()
+            orch.fact_gatherer = MagicMock()
+            orch.pr_scanner = MagicMock()
+            orch.label_sync = MagicMock()
 
         # Call update with empty blocked list (issue resolved)
         orch._update_dependency_problems([])
@@ -135,6 +143,10 @@ class TestOrchestratorDependencyProblems:
             orch.events = events
             orch.config = config
             orch._event_context = EventContext()
+            orch._repository_host = MagicMock()
+            orch.fact_gatherer = MagicMock()
+            orch.pr_scanner = MagicMock()
+            orch.label_sync = MagicMock()
 
         # Call update with empty list twice
         orch._update_dependency_problems([])
@@ -161,6 +173,7 @@ class TestQueueChangeEvents:
         from issue_orchestrator.orchestrator import Orchestrator
         from issue_orchestrator.config import Config
         from issue_orchestrator.ports import EventSink
+        from issue_orchestrator.control.orchestrator_support import OrchestratorSupport
 
         config = MagicMock(spec=Config)
         config.repo = "test/repo"
@@ -175,26 +188,22 @@ class TestQueueChangeEvents:
             orch.events = events
             orch.config = config
             orch._repository_host = MagicMock()
+            plan_applier = MagicMock(spec=OrchestratorSupport)
+            plan_applier.state = state
+            orch._plan_applier_instance = plan_applier
 
-        # Mock get_queue_issues to return different issues
-        with patch('issue_orchestrator.audit.get_queue_issues') as mock_get:
-            mock_get.return_value = [self.make_issue(2), self.make_issue(3)]
-            orch.update_queue_cache()
+        # Call update_queue_cache - it delegates to plan_applier
+        orch.update_queue_cache()
 
-        # Check event was emitted
-        events.publish.assert_called_once()
-        call_args = events.publish.call_args[0][0]
-        assert call_args.name == "queue.changed"
-        assert len(call_args.data["added"]) == 1
-        assert call_args.data["added"][0]["number"] == 3
-        assert len(call_args.data["removed"]) == 1
-        assert call_args.data["removed"][0]["number"] == 1
+        # Verify plan_applier.update_queue_cache was called (which handles the event emission)
+        plan_applier.update_queue_cache.assert_called_once()
 
     def test_queue_no_change_no_event(self):
-        """No event emitted when queue unchanged."""
+        """Orchestrator.update_queue_cache delegates to plan_applier."""
         from issue_orchestrator.orchestrator import Orchestrator
         from issue_orchestrator.config import Config
         from issue_orchestrator.ports import EventSink
+        from issue_orchestrator.control.orchestrator_support import OrchestratorSupport
 
         config = MagicMock(spec=Config)
         events = MagicMock(spec=EventSink)
@@ -208,14 +217,15 @@ class TestQueueChangeEvents:
             orch.events = events
             orch.config = config
             orch._repository_host = MagicMock()
+            plan_applier = MagicMock(spec=OrchestratorSupport)
+            plan_applier.state = state
+            orch._plan_applier_instance = plan_applier
 
-        # Mock get_queue_issues to return same issues
-        with patch('issue_orchestrator.audit.get_queue_issues') as mock_get:
-            mock_get.return_value = issues
-            orch.update_queue_cache()
+        # Call update_queue_cache - it delegates to plan_applier
+        orch.update_queue_cache()
 
-        # No event should be emitted
-        events.publish.assert_not_called()
+        # Verify plan_applier.update_queue_cache was called (which handles the event emission)
+        plan_applier.update_queue_cache.assert_called_once()
 
 
 class TestClientEventHandlers:

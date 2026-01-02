@@ -20,7 +20,7 @@ import socket
 import pytest
 
 from issue_orchestrator.config import find_config_file
-from issue_orchestrator.execution.github_http import GitHubHttpClient, GitHubHttpConfig, resolve_github_token
+from issue_orchestrator.adapters.github import GitHubAdapter
 from issue_orchestrator.testing.asyncdsl import (
     OrchestratorWatcher,
     SSEEventStream,
@@ -52,16 +52,21 @@ def _find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-_github_client_cache: dict[str, GitHubHttpClient] = {}
+_github_adapter_cache: dict[str, GitHubAdapter] = {}
 
 
-def _github_client(repo: str) -> GitHubHttpClient:
-    client = _github_client_cache.get(repo)
-    if client is None:
-        token = resolve_github_token(configured_token=None)
-        client = GitHubHttpClient(GitHubHttpConfig(repo=repo, token=token))
-        _github_client_cache[repo] = client
-    return client
+def _github_adapter(repo: str) -> GitHubAdapter:
+    """Get or create a GitHubAdapter for the given repo.
+
+    Uses a cache to reuse adapters across calls within the same process.
+    All GitHub access in e2e tests is routed through the adapter for
+    consistent auditing and rate-limit handling.
+    """
+    adapter = _github_adapter_cache.get(repo)
+    if adapter is None:
+        adapter = GitHubAdapter(repo=repo)
+        _github_adapter_cache[repo] = adapter
+    return adapter
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -488,7 +493,7 @@ def pytest_sessionfinish(session, exitstatus):
         print(f"  [E2E] Latest log: {log_files[0]}", flush=True)
 
 from issue_orchestrator.config import Config, AgentConfig
-from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
+from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from issue_orchestrator.test_data import (
     create_issue,
     create_test_issues,
@@ -619,10 +624,11 @@ def check_github_rate_limit() -> dict:
         GitHubRateLimitError: If rate limit is exceeded
     """
     try:
-        data = _github_client(get_test_repo()).get_rate_limit_snapshot()
+        data = _github_adapter(get_test_repo()).get_rate_limit_snapshot()
         if data is None:
             return {"remaining": -1, "limit": -1, "reset_at": "unknown"}
-        core = data.to_payload().get("core", {})
+        # Adapter already returns a dict with core/search/graphql keys
+        core = data.get("core", {})
         remaining = core.get("remaining", 0)
         limit = core.get("limit", 5000)
         reset_timestamp = core.get("reset", 0)
@@ -680,7 +686,7 @@ def is_claude_available() -> bool:
 def is_github_reachable() -> bool:
     """Check that GitHub API is reachable for live e2e tests."""
     try:
-        snapshot = _github_client(get_test_repo()).get_rate_limit_snapshot()
+        snapshot = _github_adapter(get_test_repo()).get_rate_limit_snapshot()
         return snapshot is not None
     except Exception:
         return False
@@ -876,33 +882,34 @@ def _cleanup_remote_branches(repo: str) -> int:
     # 1. Delete branches for ALL e2e PRs (including closed) - prevents "PR already exists" error
     # GitHub keeps closed PRs and won't let you create a new PR for the same branch
     try:
-        prs = _github_client(repo).list_prs(state="all", limit=100)
+        prs = _github_adapter(repo).list_prs(state="all", limit=100)
         for pr in prs:
-            branch = (pr.get("head") or {}).get("ref", "")
+            # PRInfo has .branch attribute directly
+            branch = pr.branch or ""
             if any(pattern in branch.lower() for pattern in e2e_patterns):
                 if time.monotonic() > deadline:
                     logger.warning("[E2E CLEANUP] Branch cleanup time budget exceeded; stopping early")
                     return branches_deleted
                 try:
-                    _github_client(repo).delete_branch(branch)
+                    _github_adapter(repo).delete_branch(branch)
                     branches_attempted.append(branch)
-                    logger.info("[E2E CLEANUP] Deleted branch for PR #%d: %s", pr.get("number"), branch)
+                    logger.info("[E2E CLEANUP] Deleted branch for PR #%d: %s", pr.number, branch)
                     branches_deleted += 1
                 except Exception:
-                    logger.warning("[E2E CLEANUP] Failed deleting branch for PR #%s: %s", pr.get("number"), branch)
+                    logger.warning("[E2E CLEANUP] Failed deleting branch for PR #%s: %s", pr.number, branch)
     except Exception as exc:
         logger.warning("[E2E CLEANUP] Failed to list PRs for branch cleanup: %s", exc)
 
     # 2. Also check for orphan branches not associated with any PR
     try:
-        for branch in _github_client(repo).list_branches():
+        for branch in _github_adapter(repo).list_branches():
             if any(pattern in branch.lower() for pattern in e2e_patterns):
                 logger.info("[E2E CLEANUP] Deleting orphan branch: %s", branch)
                 if time.monotonic() > deadline:
                     logger.warning("[E2E CLEANUP] Branch cleanup time budget exceeded; stopping early")
                     return branches_deleted
                 try:
-                    _github_client(repo).delete_branch(branch)
+                    _github_adapter(repo).delete_branch(branch)
                     branches_attempted.append(branch)
                     branches_deleted += 1
                 except Exception:
@@ -912,7 +919,7 @@ def _cleanup_remote_branches(repo: str) -> int:
 
     def _branch_gone(branch: str) -> bool:
         try:
-            return not _github_client(repo).branch_exists(branch)
+            return not _github_adapter(repo).branch_exists(branch)
         except Exception:
             return True
 
@@ -931,28 +938,33 @@ def _cleanup_prs(repo: str) -> int:
 
     Also handles closed PRs whose branches weren't deleted.
     """
+    from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
     labels_to_cleanup = [DEFAULT_E2E_FILTER_LABEL, "needs-code-review", "code-reviewed"]
     e2e_branch_patterns = ["e2e-", "-test-", "-concurrent-"]
-    closed_prs: list[dict] = []
+    closed_prs: list[PRInfo] = []
     closed_pr_nums: set[int] = set()
     branches_attempted: list[str] = []
+
+    adapter = _github_adapter(repo)
 
     # First, clean up OPEN PRs with specific labels
     for label in labels_to_cleanup:
         try:
-            items = _github_client(repo).get_prs_with_label(label, state="open")
+            items = adapter.get_prs_with_label(label, state="open")
             for item in items:
-                pr_num = item.get("number")
+                pr_num = item.number
                 if not pr_num or pr_num in closed_pr_nums:
                     continue
-                pr = _github_client(repo).get_pr(pr_num) or {}
-                title = pr.get("title", "")
-                logger.info("[E2E CLEANUP] Closing PR #%d: %s (label: %s)", pr_num, title, label)
-                _github_client(repo).close_pr(pr_num)
-                branch = (pr.get("head") or {}).get("ref", "")
+                pr = adapter.get_pr(pr_num)
+                if not pr:
+                    continue
+                logger.info("[E2E CLEANUP] Closing PR #%d: %s (label: %s)", pr_num, pr.title, label)
+                adapter.close_pr(pr_num)
+                branch = pr.branch or ""
                 if branch:
                     try:
-                        _github_client(repo).delete_branch(branch)
+                        adapter.delete_branch(branch)
                     except Exception:
                         pass
                     branches_attempted.append(branch)
@@ -963,18 +975,18 @@ def _cleanup_prs(repo: str) -> int:
 
     # Second, clean up OPEN PRs with e2e branch patterns
     try:
-        prs = _github_client(repo).list_prs(state="open", limit=100)
+        prs = adapter.list_prs(state="open", limit=100)
         for pr in prs:
-            pr_num = pr.get("number")
-            branch = (pr.get("head") or {}).get("ref", "")
+            pr_num = pr.number
+            branch = pr.branch or ""
             if not pr_num or pr_num in closed_pr_nums:
                 continue
             if any(pattern in branch.lower() for pattern in e2e_branch_patterns):
-                logger.info("[E2E CLEANUP] Closing PR #%d: %s (branch pattern)", pr_num, pr.get("title", ""))
-                _github_client(repo).close_pr(pr_num)
+                logger.info("[E2E CLEANUP] Closing PR #%d: %s (branch pattern)", pr_num, pr.title)
+                adapter.close_pr(pr_num)
                 if branch:
                     try:
-                        _github_client(repo).delete_branch(branch)
+                        adapter.delete_branch(branch)
                     except Exception:
                         pass
                     branches_attempted.append(branch)
@@ -986,18 +998,18 @@ def _cleanup_prs(repo: str) -> int:
     # Third, clean up branches from CLOSED/MERGED PRs that match e2e patterns
     # This handles cases where PRs were closed but branches weren't deleted
     try:
-        prs = _github_client(repo).list_prs(state="all", limit=100)
+        prs = adapter.list_prs(state="all", limit=100)
         for pr in prs:
-            if str(pr.get("state", "")).lower() in ("closed", "merged"):
-                branch = (pr.get("head") or {}).get("ref", "")
+            if pr.state.lower() in ("closed", "merged"):
+                branch = pr.branch or ""
                 if any(pattern in branch.lower() for pattern in e2e_branch_patterns):
                     try:
-                        _github_client(repo).delete_branch(branch)
+                        adapter.delete_branch(branch)
                         branches_attempted.append(branch)
                         logger.info(
                             "[E2E CLEANUP] Deleted orphan branch: %s (from closed PR #%d)",
                             branch,
-                            pr.get("number"),
+                            pr.number,
                         )
                     except Exception:
                         pass
@@ -1008,17 +1020,16 @@ def _cleanup_prs(repo: str) -> int:
 
     def _pr_closed(pr_number: int) -> bool:
         try:
-            pr = _github_client(repo).get_pr(pr_number)
+            pr = adapter.get_pr(pr_number)
             if not pr:
                 return True
-            state = str(pr.get("state", "")).upper()
-            return state in {"CLOSED", "MERGED"}
+            return pr.state.upper() in {"CLOSED", "MERGED"}
         except Exception:
             return True
 
     def _branch_gone(branch: str) -> bool:
         try:
-            return not _github_client(repo).branch_exists(branch)
+            return not adapter.branch_exists(branch)
         except Exception:
             return True
 
@@ -1043,7 +1054,7 @@ def _cleanup_prs(repo: str) -> int:
 def _ensure_pr_label(repo: str, label: str) -> None:
     """Ensure a PR label exists (noop if already created)."""
     try:
-        _github_client(repo).create_label(label, force=True)
+        _github_adapter(repo).create_label(label, force=True)
     except Exception:
         logger.warning("[E2E CLEANUP] Failed ensuring label: %s", label)
 
@@ -1068,25 +1079,28 @@ def _ensure_required_pr_labels(repo: str) -> None:
 
 def _cleanup_issues(repo: str) -> int:
     """Close test issues with test-data label."""
+    adapter = _github_adapter(repo)
     try:
-        issues = _github_client(repo).list_issues(labels=[DEFAULT_E2E_FILTER_LABEL], state="open", limit=100)
+        issues = adapter.list_issues(labels=[DEFAULT_E2E_FILTER_LABEL], state="open", limit=100)
     except Exception:
         return 0
     closed_issues: list[int] = []
     for issue in issues:
-        logger.info("[E2E CLEANUP] Closing issue #%d: %s", issue['number'], issue.get('title', ''))
+        # Issue (GitHubIssue) has .number and .title attributes
+        logger.info("[E2E CLEANUP] Closing issue #%d: %s", issue.number, issue.title)
         try:
-            _github_client(repo).update_issue_state(issue["number"], "closed")
-            closed_issues.append(issue["number"])
+            adapter.update_issue_state(issue.number, "closed")
+            closed_issues.append(issue.number)
         except Exception:
-            logger.warning("[E2E CLEANUP] Timeout closing issue #%d", issue["number"])
+            logger.warning("[E2E CLEANUP] Timeout closing issue #%d", issue.number)
 
     def _issue_closed(issue_number: int) -> bool:
         try:
-            issue = _github_client(repo).get_issue(issue_number)
+            issue = adapter.get_issue(issue_number)
             if not issue:
                 return True
-            return str(issue.get("state", "")).upper() == "CLOSED"
+            # GitHubIssue has .state attribute
+            return issue.state.upper() == "CLOSED"
         except Exception:
             return True
 
@@ -1359,17 +1373,23 @@ async def orchestrator_watcher(
         await stream.close()
 
 
-def trigger_refresh(port: int | None = None, timeout: int = 5) -> bool:
+def trigger_refresh(
+    port: int | None = None,
+    timeout: int = 5,
+    inflight_stable_ids: set[str] | None = None,
+) -> bool:
     """Trigger orchestrator to refresh issues immediately via control API.
 
     Args:
         port: Control API port (defaults to Config.control_api_port)
         timeout: Request timeout in seconds
+        inflight_stable_ids: Optional set of issue stable IDs that must be discovered
 
     Returns True if refresh was requested successfully.
     """
     import urllib.request
     import urllib.error
+    import json
     import time as _time
     from issue_orchestrator.config import Config
 
@@ -1381,11 +1401,24 @@ def trigger_refresh(port: int | None = None, timeout: int = 5) -> bool:
     if port <= 0:
         logger.info("[E2E] Control API disabled; relying on queue refresh")
         return False
+
+    # Prepare request body with inflight IDs if provided
+    body: bytes | None = None
+    headers: dict[str, str] = {}
+    if inflight_stable_ids:
+        payload = {"inflight_stable_ids": sorted(inflight_stable_ids)}
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+        logger.info("[E2E] Refresh with %d inflight IDs: %s",
+                   len(inflight_stable_ids), sorted(inflight_stable_ids))
+
     for attempt in range(max_retries):
         try:
             req = urllib.request.Request(
                 f"http://localhost:{port}/api/refresh",
                 method="POST",
+                data=body,
+                headers=headers,
             )
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if resp.status == 200:
@@ -1420,8 +1453,9 @@ class _InflightRefreshTracker:
             return
         pending = set(self._pending)
         self._pending.clear()
-        logger.info("[E2E] Triggering refresh for %d inflight issue(s)", len(pending))
-        if not trigger_refresh(port):
+        logger.info("[E2E] Triggering refresh for %d inflight issue(s): %s",
+                   len(pending), sorted(pending))
+        if not trigger_refresh(port, inflight_stable_ids=pending):
             self._pending.update(pending)
 
 
@@ -1618,17 +1652,11 @@ async def wait_for_issue_seen(
     issue_key: str,
     timeout_s: float,
 ) -> None:
-    """Wait for an issue to appear in snapshots (resyncing as needed)."""
+    """Wait for an issue to appear via SSE events (queue.changed)."""
     deadline = time.monotonic() + timeout_s
-    last_resync = 0.0
-    min_resync_interval_s = 600.0
     while time.monotonic() < deadline:
         if issue_key in watcher.view.issues:
             return
-        now = time.monotonic()
-        if now - last_resync >= min_resync_interval_s:
-            await watcher.resync_snapshot()
-            last_resync = now
         try:
             await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
         except asyncio.TimeoutError:
@@ -1644,18 +1672,16 @@ async def wait_for_session_started(
 ) -> None:
     """Wait until a session starts (in-progress label or PR created)."""
     deadline = time.monotonic() + timeout_s
-    last_resync = 0.0
-    min_resync_interval_s = 600.0
     while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now - last_resync >= min_resync_interval_s:
-            await watcher.resync_snapshot()
-            last_resync = now
         issue_view = watcher.view.issues.get(issue_key)
         if issue_view:
             if "in-progress" in issue_view.labels or issue_view.pr.number is not None:
                 return
-        await asyncio.sleep(1)
+        try:
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        watcher._notify.clear()
     raise TimeoutError(f"Timed out waiting for session start or PR for {issue_key}")
 
 
@@ -1665,19 +1691,17 @@ async def wait_for_issue_label_snapshot(
     label: str,
     timeout_s: float,
 ) -> None:
-    """Wait for a label to appear on an issue (resyncing as needed)."""
+    """Wait for a label to appear on an issue via SSE events."""
     deadline = time.monotonic() + timeout_s
-    last_resync = 0.0
-    min_resync_interval_s = 600.0
     while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now - last_resync >= min_resync_interval_s:
-            await watcher.resync_snapshot()
-            last_resync = now
         issue_view = watcher.view.issues.get(issue_key)
         if issue_view and label in issue_view.labels:
             return
-        await asyncio.sleep(1)
+        try:
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        watcher._notify.clear()
     raise TimeoutError(f"Timed out waiting for label {label} on {issue_key}")
 
 
@@ -1686,7 +1710,7 @@ def inflight_create(
     title: str,
     labels: list[str],
     body: str = "Created mid-test.",
-) -> IssueKey:
+) -> tuple[IssueKey, int]:
     """Create an issue while orchestrator is running.
 
     Note: Caller should call trigger_refresh() after creating all issues
@@ -1694,15 +1718,26 @@ def inflight_create(
 
     Args:
         repo: GitHub repo in owner/repo format
-        title: Issue title
+        title: Issue title (should include [EXTERNAL-ID] prefix)
         labels: Labels to apply
         body: Issue body
 
     Returns:
-        IssueKey for the created issue
+        Tuple of (IssueKey, issue_number) for the created issue
+
+    Raises:
+        ValueError: If title doesn't contain an external ID prefix like [M1-011]
     """
+    # Extract external ID from title prefix - all test issues MUST have one
+    parsed = parse_external_id(title)
+    if not parsed.external_id:
+        raise ValueError(
+            f"Title must contain external ID prefix like [M1-011]: {title!r}"
+        )
+
     issue_number = create_issue(repo, title, labels, body)
-    return GitHubIssueKey(repo=repo, external_id=str(issue_number))
+    logger.info("Created issue #%d with external_id=%s", issue_number, parsed.external_id)
+    return GitHubIssueKey(repo=repo, external_id=parsed.external_id), issue_number
 
 
 def inflight_update(
@@ -1880,8 +1915,8 @@ def _create_test_issue(repo_name: str, index: int = 0) -> dict:
 def _cleanup_test_issue(repo_name: str, issue_number: int) -> None:
     """Close a test issue."""
     try:
-        _github_client(repo_name).add_comment(issue_number, "Closed by e2e test cleanup.")
-        _github_client(repo_name).update_issue_state(issue_number, "closed")
+        _github_adapter(repo_name).add_comment(issue_number, "Closed by e2e test cleanup.")
+        _github_adapter(repo_name).update_issue_state(issue_number, "closed")
     except Exception:
         pass
 
@@ -1944,7 +1979,7 @@ def concurrent_test_run(repo_name: str, request) -> Generator[dict, None, None]:
         _cleanup_test_issue(repo_name, issue["number"])
 
     try:
-        _github_client(repo_name).delete_label(run_label)
+        _github_adapter(repo_name).delete_label(run_label)
     except Exception:
         pass
 
@@ -2351,64 +2386,6 @@ def orchestrator_process(e2e_config: Config, e2e_project_root: Path) -> Generato
         proc.stop()
 
 
-def wait_for_issue_label(
-    repo: str,
-    issue_number: int,
-    label: str,
-    timeout: int = 120,
-    orchestrator: "OrchestratorProcess | None" = None,
-) -> bool:
-    """Wait for an issue to have a specific label.
-
-    If orchestrator is provided, fails fast if the process crashes.
-    """
-    def check_label():
-        labels = _github_client(repo).get_issue_labels(issue_number)
-        # Fail fast if the session already failed/blocked.
-        if any(lbl in labels for lbl in ("blocked-failed", "blocked-needs-human", "failed")):
-            raise RuntimeError(
-                f"Issue #{issue_number} entered failure state: {sorted(labels)}"
-            )
-        if label in labels:
-            return True
-        return None
-
-    return wait_with_process_check(
-        check_label,
-        timeout=timeout,
-        orchestrator=orchestrator,
-        description=f"label '{label}' on issue #{issue_number}",
-    ) is not None
-
-
-def wait_for_pr_created(
-    repo: str,
-    issue_number: int,
-    timeout: int = 120,
-    orchestrator: "OrchestratorProcess | None" = None,
-) -> dict | None:
-    """Wait for a PR to be created for an issue.
-
-    If orchestrator is provided, fails fast if the process crashes.
-    """
-    def check_pr():
-        # Search for PRs by head branch starting with issue number
-        # (PRs don't have the test-data label, issues do)
-        prs = _github_client(repo).list_prs(state="open", limit=100)
-        for pr in prs:
-            head_ref = (pr.get("head") or {}).get("ref", "")
-            if head_ref.startswith(f"{issue_number}-"):
-                return pr
-        return None
-
-    return wait_with_process_check(
-        check_pr,
-        timeout=timeout,
-        orchestrator=orchestrator,
-        description=f"PR for issue #{issue_number}",
-    )
-
-
 def get_issue_comments(repo: str, issue_number: int) -> list[dict]:
     """Get comments on an issue."""
-    return _github_client(repo).get_issue_comments(issue_number)
+    return _github_adapter(repo).get_issue_comments(issue_number)

@@ -34,7 +34,11 @@ from .control import (
 )
 from .control.action_applier import ActionApplier
 from .control.fact_gatherer import FactGatherer
+from .control.health_gate import HealthGate
 from .execution import GitHubIssueResolver
+from .adapters.github.cache import GitHubCache
+from .execution.verification_service import DefaultVerificationService
+from .ports.verification import VerificationBudget
 from .execution.worktree_adapter import GitWorktreeManager
 from .execution.git_working_copy import GitWorkingCopy
 from .execution.command_runner import LocalCommandRunner
@@ -110,8 +114,31 @@ def build_orchestrator(
 
     # Create GitHub adapter if repo is configured
     github = None
+    github_cache = None
+    verification_service = None
     if config.repo:
-        github = GitHubAdapter(config.repo, config=config)
+        # Create cache with TTL from config
+        cache_ttl = float(max(0, getattr(config, "queue_refresh_seconds", 0)))
+        github_cache = GitHubCache(default_ttl=cache_ttl)
+
+        # Create verification service with config-based budget
+        # The service maintains circuit breaker state across calls
+        default_budget = VerificationBudget(
+            timeout_seconds=config.gh_write_verify_timeout_seconds,
+            max_attempts=20,
+            initial_delay_ms=config.gh_write_verify_initial_delay_ms,
+            max_delay_ms=config.gh_write_verify_max_delay_ms,
+            backoff_factor=config.gh_write_verify_backoff,
+            jitter_ms=config.gh_write_verify_jitter_ms,
+        )
+        verification_service = DefaultVerificationService(default_budget=default_budget)
+
+        github = GitHubAdapter(
+            config.repo,
+            config=config,
+            cache=github_cache,
+            verification_service=verification_service,
+        )
 
     event_hub = EventHub() if github else None
     if event_hub:
@@ -247,6 +274,12 @@ def build_orchestrator(
     from .execution.hook_verifier import ExecutionHookVerifier
     hook_verifier = ExecutionHookVerifier(config)
 
+    # Create HealthGate for system health checks (capacity, rate limits, etc.)
+    health_gate = HealthGate(
+        max_concurrent_sessions=config.max_concurrent_sessions,
+        rate_limit_threshold=getattr(config, "rate_limit_warn_remaining", 100),
+    )
+
     return Orchestrator(
         config=config,
         events=events,
@@ -267,6 +300,7 @@ def build_orchestrator(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
+        health_gate=health_gate,
     )
 
 
@@ -365,6 +399,12 @@ def build_orchestrator_for_testing(
     from .execution.hook_verifier import ExecutionHookVerifier
     hook_verifier = ExecutionHookVerifier(config)
 
+    # Create HealthGate for testing
+    health_gate = HealthGate(
+        max_concurrent_sessions=config.max_concurrent_sessions,
+        rate_limit_threshold=100,
+    )
+
     return Orchestrator(
         config=config,
         events=events,
@@ -378,4 +418,5 @@ def build_orchestrator_for_testing(
         working_copy=working_copy,
         hook_verifier=hook_verifier,
         command_runner=command_runner,
+        health_gate=health_gate,
     )

@@ -15,7 +15,8 @@ def test_flow_create_issue_includes_filter_label(monkeypatch):
         called["title"] = title
         called["labels"] = labels
         called["body"] = body
-        return Mock(stable_id=lambda: "123", scope=lambda: repo)
+        # Returns tuple of (IssueKey, issue_number)
+        return Mock(stable_id=lambda: "123", scope=lambda: repo), 123
 
     monkeypatch.setattr(flows, "inflight_create", fake_create)
 
@@ -32,7 +33,8 @@ def test_flow_create_issue_no_duplicate_filter_label(monkeypatch):
 
     def fake_create(repo, title, labels, body=None):
         called["labels"] = labels
-        return Mock(stable_id=lambda: "123", scope=lambda: repo)
+        # Returns tuple of (IssueKey, issue_number)
+        return Mock(stable_id=lambda: "123", scope=lambda: repo), 456
 
     monkeypatch.setattr(flows, "inflight_create", fake_create)
 
@@ -43,7 +45,7 @@ def test_flow_create_issue_no_duplicate_filter_label(monkeypatch):
 
 
 def test_flow_update_issue_calls_inflight_update(monkeypatch):
-    """Ensure update_issue delegates with control API port."""
+    """Ensure update_issue delegates with control API port derived from watcher."""
     called = {}
 
     def fake_update(issue, add_labels=None, remove_labels=None, port=None):
@@ -54,8 +56,12 @@ def test_flow_update_issue_calls_inflight_update(monkeypatch):
 
     monkeypatch.setattr(flows, "inflight_update", fake_update)
 
+    # Mock watcher with snapshot provider URL containing port
+    mock_watcher = Mock()
+    mock_watcher._snapshot_provider = Mock(url="http://localhost:19080/api/snapshot")
+
     issue = Mock(stable_id=lambda: "123")
-    flow = flows.E2EFlow(repo="owner/repo", watcher=None, control_api_port=19080)
+    flow = flows.E2EFlow(repo="owner/repo", watcher=mock_watcher)
     flow.update_issue(issue, add_labels=["blocked"], remove_labels=["in-progress"])
 
     assert called["issue"] is issue

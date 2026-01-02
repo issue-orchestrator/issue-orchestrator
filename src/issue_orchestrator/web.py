@@ -352,16 +352,36 @@ async def resume() -> JSONResponse:
 
 
 @app.post("/api/refresh")
-async def refresh() -> JSONResponse:
+async def refresh(request: Request) -> JSONResponse:
     """Request an immediate refresh of issues from GitHub.
 
     This triggers the orchestrator to fetch issues on the next loop iteration,
     bypassing the queue_refresh_seconds interval. Also resets the timer for
     the next scheduled refresh.
+
+    Optional JSON body:
+        inflight_stable_ids: list[str] - Issue IDs that tests expect to discover.
+            If provided and these issues are not found after a cached refresh,
+            the orchestrator will retry without cache to handle GitHub's
+            eventual consistency.
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-    _orchestrator.request_refresh()
+
+    # Parse optional inflight_stable_ids from request body
+    inflight_stable_ids: set[str] = set()
+    try:
+        body = await request.body()
+        if body:
+            data = json.loads(body)
+            if isinstance(data, dict) and "inflight_stable_ids" in data:
+                ids = data["inflight_stable_ids"]
+                if isinstance(ids, list):
+                    inflight_stable_ids = set(str(i) for i in ids)
+    except (json.JSONDecodeError, ValueError):
+        pass  # Ignore malformed body, proceed with empty set
+
+    _orchestrator.request_refresh(inflight_stable_ids=inflight_stable_ids)
     return JSONResponse({"status": "refresh_requested"})
 
 

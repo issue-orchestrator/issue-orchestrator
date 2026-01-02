@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 
-from issue_orchestrator.execution.github_http import (
+from issue_orchestrator.adapters.github.http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
 )
@@ -88,3 +88,78 @@ def test_get_token_scopes_from_header() -> None:
     scopes = client.get_token_scopes()
 
     assert scopes == ["repo", "read:org"]
+
+
+def test_list_issues_use_cache_false_bypasses_etag() -> None:
+    """Verify that use_cache=False bypasses ETag caching.
+
+    When use_cache=False:
+    - First call should not send If-None-Match header
+    - Server returning 304 should NOT happen (no ETag sent)
+    - Fresh data should always be fetched
+    """
+    requests_seen: list[dict] = []
+    payload = [{"number": 1, "title": "Fresh Issue"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append({
+            "method": request.method,
+            "path": request.url.path,
+            "headers": dict(request.headers),
+        })
+        # Always return 200 with fresh data
+        return httpx.Response(200, json=payload, headers={"ETag": "W/fresh-etag"})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    # First call with cache - establishes ETag
+    first_cached = client.list_issues(use_cache=True)
+    assert len(first_cached) == 1
+    assert len(requests_seen) == 1
+    assert "If-None-Match" not in requests_seen[0]["headers"]
+
+    # Second call with use_cache=False - should NOT send If-None-Match
+    requests_seen.clear()
+    second_uncached = client.list_issues(use_cache=False)
+    assert len(second_uncached) == 1
+    assert len(requests_seen) == 1
+    # The key assertion: no If-None-Match header when use_cache=False
+    # (httpx stores headers as lowercase)
+    assert "if-none-match" not in requests_seen[0]["headers"]
+
+
+def test_list_issues_use_cache_true_sends_etag() -> None:
+    """Verify that use_cache=True sends If-None-Match for cached responses."""
+    requests_seen: list[dict] = []
+    payload = [{"number": 1, "title": "Cached Issue"}]
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        requests_seen.append({
+            "method": request.method,
+            "path": request.url.path,
+            "headers": dict(request.headers),
+        })
+        if call_count == 1:
+            # First call: return data with ETag
+            return httpx.Response(200, json=payload, headers={"ETag": "W/cached-etag"})
+        else:
+            # Second call: should have If-None-Match, return 304
+            return httpx.Response(304, text="")
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    # First call - establishes cache
+    first = client.list_issues(use_cache=True)
+    assert len(first) == 1
+
+    # Second call with use_cache=True - should send If-None-Match
+    second = client.list_issues(use_cache=True)
+    assert len(second) == 1
+    assert len(requests_seen) == 2
+    # The key assertion: If-None-Match header sent when use_cache=True
+    # (httpx stores headers as lowercase)
+    assert "if-none-match" in requests_seen[1]["headers"]
+    assert requests_seen[1]["headers"]["if-none-match"] == "W/cached-etag"

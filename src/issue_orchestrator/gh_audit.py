@@ -41,6 +41,7 @@ _stats: dict[str, Any] = {
     "events": [],
     "last_rate_limit": None,
     "last_rate_limit_checked_at": None,
+    "last_rate_limit_from_headers": None,
 }
 
 _event_sink = None
@@ -295,6 +296,7 @@ def record(
     bytes_returned: int | None = None,
     items_returned: int | None = None,
     full_scan: bool | None = None,
+    rate_limit: dict[str, int] | None = None,
 ) -> None:
     if not _ENABLED:
         return
@@ -384,6 +386,12 @@ def record(
                     _stats["by_scope_totals"][scope]["full_scan_items_returned"] += items_returned
                     if sr_entry is not None:
                         sr_entry["full_scan_items_returned"] += items_returned
+        # Store rate limit info from response headers (more current than /rate_limit endpoint)
+        if rate_limit is not None:
+            _stats["last_rate_limit_from_headers"] = {
+                **rate_limit,
+                "updated_at": time.time(),
+            }
         if _INCLUDE_EVENTS:
             _stats["events"].append({
                 "call_id": call_id,
@@ -474,10 +482,18 @@ def _summary_lines() -> list[str]:
         total_bytes = _stats["total_bytes_returned"]
         full_scans = _stats["full_scan_calls"]
         full_items = _stats["full_scan_items_returned"]
+        # Slowest phases (scopes) by total_ms - per architecture objective
+        scope_totals = _stats.get("by_scope_totals", {})
+        slowest_phases = sorted(
+            [(scope, entry.get("total_ms", 0)) for scope, entry in scope_totals.items()],
+            key=lambda x: x[1],
+            reverse=True,
+        )
     lines = [
         f"[GH-AUDIT] total_calls={total} errors={errors} items={total_items} bytes={total_bytes} full_scans={full_scans} full_items={full_items}",
         f"[GH-AUDIT] top_callers={by_caller[:5]}",
         f"[GH-AUDIT] top_commands={by_cmd[:5]}",
+        f"[GH-AUDIT] slowest_phases={slowest_phases[:5]}",
     ]
     return lines
 

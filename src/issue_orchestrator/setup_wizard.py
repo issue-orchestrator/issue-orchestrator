@@ -85,18 +85,15 @@ class DetectedState:
     prompt_candidates: list[Path] = field(default_factory=list)
 
 
-def _github_client(repo: str):
-    from .execution.github_http import GitHubHttpClient, GitHubHttpConfig, resolve_github_token
+def _github_adapter(repo: str):
+    """Get a GitHubAdapter for the given repo.
 
-    token = resolve_github_token(configured_token=None, configured_env=None)
-    return GitHubHttpClient(
-        GitHubHttpConfig(
-            repo=repo,
-            token=token,
-            base_url="https://api.github.com",
-            timeout_seconds=20.0,
-        )
-    )
+    All GitHub access in setup wizard is routed through the adapter for
+    consistent auditing and rate-limit handling.
+    """
+    from .adapters.github import GitHubAdapter
+
+    return GitHubAdapter(repo=repo)
 
 
 def run_git(args: list[str], cwd: Path | None = None) -> tuple[bool, str]:
@@ -124,7 +121,7 @@ def check_prerequisites() -> dict[str, bool]:
 
     # GitHub token
     try:
-        from .execution.github_http import resolve_github_token
+        from .adapters.github.http_client import resolve_github_token
 
         resolve_github_token(configured_token=None, configured_env=None)
         checks["github_auth"] = True
@@ -169,7 +166,7 @@ def detect_repo(cwd: Path | None = None) -> str | None:
 def fetch_github_labels(repo: str) -> list[str]:
     """Fetch all labels from GitHub repo."""
     try:
-        labels = _github_client(repo).list_labels()
+        labels = _github_adapter(repo).list_labels()
         names: list[str] = []
         for label in labels:
             if not isinstance(label, dict):
@@ -368,7 +365,7 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     # Create agent labels on GitHub
     prompter.print("--- Agent Labels ---")
     if prompter.yes_no("Create agent labels on GitHub now?"):
-        client = _github_client(str(config["repo"]))
+        client = _github_adapter(str(config["repo"]))
         for agent_name in config["agents"].keys():
             try:
                 client.create_label(
@@ -639,7 +636,7 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                 prompter.print(f"    - {label}")
             if prompter.yes_no("Create missing labels on GitHub?"):
                 repo = str(config["repo"])
-                client = _github_client(repo)
+                client = _github_adapter(repo)
                 for label in missing_labels:
                     try:
                         client.create_label(
@@ -1367,7 +1364,7 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
                 prompter.print(f"  • {name} - {desc}")
 
             if prompter.yes_no(f"\nCreate these {len(missing_labels)} labels on GitHub?"):
-                client = _github_client(repo)
+                client = _github_adapter(repo)
                 for name, color, desc in missing_labels:
                     client.create_label(
                         name,

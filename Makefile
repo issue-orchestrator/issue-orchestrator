@@ -105,7 +105,7 @@ validate-before-push: typecheck lint-arch
 
 # Demo - show orchestrator features with mock data
 demo:
-	issue-orchestrator demo
+	.venv/bin/issue-orchestrator demo
 
 # Issue management
 PYTHON ?= .venv/bin/python

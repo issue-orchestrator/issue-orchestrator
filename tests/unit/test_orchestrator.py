@@ -867,36 +867,37 @@ class TestRunLoop:
         orchestrator.state.active_sessions.append(session)
 
         with patch.object(orchestrator.observer, "observe_session") as mock_observe:
-            with patch.object(orchestrator, "handle_session_completion") as mock_handle:
-                # Mock observe to return TERMINATED (session exited)
-                mock_observe.return_value = SessionObservationResult.terminated(runtime_minutes=10.0)
+            # Mock observe to return TERMINATED (session exited)
+            mock_observe.return_value = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-                # Mock the controller to return COMPLETED
-                mock_decision = SessionDecision(
-                    status=SessionStatus.COMPLETED,
-                    recovered_from_timeout=False,
-                    reason="Test",
+            # Mock the controller to return COMPLETED
+            mock_decision = SessionDecision(
+                status=SessionStatus.COMPLETED,
+                recovered_from_timeout=False,
+                reason="Test",
+            )
+            mock_controller = MagicMock()
+            mock_controller.decide_outcome.return_value = mock_decision
+
+            with patch.object(
+                Orchestrator, "_session_controller",
+                new_callable=PropertyMock,
+                return_value=mock_controller,
+            ):
+                # Run one iteration
+                async def run_one_iteration():
+                    await asyncio.sleep(0.01)
+                    orchestrator.request_shutdown()
+
+                await asyncio.gather(
+                    orchestrator.run_loop(),
+                    run_one_iteration(),
                 )
-                mock_controller = MagicMock()
-                mock_controller.decide_outcome.return_value = mock_decision
 
-                with patch.object(
-                    Orchestrator, "_session_controller",
-                    new_callable=PropertyMock,
-                    return_value=mock_controller,
-                ):
-                    # Run one iteration
-                    async def run_one_iteration():
-                        await asyncio.sleep(0.01)
-                        orchestrator.request_shutdown()
-
-                    await asyncio.gather(
-                        orchestrator.run_loop(),
-                        run_one_iteration(),
-                    )
-
-                    # Loop may run multiple iterations before shutdown; just verify it was called
-                    mock_handle.assert_called_with(session, SessionStatus.COMPLETED)
+                # Verify session was removed from active_sessions after completion
+                assert session not in orchestrator.state.active_sessions
+                # Verify session was added to history
+                assert len(orchestrator.state.session_history) > 0
 
     @pytest.mark.asyncio
     async def test_run_loop_fetches_available_issues_when_not_paused(

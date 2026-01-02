@@ -1,0 +1,202 @@
+"""GitHubWorkflow - GitHub-specific workflow operations.
+
+This module contains workflow methods extracted from the Orchestrator:
+- Issue fetching and filtering
+- PR scanning for reviews/reworks
+- Label operations
+- Dependency problem tracking
+"""
+
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional, Callable
+
+if TYPE_CHECKING:
+    from ..ports.issue import Issue
+    from ..models import OrchestratorState, DependencyProblem, Session, PendingCleanup
+    from ..domain.state_machines.issue_machine import IssueStateMachine
+    from .fact_gatherer import FactGatherer
+    from .pr_scanner import PRScanner
+    from .label_sync import LabelSync
+    from .cleanup_manager import CleanupManager
+    from .state_machine_manager import StateMachineManager
+
+from ..config import Config
+from ..events import EventName, EventContext
+from ..models import DiscoveredReview, DiscoveredRework, DiscoveredEscalation, DependencyProblem
+from ..ports import EventSink, TraceEvent, RepositoryHost
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class GitHubWorkflow:
+    """Handles GitHub-specific workflow operations."""
+
+    config: Config
+    events: EventSink
+    repository_host: RepositoryHost
+    fact_gatherer: "FactGatherer"
+    pr_scanner: "PRScanner"
+    label_sync: Optional["LabelSync"]
+    event_context: EventContext
+
+    def fetch_all_issues(
+        self,
+        milestone_filter: str | None,
+        required_stable_ids: set[str] | None = None,
+    ) -> list["Issue"]:
+        """Fetch all issues from GitHub - delegates to FactGatherer.
+
+        Args:
+            milestone_filter: Optional milestone to filter by.
+            required_stable_ids: Optional set of stable IDs that must be discovered.
+                If provided and missing after cached fetch, retry without cache.
+        """
+        base_labels = [self.config.filter_label] if self.config.filter_label else []
+        return self.fact_gatherer.fetch_issues(
+            base_labels, milestone_filter, required_stable_ids=required_stable_ids
+        )
+
+    def scan_needs_code_review_prs(
+        self,
+        state: "OrchestratorState",
+    ) -> None:
+        """Scan for PRs that need code review and add to discovered_reviews."""
+        for r in self.pr_scanner.scan_for_reviews(
+            state.pending_reviews,
+            [s.terminal_id for s in state.active_sessions],
+        ):
+            state.discovered_reviews.append(
+                DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name)
+            )
+
+    def scan_needs_rework_prs(
+        self,
+        state: "OrchestratorState",
+    ) -> None:
+        """Scan for PRs that need rework and add to discovered_reworks/escalations."""
+        reworks, escalations = self.pr_scanner.scan_for_reworks(
+            state.pending_reworks,
+            [s.issue.number for s in state.active_sessions],
+        )
+        for pr, issue, cycle in escalations:
+            state.discovered_escalations.append(DiscoveredEscalation(issue, pr, cycle))
+        for r in reworks:
+            state.discovered_reworks.append(
+                DiscoveredRework(
+                    int(r.issue_key.stable_id()),
+                    0,
+                    "",
+                    r.agent_type,
+                    r.rework_cycle,
+                )
+            )
+
+    def update_dependency_problems(
+        self,
+        state: "OrchestratorState",
+        dep_blocked: list[tuple["Issue", str]],
+    ) -> None:
+        """Update state with dependency problems and emit events."""
+        new = {
+            i.number: DependencyProblem(i.number, i.title, [], r)
+            for i, r in dep_blocked
+        }
+        blocked = set(new) - set(state.dependency_problems)
+        unblocked = set(state.dependency_problems) - set(new)
+
+        for n in blocked:
+            self.events.publish(TraceEvent(
+                EventName.DEPENDENCY_BLOCKED,
+                self.event_context.enrich({
+                    "issue_number": n,
+                    "summary": new[n].summary,
+                }),
+            ))
+        for n in unblocked:
+            self.events.publish(TraceEvent(
+                EventName.DEPENDENCY_UNBLOCKED,
+                self.event_context.enrich({"issue_number": n}),
+            ))
+
+        state.dependency_problems = new
+
+    def reconcile_orphaned_pr_labels(self, orchestrator_pr_marker: str) -> int:
+        """Reconcile orphaned PR labels at startup.
+
+        Returns the number of labels reconciled.
+        """
+        if not self.config.code_review_label or not self.config.repo or not self.label_sync:
+            return 0
+        return self.label_sync.reconcile_orphaned_pr_labels(
+            self.config.code_review_label,
+            self.config.code_reviewed_label,
+            orchestrator_pr_marker,
+        )
+
+    def refresh_issue(self, issue_number: int) -> Optional["Issue"]:
+        """Refresh a single issue from GitHub.
+
+        Returns the refreshed issue or None if failed.
+        """
+        try:
+            return self.repository_host.get_issue(issue_number)
+        except Exception as e:
+            logger.warning("Failed to refresh issue #%d: %s", issue_number, e)
+            return None
+
+    def build_labels(self, *labels: str) -> list[str]:
+        """Build a label list including the filter label if configured."""
+        return list(labels) + ([self.config.filter_label] if self.config.filter_label else [])
+
+    def get_milestone_filter(self) -> str | None:
+        """Get the configured milestone filter."""
+        return self.config.filter_milestone
+
+    def process_deferred_cleanups(
+        self,
+        pending_cleanups: list["PendingCleanup"],
+        cleanup_manager: "CleanupManager",
+    ) -> list["PendingCleanup"]:
+        """Process deferred cleanups - moved per method table.
+
+        Args:
+            pending_cleanups: List of pending cleanups from state
+            cleanup_manager: For processing the cleanups
+
+        Returns:
+            Updated list of pending cleanups
+        """
+        return cleanup_manager.process_deferred_cleanups(pending_cleanups)
+
+
+def get_issue_machine(issue: "Issue", state_machines: "StateMachineManager") -> Optional["IssueStateMachine"]:
+    """Get issue state machine - moved per method table."""
+    return state_machines.get_issue_machine(issue)
+
+
+def launch_issue_by_number(
+    n: int,
+    cached_queue_issues: list["Issue"],
+    launch_session_fn: Callable[["Issue"], Optional["Session"]],
+    increment_count_fn: Callable[[], None],
+) -> Optional["Session"]:
+    """Launch issue session by number - moved per method table.
+
+    Args:
+        n: Issue number
+        cached_queue_issues: List of cached issues
+        launch_session_fn: Function to launch session
+        increment_count_fn: Function to increment issues_started_count
+
+    Returns:
+        The launched session or None
+    """
+    issue = next((i for i in cached_queue_issues if i.number == n), None)
+    if not issue:
+        return None
+    s = launch_session_fn(issue)
+    if s:
+        increment_count_fn()
+    return s

@@ -156,5 +156,23 @@ class MaterializedView:
             self._mark_progress()
             return
 
+        if etype == "queue.changed":
+            # Handle new issues discovered during refresh
+            for added in payload.get("added", []):
+                num = added.get("number")
+                if num is not None:
+                    # Create issue key in expected format (just the number as string)
+                    ik = str(num)
+                    if ik not in self.issues:
+                        self.issues[ik] = IssueView(issue_key=ik)
+            # Remove issues that are no longer in queue
+            for removed in payload.get("removed", []):
+                num = removed.get("number")
+                if num is not None:
+                    ik = str(num)
+                    self.issues.pop(ik, None)
+            self._mark_progress()
+            return
+
         if payload.get("progress", False):
             self._mark_progress()

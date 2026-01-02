@@ -50,12 +50,19 @@ class FactGatherer:
     repository_host: RepositoryHost
     events: Optional[EventSink] = None
 
-    def fetch_issues(self, labels_for_agent: list[str], milestone: Optional[str] = None) -> list["Issue"]:
+    def fetch_issues(
+        self,
+        labels_for_agent: list[str],
+        milestone: Optional[str] = None,
+        required_stable_ids: set[str] | None = None,
+    ) -> list["Issue"]:
         """Fetch all issues for configured agents from GitHub.
 
         Args:
             labels_for_agent: Labels that identify agent issues
             milestone: Optional milestone filter
+            required_stable_ids: Optional set of stable IDs that must be discovered.
+                If provided and missing after cached fetch, retry without cache.
 
         Returns:
             List of issues across all agent types
@@ -74,6 +81,7 @@ class FactGatherer:
                     labels=labels,
                     milestone=milestone_name,
                     limit=self.config.issue_fetch_limit,
+                    required_stable_ids=required_stable_ids,
                 )
                 for issue in issues:
                     if issue.number in seen:

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .config import Config
     from .orchestrator import Orchestrator
-    from .execution.github_http import GitHubHttpClient
+    from .adapters.github import GitHubAdapter
 
 from rich.console import Console
 from rich.table import Table
@@ -24,13 +24,18 @@ LOG_FILE = Path.home() / ".issue-orchestrator.log"
 
 
 def _resolve_repo(config: "Config") -> str:
-    from .execution.github_repo import get_repo_from_git
+    from .adapters.github.repo import get_repo_from_git
 
     return config.repo or get_repo_from_git()
 
 
-def _github_client_for_config(config: "Config") -> "GitHubHttpClient | None":
-    from .execution.github_http import GitHubHttpClient, GitHubHttpConfig, resolve_github_token
+def _github_adapter_for_config(config: "Config") -> "GitHubAdapter | None":
+    """Get a GitHubAdapter for the given config.
+
+    All GitHub access in CLI is routed through the adapter for
+    consistent auditing and rate-limit handling.
+    """
+    from .adapters.github import GitHubAdapter
 
     try:
         repo = _resolve_repo(config)
@@ -40,24 +45,13 @@ def _github_client_for_config(config: "Config") -> "GitHubHttpClient | None":
     if not repo:
         console.print("[red]Error: repo must be set in config[/red]")
         return None
-    token = resolve_github_token(
-        configured_token=config.github_token,
-        configured_env=config.github_token_env,
-    )
-    return GitHubHttpClient(
-        GitHubHttpConfig(
-            repo=repo,
-            token=token,
-            base_url=config.github_api_url,
-            timeout_seconds=float(config.github_http_timeout_seconds),
-        )
-    )
+    return GitHubAdapter(repo=repo, config=config)
 
 
 def _run_test_setup(config: "Config") -> bool:
     """Run test teardown and setup. Returns True on success."""
-    client = _github_client_for_config(config)
-    if client is None:
+    adapter = _github_adapter_for_config(config)
+    if adapter is None:
         return False
     try:
         repo = _resolve_repo(config)
@@ -68,14 +62,12 @@ def _run_test_setup(config: "Config") -> bool:
     console.print("[cyan]Test mode: Cleaning up old test issues...[/cyan]")
 
     try:
-        issues = client.list_issues(labels=["test-data"], state="open", limit=100)
+        # Adapter returns list[Issue] with .number attribute
+        issues = adapter.list_issues(labels=["test-data"], state="open", limit=100)
         for issue in issues:
-            issue_number = issue.get("number")
-            if not issue_number:
-                continue
-            client.add_comment(issue_number, "Closed by test mode startup.")
-            client.update_issue_state(issue_number, "closed")
-            console.print(f"  Closed #{issue_number}")
+            adapter.add_comment(issue.number, "Closed by test mode startup.")
+            adapter.update_issue_state(issue.number, "closed")
+            console.print(f"  Closed #{issue.number}")
     except Exception as exc:
         logger.warning("Test setup cleanup failed: %s", exc)
 
@@ -83,7 +75,7 @@ def _run_test_setup(config: "Config") -> bool:
 
     # Create test-data label if missing
     try:
-        client.create_label(
+        adapter.create_label(
             "test-data",
             description="Test data for integration tests",
             force=True,
@@ -105,10 +97,10 @@ def _run_test_setup(config: "Config") -> bool:
         if priority_label:
             labels.append(priority_label)
         try:
-            client.create_label(agent_label, force=True)
+            adapter.create_label(agent_label, force=True)
             if priority_label:
-                client.create_label(priority_label, force=True)
-            issue_number = client.create_issue(
+                adapter.create_label(priority_label, force=True)
+            issue_number = adapter.create_issue(
                 title=title,
                 body="Test issue for orchestrator.\n\nExpected: Agent completes.",
                 labels=labels,
@@ -278,7 +270,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         from .control.scheduler import Scheduler
         from ._tmux_impl import get_manager
         from .analysis import analyze_all_issues, extract_issue_branches
-        from .execution.github_adapter import GitHubAdapter
+        from .adapters.github import GitHubAdapter
         from .execution.git_working_copy import GitWorkingCopy
 
         console.print("\n[cyan]DRY RUN - showing what would be processed:[/cyan]\n")
@@ -881,7 +873,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         return 1
 
     console.print(f"[cyan]Initializing labels for {repo}...[/cyan]\n")
-    client = _github_client_for_config(config)
+    client = _github_adapter_for_config(config)
     if client is None:
         console.print("[red]Error: Unable to create GitHub client[/red]")
         return 1
@@ -986,7 +978,7 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
     from ._iterm2_impl import discover_issue_tabs, get_iterm_manager
     from .models import Session, Issue
     from datetime import datetime
-    from .execution.github_adapter import GitHubAdapter
+    from .adapters.github import GitHubAdapter
 
     console.print("[cyan]Discovering existing iTerm2 sessions...[/cyan]")
 
@@ -1104,7 +1096,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     """Audit the queue - show why issues are queued or skipped."""
     from .audit import audit_queue, print_audit
     from .config import Config
-    from .execution.github_adapter import GitHubAdapter
+    from .adapters.github import GitHubAdapter
     from .execution.git_working_copy import GitWorkingCopy
     from .analysis import extract_issue_branches
 
@@ -1174,7 +1166,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     # 3. Check GitHub API auth
     console.print("\n[bold]3. GitHub API Auth[/bold]")
     try:
-        client = _github_client_for_config(config)
+        client = _github_adapter_for_config(config)
         if client is None:
             console.print("  [red]✗[/red] GitHub client could not be created")
             errors.append("GitHub token missing or invalid")
@@ -1407,8 +1399,139 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auth(args: argparse.Namespace) -> int:
+    """Manage GitHub authentication."""
+    from rich.console import Console
+    console = Console()
+
+    action = getattr(args, "auth_action", None)
+    if action is None:
+        console.print("[yellow]Usage: issue-orchestrator auth <store|clear|doctor>[/yellow]")
+        return 1
+
+    if action == "store":
+        return _cmd_auth_store(args, console)
+    elif action == "clear":
+        return _cmd_auth_clear(args, console)
+    elif action == "doctor":
+        return _cmd_auth_doctor(args, console)
+    else:
+        console.print(f"[red]Unknown auth action: {action}[/red]")
+        return 1
+
+
+def _cmd_auth_store(args: argparse.Namespace, console) -> int:
+    """Store GitHub token in OS keychain."""
+    from .adapters.github.http_client import store_keyring_token
+    import getpass
+
+    token = getattr(args, "token", None)
+    if not token:
+        try:
+            token = getpass.getpass("Enter GitHub token: ")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[yellow]Cancelled[/yellow]")
+            return 1
+
+    if not token or not token.strip():
+        console.print("[red]Token cannot be empty[/red]")
+        return 1
+
+    try:
+        store_keyring_token(token.strip())
+        console.print("[green]✓ Token stored in OS keychain[/green]")
+        console.print("[dim]The token will be used when ISSUE_ORCH_GITHUB_TOKEN is not set.[/dim]")
+        return 0
+    except ImportError:
+        console.print("[red]Error: keyring library not installed[/red]")
+        console.print("[dim]Install with: pip install keyring[/dim]")
+        return 1
+    except Exception as e:
+        console.print(f"[red]Failed to store token: {e}[/red]")
+        return 1
+
+
+def _cmd_auth_clear(args: argparse.Namespace, console) -> int:
+    """Clear GitHub token from OS keychain."""
+    from .adapters.github.http_client import clear_keyring_token
+
+    if clear_keyring_token():
+        console.print("[green]✓ Token cleared from OS keychain[/green]")
+    else:
+        console.print("[yellow]No token was stored in keychain[/yellow]")
+    return 0
+
+
+def _cmd_auth_doctor(args: argparse.Namespace, console) -> int:
+    """Check GitHub authentication status."""
+    import os
+    from .adapters.github.http_client import (
+        resolve_github_token,
+        _read_keyring_token,
+        KEYRING_SERVICE,
+        KEYRING_USERNAME,
+    )
+
+    console.print("[bold]GitHub Authentication Status[/bold]\n")
+
+    # Check env vars
+    env_vars = ["ISSUE_ORCH_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]
+    for var in env_vars:
+        value = os.environ.get(var)
+        if value:
+            masked = value[:4] + "..." + value[-4:] if len(value) > 12 else "***"
+            console.print(f"  {var}: [green]set[/green] ({masked})")
+        else:
+            console.print(f"  {var}: [dim]not set[/dim]")
+
+    # Check keyring
+    keyring_token = _read_keyring_token()
+    if keyring_token:
+        masked = keyring_token[:4] + "..." + keyring_token[-4:] if len(keyring_token) > 12 else "***"
+        console.print(f"  Keyring ({KEYRING_SERVICE}/{KEYRING_USERNAME}): [green]set[/green] ({masked})")
+    else:
+        console.print(f"  Keyring ({KEYRING_SERVICE}/{KEYRING_USERNAME}): [dim]not set[/dim]")
+
+    console.print("")
+
+    # Try to resolve and validate
+    try:
+        token = resolve_github_token(configured_token=None)
+        console.print("[green]✓ Token resolved successfully[/green]")
+
+        # Try to validate with GitHub
+        try:
+            import httpx
+            resp = httpx.get(
+                "https://api.github.com/user",
+                headers={"Authorization": f"token {token}"},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                user_info = resp.json()
+                console.print(f"[green]✓ Authenticated as: {user_info.get('login', 'unknown')}[/green]")
+            else:
+                console.print(f"[red]✗ Token invalid or expired (HTTP {resp.status_code})[/red]")
+                return 1
+        except Exception as e:
+            console.print(f"[red]✗ Failed to validate token: {e}[/red]")
+            return 1
+    except Exception as e:
+        console.print(f"[red]✗ No token available: {e}[/red]")
+        console.print("\n[dim]Set ISSUE_ORCH_GITHUB_TOKEN or run: issue-orchestrator auth store[/dim]")
+        return 1
+
+    return 0
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
-    """Demonstrate orchestrator features with mock data."""
+    """Demonstrate orchestrator features with mock data.
+
+    Behavior per DEMO_CONTRACT.md:
+    - If ISSUE_ORCH_GITHUB_TOKEN is not set: runs dry-run with local fixtures
+    - If token set and repo configured: creates demo issue and runs cycle
+    """
+    import os
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
@@ -1421,6 +1544,12 @@ def cmd_demo(args: argparse.Namespace) -> int:
     from .models import Issue, AgentConfig  # Issue used for demo mock creation
 
     console = Console()
+
+    # Check for GitHub token
+    token = os.environ.get("ISSUE_ORCH_GITHUB_TOKEN")
+    if not token:
+        console.print("[bold yellow]DEMO: no token set; running dry-run[/bold yellow]")
+        console.print()
 
     console.print(Panel("[bold cyan]Issue Orchestrator Demo[/bold cyan]", expand=False))
     console.print()
@@ -1904,6 +2033,29 @@ def main() -> int:
         "--config", type=Path, help="Path to config file (default: auto-detect)"
     )
     setup_hooks_parser.set_defaults(func=cmd_setup_hooks)
+
+    # auth command
+    auth_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "auth", help="Manage GitHub authentication"
+    )
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_action")
+
+    auth_store_parser = auth_subparsers.add_parser(
+        "store", help="Store GitHub token in OS keychain"
+    )
+    auth_store_parser.add_argument(
+        "--token", "-t", type=str, help="GitHub token (will prompt if not provided)"
+    )
+
+    auth_subparsers.add_parser(
+        "clear", help="Clear GitHub token from OS keychain"
+    )
+
+    auth_subparsers.add_parser(
+        "doctor", help="Check GitHub authentication status"
+    )
+
+    auth_parser.set_defaults(func=cmd_auth)
 
     # demo command
     demo_parser: argparse.ArgumentParser = subparsers.add_parser(

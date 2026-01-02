@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
@@ -28,7 +28,7 @@ from tests.e2e.conftest import (
     wait_for_issue_label_snapshot,
     get_issue_comments,
     OrchestratorProcess,
-    _github_client,
+    _github_adapter,
 )
 
 
@@ -86,30 +86,32 @@ async def create_watcher_for_port(port: int) -> tuple[OrchestratorWatcher, SSEEv
 
 def close_pr(repo: str, pr_number: int) -> None:
     """Close a PR and delete its branch."""
-    client = _github_client(repo)
-    pr = client.get_pr(pr_number)
+    adapter = _github_adapter(repo)
+    pr = adapter.get_pr(pr_number)
     if not pr:
         return
-    branch = (pr.get("head") or {}).get("ref")
-    client.close_pr(pr_number)
+    # PRInfo has .branch attribute directly
+    branch = pr.branch
+    adapter.close_pr(pr_number)
     if branch:
         try:
-            client.delete_branch(branch)
+            adapter.delete_branch(branch)
         except Exception:
             pass
 
 
 def cleanup_test_prs(repo: str, labels: Iterable[str]) -> int:
     """Close test PRs matching any of the provided labels."""
-    closed_prs = set()
-    client = _github_client(repo)
+    closed_prs: set[int] = set()
+    adapter = _github_adapter(repo)
     for label in labels:
         try:
-            prs = client.get_prs_with_label(label, state="open")
+            prs = adapter.get_prs_with_label(label, state="open")
         except Exception:
             prs = []
         for pr in prs:
-            pr_num = pr.get("number")
+            # PRInfo has .number attribute
+            pr_num = pr.number
             if pr_num and pr_num not in closed_prs:
                 close_pr(repo, pr_num)
                 closed_prs.add(pr_num)
@@ -183,6 +185,26 @@ async def wait_for_rework_progress(
     return False, seen
 
 
+def check_issue_comment(
+    repo: str,
+    issue_number: int,
+    predicate: Callable[[dict], bool],
+) -> dict | None:
+    """Single-shot check for a comment matching predicate.
+
+    This is a boundary check - it reads GitHub once at a known point
+    (after a flow completes) rather than polling in a loop.
+
+    Per architecture objectives: "Direct GH reads only for setup/cleanup"
+    and "refresh only at known boundaries."
+    """
+    comments = get_issue_comments(repo, issue_number)
+    for comment in comments:
+        if predicate(comment):
+            return comment
+    return None
+
+
 async def wait_for_issue_comment(
     repo: str,
     issue_number: int,
@@ -190,6 +212,19 @@ async def wait_for_issue_comment(
     timeout_s: float = 10,
     interval_s: float = 2,
 ) -> dict | None:
+    """DEPRECATED: Use check_issue_comment instead.
+
+    This function polls GitHub in a loop, which violates the architecture
+    objective: "no direct GH reads in waits". Use check_issue_comment
+    for a single boundary check after the flow completes.
+    """
+    import warnings
+    warnings.warn(
+        "wait_for_issue_comment polls GitHub directly. "
+        "Use check_issue_comment for a single boundary check.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         comments = get_issue_comments(repo, issue_number)
@@ -202,13 +237,31 @@ async def wait_for_issue_comment(
 
 @dataclass
 class E2EFlow:
-    """High-level test flow helpers for e2e tests."""
+    """High-level test flow helpers for e2e tests.
+
+    The control API port is derived from the watcher's snapshot provider URL,
+    not passed as a parameter. This ensures tests can't accidentally send
+    refresh requests to the wrong port.
+    """
 
     repo: str
     watcher: OrchestratorWatcher | None
     filter_label: str | None = None
-    control_api_port: int | None = None
     review_timeout_s: float | None = None
+    _created_issues: list[int] = field(default_factory=list, repr=False)
+
+    def _control_api_port(self) -> int | None:
+        """Extract control API port from watcher's snapshot provider URL.
+
+        Returns None if watcher is not available (falls back to env var in trigger_refresh).
+        """
+        if self.watcher is None:
+            return None
+        # Extract port from snapshot provider URL (e.g., http://localhost:19080/api/snapshot)
+        url = self.watcher._snapshot_provider.url
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return parsed.port
 
     def _default_review_timeout_s(self) -> float:
         if self.review_timeout_s is not None:
@@ -222,7 +275,7 @@ class E2EFlow:
         return 240.0
 
     def refresh(self) -> bool:
-        return trigger_refresh(self.control_api_port)
+        return trigger_refresh(self._control_api_port())
 
     def create_issue(
         self,
@@ -233,10 +286,23 @@ class E2EFlow:
         merged = list(labels)
         if self.filter_label and self.filter_label not in merged:
             merged.append(self.filter_label)
-        issue = inflight_create(self.repo, title, merged, body=body)
+        issue_key, issue_number = inflight_create(self.repo, title, merged, body=body)
+        self._created_issues.append(issue_number)
         if self.watcher is not None:
-            register_inflight_issue(issue)
-        return issue
+            register_inflight_issue(issue_key)
+        return issue_key
+
+    def cleanup_created_issues(self) -> None:
+        """Close all issues created by this flow."""
+        from issue_orchestrator.test_data import close_issue
+        for issue_number in self._created_issues:
+            try:
+                close_issue(self.repo, issue_number)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Failed to close issue #%d: %s", issue_number, e
+                )
 
     def update_issue(
         self,
@@ -244,7 +310,7 @@ class E2EFlow:
         add_labels: list[str] | None = None,
         remove_labels: list[str] | None = None,
     ) -> None:
-        inflight_update(issue, add_labels=add_labels, remove_labels=remove_labels, port=self.control_api_port)
+        inflight_update(issue, add_labels=add_labels, remove_labels=remove_labels, port=self._control_api_port())
 
     async def issue_seen(self, issue: IssueKey, timeout_s: float = 120) -> None:
         self._refresh_if_needed()
@@ -311,7 +377,7 @@ class E2EFlow:
     def _refresh_if_needed(self) -> None:
         if self.watcher is None:
             return
-        ensure_inflight_refresh(self.control_api_port)
+        ensure_inflight_refresh(self._control_api_port())
 
     def _watcher(self) -> OrchestratorWatcher:
         if self.watcher is None:

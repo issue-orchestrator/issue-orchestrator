@@ -14,49 +14,56 @@ from issue_orchestrator.test_data import (
 )
 
 
+def _mock_issue(number: int) -> Mock:
+    """Create a mock Issue object with the given number."""
+    issue = Mock()
+    issue.number = number
+    return issue
+
+
 class TestCleanupTestIssues:
     """Test the cleanup_test_issues function."""
 
     def test_cleanup_no_issues(self):
         """Test cleanup when no test issues exist."""
-        client = Mock()
-        client.list_issues.return_value = []
+        adapter = Mock()
+        adapter.list_issues.return_value = []
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=adapter):
             result = cleanup_test_issues("owner/repo")
 
         assert result == 0
-        assert client.list_issues.call_count == 2
+        assert adapter.list_issues.call_count == 2
 
     def test_cleanup_single_issue(self):
         """Test cleanup when one test issue exists."""
-        client = Mock()
-        client.list_issues.side_effect = [
-            [{"number": 42}],
+        adapter = Mock()
+        adapter.list_issues.side_effect = [
+            [_mock_issue(42)],
             [],
         ]
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=adapter):
             result = cleanup_test_issues("owner/repo")
 
         assert result == 1
-        client.add_comment.assert_called_once_with(42, "Closed by test cleanup.")
-        client.update_issue_state.assert_called_once_with(42, "closed")
+        adapter.add_comment.assert_called_once_with(42, "Closed by test cleanup.")
+        adapter.update_issue_state.assert_called_once_with(42, "closed")
 
     def test_cleanup_multiple_issues(self):
         """Test cleanup when multiple test issues exist."""
-        client = Mock()
-        client.list_issues.side_effect = [
-            [{"number": 10}, {"number": 20}, {"number": 30}],
+        adapter = Mock()
+        adapter.list_issues.side_effect = [
+            [_mock_issue(10), _mock_issue(20), _mock_issue(30)],
             [],
         ]
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=adapter):
             result = cleanup_test_issues("owner/repo")
 
         assert result == 3
-        assert client.add_comment.call_count == 3
-        assert client.update_issue_state.call_count == 3
+        assert adapter.add_comment.call_count == 3
+        assert adapter.update_issue_state.call_count == 3
 
 
 class TestCreateIssue:
@@ -67,7 +74,7 @@ class TestCreateIssue:
         client = Mock()
         client.create_issue.return_value = 123
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
             with patch("issue_orchestrator.test_data._wait_for_issue_visible"):
                 result = create_issue("owner/repo", "Test title", ["label1", "label2"])
 
@@ -79,7 +86,7 @@ class TestCreateIssue:
         client = Mock()
         client.create_issue.return_value = 456
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
             with patch("issue_orchestrator.test_data._wait_for_issue_visible") as mock_wait:
                 create_issue("owner/repo", "Test", ["label"])
 
@@ -90,7 +97,7 @@ class TestCreateIssue:
         client = Mock()
         client.create_issue.return_value = 789
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
             with patch("issue_orchestrator.test_data._wait_for_issue_visible") as mock_wait:
                 create_issue("owner/repo", "Test", ["label"], wait_visible=False)
 
@@ -101,7 +108,7 @@ class TestCreateIssue:
         client = Mock()
         client.create_issue.return_value = None
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
             with pytest.raises(RuntimeError, match="Failed to create issue"):
                 create_issue("owner/repo", "Test", ["label"], wait_visible=False)
 
@@ -113,7 +120,7 @@ class TestUpdateIssue:
         """Test adding labels to an issue."""
         client = Mock()
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
             update_issue("owner/repo", 123, add_labels=["priority:high", "urgent"])
 
         client.create_label.assert_has_calls([
@@ -129,7 +136,7 @@ class TestUpdateIssue:
         """Test removing labels from an issue."""
         client = Mock()
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
             update_issue("owner/repo", 123, remove_labels=["old-label"])
 
         client.remove_label.assert_called_once_with(123, "old-label")
@@ -142,7 +149,7 @@ class TestCloseIssue:
         """Test basic issue closing."""
         client = Mock()
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
             close_issue("owner/repo", 123)
 
         client.update_issue_state.assert_called_once_with(123, "closed")
@@ -151,7 +158,7 @@ class TestCloseIssue:
         """Test closing with a comment."""
         client = Mock()
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
             close_issue("owner/repo", 123, comment="Done!")
 
         client.add_comment.assert_called_once_with(123, "Done!")
@@ -163,10 +170,10 @@ class TestCleanupIssuesByLabel:
 
     def test_cleanup_by_label(self):
         """Test cleaning up issues by specific label."""
-        client = Mock()
-        client.list_issues.return_value = [{"number": 1}, {"number": 2}]
+        adapter = Mock()
+        adapter.list_issues.return_value = [_mock_issue(1), _mock_issue(2)]
 
-        with patch("issue_orchestrator.test_data._client_for", return_value=client):
+        with patch("issue_orchestrator.test_data._adapter_for", return_value=adapter):
             with patch("issue_orchestrator.test_data.close_issue") as mock_close:
                 result = cleanup_issues_by_label("owner/repo", "e2e:test_foo")
 

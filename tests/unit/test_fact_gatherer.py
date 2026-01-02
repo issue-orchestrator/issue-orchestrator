@@ -397,8 +397,8 @@ class TestFactGathererFetchIssues:
 
         assert [issue.number for issue in results] == [1, 2]
         assert mock_repository_host.list_issues.call_args_list == [
-            call(labels=["test-label", "agent:web"], milestone="M1", limit=100),
-            call(labels=["test-label", "agent:web"], milestone="M2", limit=100),
+            call(labels=["test-label", "agent:web"], milestone="M1", limit=100, required_stable_ids=None),
+            call(labels=["test-label", "agent:web"], milestone="M2", limit=100, required_stable_ids=None),
         ]
 
     def test_fetch_issues_uses_milestone_param_when_unfiltered(
@@ -421,4 +421,5 @@ class TestFactGathererFetchIssues:
             labels=["test-label", "agent:web"],
             milestone="M3",
             limit=50,
+            required_stable_ids=None,
         )

@@ -241,7 +241,7 @@ class TestCheckPrerequisites:
 
     @patch("issue_orchestrator.setup_wizard.run_git")
     @patch("subprocess.run")
-    @patch("issue_orchestrator.execution.github_http.resolve_github_token")
+    @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
     def test_all_prerequisites_met(self, mock_token, mock_subprocess, mock_git):
         """Test when all prerequisites are met."""
         mock_git.return_value = (True, "git version 2.40.0")
@@ -256,7 +256,7 @@ class TestCheckPrerequisites:
 
     @patch("issue_orchestrator.setup_wizard.run_git")
     @patch("subprocess.run")
-    @patch("issue_orchestrator.execution.github_http.resolve_github_token")
+    @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
     def test_missing_git(self, mock_token, mock_subprocess, mock_git):
         """Test when git is missing."""
         mock_git.return_value = (False, "")
@@ -270,7 +270,7 @@ class TestCheckPrerequisites:
 
     @patch("issue_orchestrator.setup_wizard.run_git")
     @patch("subprocess.run")
-    @patch("issue_orchestrator.execution.github_http.resolve_github_token")
+    @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
     def test_github_not_authenticated(self, mock_token, mock_subprocess, mock_git):
         """Test when GitHub token is missing."""
         mock_git.return_value = (True, "git version 2.40.0")
@@ -285,7 +285,7 @@ class TestCheckPrerequisites:
 class TestFetchGithubLabels:
     """Test the fetch_github_labels function."""
 
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_fetches_labels(self, mock_client_factory):
         """Test successful label fetching."""
         mock_client = Mock()
@@ -296,7 +296,7 @@ class TestFetchGithubLabels:
 
         assert labels == ["bug", "agent:web"]
 
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_returns_empty_on_failure(self, mock_client_factory):
         """Test that empty list is returned on failure."""
         mock_client_factory.side_effect = RuntimeError("boom")
@@ -305,7 +305,7 @@ class TestFetchGithubLabels:
 
         assert labels == []
 
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_returns_empty_on_invalid_payload(self, mock_client_factory):
         """Test that empty list is returned for invalid payload."""
         mock_client = Mock()
@@ -406,7 +406,7 @@ class TestWizardNewProject:
     """Test the wizard_new_project function."""
 
     @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_creates_basic_config(self, mock_client_factory, mock_detect_repo):
         """Test creating a basic config with one agent."""
         mock_detect_repo.return_value = "owner/repo"
@@ -442,7 +442,7 @@ class TestWizardNewProject:
         assert config["ui_mode"] == "web"
 
     @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_adds_agent_prefix_when_missing(self, mock_client_factory, mock_detect_repo):
         """Test that agent: prefix is added when user confirms."""
         mock_detect_repo.return_value = None
@@ -473,7 +473,7 @@ class TestWizardNewProject:
         assert "backend" not in config["agents"]
 
     @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_multiple_agents(self, mock_client_factory, mock_detect_repo):
         """Test creating config with multiple agents."""
         mock_detect_repo.return_value = "owner/repo"
@@ -517,7 +517,7 @@ class TestWizardNewProject:
         assert config["agents"]["agent:backend"]["model"] == "opus"
 
     @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_custom_agent_command(self, mock_client_factory, mock_detect_repo):
         """Test creating config with a custom agent command."""
         mock_detect_repo.return_value = "owner/repo"
@@ -550,7 +550,7 @@ class TestWizardNewProject:
         assert "permission_mode" not in agent_cfg
 
     @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_review_workflow_enabled(self, mock_client_factory, mock_detect_repo):
         """Test enabling two-stage review workflow."""
         mock_detect_repo.return_value = "owner/repo"
@@ -595,7 +595,7 @@ class TestWizardNewProject:
         assert config["triage_review_threshold"] == 5
 
     @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_requires_at_least_one_agent(self, mock_client_factory, mock_detect_repo):
         """Test that wizard requires at least one agent."""
         mock_detect_repo.return_value = "owner/repo"
@@ -632,7 +632,7 @@ class TestWizardNewProject:
 class TestWizardExistingProject:
     """Test the wizard_existing_project function."""
 
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_basic_existing_project(self, mock_client_factory):
         """Test onboarding an existing project."""
         mock_client_factory.return_value = Mock()
@@ -668,7 +668,7 @@ class TestWizardExistingProject:
         assert "agent:web" in config["agents"]
         assert config["concurrency"]["max_concurrent_sessions"] == 3
 
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_preserves_existing_config(self, mock_client_factory):
         """Test that existing config is preserved when updating."""
         mock_client_factory.return_value = Mock()
@@ -727,7 +727,7 @@ class TestWizardExistingProject:
         # Existing settings preserved
         assert config["ui_mode"] == "tmux"
 
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_creates_missing_github_labels(self, mock_client_factory):
         """Test creating missing labels on GitHub."""
         mock_client = Mock()
@@ -770,7 +770,7 @@ class TestWizardExistingProject:
 
         assert mock_client.create_label.called
 
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_fresh_config_when_declined(self, mock_client_factory):
         """Test starting fresh when declining to update existing config."""
         mock_client_factory.return_value = Mock()
@@ -817,7 +817,7 @@ class TestWizardExistingProject:
         # New agent should be
         assert "agent:web" in config["agents"]
 
-    @patch("issue_orchestrator.setup_wizard._github_client")
+    @patch("issue_orchestrator.setup_wizard._github_adapter")
     def test_prompts_for_repo_when_not_detected(self, mock_client_factory):
         """Test that repo is prompted when not in state or config."""
         mock_client_factory.return_value = Mock()
@@ -892,7 +892,7 @@ class TestRunWizard:
         ])
 
         with patch("issue_orchestrator.setup_wizard.detect_repo", return_value="owner/repo"):
-            with patch("issue_orchestrator.setup_wizard._github_client", return_value=Mock()):
+            with patch("issue_orchestrator.setup_wizard._github_adapter", return_value=Mock()):
                 run_wizard(target_path=target, prompter=prompter)
 
         # Verify config was written
@@ -930,7 +930,7 @@ class TestRunWizard:
         ])
 
         with patch("issue_orchestrator.setup_wizard.detect_repo", return_value="owner/repo"):
-            with patch("issue_orchestrator.setup_wizard._github_client", return_value=Mock()):
+            with patch("issue_orchestrator.setup_wizard._github_adapter", return_value=Mock()):
                 with pytest.raises(SystemExit):
                     run_wizard(target_path=target, prompter=prompter)
 
@@ -996,6 +996,6 @@ class TestRunWizard:
         ])
 
         with patch("issue_orchestrator.setup_wizard.detect_repo", return_value=None):
-            with patch("issue_orchestrator.setup_wizard._github_client", return_value=Mock()):
+            with patch("issue_orchestrator.setup_wizard._github_adapter", return_value=Mock()):
                 with pytest.raises(SystemExit):
                     run_wizard(target_path=target, prompter=prompter)

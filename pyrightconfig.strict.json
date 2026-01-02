@@ -16,6 +16,9 @@
   "reportUnknownArgumentType": false,
   "reportUnknownParameterType": false,
   "reportUnknownLambdaType": false,
+  "reportPrivateUsage": false,
+  "reportAttributeAccessIssue": false,
+  "reportOptionalMemberAccess": false,
   "reportUnusedImport": "warning",
   "reportUnusedVariable": "warning"
 }

@@ -39,10 +39,12 @@ class MockGitHubAdapter:
         milestone: str | None = None,
         state: str = "open",
         limit: int = 100,
+        required_stable_ids: set[str] | None = None,
     ) -> list[Issue]:
         """Return configured test issues, filtered by labels."""
         self.list_issues_calls.append({
-            "labels": labels, "milestone": milestone, "state": state, "limit": limit
+            "labels": labels, "milestone": milestone, "state": state, "limit": limit,
+            "required_stable_ids": required_stable_ids,
         })
         result = self.issues
         if labels:
@@ -409,6 +411,7 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
     from issue_orchestrator.control.session_controller import SessionController
     from issue_orchestrator.control.completion_processor import CompletionProcessor
     from issue_orchestrator.control.pr_scanner import PRScanner
+    from issue_orchestrator.control.health_gate import HealthGate
     from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
     from unittest.mock import MagicMock, AsyncMock
 
@@ -457,6 +460,11 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
         issue_tracker=repo_host,
         reconcile=False,
     )
+    # Create HealthGate for testing
+    health_gate = HealthGate(
+        max_concurrent_sessions=config.max_concurrent_sessions,
+        rate_limit_threshold=100,
+    )
 
     return {
         'events': events,
@@ -472,6 +480,7 @@ def build_test_orchestrator_deps(config, repo_host, events, runner, worktree_man
         'worktree_manager': worktree_manager,
         'working_copy': working_copy,
         'hook_verifier': hook_verifier,
+        'health_gate': health_gate,
     }
 
 

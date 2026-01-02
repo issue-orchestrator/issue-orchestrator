@@ -34,8 +34,8 @@ Usage:
 from .manager import PluginManager, create_plugin_manager, BUILTIN_PLUGINS
 from .terminal_tmux import TmuxPlugin
 from .terminal_iterm import ITermPlugin
-from .github_adapter import GitHubAdapter
-from .github_issue import GitHubIssue
+from ..adapters.github.github_adapter import GitHubAdapter
+from ..adapters.github.github_issue import GitHubIssue
 from .git_working_copy import GitWorkingCopy
 from .json_store import JsonSessionStore
 from .lifecycle_sse import LifecycleSSEPlugin
