@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from . import labels as label_module  # avoid name collision with 'labels' field
+from .infra import labels as label_module  # avoid name collision with 'labels' field
 
 from .domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .domain.session_key import SessionKey, TaskKind

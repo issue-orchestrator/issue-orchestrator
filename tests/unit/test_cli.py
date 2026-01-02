@@ -608,7 +608,7 @@ class TestSetupLogging:
 
     def setup_method(self):
         """Reset logging config before each test."""
-        from issue_orchestrator.logging_config import reset_logging
+        from issue_orchestrator.infra.logging_config import reset_logging
         reset_logging()
 
     def test_setup_logging_default(self):

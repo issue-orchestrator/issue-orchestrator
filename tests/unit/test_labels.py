@@ -2,7 +2,7 @@
 
 import pytest
 
-from issue_orchestrator.labels import (
+from issue_orchestrator.infra.labels import (
     # Constants
     IN_PROGRESS,
     BLOCKED,

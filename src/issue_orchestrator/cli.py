@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 from rich.console import Console
 from rich.table import Table
 
-from .logging_config import setup_logging
+from .infra.logging_config import setup_logging
 
 console = Console()
 logger = logging.getLogger(__name__)

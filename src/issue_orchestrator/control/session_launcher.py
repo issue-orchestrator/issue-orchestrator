@@ -39,7 +39,7 @@ from ..config import Config
 from ..events import EventName
 from ..models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
 from ..domain.issue_key import GitHubIssueKey
-from ..logging_config import log_context
+from ..infra.logging_config import log_context
 from ..ports import (
     EventSink,
     TraceEvent,

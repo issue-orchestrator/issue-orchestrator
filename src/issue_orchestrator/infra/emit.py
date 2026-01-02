@@ -5,7 +5,7 @@ to emit events to the orchestrator. Events are sent via the IPC socket
 if available, otherwise just logged.
 
 Usage:
-    from issue_orchestrator.emit import emit_event
+    from issue_orchestrator.infra.emit import emit_event
 
     emit_event("validation.started", {"sha": "abc123", "command": "make test"})
     # ... do work ...

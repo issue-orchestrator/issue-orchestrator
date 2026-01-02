@@ -24,12 +24,12 @@ if TYPE_CHECKING:
 
 from ..config import Config
 from ..events import EventName
-from ..logging_config import log_context
+from ..infra.logging_config import log_context
 from ..models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
 from .reconciliation import build_expected_for_mutation
-from .. import labels
+from ..infra import labels
 
 logger = logging.getLogger(__name__)
 

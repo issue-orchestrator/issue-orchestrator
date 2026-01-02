@@ -64,7 +64,7 @@ from .actions import (
     CleanupSessionAction,
 )
 from .reconciliation import build_expected_for_mutation
-from .. import labels
+from ..infra import labels
 
 logger = logging.getLogger(__name__)
 
