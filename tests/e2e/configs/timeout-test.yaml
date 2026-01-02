@@ -12,7 +12,7 @@ e2e_pr_labels: ["test-data"]
 agents:
   # Agent that does nothing - will timeout
   "agent:e2e-test-timeout":
-    prompt: "examples/prompts/e2e-test-timeout.md"
+    prompt: "tests/e2e/fixtures/prompts/e2e-test-timeout.md"
     model: haiku
     timeout_minutes: 1  # Very short - will timeout quickly
     worktree_base: "/tmp/e2e-worktrees"

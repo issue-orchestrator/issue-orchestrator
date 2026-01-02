@@ -16,7 +16,7 @@ agents:
   # Script that completes immediately (creates file, commits, calls agent-done)
   "agent:script-completes":
     command: "exec bash {prompt}"
-    prompt: "examples/scripts/complete-immediately.sh"
+    prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
     meta_agent: "claude-code"
     timeout_minutes: 1
     worktree_base: "/tmp/e2e-worktrees"
@@ -25,7 +25,7 @@ agents:
   # Script that always requests changes (for testing rework cycles)
   "agent:script-rejects":
     command: "exec bash {prompt}"
-    prompt: "examples/scripts/always-reject.sh"
+    prompt: "tests/e2e/fixtures/scripts/always-reject.sh"
     meta_agent: "claude-code"
     timeout_minutes: 1
     worktree_base: "/tmp/e2e-worktrees"
