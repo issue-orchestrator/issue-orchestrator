@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
 from issue_orchestrator.infra.config import Config, DangerousConfig
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionStatus,

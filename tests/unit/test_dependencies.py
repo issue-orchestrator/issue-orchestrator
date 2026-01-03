@@ -372,7 +372,7 @@ class TestPriorityAndDependenciesTogether:
 
     def test_issue_with_priority_and_dependencies_parsed_correctly(self):
         """Issue with [Px-nnn] title and Depends-on body has both parsed."""
-        from issue_orchestrator.models import Issue
+        from issue_orchestrator.domain.models import Issue
         from issue_orchestrator.control.scheduler import Scheduler
         from issue_orchestrator.infra.config import Config
         from unittest.mock import MagicMock

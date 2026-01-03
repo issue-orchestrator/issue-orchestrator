@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from ..domain.issue_key import GitHubIssueKey
 from ..domain.session_key import SessionKey, TaskKind
-from ..models import Issue, Session
+from ..domain.models import Issue, Session
 from ..ports import RepositoryHost, WorkingCopy
 from ..ports.session_runner import DiscoveredSession
 

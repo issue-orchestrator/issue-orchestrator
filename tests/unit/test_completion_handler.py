@@ -8,7 +8,7 @@ from issue_orchestrator.control.completion_handler import CompletionHandler
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
-from issue_orchestrator.models import AgentConfig, Issue, Session, SessionStatus
+from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.ports import NullEventSink
 
 

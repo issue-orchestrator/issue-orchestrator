@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 from issue_orchestrator.observation.observer import SessionObserver
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Session,
     SessionStatus,
     Issue,

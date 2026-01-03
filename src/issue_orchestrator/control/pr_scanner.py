@@ -16,7 +16,7 @@ from typing import Sequence, Protocol
 
 from ..infra.config import Config
 from ..events import EventName
-from ..models import PendingReview, PendingRework
+from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..ports import EventSink, TraceEvent
 from ..ports.pull_request_tracker import PRInfo

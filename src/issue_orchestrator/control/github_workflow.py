@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Optional, Callable
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
-    from ..models import OrchestratorState, DependencyProblem, Session, PendingCleanup
+    from ..domain.models import OrchestratorState, DependencyProblem, Session, PendingCleanup
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from .fact_gatherer import FactGatherer
     from .pr_scanner import PRScanner
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 from ..infra.config import Config
 from ..events import EventName, EventContext
-from ..models import DiscoveredReview, DiscoveredRework, DiscoveredEscalation, DependencyProblem
+from ..domain.models import DiscoveredReview, DiscoveredRework, DiscoveredEscalation, DependencyProblem
 from ..ports import EventSink, TraceEvent, RepositoryHost
 
 logger = logging.getLogger(__name__)

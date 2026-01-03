@@ -6,7 +6,7 @@ from pathlib import Path
 
 from issue_orchestrator.control.fact_gatherer import FactGatherer
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Issue,
     OrchestratorState,
     Session,

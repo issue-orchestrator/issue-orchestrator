@@ -24,7 +24,7 @@ from ..ports import IssueTracker, EventSink, TraceEvent
 from ..infra import gh_audit
 
 if TYPE_CHECKING:
-    from ..models import Issue
+    from ..domain.models import Issue
 
 logger = logging.getLogger(__name__)
 

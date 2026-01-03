@@ -28,7 +28,7 @@ from ..ports import EventSink, TraceEvent
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
-    from ..models import (
+    from ..domain.models import (
         OrchestratorState,
         TriageFacts,
         CleanupFacts,
@@ -157,7 +157,7 @@ class FactGatherer:
         Returns:
             TriageFacts if triage is configured, else None
         """
-        from ..models import TriageFacts
+        from ..domain.models import TriageFacts
 
         # Check if triage review is configured
         if not self.config.triage_review_agent:
@@ -212,7 +212,7 @@ class FactGatherer:
         Returns:
             CleanupFacts if there are pending cleanups, else None
         """
-        from ..models import CleanupFacts
+        from ..domain.models import CleanupFacts
 
         if not state.pending_cleanups:
             return None

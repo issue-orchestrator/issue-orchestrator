@@ -16,7 +16,7 @@ from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..infra.config import Config, AgentConfig
-    from ..models import PendingCleanup
+    from ..domain.models import PendingCleanup
     from ..ports import RepositoryHost
     from ..ports.worktree_manager import WorktreeManager
 

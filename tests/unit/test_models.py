@@ -3,7 +3,7 @@
 import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionStatus,

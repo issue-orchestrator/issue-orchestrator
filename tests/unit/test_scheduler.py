@@ -8,7 +8,7 @@ from issue_orchestrator.control.scheduler import (
     PatternStrategy, NameStrategy, get_milestone_strategy, load_strategy_class,
     BUILTIN_STRATEGIES
 )
-from issue_orchestrator.models import Issue, AgentConfig
+from issue_orchestrator.domain.models import Issue, AgentConfig
 from issue_orchestrator.infra.config import Config
 
 

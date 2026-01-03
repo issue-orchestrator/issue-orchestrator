@@ -20,7 +20,7 @@ from typing import Optional, Sequence
 
 from ...infra.config import Config
 from ...events import EventName
-from ...models import PendingTriageReview
+from ...domain.models import PendingTriageReview
 from ...ports import EventSink, TraceEvent
 
 logger = logging.getLogger(__name__)

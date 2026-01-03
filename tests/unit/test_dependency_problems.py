@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from issue_orchestrator.models import DependencyProblem, Issue, OrchestratorState
+from issue_orchestrator.domain.models import DependencyProblem, Issue, OrchestratorState
 
 
 class TestDependencyProblem:

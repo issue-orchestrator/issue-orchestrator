@@ -20,7 +20,7 @@ from issue_orchestrator.control.actions import (
     RemoveWorktreeAction,
 )
 from issue_orchestrator.control.session_manager import SessionType
-from issue_orchestrator.models import Issue, Session, AgentConfig
+from issue_orchestrator.domain.models import Issue, Session, AgentConfig
 
 
 @pytest.fixture

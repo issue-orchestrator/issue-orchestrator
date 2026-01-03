@@ -16,7 +16,7 @@ from issue_orchestrator.control.planner import (
 )
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.actions import ActionType, LaunchSessionAction
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionStatus,
@@ -362,7 +362,7 @@ class TestPlanDiscoveredReviews:
 
     def test_plans_queue_action_for_discovered_review(self):
         """Planner produces QueueReviewAction for discovered reviews."""
-        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.domain.models import DiscoveredReview
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -394,7 +394,7 @@ class TestPlanDiscoveredReviews:
 
     def test_skips_already_queued_reviews(self):
         """Planner skips discovered reviews that are already in pending_reviews."""
-        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.domain.models import DiscoveredReview
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -446,7 +446,7 @@ class TestPlanDiscoveredReviews:
 
     def test_queue_action_has_expected_state(self):
         """Planner attaches ExpectedState to QueueReviewAction."""
-        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.domain.models import DiscoveredReview
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -478,7 +478,7 @@ class TestPlanDiscoveredReviews:
 
     def test_add_label_action_has_expected_state(self):
         """Planner attaches ExpectedState to AddLabelAction for pr-pending."""
-        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.domain.models import DiscoveredReview
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -522,7 +522,7 @@ class TestPlanTriageIssueCreation:
 
     def test_creates_triage_issue_at_threshold(self):
         """Planner produces CreateTriageIssueAction when threshold is met."""
-        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.domain.models import TriageFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -556,7 +556,7 @@ class TestPlanTriageIssueCreation:
 
     def test_no_triage_issue_below_threshold(self):
         """Planner produces no CreateTriageIssueAction when below threshold."""
-        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.domain.models import TriageFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -585,7 +585,7 @@ class TestPlanTriageIssueCreation:
 
     def test_no_triage_issue_when_existing_issue(self):
         """Planner produces no CreateTriageIssueAction when existing issue exists."""
-        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.domain.models import TriageFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -631,7 +631,7 @@ class TestPlanTriageIssueCreation:
 
     def test_triage_issue_body_includes_pr_list(self):
         """Planner includes PR details in triage issue body."""
-        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.domain.models import TriageFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -676,7 +676,7 @@ class TestPlanDiscoveredReworks:
 
     def test_plans_queue_action_for_discovered_rework(self):
         """Planner produces QueueReworkAction for discovered reworks."""
-        from issue_orchestrator.models import DiscoveredRework
+        from issue_orchestrator.domain.models import DiscoveredRework
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -707,7 +707,7 @@ class TestPlanDiscoveredReworks:
 
     def test_skips_already_queued_reworks(self):
         """Planner skips discovered reworks that are already in pending_reworks."""
-        from issue_orchestrator.models import DiscoveredRework
+        from issue_orchestrator.domain.models import DiscoveredRework
         from issue_orchestrator.domain.issue_key import GitHubIssueKey
         from issue_orchestrator.control.actions import ActionType
 
@@ -751,7 +751,7 @@ class TestPlanDiscoveredEscalations:
 
     def test_plans_escalate_action_for_discovered_escalation(self):
         """Planner produces EscalateToHumanAction for discovered escalations."""
-        from issue_orchestrator.models import DiscoveredEscalation
+        from issue_orchestrator.domain.models import DiscoveredEscalation
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer", max_rework_cycles=2)
@@ -805,7 +805,7 @@ class TestPlanDiscoveredFailures:
 
     def test_plans_triage_action_for_discovered_failure(self):
         """Planner produces QueueTriageAction for discovered failures."""
-        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -836,7 +836,7 @@ class TestPlanDiscoveredFailures:
 
     def test_no_triage_action_when_disabled(self):
         """Planner produces no triage actions when triage_review_on_failure is disabled."""
-        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -863,7 +863,7 @@ class TestPlanDiscoveredFailures:
 
     def test_no_triage_action_when_no_agent_configured(self):
         """Planner produces no triage actions when no triage_review_agent configured."""
-        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -890,7 +890,7 @@ class TestPlanDiscoveredFailures:
 
     def test_skips_already_queued_triage(self):
         """Planner skips failures for issues already queued for triage."""
-        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -952,7 +952,7 @@ class TestPlanCleanups:
 
     def test_plans_cleanup_action_for_reviewed_pr(self):
         """Planner produces CleanupSessionAction when PR has been reviewed."""
-        from issue_orchestrator.models import CleanupFacts
+        from issue_orchestrator.domain.models import CleanupFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -986,7 +986,7 @@ class TestPlanCleanups:
 
     def test_no_cleanup_when_pr_not_reviewed(self):
         """Planner produces no CleanupSessionAction when PR is not reviewed."""
-        from issue_orchestrator.models import CleanupFacts
+        from issue_orchestrator.domain.models import CleanupFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -1030,7 +1030,7 @@ class TestPlanCleanups:
 
     def test_cleanup_respects_close_tabs_setting(self):
         """Planner respects the close_tabs setting from CleanupFacts."""
-        from issue_orchestrator.models import CleanupFacts
+        from issue_orchestrator.domain.models import CleanupFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")

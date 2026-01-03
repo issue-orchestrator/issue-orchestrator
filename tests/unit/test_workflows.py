@@ -18,7 +18,7 @@ from issue_orchestrator.control.workflows.triage_workflow import (
     TriageDecision,
     BatchTriageDecision,
 )
-from issue_orchestrator.models import PendingReview, PendingRework, PendingTriageReview
+from issue_orchestrator.domain.models import PendingReview, PendingRework, PendingTriageReview
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.ports import NullEventSink, TraceEvent
 

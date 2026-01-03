@@ -11,7 +11,7 @@ from issue_orchestrator.infra.analysis import (
     analyze_all_issues,
     analyze_orphan_branches,
 )
-from issue_orchestrator.models import Issue
+from issue_orchestrator.domain.models import Issue
 
 
 class TestIssueState:

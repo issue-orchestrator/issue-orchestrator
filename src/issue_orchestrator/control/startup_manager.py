@@ -21,7 +21,7 @@ from typing import Callable, Optional
 from ..infra.analysis import analyze_issue
 from ..infra.config import Config
 from ..ports.issue import Issue
-from ..models import (
+from ..domain.models import (
     OrchestratorState,
     PendingReview,
     PendingTriageReview,

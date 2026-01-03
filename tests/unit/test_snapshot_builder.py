@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, Mock, call
 
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.snapshot_builder import SnapshotBuilder
-from issue_orchestrator.models import Issue, OrchestratorState
+from issue_orchestrator.domain.models import Issue, OrchestratorState
 
 
 def test_snapshot_builder_multiple_milestones_dedupes():

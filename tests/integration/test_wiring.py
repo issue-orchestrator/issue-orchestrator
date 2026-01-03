@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from tempfile import TemporaryDirectory
 
 from issue_orchestrator.infra.config import Config, DangerousConfig
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Issue, AgentConfig, Session, OrchestratorState, SessionStatus,
     CommentHeadings
 )
@@ -292,7 +292,7 @@ class TestObserverWiring:
     def test_observer_detects_completed_session(self):
         """Verify observer detects when a session has completed."""
         from issue_orchestrator.observation import SessionObserver
-        from issue_orchestrator.models import Session, Issue, AgentConfig, SessionStatus
+        from issue_orchestrator.domain.models import Session, Issue, AgentConfig, SessionStatus
         from datetime import datetime
 
         config = MagicMock()
@@ -340,7 +340,7 @@ class TestObserverWiring:
     def test_observer_detects_running_session(self):
         """Verify observer detects when a session is still running."""
         from issue_orchestrator.observation import SessionObserver
-        from issue_orchestrator.models import Session, Issue, AgentConfig, SessionStatus
+        from issue_orchestrator.domain.models import Session, Issue, AgentConfig, SessionStatus
         from datetime import datetime
 
         config = MagicMock()
@@ -380,7 +380,7 @@ class TestSmoke:
         from issue_orchestrator.entrypoints import cli
         from issue_orchestrator.infra import config
         from issue_orchestrator.entrypoints import dashboard
-        from issue_orchestrator import models
+        from issue_orchestrator.domain import models
         from issue_orchestrator.observation import observer
         from issue_orchestrator import orchestrator
         from issue_orchestrator.control import scheduler

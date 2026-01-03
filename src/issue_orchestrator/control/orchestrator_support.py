@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 
 if TYPE_CHECKING:
     from types import FrameType
-    from ..models import OrchestratorState, Session, SessionStatus
+    from ..domain.models import OrchestratorState, Session, SessionStatus
     from ..infra.config import Config
     from ..orchestrator import Orchestrator
     from .planner import Plan, Planner
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 from ..events import EventName, EventContext
 from ..ports import EventSink, TraceEvent, RepositoryHost
 from .reconciliation import ReconciliationRequired, get_pause_label
-from ..models import (
+from ..domain.models import (
     PendingReview, PendingRework, PendingTriageReview,
 )
 
@@ -129,7 +129,7 @@ class OrchestratorSupport:
         return self.config.filter_milestone
 
     def _immediate_cleanup(self, session: "Session", status: "SessionStatus") -> None:
-        from ..models import SessionStatus
+        from ..domain.models import SessionStatus
         if status == SessionStatus.COMPLETED and (
             self.config.cleanup.without_triage.close_ai_session_tabs or not self.config.code_review_agent
         ):

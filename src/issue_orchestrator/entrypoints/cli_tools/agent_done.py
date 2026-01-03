@@ -24,7 +24,7 @@ from typing import NoReturn, Optional
 
 import os
 
-from ...models import (
+from ...domain.models import (
     CompletionRecord,
     CompletionOutcome,
     RequestedAction,

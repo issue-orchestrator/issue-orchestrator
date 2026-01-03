@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from .control.action_applier import ActionApplier, ActionResult
     from .control.fact_gatherer import FactGatherer
     from .control.actions import Action, LaunchSessionAction, EscalateToHumanAction
-    from .models import TriageFacts
+    from .domain.models import TriageFacts
     from .ports.session_runner import DiscoveredSession
 
 from .events import EventName, EventContext, EventHub
@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 
 from .infra.config import Config
 from .ports.issue import Issue
-from .models import Issue as ConcreteIssue  # For instantiation
-from .models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
+from .domain.models import Issue as ConcreteIssue  # For instantiation
+from .domain.models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
 from .observation.observer import SessionObserver
 from .control.scheduler import Scheduler
 from .control.dependency_evaluator import DependencyEvaluator

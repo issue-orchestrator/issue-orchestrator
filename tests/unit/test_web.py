@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch, Mock
 from fastapi.testclient import TestClient
 
 from issue_orchestrator.entrypoints.web import app, get_orchestrator
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionHistoryEntry,

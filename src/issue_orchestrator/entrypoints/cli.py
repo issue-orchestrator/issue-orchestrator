@@ -976,7 +976,7 @@ def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> No
     running Claude sessions.
     """
     from ..adapters.terminal._iterm2 import discover_issue_tabs, get_iterm_manager
-    from ..models import Session, Issue
+    from ..domain.models import Session, Issue
     from datetime import datetime
     from ..adapters.github import GitHubAdapter
 
@@ -1541,7 +1541,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     from ..control.dependency_evaluator import DependencyEvaluator
     from ..domain.dependencies import parse_dependencies
     from ..infra.config import Config
-    from ..models import Issue, AgentConfig  # Issue used for demo mock creation
+    from ..domain.models import Issue, AgentConfig  # Issue used for demo mock creation
 
     console = Console()
 

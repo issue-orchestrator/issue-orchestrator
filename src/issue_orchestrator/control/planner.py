@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Optional, Sequence
 
 from ..infra.config import Config
 from ..ports.issue import Issue
-from ..models import (
+from ..domain.models import (
     Session,
     PendingReview,
     PendingRework,
@@ -40,7 +40,7 @@ from ..models import (
 )
 
 if TYPE_CHECKING:
-    from ..models import OrchestratorState
+    from ..domain.models import OrchestratorState
 from .scheduler import Scheduler
 from .dependency_evaluator import DependencyEvaluator
 from .workflows import (

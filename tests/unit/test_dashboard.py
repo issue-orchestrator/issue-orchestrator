@@ -38,7 +38,7 @@ from issue_orchestrator.entrypoints.dashboard import (
     Dashboard,
     run_with_dashboard,
 )
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionStatus,

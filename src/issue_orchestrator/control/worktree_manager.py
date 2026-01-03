@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..ports.working_copy import WorkingCopy
 
 from ..infra.config import Config
-from ..models import AgentConfig
+from ..domain.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 

@@ -28,7 +28,7 @@ from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     write_marker_file,
     main,
 )
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     CompletionOutcome,
     RequestedAction,
     CompletionRecord,
