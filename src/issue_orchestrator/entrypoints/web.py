@@ -17,7 +17,7 @@ from sse_starlette.sse import EventSourceResponse
 from jinja2 import Environment, FileSystemLoader
 
 if TYPE_CHECKING:
-    from ..orchestrator import Orchestrator
+    from ..infra.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 

@@ -624,7 +624,7 @@ def sample_orchestrator(sample_config, mock_repository_host):
 
     Uses the explicit DI pattern - no autouse fixture patching needed.
     """
-    from issue_orchestrator.orchestrator import Orchestrator
+    from issue_orchestrator.infra.orchestrator import Orchestrator
     from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
     from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 

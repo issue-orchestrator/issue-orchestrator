@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from types import FrameType
     from ..domain.models import OrchestratorState, Session, SessionStatus
     from ..infra.config import Config
-    from ..orchestrator import Orchestrator
+    from ..infra.orchestrator import Orchestrator
     from .planner import Plan, Planner
     from .action_applier import ActionApplier, ActionResult
     from .actions import Action

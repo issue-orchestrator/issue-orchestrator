@@ -7,17 +7,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, cast
 
 if TYPE_CHECKING:
-    from .control.planner import Planner, Plan, OrchestratorSnapshot
-    from .control.session_manager import SessionManager, SessionRef
-    from .control.label_sync import LabelSync
-    from .control.action_applier import ActionApplier, ActionResult
-    from .control.fact_gatherer import FactGatherer
-    from .control.actions import Action, LaunchSessionAction, EscalateToHumanAction
-    from .domain.models import TriageFacts
-    from .ports.session_runner import DiscoveredSession
+    from ..control.planner import Planner, Plan, OrchestratorSnapshot
+    from ..control.session_manager import SessionManager, SessionRef
+    from ..control.label_sync import LabelSync
+    from ..control.action_applier import ActionApplier, ActionResult
+    from ..control.fact_gatherer import FactGatherer
+    from ..control.actions import Action, LaunchSessionAction, EscalateToHumanAction
+    from ..domain.models import TriageFacts
+    from ..ports.session_runner import DiscoveredSession
 
-from .events import EventName, EventContext, EventHub
-from .control.orchestrator_support import (
+from ..events import EventName, EventContext, EventHub
+from ..control.orchestrator_support import (
     log_transition,
     OrchestratorSupport,
     PlanApplier,
@@ -30,26 +30,26 @@ from .control.orchestrator_support import (
     init_orchestrator_components,
     handle_signal as _handle_signal,
 )
-from .control.github_workflow import GitHubWorkflow, launch_issue_by_number as _gw_launch_issue_by_number, get_issue_machine as _gw_get_issue_machine
-from .control.worktree_manager import get_worktree_path, get_session_name, extract_issue_branches
+from ..control.github_workflow import GitHubWorkflow, launch_issue_by_number as _gw_launch_issue_by_number, get_issue_machine as _gw_get_issue_machine
+from ..control.worktree_manager import get_worktree_path, get_session_name, extract_issue_branches
 
 logger = logging.getLogger(__name__)
 
 
-from .infra.config import Config
-from .ports.issue import Issue
-from .domain.models import Issue as ConcreteIssue  # For instantiation
-from .domain.models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
-from .observation.observer import SessionObserver
-from .control.scheduler import Scheduler
-from .control.dependency_evaluator import DependencyEvaluator
-from .domain.state_machines.issue_machine import IssueStateMachine, IssueState
-from .domain.state_machines.session_machine import SessionStateMachine, SessionState
-from .domain.state_machines.review_machine import ReviewStateMachine, ReviewState
-from .control.completion_processor import CompletionProcessor
-from .control.session_controller import SessionController
-from .control.pr_scanner import PRScanner
-from .control.session_launcher import (
+from .config import Config
+from ..ports.issue import Issue
+from ..domain.models import Issue as ConcreteIssue  # For instantiation
+from ..domain.models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
+from ..observation.observer import SessionObserver
+from ..control.scheduler import Scheduler
+from ..control.dependency_evaluator import DependencyEvaluator
+from ..domain.state_machines.issue_machine import IssueStateMachine, IssueState
+from ..domain.state_machines.session_machine import SessionStateMachine, SessionState
+from ..domain.state_machines.review_machine import ReviewStateMachine, ReviewState
+from ..control.completion_processor import CompletionProcessor
+from ..control.session_controller import SessionController
+from ..control.pr_scanner import PRScanner
+from ..control.session_launcher import (
     SessionLauncher,
     handle_session_completion as _handle_session_completion,
     process_active_sessions as _process_active_sessions,
@@ -65,23 +65,23 @@ from .control.session_launcher import (
     orchestrator_launch_session as _launch_session,
     get_session_machine as _sl_get_session_machine,
 )
-from .control.cleanup_manager import CleanupManager
-from .control.completion_handler import (
+from ..control.cleanup_manager import CleanupManager
+from ..control.completion_handler import (
     CompletionHandler,
     launch_review_by_number as _ch_launch_review_by_number,
     launch_rework_by_number as _ch_launch_rework_by_number,
     launch_triage_by_number as _ch_launch_triage_by_number,
     get_review_machine as _ch_get_review_machine,
 )
-from .control.session_restorer import SessionRestorer
-from .control.startup_manager import StartupManager
-from .control.state_machine_manager import StateMachineManager
-from .control.reconciliation import ReconciliationRequired, get_pause_label
-from .observation.observation import SessionObservation
-from .ports import TraceEvent, RepositoryHost, EventSink, SessionRunner
-from .ports.worktree_manager import WorktreeManager
-from .control.health_gate import HealthGate, HealthDecision
-from .control.orchestrator_deps import OrchestratorDeps
+from ..control.session_restorer import SessionRestorer
+from ..control.startup_manager import StartupManager
+from ..control.state_machine_manager import StateMachineManager
+from ..control.reconciliation import ReconciliationRequired, get_pause_label
+from ..observation.observation import SessionObservation
+from ..ports import TraceEvent, RepositoryHost, EventSink, SessionRunner
+from ..ports.worktree_manager import WorktreeManager
+from ..control.health_gate import HealthGate, HealthDecision
+from ..control.orchestrator_deps import OrchestratorDeps
 
 
 @dataclass
@@ -357,7 +357,7 @@ class Orchestrator:
     def launch_rework_session(self, rework: PendingRework) -> Optional[Session]: return _launch_rework_session(rework, self.state, self._session_launcher, self._session_restorer)
 
 async def run_orchestrator(config_path: Optional[Path] = None) -> None:
-    from .entrypoints.bootstrap import build_orchestrator
+    from ..entrypoints.bootstrap import build_orchestrator
     config = Config.load(config_path) if config_path else Config.find_and_load()
     orchestrator = build_orchestrator(config)
     signal.signal(signal.SIGINT, lambda s, f: _handle_signal(orchestrator, s, f))

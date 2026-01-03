@@ -28,7 +28,7 @@ from sse_starlette.sse import EventSourceResponse
 from ..infra import gh_audit
 
 if TYPE_CHECKING:
-    from ..orchestrator import Orchestrator
+    from ..infra.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 

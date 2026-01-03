@@ -58,7 +58,7 @@ class TestOrchestratorWiring:
     @pytest.mark.asyncio
     async def test_startup_queries_in_progress_issues(self, config, mock_repository_host):
         """Verify startup() queries for in-progress issues."""
-        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.infra.orchestrator import Orchestrator
         from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
         from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
 
@@ -82,7 +82,7 @@ class TestOrchestratorWiring:
 
     def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager, mock_repository_host):
         """Verify launch_session actually creates worktree and tmux window."""
-        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.infra.orchestrator import Orchestrator
         from issue_orchestrator.ports.worktree_manager import WorktreeInfo
         from tests.conftest import build_test_orchestrator_deps, MockEventSink
         # Configure mock plugin to allow session creation
@@ -145,7 +145,7 @@ class TestCLIWiring:
             mock_config.return_value = mock_cfg
 
             # Patch orchestrator module since it's imported inside cmd_start
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.infra.orchestrator.Orchestrator') as mock_orch_class:
                 mock_orch = MagicMock()
                 mock_orch.startup = AsyncMock()
                 mock_orch.run_loop = AsyncMock()
@@ -382,7 +382,7 @@ class TestSmoke:
         from issue_orchestrator.entrypoints import dashboard
         from issue_orchestrator.domain import models
         from issue_orchestrator.observation import observer
-        from issue_orchestrator import orchestrator
+        from issue_orchestrator.infra import orchestrator
         from issue_orchestrator.control import scheduler
         from issue_orchestrator.adapters.terminal import _tmux as tmux
         from issue_orchestrator.adapters.worktree import _worktree as worktree

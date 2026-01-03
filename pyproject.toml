@@ -133,13 +133,13 @@ source_modules = ["issue_orchestrator.control"]
 forbidden_modules = ["issue_orchestrator.execution"]
 # Allow TYPE_CHECKING import of Orchestrator for type hints
 ignore_imports = [
-  "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.orchestrator",
+  "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.infra.orchestrator",
 ]
 
 [[tool.importlinter.contracts]]
 name = "Orchestrator must not import execution directly"
 type = "forbidden"
-source_modules = ["issue_orchestrator.orchestrator"]
+source_modules = ["issue_orchestrator.infra.orchestrator"]
 forbidden_modules = [
   "issue_orchestrator.execution",
   "issue_orchestrator.adapters.worktree._worktree",
@@ -150,7 +150,7 @@ forbidden_modules = [
 # Allow orchestrator to import bootstrap for run_orchestrator() entry point
 # This is the only allowed path to execution - via the composition root
 ignore_imports = [
-  "issue_orchestrator.orchestrator -> issue_orchestrator.entrypoints.bootstrap",
+  "issue_orchestrator.infra.orchestrator -> issue_orchestrator.entrypoints.bootstrap",
 ]
 
 [[tool.importlinter.contracts]]
@@ -170,7 +170,7 @@ source_modules = [
 forbidden_modules = ["subprocess"]
 # Allow TYPE_CHECKING import of Orchestrator for type hints
 ignore_imports = [
-  "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.orchestrator",
+  "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.infra.orchestrator",
 ]
 
 [[tool.importlinter.contracts]]

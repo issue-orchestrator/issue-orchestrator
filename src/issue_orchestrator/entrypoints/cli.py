@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..infra.config import Config
-    from ..orchestrator import Orchestrator
+    from ..infra.orchestrator import Orchestrator
     from ..adapters.github import GitHubAdapter
 
 from rich.console import Console

@@ -53,7 +53,7 @@ from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..infra import gh_audit
 
 if TYPE_CHECKING:
-    from ..orchestrator import Orchestrator
+    from ..infra.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def build_orchestrator(
         Fully configured Orchestrator instance
     """
     # Import here to avoid circular imports
-    from ..orchestrator import Orchestrator
+    from ..infra.orchestrator import Orchestrator
 
     install_gh_guard()
 
@@ -388,7 +388,7 @@ def build_orchestrator_for_testing(
     Returns:
         Orchestrator configured with test dependencies
     """
-    from ..orchestrator import Orchestrator
+    from ..infra.orchestrator import Orchestrator
 
     install_gh_guard()
 

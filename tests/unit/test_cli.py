@@ -1247,7 +1247,7 @@ agents:
                     debug=False,
                 )
 
-                with patch('issue_orchestrator.orchestrator.Orchestrator'):
+                with patch('issue_orchestrator.infra.orchestrator.Orchestrator'):
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_asyncio.run.side_effect = _run_and_close
                         result = cmd_start(args)

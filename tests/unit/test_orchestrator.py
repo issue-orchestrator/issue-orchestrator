@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
 from tests.conftest import MockSessionRunner
-from issue_orchestrator.orchestrator import Orchestrator, run_orchestrator
+from issue_orchestrator.infra.orchestrator import Orchestrator, run_orchestrator
 from issue_orchestrator.domain.models import (
     Issue,
     Session,
@@ -795,7 +795,7 @@ class TestRunLoop:
         async def instant_yield(*args):
             await original_sleep(0)  # Use real sleep to yield
 
-        with patch("issue_orchestrator.orchestrator.asyncio.sleep", side_effect=instant_yield):
+        with patch("issue_orchestrator.infra.orchestrator.asyncio.sleep", side_effect=instant_yield):
             yield
 
     @pytest.mark.asyncio
@@ -1102,7 +1102,7 @@ class TestMaxIssuesToStart:
         async def instant_yield(*args):
             await original_sleep(0)  # Use real sleep to yield
 
-        with patch("issue_orchestrator.orchestrator.asyncio.sleep", side_effect=instant_yield):
+        with patch("issue_orchestrator.infra.orchestrator.asyncio.sleep", side_effect=instant_yield):
             yield
 
     @pytest.mark.asyncio
@@ -1395,8 +1395,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.orchestrator.Config.load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_loads_config_from_path(
         self,
         mock_signal,
@@ -1421,8 +1421,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_finds_config_when_no_path(
         self,
         mock_signal,
@@ -1444,8 +1444,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_calls_startup(
         self,
         mock_signal,
@@ -1467,8 +1467,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_calls_run_loop(
         self,
         mock_signal,
@@ -1490,8 +1490,8 @@ class TestRunOrchestrator:
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_sets_up_signal_handlers(
         self,
         mock_signal,
@@ -2107,7 +2107,7 @@ class TestPauseBehavior:
         async def instant_yield(*args):
             await original_sleep(0)
 
-        with patch("issue_orchestrator.orchestrator.asyncio.sleep", side_effect=instant_yield):
+        with patch("issue_orchestrator.infra.orchestrator.asyncio.sleep", side_effect=instant_yield):
             yield
 
     @pytest.mark.asyncio

@@ -1179,7 +1179,7 @@ class TestLaunchSessionDependencyCAS:
 
     def test_launch_skips_if_dependencies_added(self, checker, events):
         """launch_session skips if issue gained new unsatisfied dependencies."""
-        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.infra.orchestrator import Orchestrator
         from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
         from issue_orchestrator.infra.config import Config
         from unittest.mock import patch, MagicMock
@@ -1243,7 +1243,7 @@ class TestLaunchSessionDependencyCAS:
 
     def test_launch_does_not_block_if_dependencies_satisfied(self, checker, events):
         """launch_session does not emit block event if dependencies are satisfied."""
-        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.infra.orchestrator import Orchestrator
         from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
         from issue_orchestrator.infra.config import Config
         from unittest.mock import patch, MagicMock

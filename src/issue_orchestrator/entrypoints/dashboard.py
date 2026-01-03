@@ -14,7 +14,7 @@ from textual.reactive import reactive
 from rich.text import Text
 
 if TYPE_CHECKING:
-    from ..orchestrator import Orchestrator
+    from ..infra.orchestrator import Orchestrator
 
 
 class StatusBar(Static):
