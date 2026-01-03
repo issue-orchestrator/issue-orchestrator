@@ -103,7 +103,7 @@ forbidden_modules = [
   "pluggy",
   "issue_orchestrator.execution",
   "issue_orchestrator.observation",
-  "issue_orchestrator.hooks",
+  "issue_orchestrator.infra.hooks",
   "issue_orchestrator.ipc",
   "issue_orchestrator.scripts",
   "issue_orchestrator.templates",
@@ -122,7 +122,7 @@ source_modules = ["issue_orchestrator.ports"]
 forbidden_modules = [
   "issue_orchestrator.execution",
   "issue_orchestrator.observation",
-  "issue_orchestrator.hooks",
+  "issue_orchestrator.infra.hooks",
   "issue_orchestrator.ipc",
 ]
 
@@ -150,7 +150,7 @@ forbidden_modules = [
 # Allow orchestrator to import bootstrap for run_orchestrator() entry point
 # This is the only allowed path to execution - via the composition root
 ignore_imports = [
-  "issue_orchestrator.orchestrator -> issue_orchestrator.bootstrap",
+  "issue_orchestrator.orchestrator -> issue_orchestrator.entrypoints.bootstrap",
 ]
 
 [[tool.importlinter.contracts]]
@@ -182,5 +182,5 @@ source_modules = [
 forbidden_modules = ["httpx"]
 ignore_imports = [
   "issue_orchestrator.adapters.github.http_client -> httpx",
-  "issue_orchestrator.cli -> httpx",
+  "issue_orchestrator.entrypoints.cli -> httpx",
 ]

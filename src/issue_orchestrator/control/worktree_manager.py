@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..ports.working_copy import WorkingCopy
 
-from ..config import Config
+from ..infra.config import Config
 from ..models import AgentConfig
 
 logger = logging.getLogger(__name__)

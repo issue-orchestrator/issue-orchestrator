@@ -16,7 +16,7 @@ from issue_orchestrator.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports.pull_request_tracker import PRInfo

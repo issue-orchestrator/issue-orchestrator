@@ -36,7 +36,7 @@ from .control.worktree_manager import get_worktree_path, get_session_name, extra
 logger = logging.getLogger(__name__)
 
 
-from .config import Config
+from .infra.config import Config
 from .ports.issue import Issue
 from .models import Issue as ConcreteIssue  # For instantiation
 from .models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER

@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Sequence
 
-from ..config import Config
+from ..infra.config import Config
 from ..ports.issue import Issue
 from ..models import (
     Session,

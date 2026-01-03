@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ..config import Config
+    from ..infra.config import Config
     from ..orchestrator import Orchestrator
     from ..adapters.github import GitHubAdapter
 
@@ -1078,7 +1078,7 @@ def _load_config(args: argparse.Namespace) -> "Config":
     Raises:
         FileNotFoundError: If config file not found
     """
-    from ..config import Config
+    from ..infra.config import Config
 
     overrides = getattr(args, "set", None) or []
     if hasattr(args, 'config') and args.config:
@@ -1095,7 +1095,7 @@ def _load_config(args: argparse.Namespace) -> "Config":
 def cmd_audit(args: argparse.Namespace) -> int:
     """Audit the queue - show why issues are queued or skipped."""
     from ..infra.audit import audit_queue, print_audit
-    from ..config import Config
+    from ..infra.config import Config
     from ..adapters.github import GitHubAdapter
     from ..execution.git_working_copy import GitWorkingCopy
     from ..infra.analysis import extract_issue_branches
@@ -1540,7 +1540,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     from ..control.scheduler import Scheduler
     from ..control.dependency_evaluator import DependencyEvaluator
     from ..domain.dependencies import parse_dependencies
-    from ..config import Config
+    from ..infra.config import Config
     from ..models import Issue, AgentConfig  # Issue used for demo mock creation
 
     console = Console()

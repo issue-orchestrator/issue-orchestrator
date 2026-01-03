@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
-from ...config import Config
+from ...infra.config import Config
 from ...ports.issue_tracker import IssueTracker
 from ...ports.label_set import LabelSet
 from ...ports.pull_request_tracker import PRInfo, PullRequestTracker

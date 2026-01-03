@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, PropertyMock, patch
 from issue_orchestrator.models import AgentConfig, Issue, Session
-from issue_orchestrator.config import Config, DangerousConfig
+from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey

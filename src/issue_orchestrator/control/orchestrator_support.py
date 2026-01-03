@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 if TYPE_CHECKING:
     from types import FrameType
     from ..models import OrchestratorState, Session, SessionStatus
-    from ..config import Config
+    from ..infra.config import Config
     from ..orchestrator import Orchestrator
     from .planner import Plan, Planner
     from .action_applier import ActionApplier, ActionResult

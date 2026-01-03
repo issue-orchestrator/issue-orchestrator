@@ -7,7 +7,7 @@ The planner decides "should we?" - no mocks for tmux/GitHub needed.
 import pytest
 from unittest.mock import Mock, MagicMock
 
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.planner import (
     Planner,
     Plan,

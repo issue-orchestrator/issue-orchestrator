@@ -19,7 +19,7 @@ import time
 from typing import Callable, Optional
 
 from ..infra.analysis import analyze_issue
-from ..config import Config
+from ..infra.config import Config
 from ..ports.issue import Issue
 from ..models import (
     OrchestratorState,

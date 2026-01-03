@@ -11,7 +11,7 @@ import time
 from typing import Optional
 
 from ...infra import gh_audit
-from ...config import Config
+from ...infra.config import Config
 from ...adapters.github import GitHubAdapter
 
 logger = logging.getLogger(__name__)

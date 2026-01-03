@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..config import Config
+from ..infra.config import Config
 from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner
 from ..control.orchestrator_deps import OrchestratorDeps
 from ..execution import (

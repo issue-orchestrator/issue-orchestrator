@@ -6,7 +6,7 @@ from typing import Optional
 
 import yaml
 
-from .models import AgentConfig, CommentHeadings
+from ..models import AgentConfig, CommentHeadings
 
 
 @dataclass

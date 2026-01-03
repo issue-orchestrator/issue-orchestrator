@@ -15,7 +15,7 @@ from ..models import OrchestratorState
 from ..ports.event_sink import EventSink, TraceEvent
 
 if TYPE_CHECKING:
-    from ..config import Config
+    from ..infra.config import Config
     from ..ports.repository_host import RepositoryHost
 
 logger = logging.getLogger(__name__)

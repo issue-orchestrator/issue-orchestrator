@@ -356,7 +356,7 @@ def load_agent_gate_config(worktree: Path) -> tuple[Optional[str], int]:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
     import os
-    from ...config import load_validation_config
+    from ...infra.config import load_validation_config
 
     # Check for environment variable override (useful for e2e tests)
     env_cmd = os.environ.get("ORCHESTRATOR_AGENT_GATE_CMD")

@@ -7,7 +7,7 @@ appropriate SessionDecision without requiring full e2e orchestration.
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.control.session_controller import SessionController
 from issue_orchestrator.domain.issue_key import FakeIssueKey

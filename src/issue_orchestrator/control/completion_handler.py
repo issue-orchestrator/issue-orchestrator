@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from ..models import PendingReview, PendingRework, PendingTriageReview
     from .state_machine_manager import StateMachineManager
 
-from ..config import Config
+from ..infra.config import Config
 from ..events import EventName
 from ..infra.logging_config import log_context
 from ..models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup

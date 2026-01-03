@@ -19,7 +19,7 @@ import socket
 
 import pytest
 
-from issue_orchestrator.config import find_config_file
+from issue_orchestrator.infra.config import find_config_file
 from issue_orchestrator.adapters.github import GitHubAdapter
 from issue_orchestrator.testing.asyncdsl import (
     OrchestratorWatcher,
@@ -495,7 +495,7 @@ def pytest_sessionfinish(session, exitstatus):
     if log_files:
         print(f"  [E2E] Latest log: {log_files[0]}", flush=True)
 
-from issue_orchestrator.config import Config, AgentConfig
+from issue_orchestrator.infra.config import Config, AgentConfig
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from issue_orchestrator.testing.support.test_data import (
     create_issue,
@@ -1225,7 +1225,7 @@ def e2e_session_tmp(tmp_path_factory) -> Path:
 @pytest.fixture(scope="session")
 def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name: str) -> Config:
     """Session-scoped config for single orchestrator."""
-    from issue_orchestrator.config import ValidationConfig, ValidationGateConfig
+    from issue_orchestrator.infra.config import ValidationConfig, ValidationGateConfig
 
     config = Config()
     config.repo = repo_name
@@ -1381,7 +1381,7 @@ async def orchestrator_watcher(
     e2e_orchestrator: "OrchestratorProcess",
 ) -> AsyncGenerator[OrchestratorWatcher, None]:
     """Async watcher wired to the control API SSE stream."""
-    from issue_orchestrator.config import Config
+    from issue_orchestrator.infra.config import Config
 
     env_port = os.environ.get("E2E_CONTROL_API_PORT")
     port = int(env_port) if env_port is not None else Config().control_api_port
@@ -1423,7 +1423,7 @@ def trigger_refresh(
     import urllib.error
     import json
     import time as _time
-    from issue_orchestrator.config import Config
+    from issue_orchestrator.infra.config import Config
 
     # Retry a few times with backoff - the control API might still be starting
     max_retries = 5
@@ -1856,7 +1856,7 @@ def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
 @pytest.fixture
 def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config:
     """Create e2e test config with e2e-test agent."""
-    from issue_orchestrator.config import ValidationConfig, ValidationGateConfig
+    from issue_orchestrator.infra.config import ValidationConfig, ValidationGateConfig
 
     config = Config()
     config.repo = repo_name

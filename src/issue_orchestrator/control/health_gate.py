@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Protocol, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..config import Config
+    from ..infra.config import Config
 
 logger = logging.getLogger(__name__)
 

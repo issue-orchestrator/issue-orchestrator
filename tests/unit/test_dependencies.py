@@ -374,7 +374,7 @@ class TestPriorityAndDependenciesTogether:
         """Issue with [Px-nnn] title and Depends-on body has both parsed."""
         from issue_orchestrator.models import Issue
         from issue_orchestrator.control.scheduler import Scheduler
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.config import Config
         from unittest.mock import MagicMock
 
         # Create issue with priority in title AND dependency in body

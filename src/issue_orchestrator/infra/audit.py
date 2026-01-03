@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from ..ports.issue_tracker import IssueTracker
 
 from .analysis import analyze_issue
-from ..config import Config
+from .config import Config
 from ..domain.dependencies import DependencyReport, parse_dependencies
 from ..ports.issue import Issue
 from ..models import OrchestratorState

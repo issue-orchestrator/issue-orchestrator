@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from .cleanup_manager import CleanupManager
     from .state_machine_manager import StateMachineManager
 
-from ..config import Config
+from ..infra.config import Config
 from ..events import EventName, EventContext
 from ..models import DiscoveredReview, DiscoveredRework, DiscoveredEscalation, DependencyProblem
 from ..ports import EventSink, TraceEvent, RepositoryHost

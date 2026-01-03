@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Set, FrozenSet
 
-from ..config import Config
+from ..infra.config import Config
 from ..domain.state_machines.issue_machine import IssueState
 
 logger = logging.getLogger(__name__)

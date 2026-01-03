@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock, Mock, AsyncMock, patch
 
 from issue_orchestrator.control.startup_manager import StartupManager
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.models import (
     Issue,
     OrchestratorState,

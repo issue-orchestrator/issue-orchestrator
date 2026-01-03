@@ -15,7 +15,7 @@ from ..ports.issue import Issue
 
 # Sort keys can contain floats (timestamps/inf), ints (numbers), or strings (names)
 SortKey = tuple[float | int | str, ...]
-from ..config import Config
+from ..infra.config import Config
 from ..infra import labels
 from .dependency_evaluator import DependencyEvaluator
 

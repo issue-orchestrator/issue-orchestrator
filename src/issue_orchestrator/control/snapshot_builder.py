@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..config import Config
+from ..infra.config import Config
 from ..infra import gh_audit
 from ..ports.repository_host import RepositoryHost
 from ..models import OrchestratorState

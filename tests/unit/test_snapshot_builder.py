@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, Mock, call
 
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.snapshot_builder import SnapshotBuilder
 from issue_orchestrator.models import Issue, OrchestratorState
 

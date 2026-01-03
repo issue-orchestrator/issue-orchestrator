@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Sequence, Protocol
 
-from ..config import Config
+from ..infra.config import Config
 from ..events import EventName
 from ..models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey

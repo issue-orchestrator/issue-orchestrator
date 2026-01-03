@@ -9,7 +9,7 @@ from issue_orchestrator.control.scheduler import (
     BUILTIN_STRATEGIES
 )
 from issue_orchestrator.models import Issue, AgentConfig
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 
 
 def create_mock_issue(number, priority=None, milestone=None, state="open", milestone_number=None, milestone_due_on=None, title=None):
@@ -1181,7 +1181,7 @@ class TestLaunchSessionDependencyCAS:
         """launch_session skips if issue gained new unsatisfied dependencies."""
         from issue_orchestrator.orchestrator import Orchestrator
         from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.config import Config
         from unittest.mock import patch, MagicMock
 
         # Dependency is open
@@ -1245,7 +1245,7 @@ class TestLaunchSessionDependencyCAS:
         """launch_session does not emit block event if dependencies are satisfied."""
         from issue_orchestrator.orchestrator import Orchestrator
         from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.config import Config
         from unittest.mock import patch, MagicMock
 
         # Dependency is closed (satisfied)

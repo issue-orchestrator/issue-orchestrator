@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
-from ..config import Config
+from ..infra.config import Config
 from ..events import EventName
 from ..ports.repository_host import RepositoryHost
 from ..ports import EventSink, TraceEvent

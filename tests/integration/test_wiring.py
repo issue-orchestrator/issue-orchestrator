@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 from tempfile import TemporaryDirectory
 
-from issue_orchestrator.config import Config, DangerousConfig
+from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.models import (
     Issue, AgentConfig, Session, OrchestratorState, SessionStatus,
     CommentHeadings
@@ -137,7 +137,7 @@ class TestCLIWiring:
         from issue_orchestrator.entrypoints.cli import cmd_start
 
         # Patch at config module level since it's imported inside cmd_start
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_config:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_config:
             mock_cfg = MagicMock()
             mock_cfg.agents = {"agent:test": MagicMock()}
             mock_cfg.max_concurrent_sessions = 2
@@ -172,7 +172,7 @@ class TestCLIWiring:
         """Verify cmd_status can execute without error."""
         from issue_orchestrator.entrypoints.cli import cmd_status
 
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_config:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_config:
             mock_cfg = MagicMock()
             mock_cfg.agents = {"agent:test": MagicMock()}
             mock_cfg.repo_root = Path("/fake")
@@ -378,7 +378,7 @@ class TestSmoke:
     def test_can_import_all_modules(self):
         """Verify all modules can be imported without errors."""
         from issue_orchestrator.entrypoints import cli
-        from issue_orchestrator import config
+        from issue_orchestrator.infra import config
         from issue_orchestrator.entrypoints import dashboard
         from issue_orchestrator import models
         from issue_orchestrator.observation import observer

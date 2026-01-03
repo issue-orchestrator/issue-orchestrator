@@ -9,7 +9,7 @@ import logging
 from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
-from ..config import Config
+from ..infra.config import Config
 from ..ports import EventSink, Issue
 
 logger = logging.getLogger(__name__)

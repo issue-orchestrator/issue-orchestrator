@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
-from issue_orchestrator.config import Config, DangerousConfig
+from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.models import (
     Issue,
     Session,

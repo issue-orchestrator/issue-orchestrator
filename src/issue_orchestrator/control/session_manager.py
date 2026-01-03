@@ -22,7 +22,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from ..config import Config
+from ..infra.config import Config
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent
 

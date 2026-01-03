@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, call
 
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.adapters.github import GitHubAdapter
 from issue_orchestrator.adapters.github.cache import GitHubCache
 from issue_orchestrator.ports.pull_request_tracker import PRInfo

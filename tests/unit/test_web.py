@@ -14,7 +14,7 @@ from issue_orchestrator.models import (
     AgentConfig,
     SessionStatus,
 )
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 

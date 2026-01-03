@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
-from ...config import Config
+from ...infra.config import Config
 from ...events import EventName
 from ...models import PendingTriageReview
 from ...ports import EventSink, TraceEvent

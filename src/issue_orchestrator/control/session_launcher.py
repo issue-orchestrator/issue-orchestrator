@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from ..models import OrchestratorState
     from ..ports.session_runner import DiscoveredSession
 
-from ..config import Config
+from ..infra.config import Config
 from ..events import EventName
 from ..models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
 from ..domain.issue_key import GitHubIssueKey

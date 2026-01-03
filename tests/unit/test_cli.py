@@ -24,7 +24,7 @@ class TestCmdStart:
     def test_cmd_start_missing_config_returns_error(self):
         """Verify proper error handling when config is missing."""
         # Patch where Config is defined, not where it's imported
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_find.side_effect = FileNotFoundError("No config")
 
             args = argparse.Namespace(
@@ -40,7 +40,7 @@ class TestCmdStart:
 
     def test_cmd_start_calls_startup_and_run_loop(self):
         """Verify that startup() is called before run_loop()."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
@@ -77,7 +77,7 @@ class TestCmdStart:
 
     def test_cmd_start_no_dashboard_calls_run_loop(self):
         """Verify run_loop() is called when --no-dashboard is set."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                     mock_config = Mock()
@@ -110,7 +110,7 @@ class TestCmdStart:
 
     def test_cmd_start_dry_run_does_not_create_orchestrator(self):
         """Verify dry-run mode doesn't create orchestrator."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.adapters.github.github_adapter.GitHubAdapter.list_issues', return_value=[]):
                     with patch('issue_orchestrator.control.scheduler.Scheduler'):
@@ -158,7 +158,7 @@ class TestCmdStatus:
 
     def test_cmd_status_shows_config(self):
         """Verify status shows configuration."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.adapters.terminal._tmux.list_sessions', return_value=[]):
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
@@ -176,7 +176,7 @@ class TestCmdStatus:
 
     def test_cmd_status_shows_active_sessions(self):
         """Verify status shows active sessions."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.adapters.terminal._tmux.list_sessions') as mock_list:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
@@ -195,7 +195,7 @@ class TestCmdStatus:
 
     def test_cmd_status_handles_missing_config(self):
         """Verify status handles missing config gracefully."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_find.side_effect = FileNotFoundError("No config")
 
             args = argparse.Namespace()
@@ -209,7 +209,7 @@ class TestCmdInit:
 
     def test_cmd_init_missing_config_returns_error(self):
         """Verify init fails gracefully without config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_find.side_effect = FileNotFoundError("No config")
 
             args = argparse.Namespace()
@@ -219,7 +219,7 @@ class TestCmdInit:
 
     def test_cmd_init_missing_repo_returns_error(self):
         """Verify init fails when repo not configured."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.cli._resolve_repo', side_effect=RuntimeError("no repo")):
                 mock_config = Mock()
                 mock_config.repo = None
@@ -720,7 +720,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_test_mode_without_repo(self):
         """Verify test mode fails when repo not configured."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_config = Mock()
             mock_config.repo = None
             mock_config.agents = {'agent:test': Mock()}
@@ -740,7 +740,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_test_mode_success(self):
         """Verify test mode sets filter_label to test-data."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.cli._run_test_setup') as mock_test_setup:
                 with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                     with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
@@ -774,7 +774,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_milestone_override(self):
         """Verify milestone argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
@@ -804,7 +804,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_milestones_override(self):
         """Verify milestones argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
@@ -836,7 +836,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_ui_mode_override(self):
         """Verify ui_mode argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
@@ -868,7 +868,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_queue_refresh_override(self):
         """Verify queue_refresh argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
@@ -898,7 +898,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_max_issues_override(self):
         """Verify max_issues argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
@@ -928,7 +928,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_web_mode(self):
         """Verify web mode launches web dashboard."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.web.run_with_web_dashboard') as mock_web:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
@@ -959,7 +959,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_web_mode_custom_port(self):
         """Verify web mode respects custom port."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.web.run_with_web_dashboard') as mock_web:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
@@ -990,7 +990,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_keyboard_interrupt(self):
         """Verify keyboard interrupt is handled gracefully."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
@@ -1028,7 +1028,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_unexpected_error(self):
         """Verify unexpected errors during config load are handled."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_find.side_effect = ValueError("Unexpected error")
 
             args = argparse.Namespace(
@@ -1048,7 +1048,7 @@ class TestCmdInitAdvanced:
 
     def test_cmd_init_creates_all_labels(self):
         """Verify init creates all required labels."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
@@ -1073,7 +1073,7 @@ class TestCmdInitAdvanced:
 
     def test_cmd_init_handles_failures(self):
         """Verify init reports failures correctly."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
@@ -1101,7 +1101,7 @@ class TestLoadConfig:
 
     def test_load_config_without_explicit_path(self):
         """Verify _load_config calls find_and_load when no --config provided."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_config = Mock()
             mock_find.return_value = mock_config
 
@@ -1122,7 +1122,7 @@ agents:
     worktree_base: /tmp
 """)
 
-        with patch('issue_orchestrator.config.Config.load') as mock_load:
+        with patch('issue_orchestrator.infra.config.Config.load') as mock_load:
             mock_config = Mock()
             mock_config.repo_root_from_yaml = False
             mock_load.return_value = mock_config
@@ -1148,7 +1148,7 @@ agents:
 
     def test_load_config_no_config_attribute(self):
         """Verify _load_config uses find_and_load when args lacks config attr."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_config = Mock()
             mock_find.return_value = mock_config
 
@@ -1229,8 +1229,8 @@ agents:
     worktree_base: /tmp
 """)
 
-        with patch('issue_orchestrator.config.Config.load') as mock_load:
-            with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.load') as mock_load:
+            with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
                 mock_config = Mock()
                 mock_config.agents = {'agent:test': Mock()}
                 mock_config.max_concurrent_sessions = 2
