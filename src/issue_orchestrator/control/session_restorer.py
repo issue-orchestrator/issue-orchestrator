@@ -152,6 +152,8 @@ class SessionRestorer:
         issue_key = GitHubIssueKey(repo=self.config.repo, external_id=str(issue_number))
         task_kind = TaskKind.REVIEW if is_review else TaskKind.CODE
         session_key = SessionKey(issue=issue_key, task=task_kind)
+        # Use the agent type from issue labels, or the first available agent as fallback
+        agent_label_val = issue_obj.agent_type or next(iter(self.config.agents.keys()), "unknown")
         return Session(
             key=session_key,
             issue=issue_obj,
@@ -159,6 +161,7 @@ class SessionRestorer:
             terminal_id=session_name,
             worktree_path=worktree_path,
             branch_name=branch_name,
+            agent_label=agent_label_val,
         )
 
     def _find_worktree(self, issue_number: int) -> tuple[Optional[Path], str]:

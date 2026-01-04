@@ -716,6 +716,192 @@ review:
         # Threshold of 0 means auto-trigger is disabled
         assert config.triage_review_threshold == 0
 
+    def test_per_agent_reviewer_field(self, tmp_path):
+        """Test that per-agent reviewer field is parsed from YAML."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+agents:
+  agent:frontend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+    reviewer: agent:web-reviewer
+  agent:backend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+  agent:web-reviewer:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+  agent:reviewer:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+
+review:
+  enabled: true
+  default: agent:reviewer
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # Per-agent reviewer should be set
+        assert config.agents["agent:frontend"].reviewer == "agent:web-reviewer"
+        # Backend has no per-agent reviewer
+        assert config.agents["agent:backend"].reviewer is None
+        # Default reviewer should be set
+        assert config.review_enabled is True
+        assert config.code_review_agent == "agent:reviewer"
+
+    def test_get_reviewer_for_agent_with_per_agent_override(self, tmp_path):
+        """Test get_reviewer_for_agent returns per-agent reviewer when set."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+agents:
+  agent:frontend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+    reviewer: agent:web-reviewer
+  agent:backend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+  agent:web-reviewer:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+  agent:reviewer:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+
+review:
+  enabled: true
+  default: agent:reviewer
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # Frontend should use per-agent reviewer
+        assert config.get_reviewer_for_agent("agent:frontend") == "agent:web-reviewer"
+        # Backend should use default reviewer
+        assert config.get_reviewer_for_agent("agent:backend") == "agent:reviewer"
+        # Unknown agent should use default reviewer
+        assert config.get_reviewer_for_agent("agent:unknown") == "agent:reviewer"
+
+    def test_get_reviewer_for_agent_no_default(self, tmp_path):
+        """Test get_reviewer_for_agent returns None when no default reviewer."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+agents:
+  agent:frontend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # No default reviewer configured
+        assert config.code_review_agent is None
+        assert config.get_reviewer_for_agent("agent:frontend") is None
+
+    def test_review_enabled_and_default(self, tmp_path):
+        """Test that review.enabled and review.default are parsed correctly."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+  agent:new-reviewer:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+
+review:
+  enabled: true
+  default: agent:new-reviewer
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.review_enabled is True
+        assert config.code_review_agent == "agent:new-reviewer"
+
+    def test_validate_per_agent_reviewer_exists(self, tmp_path):
+        """Test that validation catches non-existent per-agent reviewers."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+agents:
+  agent:frontend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+    reviewer: agent:nonexistent-reviewer
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        errors = config.validate()
+        assert any("reviewer 'agent:nonexistent-reviewer' not found" in e for e in errors)
+
+    def test_validate_default_reviewer_required_when_enabled(self, tmp_path):
+        """Test that default reviewer is required when review.enabled is true."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+agents:
+  agent:frontend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+
+review:
+  enabled: true
+  # No default set!
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        errors = config.validate()
+        assert any("no default reviewer set" in e for e in errors)
+
+    def test_validate_no_error_when_review_disabled(self, tmp_path):
+        """Test that no error when review.enabled is false (default)."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+agents:
+  agent:frontend:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+
+# No review section - defaults to enabled: false
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        errors = config.validate()
+        # Should not have any review-related errors
+        assert not any("reviewer" in e.lower() for e in errors)
+
 
 class TestCleanupConfig:
     """Tests for cleanup configuration."""
@@ -955,7 +1141,8 @@ agents:
     worktree_base: {worktree_dir}
 
 review:
-  code_review_agent: agent:nonexistent
+  enabled: true
+  default: agent:nonexistent
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -963,7 +1150,7 @@ review:
         config = Config.load(config_file)
         errors = config.validate()
 
-        assert any("code_review_agent 'agent:nonexistent' not found" in e for e in errors)
+        assert any("review.default 'agent:nonexistent' not found" in e for e in errors)
 
     def test_validate_valid_config_returns_empty(self, tmp_path):
         """Test that valid config returns no errors."""

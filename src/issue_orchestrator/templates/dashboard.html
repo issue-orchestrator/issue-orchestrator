@@ -367,6 +367,29 @@
         .info-row:last-child { border-bottom: none; }
         .info-label { color: #8b949e; }
         .info-value { font-family: monospace; }
+
+        /* Toast notifications */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #238636;
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            opacity: 0;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            z-index: 10000;
+        }
+        .toast.visible {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+        .toast.error { background: #f85149; }
     </style>
 </head>
 <body>
@@ -542,6 +565,10 @@
             <span>⏸</span> Pause
             {% endif %}
         </div>
+        <div class="settings-menu-item" onclick="refreshFromGitHub()">
+            <span>🔄</span> Refresh from GitHub
+        </div>
+        <div class="settings-divider"></div>
         <div class="settings-menu-item" onclick="shutdown()">
             <span>⏻</span> Shutdown
         </div>
@@ -564,6 +591,9 @@
             <span>🗑</span> Clear History
         </div>
         <div class="settings-divider"></div>
+        <div class="settings-menu-item" onclick="showDoctor()">
+            <span>🩺</span> Run Doctor
+        </div>
         <div class="settings-menu-item" onclick="showDebug()">
             <span>🔧</span> Debug Info
         </div>
@@ -586,6 +616,12 @@
     </div>
 
     <script>
+        // Helper to hide settings menu (used by multiple functions)
+        function hideSettingsMenu() {
+            const menu = document.getElementById('settingsMenu');
+            if (menu) menu.classList.remove('visible');
+        }
+
         // Row click handler
         async function handleClick(row) {
             const action = row.dataset.action;
@@ -637,6 +673,21 @@
                 isPaused = true;
             }
         }
+        async function refreshFromGitHub() {
+            hideSettingsMenu();
+            try {
+                const res = await fetch('/api/refresh', { method: 'POST' });
+                if (res.ok) {
+                    showToast('Refreshed from GitHub');
+                } else {
+                    showToast('Refresh failed', true);
+                }
+            } catch (e) {
+                console.error('Refresh failed:', e);
+                showToast('Refresh failed', true);
+            }
+        }
+
         async function shutdown() {
             // First, check if there are active sessions
             const statusRes = await fetch('/api/status');
@@ -1087,7 +1138,7 @@
                 <div class="info-row"><span class="info-label">Version</span><span class="info-value">${data.version || 'dev'}</span></div>
                 <div class="info-row"><span class="info-label">Repository</span><span class="info-value">${data.repo}</span></div>
                 <div class="info-row"><span class="info-label">UI Mode</span><span class="info-value">${data.ui_mode}</span></div>
-                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${data.max_concurrent_sessions}</span></div>
+                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${data.max_sessions || '-'}</span></div>
                 <div class="info-row"><span class="info-label">Active Sessions</span><span class="info-value">${data.active_sessions}</span></div>
                 <div class="info-row"><span class="info-label">Completed Today</span><span class="info-value">${data.completed_today}</span></div>
             `;
@@ -1113,7 +1164,7 @@
                 <div class="info-row"><span class="info-label">Test Mode</span><span class="info-value">${opts.test_mode ? 'yes' : 'no'}</span></div>
                 <div class="info-row"><span class="info-label">Filter Label</span><span class="info-value">${opts.filter_label || 'none'}</span></div>
                 <div class="info-row"><span class="info-label">Filter Milestone</span><span class="info-value">${opts.filter_milestone || 'none'}</span></div>
-                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${opts.max_concurrent_sessions || '-'}</span></div>
+                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${opts.max_sessions || '-'}</span></div>
                 <h3 style="margin: 16px 0 8px; font-size: 14px;">State</h3>
                 <div class="info-row"><span class="info-label">Paused</span><span class="info-value">${data.paused}</span></div>
                 <div class="info-row"><span class="info-label">Priority Queue</span><span class="info-value">${data.priority_queue.length > 0 ? data.priority_queue.join(', ') : 'empty'}</span></div>
@@ -1126,6 +1177,32 @@
                 `).join('')}
             `;
             openModal('Debug Info', html);
+        }
+
+        async function showDoctor() {
+            settingsMenu.classList.remove('visible');
+            const res = await fetch('/api/doctor');
+            const data = await res.json();
+
+            const statusIcon = {
+                'ok': '✅',
+                'warning': '⚠️',
+                'error': '❌'
+            };
+
+            const html = `
+                <div style="margin-bottom: 12px;">
+                    <span style="font-size: 18px;">${statusIcon[data.overall]}</span>
+                    <span style="font-weight: 600; margin-left: 8px;">Overall: ${data.overall.toUpperCase()}</span>
+                </div>
+                ${data.checks.map(c => `
+                    <div class="info-row">
+                        <span class="info-label">${statusIcon[c.status]} ${c.name}</span>
+                        <span class="info-value" style="font-size: 12px;">${c.detail}</span>
+                    </div>
+                `).join('')}
+            `;
+            openModal('Doctor', html);
         }
 
         function openRepo() {
@@ -1171,6 +1248,17 @@
                 alert(data.error || 'Failed to clear history');
             }
         }
+
+        // Toast notification
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            if (!toast) return;
+            toast.textContent = message;
+            toast.classList.toggle('error', isError);
+            toast.classList.add('visible');
+            setTimeout(() => toast.classList.remove('visible'), 2500);
+        }
     </script>
+    <div id="toast" class="toast"></div>
 </body>
 </html>

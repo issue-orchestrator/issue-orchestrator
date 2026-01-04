@@ -591,15 +591,16 @@ class TestWizardNewProject:
 
         config = wizard_new_project(prompter)
 
-        # Stage 1: Code Review
-        assert config["code_review_agent"] == "agent:reviewer"
-        assert config["code_review_label"] == "needs-code-review"
-        assert config["code_reviewed_label"] == "code-reviewed"
+        # Stage 1: Code Review (new structure)
+        assert config["review"]["enabled"] is True
+        assert config["review"]["default"] == "agent:reviewer"
+        assert config["review"]["code_review_label"] == "needs-code-review"
+        assert config["review"]["code_reviewed_label"] == "code-reviewed"
 
         # Stage 2: Triage Batch Review
-        assert config["triage_review_agent"] == "agent:triage"
-        assert config["triage_reviewed_label"] == "triage-reviewed"
-        assert config["triage_review_threshold"] == 5
+        assert config["review"]["triage_review_agent"] == "agent:triage"
+        assert config["review"]["triage_reviewed_label"] == "triage-reviewed"
+        assert config["review"]["triage_review_threshold"] == 5
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")

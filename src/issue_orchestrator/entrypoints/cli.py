@@ -1407,15 +1407,14 @@ def cmd_auth(args: argparse.Namespace) -> int:
 
     action = getattr(args, "auth_action", None)
     if action is None:
-        console.print("[yellow]Usage: issue-orchestrator auth <store|clear|doctor>[/yellow]")
+        console.print("[yellow]Usage: issue-orchestrator auth <store|clear>[/yellow]")
+        console.print("[dim]For diagnostics, use: issue-orchestrator doctor[/dim]")
         return 1
 
     if action == "store":
         return _cmd_auth_store(args, console)
     elif action == "clear":
         return _cmd_auth_clear(args, console)
-    elif action == "doctor":
-        return _cmd_auth_doctor(args, console)
     else:
         console.print(f"[red]Unknown auth action: {action}[/red]")
         return 1
@@ -1463,66 +1462,46 @@ def _cmd_auth_clear(args: argparse.Namespace, console) -> int:
     return 0
 
 
-def _cmd_auth_doctor(args: argparse.Namespace, console) -> int:
-    """Check GitHub authentication status."""
-    import os
-    from ..adapters.github.http_client import (
-        resolve_github_token,
-        _read_keyring_token,
-        KEYRING_SERVICE,
-        KEYRING_USERNAME,
-    )
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Run unified diagnostics on configuration and environment."""
+    from pathlib import Path
+    from rich.console import Console
+    from ..infra.doctor import run_doctor
 
-    console.print("[bold]GitHub Authentication Status[/bold]\n")
+    console = Console()
+    console.print("[bold]Issue Orchestrator Doctor[/bold]\n")
 
-    # Check env vars
-    env_vars = ["ISSUE_ORCH_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]
-    for var in env_vars:
-        value = os.environ.get(var)
-        if value:
-            masked = value[:4] + "..." + value[-4:] if len(value) > 12 else "***"
-            console.print(f"  {var}: [green]set[/green] ({masked})")
-        else:
-            console.print(f"  {var}: [dim]not set[/dim]")
+    # Get config path from args
+    config_path = None
+    if hasattr(args, "config") and args.config:
+        config_path = Path(args.config)
 
-    # Check keyring
-    keyring_token = _read_keyring_token()
-    if keyring_token:
-        masked = keyring_token[:4] + "..." + keyring_token[-4:] if len(keyring_token) > 12 else "***"
-        console.print(f"  Keyring ({KEYRING_SERVICE}/{KEYRING_USERNAME}): [green]set[/green] ({masked})")
-    else:
-        console.print(f"  Keyring ({KEYRING_SERVICE}/{KEYRING_USERNAME}): [dim]not set[/dim]")
+    # Run diagnostics
+    result = run_doctor(config_path=config_path)
+
+    # Display results
+    for check in result.checks:
+        if check.status == "ok":
+            console.print(f"  [green]✓[/green] {check.name}: {check.detail}")
+        elif check.status == "warning":
+            console.print(f"  [yellow]![/yellow] {check.name}: {check.detail}")
+        elif check.status == "error":
+            console.print(f"  [red]✗[/red] {check.name}: {check.detail}")
+        else:  # info
+            console.print(f"  [dim]•[/dim] {check.name}: {check.detail}")
 
     console.print("")
 
-    # Try to resolve and validate
-    try:
-        token = resolve_github_token(configured_token=None)
-        console.print("[green]✓ Token resolved successfully[/green]")
-
-        # Try to validate with GitHub
-        try:
-            import httpx
-            resp = httpx.get(
-                "https://api.github.com/user",
-                headers={"Authorization": f"token {token}"},
-                timeout=10.0,
-            )
-            if resp.status_code == 200:
-                user_info = resp.json()
-                console.print(f"[green]✓ Authenticated as: {user_info.get('login', 'unknown')}[/green]")
-            else:
-                console.print(f"[red]✗ Token invalid or expired (HTTP {resp.status_code})[/red]")
-                return 1
-        except Exception as e:
-            console.print(f"[red]✗ Failed to validate token: {e}[/red]")
-            return 1
-    except Exception as e:
-        console.print(f"[red]✗ No token available: {e}[/red]")
-        console.print("\n[dim]Set ISSUE_ORCH_GITHUB_TOKEN or run: issue-orchestrator auth store[/dim]")
+    # Summary
+    if result.overall == "error":
+        console.print("[red]Some checks failed[/red]")
         return 1
-
-    return 0
+    elif result.overall == "warning":
+        console.print("[yellow]Completed with warnings[/yellow]")
+        return 0
+    else:
+        console.print("[green]All checks passed[/green]")
+        return 0
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
@@ -2070,11 +2049,16 @@ def main() -> int:
         "clear", help="Clear GitHub token from OS keychain"
     )
 
-    auth_subparsers.add_parser(
-        "doctor", help="Check GitHub authentication status"
-    )
-
     auth_parser.set_defaults(func=cmd_auth)
+
+    # doctor command (unified diagnostics)
+    doctor_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "doctor", help="Run diagnostics on configuration and environment"
+    )
+    doctor_parser.add_argument(
+        "--config", "-c", type=str, help="Path to config file"
+    )
+    doctor_parser.set_defaults(func=cmd_doctor)
 
     # demo command
     demo_parser: argparse.ArgumentParser = subparsers.add_parser(

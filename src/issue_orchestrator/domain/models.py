@@ -312,6 +312,8 @@ class AgentConfig:
     permission_mode: str = "default"
     # Skip code review for this agent (e.g., domain-expert agents that don't produce code)
     skip_review: bool = False
+    # Per-agent reviewer override (uses review.default if not set)
+    reviewer: Optional[str] = None
     # Command template - {initial_prompt} is passed as positional arg to claude
     command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     # Optional override for hook verification meta-agent (e.g., "claude-code")
@@ -395,6 +397,7 @@ class Session:
     worktree_path: Path
     branch_name: str
     completion_path: str = COMPLETION_RECORD_PATH  # Agent-specific path to completion.json
+    agent_label: Optional[str] = None  # Agent type label (e.g., "agent:backend") for per-agent reviewer
     started_at: datetime = field(default_factory=datetime.now)
     status: SessionStatus = SessionStatus.RUNNING
     exit_sent: bool = False  # Track if we've already sent /exit
@@ -459,6 +462,7 @@ class PendingReview:
     pr_number: int
     pr_url: str
     branch_name: str
+    agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
 
     @property
     def issue_number(self) -> int:
@@ -477,6 +481,7 @@ class DiscoveredReview:
     pr_number: int
     pr_url: str
     branch_name: str
+    agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
 
 
 @dataclass(frozen=True)
