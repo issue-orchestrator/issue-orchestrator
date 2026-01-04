@@ -367,6 +367,29 @@
         .info-row:last-child { border-bottom: none; }
         .info-label { color: #8b949e; }
         .info-value { font-family: monospace; }
+
+        /* Toast notifications */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #238636;
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            opacity: 0;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            z-index: 10000;
+        }
+        .toast.visible {
+            transform: translateX(-50%) translateY(0);
+            opacity: 1;
+        }
+        .toast.error { background: #f85149; }
     </style>
 </head>
 <body>
@@ -646,16 +669,13 @@
             try {
                 const res = await fetch('/api/refresh', { method: 'POST' });
                 if (res.ok) {
-                    // Brief visual feedback
-                    const badge = document.querySelector('.status-badge');
-                    if (badge) {
-                        const originalText = badge.textContent;
-                        badge.textContent = 'Refreshing...';
-                        setTimeout(() => { badge.textContent = originalText; }, 1500);
-                    }
+                    showToast('Refreshed from GitHub');
+                } else {
+                    showToast('Refresh failed', true);
                 }
             } catch (e) {
                 console.error('Refresh failed:', e);
+                showToast('Refresh failed', true);
             }
         }
 
@@ -1135,7 +1155,7 @@
                 <div class="info-row"><span class="info-label">Test Mode</span><span class="info-value">${opts.test_mode ? 'yes' : 'no'}</span></div>
                 <div class="info-row"><span class="info-label">Filter Label</span><span class="info-value">${opts.filter_label || 'none'}</span></div>
                 <div class="info-row"><span class="info-label">Filter Milestone</span><span class="info-value">${opts.filter_milestone || 'none'}</span></div>
-                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${opts.max_concurrent_sessions || '-'}</span></div>
+                <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${opts.max_sessions || '-'}</span></div>
                 <h3 style="margin: 16px 0 8px; font-size: 14px;">State</h3>
                 <div class="info-row"><span class="info-label">Paused</span><span class="info-value">${data.paused}</span></div>
                 <div class="info-row"><span class="info-label">Priority Queue</span><span class="info-value">${data.priority_queue.length > 0 ? data.priority_queue.join(', ') : 'empty'}</span></div>
@@ -1193,6 +1213,16 @@
                 alert(data.error || 'Failed to clear history');
             }
         }
+
+        // Toast notification
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.toggle('error', isError);
+            toast.classList.add('visible');
+            setTimeout(() => toast.classList.remove('visible'), 2500);
+        }
     </script>
+    <div id="toast" class="toast"></div>
 </body>
 </html>
