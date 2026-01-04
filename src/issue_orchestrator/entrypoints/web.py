@@ -921,13 +921,38 @@ async def get_doctor() -> JSONResponse:
                 "detail": "Not configured",
             })
 
-        # Check agents
+        # Check agents and their scripts
         agent_count = len(config.agents)
         checks.append({
             "name": "Agents Configured",
             "status": "ok" if agent_count > 0 else "warning",
             "detail": f"{agent_count} agent(s)",
         })
+
+        # Verify agent scripts exist
+        import shutil
+        missing_scripts = []
+        for name, agent_cfg in config.agents.items():
+            # Extract the command/script (first word)
+            cmd_parts = agent_cfg.command.split()
+            if cmd_parts:
+                script = cmd_parts[0]
+                # Check if it's in PATH or is an absolute path
+                if not shutil.which(script) and not Path(script).exists():
+                    missing_scripts.append(f"{name}: {script}")
+
+        if missing_scripts:
+            checks.append({
+                "name": "Agent Scripts",
+                "status": "error",
+                "detail": f"Missing: {', '.join(missing_scripts)}",
+            })
+        elif agent_count > 0:
+            checks.append({
+                "name": "Agent Scripts",
+                "status": "ok",
+                "detail": "All scripts found",
+            })
     else:
         checks.append({
             "name": "Orchestrator",
