@@ -106,6 +106,82 @@ Key principle: **The agent reports intent; the orchestrator decides and executes
 
 The system follows hexagonal (ports and adapters) architecture:
 
+```mermaid
+graph TB
+    subgraph "Entry Points"
+        CLI[CLI<br/>issue-orchestrator]
+        WEB[Web UI<br/>localhost:8765]
+    end
+
+    subgraph "Control Plane"
+        ORCH[Orchestrator]
+        SCHED[Scheduler]
+        PLAN[Planner]
+        APPLY[ActionApplier]
+        OBS[Observer]
+    end
+
+    subgraph "Domain"
+        MOD[Models]
+        EVT[Events/Catalog]
+        DEP[Dependencies]
+    end
+
+    subgraph "Ports (Interfaces)"
+        PT_ISSUE[IssueTracker]
+        PT_PR[PullRequestTracker]
+        PT_SESS[SessionRunner]
+        PT_EVT[EventSink]
+        PT_WC[WorkingCopy]
+    end
+
+    subgraph "Adapters (Execution)"
+        GH[GitHubAdapter]
+        TERM[TerminalAdapter<br/>tmux/iTerm2]
+        SSE[SSE Plugin]
+    end
+
+    subgraph "External Systems"
+        GHAPI[GitHub API]
+        TMUX[Terminal Sessions]
+        BROWSER[Browser SSE]
+    end
+
+    CLI --> ORCH
+    WEB --> |REST API| ORCH
+    WEB --> |SSE| SSE
+
+    ORCH --> SCHED
+    ORCH --> PLAN
+    ORCH --> OBS
+    PLAN --> APPLY
+
+    SCHED --> DEP
+    PLAN --> MOD
+    OBS --> EVT
+
+    APPLY --> PT_ISSUE
+    APPLY --> PT_SESS
+    APPLY --> PT_EVT
+    OBS --> PT_WC
+
+    PT_ISSUE --> GH
+    PT_PR --> GH
+    PT_SESS --> TERM
+    PT_EVT --> SSE
+
+    GH --> GHAPI
+    TERM --> TMUX
+    SSE --> BROWSER
+
+    style WEB fill:#6366f1,color:#fff
+    style CLI fill:#22c55e,color:#fff
+    style ORCH fill:#f97316,color:#fff
+    style GH fill:#0969da,color:#fff
+```
+
+### ASCII Overview
+
 ```
                     ┌─────────────────────┐
                     │                     │
