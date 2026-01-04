@@ -843,6 +843,109 @@ async def get_debug() -> JSONResponse:
     })
 
 
+@app.get("/api/doctor")
+async def get_doctor() -> JSONResponse:
+    """Run diagnostics and return health status."""
+    import os
+    from ..adapters.github.http_client import (
+        _read_keyring_token,
+        validate_github_token,
+        KEYRING_SERVICE,
+        KEYRING_USERNAME,
+    )
+
+    checks: list[dict[str, str | bool]] = []
+
+    # Check GitHub token sources
+    env_vars = ["ISSUE_ORCH_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]
+    token_sources = []
+    for var in env_vars:
+        value = os.environ.get(var)
+        if value:
+            masked = value[:4] + "..." + value[-4:] if len(value) > 12 else "***"
+            token_sources.append(f"{var}: {masked}")
+
+    keyring_token = _read_keyring_token()
+    if keyring_token:
+        masked = keyring_token[:4] + "..." + keyring_token[-4:] if len(keyring_token) > 12 else "***"
+        token_sources.append(f"Keyring ({KEYRING_SERVICE}/{KEYRING_USERNAME}): {masked}")
+
+    if token_sources:
+        checks.append({
+            "name": "Token Sources",
+            "status": "ok",
+            "detail": ", ".join(token_sources),
+        })
+    else:
+        checks.append({
+            "name": "Token Sources",
+            "status": "error",
+            "detail": "No GitHub token found",
+        })
+
+    # Validate token with GitHub (uses adapter to respect layer boundaries)
+    result = validate_github_token()
+    if result.valid:
+        checks.append({
+            "name": "GitHub Auth",
+            "status": "ok",
+            "detail": f"Authenticated as: {result.username}",
+        })
+    else:
+        checks.append({
+            "name": "GitHub Auth",
+            "status": "error",
+            "detail": result.error or "Unknown error",
+        })
+
+    # Check orchestrator status
+    if _orchestrator:
+        checks.append({
+            "name": "Orchestrator",
+            "status": "ok",
+            "detail": f"Running, {'paused' if _orchestrator.state.paused else 'active'}",
+        })
+
+        # Check config
+        config = _orchestrator.config
+        if config.repo:
+            checks.append({
+                "name": "Repository",
+                "status": "ok",
+                "detail": config.repo,
+            })
+        else:
+            checks.append({
+                "name": "Repository",
+                "status": "warning",
+                "detail": "Not configured",
+            })
+
+        # Check agents
+        agent_count = len(config.agents)
+        checks.append({
+            "name": "Agents Configured",
+            "status": "ok" if agent_count > 0 else "warning",
+            "detail": f"{agent_count} agent(s)",
+        })
+    else:
+        checks.append({
+            "name": "Orchestrator",
+            "status": "error",
+            "detail": "Not running",
+        })
+
+    # Overall status
+    has_errors = any(c["status"] == "error" for c in checks)
+    has_warnings = any(c["status"] == "warning" for c in checks)
+    overall = "error" if has_errors else ("warning" if has_warnings else "ok")
+
+    return JSONResponse({
+        "overall": overall,
+        "checks": checks,
+    })
+
+
 def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     """Check if a port is already in use."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

@@ -591,6 +591,9 @@
             <span>🗑</span> Clear History
         </div>
         <div class="settings-divider"></div>
+        <div class="settings-menu-item" onclick="showDoctor()">
+            <span>🩺</span> Run Doctor
+        </div>
         <div class="settings-menu-item" onclick="showDebug()">
             <span>🔧</span> Debug Info
         </div>
@@ -1168,6 +1171,32 @@
                 `).join('')}
             `;
             openModal('Debug Info', html);
+        }
+
+        async function showDoctor() {
+            settingsMenu.classList.remove('visible');
+            const res = await fetch('/api/doctor');
+            const data = await res.json();
+
+            const statusIcon = {
+                'ok': '✅',
+                'warning': '⚠️',
+                'error': '❌'
+            };
+
+            const html = `
+                <div style="margin-bottom: 12px;">
+                    <span style="font-size: 18px;">${statusIcon[data.overall]}</span>
+                    <span style="font-weight: 600; margin-left: 8px;">Overall: ${data.overall.toUpperCase()}</span>
+                </div>
+                ${data.checks.map(c => `
+                    <div class="info-row">
+                        <span class="info-label">${statusIcon[c.status]} ${c.name}</span>
+                        <span class="info-value" style="font-size: 12px;">${c.detail}</span>
+                    </div>
+                `).join('')}
+            `;
+            openModal('Doctor', html);
         }
 
         function openRepo() {

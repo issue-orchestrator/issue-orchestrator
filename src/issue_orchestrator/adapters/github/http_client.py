@@ -677,6 +677,50 @@ def resolve_github_token(
     )
 
 
+@dataclass
+class TokenValidationResult:
+    """Result of validating a GitHub token."""
+    valid: bool
+    username: str | None = None
+    error: str | None = None
+
+
+def validate_github_token(token: str | None = None) -> TokenValidationResult:
+    """Validate a GitHub token by calling the API.
+
+    Args:
+        token: Token to validate. If None, will resolve using standard sources.
+
+    Returns:
+        TokenValidationResult with valid status, username, or error message.
+    """
+    try:
+        if token is None:
+            token = resolve_github_token(configured_token=None)
+    except GitHubAuthError as e:
+        return TokenValidationResult(valid=False, error=str(e))
+
+    try:
+        resp = httpx.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"token {token}"},
+            timeout=10.0,
+        )
+        if resp.status_code == 200:
+            user_info = resp.json()
+            return TokenValidationResult(
+                valid=True,
+                username=user_info.get("login"),
+            )
+        else:
+            return TokenValidationResult(
+                valid=False,
+                error=f"Token invalid (HTTP {resp.status_code})",
+            )
+    except Exception as e:
+        return TokenValidationResult(valid=False, error=str(e))
+
+
 # Keyring service/username constants for token storage
 KEYRING_SERVICE = "issue-orchestrator"
 KEYRING_USERNAME = "github-token"
