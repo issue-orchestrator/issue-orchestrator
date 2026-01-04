@@ -151,12 +151,12 @@ class TestClaudeExecution:
 class TestShellEscaping:
     """Test shell escaping without requiring Claude CLI."""
 
-    def test_zsh_single_quote_escaping(self):
-        """Verify our single-quote escaping pattern works in zsh."""
-        # This is the pattern: replace ' with '\''
+    def test_shell_single_quote_escaping(self):
+        """Verify our single-quote escaping pattern works in shell."""
+        # This is the pattern: replace ' with '\'' (POSIX standard)
         original = "echo 'hello world'"
         escaped = original.replace("'", "'\\''")
-        wrapped = f"zsh -l -c '{escaped}'"
+        wrapped = f"bash -c '{escaped}'"
 
         result = subprocess.run(
             ["bash", "-c", wrapped],
@@ -173,7 +173,7 @@ class TestShellEscaping:
         # Simulate the orchestrator command pattern
         command = "echo --flag 'value with spaces' 'another value'"
         escaped = command.replace("'", "'\\''")
-        wrapped = f"zsh -l -c 'cd /tmp && {escaped}'"
+        wrapped = f"bash -c 'cd /tmp && {escaped}'"
 
         result = subprocess.run(
             ["bash", "-c", wrapped],
@@ -194,7 +194,7 @@ class TestShellEscaping:
         escaped_prompt = prompt.replace("'", "'\\''")
         command = f"echo '{escaped_prompt}'"
         escaped = command.replace("'", "'\\''")
-        wrapped = f"zsh -l -c '{escaped}'"
+        wrapped = f"bash -c '{escaped}'"
 
         result = subprocess.run(
             ["bash", "-c", wrapped],
