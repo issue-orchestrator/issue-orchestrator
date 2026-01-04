@@ -542,6 +542,10 @@
             <span>⏸</span> Pause
             {% endif %}
         </div>
+        <div class="settings-menu-item" onclick="refreshFromGitHub()">
+            <span>🔄</span> Refresh from GitHub
+        </div>
+        <div class="settings-divider"></div>
         <div class="settings-menu-item" onclick="shutdown()">
             <span>⏻</span> Shutdown
         </div>
@@ -637,6 +641,24 @@
                 isPaused = true;
             }
         }
+        async function refreshFromGitHub() {
+            hideSettingsMenu();
+            try {
+                const res = await fetch('/api/refresh', { method: 'POST' });
+                if (res.ok) {
+                    // Brief visual feedback
+                    const badge = document.querySelector('.status-badge');
+                    if (badge) {
+                        const originalText = badge.textContent;
+                        badge.textContent = 'Refreshing...';
+                        setTimeout(() => { badge.textContent = originalText; }, 1500);
+                    }
+                }
+            } catch (e) {
+                console.error('Refresh failed:', e);
+            }
+        }
+
         async function shutdown() {
             // First, check if there are active sessions
             const statusRes = await fetch('/api/status');
