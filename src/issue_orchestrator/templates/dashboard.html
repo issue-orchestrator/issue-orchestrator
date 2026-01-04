@@ -675,18 +675,15 @@
         }
         async function refreshFromGitHub() {
             hideSettingsMenu();
-            console.log('[refresh] Starting refresh from GitHub...');
             try {
                 const res = await fetch('/api/refresh', { method: 'POST' });
-                console.log('[refresh] Response:', res.status, res.ok);
                 if (res.ok) {
-                    console.log('[refresh] Calling showToast...');
                     showToast('Refreshed from GitHub');
                 } else {
                     showToast('Refresh failed', true);
                 }
             } catch (e) {
-                console.error('[refresh] Error:', e);
+                console.error('Refresh failed:', e);
                 showToast('Refresh failed', true);
             }
         }
@@ -1254,17 +1251,11 @@
 
         // Toast notification
         function showToast(message, isError = false) {
-            console.log('[toast] showToast called:', message, isError);
             const toast = document.getElementById('toast');
-            console.log('[toast] toast element:', toast);
-            if (!toast) {
-                console.error('[toast] Toast element not found!');
-                return;
-            }
+            if (!toast) return;
             toast.textContent = message;
             toast.classList.toggle('error', isError);
             toast.classList.add('visible');
-            console.log('[toast] Toast should be visible now');
             setTimeout(() => toast.classList.remove('visible'), 2500);
         }
     </script>
