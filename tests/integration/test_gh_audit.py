@@ -12,7 +12,7 @@ def test_gh_audit_writes_report(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("ORCHESTRATOR_GH_AUDIT", "1")
     monkeypatch.setenv("ORCHESTRATOR_GH_AUDIT_FILE", str(report_path))
 
-    from issue_orchestrator import gh_audit
+    from issue_orchestrator.infra import gh_audit
     gh_audit = importlib.reload(gh_audit)
 
     gh_audit.record(
@@ -34,7 +34,7 @@ def test_gh_audit_usage_units_count_calls_and_items(tmp_path, monkeypatch) -> No
     monkeypatch.setenv("ORCHESTRATOR_GH_AUDIT", "1")
     monkeypatch.setenv("ORCHESTRATOR_GH_AUDIT_FILE", str(report_path))
 
-    from issue_orchestrator import gh_audit
+    from issue_orchestrator.infra import gh_audit
     gh_audit = importlib.reload(gh_audit)
 
     with gh_audit.context(

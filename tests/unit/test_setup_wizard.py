@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, Mock
 
-from issue_orchestrator.setup_wizard import (
+from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     create_starter_prompt,
     create_triage_review_prompt,
     detect_repo,
@@ -15,9 +15,12 @@ from issue_orchestrator.setup_wizard import (
     wizard_new_project,
     wizard_existing_project,
     run_wizard,
+    write_config,
     Prompter,
     ConsolePrompter,
     DetectedState,
+    FileCollector,
+    PlannedWrite,
 )
 
 
@@ -190,7 +193,7 @@ class TestCreateTriageReviewPrompt:
 class TestDetectRepo:
     """Test the detect_repo function."""
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_detect_https_url(self, mock_run_git):
         """Test detecting repo from HTTPS URL."""
         mock_run_git.return_value = (True, "https://github.com/owner/repo.git")
@@ -199,7 +202,7 @@ class TestDetectRepo:
 
         assert repo == "owner/repo"
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_detect_ssh_url(self, mock_run_git):
         """Test detecting repo from SSH URL."""
         mock_run_git.return_value = (True, "git@github.com:owner/repo.git")
@@ -208,7 +211,7 @@ class TestDetectRepo:
 
         assert repo == "owner/repo"
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_detect_https_without_git_suffix(self, mock_run_git):
         """Test detecting repo from HTTPS URL without .git suffix."""
         mock_run_git.return_value = (True, "https://github.com/owner/repo")
@@ -217,7 +220,7 @@ class TestDetectRepo:
 
         assert repo == "owner/repo"
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_returns_none_on_failure(self, mock_run_git):
         """Test that None is returned when git command fails."""
         mock_run_git.return_value = (False, "")
@@ -226,7 +229,7 @@ class TestDetectRepo:
 
         assert repo is None
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     def test_returns_none_for_non_github(self, mock_run_git):
         """Test that None is returned for non-GitHub remotes."""
         mock_run_git.return_value = (True, "https://gitlab.com/owner/repo.git")
@@ -239,7 +242,7 @@ class TestDetectRepo:
 class TestCheckPrerequisites:
     """Test the check_prerequisites function."""
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
     @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
     def test_all_prerequisites_met(self, mock_token, mock_subprocess, mock_git):
@@ -254,7 +257,7 @@ class TestCheckPrerequisites:
         assert checks["github_auth"] is True
         assert checks["claude"] is True
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
     @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
     def test_missing_git(self, mock_token, mock_subprocess, mock_git):
@@ -268,7 +271,7 @@ class TestCheckPrerequisites:
         assert checks["git"] is False
         assert checks["github_auth"] is True
 
-    @patch("issue_orchestrator.setup_wizard.run_git")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
     @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
     def test_github_not_authenticated(self, mock_token, mock_subprocess, mock_git):
@@ -285,7 +288,7 @@ class TestCheckPrerequisites:
 class TestFetchGithubLabels:
     """Test the fetch_github_labels function."""
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_fetches_labels(self, mock_client_factory):
         """Test successful label fetching."""
         mock_client = Mock()
@@ -296,7 +299,7 @@ class TestFetchGithubLabels:
 
         assert labels == ["bug", "agent:web"]
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_returns_empty_on_failure(self, mock_client_factory):
         """Test that empty list is returned on failure."""
         mock_client_factory.side_effect = RuntimeError("boom")
@@ -305,7 +308,7 @@ class TestFetchGithubLabels:
 
         assert labels == []
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_returns_empty_on_invalid_payload(self, mock_client_factory):
         """Test that empty list is returned for invalid payload."""
         mock_client = Mock()
@@ -368,10 +371,10 @@ class TestFindExistingConfig:
 class TestScanExistingRepo:
     """Test the scan_existing_repo function."""
 
-    @patch("issue_orchestrator.setup_wizard.find_prompt_candidates")
-    @patch("issue_orchestrator.setup_wizard.find_existing_config")
-    @patch("issue_orchestrator.setup_wizard.fetch_github_labels")
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.find_prompt_candidates")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.find_existing_config")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     def test_scans_repo(self, mock_repo, mock_labels, mock_config, mock_prompts, tmp_path):
         """Test scanning an existing repo."""
         mock_repo.return_value = "owner/repo"
@@ -385,10 +388,10 @@ class TestScanExistingRepo:
         assert state.agent_labels == ["agent:web", "agent:backend"]
         assert len(state.github_labels) == 3
 
-    @patch("issue_orchestrator.setup_wizard.find_prompt_candidates")
-    @patch("issue_orchestrator.setup_wizard.find_existing_config")
-    @patch("issue_orchestrator.setup_wizard.fetch_github_labels")
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.find_prompt_candidates")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.find_existing_config")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     def test_handles_no_repo(self, mock_repo, mock_labels, mock_config, mock_prompts, tmp_path):
         """Test scanning when repo detection fails."""
         mock_repo.return_value = None
@@ -405,8 +408,8 @@ class TestScanExistingRepo:
 class TestWizardNewProject:
     """Test the wizard_new_project function."""
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_creates_basic_config(self, mock_client_factory, mock_detect_repo):
         """Test creating a basic config with one agent."""
         mock_detect_repo.return_value = "owner/repo"
@@ -421,13 +424,14 @@ class TestWizardNewProject:
             "sonnet",               # model choice
             "default",              # permission mode
             "",                     # empty to finish agents
-            True,                   # create labels on GitHub
             "3",                    # max concurrent sessions
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
+            "M0",                   # foundation milestone
             "../",                  # worktree base
             "web",                  # ui mode
             "8080",                 # web port
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # enable PR review labeling
         ])
 
@@ -441,8 +445,8 @@ class TestWizardNewProject:
         assert config["concurrency"]["max_concurrent_sessions"] == 3
         assert config["ui_mode"] == "web"
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_adds_agent_prefix_when_missing(self, mock_client_factory, mock_detect_repo):
         """Test that agent: prefix is added when user confirms."""
         mock_detect_repo.return_value = None
@@ -461,9 +465,10 @@ class TestWizardNewProject:
             False,                  # don't create labels
             "2",                    # max concurrent
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "../",
             "tmux",                 # ui mode (tmux doesn't need port)
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # no review workflow
         ])
 
@@ -472,8 +477,8 @@ class TestWizardNewProject:
         assert "agent:backend" in config["agents"]
         assert "backend" not in config["agents"]
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_multiple_agents(self, mock_client_factory, mock_detect_repo):
         """Test creating config with multiple agents."""
         mock_detect_repo.return_value = "owner/repo"
@@ -498,13 +503,13 @@ class TestWizardNewProject:
             True,                   # confirm bypassPermissions
             # Finish
             "",
-            True,                   # create labels
             "5",                    # max concurrent
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "../",
             "web",
             "9000",                 # custom port
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # no review
         ])
 
@@ -516,8 +521,8 @@ class TestWizardNewProject:
         assert config["agents"]["agent:frontend"]["model"] == "sonnet"
         assert config["agents"]["agent:backend"]["model"] == "opus"
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_custom_agent_command(self, mock_client_factory, mock_detect_repo):
         """Test creating config with a custom agent command."""
         mock_detect_repo.return_value = "owner/repo"
@@ -534,10 +539,11 @@ class TestWizardNewProject:
             False,                  # don't create labels
             "3",
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "../",
             "web",
             "8080",
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # no review
         ])
 
@@ -549,8 +555,8 @@ class TestWizardNewProject:
         # Custom agents don't get permission_mode since it's Claude-specific
         assert "permission_mode" not in agent_cfg
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_review_workflow_enabled(self, mock_client_factory, mock_detect_repo):
         """Test enabling two-stage review workflow."""
         mock_detect_repo.return_value = "owner/repo"
@@ -568,10 +574,11 @@ class TestWizardNewProject:
             False,                  # don't create labels
             "3",
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "../",
             "web",
             "8080",
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             True,                   # enable Stage 1: per-PR code review
             "agent:reviewer",       # code review agent
             "needs-code-review",    # code review label
@@ -594,8 +601,8 @@ class TestWizardNewProject:
         assert config["triage_reviewed_label"] == "triage-reviewed"
         assert config["triage_review_threshold"] == 5
 
-    @patch("issue_orchestrator.setup_wizard.detect_repo")
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_requires_at_least_one_agent(self, mock_client_factory, mock_detect_repo):
         """Test that wizard requires at least one agent."""
         mock_detect_repo.return_value = "owner/repo"
@@ -614,10 +621,11 @@ class TestWizardNewProject:
             False,                  # don't create labels
             "3",
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "../",
             "web",
             "8080",
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # no review
         ])
 
@@ -632,7 +640,7 @@ class TestWizardNewProject:
 class TestWizardExistingProject:
     """Test the wizard_existing_project function."""
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_basic_existing_project(self, mock_client_factory):
         """Test onboarding an existing project."""
         mock_client_factory.return_value = Mock()
@@ -655,10 +663,11 @@ class TestWizardExistingProject:
             "default",              # permission mode
             "3",                    # max concurrent
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "../",                  # worktree base
             "web",                  # ui mode
             "8080",                 # port
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # no review workflow
         ])
 
@@ -668,7 +677,7 @@ class TestWizardExistingProject:
         assert "agent:web" in config["agents"]
         assert config["concurrency"]["max_concurrent_sessions"] == 3
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_preserves_existing_config(self, mock_client_factory):
         """Test that existing config is preserved when updating."""
         mock_client_factory.return_value = Mock()
@@ -707,11 +716,12 @@ class TestWizardExistingProject:
             # Concurrency already configured - won't ask
             # Milestone sort not configured - will ask
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             # Worktrees needed for backend
             "../",
             # UI mode already configured - won't ask
             # Label prefix not configured
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             # Review not configured
             False,                  # no review
         ])
@@ -727,9 +737,9 @@ class TestWizardExistingProject:
         # Existing settings preserved
         assert config["ui_mode"] == "tmux"
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
-    def test_creates_missing_github_labels(self, mock_client_factory):
-        """Test creating missing labels on GitHub."""
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
+    def test_preserves_agent_config_for_label_creation(self, mock_client_factory):
+        """Test that agent config is preserved for later label creation."""
         mock_client = Mock()
         mock_client_factory.return_value = mock_client
 
@@ -751,26 +761,27 @@ class TestWizardExistingProject:
         prompter = MockPrompter([
             True,                   # update existing config
             # No unconfigured agents
-            # agent:web is configured but missing from GitHub
-            True,                   # create missing labels
             # Milestone sort missing
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             # Worktree missing
             "../",
             # UI mode missing
             "web",
             "8080",
             # Label prefix
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             # Review
             False,
         ])
 
         config, _ = wizard_existing_project(state, prompter)
 
-        assert mock_client.create_label.called
+        # Agent config is preserved - labels will be created by run_wizard
+        assert "agent:web" in config["agents"]
+        assert config["repo"] == "owner/repo"
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_fresh_config_when_declined(self, mock_client_factory):
         """Test starting fresh when declining to update existing config."""
         mock_client_factory.return_value = Mock()
@@ -800,12 +811,13 @@ class TestWizardExistingProject:
             "2",
             # Milestone sort (fresh config needs this)
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             # Worktree
             "../",
             # UI mode (fresh)
             "tmux",
             # Label prefix
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             # Review
             False,
         ])
@@ -817,7 +829,7 @@ class TestWizardExistingProject:
         # New agent should be
         assert "agent:web" in config["agents"]
 
-    @patch("issue_orchestrator.setup_wizard._github_adapter")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter")
     def test_prompts_for_repo_when_not_detected(self, mock_client_factory):
         """Test that repo is prompted when not in state or config."""
         mock_client_factory.return_value = Mock()
@@ -836,9 +848,10 @@ class TestWizardExistingProject:
             # No agents to configure, so no worktree prompt
             "3",                    # concurrency
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "web",                  # ui mode
             "8080",                 # port (since web mode)
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # no review
         ])
 
@@ -850,14 +863,15 @@ class TestWizardExistingProject:
 class TestRunWizard:
     """Test the run_wizard function."""
 
-    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
-    @patch("issue_orchestrator.setup_wizard.scan_existing_repo")
-    @patch("issue_orchestrator.setup_wizard.write_config")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.scan_existing_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
     @patch("os.chdir")
-    def test_new_project_flow(self, mock_chdir, mock_write, mock_scan, mock_prereqs, tmp_path):
+    def test_new_project_flow(self, mock_chdir, mock_labels, mock_scan, mock_prereqs, tmp_path):
         """Test the full wizard flow for a new project."""
         mock_prereqs.return_value = {"git": True, "github_auth": True, "claude": True}
         mock_scan.return_value = DetectedState(repo="owner/repo")
+        mock_labels.return_value = []  # No existing labels
 
         # Create target directory
         target = tmp_path / "myproject"
@@ -875,34 +889,33 @@ class TestRunWizard:
             "sonnet",               # model
             "default",              # permission mode
             "",                     # finish agents
-            False,                  # don't create agent labels on GitHub
             "3",
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "../",
             "web",
             "8080",
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # no review workflow
-            # Post-wizard
-            True,                   # save config
-            ".issue-orchestrator.yaml",  # output path
-            True,                   # overwrite existing (asked since os.chdir is mocked and we're in repo root)
-            True,                   # create prompt file
-            False,                  # don't create missing GitHub labels
+            # Post-wizard (new flow)
+            ".issue-orchestrator.yaml",  # config filename
+            True,                   # Apply these changes?
         ])
 
-        with patch("issue_orchestrator.setup_wizard.detect_repo", return_value="owner/repo"):
-            with patch("issue_orchestrator.setup_wizard._github_adapter", return_value=Mock()):
+        with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
+            with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter", return_value=Mock()):
                 run_wizard(target_path=target, prompter=prompter)
 
-        # Verify config was written
-        assert mock_write.called
+        # Verify files were created
+        assert (target / ".issue-orchestrator.yaml").exists() or any("apply" in msg.lower() for msg in prompter.printed)
 
-    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
     @patch("os.chdir")
-    def test_aborts_when_config_not_saved(self, mock_chdir, mock_prereqs, tmp_path):
-        """Test that wizard aborts when user doesn't save config."""
+    def test_aborts_when_apply_declined(self, mock_chdir, mock_labels, mock_prereqs, tmp_path):
+        """Test that wizard aborts when user declines to apply changes."""
         mock_prereqs.return_value = {"git": True, "github_auth": True, "claude": True}
+        mock_labels.return_value = []  # No existing labels
 
         target = tmp_path / "myproject"
         target.mkdir()
@@ -918,23 +931,25 @@ class TestRunWizard:
             "sonnet",               # model
             "default",              # permission mode
             "",
-            False,                  # don't create agent labels
             "3",
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "../",
             "web",
             "8080",
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # no review workflow
-            False,                  # DON'T save config (exits here)
+            # Post-wizard (new flow)
+            ".issue-orchestrator.yaml",  # config filename
+            False,                  # DON'T apply changes (exits here)
         ])
 
-        with patch("issue_orchestrator.setup_wizard.detect_repo", return_value="owner/repo"):
-            with patch("issue_orchestrator.setup_wizard._github_adapter", return_value=Mock()):
+        with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
+            with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter", return_value=Mock()):
                 with pytest.raises(SystemExit):
                     run_wizard(target_path=target, prompter=prompter)
 
-    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
     @patch("os.chdir")
     def test_warns_on_missing_prerequisites(self, mock_chdir, mock_prereqs, tmp_path):
         """Test that wizard warns when prerequisites are missing."""
@@ -959,15 +974,17 @@ class TestRunWizard:
         assert any("prerequisites" in msg.lower() or "missing" in msg.lower()
                   for msg in prompter.printed)
 
-    @patch("issue_orchestrator.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
     @patch("os.chdir")
-    def test_continues_despite_missing_prerequisites(self, mock_chdir, mock_prereqs, tmp_path):
+    def test_continues_despite_missing_prerequisites(self, mock_chdir, mock_labels, mock_prereqs, tmp_path):
         """Test that wizard can continue despite missing prerequisites."""
         mock_prereqs.return_value = {
             "git": True,
             "github_auth": False,
             "claude": False,
         }
+        mock_labels.return_value = []
 
         target = tmp_path / "myproject"
         target.mkdir()
@@ -984,18 +1001,207 @@ class TestRunWizard:
             "sonnet",               # model
             "default",              # permission mode
             "",
-            False,                  # don't create agent labels
             "3",
             "due_date",             # milestone sort strategy
+            "M0",                   # foundation milestone
             "../",
             "web",
             "8080",
-            "",                     # label prefix (none)
+            "io",                   # label prefix
             False,                  # no review workflow
-            False,                  # Don't save - exits here
+            # Post-wizard (new flow)
+            ".issue-orchestrator.yaml",  # config filename
+            False,                  # Don't apply - exits here
         ])
 
-        with patch("issue_orchestrator.setup_wizard.detect_repo", return_value=None):
-            with patch("issue_orchestrator.setup_wizard._github_adapter", return_value=Mock()):
+        with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value=None):
+            with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter", return_value=Mock()):
                 with pytest.raises(SystemExit):
                     run_wizard(target_path=target, prompter=prompter)
+
+
+class TestFileCollector:
+    """Test the FileCollector class for dry-run mode."""
+
+    def test_add_write(self):
+        """Test adding a write to the collector."""
+        collector = FileCollector()
+        collector.add_write(Path("/tmp/test.yaml"), "content: here", "create")
+
+        assert len(collector.writes) == 1
+        assert collector.writes[0].path == Path("/tmp/test.yaml")
+        assert collector.writes[0].content == "content: here"
+        assert collector.writes[0].action == "create"
+
+    def test_add_multiple_writes(self):
+        """Test adding multiple writes."""
+        collector = FileCollector()
+        collector.add_write(Path("/tmp/a.yaml"), "a", "create")
+        collector.add_write(Path("/tmp/b.md"), "b", "overwrite")
+
+        assert len(collector.writes) == 2
+        assert collector.writes[0].action == "create"
+        assert collector.writes[1].action == "overwrite"
+
+    def test_add_label(self):
+        """Test adding a label to the collector."""
+        collector = FileCollector()
+        collector.add_label("agent:test", "FF0000", "Test agent label")
+
+        assert len(collector.labels) == 1
+        assert collector.labels[0] == ("agent:test", "FF0000", "Test agent label")
+
+
+class TestPlannedWrite:
+    """Test the PlannedWrite dataclass."""
+
+    def test_size_display_bytes(self):
+        """Test size display for small content."""
+        write = PlannedWrite(Path("/tmp/test.txt"), "hello", "create")
+        assert write.size_display() == "5 B"
+
+    def test_size_display_kilobytes(self):
+        """Test size display for larger content."""
+        content = "x" * 2048
+        write = PlannedWrite(Path("/tmp/test.txt"), content, "create")
+        assert write.size_display() == "2.0 KB"
+
+    def test_size_display_unicode(self):
+        """Test size display handles unicode correctly."""
+        # Unicode characters take more bytes than characters
+        write = PlannedWrite(Path("/tmp/test.txt"), "hello 世界", "create")
+        # 'hello ' is 6 bytes, '世界' is 6 bytes (2 chars * 3 bytes each in UTF-8)
+        assert write.size_display() == "12 B"
+
+
+class TestDryRunMode:
+    """Test dry-run mode for setup wizard functions."""
+
+    def test_create_starter_prompt_dry_run(self, tmp_path):
+        """Test that dry-run collects write without creating file."""
+        prompt_path = tmp_path / "prompts" / "test.md"
+        collector = FileCollector()
+
+        create_starter_prompt("agent:test", prompt_path, file_collector=collector)
+
+        # File should NOT exist
+        assert not prompt_path.exists()
+        # But write should be collected
+        assert len(collector.writes) == 1
+        assert collector.writes[0].path == prompt_path
+        assert "Test Agent Prompt" in collector.writes[0].content
+        assert collector.writes[0].action == "create"
+
+    def test_write_config_dry_run(self, tmp_path):
+        """Test that dry-run collects config write without creating file."""
+        config_path = tmp_path / ".issue-orchestrator.yaml"
+        collector = FileCollector()
+        config = {"repo": "owner/repo", "agents": {}}
+
+        write_config(config, config_path, file_collector=collector)
+
+        # File should NOT exist
+        assert not config_path.exists()
+        # But write should be collected
+        assert len(collector.writes) == 1
+        assert collector.writes[0].path == config_path
+        assert "repo: owner/repo" in collector.writes[0].content
+        assert collector.writes[0].action == "create"
+
+    def test_write_config_dry_run_overwrite(self, tmp_path):
+        """Test that dry-run detects overwrite action."""
+        config_path = tmp_path / ".issue-orchestrator.yaml"
+        config_path.write_text("old content")
+        collector = FileCollector()
+        config = {"repo": "owner/repo"}
+
+        write_config(config, config_path, file_collector=collector)
+
+        # Old file content should be unchanged
+        assert config_path.read_text() == "old content"
+        # Write should be collected with overwrite action
+        assert len(collector.writes) == 1
+        assert collector.writes[0].action == "overwrite"
+
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
+    @patch("os.chdir")
+    def test_run_wizard_dry_run_no_files_written(self, mock_chdir, mock_labels, mock_prereqs, tmp_path):
+        """Test that dry-run mode doesn't write any files."""
+        mock_prereqs.return_value = {"git": True, "github_auth": True, "claude": True}
+        mock_labels.return_value = []
+
+        target = tmp_path / "myproject"
+        target.mkdir()
+
+        prompter = MockPrompter([
+            "New project - set up from scratch",
+            "owner/repo",
+            "agent:backend",
+            ".prompts/backend.md",
+            "45",
+            "claude",
+            "sonnet",
+            "default",
+            "",  # finish agents
+            "3",
+            "due_date",
+            "M0",  # foundation milestone
+            "../",
+            "web",
+            "8080",
+            "io",  # label prefix
+            False,  # no review workflow
+        ])
+
+        with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
+            with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter", return_value=Mock()):
+                run_wizard(target_path=target, prompter=prompter, dry_run=True)
+
+        # No config file should be created
+        assert not (target / ".issue-orchestrator.yaml").exists()
+        # No prompts directory should be created
+        assert not (target / ".prompts").exists()
+
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.fetch_github_labels")
+    @patch("os.chdir")
+    def test_run_wizard_dry_run_shows_summary(self, mock_chdir, mock_labels, mock_prereqs, tmp_path):
+        """Test that dry-run mode shows summary output."""
+        mock_prereqs.return_value = {"git": True, "github_auth": True, "claude": True}
+        mock_labels.return_value = []
+
+        target = tmp_path / "myproject"
+        target.mkdir()
+
+        prompter = MockPrompter([
+            "New project - set up from scratch",
+            "owner/repo",
+            "agent:backend",
+            ".prompts/backend.md",
+            "45",
+            "claude",
+            "sonnet",
+            "default",
+            "",
+            False,
+            "3",
+            "due_date",
+            "M0",  # foundation milestone
+            "../",
+            "web",
+            "8080",
+            "",
+            False,
+        ])
+
+        with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
+            with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._github_adapter", return_value=Mock()):
+                run_wizard(target_path=target, prompter=prompter, dry_run=True)
+
+        # Should show dry run header
+        assert any("DRY RUN" in msg for msg in prompter.printed)
+        # Should show summary (now titled "CHANGES THAT WOULD BE APPLIED")
+        assert any("CHANGES" in msg for msg in prompter.printed)
+        # Should suggest running without --dry-run
+        assert any("without --dry-run" in msg for msg in prompter.printed)

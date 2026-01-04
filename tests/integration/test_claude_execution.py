@@ -149,14 +149,23 @@ class TestClaudeExecution:
 
 
 class TestShellEscaping:
-    """Test shell escaping without requiring Claude CLI."""
+    """Test POSIX single-quote escaping used by iTerm2 adapter.
 
-    def test_zsh_single_quote_escaping(self):
-        """Verify our single-quote escaping pattern works in zsh."""
+    The escaping pattern replace("'", "'\\''") is POSIX standard and works
+    identically in bash and zsh. Production uses 'zsh -l -c' for login shell
+    PATH setup, but the escaping itself is shell-agnostic.
+    """
+
+    def test_single_quote_escaping(self):
+        """Verify the POSIX single-quote escaping pattern works.
+
+        This tests the escaping used in _iterm2.py: replace("'", "'\\''")
+        The pattern: end quote, escaped literal quote, start quote.
+        """
         # This is the pattern: replace ' with '\''
         original = "echo 'hello world'"
         escaped = original.replace("'", "'\\''")
-        wrapped = f"zsh -l -c '{escaped}'"
+        wrapped = f"bash -c '{escaped}'"
 
         result = subprocess.run(
             ["bash", "-c", wrapped],
@@ -169,11 +178,10 @@ class TestShellEscaping:
         assert "hello world" in result.stdout
 
     def test_complex_quoting_pattern(self):
-        """Test the exact quoting pattern used by orchestrator commands."""
-        # Simulate the orchestrator command pattern
+        """Test the quoting pattern with multiple quoted arguments."""
         command = "echo --flag 'value with spaces' 'another value'"
         escaped = command.replace("'", "'\\''")
-        wrapped = f"zsh -l -c 'cd /tmp && {escaped}'"
+        wrapped = f"bash -c 'cd /tmp && {escaped}'"
 
         result = subprocess.run(
             ["bash", "-c", wrapped],
@@ -194,7 +202,7 @@ class TestShellEscaping:
         escaped_prompt = prompt.replace("'", "'\\''")
         command = f"echo '{escaped_prompt}'"
         escaped = command.replace("'", "'\\''")
-        wrapped = f"zsh -l -c '{escaped}'"
+        wrapped = f"bash -c '{escaped}'"
 
         result = subprocess.run(
             ["bash", "-c", wrapped],

@@ -1,0 +1,541 @@
+"""Unit tests for CleanupManager.
+
+Tests focus on behavior:
+- Processing deferred cleanups when PRs have review labels
+- Orphaned cleanup recovery at startup
+- Throttling for triage issue creation failures
+- Error handling in cleanup operations
+"""
+
+import logging
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+import pytest
+
+from issue_orchestrator.control.cleanup_manager import CleanupManager
+from issue_orchestrator.domain.models import PendingCleanup
+from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+
+# --- Helpers ---
+
+
+def make_pending_cleanup(
+    issue_number: int,
+    pr_number: int,
+    terminal_session_name: str = None,
+    worktree_path: Path = None,
+) -> PendingCleanup:
+    """Create a PendingCleanup with a mock issue."""
+    mock_issue = MagicMock()
+    mock_issue.number = issue_number
+    return PendingCleanup(
+        issue=mock_issue,
+        pr_number=pr_number,
+        pr_url=f"https://github.com/test/repo/pull/{pr_number}",
+        branch_name=f"{issue_number}-branch",
+        terminal_session_name=terminal_session_name or f"issue-{issue_number}",
+        worktree_path=worktree_path or Path(f"/tmp/worktree-{issue_number}"),
+    )
+
+
+# --- Fixtures ---
+
+
+@pytest.fixture
+def mock_config():
+    """Create a mock config with reasonable defaults."""
+    config = MagicMock()
+    config.triage_review_agent = None
+    config.code_review_agent = None
+    config.triage_reviewed_label = "triage-reviewed"
+    config.code_reviewed_label = "code-reviewed"
+    config.cleanup.with_triage.close_ai_session_tabs = True
+    config.cleanup.with_triage.remove_worktrees = True
+    config.cleanup.without_triage.close_ai_session_tabs = True
+    config.cleanup.without_triage.remove_worktrees = True
+    config.agents = {}
+    return config
+
+
+@pytest.fixture
+def mock_repository_host():
+    """Create a mock repository host."""
+    host = MagicMock()
+    host.get_prs_with_label.return_value = []
+    return host
+
+
+@pytest.fixture
+def mock_worktree_manager():
+    """Create a mock worktree manager."""
+    mgr = MagicMock()
+    mgr.extract_issue_number.return_value = None
+    mgr.remove.return_value = None
+    return mgr
+
+
+@pytest.fixture
+def cleanup_manager(mock_config, mock_repository_host, mock_worktree_manager):
+    """Create a CleanupManager with mocked dependencies."""
+    return CleanupManager(
+        config=mock_config,
+        repository_host=mock_repository_host,
+        worktree_manager=mock_worktree_manager,
+        kill_session_fn=MagicMock(),
+        session_exists_fn=MagicMock(return_value=False),
+        get_worktree_path_fn=MagicMock(return_value=Path("/tmp/worktree")),
+        get_session_name_fn=MagicMock(return_value="issue-123"),
+    )
+
+
+# --- Test: Throttling ---
+
+
+class TestTriageIssueThrottling:
+    """Test throttling logic for triage issue creation failures."""
+
+    def test_should_retry_returns_true_initially(self, cleanup_manager):
+        """First attempt always allowed before any failure."""
+        assert cleanup_manager.should_retry_triage_issue() is True
+
+    def test_should_retry_returns_false_after_failure(self, cleanup_manager):
+        """Should not retry immediately after failure."""
+        cleanup_manager.mark_triage_issue_failure()
+
+        assert cleanup_manager.should_retry_triage_issue(cooldown_seconds=60) is False
+
+    def test_should_retry_returns_true_after_cooldown(self, cleanup_manager):
+        """Should allow retry after cooldown expires."""
+        cleanup_manager.mark_triage_issue_failure()
+
+        # Simulate cooldown expiration by setting last failure in the past
+        cleanup_manager._triage_issue_last_failure -= 120  # 2 minutes ago
+
+        assert cleanup_manager.should_retry_triage_issue(cooldown_seconds=60) is True
+
+
+# --- Test: Process Deferred Cleanups ---
+
+
+class TestProcessDeferredCleanups:
+    """Test deferred cleanup processing."""
+
+    def test_empty_list_returns_empty(self, cleanup_manager):
+        """Processing empty list returns empty list."""
+        result = cleanup_manager.process_deferred_cleanups([])
+        assert result == []
+
+    def test_no_review_workflow_returns_unchanged(
+        self, cleanup_manager, mock_config, caplog
+    ):
+        """Without review workflow configured, cleanups are not processed."""
+        mock_config.triage_review_agent = None
+        mock_config.code_review_agent = None
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_session_name="issue-123",
+                worktree_path=Path("/tmp/worktree"),
+            )
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            result = cleanup_manager.process_deferred_cleanups(pending)
+
+        assert result == pending
+        assert "no review workflow configured" in caplog.text
+
+    def test_triage_workflow_cleans_up_reviewed_prs(
+        self, cleanup_manager, mock_config, mock_repository_host
+    ):
+        """With triage workflow, PRs with triage-reviewed label are cleaned."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_reviewed_label = "triage-reviewed"
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_session_name="issue-123",
+                worktree_path=Path("/tmp/worktree"),
+            )
+        ]
+
+        # PR 456 has the reviewed label
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(
+                number=456, url="...", title="PR", branch="123-fix",
+                labels=["triage-reviewed"], body="", state="open"
+            )
+        ]
+
+        result = cleanup_manager.process_deferred_cleanups(pending)
+
+        assert result == []  # Cleanup was processed and removed
+        mock_repository_host.get_prs_with_label.assert_called_once_with("triage-reviewed")
+
+    def test_code_review_workflow_cleans_up_reviewed_prs(
+        self, cleanup_manager, mock_config, mock_repository_host
+    ):
+        """With code review workflow, PRs with code-reviewed label are cleaned."""
+        mock_config.triage_review_agent = None
+        mock_config.code_review_agent = "agent:reviewer"
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=789,
+                terminal_session_name="issue-123",
+                worktree_path=Path("/tmp/worktree"),
+            )
+        ]
+
+        # PR 789 has the code-reviewed label
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(
+                number=789, url="...", title="PR", branch="123-fix",
+                labels=["code-reviewed"], body="", state="open"
+            )
+        ]
+
+        result = cleanup_manager.process_deferred_cleanups(pending)
+
+        assert result == []
+        mock_repository_host.get_prs_with_label.assert_called_once_with("code-reviewed")
+
+    def test_unreviewed_prs_remain_pending(
+        self, cleanup_manager, mock_config, mock_repository_host
+    ):
+        """PRs without the review label remain in pending list."""
+        mock_config.triage_review_agent = "agent:triage"
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_session_name="issue-123",
+                worktree_path=Path("/tmp/worktree"),
+            )
+        ]
+
+        # No PRs have the reviewed label
+        mock_repository_host.get_prs_with_label.return_value = []
+
+        result = cleanup_manager.process_deferred_cleanups(pending)
+
+        assert len(result) == 1
+        assert result[0].pr_number == 456
+
+    def test_kills_session_when_configured(
+        self, cleanup_manager, mock_config, mock_repository_host
+    ):
+        """Session is killed when close_ai_session_tabs is True."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.cleanup.with_triage.close_ai_session_tabs = True
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_session_name="issue-123",
+                worktree_path=Path("/tmp/worktree"),
+            )
+        ]
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="123-fix",
+                   labels=[], body="", state="open")
+        ]
+
+        cleanup_manager.process_deferred_cleanups(pending)
+
+        cleanup_manager._kill_session.assert_called_once_with("issue-123")
+
+    def test_removes_worktree_when_configured(
+        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
+    ):
+        """Worktree is removed when remove_worktrees is True."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.cleanup.with_triage.remove_worktrees = True
+
+        worktree_path = Path("/tmp/issue-123-worktree")
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_session_name="issue-123",
+                worktree_path=worktree_path,
+            )
+        ]
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="123-fix",
+                   labels=[], body="", state="open")
+        ]
+
+        cleanup_manager.process_deferred_cleanups(pending)
+
+        mock_worktree_manager.remove.assert_called_once_with(worktree_path)
+
+    def test_handles_kill_session_failure(
+        self, cleanup_manager, mock_config, mock_repository_host, caplog
+    ):
+        """Session kill failure is logged but doesn't prevent cleanup."""
+        mock_config.triage_review_agent = "agent:triage"
+        cleanup_manager._kill_session.side_effect = Exception("Session not found")
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_session_name="issue-123",
+                worktree_path=Path("/tmp/worktree"),
+            )
+        ]
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="123-fix",
+                   labels=[], body="", state="open")
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            result = cleanup_manager.process_deferred_cleanups(pending)
+
+        # Cleanup still processed despite session kill failure
+        assert result == []
+        assert "Failed to close session" in caplog.text
+
+    def test_handles_worktree_removal_failure(
+        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager, caplog
+    ):
+        """Worktree removal failure is logged but cleanup still marked done."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_worktree_manager.remove.side_effect = Exception("Permission denied")
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_session_name="issue-123",
+                worktree_path=Path("/tmp/worktree"),
+            )
+        ]
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="123-fix",
+                   labels=[], body="", state="open")
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            result = cleanup_manager.process_deferred_cleanups(pending)
+
+        assert result == []
+        assert "Failed to remove worktree" in caplog.text
+
+    def test_handles_pr_fetch_failure(
+        self, cleanup_manager, mock_config, mock_repository_host, caplog
+    ):
+        """PR fetch failure returns unchanged list."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_repository_host.get_prs_with_label.side_effect = Exception("API error")
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_session_name="issue-123",
+                worktree_path=Path("/tmp/worktree"),
+            )
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            result = cleanup_manager.process_deferred_cleanups(pending)
+
+        assert result == pending
+        assert "Failed to fetch PRs" in caplog.text
+
+    def test_processes_multiple_cleanups(
+        self, cleanup_manager, mock_config, mock_repository_host
+    ):
+        """Multiple cleanups can be processed in one call."""
+        mock_config.triage_review_agent = "agent:triage"
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123, pr_number=456,
+                terminal_session_name="issue-123", worktree_path=Path("/tmp/wt1")
+            ),
+            make_pending_cleanup(
+                issue_number=124, pr_number=457,
+                terminal_session_name="issue-124", worktree_path=Path("/tmp/wt2")
+            ),
+            make_pending_cleanup(
+                issue_number=125, pr_number=458,
+                terminal_session_name="issue-125", worktree_path=Path("/tmp/wt3")
+            ),
+        ]
+
+        # Only PRs 456 and 458 are reviewed
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR1", branch="123-fix",
+                   labels=[], body="", state="open"),
+            PRInfo(number=458, url="...", title="PR3", branch="125-fix",
+                   labels=[], body="", state="open"),
+        ]
+
+        result = cleanup_manager.process_deferred_cleanups(pending)
+
+        # Only PR 457 (issue 124) should remain
+        assert len(result) == 1
+        assert result[0].pr_number == 457
+
+
+# --- Test: Orphaned Cleanup Recovery ---
+
+
+class TestRecoverOrphanedCleanups:
+    """Test orphaned cleanup recovery at startup."""
+
+    def test_returns_zero_without_review_workflow(self, cleanup_manager, mock_config):
+        """Without review workflow, returns 0 (no cleanup needed)."""
+        mock_config.triage_review_agent = None
+        mock_config.code_review_agent = None
+
+        result = cleanup_manager.recover_orphaned_cleanups()
+
+        assert result == 0
+
+    def test_returns_zero_without_cleanup_label(self, cleanup_manager, mock_config):
+        """Without cleanup label configured, returns 0."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_reviewed_label = None
+
+        result = cleanup_manager.recover_orphaned_cleanups()
+
+        assert result == 0
+
+    def test_returns_zero_when_no_reviewed_prs(
+        self, cleanup_manager, mock_config, mock_repository_host
+    ):
+        """With no reviewed PRs, returns 0."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_repository_host.get_prs_with_label.return_value = []
+
+        result = cleanup_manager.recover_orphaned_cleanups()
+
+        assert result == 0
+
+    def test_skips_running_sessions(
+        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
+    ):
+        """Sessions still running are not cleaned up."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="123-fix",
+                   labels=[], body="", state="open")
+        ]
+        mock_worktree_manager.extract_issue_number.return_value = 123
+
+        # Session is still running
+        cleanup_manager._session_exists = MagicMock(return_value=True)
+
+        result = cleanup_manager.recover_orphaned_cleanups()
+
+        assert result == 0
+        mock_worktree_manager.remove.assert_not_called()
+
+    def test_cleans_up_orphaned_worktrees(
+        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager, tmp_path
+    ):
+        """Orphaned worktrees are cleaned up."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.agents = {"agent:triage": MagicMock()}
+
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="123-fix",
+                   labels=[], body="", state="open")
+        ]
+        mock_worktree_manager.extract_issue_number.return_value = 123
+
+        # Session is not running
+        cleanup_manager._session_exists = MagicMock(return_value=False)
+
+        # Worktree exists
+        worktree = tmp_path / "issue-123"
+        worktree.mkdir()
+        cleanup_manager._get_worktree_path = MagicMock(return_value=worktree)
+
+        result = cleanup_manager.recover_orphaned_cleanups()
+
+        assert result == 1
+        mock_worktree_manager.remove.assert_called_once()
+
+    def test_handles_pr_fetch_failure(
+        self, cleanup_manager, mock_config, mock_repository_host, caplog
+    ):
+        """PR fetch failure during recovery is logged, returns 0."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_repository_host.get_prs_with_label.side_effect = Exception("Network error")
+
+        with caplog.at_level(logging.WARNING):
+            result = cleanup_manager.recover_orphaned_cleanups()
+
+        assert result == 0
+        assert "Failed to fetch reviewed PRs" in caplog.text
+
+    def test_calls_startup_message_callback(
+        self, cleanup_manager, mock_config, mock_repository_host
+    ):
+        """Startup message callback is invoked if provided."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_repository_host.get_prs_with_label.return_value = []
+
+        callback = MagicMock()
+        cleanup_manager.recover_orphaned_cleanups(set_startup_message=callback)
+
+        callback.assert_called_once_with("Checking for orphaned cleanups...")
+
+    def test_handles_worktree_removal_failure_during_recovery(
+        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager, tmp_path, caplog
+    ):
+        """Worktree removal failure is logged but doesn't stop recovery."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.agents = {"agent:triage": MagicMock()}
+
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="123-fix",
+                   labels=[], body="", state="open")
+        ]
+        mock_worktree_manager.extract_issue_number.return_value = 123
+        mock_worktree_manager.remove.side_effect = Exception("Cannot remove")
+
+        cleanup_manager._session_exists = MagicMock(return_value=False)
+
+        worktree = tmp_path / "issue-123"
+        worktree.mkdir()
+        cleanup_manager._get_worktree_path = MagicMock(return_value=worktree)
+
+        with caplog.at_level(logging.WARNING):
+            result = cleanup_manager.recover_orphaned_cleanups()
+
+        # Still counted as cleaned (attempted)
+        assert result == 1
+        assert "Failed to remove worktree" in caplog.text
+
+    def test_skips_prs_without_extractable_issue_number(
+        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
+    ):
+        """PRs where issue number can't be extracted are skipped."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.agents = {"agent:triage": MagicMock()}
+
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="weird-branch-name",
+                   labels=[], body="", state="open")
+        ]
+        # Can't extract issue number from branch
+        mock_worktree_manager.extract_issue_number.return_value = None
+
+        result = cleanup_manager.recover_orphaned_cleanups()
+
+        assert result == 0

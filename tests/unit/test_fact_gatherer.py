@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, Mock, call
 from pathlib import Path
 
 from issue_orchestrator.control.fact_gatherer import FactGatherer
-from issue_orchestrator.config import Config
-from issue_orchestrator.models import (
+from issue_orchestrator.infra.config import Config
+from issue_orchestrator.domain.models import (
     Issue,
     OrchestratorState,
     Session,

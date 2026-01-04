@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from ..emit import emit_event
+from ..infra.emit import emit_event
 from ..ports import CommandRunner, CommandResult, WorkingCopy
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch, call
 
 import pytest
 
-from issue_orchestrator.test_data import (
+from issue_orchestrator.testing.support.test_data import (
     cleanup_test_issues,
     create_test_issues,
     create_issue,
@@ -29,7 +29,7 @@ class TestCleanupTestIssues:
         adapter = Mock()
         adapter.list_issues.return_value = []
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=adapter):
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=adapter):
             result = cleanup_test_issues("owner/repo")
 
         assert result == 0
@@ -43,7 +43,7 @@ class TestCleanupTestIssues:
             [],
         ]
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=adapter):
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=adapter):
             result = cleanup_test_issues("owner/repo")
 
         assert result == 1
@@ -58,7 +58,7 @@ class TestCleanupTestIssues:
             [],
         ]
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=adapter):
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=adapter):
             result = cleanup_test_issues("owner/repo")
 
         assert result == 3
@@ -74,8 +74,8 @@ class TestCreateIssue:
         client = Mock()
         client.create_issue.return_value = 123
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
-            with patch("issue_orchestrator.test_data._wait_for_issue_visible"):
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
+            with patch("issue_orchestrator.testing.support.test_data._wait_for_issue_visible"):
                 result = create_issue("owner/repo", "Test title", ["label1", "label2"])
 
         assert result == 123
@@ -86,8 +86,8 @@ class TestCreateIssue:
         client = Mock()
         client.create_issue.return_value = 456
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
-            with patch("issue_orchestrator.test_data._wait_for_issue_visible") as mock_wait:
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
+            with patch("issue_orchestrator.testing.support.test_data._wait_for_issue_visible") as mock_wait:
                 create_issue("owner/repo", "Test", ["label"])
 
         mock_wait.assert_called_once_with("owner/repo", 456, ["label"], None)
@@ -97,8 +97,8 @@ class TestCreateIssue:
         client = Mock()
         client.create_issue.return_value = 789
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
-            with patch("issue_orchestrator.test_data._wait_for_issue_visible") as mock_wait:
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
+            with patch("issue_orchestrator.testing.support.test_data._wait_for_issue_visible") as mock_wait:
                 create_issue("owner/repo", "Test", ["label"], wait_visible=False)
 
         mock_wait.assert_not_called()
@@ -108,7 +108,7 @@ class TestCreateIssue:
         client = Mock()
         client.create_issue.return_value = None
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
             with pytest.raises(RuntimeError, match="Failed to create issue"):
                 create_issue("owner/repo", "Test", ["label"], wait_visible=False)
 
@@ -120,7 +120,7 @@ class TestUpdateIssue:
         """Test adding labels to an issue."""
         client = Mock()
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
             update_issue("owner/repo", 123, add_labels=["priority:high", "urgent"])
 
         client.create_label.assert_has_calls([
@@ -136,7 +136,7 @@ class TestUpdateIssue:
         """Test removing labels from an issue."""
         client = Mock()
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
             update_issue("owner/repo", 123, remove_labels=["old-label"])
 
         client.remove_label.assert_called_once_with(123, "old-label")
@@ -149,7 +149,7 @@ class TestCloseIssue:
         """Test basic issue closing."""
         client = Mock()
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
             close_issue("owner/repo", 123)
 
         client.update_issue_state.assert_called_once_with(123, "closed")
@@ -158,7 +158,7 @@ class TestCloseIssue:
         """Test closing with a comment."""
         client = Mock()
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=client):
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
             close_issue("owner/repo", 123, comment="Done!")
 
         client.add_comment.assert_called_once_with(123, "Done!")
@@ -173,8 +173,8 @@ class TestCleanupIssuesByLabel:
         adapter = Mock()
         adapter.list_issues.return_value = [_mock_issue(1), _mock_issue(2)]
 
-        with patch("issue_orchestrator.test_data._adapter_for", return_value=adapter):
-            with patch("issue_orchestrator.test_data.close_issue") as mock_close:
+        with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=adapter):
+            with patch("issue_orchestrator.testing.support.test_data.close_issue") as mock_close:
                 result = cleanup_issues_by_label("owner/repo", "e2e:test_foo")
 
         assert result == 2
@@ -189,14 +189,14 @@ class TestCreateTestIssues:
 
     def test_create_with_default_labels(self):
         """Test creating issues with default agent labels."""
-        with patch("issue_orchestrator.test_data.create_issue", side_effect=[1, 2, 3, 4, 5]):
+        with patch("issue_orchestrator.testing.support.test_data.create_issue", side_effect=[1, 2, 3, 4, 5]):
             result = create_test_issues("owner/repo")
 
         assert result == [1, 2, 3, 4, 5]
 
     def test_create_with_custom_labels(self):
         """Test creating issues with custom agent labels."""
-        with patch("issue_orchestrator.test_data.create_issue", side_effect=[1, 2, 3, 4, 5]):
+        with patch("issue_orchestrator.testing.support.test_data.create_issue", side_effect=[1, 2, 3, 4, 5]):
             custom_labels = ["agent:api", "agent:database"]
             result = create_test_issues("owner/repo", agent_labels=custom_labels)
 

@@ -32,14 +32,14 @@ if TYPE_CHECKING:
     from .session_restorer import SessionRestorer
     from .state_machine_manager import StateMachineManager
     from ..observation.observer import SessionObserver
-    from ..models import OrchestratorState
+    from ..domain.models import OrchestratorState
     from ..ports.session_runner import DiscoveredSession
 
-from ..config import Config
+from ..infra.config import Config
 from ..events import EventName
-from ..models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
+from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
 from ..domain.issue_key import GitHubIssueKey
-from ..logging_config import log_context
+from ..infra.logging_config import log_context
 from ..ports import (
     EventSink,
     TraceEvent,
@@ -237,6 +237,7 @@ class SessionLauncher:
                 report = self._dependency_evaluator.evaluate(
                     issue_number=issue.number,
                     issue_body=fresh_issue.body,
+                    source_milestone=fresh_issue.milestone,
                 )
                 if not report.runnable:
                     log_transition(
@@ -863,7 +864,7 @@ def handle_session_completion(
         kill_session_fn: Function to kill terminal session
         config: Configuration
     """
-    from ..models import DiscoveredReview, DiscoveredFailure
+    from ..domain.models import DiscoveredReview, DiscoveredFailure
 
     name = session.terminal_id
     entity = "review" if name.startswith("review-") else ("rework" if name.startswith("rework-") else "issue")

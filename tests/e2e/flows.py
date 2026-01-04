@@ -16,7 +16,7 @@ from issue_orchestrator.testing.asyncdsl import (
     HTTPReplayProvider,
     WatcherConfig,
 )
-from issue_orchestrator.test_data import close_issue, _ensure_label
+from issue_orchestrator.testing.support.test_data import close_issue, _ensure_label
 from tests.e2e.conftest import (
     inflight_create,
     inflight_update,
@@ -294,7 +294,7 @@ class E2EFlow:
 
     def cleanup_created_issues(self) -> None:
         """Close all issues created by this flow."""
-        from issue_orchestrator.test_data import close_issue
+        from issue_orchestrator.testing.support.test_data import close_issue
         for issue_number in self._created_issues:
             try:
                 close_issue(self.repo, issue_number)

@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from issue_orchestrator.models import DependencyProblem, Issue, OrchestratorState
+from issue_orchestrator.domain.models import DependencyProblem, Issue, OrchestratorState
 
 
 class TestDependencyProblem:
@@ -38,8 +38,8 @@ class TestOrchestratorDependencyProblems:
     def test_update_dependency_problems_adds_new(self):
         """New blocked issues are added to state and events emitted."""
         from pathlib import Path
-        from issue_orchestrator.orchestrator import Orchestrator
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.orchestrator import Orchestrator
+        from issue_orchestrator.infra.config import Config
         from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
         from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 
@@ -97,8 +97,8 @@ class TestOrchestratorDependencyProblems:
 
     def test_update_dependency_problems_removes_resolved(self):
         """Resolved issues are removed from state and events emitted."""
-        from issue_orchestrator.orchestrator import Orchestrator
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.orchestrator import Orchestrator
+        from issue_orchestrator.infra.config import Config
         from issue_orchestrator.ports import EventSink
 
         config = MagicMock(spec=Config)
@@ -146,8 +146,8 @@ class TestOrchestratorDependencyProblems:
 
     def test_update_dependency_problems_no_change(self):
         """No events emitted when nothing changes."""
-        from issue_orchestrator.orchestrator import Orchestrator
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.orchestrator import Orchestrator
+        from issue_orchestrator.infra.config import Config
         from issue_orchestrator.ports import EventSink
 
         config = MagicMock(spec=Config)
@@ -190,8 +190,8 @@ class TestQueueChangeEvents:
 
     def test_queue_change_emits_event(self):
         """Queue changes emit queue.changed event."""
-        from issue_orchestrator.orchestrator import Orchestrator
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.orchestrator import Orchestrator
+        from issue_orchestrator.infra.config import Config
         from issue_orchestrator.ports import EventSink
         from issue_orchestrator.control.orchestrator_support import OrchestratorSupport
 
@@ -224,8 +224,8 @@ class TestQueueChangeEvents:
 
     def test_queue_no_change_no_event(self):
         """Orchestrator.update_queue_cache delegates to plan_applier."""
-        from issue_orchestrator.orchestrator import Orchestrator
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.orchestrator import Orchestrator
+        from issue_orchestrator.infra.config import Config
         from issue_orchestrator.ports import EventSink
         from issue_orchestrator.control.orchestrator_support import OrchestratorSupport
 
@@ -300,8 +300,8 @@ class TestDependencyProblemsAPI:
     def app_client(self):
         """Create test client with mocked orchestrator."""
         from fastapi.testclient import TestClient
-        from issue_orchestrator import web
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.infra.config import Config
 
         mock_orch = MagicMock()
         mock_orch.state = OrchestratorState()

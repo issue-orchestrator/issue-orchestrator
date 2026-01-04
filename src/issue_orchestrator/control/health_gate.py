@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Protocol, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..config import Config
+    from ..infra.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +184,7 @@ def create_health_gate_from_config(config: Config) -> HealthGate:
     Returns:
         Configured HealthGate instance.
     """
-    from .. import gh_audit
+    from ..infra import gh_audit
 
     # gh_audit implements RateLimitProvider protocol
     return HealthGate(

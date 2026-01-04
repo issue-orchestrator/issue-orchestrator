@@ -6,7 +6,7 @@ import subprocess
 import os
 from pathlib import Path
 
-from issue_orchestrator._iterm2_impl import (
+from issue_orchestrator.adapters.terminal._iterm2 import (
     is_iterm2_available,
     is_running_in_iterm2,
     run_applescript,
@@ -26,14 +26,14 @@ from issue_orchestrator._iterm2_impl import (
 class TestIsIterm2Available:
     """Test the is_iterm2_available function."""
 
-    @patch("issue_orchestrator._iterm2_impl.os.uname")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.os.uname")
     def test_not_darwin(self, mock_uname):
         """Test that it returns False on non-macOS systems."""
         mock_uname.return_value = MagicMock(sysname="Linux")
         assert is_iterm2_available() is False
 
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
-    @patch("issue_orchestrator._iterm2_impl.os.uname")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.os.uname")
     def test_darwin_iterm_running(self, mock_uname, mock_run):
         """Test that it returns True when iTerm2 is running on macOS."""
         mock_uname.return_value = MagicMock(sysname="Darwin")
@@ -46,8 +46,8 @@ class TestIsIterm2Available:
             text=True
         )
 
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
-    @patch("issue_orchestrator._iterm2_impl.os.uname")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.os.uname")
     def test_darwin_iterm_not_running(self, mock_uname, mock_run):
         """Test that it returns False when iTerm2 is not running on macOS."""
         mock_uname.return_value = MagicMock(sysname="Darwin")
@@ -55,8 +55,8 @@ class TestIsIterm2Available:
 
         assert is_iterm2_available() is False
 
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
-    @patch("issue_orchestrator._iterm2_impl.os.uname")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.os.uname")
     def test_darwin_iterm_case_insensitive(self, mock_uname, mock_run):
         """Test that 'true' check is case-insensitive."""
         mock_uname.return_value = MagicMock(sysname="Darwin")
@@ -87,7 +87,7 @@ class TestIsRunningInIterm2:
 class TestRunApplescript:
     """Test the run_applescript function."""
 
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_successful_script(self, mock_run):
         """Test successful AppleScript execution."""
         mock_run.return_value = MagicMock(
@@ -106,7 +106,7 @@ class TestRunApplescript:
             text=True
         )
 
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_failed_script(self, mock_run):
         """Test failed AppleScript execution."""
         mock_run.return_value = MagicMock(
@@ -120,7 +120,7 @@ class TestRunApplescript:
         assert success is False
         assert "execution error" in output
 
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_script_with_output_trimming(self, mock_run):
         """Test that output is properly trimmed."""
         mock_run.return_value = MagicMock(
@@ -138,7 +138,7 @@ class TestRunApplescript:
 class TestSelectTabByName:
     """Test the select_tab_by_name function."""
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_successful_tab_selection(self, mock_run_as):
         """Test successful tab selection by name."""
         mock_run_as.return_value = (True, "true")
@@ -151,7 +151,7 @@ class TestSelectTabByName:
         assert "my-tab" in script
         assert 'tell application "iTerm"' in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_tab_not_found(self, mock_run_as):
         """Test when tab is not found."""
         mock_run_as.return_value = (True, "false")
@@ -160,7 +160,7 @@ class TestSelectTabByName:
 
         assert result is False
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_applescript_failure(self, mock_run_as):
         """Test when AppleScript fails."""
         mock_run_as.return_value = (False, "error message")
@@ -169,7 +169,7 @@ class TestSelectTabByName:
 
         assert result is False
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_case_insensitive_true_check(self, mock_run_as):
         """Test that 'true' check is case-insensitive."""
         mock_run_as.return_value = (True, "TRUE")
@@ -182,7 +182,7 @@ class TestSelectTabByName:
 class TestSelectTabByIndex:
     """Test the select_tab_by_index function."""
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_successful_tab_selection(self, mock_run_as):
         """Test successful tab selection by index."""
         mock_run_as.return_value = (True, "true")
@@ -193,7 +193,7 @@ class TestSelectTabByIndex:
         script = mock_run_as.call_args[0][0]
         assert "2" in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_index_out_of_bounds(self, mock_run_as):
         """Test when index exceeds tab count."""
         mock_run_as.return_value = (True, "false")
@@ -202,7 +202,7 @@ class TestSelectTabByIndex:
 
         assert result is False
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_applescript_failure(self, mock_run_as):
         """Test when AppleScript fails."""
         mock_run_as.return_value = (False, "error")
@@ -215,7 +215,7 @@ class TestSelectTabByIndex:
 class TestGetTabCount:
     """Test the get_tab_count function."""
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_successful_count(self, mock_run_as):
         """Test successful tab count retrieval."""
         mock_run_as.return_value = (True, "5")
@@ -224,7 +224,7 @@ class TestGetTabCount:
 
         assert result == 5
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_applescript_failure(self, mock_run_as):
         """Test when AppleScript fails."""
         mock_run_as.return_value = (False, "error")
@@ -233,7 +233,7 @@ class TestGetTabCount:
 
         assert result == 0
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_invalid_number_format(self, mock_run_as):
         """Test when output is not a valid number."""
         mock_run_as.return_value = (True, "not-a-number")
@@ -242,7 +242,7 @@ class TestGetTabCount:
 
         assert result == 0
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_zero_tabs(self, mock_run_as):
         """Test when there are no tabs."""
         mock_run_as.return_value = (True, "0")
@@ -255,7 +255,7 @@ class TestGetTabCount:
 class TestSplitPaneVertical:
     """Test the split_pane_vertical function."""
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_successful_split(self, mock_run_as):
         """Test successful vertical pane split."""
         mock_run_as.return_value = (True, "")
@@ -266,7 +266,7 @@ class TestSplitPaneVertical:
         script = mock_run_as.call_args[0][0]
         assert "split vertically" in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_failed_split(self, mock_run_as):
         """Test failed vertical pane split."""
         mock_run_as.return_value = (False, "error")
@@ -279,7 +279,7 @@ class TestSplitPaneVertical:
 class TestSplitPaneHorizontal:
     """Test the split_pane_horizontal function."""
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_successful_split(self, mock_run_as):
         """Test successful horizontal pane split."""
         mock_run_as.return_value = (True, "")
@@ -290,7 +290,7 @@ class TestSplitPaneHorizontal:
         script = mock_run_as.call_args[0][0]
         assert "split horizontally" in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_failed_split(self, mock_run_as):
         """Test failed horizontal pane split."""
         mock_run_as.return_value = (False, "error")
@@ -303,7 +303,7 @@ class TestSplitPaneHorizontal:
 class TestSendTextToSession:
     """Test the send_text_to_session function."""
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_send_text_with_newline(self, mock_run_as):
         """Test sending text with newline."""
         mock_run_as.return_value = (True, "")
@@ -315,7 +315,7 @@ class TestSendTextToSession:
         assert "echo hello" in script
         assert "newline true" in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_send_text_without_newline(self, mock_run_as):
         """Test sending text without newline."""
         mock_run_as.return_value = (True, "")
@@ -326,7 +326,7 @@ class TestSendTextToSession:
         script = mock_run_as.call_args[0][0]
         assert "newline false" in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_send_text_with_quotes(self, mock_run_as):
         """Test sending text that contains quotes."""
         mock_run_as.return_value = (True, "")
@@ -338,7 +338,7 @@ class TestSendTextToSession:
         # Quotes should be escaped
         assert '\\"' in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_send_text_failure(self, mock_run_as):
         """Test failed text sending."""
         mock_run_as.return_value = (False, "error")
@@ -351,7 +351,7 @@ class TestSendTextToSession:
 class TestCreateNewTabWithCommand:
     """Test the create_new_tab_with_command function."""
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_create_tab_without_name(self, mock_run_as):
         """Test creating tab without a name."""
         mock_run_as.return_value = (True, "")
@@ -363,7 +363,7 @@ class TestCreateNewTabWithCommand:
         assert "ls -la" in script
         assert "create tab" in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_create_tab_with_name(self, mock_run_as):
         """Test creating tab with a name."""
         mock_run_as.return_value = (True, "")
@@ -375,7 +375,7 @@ class TestCreateNewTabWithCommand:
         assert "My Tab" in script
         assert 'set name to "My Tab"' in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_create_tab_with_quotes_in_command(self, mock_run_as):
         """Test creating tab with command containing quotes."""
         mock_run_as.return_value = (True, "")
@@ -386,7 +386,7 @@ class TestCreateNewTabWithCommand:
         script = mock_run_as.call_args[0][0]
         assert '\\"' in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_create_tab_failure(self, mock_run_as):
         """Test failed tab creation."""
         mock_run_as.return_value = (False, "error")
@@ -399,7 +399,7 @@ class TestCreateNewTabWithCommand:
 class TestAttachToTmuxCc:
     """Test the attach_to_tmux_cc function."""
 
-    @patch("issue_orchestrator._iterm2_impl.send_text_to_session")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.send_text_to_session")
     def test_attach_default_session(self, mock_send):
         """Test attaching to default tmux session."""
         mock_send.return_value = True
@@ -409,7 +409,7 @@ class TestAttachToTmuxCc:
         assert result is True
         mock_send.assert_called_once_with("tmux -CC attach -t orchestrator")
 
-    @patch("issue_orchestrator._iterm2_impl.send_text_to_session")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.send_text_to_session")
     def test_attach_custom_session(self, mock_send):
         """Test attaching to custom tmux session."""
         mock_send.return_value = True
@@ -419,7 +419,7 @@ class TestAttachToTmuxCc:
         assert result is True
         mock_send.assert_called_once_with("tmux -CC attach -t my-session")
 
-    @patch("issue_orchestrator._iterm2_impl.send_text_to_session")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.send_text_to_session")
     def test_attach_failure(self, mock_send):
         """Test failed tmux attachment."""
         mock_send.return_value = False
@@ -437,8 +437,8 @@ class TestITermSessionManager:
         manager = ITermSessionManager()
         assert manager._sessions == {}
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_create_session_basic(self, mock_subprocess, mock_run_as):
         """Test creating a basic session."""
         mock_run_as.return_value = (True, "")
@@ -455,8 +455,8 @@ class TestITermSessionManager:
         assert 42 in manager._sessions
         assert manager._sessions[42]["tab_name"] == "#42"
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_create_session_with_title(self, mock_subprocess, mock_run_as):
         """Test creating a session with a title."""
         mock_run_as.return_value = (True, "")
@@ -475,8 +475,8 @@ class TestITermSessionManager:
         # Title should be truncated to 20 chars
         assert "#42 Fix authentication " in manager._sessions[42]["tab_name"]
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_create_session_long_title(self, mock_subprocess, mock_run_as):
         """Test creating a session with a very long title."""
         mock_run_as.return_value = (True, "")
@@ -495,8 +495,8 @@ class TestITermSessionManager:
         # Title should be truncated to 20 chars
         assert len(manager._sessions[42]["tab_name"]) <= 24  # "#42 " + 20 chars
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_create_session_escaping(self, mock_subprocess, mock_run_as):
         """Test that special characters are properly escaped."""
         mock_run_as.return_value = (True, "")
@@ -515,8 +515,8 @@ class TestITermSessionManager:
         # Check that quotes are escaped
         assert '\\"' in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_create_session_single_quote_escaping(self, mock_subprocess, mock_run_as):
         """Test that single quotes in commands are properly escaped for zsh wrapper.
 
@@ -549,8 +549,8 @@ class TestITermSessionManager:
         assert "'\\\\''Read prompt.md'\\\\''".replace("\\\\", "\\") in script or \
                "'\\\\''" in script  # Either form of escaping
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
-    @patch("issue_orchestrator._iterm2_impl.subprocess.run")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_create_session_failure(self, mock_subprocess, mock_run_as):
         """Test failed session creation."""
         mock_run_as.return_value = (False, "error message")
@@ -565,7 +565,7 @@ class TestITermSessionManager:
         assert result is False
         assert 42 not in manager._sessions
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_running(self, mock_run_as):
         """Test session_exists when session is running."""
         # _has_running_tab_for_issue expects "true" in output
@@ -576,7 +576,7 @@ class TestITermSessionManager:
 
         assert manager.session_exists(42) is True
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_idle(self, mock_run_as):
         """Test session_exists when session is idle (not running)."""
         # _has_running_tab_for_issue returns False when no "true" in output
@@ -589,7 +589,7 @@ class TestITermSessionManager:
         # Session should be cleaned up
         assert 42 not in manager._sessions
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_not_found(self, mock_run_as):
         """Test session_exists when tab is not found."""
         mock_run_as.return_value = (True, "false")
@@ -601,7 +601,7 @@ class TestITermSessionManager:
         # Session should be cleaned up
         assert 42 not in manager._sessions
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_not_tracked_but_running(self, mock_run_as):
         """Test session_exists for untracked session that IS running in iTerm.
 
@@ -614,7 +614,7 @@ class TestITermSessionManager:
 
         assert manager.session_exists(42) is True
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_not_tracked_not_running(self, mock_run_as):
         """Test session_exists for untracked session that is NOT running."""
         mock_run_as.return_value = (True, "false")
@@ -622,7 +622,7 @@ class TestITermSessionManager:
 
         assert manager.session_exists(42) is False
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_applescript_failure(self, mock_run_as):
         """Test session_exists when AppleScript fails."""
         mock_run_as.return_value = (False, "error")
@@ -634,7 +634,7 @@ class TestITermSessionManager:
         # Session should be cleaned up
         assert 42 not in manager._sessions
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_kill_session_success(self, mock_run_as):
         """Test successful session kill."""
         mock_run_as.return_value = (True, "true")
@@ -647,7 +647,7 @@ class TestITermSessionManager:
         assert result is True
         assert 42 not in manager._sessions
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_kill_session_not_found(self, mock_run_as):
         """Test killing session that doesn't exist."""
         mock_run_as.return_value = (True, "false")
@@ -660,7 +660,7 @@ class TestITermSessionManager:
         assert result is False
         assert 42 not in manager._sessions  # Still cleaned up from tracking
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_kill_session_untracked(self, mock_run_as):
         """Test killing untracked session."""
         mock_run_as.return_value = (True, "true")
@@ -671,7 +671,7 @@ class TestITermSessionManager:
 
         assert result is True
 
-    @patch("issue_orchestrator._iterm2_impl.select_tab_by_name")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name")
     def test_select_session_success(self, mock_select):
         """Test successful session selection."""
         mock_select.return_value = True
@@ -682,7 +682,7 @@ class TestITermSessionManager:
         assert result is True
         mock_select.assert_called_once_with("#42")
 
-    @patch("issue_orchestrator._iterm2_impl.select_tab_by_name")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name")
     def test_select_session_failure(self, mock_select):
         """Test failed session selection."""
         mock_select.return_value = False
@@ -692,7 +692,7 @@ class TestITermSessionManager:
 
         assert result is False
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_send_to_session_success(self, mock_run_as):
         """Test successfully sending text to a session."""
         mock_run_as.return_value = (True, "true")
@@ -706,7 +706,7 @@ class TestITermSessionManager:
         assert "#42" in script
         assert "com.googlecode.iterm2" in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_send_to_session_not_found(self, mock_run_as):
         """Test sending text when session is not found."""
         mock_run_as.return_value = (True, "false")
@@ -716,7 +716,7 @@ class TestITermSessionManager:
 
         assert result is False
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_send_to_session_with_quotes(self, mock_run_as):
         """Test sending text with quotes."""
         mock_run_as.return_value = (True, "true")
@@ -729,7 +729,7 @@ class TestITermSessionManager:
         # Quotes should be escaped
         assert '\\"' in script
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_send_to_session_applescript_failure(self, mock_run_as):
         """Test sending text when AppleScript fails."""
         mock_run_as.return_value = (False, "error")
@@ -739,7 +739,7 @@ class TestITermSessionManager:
 
         assert result is False
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_list_sessions_empty(self, mock_run_as):
         """Test listing sessions when none exist."""
         manager = ITermSessionManager()
@@ -748,7 +748,7 @@ class TestITermSessionManager:
 
         assert result == []
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_list_sessions_all_valid(self, mock_run_as):
         """Test listing sessions when all are valid (running)."""
         # All sessions running - _has_running_tab_for_issue expects "true"
@@ -765,7 +765,7 @@ class TestITermSessionManager:
 
         assert set(result) == {1, 2, 3}
 
-    @patch("issue_orchestrator._iterm2_impl.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_list_sessions_some_invalid(self, mock_run_as):
         """Test listing sessions when some are no longer valid."""
         def side_effect(script):
@@ -810,7 +810,7 @@ class TestGetItermManager:
     def test_get_manager_creates_instance(self):
         """Test that get_iterm_manager creates an instance."""
         # Reset the global variable
-        import issue_orchestrator._iterm2_impl as iterm2_module
+        import issue_orchestrator.adapters.terminal._iterm2 as iterm2_module
         iterm2_module._iterm_manager = None
 
         manager = get_iterm_manager()
@@ -819,7 +819,7 @@ class TestGetItermManager:
 
     def test_get_manager_returns_same_instance(self):
         """Test that get_iterm_manager returns the same instance."""
-        import issue_orchestrator._iterm2_impl as iterm2_module
+        import issue_orchestrator.adapters.terminal._iterm2 as iterm2_module
         iterm2_module._iterm_manager = None
 
         manager1 = get_iterm_manager()
@@ -829,7 +829,7 @@ class TestGetItermManager:
 
     def test_get_manager_preserves_state(self):
         """Test that the singleton preserves state."""
-        import issue_orchestrator._iterm2_impl as iterm2_module
+        import issue_orchestrator.adapters.terminal._iterm2 as iterm2_module
         iterm2_module._iterm_manager = None
 
         manager1 = get_iterm_manager()

@@ -12,7 +12,7 @@ from issue_orchestrator.domain.state_machines import (
     ReviewState,
     InvalidStateTransition,
 )
-from issue_orchestrator.models import Issue
+from issue_orchestrator.domain.models import Issue
 
 
 @pytest.fixture

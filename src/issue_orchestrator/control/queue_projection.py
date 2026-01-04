@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING
 
 from ..events import EventName
 from ..ports.issue import Issue
-from ..models import OrchestratorState
+from ..domain.models import OrchestratorState
 from ..ports.event_sink import EventSink, TraceEvent
 
 if TYPE_CHECKING:
-    from ..config import Config
+    from ..infra.config import Config
     from ..ports.repository_host import RepositoryHost
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class QueueProjection:
         Returns:
             List of issues available in the queue
         """
-        from ..audit import get_queue_issues
+        from ..infra.audit import get_queue_issues
         return get_queue_issues(self._config, state, issue_tracker=self._repository_host)
 
     def update_and_emit(self, state: OrchestratorState) -> QueueChange | None:

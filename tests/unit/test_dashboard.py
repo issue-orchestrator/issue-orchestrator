@@ -30,7 +30,7 @@ import pytest
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
-from issue_orchestrator.dashboard import (
+from issue_orchestrator.entrypoints.dashboard import (
     StatusBar,
     SessionsTable,
     QueueTable,
@@ -38,14 +38,14 @@ from issue_orchestrator.dashboard import (
     Dashboard,
     run_with_dashboard,
 )
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionStatus,
     AgentConfig,
     OrchestratorState,
 )
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
@@ -186,7 +186,7 @@ class TestSessionsTable:
 
         assert table.orchestrator == orchestrator
 
-    @patch('issue_orchestrator.dashboard.SessionsTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.SessionsTable.query_one')
     def test_update_table_no_sessions(self, mock_query_one):
         """Test updating table with no active sessions."""
         mock_data_table = MagicMock()
@@ -203,7 +203,7 @@ class TestSessionsTable:
             "-", "No active sessions", "-", "-", "-"
         )
 
-    @patch('issue_orchestrator.dashboard.SessionsTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.SessionsTable.query_one')
     def test_update_table_with_sessions(self, mock_query_one):
         """Test updating table with active sessions."""
         mock_data_table = MagicMock()
@@ -232,7 +232,7 @@ class TestSessionsTable:
         mock_data_table.clear.assert_called_once()
         assert mock_data_table.add_row.call_count == 2
 
-    @patch('issue_orchestrator.dashboard.SessionsTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.SessionsTable.query_one')
     def test_update_table_truncates_long_titles(self, mock_query_one):
         """Test that long issue titles are truncated."""
         mock_data_table = MagicMock()
@@ -258,7 +258,7 @@ class TestSessionsTable:
         assert len(title_arg) <= 40
         assert title_arg.endswith("...")
 
-    @patch('issue_orchestrator.dashboard.SessionsTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.SessionsTable.query_one')
     def test_update_table_status_colors(self, mock_query_one):
         """Test that sessions have correct status colors."""
         from rich.text import Text
@@ -297,7 +297,7 @@ class TestQueueTable:
 
         assert table.orchestrator == orchestrator
 
-    @patch('issue_orchestrator.dashboard.QueueTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.QueueTable.query_one')
     def test_update_table_empty_queue(self, mock_query_one):
         """Test updating table with empty queue."""
         mock_data_table = MagicMock()
@@ -312,7 +312,7 @@ class TestQueueTable:
         mock_data_table.clear.assert_called_once()
         mock_data_table.add_row.assert_called_once_with("-", "Queue empty", "-")
 
-    @patch('issue_orchestrator.dashboard.QueueTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.QueueTable.query_one')
     def test_update_table_with_queue(self, mock_query_one):
         """Test updating table with queued issues."""
         mock_data_table = MagicMock()
@@ -328,7 +328,7 @@ class TestQueueTable:
         mock_data_table.clear.assert_called_once()
         assert mock_data_table.add_row.call_count == 5
 
-    @patch('issue_orchestrator.dashboard.QueueTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.QueueTable.query_one')
     def test_update_table_excludes_active_sessions(self, mock_query_one):
         """Test that active session issue numbers are excluded from queue."""
         mock_data_table = MagicMock()
@@ -349,7 +349,7 @@ class TestQueueTable:
         # Should only show issues 2 and 3 (issue 1 is active)
         assert mock_data_table.add_row.call_count == 2
 
-    @patch('issue_orchestrator.dashboard.QueueTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.QueueTable.query_one')
     def test_update_table_limits_to_10_items(self, mock_query_one):
         """Test that queue table only shows first 10 items."""
         mock_data_table = MagicMock()
@@ -531,7 +531,7 @@ class TestDashboardApp:
 
         app = DashboardApp(orchestrator)
 
-        with patch('issue_orchestrator._iterm2_impl.select_tab_by_name') as mock_select:
+        with patch('issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name') as mock_select:
             with patch.object(app, 'notify') as mock_notify:
                 mock_select.return_value = True
 
@@ -559,7 +559,7 @@ class TestDashboardApp:
         mock_manager.session = MagicMock()
         mock_manager.select_window.return_value = True
 
-        with patch('issue_orchestrator._tmux_impl.get_manager', return_value=mock_manager):
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager', return_value=mock_manager):
             with patch.object(app, 'exit') as mock_exit:
                 await app.action_attach(1)
 
@@ -580,7 +580,7 @@ class TestDashboardApp:
 
         app = DashboardApp(orchestrator)
 
-        with patch('issue_orchestrator._tmux_impl.get_manager', side_effect=Exception("Test error")):
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager', side_effect=Exception("Test error")):
             with patch.object(app, 'notify') as mock_notify:
                 await app.action_attach(1)
 
@@ -641,7 +641,7 @@ class TestDashboard:
         mock_manager = MagicMock()
         mock_manager.session = MagicMock()
 
-        with patch('issue_orchestrator._tmux_impl.get_manager', return_value=mock_manager):
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager', return_value=mock_manager):
             await dashboard._handle_attach(42)
 
             mock_manager.select_window.assert_called_once_with(42)
@@ -656,7 +656,7 @@ class TestDashboard:
         dashboard._app = MagicMock()
         dashboard._app.notify = MagicMock()
 
-        with patch('issue_orchestrator._iterm2_impl.select_tab_by_name') as mock_select:
+        with patch('issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name') as mock_select:
             mock_select.return_value = True
 
             await dashboard._handle_attach(42)
@@ -673,7 +673,7 @@ class TestDashboard:
         dashboard._app = MagicMock()
         dashboard._app.notify = MagicMock()
 
-        with patch('issue_orchestrator._iterm2_impl.select_tab_by_name') as mock_select:
+        with patch('issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name') as mock_select:
             mock_select.return_value = False
 
             await dashboard._handle_attach(42)
@@ -710,7 +710,7 @@ class TestRunWithDashboard:
         orchestrator = create_orchestrator()
         orchestrator.run_loop = AsyncMock()
 
-        with patch('issue_orchestrator.dashboard.Dashboard.run', new_callable=AsyncMock) as mock_run:
+        with patch('issue_orchestrator.entrypoints.dashboard.Dashboard.run', new_callable=AsyncMock) as mock_run:
             await run_with_dashboard(orchestrator, ui_mode="tmux")
 
             mock_run.assert_called_once()
@@ -731,7 +731,7 @@ class TestRunWithDashboard:
             # Give the orchestrator task a chance to start
             await asyncio.sleep(0.01)
 
-        with patch('issue_orchestrator.dashboard.Dashboard.run', new_callable=AsyncMock, side_effect=mock_dashboard_run):
+        with patch('issue_orchestrator.entrypoints.dashboard.Dashboard.run', new_callable=AsyncMock, side_effect=mock_dashboard_run):
             await run_with_dashboard(orchestrator, ui_mode="tmux")
 
             assert run_loop_called is True
@@ -743,7 +743,7 @@ class TestRunWithDashboard:
         orchestrator.run_loop = AsyncMock()
         orchestrator._shutdown_requested = False
 
-        with patch('issue_orchestrator.dashboard.Dashboard.run', new_callable=AsyncMock):
+        with patch('issue_orchestrator.entrypoints.dashboard.Dashboard.run', new_callable=AsyncMock):
             await run_with_dashboard(orchestrator, ui_mode="tmux")
 
             assert orchestrator._shutdown_requested is True
@@ -754,7 +754,7 @@ class TestRunWithDashboard:
         orchestrator = create_orchestrator()
         orchestrator.run_loop = AsyncMock()
 
-        with patch('issue_orchestrator.dashboard.Dashboard') as mock_dashboard_class:
+        with patch('issue_orchestrator.entrypoints.dashboard.Dashboard') as mock_dashboard_class:
             mock_dashboard = MagicMock()
             mock_dashboard.attach_after_exit = True
             mock_dashboard.run = AsyncMock()
@@ -779,7 +779,7 @@ class TestRunWithDashboard:
 
         orchestrator.run_loop = mock_run_loop
 
-        with patch('issue_orchestrator.dashboard.Dashboard.run', new_callable=AsyncMock):
+        with patch('issue_orchestrator.entrypoints.dashboard.Dashboard.run', new_callable=AsyncMock):
             # Should complete without hanging
             result = await run_with_dashboard(orchestrator, ui_mode="tmux")
 
@@ -791,7 +791,7 @@ class TestRunWithDashboard:
         orchestrator = create_orchestrator()
         orchestrator.run_loop = AsyncMock()
 
-        with patch('issue_orchestrator.dashboard.Dashboard') as mock_dashboard_class:
+        with patch('issue_orchestrator.entrypoints.dashboard.Dashboard') as mock_dashboard_class:
             mock_dashboard = MagicMock()
             mock_dashboard.attach_after_exit = False
             mock_dashboard.run = AsyncMock()
@@ -840,7 +840,7 @@ class TestStatusBarRendering:
 class TestTableEdgeCases:
     """Test edge cases for table widgets."""
 
-    @patch('issue_orchestrator.dashboard.SessionsTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.SessionsTable.query_one')
     def test_sessions_table_with_exact_40_char_title(self, mock_query_one):
         """Test that 40-character titles are not truncated."""
         mock_data_table = MagicMock()
@@ -866,7 +866,7 @@ class TestTableEdgeCases:
         assert len(title_arg) == 40
         assert not title_arg.endswith("...")
 
-    @patch('issue_orchestrator.dashboard.SessionsTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.SessionsTable.query_one')
     def test_sessions_table_runtime_at_timeout_threshold(self, mock_query_one):
         """Test session exactly at timeout threshold."""
         from rich.text import Text
@@ -892,7 +892,7 @@ class TestTableEdgeCases:
         # At timeout, status should be "slow" (yellow)
         assert status_text.style == "yellow"
 
-    @patch('issue_orchestrator.dashboard.QueueTable.query_one')
+    @patch('issue_orchestrator.entrypoints.dashboard.QueueTable.query_one')
     def test_queue_table_with_all_sessions_active(self, mock_query_one):
         """Test queue table when all queued issues are active."""
         mock_data_table = MagicMock()

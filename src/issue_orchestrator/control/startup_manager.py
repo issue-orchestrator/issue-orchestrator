@@ -18,10 +18,10 @@ import re
 import time
 from typing import Callable, Optional
 
-from ..analysis import analyze_issue
-from ..config import Config
+from ..infra.analysis import analyze_issue
+from ..infra.config import Config
 from ..ports.issue import Issue
-from ..models import (
+from ..domain.models import (
     OrchestratorState,
     PendingReview,
     PendingTriageReview,
@@ -31,8 +31,8 @@ from ..models import (
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost, HookVerifier
 from ..ports.session_runner import DiscoveredSession
-from .. import labels
-from .. import gh_audit
+from ..infra import labels
+from ..infra import gh_audit
 
 
 
@@ -147,7 +147,7 @@ class StartupManager:
 
         # Step 10: Audit and cache the queue
         state.startup_message = "Auditing queue..."
-        from ..audit import audit_queue, print_audit
+        from ..infra.audit import audit_queue, print_audit
         audit_entries = audit_queue(self.config, state, self.repository_host, issue_branches=issue_branches)
         print_audit(audit_entries)
 

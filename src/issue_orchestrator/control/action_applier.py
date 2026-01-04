@@ -36,7 +36,7 @@ from ..ports.label_set import LabelSet
 from ..ports.issue_tracker import IssueTracker
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
-from ..models import Session
+from ..domain.models import Session
 from .reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,

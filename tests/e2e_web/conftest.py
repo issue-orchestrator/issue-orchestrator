@@ -9,18 +9,19 @@ from unittest.mock import MagicMock
 import pytest
 import uvicorn
 
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
+from issue_orchestrator.events import EventHub
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     AgentConfig,
     Issue,
     OrchestratorState,
     Session,
     SessionHistoryEntry,
 )
-import issue_orchestrator.web as web_module
-from issue_orchestrator.web import app
+import issue_orchestrator.entrypoints.web as web_module
+from issue_orchestrator.entrypoints.web import app
 
 
 def find_free_port() -> int:
@@ -52,6 +53,11 @@ class MockOrchestratorForWeb:
         )
         self.config = self._create_mock_config()
         self._shutdown_requested = False
+        self._event_hub = EventHub()
+
+    @property
+    def event_hub(self) -> EventHub:
+        return self._event_hub
 
     def _create_mock_config(self) -> Config:
         config = Config()

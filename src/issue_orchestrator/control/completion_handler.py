@@ -19,17 +19,17 @@ if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
-    from ..models import PendingReview, PendingRework, PendingTriageReview
+    from ..domain.models import PendingReview, PendingRework, PendingTriageReview
     from .state_machine_manager import StateMachineManager
 
-from ..config import Config
+from ..infra.config import Config
 from ..events import EventName
-from ..logging_config import log_context
-from ..models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
+from ..infra.logging_config import log_context
+from ..domain.models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
 from .reconciliation import build_expected_for_mutation
-from .. import labels
+from ..infra import labels
 
 logger = logging.getLogger(__name__)
 

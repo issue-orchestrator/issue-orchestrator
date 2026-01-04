@@ -7,7 +7,7 @@ The planner decides "should we?" - no mocks for tmux/GitHub needed.
 import pytest
 from unittest.mock import Mock, MagicMock
 
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.planner import (
     Planner,
     Plan,
@@ -16,7 +16,7 @@ from issue_orchestrator.control.planner import (
 )
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.actions import ActionType, LaunchSessionAction
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionStatus,
@@ -362,7 +362,7 @@ class TestPlanDiscoveredReviews:
 
     def test_plans_queue_action_for_discovered_review(self):
         """Planner produces QueueReviewAction for discovered reviews."""
-        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.domain.models import DiscoveredReview
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -394,7 +394,7 @@ class TestPlanDiscoveredReviews:
 
     def test_skips_already_queued_reviews(self):
         """Planner skips discovered reviews that are already in pending_reviews."""
-        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.domain.models import DiscoveredReview
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -446,7 +446,7 @@ class TestPlanDiscoveredReviews:
 
     def test_queue_action_has_expected_state(self):
         """Planner attaches ExpectedState to QueueReviewAction."""
-        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.domain.models import DiscoveredReview
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -478,7 +478,7 @@ class TestPlanDiscoveredReviews:
 
     def test_add_label_action_has_expected_state(self):
         """Planner attaches ExpectedState to AddLabelAction for pr-pending."""
-        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.domain.models import DiscoveredReview
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -522,7 +522,7 @@ class TestPlanTriageIssueCreation:
 
     def test_creates_triage_issue_at_threshold(self):
         """Planner produces CreateTriageIssueAction when threshold is met."""
-        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.domain.models import TriageFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -556,7 +556,7 @@ class TestPlanTriageIssueCreation:
 
     def test_no_triage_issue_below_threshold(self):
         """Planner produces no CreateTriageIssueAction when below threshold."""
-        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.domain.models import TriageFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -585,7 +585,7 @@ class TestPlanTriageIssueCreation:
 
     def test_no_triage_issue_when_existing_issue(self):
         """Planner produces no CreateTriageIssueAction when existing issue exists."""
-        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.domain.models import TriageFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -631,7 +631,7 @@ class TestPlanTriageIssueCreation:
 
     def test_triage_issue_body_includes_pr_list(self):
         """Planner includes PR details in triage issue body."""
-        from issue_orchestrator.models import TriageFacts
+        from issue_orchestrator.domain.models import TriageFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -676,7 +676,7 @@ class TestPlanDiscoveredReworks:
 
     def test_plans_queue_action_for_discovered_rework(self):
         """Planner produces QueueReworkAction for discovered reworks."""
-        from issue_orchestrator.models import DiscoveredRework
+        from issue_orchestrator.domain.models import DiscoveredRework
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -707,7 +707,7 @@ class TestPlanDiscoveredReworks:
 
     def test_skips_already_queued_reworks(self):
         """Planner skips discovered reworks that are already in pending_reworks."""
-        from issue_orchestrator.models import DiscoveredRework
+        from issue_orchestrator.domain.models import DiscoveredRework
         from issue_orchestrator.domain.issue_key import GitHubIssueKey
         from issue_orchestrator.control.actions import ActionType
 
@@ -751,7 +751,7 @@ class TestPlanDiscoveredEscalations:
 
     def test_plans_escalate_action_for_discovered_escalation(self):
         """Planner produces EscalateToHumanAction for discovered escalations."""
-        from issue_orchestrator.models import DiscoveredEscalation
+        from issue_orchestrator.domain.models import DiscoveredEscalation
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer", max_rework_cycles=2)
@@ -805,7 +805,7 @@ class TestPlanDiscoveredFailures:
 
     def test_plans_triage_action_for_discovered_failure(self):
         """Planner produces QueueTriageAction for discovered failures."""
-        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -836,7 +836,7 @@ class TestPlanDiscoveredFailures:
 
     def test_no_triage_action_when_disabled(self):
         """Planner produces no triage actions when triage_review_on_failure is disabled."""
-        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -863,7 +863,7 @@ class TestPlanDiscoveredFailures:
 
     def test_no_triage_action_when_no_agent_configured(self):
         """Planner produces no triage actions when no triage_review_agent configured."""
-        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -890,7 +890,7 @@ class TestPlanDiscoveredFailures:
 
     def test_skips_already_queued_triage(self):
         """Planner skips failures for issues already queued for triage."""
-        from issue_orchestrator.models import DiscoveredFailure
+        from issue_orchestrator.domain.models import DiscoveredFailure
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(
@@ -952,7 +952,7 @@ class TestPlanCleanups:
 
     def test_plans_cleanup_action_for_reviewed_pr(self):
         """Planner produces CleanupSessionAction when PR has been reviewed."""
-        from issue_orchestrator.models import CleanupFacts
+        from issue_orchestrator.domain.models import CleanupFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -986,7 +986,7 @@ class TestPlanCleanups:
 
     def test_no_cleanup_when_pr_not_reviewed(self):
         """Planner produces no CleanupSessionAction when PR is not reviewed."""
-        from issue_orchestrator.models import CleanupFacts
+        from issue_orchestrator.domain.models import CleanupFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -1030,7 +1030,7 @@ class TestPlanCleanups:
 
     def test_cleanup_respects_close_tabs_setting(self):
         """Planner respects the close_tabs setting from CleanupFacts."""
-        from issue_orchestrator.models import CleanupFacts
+        from issue_orchestrator.domain.models import CleanupFacts
         from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
@@ -1054,3 +1054,847 @@ class TestPlanCleanups:
         assert len(cleanup_actions) == 1
         assert cleanup_actions[0].close_tabs is False
         assert cleanup_actions[0].remove_worktrees is True
+
+
+# =============================================================================
+# BEHAVIOR-CENTRIC TESTS: Priority and Action Ordering
+# =============================================================================
+
+class TestActionPriority:
+    """Tests for action priority: Reviews > Reworks > Triage > Issues.
+
+    The planner enforces a strict priority order to ensure completed work
+    (PRs waiting for review) is processed before starting new work.
+    """
+
+    def test_reviews_take_priority_over_issues(self):
+        """Reviews are launched before issues when both are available."""
+        config = make_config(code_review_agent="agent:reviewer", max_concurrent_sessions=1)
+        scheduler = Scheduler(config)
+
+        # Mock review workflow to return a review
+        mock_review_workflow = Mock()
+        mock_review_workflow.is_configured.return_value = True
+        mock_decision = Mock()
+        mock_decision.should_launch = True
+        mock_decision.skip_reason = None
+        mock_decision.reviews_to_launch = [
+            PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch"),
+        ]
+        mock_review_workflow.should_launch_reviews.return_value = mock_decision
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            review_workflow=mock_review_workflow,
+        )
+
+        # Both issues and reviews are available
+        snapshot = make_snapshot(
+            issues=[make_issue(2)],  # Issue waiting
+            pending_reviews=[
+                PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch"),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should launch review, NOT issue (only 1 slot available)
+        launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert len(launch_actions) == 1
+        assert launch_actions[0].session_type == "review"
+        assert launch_actions[0].number == 100
+
+    def test_reworks_take_priority_over_triage(self):
+        """Reworks are launched before triage when both are available."""
+        from tests.conftest import MockEventSink
+
+        config = make_config(
+            code_review_agent="agent:reviewer",
+            triage_review_agent="agent:triage",
+            max_concurrent_sessions=1,
+        )
+        scheduler = Scheduler(config)
+
+        # Mock rework workflow to return a rework
+        mock_rework_workflow = Mock()
+        mock_decision = Mock()
+        mock_decision.should_launch = True
+        mock_decision.skip_reason = None
+        pending_rework = PendingRework(
+            issue_key=FakeIssueKey(name="1"),
+            agent_type="agent:developer",
+            rework_cycle=1,
+        )
+        mock_decision.reworks_to_launch = [pending_rework]
+        mock_rework_workflow.should_launch_reworks.return_value = mock_decision
+        mock_rework_workflow.should_escalate.return_value = Mock(should_escalate=False)
+
+        # Mock triage workflow (should not be called if reworks consume capacity)
+        mock_triage_workflow = Mock()
+        mock_triage_workflow.is_configured.return_value = True
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            rework_workflow=mock_rework_workflow,
+            triage_workflow=mock_triage_workflow,
+        )
+
+        snapshot = make_snapshot(
+            pending_reworks=[pending_rework],
+            pending_triage=[
+                PendingTriageReview(issue_number=2, title="Investigate failure"),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should launch rework (priority over triage)
+        launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert len(launch_actions) == 1
+        assert launch_actions[0].session_type == "rework"
+
+    def test_no_new_issues_when_pending_reviews_exist(self):
+        """New issue work is blocked when pending reviews exist."""
+        config = make_config(code_review_agent="agent:reviewer", max_concurrent_sessions=3)
+        scheduler = Scheduler(config)
+
+        # Mock review workflow that doesn't launch (e.g., all reviews in progress)
+        mock_review_workflow = Mock()
+        mock_review_workflow.is_configured.return_value = True
+        mock_review_workflow.should_launch_reviews.return_value = Mock(
+            should_launch=False, skip_reason="Already reviewing"
+        )
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            review_workflow=mock_review_workflow,
+        )
+
+        snapshot = make_snapshot(
+            issues=[make_issue(1), make_issue(2)],
+            pending_reviews=[
+                PendingReview(issue_key=FakeIssueKey(name="10"), pr_number=100, pr_url="url", branch_name="branch"),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should NOT launch issues because pending_reviews is non-empty
+        issue_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == "issue"
+        ]
+        assert len(issue_actions) == 0
+
+    def test_issues_launched_when_no_pending_work(self):
+        """New issues are launched when no reviews, reworks, or triage are pending."""
+        config = make_config(max_concurrent_sessions=3)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            issues=[make_issue(1), make_issue(2)],
+            pending_reviews=[],
+            pending_reworks=[],
+            pending_triage=[],
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should launch issues since nothing else is pending
+        issue_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == "issue"
+        ]
+        assert len(issue_actions) == 2
+
+
+class TestEdgeCases:
+    """Tests for edge cases and unusual input combinations."""
+
+    def test_empty_snapshot_produces_empty_plan(self):
+        """A completely empty snapshot produces no actions."""
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            issues=[],
+            active_sessions=[],
+            pending_reviews=[],
+            pending_reworks=[],
+            pending_triage=[],
+            discovered_reviews=(),
+            discovered_reworks=(),
+            discovered_escalations=(),
+            discovered_failures=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        assert plan.action_count == 0
+        assert len(plan.skipped) == 0
+
+    def test_multiple_discovered_reviews_all_queued(self):
+        """Multiple discovered reviews all produce queue actions."""
+        from issue_orchestrator.domain.models import DiscoveredReview
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = [
+            DiscoveredReview(issue_number=1, pr_number=101, pr_url="url1", branch_name="branch1"),
+            DiscoveredReview(issue_number=2, pr_number=102, pr_url="url2", branch_name="branch2"),
+            DiscoveredReview(issue_number=3, pr_number=103, pr_url="url3", branch_name="branch3"),
+        ]
+
+        snapshot = make_snapshot(discovered_reviews=tuple(discovered))
+
+        plan = planner.plan(snapshot)
+
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
+        assert len(queue_actions) == 3
+
+        # Also produces AddLabel actions for pr-pending
+        label_actions = [
+            a for a in plan.actions
+            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"
+        ]
+        assert len(label_actions) == 3
+
+    def test_discovered_review_without_code_review_agent_only_adds_label(self):
+        """Discovered review without code_review_agent configured only adds pr-pending label."""
+        from issue_orchestrator.domain.models import DiscoveredReview
+
+        config = make_config(code_review_agent=None)  # No review agent
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredReview(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/test/repo/pull/100",
+            branch_name="feature/issue-42",
+        )
+
+        snapshot = make_snapshot(discovered_reviews=(discovered,))
+
+        plan = planner.plan(snapshot)
+
+        # Should have AddLabelAction for pr-pending but NO QueueReviewAction
+        label_actions = [
+            a for a in plan.actions
+            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"
+        ]
+        assert len(label_actions) == 1
+
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
+        assert len(queue_actions) == 0
+
+    def test_conflicting_signals_pending_review_and_discovered_same_pr(self):
+        """When a PR is both pending and discovered, don't re-queue."""
+        from issue_orchestrator.domain.models import DiscoveredReview
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Same PR in both discovered and pending
+        pr_number = 100
+        discovered = DiscoveredReview(
+            issue_number=42,
+            pr_number=pr_number,
+            pr_url="url",
+            branch_name="branch",
+        )
+        pending = PendingReview(
+            issue_key=FakeIssueKey(name="42"),
+            pr_number=pr_number,
+            pr_url="url",
+            branch_name="branch",
+        )
+
+        snapshot = make_snapshot(
+            discovered_reviews=(discovered,),
+            pending_reviews=[pending],
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should NOT re-queue since already pending
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
+        assert len(queue_actions) == 0
+
+    def test_issue_in_discovered_reviews_excluded_from_launch(self):
+        """Issues with discovered reviews are filtered out from new work launches.
+
+        The planner filters issues that appear in discovered_reviews or discovered_reworks
+        from being launched, even if they're in the available issues list.
+        """
+        from issue_orchestrator.domain.models import DiscoveredReview
+
+        config = make_config(code_review_agent="agent:reviewer", max_concurrent_sessions=5)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Issue 42 has a discovered review
+        discovered = DiscoveredReview(
+            issue_number=42,
+            pr_number=100,
+            pr_url="url",
+            branch_name="branch",
+        )
+
+        # Both issues in available list, but issue 42 has discovered review
+        snapshot = make_snapshot(
+            issues=[make_issue(42), make_issue(43)],
+            discovered_reviews=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Issue 42 should NOT be launched (has pending review in discovered_reviews)
+        # Issue 43 CAN be launched if no other pending work
+        # But wait - discovered_reviews produces QueueReviewAction, which means
+        # pending_reviews will have an item AFTER the action is applied.
+        # The exclusion happens via issues_with_pending_reviews check in _plan_issues
+
+        issue_launches = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == "issue"
+        ]
+
+        # Issue 42 is excluded (in discovered_reviews)
+        # Issue 43 could be launched, but check what numbers actually launched
+        launched_numbers = {a.number for a in issue_launches}
+        assert 42 not in launched_numbers, "Issue 42 should not be launched (has discovered review)"
+
+        # Issue 43 may or may not launch depending on whether pending_reviews
+        # blocks new issues - but the discovered_reviews ARE converted to
+        # pending_reviews indirectly via queue actions. The check is:
+        # has_pending_work looks at snapshot.pending_reviews (which is empty here),
+        # so issue 43 could still launch since the queue action hasn't been applied yet.
+        # The key invariant is: issue 42 must not be launched.
+
+    def test_multiple_escalations_all_produce_actions(self):
+        """Multiple discovered escalations all produce escalate actions."""
+        from issue_orchestrator.domain.models import DiscoveredEscalation
+
+        config = make_config(max_rework_cycles=2)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        escalations = [
+            DiscoveredEscalation(issue_number=1, pr_number=101, rework_cycle=3),
+            DiscoveredEscalation(issue_number=2, pr_number=102, rework_cycle=4),
+        ]
+
+        snapshot = make_snapshot(discovered_escalations=tuple(escalations))
+
+        plan = planner.plan(snapshot)
+
+        escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
+        assert len(escalate_actions) == 2
+        assert {a.issue_number for a in escalate_actions} == {1, 2}
+
+    def test_max_capacity_reached_mid_planning(self):
+        """Actions respect capacity even when multiple types compete."""
+        from tests.conftest import MockEventSink
+
+        config = make_config(
+            code_review_agent="agent:reviewer",
+            max_concurrent_sessions=2,
+        )
+        scheduler = Scheduler(config)
+
+        # Mock review workflow returning 3 reviews
+        mock_review_workflow = Mock()
+        mock_review_workflow.is_configured.return_value = True
+        reviews = [
+            PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=101, pr_url="u1", branch_name="b1"),
+            PendingReview(issue_key=FakeIssueKey(name="2"), pr_number=102, pr_url="u2", branch_name="b2"),
+            PendingReview(issue_key=FakeIssueKey(name="3"), pr_number=103, pr_url="u3", branch_name="b3"),
+        ]
+        mock_review_workflow.should_launch_reviews.return_value = Mock(
+            should_launch=True,
+            skip_reason=None,
+            reviews_to_launch=reviews,
+        )
+
+        # Mock rework workflow returning 2 reworks
+        mock_rework_workflow = Mock()
+        reworks = [
+            PendingRework(issue_key=FakeIssueKey(name="10"), agent_type="agent:dev", rework_cycle=1),
+            PendingRework(issue_key=FakeIssueKey(name="11"), agent_type="agent:dev", rework_cycle=1),
+        ]
+        mock_rework_workflow.should_launch_reworks.return_value = Mock(
+            should_launch=True,
+            skip_reason=None,
+            reworks_to_launch=reworks,
+        )
+        mock_rework_workflow.should_escalate.return_value = Mock(should_escalate=False)
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            review_workflow=mock_review_workflow,
+            rework_workflow=mock_rework_workflow,
+        )
+
+        snapshot = make_snapshot(
+            pending_reviews=reviews,
+            pending_reworks=reworks,
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should launch exactly 2 sessions (max capacity), all reviews (higher priority)
+        launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert len(launch_actions) == 2
+        assert all(a.session_type == "review" for a in launch_actions)
+
+
+class TestPlanQueueActionsOnlyPhase:
+    """Tests that queue actions (Phase 1) happen even at capacity.
+
+    The planner has two phases:
+    - Phase 1: Queue population (AddLabel, QueueReview, etc.) - always runs
+    - Phase 2: Session launches - only when capacity available
+    """
+
+    def test_queue_actions_produced_at_capacity(self):
+        """Queue actions are generated even when at max capacity."""
+        from issue_orchestrator.domain.models import DiscoveredReview
+
+        config = make_config(code_review_agent="agent:reviewer", max_concurrent_sessions=1)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Already at capacity
+        issue = make_issue(1)
+        active_session = make_session(issue)
+
+        # New review discovered
+        discovered = DiscoveredReview(
+            issue_number=42,
+            pr_number=100,
+            pr_url="url",
+            branch_name="branch",
+        )
+
+        snapshot = make_snapshot(
+            issues=[make_issue(2)],
+            active_sessions=[active_session],  # At capacity
+            discovered_reviews=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Queue actions should still be produced
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
+        assert len(queue_actions) == 1
+
+        label_actions = [
+            a for a in plan.actions
+            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"
+        ]
+        assert len(label_actions) == 1
+
+        # But no launch actions (at capacity)
+        launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert len(launch_actions) == 0
+
+    def test_escalation_actions_produced_at_capacity(self):
+        """Escalation actions are generated even when at max capacity."""
+        from issue_orchestrator.domain.models import DiscoveredEscalation
+
+        config = make_config(max_concurrent_sessions=1, max_rework_cycles=2)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Already at capacity
+        issue = make_issue(1)
+        active_session = make_session(issue)
+
+        escalation = DiscoveredEscalation(issue_number=42, pr_number=100, rework_cycle=3)
+
+        snapshot = make_snapshot(
+            active_sessions=[active_session],
+            discovered_escalations=(escalation,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Escalation action should still be produced
+        escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
+        assert len(escalate_actions) == 1
+
+    def test_triage_queue_actions_produced_at_capacity(self):
+        """Triage queue actions are generated even when at max capacity."""
+        from issue_orchestrator.domain.models import DiscoveredFailure
+
+        config = make_config(
+            max_concurrent_sessions=1,
+            triage_review_agent="agent:triage",
+            triage_review_on_failure=True,
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Already at capacity
+        issue = make_issue(1)
+        active_session = make_session(issue)
+
+        failure = DiscoveredFailure(
+            issue_number=42,
+            issue_title="Failed issue",
+            failure_reason="timed_out",
+        )
+
+        snapshot = make_snapshot(
+            active_sessions=[active_session],
+            discovered_failures=(failure,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Triage queue action should still be produced
+        triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
+        assert len(triage_actions) == 1
+
+    def test_cleanup_actions_produced_at_capacity(self):
+        """Cleanup actions are generated even when at max capacity."""
+        from issue_orchestrator.domain.models import CleanupFacts
+
+        config = make_config(max_concurrent_sessions=1)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Already at capacity
+        issue = make_issue(1)
+        active_session = make_session(issue)
+
+        cleanup_facts = CleanupFacts(
+            pending_cleanups=((42, 100, "session-42", "/tmp/worktree-42"),),
+            reviewed_pr_numbers=frozenset({100}),
+            close_tabs=True,
+            remove_worktrees=True,
+        )
+
+        snapshot = make_snapshot(
+            active_sessions=[active_session],
+            cleanup_facts=cleanup_facts,
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Cleanup action should still be produced
+        cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
+        assert len(cleanup_actions) == 1
+
+
+class TestReworkEscalationWithinReworkPlanning:
+    """Tests for escalation detection during rework planning phase."""
+
+    def test_rework_escalates_when_max_cycles_exceeded(self):
+        """Rework is escalated instead of launched when max cycles exceeded."""
+        from tests.conftest import MockEventSink
+        from issue_orchestrator.control.workflows import ReworkWorkflow
+
+        config = make_config(max_rework_cycles=2)
+        scheduler = Scheduler(config)
+
+        # Create real rework workflow with mock event sink
+        events = MockEventSink()
+        rework_workflow = ReworkWorkflow(config=config, events=events)
+
+        # Pending rework at cycle 3 (exceeds max of 2)
+        pending_rework = PendingRework(
+            issue_key=FakeIssueKey(name="42"),
+            agent_type="agent:developer",
+            rework_cycle=3,
+        )
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            rework_workflow=rework_workflow,
+        )
+
+        snapshot = make_snapshot(pending_reworks=[pending_rework])
+
+        plan = planner.plan(snapshot)
+
+        # Should escalate, not launch
+        escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
+        launch_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == "rework"
+        ]
+
+        assert len(escalate_actions) == 1
+        assert len(launch_actions) == 0
+        assert escalate_actions[0].issue_number == 42
+
+    def test_rework_launches_when_under_max_cycles(self):
+        """Rework is launched when under max cycles."""
+        from tests.conftest import MockEventSink
+        from issue_orchestrator.control.workflows import ReworkWorkflow
+
+        config = make_config(max_rework_cycles=3)
+        scheduler = Scheduler(config)
+
+        events = MockEventSink()
+        rework_workflow = ReworkWorkflow(config=config, events=events)
+
+        # Pending rework at cycle 2 (under max of 3)
+        pending_rework = PendingRework(
+            issue_key=FakeIssueKey(name="42"),
+            agent_type="agent:developer",
+            rework_cycle=2,
+        )
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            rework_workflow=rework_workflow,
+        )
+
+        snapshot = make_snapshot(pending_reworks=[pending_rework])
+
+        plan = planner.plan(snapshot)
+
+        # Should launch, not escalate
+        launch_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == "rework"
+        ]
+        escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
+
+        assert len(launch_actions) == 1
+        assert len(escalate_actions) == 0
+        assert launch_actions[0].number == 42
+
+
+class TestSnapshotFromState:
+    """Tests for OrchestratorSnapshot.from_state factory method."""
+
+    def test_snapshot_from_state_captures_all_fields(self):
+        """Snapshot correctly captures all state fields."""
+        from issue_orchestrator.domain.models import (
+            OrchestratorState,
+            DiscoveredReview,
+            DiscoveredRework,
+            DiscoveredEscalation,
+            DiscoveredFailure,
+            TriageFacts,
+            CleanupFacts,
+        )
+
+        state = OrchestratorState()
+        issue = make_issue(1)
+        session = make_session(issue)
+        state.active_sessions = [session]
+        state.paused = True
+        state.priority_queue = [1, 2, 3]
+        state.issues_started_count = 5
+
+        review = PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="b")
+        state.pending_reviews = [review]
+
+        rework = PendingRework(issue_key=FakeIssueKey(name="2"), agent_type="agent:dev", rework_cycle=1)
+        state.pending_reworks = [rework]
+
+        triage = PendingTriageReview(issue_number=3, title="Triage")
+        state.pending_triage_reviews = [triage]
+
+        discovered_review = DiscoveredReview(issue_number=10, pr_number=110, pr_url="url", branch_name="b")
+        discovered_rework = DiscoveredRework(issue_number=11, pr_number=111, branch_name="b", agent_type="a", rework_cycle=1)
+        discovered_escalation = DiscoveredEscalation(issue_number=12, pr_number=112, rework_cycle=5)
+        discovered_failure = DiscoveredFailure(issue_number=13, issue_title="F", failure_reason="failed")
+        triage_facts = TriageFacts(pr_count=2, threshold=3)
+        cleanup_facts = CleanupFacts(pending_cleanups=(), reviewed_pr_numbers=frozenset())
+
+        snapshot = OrchestratorSnapshot.from_state(
+            issues=[issue],
+            state=state,
+            max_issues_to_start=10,
+            discovered_reviews=[discovered_review],
+            discovered_reworks=[discovered_rework],
+            discovered_escalations=[discovered_escalation],
+            discovered_failures=[discovered_failure],
+            triage_facts=triage_facts,
+            cleanup_facts=cleanup_facts,
+        )
+
+        assert len(snapshot.issues) == 1
+        assert len(snapshot.active_sessions) == 1
+        assert snapshot.paused is True
+        assert snapshot.priority_queue == (1, 2, 3)
+        assert snapshot.issues_started_count == 5
+        assert snapshot.max_issues_to_start == 10
+        assert len(snapshot.pending_reviews) == 1
+        assert len(snapshot.pending_reworks) == 1
+        assert len(snapshot.pending_triage) == 1
+        assert len(snapshot.discovered_reviews) == 1
+        assert len(snapshot.discovered_reworks) == 1
+        assert len(snapshot.discovered_escalations) == 1
+        assert len(snapshot.discovered_failures) == 1
+        assert snapshot.triage_facts is not None
+        assert snapshot.cleanup_facts is not None
+
+
+class TestActionReasonMessages:
+    """Tests that action reason messages are informative."""
+
+    def test_queue_review_action_has_descriptive_reason(self):
+        """QueueReviewAction includes PR number in reason."""
+        from issue_orchestrator.domain.models import DiscoveredReview
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredReview(
+            issue_number=42,
+            pr_number=100,
+            pr_url="url",
+            branch_name="branch",
+        )
+
+        snapshot = make_snapshot(discovered_reviews=(discovered,))
+        plan = planner.plan(snapshot)
+
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
+        assert len(queue_actions) == 1
+        assert "#100" in queue_actions[0].reason
+
+    def test_escalation_action_has_descriptive_reason(self):
+        """EscalateToHumanAction includes cycle count in reason."""
+        from issue_orchestrator.domain.models import DiscoveredEscalation
+
+        config = make_config(max_rework_cycles=2)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        escalation = DiscoveredEscalation(issue_number=42, pr_number=100, rework_cycle=3)
+        snapshot = make_snapshot(discovered_escalations=(escalation,))
+        plan = planner.plan(snapshot)
+
+        escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
+        assert len(escalate_actions) == 1
+        # Reason should mention cycles
+        assert "2" in escalate_actions[0].reason  # rework_cycle - 1
+
+    def test_launch_session_action_has_priority_reason(self):
+        """LaunchSessionAction includes priority info in reason."""
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        issue = make_issue(42, title="[P1-001] High priority task", milestone="M1")
+        snapshot = make_snapshot(issues=[issue])
+        plan = planner.plan(snapshot)
+
+        launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert len(launch_actions) == 1
+        # Reason should include priority and milestone info
+        reason = launch_actions[0].reason
+        assert "milestone=M1" in reason or "P1" in reason
+
+
+class TestMultiplePendingTypesInteraction:
+    """Tests for interactions when multiple pending types exist simultaneously."""
+
+    def test_all_pending_types_block_new_issues(self):
+        """Any non-empty pending queue blocks new issue launches."""
+        config = make_config(max_concurrent_sessions=5)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Only triage pending (no reviews or reworks)
+        pending_triage = PendingTriageReview(issue_number=100, title="Investigate")
+
+        snapshot = make_snapshot(
+            issues=[make_issue(1), make_issue(2)],
+            pending_triage=[pending_triage],
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Issues should NOT be launched because pending_triage is non-empty
+        issue_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == "issue"
+        ]
+        assert len(issue_actions) == 0
+
+    def test_capacity_shared_across_all_types(self):
+        """Capacity is correctly shared when multiple types launch."""
+        from tests.conftest import MockEventSink
+        from issue_orchestrator.control.workflows import (
+            ReviewWorkflow,
+            ReworkWorkflow,
+            TriageWorkflow,
+        )
+
+        config = make_config(
+            code_review_agent="agent:reviewer",
+            triage_review_agent="agent:triage",
+            max_concurrent_sessions=3,
+        )
+        scheduler = Scheduler(config)
+        events = MockEventSink()
+
+        review_workflow = ReviewWorkflow(config=config, events=events)
+        rework_workflow = ReworkWorkflow(config=config, events=events)
+        triage_workflow = TriageWorkflow(config=config, events=events)
+
+        # 1 review, 1 rework, 1 triage, 3 issues - only 3 capacity
+        pending_review = PendingReview(
+            issue_key=FakeIssueKey(name="1"),
+            pr_number=101,
+            pr_url="url",
+            branch_name="b",
+        )
+        pending_rework = PendingRework(
+            issue_key=FakeIssueKey(name="2"),
+            agent_type="agent:dev",
+            rework_cycle=1,
+        )
+        pending_triage = PendingTriageReview(issue_number=3, title="Investigate")
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            review_workflow=review_workflow,
+            rework_workflow=rework_workflow,
+            triage_workflow=triage_workflow,
+        )
+
+        snapshot = make_snapshot(
+            issues=[make_issue(4), make_issue(5), make_issue(6)],
+            pending_reviews=[pending_review],
+            pending_reworks=[pending_rework],
+            pending_triage=[pending_triage],
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should have exactly 3 launch actions total
+        launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert len(launch_actions) == 3
+
+        # Priority order: review first, then rework, then triage
+        types = [a.session_type for a in launch_actions]
+        assert types[0] == "review"
+        assert types[1] == "rework"
+        assert types[2] == "triage"
+
+        # No issue launches (pending work exists)
+        issue_launches = [a for a in launch_actions if a.session_type == "issue"]
+        assert len(issue_launches) == 0

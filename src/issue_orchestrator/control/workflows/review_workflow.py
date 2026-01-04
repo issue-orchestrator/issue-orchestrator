@@ -18,9 +18,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
-from ...config import Config
+from ...infra.config import Config
 from ...events import EventName
-from ...models import PendingReview
+from ...domain.models import PendingReview
 from ...ports import EventSink, TraceEvent
 
 logger = logging.getLogger(__name__)

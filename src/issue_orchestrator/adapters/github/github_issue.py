@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from ...domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
-from ... import labels as label_module
+from ...infra import labels as label_module
 
 
 @dataclass(frozen=True, eq=False)

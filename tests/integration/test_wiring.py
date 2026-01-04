@@ -15,8 +15,8 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 from tempfile import TemporaryDirectory
 
-from issue_orchestrator.config import Config, DangerousConfig
-from issue_orchestrator.models import (
+from issue_orchestrator.infra.config import Config, DangerousConfig
+from issue_orchestrator.domain.models import (
     Issue, AgentConfig, Session, OrchestratorState, SessionStatus,
     CommentHeadings
 )
@@ -58,7 +58,7 @@ class TestOrchestratorWiring:
     @pytest.mark.asyncio
     async def test_startup_queries_in_progress_issues(self, config, mock_repository_host):
         """Verify startup() queries for in-progress issues."""
-        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.infra.orchestrator import Orchestrator
         from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
         from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
 
@@ -82,7 +82,7 @@ class TestOrchestratorWiring:
 
     def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager, mock_repository_host):
         """Verify launch_session actually creates worktree and tmux window."""
-        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.infra.orchestrator import Orchestrator
         from issue_orchestrator.ports.worktree_manager import WorktreeInfo
         from tests.conftest import build_test_orchestrator_deps, MockEventSink
         # Configure mock plugin to allow session creation
@@ -134,10 +134,10 @@ class TestCLIWiring:
         Note: cmd_start has lazy imports and uses asyncio.run(),
         so we test at a simpler level.
         """
-        from issue_orchestrator.cli import cmd_start
+        from issue_orchestrator.entrypoints.cli import cmd_start
 
         # Patch at config module level since it's imported inside cmd_start
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_config:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_config:
             mock_cfg = MagicMock()
             mock_cfg.agents = {"agent:test": MagicMock()}
             mock_cfg.max_concurrent_sessions = 2
@@ -145,7 +145,7 @@ class TestCLIWiring:
             mock_config.return_value = mock_cfg
 
             # Patch orchestrator module since it's imported inside cmd_start
-            with patch('issue_orchestrator.orchestrator.Orchestrator') as mock_orch_class:
+            with patch('issue_orchestrator.infra.orchestrator.Orchestrator') as mock_orch_class:
                 mock_orch = MagicMock()
                 mock_orch.startup = AsyncMock()
                 mock_orch.run_loop = AsyncMock()
@@ -153,7 +153,7 @@ class TestCLIWiring:
                 mock_orch_class.return_value = mock_orch
 
                 # Patch dashboard module
-                with patch('issue_orchestrator.dashboard.run_with_dashboard', new_callable=AsyncMock):
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard', new_callable=AsyncMock):
                     with patch('asyncio.run') as mock_asyncio_run:
                         mock_asyncio_run.return_value = None
 
@@ -170,9 +170,9 @@ class TestCLIWiring:
 
     def test_cmd_status_returns_without_error(self):
         """Verify cmd_status can execute without error."""
-        from issue_orchestrator.cli import cmd_status
+        from issue_orchestrator.entrypoints.cli import cmd_status
 
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_config:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_config:
             mock_cfg = MagicMock()
             mock_cfg.agents = {"agent:test": MagicMock()}
             mock_cfg.repo_root = Path("/fake")
@@ -180,7 +180,7 @@ class TestCLIWiring:
             mock_config.return_value = mock_cfg
 
             # Patch tmux at the module level
-            with patch('issue_orchestrator._tmux_impl.get_manager') as mock_tmux:
+            with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_tmux:
                 mock_mgr = MagicMock()
                 mock_mgr.list_windows.return_value = []
                 mock_tmux.return_value = mock_mgr
@@ -249,7 +249,7 @@ class TestDashboardWiring:
     @pytest.mark.asyncio
     async def test_dashboard_pause_updates_orchestrator_state(self):
         """Verify pressing pause in dashboard actually updates orchestrator state."""
-        from issue_orchestrator.dashboard import Dashboard
+        from issue_orchestrator.entrypoints.dashboard import Dashboard
 
         # Create a mock orchestrator
         mock_orch = MagicMock()
@@ -270,7 +270,7 @@ class TestDashboardWiring:
     @pytest.mark.asyncio
     async def test_dashboard_resume_updates_orchestrator_state(self):
         """Verify pressing resume in dashboard actually updates orchestrator state."""
-        from issue_orchestrator.dashboard import Dashboard
+        from issue_orchestrator.entrypoints.dashboard import Dashboard
 
         mock_orch = MagicMock()
         mock_orch.state = OrchestratorState()
@@ -292,7 +292,7 @@ class TestObserverWiring:
     def test_observer_detects_completed_session(self):
         """Verify observer detects when a session has completed."""
         from issue_orchestrator.observation import SessionObserver
-        from issue_orchestrator.models import Session, Issue, AgentConfig, SessionStatus
+        from issue_orchestrator.domain.models import Session, Issue, AgentConfig, SessionStatus
         from datetime import datetime
 
         config = MagicMock()
@@ -340,7 +340,7 @@ class TestObserverWiring:
     def test_observer_detects_running_session(self):
         """Verify observer detects when a session is still running."""
         from issue_orchestrator.observation import SessionObserver
-        from issue_orchestrator.models import Session, Issue, AgentConfig, SessionStatus
+        from issue_orchestrator.domain.models import Session, Issue, AgentConfig, SessionStatus
         from datetime import datetime
 
         config = MagicMock()
@@ -377,15 +377,15 @@ class TestSmoke:
 
     def test_can_import_all_modules(self):
         """Verify all modules can be imported without errors."""
-        from issue_orchestrator import cli
-        from issue_orchestrator import config
-        from issue_orchestrator import dashboard
-        from issue_orchestrator import models
+        from issue_orchestrator.entrypoints import cli
+        from issue_orchestrator.infra import config
+        from issue_orchestrator.entrypoints import dashboard
+        from issue_orchestrator.domain import models
         from issue_orchestrator.observation import observer
-        from issue_orchestrator import orchestrator
+        from issue_orchestrator.infra import orchestrator
         from issue_orchestrator.control import scheduler
-        from issue_orchestrator import _tmux_impl as tmux
-        from issue_orchestrator import _worktree_impl as worktree
+        from issue_orchestrator.adapters.terminal import _tmux as tmux
+        from issue_orchestrator.adapters.worktree import _worktree as worktree
         from issue_orchestrator import execution
 
         # If we get here, all imports succeeded

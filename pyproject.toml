@@ -47,10 +47,10 @@ dev = [
 ]
 
 [project.scripts]
-issue-orchestrator = "issue_orchestrator.cli:main"
-agent-done = "issue_orchestrator.agent_done:main"
+issue-orchestrator = "issue_orchestrator.entrypoints.cli:main"
+agent-done = "issue_orchestrator.entrypoints.cli_tools.agent_done:main"
 verify-agent-sandbox = "issue_orchestrator.control.sandbox_verify:main"
-prepush-check = "issue_orchestrator.prepush_check:main"
+prepush-check = "issue_orchestrator.entrypoints.cli_tools.prepush_check:main"
 
 # Plugin entry points - third-party packages can add their own
 [project.entry-points."issue_orchestrator.plugins"]
@@ -80,7 +80,7 @@ markers = [
 
 [tool.pyright]
 include = ["src"]
-pythonVersion = "3.11"
+pythonVersion = "3.14"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "standard"
@@ -103,7 +103,7 @@ forbidden_modules = [
   "pluggy",
   "issue_orchestrator.execution",
   "issue_orchestrator.observation",
-  "issue_orchestrator.hooks",
+  "issue_orchestrator.infra.hooks",
   "issue_orchestrator.ipc",
   "issue_orchestrator.scripts",
   "issue_orchestrator.templates",
@@ -122,7 +122,7 @@ source_modules = ["issue_orchestrator.ports"]
 forbidden_modules = [
   "issue_orchestrator.execution",
   "issue_orchestrator.observation",
-  "issue_orchestrator.hooks",
+  "issue_orchestrator.infra.hooks",
   "issue_orchestrator.ipc",
 ]
 
@@ -133,24 +133,24 @@ source_modules = ["issue_orchestrator.control"]
 forbidden_modules = ["issue_orchestrator.execution"]
 # Allow TYPE_CHECKING import of Orchestrator for type hints
 ignore_imports = [
-  "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.orchestrator",
+  "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.infra.orchestrator",
 ]
 
 [[tool.importlinter.contracts]]
 name = "Orchestrator must not import execution directly"
 type = "forbidden"
-source_modules = ["issue_orchestrator.orchestrator"]
+source_modules = ["issue_orchestrator.infra.orchestrator"]
 forbidden_modules = [
   "issue_orchestrator.execution",
-  "issue_orchestrator._worktree_impl",
+  "issue_orchestrator.adapters.worktree._worktree",
   "issue_orchestrator._github_impl",
-  "issue_orchestrator._tmux_impl",
-  "issue_orchestrator._iterm2_impl",
+  "issue_orchestrator.adapters.terminal._tmux",
+  "issue_orchestrator.adapters.terminal._iterm2",
 ]
 # Allow orchestrator to import bootstrap for run_orchestrator() entry point
 # This is the only allowed path to execution - via the composition root
 ignore_imports = [
-  "issue_orchestrator.orchestrator -> issue_orchestrator.bootstrap",
+  "issue_orchestrator.infra.orchestrator -> issue_orchestrator.entrypoints.bootstrap",
 ]
 
 [[tool.importlinter.contracts]]
@@ -170,7 +170,7 @@ source_modules = [
 forbidden_modules = ["subprocess"]
 # Allow TYPE_CHECKING import of Orchestrator for type hints
 ignore_imports = [
-  "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.orchestrator",
+  "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.infra.orchestrator",
 ]
 
 [[tool.importlinter.contracts]]
@@ -182,5 +182,5 @@ source_modules = [
 forbidden_modules = ["httpx"]
 ignore_imports = [
   "issue_orchestrator.adapters.github.http_client -> httpx",
-  "issue_orchestrator.cli -> httpx",
+  "issue_orchestrator.entrypoints.cli -> httpx",
 ]

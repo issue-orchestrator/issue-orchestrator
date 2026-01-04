@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from .completion_processor import CompletionProcessor, ProcessingResult
 
 from ..events import EventName
-from ..models import SessionStatus
+from ..domain.models import SessionStatus
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
 
@@ -239,7 +239,7 @@ class SessionController:
         })
 
         # Map completion outcome to session status
-        from ..models import CompletionOutcome
+        from ..domain.models import CompletionOutcome
         outcome_to_status = {
             CompletionOutcome.COMPLETED: SessionStatus.COMPLETED,
             CompletionOutcome.BLOCKED: SessionStatus.BLOCKED,

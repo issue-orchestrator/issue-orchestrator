@@ -8,7 +8,7 @@ database, Redis, etc.) while maintaining the same interface.
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from issue_orchestrator.models import Session
+    from issue_orchestrator.domain.models import Session
 
 
 class SessionStore(Protocol):

@@ -21,10 +21,10 @@ from typing import TYPE_CHECKING
 from ..domain.issue_key import IssueKey, IssueHandle, GitHubIssueKey, parse_external_id
 from ..events import EventName
 from ..ports import IssueTracker, EventSink, TraceEvent
-from .. import gh_audit
+from ..infra import gh_audit
 
 if TYPE_CHECKING:
-    from ..models import Issue
+    from ..domain.models import Issue
 
 logger = logging.getLogger(__name__)
 

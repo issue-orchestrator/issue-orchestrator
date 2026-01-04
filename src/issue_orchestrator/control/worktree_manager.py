@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..ports.working_copy import WorkingCopy
 
-from ..config import Config
-from ..models import AgentConfig
+from ..infra.config import Config
+from ..domain.models import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,6 @@ def extract_issue_branches(
     Returns a mapping of issue number to branch name for all
     branches that match the issue branch pattern.
     """
-    from ..analysis import extract_issue_branches
+    from ..infra.analysis import extract_issue_branches
     branches = working_copy.list_remote_branches(repo_root)
     return extract_issue_branches(branches)

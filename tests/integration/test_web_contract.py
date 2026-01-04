@@ -1,0 +1,53 @@
+"""Contract tests ensuring orchestrator and web layer stay in sync.
+
+These tests verify that both the real Orchestrator and MockOrchestratorForWeb
+satisfy the OrchestratorForWeb protocol, catching drift between them.
+"""
+
+import pytest
+
+from issue_orchestrator.ports.web_contract import OrchestratorForWeb
+
+
+class TestOrchestratorWebContract:
+    """Verify orchestrator implementations satisfy the web contract."""
+
+    def test_real_orchestrator_satisfies_protocol(self, sample_orchestrator):
+        """Real Orchestrator must satisfy OrchestratorForWeb protocol."""
+        assert isinstance(sample_orchestrator, OrchestratorForWeb), (
+            "Orchestrator no longer satisfies OrchestratorForWeb protocol. "
+            "Update the protocol or fix the Orchestrator."
+        )
+
+    def test_mock_orchestrator_satisfies_protocol(self):
+        """MockOrchestratorForWeb must satisfy OrchestratorForWeb protocol."""
+        from tests.e2e_web.conftest import MockOrchestratorForWeb
+
+        mock = MockOrchestratorForWeb()
+        assert isinstance(mock, OrchestratorForWeb), (
+            "MockOrchestratorForWeb no longer satisfies OrchestratorForWeb protocol. "
+            "Update the mock to match the real Orchestrator."
+        )
+
+    def test_protocol_attributes_exist_on_real(self, sample_orchestrator):
+        """Verify required attributes exist on real orchestrator."""
+        assert hasattr(sample_orchestrator, "state")
+        assert hasattr(sample_orchestrator, "config")
+        assert hasattr(sample_orchestrator, "_shutdown_requested")
+        assert callable(getattr(sample_orchestrator, "pause", None))
+        assert callable(getattr(sample_orchestrator, "resume", None))
+        assert callable(getattr(sample_orchestrator, "request_shutdown", None))
+        assert callable(getattr(sample_orchestrator, "request_refresh", None))
+
+    def test_protocol_attributes_exist_on_mock(self):
+        """Verify required attributes exist on mock orchestrator."""
+        from tests.e2e_web.conftest import MockOrchestratorForWeb
+
+        mock = MockOrchestratorForWeb()
+        assert hasattr(mock, "state")
+        assert hasattr(mock, "config")
+        assert hasattr(mock, "_shutdown_requested")
+        assert callable(getattr(mock, "pause", None))
+        assert callable(getattr(mock, "resume", None))
+        assert callable(getattr(mock, "request_shutdown", None))
+        assert callable(getattr(mock, "request_refresh", None))

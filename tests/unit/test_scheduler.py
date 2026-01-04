@@ -4,12 +4,12 @@ from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
 from issue_orchestrator.control.scheduler import (
-    Scheduler, SchedulerResult, DueDateStrategy, NumberStrategy,
+    Scheduler, SchedulerResult, DueDateStrategy, MilestoneNumberStrategy,
     PatternStrategy, NameStrategy, get_milestone_strategy, load_strategy_class,
     BUILTIN_STRATEGIES
 )
-from issue_orchestrator.models import Issue, AgentConfig
-from issue_orchestrator.config import Config
+from issue_orchestrator.domain.models import Issue, AgentConfig
+from issue_orchestrator.infra.config import Config
 
 
 def create_mock_issue(number, priority=None, milestone=None, state="open", milestone_number=None, milestone_due_on=None, title=None):
@@ -502,51 +502,39 @@ class TestMilestoneSortStrategies:
         key = strategy.get_sort_key(issue)
         assert key == (float("inf"),)
 
-    def test_number_strategy_with_numbers(self):
-        """Test NumberStrategy sorts by milestone number."""
-        strategy = NumberStrategy()
+    def test_milestone_number_strategy_extracts_numbers(self):
+        """Test MilestoneNumberStrategy extracts first number from name."""
+        strategy = MilestoneNumberStrategy()
 
-        issue1 = Issue(
-            number=1, title="First", labels=[],
-            milestone="M6", milestone_number=6
-        )
-        issue2 = Issue(
-            number=2, title="Second", labels=[],
-            milestone="M7", milestone_number=7
-        )
-        issue3 = Issue(
-            number=3, title="Third", labels=[],
-            milestone="M5", milestone_number=5
-        )
+        issue1 = Issue(number=1, title="First", labels=[], milestone="M1")
+        issue2 = Issue(number=2, title="Second", labels=[], milestone="M10")
+        issue3 = Issue(number=3, title="Third", labels=[], milestone="M2")
 
         key1 = strategy.get_sort_key(issue1)
         key2 = strategy.get_sort_key(issue2)
         key3 = strategy.get_sort_key(issue3)
 
-        # Lower numbers sort first
-        assert key3 < key1 < key2
-        assert key3 == (5,)
-        assert key1 == (6,)
-        assert key2 == (7,)
+        # Numeric sort: M1 < M2 < M10
+        assert key1 == (1,)
+        assert key2 == (10,)
+        assert key3 == (2,)
+        assert key1 < key3 < key2
 
-    def test_number_strategy_nulls_last(self):
-        """Test NumberStrategy places nulls at the end."""
-        strategy = NumberStrategy()
+    def test_milestone_number_strategy_various_formats(self):
+        """Test MilestoneNumberStrategy handles various milestone formats."""
+        strategy = MilestoneNumberStrategy()
 
-        issue_with_num = Issue(
-            number=1, title="Has number", labels=[],
-            milestone="M6", milestone_number=6
-        )
-        issue_no_num = Issue(
-            number=2, title="No number", labels=[],
-            milestone="Some Milestone", milestone_number=None
-        )
+        issue_m = Issue(number=1, title="", labels=[], milestone="M5")
+        issue_sprint = Issue(number=2, title="", labels=[], milestone="Sprint 3")
+        issue_v = Issue(number=3, title="", labels=[], milestone="v2.0")
+        issue_no_num = Issue(number=4, title="", labels=[], milestone="Alpha")
+        issue_none = Issue(number=5, title="", labels=[], milestone=None)
 
-        key_with_num = strategy.get_sort_key(issue_with_num)
-        key_no_num = strategy.get_sort_key(issue_no_num)
-
-        assert key_with_num < key_no_num
-        assert key_no_num == (float("inf"),)
+        assert strategy.get_sort_key(issue_m) == (5,)
+        assert strategy.get_sort_key(issue_sprint) == (3,)
+        assert strategy.get_sort_key(issue_v) == (2,)
+        assert strategy.get_sort_key(issue_no_num) == (float("inf"),)
+        assert strategy.get_sort_key(issue_none) == (float("inf"),)
 
     def test_pattern_strategy_default_pattern(self):
         """Test PatternStrategy with default M(\\d+) pattern."""
@@ -647,13 +635,13 @@ class TestMilestoneSortStrategies:
         strategy = get_milestone_strategy(config)
         assert isinstance(strategy, DueDateStrategy)
 
-    def test_get_milestone_strategy_number(self):
-        """Test factory creates NumberStrategy."""
+    def test_get_milestone_strategy_milestone_number(self):
+        """Test factory creates MilestoneNumberStrategy."""
         config = Config()
-        config.milestone_sort = "number"
+        config.milestone_sort = "milestone_number"
 
         strategy = get_milestone_strategy(config)
-        assert isinstance(strategy, NumberStrategy)
+        assert isinstance(strategy, MilestoneNumberStrategy)
 
     def test_get_milestone_strategy_pattern(self):
         """Test factory creates PatternStrategy."""
@@ -708,10 +696,10 @@ class TestMilestoneSortStrategies:
         """Test factory accepts full module path (same mechanism as user plugins)."""
         config = Config()
         # Use full module path instead of alias - proves dynamic import works
-        config.milestone_sort = "issue_orchestrator.control.scheduler.NumberStrategy"
+        config.milestone_sort = "issue_orchestrator.control.scheduler.MilestoneNumberStrategy"
 
         strategy = get_milestone_strategy(config)
-        assert isinstance(strategy, NumberStrategy)
+        assert isinstance(strategy, MilestoneNumberStrategy)
 
     def test_builtin_strategies_registry(self):
         """Test all builtin aliases map to valid module paths."""
@@ -756,7 +744,7 @@ class TestSchedulerWithStrategies:
 
     def test_scheduler_with_custom_strategy(self, sample_config):
         """Test Scheduler can accept custom strategy."""
-        custom_strategy = NumberStrategy()
+        custom_strategy = MilestoneNumberStrategy()
         scheduler = Scheduler(config=sample_config, milestone_strategy=custom_strategy)
 
         assert scheduler.milestone_strategy is custom_strategy
@@ -788,29 +776,29 @@ class TestSchedulerWithStrategies:
         assert sorted_issues[1].number == 1
         assert sorted_issues[2].number == 3
 
-    def test_sort_by_priority_with_number_strategy(self, sample_config):
-        """Test sorting with NumberStrategy."""
-        sample_config.milestone_sort = "number"
+    def test_sort_by_priority_with_milestone_number_strategy(self, sample_config):
+        """Test sorting with MilestoneNumberStrategy."""
+        sample_config.milestone_sort = "milestone_number"
         scheduler = Scheduler(config=sample_config)
 
         issues = [
             Issue(
                 number=1, title="M7", labels=["priority:high"],
-                milestone="M7", milestone_number=7
+                milestone="M7"
             ),
             Issue(
                 number=2, title="M5", labels=["priority:high"],
-                milestone="M5", milestone_number=5
+                milestone="M5"
             ),
             Issue(
                 number=3, title="M10", labels=["priority:high"],
-                milestone="M10", milestone_number=10
+                milestone="M10"
             ),
         ]
 
         sorted_issues = scheduler.sort_by_priority(issues)
 
-        # Should sort by milestone number
+        # Should sort by extracted milestone number: M5 < M7 < M10
         assert sorted_issues[0].number == 2  # M5
         assert sorted_issues[1].number == 1  # M7
         assert sorted_issues[2].number == 3  # M10
@@ -836,21 +824,21 @@ class TestSchedulerWithStrategies:
 
     def test_sort_by_priority_milestone_then_priority(self, sample_config):
         """Test sorting respects milestone first, then priority."""
-        sample_config.milestone_sort = "number"
+        sample_config.milestone_sort = "milestone_number"
         scheduler = Scheduler(config=sample_config)
 
         issues = [
             Issue(
                 number=1, title="M7 low", labels=["priority:low"],
-                milestone="M7", milestone_number=7
+                milestone="M7"
             ),
             Issue(
                 number=2, title="M5 high", labels=["priority:high"],
-                milestone="M5", milestone_number=5
+                milestone="M5"
             ),
             Issue(
                 number=3, title="M5 low", labels=["priority:low"],
-                milestone="M5", milestone_number=5
+                milestone="M5"
             ),
         ]
 
@@ -865,11 +853,15 @@ class TestSchedulerWithStrategies:
 class MockIssueChecker:
     """Mock issue checker for testing dependency gating."""
 
-    def __init__(self):
+    def __init__(self, default_milestone: str | None = "M1"):
         self.issues: dict[int, str] = {}  # issue_number -> state
+        self._default_milestone = default_milestone
 
     def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
         return self.issues.get(issue_number)
+
+    def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+        return self._default_milestone
 
 
 class CollectingEventSink:
@@ -927,12 +919,14 @@ class TestSchedulerDependencyGating:
                 title="Independent issue",
                 labels=[],
                 body="No dependencies",
+                milestone="M1",
             ),
             Issue(
                 number=2,
                 title="Blocked issue",
                 labels=[],
                 body="Depends-on: #100",  # Depends on open issue
+                milestone="M1",
             ),
         ]
 
@@ -965,6 +959,7 @@ class TestSchedulerDependencyGating:
                 title="Issue with satisfied dep",
                 labels=[],
                 body="Depends-on: #100",
+                milestone="M1",
             ),
         ]
 
@@ -992,6 +987,7 @@ class TestSchedulerDependencyGating:
                 title="Would be blocked",
                 labels=[],
                 body="Depends-on: #100",
+                milestone="M1",
             ),
         ]
 
@@ -1013,6 +1009,7 @@ class TestSchedulerDependencyGating:
                 title="Has dependency but no evaluator",
                 labels=[],
                 body="Depends-on: #100",
+                milestone="M1",
             ),
         ]
 
@@ -1037,6 +1034,7 @@ class TestSchedulerDependencyGating:
                 title="Blocked",
                 labels=[],
                 body="Depends-on: #100",
+                milestone="M1",
             ),
         ]
 
@@ -1068,6 +1066,7 @@ class TestSchedulerDependencyGating:
                 title="Multi-dep issue",
                 labels=[],
                 body="Depends-on: #100\nDepends-on: #200",
+                milestone="M1",
             ),
         ]
 
@@ -1112,6 +1111,7 @@ class TestSchedulerDependencyGating:
                 title="Waiting on #100",
                 labels=[],
                 body="Depends-on: #100",
+                milestone="M1",
             ),
         ]
 
@@ -1149,6 +1149,7 @@ class TestSchedulerDependencyGating:
                 title="Complex deps",
                 labels=[],
                 body="Depends-on: #100\nDepends-on: #200\nDepends-on: #300",
+                milestone="M1",
             ),
         ]
 
@@ -1179,9 +1180,9 @@ class TestLaunchSessionDependencyCAS:
 
     def test_launch_skips_if_dependencies_added(self, checker, events):
         """launch_session skips if issue gained new unsatisfied dependencies."""
-        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.infra.orchestrator import Orchestrator
         from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.config import Config
         from unittest.mock import patch, MagicMock
 
         # Dependency is open
@@ -1243,9 +1244,9 @@ class TestLaunchSessionDependencyCAS:
 
     def test_launch_does_not_block_if_dependencies_satisfied(self, checker, events):
         """launch_session does not emit block event if dependencies are satisfied."""
-        from issue_orchestrator.orchestrator import Orchestrator
+        from issue_orchestrator.infra.orchestrator import Orchestrator
         from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
-        from issue_orchestrator.config import Config
+        from issue_orchestrator.infra.config import Config
         from unittest.mock import patch, MagicMock
 
         # Dependency is closed (satisfied)

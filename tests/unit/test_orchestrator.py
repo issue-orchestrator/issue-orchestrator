@@ -6,8 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
 from tests.conftest import MockSessionRunner
-from issue_orchestrator.orchestrator import Orchestrator, run_orchestrator
-from issue_orchestrator.models import (
+from issue_orchestrator.infra.orchestrator import Orchestrator, run_orchestrator
+from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionStatus,
@@ -16,7 +16,7 @@ from issue_orchestrator.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
@@ -98,9 +98,9 @@ def create_test_orchestrator(
         label_sync: Optional LabelSync override for testing
 
     Access mocks via:
-        - orchestrator.events (MockEventSink)
-        - orchestrator.runner (MockSessionRunner)
-        - orchestrator.runner.plugin (MockTerminalPlugin for session call assertions)
+        - orchestrator.deps.events (MockEventSink)
+        - orchestrator.deps.runner (MockSessionRunner)
+        - orchestrator.deps.runner.plugin (MockTerminalPlugin for session call assertions)
     """
     from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
 
@@ -468,8 +468,8 @@ class TestLaunchSession:
         session = orchestrator.launch_session(issue)
 
         # Verify session was created via plugin
-        assert len(orchestrator.runner.plugin.create_session_calls) == 1
-        call = orchestrator.runner.plugin.create_session_calls[0]
+        assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1
+        call = orchestrator.deps.runner.plugin.create_session_calls[0]
         assert call["session_id"] == 1  # issue number
         assert isinstance(call["command"], str)
         assert call["working_dir"] == "/tmp/worktree"
@@ -795,7 +795,7 @@ class TestRunLoop:
         async def instant_yield(*args):
             await original_sleep(0)  # Use real sleep to yield
 
-        with patch("issue_orchestrator.orchestrator.asyncio.sleep", side_effect=instant_yield):
+        with patch("issue_orchestrator.infra.orchestrator.asyncio.sleep", side_effect=instant_yield):
             yield
 
     @pytest.mark.asyncio
@@ -1102,7 +1102,7 @@ class TestMaxIssuesToStart:
         async def instant_yield(*args):
             await original_sleep(0)  # Use real sleep to yield
 
-        with patch("issue_orchestrator.orchestrator.asyncio.sleep", side_effect=instant_yield):
+        with patch("issue_orchestrator.infra.orchestrator.asyncio.sleep", side_effect=instant_yield):
             yield
 
     @pytest.mark.asyncio
@@ -1355,7 +1355,7 @@ class TestControlMethods:
 
         orchestrator.request_shutdown()
 
-        events = [e for e in orchestrator.events.events if e.name == "orchestrator.shutdown_requested"]
+        events = [e for e in orchestrator.deps.events.events if e.name == "orchestrator.shutdown_requested"]
         assert len(events) == 1
         assert events[0].data["force"] is False
         assert events[0].data["active_session_count"] == 0
@@ -1371,7 +1371,7 @@ class TestControlMethods:
 
         orchestrator.request_shutdown(force=True)
 
-        events = [e for e in orchestrator.events.events if e.name == "orchestrator.shutdown_requested"]
+        events = [e for e in orchestrator.deps.events.events if e.name == "orchestrator.shutdown_requested"]
         assert len(events) == 1
         assert events[0].data["force"] is True
         assert events[0].data["active_session_count"] == 1
@@ -1385,7 +1385,7 @@ class TestControlMethods:
 
         await orchestrator.run_loop()
 
-        event_names = [e.name for e in orchestrator.events.events]
+        event_names = [e.name for e in orchestrator.deps.events.events]
         assert "orchestrator.shutdown_started" in event_names
         assert "orchestrator.shutdown_completed" in event_names
 
@@ -1394,9 +1394,9 @@ class TestRunOrchestrator:
     """Test the run_orchestrator entry point."""
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.infra.orchestrator.Config.load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_loads_config_from_path(
         self,
         mock_signal,
@@ -1420,9 +1420,9 @@ class TestRunOrchestrator:
         mock_config_load.assert_called_once_with(config_path)
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_finds_config_when_no_path(
         self,
         mock_signal,
@@ -1443,9 +1443,9 @@ class TestRunOrchestrator:
         mock_config_find.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_calls_startup(
         self,
         mock_signal,
@@ -1466,9 +1466,9 @@ class TestRunOrchestrator:
         mock_orch.startup.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_calls_run_loop(
         self,
         mock_signal,
@@ -1489,9 +1489,9 @@ class TestRunOrchestrator:
         mock_orch.run_loop.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("issue_orchestrator.bootstrap.build_orchestrator")
-    @patch("issue_orchestrator.orchestrator.Config.find_and_load")
-    @patch("issue_orchestrator.orchestrator.signal.signal")
+    @patch("issue_orchestrator.entrypoints.bootstrap.build_orchestrator")
+    @patch("issue_orchestrator.infra.orchestrator.Config.find_and_load")
+    @patch("issue_orchestrator.infra.orchestrator.signal.signal")
     async def test_run_orchestrator_sets_up_signal_handlers(
         self,
         mock_signal,
@@ -1533,7 +1533,7 @@ class TestGatherTriageFacts:
         sample_config.triage_review_threshold = 5
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
         assert facts is None
 
     def test_gather_triage_facts_returns_none_with_zero_threshold(self, sample_config, mock_repository_host):
@@ -1543,7 +1543,7 @@ class TestGatherTriageFacts:
         sample_config.triage_review_threshold = 0
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
         assert facts is None
 
     def test_gather_triage_facts_returns_facts_below_threshold(self, sample_config, mock_repository_host):
@@ -1559,7 +1559,7 @@ class TestGatherTriageFacts:
         ]
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         # Facts should be returned (Planner decides whether to act)
         assert facts is not None
@@ -1582,7 +1582,7 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         assert facts is not None
         assert facts.pr_count == 3
@@ -1608,7 +1608,7 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = [existing_issue]
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         assert facts is not None
         assert facts.existing_triage_issue == 100
@@ -1628,7 +1628,7 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         assert facts is not None
         assert len(facts.prs) == 2
@@ -1651,7 +1651,7 @@ class TestLaunchReviewSession:
         sample_config,
     ):
         """Test that launch_review_session creates a worktree."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
@@ -1682,7 +1682,7 @@ class TestLaunchReviewSession:
         sample_config,
     ):
         """Test that launch_review_session creates a tmux session."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
@@ -1705,8 +1705,8 @@ class TestLaunchReviewSession:
         session = orchestrator.launch_review_session(review)
 
         # Verify session was created via plugin
-        assert len(orchestrator.runner.plugin.create_session_calls) == 1
-        call = orchestrator.runner.plugin.create_session_calls[0]
+        assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1
+        call = orchestrator.deps.runner.plugin.create_session_calls[0]
         # Session ID should be review-{pr_number} encoded as integer
         assert call["session_id"] == 123  # PR number
 
@@ -1715,7 +1715,7 @@ class TestLaunchReviewSession:
         sample_config,
     ):
         """Test that launch_review_session adds session to active_sessions."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
@@ -1746,7 +1746,7 @@ class TestLaunchReviewSession:
         sample_config,
     ):
         """Test that launch_review_session removes PR from pending_reviews."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
@@ -1777,7 +1777,7 @@ class TestLaunchReviewSession:
         sample_config,
     ):
         """Test that launch_review_session returns None if session already exists."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = True  # Session already running
@@ -1801,7 +1801,7 @@ class TestLaunchReviewSession:
         sample_config,
     ):
         """Test that launch_review_session checks for review-{pr_number} session."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         # Session exists - already running
@@ -1820,11 +1820,11 @@ class TestLaunchReviewSession:
         orchestrator.launch_review_session(review)
 
         # Should check for review-{pr_number} session
-        assert 123 in orchestrator.runner.plugin.session_exists_calls
+        assert 123 in orchestrator.deps.runner.plugin.session_exists_calls
 
     def test_launch_review_session_returns_none_without_agent_config(self, sample_config):
         """Test that launch_review_session returns None without code_review_agent configured."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         sample_config.code_review_agent = None  # Not configured
 
@@ -1845,7 +1845,7 @@ class TestLaunchReviewSession:
         sample_config,
     ):
         """Test that launch_review_session does not install pre-push hooks."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False
@@ -1893,7 +1893,7 @@ class TestHandleSessionCompletionWithCodeReview:
     ):
         """Test that handle_session_completion stores DiscoveredReview for Planner."""
         from issue_orchestrator.ports.pull_request_tracker import PRInfo
-        from issue_orchestrator.models import DiscoveredReview
+        from issue_orchestrator.domain.models import DiscoveredReview
 
         sample_config.code_review_agent = "agent:reviewer"
         mock_repository_host.prs["feature/issue-1"] = [
@@ -2107,7 +2107,7 @@ class TestPauseBehavior:
         async def instant_yield(*args):
             await original_sleep(0)
 
-        with patch("issue_orchestrator.orchestrator.asyncio.sleep", side_effect=instant_yield):
+        with patch("issue_orchestrator.infra.orchestrator.asyncio.sleep", side_effect=instant_yield):
             yield
 
     @pytest.mark.asyncio
@@ -2335,7 +2335,7 @@ class TestSessionExistsDetection:
         the session should be restored via SessionRestorer. This prevents infinite
         loops because the session is now actively tracked.
         """
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = True  # Terminal session exists (but not tracked)
@@ -2374,7 +2374,7 @@ class TestSessionExistsDetection:
         sample_config,
     ):
         """Test reviews tracked in active_sessions are removed from pending."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         sample_config.code_review_agent = "agent:web"
 
@@ -2411,7 +2411,7 @@ class TestSessionExistsDetection:
         the session should be restored via SessionRestorer. This prevents infinite
         loops because the session is now actively tracked.
         """
-        from issue_orchestrator.models import PendingRework
+        from issue_orchestrator.domain.models import PendingRework
         from issue_orchestrator.domain.issue_key import FakeIssueKey
 
         runner = MockSessionRunner()
@@ -2453,7 +2453,7 @@ class TestStateMachineTransitions:
         sample_config,
     ):
         """Test that successful launch moves review from pending to active."""
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = False  # No existing session
@@ -2488,7 +2488,7 @@ class TestStateMachineTransitions:
         This is the critical bug fix test: if session_exists returns True
         (session already running), the item should be removed from pending_reviews.
         """
-        from issue_orchestrator.models import PendingReview
+        from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
         runner.plugin.session_exists_override = True  # Session already exists
@@ -2755,7 +2755,7 @@ class TestProcessDeferredCleanups:
         tmp_path,
     ):
         """Test that cleanups are processed when PR has reviewed label."""
-        from issue_orchestrator.models import PendingCleanup
+        from issue_orchestrator.domain.models import PendingCleanup
 
         # Enable triage review
         sample_config.triage_review_agent = "agent:triage"
@@ -2797,7 +2797,7 @@ class TestProcessDeferredCleanups:
         tmp_path,
     ):
         """Test that cleanups are not processed if PR doesn't have reviewed label."""
-        from issue_orchestrator.models import PendingCleanup
+        from issue_orchestrator.domain.models import PendingCleanup
 
         # Enable triage review
         sample_config.triage_review_agent = "agent:triage"
@@ -2840,7 +2840,7 @@ class TestProcessDeferredCleanups:
 
     def test_process_cleanups_noop_without_review_workflow(self, sample_config):
         """Test that process_deferred_cleanups handles no review workflow."""
-        from issue_orchestrator.models import PendingCleanup
+        from issue_orchestrator.domain.models import PendingCleanup
 
         # No review workflow
         sample_config.triage_review_agent = None
@@ -3013,7 +3013,7 @@ class TestReworkEscalation:
         planner = Planner(config=sample_config, scheduler=scheduler)
 
         # Create a snapshot with a discovered escalation
-        from issue_orchestrator.models import OrchestratorState, DiscoveredEscalation
+        from issue_orchestrator.domain.models import OrchestratorState, DiscoveredEscalation
         from issue_orchestrator.control.planner import OrchestratorSnapshot
 
         state = OrchestratorState()

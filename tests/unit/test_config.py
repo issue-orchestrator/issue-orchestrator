@@ -2,8 +2,8 @@
 
 import pytest
 from pathlib import Path
-from issue_orchestrator.config import Config
-from issue_orchestrator.models import AgentConfig
+from issue_orchestrator.infra.config import Config
+from issue_orchestrator.domain.models import AgentConfig
 
 
 class TestConfig:

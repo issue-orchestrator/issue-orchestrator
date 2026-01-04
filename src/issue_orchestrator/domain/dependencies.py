@@ -26,6 +26,7 @@ class DependencyState(Enum):
     UNSATISFIED = "unsatisfied"  # Dependency issue is OPEN
     MISSING = "missing"  # Cannot find dependency (404, permissions, deleted)
     UNKNOWN = "unknown"  # Transient error (network, rate limit)
+    CROSS_MILESTONE = "cross_milestone"  # Dependency violates milestone scope
 
 
 @dataclass(frozen=True)
@@ -44,8 +45,11 @@ class Dependency:
     # Resolved state
     state: DependencyState = DependencyState.UNKNOWN
 
-    # Error message if missing/unknown
+    # Error message if missing/unknown/cross_milestone
     error: str | None = None
+
+    # Milestone of the dependency issue (for cross-milestone validation)
+    milestone: str | None = None
 
     @property
     def is_satisfied(self) -> bool:
@@ -83,6 +87,7 @@ class DependencyReport:
     unsatisfied: tuple[Dependency, ...] = field(default_factory=tuple)
     missing: tuple[Dependency, ...] = field(default_factory=tuple)
     unknown: tuple[Dependency, ...] = field(default_factory=tuple)
+    cross_milestone: tuple[Dependency, ...] = field(default_factory=tuple)
 
     @property
     def runnable(self) -> bool:
@@ -91,22 +96,28 @@ class DependencyReport:
             len(self.unsatisfied) == 0
             and len(self.missing) == 0
             and len(self.unknown) == 0
+            and len(self.cross_milestone) == 0
         )
 
     @property
     def all_dependencies(self) -> tuple[Dependency, ...]:
         """All dependencies regardless of state."""
-        return self.satisfied + self.unsatisfied + self.missing + self.unknown
+        return self.satisfied + self.unsatisfied + self.missing + self.unknown + self.cross_milestone
 
     @property
     def blocking_dependencies(self) -> tuple[Dependency, ...]:
         """Dependencies that block running."""
-        return self.unsatisfied + self.missing + self.unknown
+        return self.unsatisfied + self.missing + self.unknown + self.cross_milestone
+
+    @property
+    def has_cross_milestone(self) -> bool:
+        """Check if there are cross-milestone dependency violations."""
+        return len(self.cross_milestone) > 0
 
     @property
     def has_warnings(self) -> bool:
-        """Check if there are missing or unknown dependencies (warrant warning)."""
-        return len(self.missing) > 0 or len(self.unknown) > 0
+        """Check if there are missing, unknown, or cross-milestone dependencies."""
+        return len(self.missing) > 0 or len(self.unknown) > 0 or len(self.cross_milestone) > 0
 
     def summary(self) -> str:
         """Human-readable summary of dependency status."""
@@ -125,6 +136,9 @@ class DependencyReport:
         if self.unknown:
             refs = ", ".join(d.display_ref for d in self.unknown)
             parts.append(f"unknown: {refs}")
+        if self.cross_milestone:
+            refs = ", ".join(d.display_ref for d in self.cross_milestone)
+            parts.append(f"cross-milestone: {refs}")
 
         return "Blocked - " + "; ".join(parts)
 

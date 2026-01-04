@@ -3,7 +3,7 @@
 from unittest.mock import Mock, patch
 
 
-from issue_orchestrator.analysis import (
+from issue_orchestrator.infra.analysis import (
     IssueState,
     OrphanBranchState,
     extract_issue_branches,
@@ -11,7 +11,7 @@ from issue_orchestrator.analysis import (
     analyze_all_issues,
     analyze_orphan_branches,
 )
-from issue_orchestrator.models import Issue
+from issue_orchestrator.domain.models import Issue
 
 
 class TestIssueState:
@@ -389,7 +389,7 @@ class TestAnalyzeIssue:
 class TestAnalyzeAllIssues:
     """Test the analyze_all_issues function."""
 
-    @patch("issue_orchestrator.analysis.analyze_issue")
+    @patch("issue_orchestrator.infra.analysis.analyze_issue")
     def test_analyze_all_issues_empty_list(self, mock_analyze):
         """Test analyzing empty issue list."""
         check_session = Mock()
@@ -399,7 +399,7 @@ class TestAnalyzeAllIssues:
         assert result == []
         mock_analyze.assert_not_called()
 
-    @patch("issue_orchestrator.analysis.analyze_issue")
+    @patch("issue_orchestrator.infra.analysis.analyze_issue")
     def test_analyze_all_issues_multiple_issues(self, mock_analyze):
         """Test analyzing multiple issues."""
         issue1 = Issue(number=1, title="Issue 1", labels=[])
@@ -428,7 +428,7 @@ class TestAnalyzeAllIssues:
             issue2, "owner/repo", {1: "1-issue-1"}, check_session, None
         )
 
-    @patch("issue_orchestrator.analysis.analyze_issue")
+    @patch("issue_orchestrator.infra.analysis.analyze_issue")
     def test_analyze_all_issues_passes_branches_to_all(
         self, mock_analyze
     ):

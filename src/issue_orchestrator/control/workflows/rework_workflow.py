@@ -18,9 +18,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
-from ...config import Config
+from ...infra.config import Config
 from ...events import EventName
-from ...models import PendingRework
+from ...domain.models import PendingRework
 from ...ports import EventSink, TraceEvent
 
 logger = logging.getLogger(__name__)

@@ -14,7 +14,7 @@ from typing import Optional, Set
 
 from ..events import EventName
 from ..ports import EventSink, TraceEvent
-from .. import gh_audit
+from ..infra import gh_audit
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PullRequestTracker
 from .label_projection import DesiredLabels, compute_label_changes

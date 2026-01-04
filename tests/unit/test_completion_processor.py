@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
-from issue_orchestrator.models import (
+from issue_orchestrator.domain.models import (
     CompletionRecord,
     CompletionOutcome,
     RequestedAction,

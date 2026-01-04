@@ -5,7 +5,7 @@ import inspect
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 import pytest
 
-from issue_orchestrator.cli import (
+from issue_orchestrator.entrypoints.cli import (
     cmd_start, cmd_status, cmd_init, cmd_attach, cmd_switch,
     cmd_dashboard, cmd_output, cmd_pause, cmd_resume, cmd_next,
     cmd_test_reset, main, setup_logging, _run_test_setup, _load_config
@@ -24,7 +24,7 @@ class TestCmdStart:
     def test_cmd_start_missing_config_returns_error(self):
         """Verify proper error handling when config is missing."""
         # Patch where Config is defined, not where it's imported
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_find.side_effect = FileNotFoundError("No config")
 
             args = argparse.Namespace(
@@ -40,10 +40,10 @@ class TestCmdStart:
 
     def test_cmd_start_calls_startup_and_run_loop(self):
         """Verify that startup() is called before run_loop()."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         # Setup config
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
@@ -77,9 +77,9 @@ class TestCmdStart:
 
     def test_cmd_start_no_dashboard_calls_run_loop(self):
         """Verify run_loop() is called when --no-dashboard is set."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                     mock_config = Mock()
                     mock_config.agents = {'agent:test': Mock()}
                     mock_config.max_concurrent_sessions = 2
@@ -110,14 +110,14 @@ class TestCmdStart:
 
     def test_cmd_start_dry_run_does_not_create_orchestrator(self):
         """Verify dry-run mode doesn't create orchestrator."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.adapters.github.github_adapter.GitHubAdapter.list_issues', return_value=[]):
                     with patch('issue_orchestrator.control.scheduler.Scheduler'):
-                        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
-                            with patch('issue_orchestrator.analysis.analyze_all_issues', return_value=[]):
+                        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
+                            with patch('issue_orchestrator.infra.analysis.analyze_all_issues', return_value=[]):
                                 with patch('issue_orchestrator.execution.git_working_copy.GitWorkingCopy.list_remote_branches', return_value=[]):
-                                    with patch('issue_orchestrator.analysis.analyze_orphan_branches', return_value=[]):
+                                    with patch('issue_orchestrator.infra.analysis.analyze_orphan_branches', return_value=[]):
                                         mock_config = Mock()
                                         mock_config.agents = {'agent:test': Mock()}
                                         mock_config.max_concurrent_sessions = 2
@@ -158,8 +158,8 @@ class TestCmdStatus:
 
     def test_cmd_status_shows_config(self):
         """Verify status shows configuration."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator._tmux_impl.list_sessions', return_value=[]):
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.adapters.terminal._tmux.list_sessions', return_value=[]):
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.max_concurrent_sessions = 3
@@ -176,8 +176,8 @@ class TestCmdStatus:
 
     def test_cmd_status_shows_active_sessions(self):
         """Verify status shows active sessions."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator._tmux_impl.list_sessions') as mock_list:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.adapters.terminal._tmux.list_sessions') as mock_list:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.max_concurrent_sessions = 3
@@ -195,7 +195,7 @@ class TestCmdStatus:
 
     def test_cmd_status_handles_missing_config(self):
         """Verify status handles missing config gracefully."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_find.side_effect = FileNotFoundError("No config")
 
             args = argparse.Namespace()
@@ -209,7 +209,7 @@ class TestCmdInit:
 
     def test_cmd_init_missing_config_returns_error(self):
         """Verify init fails gracefully without config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_find.side_effect = FileNotFoundError("No config")
 
             args = argparse.Namespace()
@@ -219,8 +219,8 @@ class TestCmdInit:
 
     def test_cmd_init_missing_repo_returns_error(self):
         """Verify init fails when repo not configured."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.cli._resolve_repo', side_effect=RuntimeError("no repo")):
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.cli._resolve_repo', side_effect=RuntimeError("no repo")):
                 mock_config = Mock()
                 mock_config.repo = None
                 mock_find.return_value = mock_config
@@ -242,7 +242,7 @@ class TestMain:
 
     def test_main_dispatches_to_status(self):
         """Verify main dispatches to correct command handler."""
-        with patch('issue_orchestrator.cli.cmd_status') as mock_cmd_status:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_status') as mock_cmd_status:
             mock_cmd_status.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'status']):
@@ -253,7 +253,7 @@ class TestMain:
 
     def test_main_dispatches_to_start(self):
         """Verify main dispatches start command correctly."""
-        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_start') as mock_cmd_start:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start']):
@@ -264,7 +264,7 @@ class TestMain:
 
     def test_main_dispatches_to_init(self):
         """Verify main dispatches init command correctly."""
-        with patch('issue_orchestrator.cli.cmd_init') as mock_cmd_init:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_init') as mock_cmd_init:
             mock_cmd_init.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'init']):
@@ -275,7 +275,7 @@ class TestMain:
 
     def test_main_parses_start_with_test_mode(self):
         """Verify main parses --test-mode flag correctly."""
-        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_start') as mock_cmd_start:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--test-mode']):
@@ -287,7 +287,7 @@ class TestMain:
 
     def test_main_parses_start_with_dry_run(self):
         """Verify main parses --dry-run flag correctly."""
-        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_start') as mock_cmd_start:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--dry-run']):
@@ -298,7 +298,7 @@ class TestMain:
 
     def test_main_parses_start_with_milestone(self):
         """Verify main parses --milestone argument correctly."""
-        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_start') as mock_cmd_start:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--milestone', 'v1.0']):
@@ -309,7 +309,7 @@ class TestMain:
 
     def test_main_parses_start_with_ui_mode(self):
         """Verify main parses --ui-mode argument correctly."""
-        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_start') as mock_cmd_start:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--ui-mode', 'web']):
@@ -320,7 +320,7 @@ class TestMain:
 
     def test_main_parses_start_with_port(self):
         """Verify main parses --port argument correctly."""
-        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_start') as mock_cmd_start:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--port', '9000']):
@@ -331,7 +331,7 @@ class TestMain:
 
     def test_main_parses_attach_with_issue_number(self):
         """Verify main parses attach command with issue number."""
-        with patch('issue_orchestrator.cli.cmd_attach') as mock_cmd_attach:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_attach') as mock_cmd_attach:
             mock_cmd_attach.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'attach', '123']):
@@ -342,7 +342,7 @@ class TestMain:
 
     def test_main_parses_switch_with_issue_number(self):
         """Verify main parses switch command with issue number."""
-        with patch('issue_orchestrator.cli.cmd_switch') as mock_cmd_switch:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_switch') as mock_cmd_switch:
             mock_cmd_switch.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'switch', '456']):
@@ -353,7 +353,7 @@ class TestMain:
 
     def test_main_parses_output_with_lines(self):
         """Verify main parses output command with --lines."""
-        with patch('issue_orchestrator.cli.cmd_output') as mock_cmd_output:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_output') as mock_cmd_output:
             mock_cmd_output.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'output', '789', '--lines', '50']):
@@ -369,7 +369,7 @@ class TestCmdAttach:
 
     def test_cmd_attach_no_session(self):
         """Verify attach fails when no session exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = False
             mock_get_mgr.return_value = mock_mgr
@@ -381,8 +381,8 @@ class TestCmdAttach:
 
     def test_cmd_attach_success(self):
         """Verify attach succeeds when session exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
-            with patch('issue_orchestrator._tmux_impl.attach_session') as mock_attach:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
+            with patch('issue_orchestrator.adapters.terminal._tmux.attach_session') as mock_attach:
                 mock_mgr = Mock()
                 mock_mgr.has_session.return_value = True
                 mock_get_mgr.return_value = mock_mgr
@@ -395,8 +395,8 @@ class TestCmdAttach:
 
     def test_cmd_attach_with_issue_number(self):
         """Verify attach switches to specific issue window."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
-            with patch('issue_orchestrator._tmux_impl.attach_session') as mock_attach:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
+            with patch('issue_orchestrator.adapters.terminal._tmux.attach_session') as mock_attach:
                 mock_mgr = Mock()
                 mock_mgr.has_session.return_value = True
                 mock_mgr.select_window.return_value = True
@@ -414,7 +414,7 @@ class TestCmdSwitch:
 
     def test_cmd_switch_no_session(self):
         """Verify switch fails when no session exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = False
             mock_get_mgr.return_value = mock_mgr
@@ -426,7 +426,7 @@ class TestCmdSwitch:
 
     def test_cmd_switch_window_not_found(self):
         """Verify switch fails when window doesn't exist."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = True
             mock_mgr.select_window.return_value = False
@@ -439,7 +439,7 @@ class TestCmdSwitch:
 
     def test_cmd_switch_success(self):
         """Verify switch succeeds when window exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = True
             mock_mgr.select_window.return_value = True
@@ -457,7 +457,7 @@ class TestCmdDashboard:
 
     def test_cmd_dashboard_no_session(self):
         """Verify dashboard fails when no session exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = False
             mock_get_mgr.return_value = mock_mgr
@@ -469,7 +469,7 @@ class TestCmdDashboard:
 
     def test_cmd_dashboard_not_found(self):
         """Verify dashboard fails when window doesn't exist."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = True
             mock_mgr.select_dashboard.return_value = False
@@ -482,7 +482,7 @@ class TestCmdDashboard:
 
     def test_cmd_dashboard_success(self):
         """Verify dashboard succeeds when window exists."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.has_session.return_value = True
             mock_mgr.select_dashboard.return_value = True
@@ -500,7 +500,7 @@ class TestCmdOutput:
 
     def test_cmd_output_window_not_found(self):
         """Verify output fails when window doesn't exist."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.capture_pane_output.return_value = None
             mock_get_mgr.return_value = mock_mgr
@@ -512,7 +512,7 @@ class TestCmdOutput:
 
     def test_cmd_output_success(self):
         """Verify output displays pane content successfully."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.capture_pane_output.return_value = "Sample output\nLine 2"
             mock_get_mgr.return_value = mock_mgr
@@ -525,7 +525,7 @@ class TestCmdOutput:
 
     def test_cmd_output_custom_lines(self):
         """Verify output respects custom line count."""
-        with patch('issue_orchestrator._tmux_impl.get_manager') as mock_get_mgr:
+        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
             mock_mgr = Mock()
             mock_mgr.capture_pane_output.return_value = "Output"
             mock_get_mgr.return_value = mock_mgr
@@ -568,7 +568,7 @@ class TestCmdTestReset:
 
     def test_cmd_test_reset_scripts_found(self):
         """Verify test-reset executes teardown and setup scripts."""
-        with patch('issue_orchestrator.cli.Path') as mock_path_class:
+        with patch('issue_orchestrator.entrypoints.cli.Path') as mock_path_class:
             with patch('subprocess.run') as mock_run:
                 # Mock script paths
                 mock_scripts_dir = Mock()
@@ -608,7 +608,7 @@ class TestSetupLogging:
 
     def setup_method(self):
         """Reset logging config before each test."""
-        from issue_orchestrator.logging_config import reset_logging
+        from issue_orchestrator.infra.logging_config import reset_logging
         reset_logging()
 
     def test_setup_logging_default(self):
@@ -684,7 +684,7 @@ class TestRunTestSetup:
         config.github_token_env = None
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
-        with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_adapter_factory:
+        with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_adapter_factory:
             adapter = Mock()
             adapter.list_issues.return_value = [_mock_issue(1), _mock_issue(2)]
             adapter.create_issue.return_value = 123
@@ -704,7 +704,7 @@ class TestRunTestSetup:
         config.github_token_env = None
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
-        with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_adapter_factory:
+        with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_adapter_factory:
             adapter = Mock()
             adapter.list_issues.return_value = []
             mock_adapter_factory.return_value = adapter
@@ -720,7 +720,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_test_mode_without_repo(self):
         """Verify test mode fails when repo not configured."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_config = Mock()
             mock_config.repo = None
             mock_config.agents = {'agent:test': Mock()}
@@ -740,11 +740,11 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_test_mode_success(self):
         """Verify test mode sets filter_label to test-data."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.cli._run_test_setup') as mock_test_setup:
-                with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                    with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
-                        with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.cli._run_test_setup') as mock_test_setup:
+                with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                    with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                        with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                             mock_config = Mock()
                             mock_config.repo = 'test/repo'
                             mock_config.agents = {'agent:test': Mock()}
@@ -774,10 +774,10 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_milestone_override(self):
         """Verify milestone argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
@@ -804,10 +804,10 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_milestones_override(self):
         """Verify milestones argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
@@ -836,11 +836,11 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_ui_mode_override(self):
         """Verify ui_mode argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
-                        with patch('issue_orchestrator._iterm2_impl.is_running_in_iterm2') as mock_is_iterm2:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
+                        with patch('issue_orchestrator.adapters.terminal._iterm2.is_running_in_iterm2') as mock_is_iterm2:
                             mock_config = Mock()
                             mock_config.agents = {'agent:test': Mock()}
                             mock_config.max_concurrent_sessions = 2
@@ -868,10 +868,10 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_queue_refresh_override(self):
         """Verify queue_refresh argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
@@ -898,10 +898,10 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_max_issues_override(self):
         """Verify max_issues argument overrides config."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
@@ -928,10 +928,10 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_web_mode(self):
         """Verify web mode launches web dashboard."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.web.run_with_web_dashboard') as mock_web:
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.web.run_with_web_dashboard') as mock_web:
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
@@ -959,10 +959,10 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_web_mode_custom_port(self):
         """Verify web mode respects custom port."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.web.run_with_web_dashboard') as mock_web:
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.web.run_with_web_dashboard') as mock_web:
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
@@ -990,10 +990,10 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_keyboard_interrupt(self):
         """Verify keyboard interrupt is handled gracefully."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.dashboard.run_with_dashboard') as mock_dashboard:
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
@@ -1028,7 +1028,7 @@ class TestCmdStartAdvanced:
 
     def test_cmd_start_unexpected_error(self):
         """Verify unexpected errors during config load are handled."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_find.side_effect = ValueError("Unexpected error")
 
             args = argparse.Namespace(
@@ -1048,8 +1048,8 @@ class TestCmdInitAdvanced:
 
     def test_cmd_init_creates_all_labels(self):
         """Verify init creates all required labels."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_client_factory:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.agents = {'agent:backend': Mock(), 'agent:frontend': Mock()}
@@ -1073,8 +1073,8 @@ class TestCmdInitAdvanced:
 
     def test_cmd_init_handles_failures(self):
         """Verify init reports failures correctly."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.cli._github_adapter_for_config') as mock_client_factory:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
+            with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.agents = {'agent:test': Mock()}
@@ -1101,7 +1101,7 @@ class TestLoadConfig:
 
     def test_load_config_without_explicit_path(self):
         """Verify _load_config calls find_and_load when no --config provided."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_config = Mock()
             mock_find.return_value = mock_config
 
@@ -1122,7 +1122,7 @@ agents:
     worktree_base: /tmp
 """)
 
-        with patch('issue_orchestrator.config.Config.load') as mock_load:
+        with patch('issue_orchestrator.infra.config.Config.load') as mock_load:
             mock_config = Mock()
             mock_config.repo_root_from_yaml = False
             mock_load.return_value = mock_config
@@ -1148,7 +1148,7 @@ agents:
 
     def test_load_config_no_config_attribute(self):
         """Verify _load_config uses find_and_load when args lacks config attr."""
-        with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             mock_config = Mock()
             mock_find.return_value = mock_config
 
@@ -1164,7 +1164,7 @@ class TestConfigCliArgument:
 
     def test_main_parses_config_argument(self):
         """Verify main parses --config argument correctly."""
-        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_start') as mock_cmd_start:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', '--config', '/path/to/config.yaml', 'start']):
@@ -1175,7 +1175,7 @@ class TestConfigCliArgument:
 
     def test_main_parses_config_short_form(self):
         """Verify main parses -c short form correctly."""
-        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_start') as mock_cmd_start:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', '-c', '/custom/path.yaml', 'start']):
@@ -1186,7 +1186,7 @@ class TestConfigCliArgument:
 
     def test_main_config_default_is_none(self):
         """Verify --config defaults to None when not provided."""
-        with patch('issue_orchestrator.cli.cmd_start') as mock_cmd_start:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_start') as mock_cmd_start:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start']):
@@ -1197,7 +1197,7 @@ class TestConfigCliArgument:
 
     def test_config_argument_with_status_command(self):
         """Verify --config works with status command."""
-        with patch('issue_orchestrator.cli.cmd_status') as mock_cmd_status:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_status') as mock_cmd_status:
             mock_cmd_status.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', '--config', '/path/config.yaml', 'status']):
@@ -1208,7 +1208,7 @@ class TestConfigCliArgument:
 
     def test_config_argument_with_init_command(self):
         """Verify --config works with init command."""
-        with patch('issue_orchestrator.cli.cmd_init') as mock_cmd_init:
+        with patch('issue_orchestrator.entrypoints.cli.cmd_init') as mock_cmd_init:
             mock_cmd_init.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', '--config', '/path/config.yaml', 'init']):
@@ -1229,8 +1229,8 @@ agents:
     worktree_base: /tmp
 """)
 
-        with patch('issue_orchestrator.config.Config.load') as mock_load:
-            with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
+        with patch('issue_orchestrator.infra.config.Config.load') as mock_load:
+            with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
                 mock_config = Mock()
                 mock_config.agents = {'agent:test': Mock()}
                 mock_config.max_concurrent_sessions = 2
@@ -1247,8 +1247,8 @@ agents:
                     debug=False,
                 )
 
-                with patch('issue_orchestrator.orchestrator.Orchestrator'):
-                    with patch('issue_orchestrator.cli.asyncio') as mock_asyncio:
+                with patch('issue_orchestrator.infra.orchestrator.Orchestrator'):
+                    with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_asyncio.run.side_effect = _run_and_close
                         result = cmd_start(args)
 

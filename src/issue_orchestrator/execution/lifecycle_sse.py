@@ -7,7 +7,7 @@ to SSE subscribers (web dashboard clients).
 import asyncio
 import logging
 
-from ..hookspec import hookimpl
+from ..infra.hooks.hookspec import hookimpl
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class LifecycleSSEPlugin:
             data: Event data dictionary
         """
         try:
-            from ..web import broadcast_event, _event_subscribers
+            from ..entrypoints.web import broadcast_event, _event_subscribers
 
             if not _event_subscribers:
                 logger.debug("[SSE] No subscribers, skipping event: %s", event)

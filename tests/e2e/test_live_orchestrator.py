@@ -16,7 +16,7 @@ import time
 import pytest
 
 from tests.e2e.flows import E2EFlow, cleanup_test_prs, check_issue_comment
-from issue_orchestrator.test_data import cleanup_test_issues
+from issue_orchestrator.testing.support.test_data import cleanup_test_issues
 
 logger = logging.getLogger(__name__)
 

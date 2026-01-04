@@ -14,7 +14,7 @@ from datetime import datetime
 from issue_orchestrator.control.session_controller import SessionController, SessionDecision
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
-from issue_orchestrator.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
+from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
 from issue_orchestrator.ports import NullEventSink
 
 

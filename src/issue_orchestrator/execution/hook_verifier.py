@@ -3,7 +3,7 @@
 import logging
 
 from ..ports.hook_verifier import HookVerifier, HookVerificationResult
-from ..config import Config
+from ..infra.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ class ExecutionHookVerifier:
         self.config = config
 
     async def verify(self) -> HookVerificationResult:
-        from ..hooks import (
+        from ..infra.hooks.hooks import (
             detect_agents_from_config,
             get_adapter,
             check_verification_status,

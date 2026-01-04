@@ -7,13 +7,13 @@ appropriate SessionDecision without requiring full e2e orchestration.
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from issue_orchestrator.config import Config
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.control.session_controller import SessionController
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.events import EventName
-from issue_orchestrator.models import AgentConfig, Issue, Session, SessionStatus
+from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports import TraceEvent
