@@ -68,4 +68,4 @@ jobs:
           key: tooling-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'pyproject.toml', 'pyrightconfig*.json', 'importlinter.toml', 'tools/ast_guardrails.yml', 'Makefile') }}
 
       - name: Run validate
-        run: make validate
+        run: make validate PYRIGHT=pyright PYTEST=pytest LINT_IMPORTS=lint-imports PYTHON=python
