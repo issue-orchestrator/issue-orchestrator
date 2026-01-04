@@ -981,8 +981,12 @@ def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
             return True
 
 
-def _kill_process_on_port(port: int) -> bool:
+def _kill_process_on_port(port: int, use_sigkill: bool = False) -> bool:
     """Kill any process using the specified port.
+
+    Args:
+        port: The port to free
+        use_sigkill: If True, use SIGKILL (force); otherwise SIGTERM (graceful)
 
     Returns True if a process was killed, False otherwise.
     """
@@ -995,39 +999,63 @@ def _kill_process_on_port(port: int) -> bool:
         )
         if result.returncode == 0 and result.stdout.strip():
             pids = result.stdout.strip().split("\n")
+            sig = signal.SIGKILL if use_sigkill else signal.SIGTERM
             for pid in pids:
                 try:
-                    os.kill(int(pid), signal.SIGKILL)
-                    logger.info("[web] Killed existing process %s on port %d", pid, port)
+                    os.kill(int(pid), sig)
+                    logger.info("[web] Sent %s to process %s on port %d",
+                               "SIGKILL" if use_sigkill else "SIGTERM", pid, port)
                 except (ProcessLookupError, ValueError):
                     pass
             return True
     except FileNotFoundError:
-        # lsof not available, try netstat approach or just fail gracefully
+        # lsof not available
         pass
     return False
 
 
-def ensure_port_available(port: int, host: str = "127.0.0.1") -> None:
-    """Ensure the specified port is available, killing any existing process if needed."""
+def ensure_port_available(port: int, host: str = "127.0.0.1", max_retries: int = 5) -> None:
+    """Ensure the specified port is available, killing any existing process if needed.
+
+    This function is designed to handle orchestrator restarts gracefully by
+    automatically freeing the port from any stale processes.
+    """
+    import time
+
     if not _is_port_in_use(port, host):
         return
 
     logger.warning("[web] Port %d is already in use, attempting to free it...", port)
 
-    if _kill_process_on_port(port):
-        # Wait a moment for the port to be released
-        import time
-        time.sleep(0.5)
+    # First try graceful shutdown (SIGTERM)
+    _kill_process_on_port(port, use_sigkill=False)
+    time.sleep(0.3)
 
+    # Retry loop with escalating force
+    for attempt in range(max_retries):
         if not _is_port_in_use(port, host):
             logger.info("[web] Port %d is now available", port)
             return
 
-    # Still in use - provide helpful error
+        # After first attempt, use SIGKILL
+        if attempt > 0:
+            logger.warning("[web] Port %d still in use, force killing (attempt %d/%d)...",
+                          port, attempt + 1, max_retries)
+            _kill_process_on_port(port, use_sigkill=True)
+
+        # Exponential backoff: 0.5s, 1s, 2s, 4s, 8s
+        wait_time = 0.5 * (2 ** attempt)
+        time.sleep(wait_time)
+
+    # Final check
+    if not _is_port_in_use(port, host):
+        logger.info("[web] Port %d is now available", port)
+        return
+
+    # Still in use after all retries - provide helpful error
     raise RuntimeError(
-        f"Port {port} is already in use and could not be freed. "
-        f"Try: lsof -ti:{port} | xargs kill -9"
+        f"Port {port} is already in use and could not be freed after {max_retries} attempts. "
+        f"Try manually: lsof -ti:{port} | xargs kill -9"
     )
 
 
