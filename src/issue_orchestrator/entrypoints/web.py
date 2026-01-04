@@ -846,129 +846,30 @@ async def get_debug() -> JSONResponse:
 @app.get("/api/doctor")
 async def get_doctor() -> JSONResponse:
     """Run diagnostics and return health status."""
-    import os
-    from ..adapters.github.http_client import (
-        _read_keyring_token,
-        validate_github_token,
-        KEYRING_SERVICE,
-        KEYRING_USERNAME,
-    )
+    from ..infra.doctor import run_doctor
 
-    checks: list[dict[str, str | bool]] = []
+    # Get config from running orchestrator if available
+    config = _orchestrator.config if _orchestrator else None
 
-    # Check GitHub token sources
-    env_vars = ["ISSUE_ORCH_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]
-    token_sources = []
-    for var in env_vars:
-        value = os.environ.get(var)
-        if value:
-            masked = value[:4] + "..." + value[-4:] if len(value) > 12 else "***"
-            token_sources.append(f"{var}: {masked}")
+    # Run unified doctor
+    result = run_doctor(config=config)
 
-    keyring_token = _read_keyring_token()
-    if keyring_token:
-        masked = keyring_token[:4] + "..." + keyring_token[-4:] if len(keyring_token) > 12 else "***"
-        token_sources.append(f"Keyring ({KEYRING_SERVICE}/{KEYRING_USERNAME}): {masked}")
-
-    if token_sources:
-        checks.append({
-            "name": "Token Sources",
-            "status": "ok",
-            "detail": ", ".join(token_sources),
-        })
-    else:
-        checks.append({
-            "name": "Token Sources",
-            "status": "error",
-            "detail": "No GitHub token found",
-        })
-
-    # Validate token with GitHub (uses adapter to respect layer boundaries)
-    result = validate_github_token()
-    if result.valid:
-        checks.append({
-            "name": "GitHub Auth",
-            "status": "ok",
-            "detail": f"Authenticated as: {result.username}",
-        })
-    else:
-        checks.append({
-            "name": "GitHub Auth",
-            "status": "error",
-            "detail": result.error or "Unknown error",
-        })
-
-    # Check orchestrator status
+    # Add orchestrator-specific check (only web knows if orchestrator is running)
     if _orchestrator:
-        checks.append({
-            "name": "Orchestrator",
-            "status": "ok",
-            "detail": f"Running, {'paused' if _orchestrator.state.paused else 'active'}",
-        })
-
-        # Check config
-        config = _orchestrator.config
-        if config.repo:
-            checks.append({
-                "name": "Repository",
-                "status": "ok",
-                "detail": config.repo,
-            })
-        else:
-            checks.append({
-                "name": "Repository",
-                "status": "warning",
-                "detail": "Not configured",
-            })
-
-        # Check agents and their scripts
-        agent_count = len(config.agents)
-        checks.append({
-            "name": "Agents Configured",
-            "status": "ok" if agent_count > 0 else "warning",
-            "detail": f"{agent_count} agent(s)",
-        })
-
-        # Verify agent scripts exist
-        import shutil
-        missing_scripts = []
-        for name, agent_cfg in config.agents.items():
-            # Extract the command/script (first word)
-            cmd_parts = agent_cfg.command.split()
-            if cmd_parts:
-                script = cmd_parts[0]
-                # Check if it's in PATH or is an absolute path
-                if not shutil.which(script) and not Path(script).exists():
-                    missing_scripts.append(f"{name}: {script}")
-
-        if missing_scripts:
-            checks.append({
-                "name": "Agent Scripts",
-                "status": "error",
-                "detail": f"Missing: {', '.join(missing_scripts)}",
-            })
-        elif agent_count > 0:
-            checks.append({
-                "name": "Agent Scripts",
-                "status": "ok",
-                "detail": "All scripts found",
-            })
+        # Insert at position 2 (after auth checks)
+        result.checks.insert(2, type(result.checks[0])(
+            name="Orchestrator",
+            status="ok",
+            detail=f"Running, {'paused' if _orchestrator.state.paused else 'active'}",
+        ))
     else:
-        checks.append({
-            "name": "Orchestrator",
-            "status": "error",
-            "detail": "Not running",
-        })
+        result.checks.insert(2, type(result.checks[0])(
+            name="Orchestrator",
+            status="error",
+            detail="Not running",
+        ))
 
-    # Overall status
-    has_errors = any(c["status"] == "error" for c in checks)
-    has_warnings = any(c["status"] == "warning" for c in checks)
-    overall = "error" if has_errors else ("warning" if has_warnings else "ok")
-
-    return JSONResponse({
-        "overall": overall,
-        "checks": checks,
-    })
+    return JSONResponse(result.to_dict())
 
 
 def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:

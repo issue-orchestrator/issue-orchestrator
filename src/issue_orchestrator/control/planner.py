@@ -370,6 +370,7 @@ class Planner:
                         pr_url=review.pr_url,
                         branch_name=review.branch_name,
                         code_review_label=self.config.code_review_label or "",
+                        agent_label=review.agent_label,
                         reason=f"session completed with PR #{review.pr_number}",
                         expected=build_expected_for_mutation(),
                     ))

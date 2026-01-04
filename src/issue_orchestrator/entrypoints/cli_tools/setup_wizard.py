@@ -507,9 +507,13 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
         code_review_label = prompter.input("  Label for PRs needing review", "needs-code-review")
         code_reviewed_label = prompter.input("  Label after review passes", "code-reviewed")
 
-        config["code_review_agent"] = code_review_agent
-        config["code_review_label"] = code_review_label
-        config["code_reviewed_label"] = code_reviewed_label
+        # Use new review structure with enabled flag
+        config["review"] = {
+            "enabled": True,
+            "default": code_review_agent,
+            "code_review_label": code_review_label,
+            "code_reviewed_label": code_reviewed_label,
+        }
         prompter.print(f"  ✓ PRs will be reviewed by {code_review_agent}")
         prompter.print(f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}")
 
@@ -521,12 +525,12 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
             triage_reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
             threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
 
-            config["triage_review_agent"] = triage_review_agent
-            config["triage_reviewed_label"] = triage_reviewed_label
+            config["review"]["triage_review_agent"] = triage_review_agent
+            config["review"]["triage_reviewed_label"] = triage_reviewed_label
             try:
                 threshold_int = int(threshold)
                 if threshold_int > 0:
-                    config["triage_review_threshold"] = threshold_int
+                    config["review"]["triage_review_threshold"] = threshold_int
                     prompter.print(f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
             except ValueError:
                 pass
@@ -765,7 +769,9 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
             prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
 
     # Two-stage review workflow - ask if not already configured (default enabled)
-    if "code_review_agent" not in config:
+    # Check both old and new config keys
+    has_review_config = "code_review_agent" in config or ("review" in config and config["review"].get("enabled"))
+    if not has_review_config:
         prompter.print("\n--- Review Workflow ---")
         prompter.print("Code review is RECOMMENDED to catch issues before merging:")
         prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
@@ -778,9 +784,13 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
             code_review_label = prompter.input("  Label for PRs needing review", "needs-code-review")
             code_reviewed_label = prompter.input("  Label after review passes", "code-reviewed")
 
-            config["code_review_agent"] = code_review_agent
-            config["code_review_label"] = code_review_label
-            config["code_reviewed_label"] = code_reviewed_label
+            # Use new review structure with enabled flag
+            config["review"] = {
+                "enabled": True,
+                "default": code_review_agent,
+                "code_review_label": code_review_label,
+                "code_reviewed_label": code_reviewed_label,
+            }
             prompter.print(f"  ✓ PRs will be reviewed by {code_review_agent}")
             prompter.print(f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}")
 
@@ -792,12 +802,12 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                 triage_reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
                 threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
 
-                config["triage_review_agent"] = triage_review_agent
-                config["triage_reviewed_label"] = triage_reviewed_label
+                config["review"]["triage_review_agent"] = triage_review_agent
+                config["review"]["triage_reviewed_label"] = triage_reviewed_label
                 try:
                     threshold_int = int(threshold)
                     if threshold_int > 0:
-                        config["triage_review_threshold"] = threshold_int
+                        config["review"]["triage_review_threshold"] = threshold_int
                         prompter.print(f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
                 except ValueError:
                     pass
@@ -1344,8 +1354,13 @@ def run_wizard(
 
     # Add cleanup config with defaults (don't prompt - users can edit later)
     if "cleanup" not in config:
+        # Check for review config (new and legacy keys)
+        review_cfg = config.get("review", {})
+        has_triage = review_cfg.get("triage_review_agent") or config.get("triage_review_agent")
+        has_code_review = review_cfg.get("enabled") or review_cfg.get("default") or config.get("code_review_agent")
+
         # Include section based on their review workflow
-        if config.get("triage_review_agent"):
+        if has_triage:
             # Triage workflow - cleanup happens after triage review
             config["cleanup"] = {
                 "with_cto": {
@@ -1353,7 +1368,7 @@ def run_wizard(
                     "remove_worktrees": False,
                 }
             }
-        elif config.get("code_review_agent"):
+        elif has_code_review:
             # Code review only - cleanup after code review
             config["cleanup"] = {
                 "without_cto": {
@@ -1393,12 +1408,13 @@ def run_wizard(
 
     # Collect prompt file writes (removed intermediate confirmations)
 
-    # Get review config (new two-stage fields)
-    code_review_agent = config.get("code_review_agent")
-    code_review_label = config.get("code_review_label", "needs-code-review")
-    code_reviewed_label = config.get("code_reviewed_label", "code-reviewed")
-    triage_review_agent = config.get("triage_review_agent")
-    triage_reviewed_label = config.get("triage_reviewed_label", "triage-reviewed")
+    # Get review config - support both old and new structure
+    review_config = config.get("review", {})
+    code_review_agent = review_config.get("default") or config.get("code_review_agent")
+    code_review_label = review_config.get("code_review_label") or config.get("code_review_label", "needs-code-review")
+    code_reviewed_label = review_config.get("code_reviewed_label") or config.get("code_reviewed_label", "code-reviewed")
+    triage_review_agent = review_config.get("triage_review_agent") or config.get("triage_review_agent")
+    triage_reviewed_label = review_config.get("triage_reviewed_label") or config.get("triage_reviewed_label", "triage-reviewed")
 
     # Track all prompt files for the next steps summary
     all_prompt_paths: list[Path] = []

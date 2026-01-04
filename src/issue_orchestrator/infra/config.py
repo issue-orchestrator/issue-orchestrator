@@ -163,6 +163,7 @@ class Config:
     setup_worktree: list[str] = field(default_factory=list)
 
     # Code review workflow (optional) - per-PR review after agent creates PR
+    review_enabled: bool = False  # Explicit toggle for code review
     code_review_agent: Optional[str] = None  # Agent that reviews PRs (e.g., "agent:reviewer")
     code_review_label: Optional[str] = None  # Label on PRs needing review (e.g., "needs-code-review")
     code_reviewed_label: Optional[str] = None  # Label after review passes (e.g., "code-reviewed")
@@ -248,6 +249,18 @@ class Config:
         if self.filter_milestone:
             return [self.filter_milestone]
         return []
+
+    def get_reviewer_for_agent(self, agent_label: str) -> Optional[str]:
+        """Get the effective reviewer for an agent.
+
+        Returns the per-agent reviewer if set, otherwise the default reviewer
+        (code_review_agent). Returns None if no reviewer is configured.
+        """
+        if agent_label not in self.agents:
+            return self.code_review_agent
+        agent = self.agents[agent_label]
+        # Per-agent reviewer takes precedence over default
+        return agent.reviewer or self.code_review_agent
 
     def to_event_dict(self) -> dict:
         """Convert config to a dict for event emission.
@@ -414,6 +427,7 @@ class Config:
                 "timeout_minutes": agent_data.get("timeout_minutes", 45),
                 "permission_mode": agent_data.get("permission_mode", "default"),
                 "skip_review": agent_data.get("skip_review", False),
+                "reviewer": agent_data.get("reviewer"),  # Per-agent reviewer override
                 "meta_agent": agent_data.get("meta_agent"),
             }
             if "command" in agent_data:
@@ -513,7 +527,13 @@ class Config:
         review_config = data.get("review", {})
 
         # Code review (per-PR, immediate)
-        config.code_review_agent = review_config.get("code_review_agent")
+        # "enabled" explicitly toggles code review on/off
+        config.review_enabled = review_config.get("enabled", False)
+        # "default" is the preferred key for the default reviewer, "code_review_agent" is legacy
+        config.code_review_agent = (
+            review_config.get("default") or
+            review_config.get("code_review_agent")
+        )
         config.code_review_label = review_config.get("code_review_label", "needs-code-review")
         config.code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
 
@@ -667,18 +687,33 @@ class Config:
                     f"Agent '{label}': unknown model '{agent.model}'. Known: {known_models}"
                 )
 
-        # Validate review workflow references valid agents
-        if self.code_review_agent and self.code_review_agent not in self.agents:
-            errors.append(
-                f"code_review_agent '{self.code_review_agent}' not found in agents. "
-                f"Available: {list(self.agents.keys())}"
-            )
+        # Validate review workflow
+        if self.review_enabled:
+            # If reviews are enabled, default reviewer is required
+            if not self.code_review_agent:
+                errors.append(
+                    "review.enabled is true but no default reviewer set. "
+                    "Add 'review: default: agent:reviewer' to config."
+                )
+            elif self.code_review_agent not in self.agents:
+                errors.append(
+                    f"review.default '{self.code_review_agent}' not found in agents. "
+                    f"Available: {list(self.agents.keys())}"
+                )
 
         if self.triage_review_agent and self.triage_review_agent not in self.agents:
             errors.append(
                 f"triage_review_agent '{self.triage_review_agent}' not found in agents. "
                 f"Available: {list(self.agents.keys())}"
             )
+
+        # Validate per-agent reviewers reference valid agents
+        for label, agent in self.agents.items():
+            if agent.reviewer and agent.reviewer not in self.agents:
+                errors.append(
+                    f"Agent '{label}': reviewer '{agent.reviewer}' not found in agents. "
+                    f"Available: {list(self.agents.keys())}"
+                )
 
         # Validate isolation mode
         valid_isolation_modes = {"standard", "hardened"}

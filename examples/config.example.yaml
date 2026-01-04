@@ -16,6 +16,7 @@ agents:
     worktree_base: "../"
     model: "sonnet"
     timeout_minutes: 45
+    reviewer: "agent:web-reviewer"  # Domain-specific reviewer for frontend PRs
 
   # Domain expert agent (no code, skip code review)
   "agent:domain-expert":
@@ -25,9 +26,16 @@ agents:
     timeout_minutes: 30
     skip_review: true  # Skip code review for non-code agents
 
-  # Reviewer agent for Stage 1 (per-PR code review)
+  # Default reviewer agent for Stage 1 (per-PR code review)
   "agent:reviewer":
-    prompt: ".issue-orchestrator/prompts/reviewer.md"
+    prompt: ".issue-orchestrator/prompts/code-review.md"
+    worktree_base: "../"
+    model: "sonnet"
+    timeout_minutes: 10
+
+  # Domain-specific reviewer for web/frontend PRs
+  "agent:web-reviewer":
+    prompt: ".issue-orchestrator/prompts/code-review-web.md"
     worktree_base: "../"
     model: "sonnet"
     timeout_minutes: 10
@@ -116,9 +124,16 @@ comment_headings:
 
 # Two-stage code review workflow (recommended)
 # Stage 1: Per-PR code review (immediate, after each PR)
-code_review_agent: "agent:reviewer"   # Agent that reviews PRs
-code_review_label: "needs-code-review"  # Label applied to PRs needing review
-code_reviewed_label: "code-reviewed"    # Label after review passes
+review:
+  enabled: true  # Explicit toggle - if true, default is required
+  default: "agent:reviewer"  # Default reviewer for all agents
+  code_review_label: "needs-code-review"  # Label applied to PRs needing review
+  code_reviewed_label: "code-reviewed"    # Label after review passes
+
+# Per-agent reviewers:
+# Each agent can specify a custom reviewer via the `reviewer` field.
+# This allows domain-specific reviewers (e.g., agent:web-reviewer for frontend).
+# If not specified, the agent uses review.default.
 
 # Rework iteration (when reviewer requests changes)
 # max_rework_cycles: 2                  # Max rework attempts before escalating to needs-human (default: 2)

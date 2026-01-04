@@ -387,6 +387,7 @@ class SessionLauncher:
             worktree_path=worktree_path,
             branch_name=branch_name,
             completion_path=completion_path,
+            agent_label=issue.agent_type,
         )
 
         total_time = time.time() - launch_start
@@ -414,7 +415,8 @@ class SessionLauncher:
         active_sessions: list[Session],
     ) -> LaunchResult:
         """Launch a code review session for a PR."""
-        agent_label = self.config.code_review_agent
+        # Get the reviewer for this agent (per-agent override or default)
+        agent_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent
         if not agent_label:
             return LaunchResult(None, False, "No code review agent configured")
 
@@ -556,6 +558,7 @@ class SessionLauncher:
             worktree_path=worktree_path,
             branch_name=review.branch_name,
             completion_path=completion_path,
+            agent_label=agent_label,
         )
 
         log_transition("review", review.pr_number, "LAUNCHING", "ACTIVE", "session launched")
@@ -732,6 +735,7 @@ class SessionLauncher:
             worktree_path=worktree_path,
             branch_name=branch_name,
             completion_path=completion_path,
+            agent_label=rework.agent_type,
         )
 
         log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
@@ -892,7 +896,10 @@ def handle_session_completion(
         _immediate_cleanup(session, status, worktree_manager, kill_session_fn, config)
 
     if result.should_queue_review and result.pr_url and result.pr_number:
-        state.discovered_reviews.append(DiscoveredReview(session.issue.number, result.pr_number, result.pr_url, session.branch_name))
+        state.discovered_reviews.append(DiscoveredReview(
+            session.issue.number, result.pr_number, result.pr_url, session.branch_name,
+            agent_label=session.agent_label
+        ))
     if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
         state.discovered_failures.append(DiscoveredFailure(session.issue.number, session.issue.title, status.value))
 

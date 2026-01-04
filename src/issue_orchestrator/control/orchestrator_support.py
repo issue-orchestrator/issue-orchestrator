@@ -306,6 +306,7 @@ class OrchestratorSupport:
                         a.pr_number,
                         a.pr_url,
                         a.branch_name,
+                        agent_label=a.agent_label,
                     )
                 )
                 log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")

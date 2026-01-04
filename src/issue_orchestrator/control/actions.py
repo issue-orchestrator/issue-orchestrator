@@ -177,6 +177,7 @@ class QueueReviewAction(Action):
     pr_url: str = ""
     branch_name: str = ""
     code_review_label: str = ""  # Label to add (e.g., needs-code-review)
+    agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
     action_type: ActionType = field(default=ActionType.QUEUE_REVIEW, init=False)
 
 
