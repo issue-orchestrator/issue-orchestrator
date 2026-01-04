@@ -10,6 +10,7 @@ import pytest
 import uvicorn
 
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.events import EventHub
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.models import (
@@ -52,6 +53,11 @@ class MockOrchestratorForWeb:
         )
         self.config = self._create_mock_config()
         self._shutdown_requested = False
+        self._event_hub = EventHub()
+
+    @property
+    def event_hub(self) -> EventHub:
+        return self._event_hub
 
     def _create_mock_config(self) -> Config:
         config = Config()

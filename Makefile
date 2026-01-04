@@ -1,4 +1,4 @@
-.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-web test-web-headed playwright-install validate validate-quick validate-before-push clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-web test-web-headed playwright-install validate validate-quick validate-full clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # Default target
 help:
@@ -16,9 +16,9 @@ help:
 	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
 	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
-	@echo "  validate            Full validation (parallel: pyright + lint-arch + unit + integration + e2e)"
+	@echo "  validate            Standard validation (typecheck + lint-arch + unit + integration + web-ui)"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
-	@echo "  validate-before-push Pre-push gate (typecheck + lint-arch + unit + integration + web-ui, NO e2e)"
+	@echo "  validate-full       Full validation (parallel: pyright + lint-arch + unit + integration + e2e + web-ui)"
 	@echo "  demo                Run demo showing orchestrator features"
 	@echo "  issues-validate     Check issue naming conventions"
 	@echo "  issues-fix          Apply issue name fixes"
@@ -94,11 +94,15 @@ playwright-install:
 # Quick validation for agent_gate (~45s)
 validate-quick: typecheck test-unit
 
+# Standard validation - used by CI and pre-push hook
+validate: typecheck lint-arch
+	$(PYTEST) tests/unit tests/integration tests/e2e_web -x -q --tb=short
+
 # Full validation - runs pyright, lint-arch, unit, integration, and e2e all in parallel
 # Logs to .validate/*.log, fails if any component fails
-validate:
+validate-full:
 	@mkdir -p .validate
-	@echo "Starting parallel validation (pyright + lint-arch + unit + integration + e2e)..."
+	@echo "Starting parallel validation (pyright + lint-arch + unit + integration + e2e + web-ui)..."
 	@( \
 		$(PYRIGHT) src/ > .validate/pyright.log 2>&1 && echo "✓ pyright passed" || (echo "✗ pyright FAILED (see .validate/pyright.log)" && exit 1) \
 	) & pid1=$$!; \
@@ -114,12 +118,11 @@ validate:
 	( \
 		$(PYTEST) tests/e2e -v -s --tb=short -x > .validate/e2e.log 2>&1 && echo "✓ e2e tests passed" || (echo "✗ e2e tests FAILED (see .validate/e2e.log)" && exit 1) \
 	) & pid5=$$!; \
-	wait $$pid1 && wait $$pid2 && wait $$pid3 && wait $$pid4 && wait $$pid5 || (echo "Validation failed - check .validate/*.log" && exit 1)
+	( \
+		$(PYTEST) tests/e2e_web -v --tb=short > .validate/web.log 2>&1 && echo "✓ web-ui tests passed" || (echo "✗ web-ui tests FAILED (see .validate/web.log)" && exit 1) \
+	) & pid6=$$!; \
+	wait $$pid1 && wait $$pid2 && wait $$pid3 && wait $$pid4 && wait $$pid5 && wait $$pid6 || (echo "Validation failed - check .validate/*.log" && exit 1)
 	@echo "All validations passed!"
-
-# Pre-push validation - NO e2e (too slow for hooks), but includes web UI tests
-validate-before-push: typecheck lint-arch
-	$(PYTEST) tests/unit tests/integration tests/e2e_web -x -q --tb=short
 
 # Demo - show orchestrator features with mock data
 demo:

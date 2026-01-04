@@ -110,33 +110,12 @@ class Orchestrator:
     def __post_init__(self):
         # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
         # If deps is constructed, all dependencies are present.
-        dep_eval = DependencyEvaluator(self.deps.repository_host, self.deps.events)
+        dep_eval = DependencyEvaluator(
+            self.deps.repository_host,
+            self.deps.events,
+            foundation_milestone=self.config.foundation_milestone,
+        )
         init_orchestrator_components(self, dep_eval)
-
-    @property
-    def repository_host(self) -> RepositoryHost:
-        return self.deps.repository_host
-
-    # Convenience accessors for deps - makes call sites shorter
-    @property
-    def events(self) -> EventSink:
-        return self.deps.events
-
-    @property
-    def runner(self) -> SessionRunner:
-        return self.deps.runner
-
-    @property
-    def fact_gatherer(self) -> "FactGatherer":
-        return self.deps.fact_gatherer
-
-    @property
-    def label_sync(self) -> "LabelSync":
-        return self.deps.label_sync
-
-    @property
-    def session_controller(self) -> "SessionController":
-        return self.deps.session_controller
 
     @property
     def event_hub(self) -> EventHub:
@@ -146,8 +125,8 @@ class Orchestrator:
     def _cleanup_manager(self) -> CleanupManager:
         return CleanupManager(
             self.config, self.deps.repository_host, self.deps.worktree_manager,
-            lambda name: _kill_session(name, self._sm, self.events),
-            lambda name: _session_exists(name, self._sm, self.events),
+            lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
+            lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             lambda issue_number, agent_config: get_worktree_path(self.config, issue_number, agent_config),
             lambda number, session_type="issue": get_session_name(number, session_type),
         )
@@ -166,7 +145,7 @@ class Orchestrator:
         return SessionLauncher(
             self.config, self.deps.events, self.deps.repository_host, self.deps.session_manager,
             self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner,
-            lambda name: _session_exists(name, self._sm, self.events),
+            lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
             self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),
         )
@@ -180,23 +159,8 @@ class Orchestrator:
             planner=self.deps.planner, worktree_manager=self.deps.worktree_manager,
             state_machine_manager=self.deps.state_machine_manager, cleanup_manager=self._cleanup_manager,
             get_review_machine=self._get_review_machine,
-            kill_session=lambda name: _kill_session(name, self._sm, self.events),
+            kill_session=lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
         )
-
-    @property
-    def _session_restorer(self) -> SessionRestorer:
-        return self.deps.session_restorer
-
-    @property
-    def _state_machines(self) -> StateMachineManager: return self.deps.state_machine_manager
-    @property
-    def _sm(self) -> "SessionManager": return self.deps.session_manager
-    @property
-    def _aa(self) -> "ActionApplier": return self.deps.action_applier
-    @property
-    def _fg(self) -> "FactGatherer": return self.deps.fact_gatherer
-    @property
-    def _wm(self) -> WorktreeManager: return self.deps.worktree_manager
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str: return get_session_name(number, session_type)
     def _get_worktree_path(self, issue_number: int, agent_config: AgentConfig) -> Path: return get_worktree_path(self.config, issue_number, agent_config)
@@ -206,15 +170,15 @@ class Orchestrator:
     def _launch_rework_by_number(self, n: int) -> Optional[Session]: return _ch_launch_rework_by_number(n, self.state.pending_reworks, self.launch_rework_session)
     def _launch_triage_by_number(self, n: int) -> Optional[Session]: return _ch_launch_triage_by_number(n, self.state.pending_triage_reviews, self.state.active_sessions, self._launch_triage_session)
 
-    def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]: return _gw_get_issue_machine(issue, self._state_machines)
-    def _get_session_machine(self, name: str, n: int, timeout: int) -> Optional[SessionStateMachine]: return _sl_get_session_machine(name, n, timeout, self._state_machines)
-    def _get_review_machine(self, pr: int, issue: int) -> Optional[ReviewStateMachine]: return _ch_get_review_machine(pr, issue, self._state_machines)
+    def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]: return _gw_get_issue_machine(issue, self.deps.state_machine_manager)
+    def _get_session_machine(self, name: str, n: int, timeout: int) -> Optional[SessionStateMachine]: return _sl_get_session_machine(name, n, timeout, self.deps.state_machine_manager)
+    def _get_review_machine(self, pr: int, issue: int) -> Optional[ReviewStateMachine]: return _ch_get_review_machine(pr, issue, self.deps.state_machine_manager)
 
-    def _restore_running_sessions(self, running: list["DiscoveredSession"]) -> None: _restore_running_sessions(running, self.state.active_sessions, self._session_restorer)
-    def _parse_session_ref(self, session_name: str, operation: str) -> "SessionRef": return _parse_session_ref(session_name, operation, self.events)
-    def _create_session(self, name: str, cmd: str, wd: Path, title: str | None = None) -> bool: return _create_session(name, cmd, wd, title, self._sm, self.events)
-    def _session_exists(self, name: str) -> bool: return _session_exists(name, self._sm, self.events)
-    def _kill_session(self, name: str) -> None: _kill_session(name, self._sm, self.events)
+    def _restore_running_sessions(self, running: list["DiscoveredSession"]) -> None: _restore_running_sessions(running, self.state.active_sessions, self.deps.session_restorer)
+    def _parse_session_ref(self, session_name: str, operation: str) -> "SessionRef": return _parse_session_ref(session_name, operation, self.deps.events)
+    def _create_session(self, name: str, cmd: str, wd: Path, title: str | None = None) -> bool: return _create_session(name, cmd, wd, title, self.deps.session_manager, self.deps.events)
+    def _session_exists(self, name: str) -> bool: return _session_exists(name, self.deps.session_manager, self.deps.events)
+    def _kill_session(self, name: str) -> None: _kill_session(name, self.deps.session_manager, self.deps.events)
     def _refresh_issue(self, n: int) -> Optional[Issue]: return self._github_workflow.refresh_issue(n)
     def _build_labels(self, *labels: str) -> list[str]: return self._github_workflow.build_labels(*labels)
 
@@ -234,10 +198,10 @@ class Orchestrator:
     async def startup(self) -> None: await self._startup_manager.run_startup(self.state)
 
     def launch_session(self, issue: Issue) -> Optional[Session]: return _launch_session(issue, self.state, self._session_launcher)
-    def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self._aa, self.observer, self._wm, self._kill_session, self.config)
+    def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config)
 
     def tick(self) -> bool:
-        self._loop_iteration, cont = _run_tick_impl(self._loop_iteration, self._event_context, self._inflight_stable_ids, self.state, self.events, self._shutdown_requested, self._process_active_sessions, self._check_health, self._run_planning_cycle, self._emit_heartbeat_if_needed)
+        self._loop_iteration, cont = _run_tick_impl(self._loop_iteration, self._event_context, self._inflight_stable_ids, self.state, self.deps.events, self._shutdown_requested, self._process_active_sessions, self._check_health, self._run_planning_cycle, self._emit_heartbeat_if_needed)
         return cont
 
     def _check_health(self) -> HealthDecision:
@@ -246,11 +210,11 @@ class Orchestrator:
     def _process_active_sessions(self) -> None:
         _process_active_sessions(
             self.state, self.observer, self.deps.session_controller, self._completion_handler,
-            self._aa, self._wm, self._kill_session, self.config
+            self.deps.action_applier, self.deps.worktree_manager, self._kill_session, self.config
         )
 
     def _run_planning_cycle(self) -> None:
-        self._last_issue_fetch, self._refresh_requested = _run_planning_cycle_impl(self.config, self.events, self._event_context, self.state, self._fg, self.deps.planner, self.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, self._refresh_requested, self._inflight_stable_ids)
+        self._last_issue_fetch, self._refresh_requested = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, self._refresh_requested, self._inflight_stable_ids)
 
     def _clear_discovered_facts(self) -> None: self._plan_applier._clear_discovered_facts()
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier._emit_heartbeat_if_needed()
@@ -259,7 +223,7 @@ class Orchestrator:
         logger.info("Starting orchestration loop")
 
         # Emit orchestrator.started
-        self.events.publish(TraceEvent(
+        self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_STARTED,
             self._event_context.enrich({
                 "mode": "web" if hasattr(self, "_web_mode") else "headless",
@@ -279,7 +243,7 @@ class Orchestrator:
 
         # Shutdown sequence
         active = self.state.active_sessions
-        self.events.publish(TraceEvent(
+        self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_SHUTDOWN_STARTED,
             self._event_context.enrich({
                 "force": False,
@@ -287,7 +251,7 @@ class Orchestrator:
                 "sessions": [s.issue.number for s in active],
             }),
         ))
-        self.events.publish(TraceEvent(
+        self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_SHUTDOWN_COMPLETED,
             self._event_context.enrich({
                 "force": False,
@@ -300,7 +264,7 @@ class Orchestrator:
         """Request graceful or forced shutdown."""
         self._shutdown_requested = True
         active = self.state.active_sessions
-        self.events.publish(TraceEvent(
+        self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_SHUTDOWN_REQUESTED,
             self._event_context.enrich({
                 "force": force,
@@ -327,7 +291,7 @@ class Orchestrator:
     def pause(self) -> None:
         self.state.paused = True
         logger.info("Orchestrator paused")
-        self.events.publish(TraceEvent(
+        self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_PAUSED,
             self._event_context.enrich({}),
         ))
@@ -335,26 +299,26 @@ class Orchestrator:
     def resume(self) -> None:
         self.state.paused = False
         logger.info("Orchestrator resumed")
-        self.events.publish(TraceEvent(
+        self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_RESUMED,
             self._event_context.enrich({}),
         ))
 
-    def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None: pause_issue_for_reconciliation(self.events, self.repository_host, self._event_context, issue_number, reason)
+    def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None: pause_issue_for_reconciliation(self.deps.events, self.deps.repository_host, self._event_context, issue_number, reason)
     def _apply_plan(self, plan: "Plan") -> None: self._plan_applier._apply_plan(plan, self._pause_issue_for_reconciliation)
     def _fetch_all_issues(self, required_stable_ids: set[str] | None = None) -> list[Issue]: return self._github_workflow.fetch_all_issues(self._get_milestone_filter(), required_stable_ids)
     def update_queue_cache(self) -> None: self._plan_applier.update_queue_cache()
     def _update_dependency_problems(self, dep_blocked: list[tuple["Issue", str]]) -> None: self._github_workflow.update_dependency_problems(self.state, dep_blocked)
     @property
-    def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.events, self.repository_host, self._fg, self.deps.pr_scanner, self.deps.label_sync, self._event_context)
-    def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self._session_restorer)
+    def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.deps.events, self.deps.repository_host, self.deps.fact_gatherer, self.deps.pr_scanner, self.deps.label_sync, self._event_context)
+    def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def _launch_triage_session(self, triage: PendingTriageReview) -> None: _launch_triage_session(triage, self.config, self.launch_session)
     def process_deferred_cleanups(self) -> None: self.state.pending_cleanups = self._github_workflow.process_deferred_cleanups(self.state.pending_cleanups, self._cleanup_manager)
     def _recover_orphaned_cleanups(self) -> None: self._plan_applier._recover_orphaned_cleanups()
     def scan_needs_code_review_prs(self) -> None: self._github_workflow.scan_needs_code_review_prs(self.state)
     def scan_needs_rework_prs(self) -> None: self._github_workflow.scan_needs_rework_prs(self.state)
     def reconcile_orphaned_pr_labels(self) -> int: return self._github_workflow.reconcile_orphaned_pr_labels(ORCHESTRATOR_PR_MARKER)
-    def launch_rework_session(self, rework: PendingRework) -> Optional[Session]: return _launch_rework_session(rework, self.state, self._session_launcher, self._session_restorer)
+    def launch_rework_session(self, rework: PendingRework) -> Optional[Session]: return _launch_rework_session(rework, self.state, self._session_launcher, self.deps.session_restorer)
 
 async def run_orchestrator(config_path: Optional[Path] = None) -> None:
     from ..entrypoints.bootstrap import build_orchestrator

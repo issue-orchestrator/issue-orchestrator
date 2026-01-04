@@ -1,0 +1,1076 @@
+"""Unit tests for OrchestratorSupport.
+
+These tests verify the behavior of support functions extracted from the Orchestrator.
+Tests are behavior-centric, focusing on invariants, state transitions, and outcomes.
+"""
+
+import time
+import pytest
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch, PropertyMock
+from typing import Optional
+
+from issue_orchestrator.control.orchestrator_support import (
+    OrchestratorSupport,
+    log_transition,
+    init_orchestrator_components,
+    pause_issue_for_reconciliation,
+    clear_discovered_facts,
+    emit_heartbeat_if_needed,
+    check_health,
+    run_planning_cycle,
+    run_tick,
+)
+from issue_orchestrator.control.reconciliation import (
+    ReconciliationRequired,
+    ExpectedState,
+    ExternalSnapshot,
+    get_pause_label,
+)
+from issue_orchestrator.control.actions import ActionType, LaunchSessionAction
+from issue_orchestrator.control.health_gate import HealthGate, HealthDecision
+from issue_orchestrator.domain.models import (
+    Issue,
+    Session,
+    SessionStatus,
+    OrchestratorState,
+    PendingReview,
+    PendingRework,
+    PendingTriageReview,
+    PendingCleanup,
+    DiscoveredReview,
+    DiscoveredRework,
+    DiscoveredEscalation,
+    DiscoveredFailure,
+    AgentConfig,
+)
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.events import EventName
+from issue_orchestrator.ports import TraceEvent
+
+
+# =============================================================================
+# Test Fixtures and Helpers
+# =============================================================================
+
+
+@pytest.fixture
+def mock_event_sink():
+    """Create a mock EventSink for tracking published events."""
+    sink = MagicMock()
+    sink.events = []
+
+    def capture_publish(event):
+        sink.events.append(event)
+
+    sink.publish = Mock(side_effect=capture_publish)
+    return sink
+
+
+@pytest.fixture
+def mock_repository_host():
+    """Create a mock RepositoryHost."""
+    host = MagicMock()
+    host.add_label = Mock()
+    host.remove_label = Mock()
+    host.create_issue_key = Mock(side_effect=lambda n: FakeIssueKey(name=str(n)))
+    return host
+
+
+@pytest.fixture
+def sample_orchestrator_state():
+    """Create a sample OrchestratorState for testing."""
+    return OrchestratorState(
+        active_sessions=[],
+        paused=False,
+        pending_reviews=[],
+        pending_reworks=[],
+        pending_triage_reviews=[],
+        discovered_reviews=[],
+        discovered_reworks=[],
+        discovered_escalations=[],
+        discovered_failures=[],
+    )
+
+
+@pytest.fixture
+def sample_event_context():
+    """Create a mock EventContext."""
+    ctx = MagicMock()
+    ctx.tick_id = 1
+    ctx.enrich = Mock(side_effect=lambda d: d)
+    return ctx
+
+
+@pytest.fixture
+def sample_agent_config(tmp_path):
+    """Create a sample AgentConfig."""
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Test prompt")
+    return AgentConfig(
+        prompt_path=prompt_path,
+        worktree_base=tmp_path,
+        model="sonnet",
+        timeout_minutes=45,
+    )
+
+
+def make_issue(number: int, title: str = "Test Issue", labels: list | None = None) -> Issue:
+    """Create a test issue."""
+    return Issue(
+        number=number,
+        title=title,
+        labels=labels or [],
+        state="open",
+    )
+
+
+def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = None) -> Session:
+    """Create a test session for an issue."""
+    issue_key = FakeIssueKey(name=str(issue.number))
+    session_key = SessionKey(issue=issue_key, task=task)
+    worktree = tmp_path or Path("/tmp/test-worktree")
+
+    return Session(
+        key=session_key,
+        issue=issue,
+        agent_config=AgentConfig(
+            prompt_path=Path("/tmp/prompt.md"),
+            worktree_base=Path("/tmp"),
+        ),
+        terminal_id=f"session-{issue.number}",
+        worktree_path=worktree,
+        branch_name=f"issue-{issue.number}",
+        started_at=datetime.now(),
+        status=SessionStatus.RUNNING,
+    )
+
+
+# =============================================================================
+# Tests for log_transition
+# =============================================================================
+
+
+class TestLogTransition:
+    """Tests for the log_transition helper function."""
+
+    def test_logs_state_transition_format(self, caplog):
+        """log_transition emits correctly formatted log message."""
+        import logging
+        caplog.set_level(logging.INFO)
+
+        log_transition(
+            entity_type="issue",
+            number=42,
+            from_state="AVAILABLE",
+            to_state="IN_PROGRESS",
+            reason="session started",
+        )
+
+        # Verify log format includes all components
+        assert "[TRANSITION]" in caplog.text
+        assert "issue #42" in caplog.text
+        assert "AVAILABLE" in caplog.text
+        assert "IN_PROGRESS" in caplog.text
+        assert "session started" in caplog.text
+
+    def test_logs_extra_details_at_debug_level(self, caplog):
+        """log_transition logs extra details at DEBUG level."""
+        import logging
+        caplog.set_level(logging.DEBUG)
+
+        log_transition(
+            entity_type="review",
+            number=100,
+            from_state="QUEUED",
+            to_state="STARTED",
+            reason="reviewer assigned",
+            extra={"reviewer": "agent:reviewer", "cycle": 1},
+        )
+
+        assert "#100" in caplog.text
+        assert "extra" in caplog.text
+
+
+# =============================================================================
+# Tests for pause_issue_for_reconciliation
+# =============================================================================
+
+
+class TestPauseIssueForReconciliation:
+    """Tests for pause_issue_for_reconciliation function."""
+
+    def test_adds_pause_label_on_reconciliation_failure(
+        self, mock_event_sink, mock_repository_host, sample_event_context
+    ):
+        """Reconciliation failure adds pause label to issue."""
+        pause_issue_for_reconciliation(
+            events=mock_event_sink,
+            repository_host=mock_repository_host,
+            event_context=sample_event_context,
+            issue_number=42,
+            reason="Labels changed externally",
+        )
+
+        # Should add the pause label
+        pause_label = get_pause_label()
+        mock_repository_host.add_label.assert_called_once_with(42, pause_label)
+
+    def test_emits_issue_paused_event(
+        self, mock_event_sink, mock_repository_host, sample_event_context
+    ):
+        """Reconciliation pause emits ISSUE_PAUSED_RECONCILE event."""
+        pause_issue_for_reconciliation(
+            events=mock_event_sink,
+            repository_host=mock_repository_host,
+            event_context=sample_event_context,
+            issue_number=99,
+            reason="State drift detected",
+        )
+
+        # Should publish event
+        mock_event_sink.publish.assert_called_once()
+        event = mock_event_sink.events[0]
+        assert event.name == EventName.ISSUE_PAUSED_RECONCILE
+        assert event.data["issue_number"] == 99
+        assert "State drift" in event.data["reason"]
+
+    def test_handles_add_label_failure_gracefully(
+        self, mock_event_sink, mock_repository_host, sample_event_context, caplog
+    ):
+        """If add_label fails, function logs error but doesn't raise."""
+        import logging
+        caplog.set_level(logging.ERROR)
+
+        mock_repository_host.add_label.side_effect = Exception("API error")
+
+        # Should not raise
+        pause_issue_for_reconciliation(
+            events=mock_event_sink,
+            repository_host=mock_repository_host,
+            event_context=sample_event_context,
+            issue_number=42,
+            reason="Test failure",
+        )
+
+        # Should log error
+        assert "Failed to add pause label" in caplog.text
+
+
+# =============================================================================
+# Tests for clear_discovered_facts
+# =============================================================================
+
+
+class TestClearDiscoveredFacts:
+    """Tests for clear_discovered_facts function."""
+
+    def test_clears_all_discovered_fact_lists(self, sample_orchestrator_state):
+        """clear_discovered_facts empties all discovered* lists."""
+        # Populate with test data
+        sample_orchestrator_state.discovered_reviews = [
+            DiscoveredReview(issue_number=1, pr_number=100, pr_url="url", branch_name="branch")
+        ]
+        sample_orchestrator_state.discovered_reworks = [
+            DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="agent:dev", rework_cycle=1)
+        ]
+        sample_orchestrator_state.discovered_escalations = [
+            DiscoveredEscalation(issue_number=3, pr_number=300, rework_cycle=3)
+        ]
+        sample_orchestrator_state.discovered_failures = [
+            DiscoveredFailure(issue_number=4, issue_title="Test", failure_reason="failed")
+        ]
+
+        clear_discovered_facts(sample_orchestrator_state)
+
+        # All lists should be empty
+        assert len(sample_orchestrator_state.discovered_reviews) == 0
+        assert len(sample_orchestrator_state.discovered_reworks) == 0
+        assert len(sample_orchestrator_state.discovered_escalations) == 0
+        assert len(sample_orchestrator_state.discovered_failures) == 0
+
+    def test_preserves_non_discovered_state(self, sample_orchestrator_state):
+        """clear_discovered_facts does not affect other state fields."""
+        # Set up some non-discovered state
+        sample_orchestrator_state.paused = True
+        sample_orchestrator_state.issues_started_count = 5
+        sample_orchestrator_state.pending_reviews = [
+            PendingReview(
+                issue_key=FakeIssueKey(name="1"),
+                pr_number=100,
+                pr_url="url",
+                branch_name="branch",
+            )
+        ]
+
+        clear_discovered_facts(sample_orchestrator_state)
+
+        # Non-discovered fields should be untouched
+        assert sample_orchestrator_state.paused is True
+        assert sample_orchestrator_state.issues_started_count == 5
+        assert len(sample_orchestrator_state.pending_reviews) == 1
+
+
+# =============================================================================
+# Tests for emit_heartbeat_if_needed
+# =============================================================================
+
+
+class TestEmitHeartbeatIfNeeded:
+    """Tests for emit_heartbeat_if_needed function."""
+
+    def test_emits_heartbeat_after_interval(self, mock_event_sink, sample_event_context, sample_orchestrator_state):
+        """Heartbeat is emitted when interval has elapsed."""
+        last_update = time.time() - 60  # 60 seconds ago
+
+        new_timestamp = emit_heartbeat_if_needed(
+            events=mock_event_sink,
+            event_context=sample_event_context,
+            state=sample_orchestrator_state,
+            last_ui_update=last_update,
+            ui_update_interval=30,  # 30 second interval
+        )
+
+        # Should have published heartbeat
+        mock_event_sink.publish.assert_called_once()
+        event = mock_event_sink.events[0]
+        assert event.name == EventName.ORCHESTRATOR_IDLE
+
+        # Should return updated timestamp
+        assert new_timestamp > last_update
+
+    def test_no_heartbeat_before_interval(self, mock_event_sink, sample_event_context, sample_orchestrator_state):
+        """No heartbeat when interval has not elapsed."""
+        last_update = time.time() - 5  # 5 seconds ago
+
+        new_timestamp = emit_heartbeat_if_needed(
+            events=mock_event_sink,
+            event_context=sample_event_context,
+            state=sample_orchestrator_state,
+            last_ui_update=last_update,
+            ui_update_interval=30,  # 30 second interval
+        )
+
+        # Should NOT have published heartbeat
+        mock_event_sink.publish.assert_not_called()
+
+        # Should return same timestamp
+        assert new_timestamp == last_update
+
+
+# =============================================================================
+# Tests for check_health
+# =============================================================================
+
+
+class TestCheckHealth:
+    """Tests for check_health function."""
+
+    def test_returns_ok_when_healthy(self):
+        """check_health returns OK decision when system is healthy."""
+        health_gate = HealthGate(max_concurrent_sessions=3)
+
+        decision = check_health(
+            health_gate=health_gate,
+            active_sessions_count=1,
+            paused=False,
+        )
+
+        assert decision.can_proceed is True
+
+    def test_returns_blocked_when_paused(self):
+        """check_health returns blocked when orchestrator is paused."""
+        health_gate = HealthGate(max_concurrent_sessions=3)
+
+        decision = check_health(
+            health_gate=health_gate,
+            active_sessions_count=0,
+            paused=True,
+        )
+
+        assert decision.can_proceed is False
+        assert "paused" in decision.reason
+
+    def test_returns_blocked_when_at_capacity(self):
+        """check_health returns blocked when at maximum capacity."""
+        health_gate = HealthGate(max_concurrent_sessions=2)
+
+        decision = check_health(
+            health_gate=health_gate,
+            active_sessions_count=2,
+            paused=False,
+        )
+
+        assert decision.can_proceed is False
+        assert "at_capacity" in decision.reason
+
+
+# =============================================================================
+# Tests for OrchestratorSupport._apply_plan
+# =============================================================================
+
+
+class TestOrchestratorSupportApplyPlan:
+    """Tests for OrchestratorSupport._apply_plan method."""
+
+    @pytest.fixture
+    def support(
+        self,
+        sample_orchestrator_state,
+        mock_event_sink,
+        mock_repository_host,
+        sample_event_context,
+    ):
+        """Create an OrchestratorSupport instance for testing."""
+        mock_config = MagicMock()
+        mock_config.cleanup = MagicMock()
+        mock_config.cleanup.without_triage = MagicMock()
+        mock_config.cleanup.without_triage.close_ai_session_tabs = False
+        mock_config.code_review_agent = None
+
+        mock_session_manager = MagicMock()
+        mock_action_applier = MagicMock()
+        mock_fact_gatherer = MagicMock()
+        mock_planner = MagicMock()
+        mock_worktree_manager = MagicMock()
+        mock_state_machine_manager = MagicMock()
+        mock_cleanup_manager = MagicMock()
+        mock_cleanup_manager.should_retry_triage_issue = Mock(return_value=True)
+
+        return OrchestratorSupport(
+            config=mock_config,
+            events=mock_event_sink,
+            repository_host=mock_repository_host,
+            state=sample_orchestrator_state,
+            event_context=sample_event_context,
+            session_manager=mock_session_manager,
+            action_applier=mock_action_applier,
+            fact_gatherer=mock_fact_gatherer,
+            planner=mock_planner,
+            worktree_manager=mock_worktree_manager,
+            state_machine_manager=mock_state_machine_manager,
+            cleanup_manager=mock_cleanup_manager,
+            get_review_machine=Mock(),
+            kill_session=Mock(),
+        )
+
+    def test_empty_plan_does_nothing(self, support, mock_event_sink):
+        """Empty plan (action_count=0) does not emit events or apply actions."""
+        empty_plan = MagicMock()
+        empty_plan.action_count = 0
+        empty_plan.actions = []
+
+        pause_callback = Mock()
+        support._apply_plan(empty_plan, pause_callback)
+
+        # No events should be published for empty plan
+        assert mock_event_sink.publish.call_count == 0
+        pause_callback.assert_not_called()
+
+    def test_emits_apply_started_and_completed_events(self, support, mock_event_sink):
+        """Applying a plan emits APPLY_STARTED and APPLY_COMPLETED events."""
+        mock_action = MagicMock()
+        mock_action.action_type = ActionType.ADD_LABEL
+
+        plan = MagicMock()
+        plan.action_count = 1
+        plan.actions = [mock_action]
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.details = {}
+        support.action_applier.apply = Mock(return_value=mock_result)
+
+        support._apply_plan(plan, Mock())
+
+        # Should have APPLY_STARTED and APPLY_COMPLETED
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.APPLY_STARTED in event_names
+        assert EventName.APPLY_COMPLETED in event_names
+
+    def test_stops_applying_when_paused(self, support, sample_orchestrator_state):
+        """Plan application stops when orchestrator becomes paused."""
+        actions = [MagicMock(action_type=ActionType.ADD_LABEL) for _ in range(3)]
+        plan = MagicMock()
+        plan.action_count = 3
+        plan.actions = actions
+
+        # Pause after first action
+        apply_count = 0
+        def pause_on_second_apply(action):
+            nonlocal apply_count
+            apply_count += 1
+            if apply_count == 1:
+                sample_orchestrator_state.paused = True
+            result = MagicMock()
+            result.success = True
+            result.details = {}
+            return result
+
+        support.action_applier.apply = Mock(side_effect=pause_on_second_apply)
+
+        support._apply_plan(plan, Mock())
+
+        # Should have stopped after 1 action (paused before second)
+        assert apply_count == 1
+
+    def test_reconciliation_required_pauses_issue(self, support, mock_event_sink):
+        """ReconciliationRequired exception triggers issue pause callback."""
+        mock_action = MagicMock()
+        mock_action.action_type = ActionType.ADD_LABEL
+
+        plan = MagicMock()
+        plan.action_count = 1
+        plan.actions = [mock_action]
+
+        # Simulate reconciliation failure
+        support.action_applier.apply = Mock(
+            side_effect=ReconciliationRequired(
+                entity_type="issue",
+                entity_id=42,
+                expected=ExternalSnapshot.for_issue(42, {"in-progress"}),
+                actual=ExternalSnapshot.for_issue(42, {"blocked"}),
+                reason="Labels changed",
+            )
+        )
+
+        pause_callback = Mock()
+        support._apply_plan(plan, pause_callback)
+
+        # Should have called pause callback
+        pause_callback.assert_called_once_with(42, "Labels changed")
+
+        # Should have emitted RECONCILIATION_REQUIRED event
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.RECONCILIATION_REQUIRED in event_names
+
+    def test_triage_issue_skipped_on_cooldown(self, support, mock_event_sink):
+        """CREATE_TRIAGE_ISSUE action is skipped when on cooldown."""
+        mock_action = MagicMock()
+        mock_action.action_type = ActionType.CREATE_TRIAGE_ISSUE
+
+        plan = MagicMock()
+        plan.action_count = 1
+        plan.actions = [mock_action]
+
+        # Set cooldown active
+        support._cleanup_manager.should_retry_triage_issue = Mock(return_value=False)
+
+        support._apply_plan(plan, Mock())
+
+        # Should not have called apply for this action
+        support.action_applier.apply.assert_not_called()
+
+        # Should have emitted APPLY_FAILED
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.APPLY_FAILED in event_names
+
+
+# =============================================================================
+# Tests for OrchestratorSupport._update_state_after_action
+# =============================================================================
+
+
+class TestUpdateStateAfterAction:
+    """Tests for OrchestratorSupport._update_state_after_action method."""
+
+    @pytest.fixture
+    def support_with_state(
+        self,
+        sample_orchestrator_state,
+        mock_event_sink,
+        mock_repository_host,
+        sample_event_context,
+    ):
+        """Create support with accessible state."""
+        mock_config = MagicMock()
+        mock_config.cleanup = MagicMock()
+        mock_config.cleanup.without_triage = MagicMock()
+        mock_config.cleanup.without_triage.close_ai_session_tabs = False
+        mock_config.code_review_agent = None
+
+        return OrchestratorSupport(
+            config=mock_config,
+            events=mock_event_sink,
+            repository_host=mock_repository_host,
+            state=sample_orchestrator_state,
+            event_context=sample_event_context,
+            session_manager=MagicMock(),
+            action_applier=MagicMock(),
+            fact_gatherer=MagicMock(),
+            planner=MagicMock(),
+            worktree_manager=MagicMock(),
+            state_machine_manager=MagicMock(),
+            cleanup_manager=MagicMock(),
+            get_review_machine=Mock(),
+            kill_session=Mock(),
+        )
+
+    def test_queue_review_adds_to_pending_reviews(self, support_with_state, mock_repository_host):
+        """QUEUE_REVIEW action adds PendingReview to state."""
+        from issue_orchestrator.control.actions import QueueReviewAction
+
+        action = QueueReviewAction(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/test/repo/pull/100",
+            branch_name="issue-42",
+        )
+        result = MagicMock(success=True, details={})
+
+        support_with_state._update_state_after_action(action, result)
+
+        # Should have added to pending_reviews
+        assert len(support_with_state.state.pending_reviews) == 1
+        review = support_with_state.state.pending_reviews[0]
+        assert review.pr_number == 100
+        assert review.branch_name == "issue-42"
+
+    def test_queue_review_skips_duplicate(self, support_with_state, mock_repository_host):
+        """QUEUE_REVIEW action skips if PR already in pending_reviews."""
+        from issue_orchestrator.control.actions import QueueReviewAction
+
+        # Pre-populate with existing review
+        existing = PendingReview(
+            issue_key=FakeIssueKey(name="42"),
+            pr_number=100,
+            pr_url="https://github.com/test/repo/pull/100",
+            branch_name="issue-42",
+        )
+        support_with_state.state.pending_reviews.append(existing)
+
+        action = QueueReviewAction(
+            issue_number=42,
+            pr_number=100,  # Same PR
+            pr_url="https://github.com/test/repo/pull/100",
+            branch_name="issue-42",
+        )
+        result = MagicMock(success=True, details={})
+
+        support_with_state._update_state_after_action(action, result)
+
+        # Should NOT have added duplicate
+        assert len(support_with_state.state.pending_reviews) == 1
+
+    def test_queue_rework_adds_to_pending_reworks(self, support_with_state, mock_repository_host):
+        """QUEUE_REWORK action adds PendingRework to state."""
+        from issue_orchestrator.control.actions import QueueReworkAction
+
+        # Add discovered rework for agent type lookup
+        support_with_state.state.discovered_reworks = [
+            DiscoveredRework(
+                issue_number=42,
+                pr_number=100,
+                branch_name="issue-42",
+                agent_type="agent:developer",
+                rework_cycle=2,
+            )
+        ]
+
+        action = QueueReworkAction(
+            issue_number=42,
+            rework_cycle=2,
+        )
+        result = MagicMock(success=True, details={})
+
+        support_with_state._update_state_after_action(action, result)
+
+        # Should have added to pending_reworks
+        assert len(support_with_state.state.pending_reworks) == 1
+        rework = support_with_state.state.pending_reworks[0]
+        assert rework.agent_type == "agent:developer"
+        assert rework.rework_cycle == 2
+
+    def test_cleanup_session_removes_from_pending_cleanups(self, support_with_state):
+        """CLEANUP_SESSION action removes cleanup from pending_cleanups."""
+        from issue_orchestrator.control.actions import CleanupSessionAction
+
+        # Pre-populate with cleanup
+        mock_issue = MagicMock()
+        mock_issue.number = 42
+        cleanup = PendingCleanup(
+            issue=mock_issue,
+            pr_number=100,
+            pr_url="url",
+            branch_name="branch",
+            terminal_session_name="session-42",
+            worktree_path=Path("/tmp/worktree"),
+        )
+        support_with_state.state.pending_cleanups.append(cleanup)
+
+        action = CleanupSessionAction(
+            issue_number=42,
+            pr_number=100,
+            terminal_session_name="session-42",
+            worktree_path="/tmp/worktree",
+            close_tabs=True,
+            remove_worktrees=True,
+        )
+        result = MagicMock(success=True, details={})
+
+        support_with_state._update_state_after_action(action, result)
+
+        # Should have removed from pending_cleanups
+        assert len(support_with_state.state.pending_cleanups) == 0
+
+    def test_create_triage_issue_adds_to_pending_triage(self, support_with_state):
+        """CREATE_TRIAGE_ISSUE action adds to pending_triage_reviews."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+
+        action = CreateTriageIssueAction(
+            title="Triage Batch Review",
+            body="Review these PRs",
+            labels=("agent:triage",),
+            pr_count=5,
+        )
+        result = MagicMock(success=True, details={"issue_number": 999})
+
+        support_with_state._update_state_after_action(action, result)
+
+        # Should have added to pending_triage_reviews
+        assert len(support_with_state.state.pending_triage_reviews) == 1
+        triage = support_with_state.state.pending_triage_reviews[0]
+        assert triage.issue_number == 999
+
+
+# =============================================================================
+# Tests for run_tick
+# =============================================================================
+
+
+class TestRunTick:
+    """Tests for run_tick function."""
+
+    def test_increments_loop_iteration(self, sample_orchestrator_state, mock_event_sink, sample_event_context):
+        """run_tick increments loop iteration counter."""
+        inflight = {}
+
+        new_iteration, should_continue = run_tick(
+            loop_iteration=5,
+            event_context=sample_event_context,
+            inflight_stable_ids=inflight,
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        assert new_iteration == 6
+
+    def test_returns_false_when_shutdown_requested(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        """run_tick returns should_continue=False when shutdown requested."""
+        inflight = {}
+
+        _, should_continue = run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids=inflight,
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=True,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        assert should_continue is False
+
+    def test_emits_tick_started_and_completed_events(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        """run_tick emits TICK_STARTED and TICK_COMPLETED events."""
+        inflight = {}
+
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids=inflight,
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.TICK_STARTED in event_names
+        assert EventName.TICK_COMPLETED in event_names
+
+    def test_skips_planning_when_health_check_fails(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        """run_tick skips planning when health gate blocks."""
+        inflight = {}
+        planning_fn = Mock()
+
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids=inflight,
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.blocked("at_capacity")),
+            run_planning_cycle_fn=planning_fn,
+            emit_heartbeat_fn=Mock(),
+        )
+
+        # Planning should NOT have been called
+        planning_fn.assert_not_called()
+
+        # Should emit PLAN_NOOP event
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.PLAN_NOOP in event_names
+
+    def test_prunes_expired_inflight_ids(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        """run_tick removes expired inflight stable IDs."""
+        now = time.monotonic()
+        inflight = {
+            "expired-id": now - 10,  # Already expired
+            "valid-id": now + 100,   # Still valid
+        }
+
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids=inflight,
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        # Expired ID should be removed
+        assert "expired-id" not in inflight
+        # Valid ID should remain
+        assert "valid-id" in inflight
+
+
+# =============================================================================
+# Tests for OrchestratorSupport.request_refresh
+# =============================================================================
+
+
+class TestRequestRefresh:
+    """Tests for OrchestratorSupport.request_refresh method."""
+
+    @pytest.fixture
+    def support(self, sample_orchestrator_state, mock_event_sink, mock_repository_host, sample_event_context):
+        """Create a minimal OrchestratorSupport for testing."""
+        mock_config = MagicMock()
+        mock_config.cleanup = MagicMock()
+
+        return OrchestratorSupport(
+            config=mock_config,
+            events=mock_event_sink,
+            repository_host=mock_repository_host,
+            state=sample_orchestrator_state,
+            event_context=sample_event_context,
+            session_manager=MagicMock(),
+            action_applier=MagicMock(),
+            fact_gatherer=MagicMock(),
+            planner=MagicMock(),
+            worktree_manager=MagicMock(),
+            state_machine_manager=MagicMock(),
+            cleanup_manager=MagicMock(),
+            get_review_machine=Mock(),
+            kill_session=Mock(),
+        )
+
+    def test_adds_inflight_ids_with_expiry(self, support):
+        """request_refresh adds inflight IDs with expiry timestamp."""
+        inflight_dict = {}
+        ttl = 60.0
+
+        support.request_refresh(
+            inflight_stable_ids={"id-1", "id-2"},
+            inflight_dict=inflight_dict,
+            ttl=ttl,
+        )
+
+        # Both IDs should be in dict
+        assert "id-1" in inflight_dict
+        assert "id-2" in inflight_dict
+
+        # Expiry should be in the future
+        now = time.monotonic()
+        assert inflight_dict["id-1"] > now
+        assert inflight_dict["id-2"] > now
+
+    def test_handles_empty_inflight_ids(self, support, caplog):
+        """request_refresh handles None/empty inflight IDs gracefully."""
+        import logging
+        caplog.set_level(logging.INFO)
+
+        inflight_dict = {}
+
+        support.request_refresh(
+            inflight_stable_ids=None,
+            inflight_dict=inflight_dict,
+            ttl=60.0,
+        )
+
+        # Dict should remain empty
+        assert len(inflight_dict) == 0
+        # Should log the refresh
+        assert "[REFRESH]" in caplog.text
+
+
+# =============================================================================
+# Tests for OrchestratorSupport._check_health
+# =============================================================================
+
+
+class TestSupportCheckHealth:
+    """Tests for OrchestratorSupport._check_health method."""
+
+    @pytest.fixture
+    def support_with_sessions(
+        self,
+        sample_orchestrator_state,
+        mock_event_sink,
+        mock_repository_host,
+        sample_event_context,
+    ):
+        """Create support with active sessions."""
+        mock_config = MagicMock()
+        mock_config.cleanup = MagicMock()
+
+        # Add some active sessions
+        issue = make_issue(1)
+        sample_orchestrator_state.active_sessions = [make_session(issue)]
+
+        return OrchestratorSupport(
+            config=mock_config,
+            events=mock_event_sink,
+            repository_host=mock_repository_host,
+            state=sample_orchestrator_state,
+            event_context=sample_event_context,
+            session_manager=MagicMock(),
+            action_applier=MagicMock(),
+            fact_gatherer=MagicMock(),
+            planner=MagicMock(),
+            worktree_manager=MagicMock(),
+            state_machine_manager=MagicMock(),
+            cleanup_manager=MagicMock(),
+            get_review_machine=Mock(),
+            kill_session=Mock(),
+        )
+
+    def test_passes_session_count_to_health_gate(self, support_with_sessions):
+        """_check_health passes current session count to health gate."""
+        mock_gate = MagicMock()
+        mock_gate.check = Mock(return_value=HealthDecision.ok())
+
+        support_with_sessions._check_health(mock_gate)
+
+        # Should have passed active_sessions count
+        mock_gate.check.assert_called_once()
+        call_kwargs = mock_gate.check.call_args.kwargs
+        assert call_kwargs["active_sessions"] == 1
+
+    def test_passes_paused_state_to_health_gate(self, support_with_sessions):
+        """_check_health passes paused state to health gate."""
+        support_with_sessions.state.paused = True
+
+        mock_gate = MagicMock()
+        mock_gate.check = Mock(return_value=HealthDecision.blocked("paused"))
+
+        support_with_sessions._check_health(mock_gate)
+
+        call_kwargs = mock_gate.check.call_args.kwargs
+        assert call_kwargs["paused"] is True
+
+
+# =============================================================================
+# Tests for OrchestratorSupport._immediate_cleanup
+# =============================================================================
+
+
+class TestImmediateCleanup:
+    """Tests for OrchestratorSupport._immediate_cleanup method."""
+
+    @pytest.fixture
+    def support_for_cleanup(
+        self,
+        sample_orchestrator_state,
+        mock_event_sink,
+        mock_repository_host,
+        sample_event_context,
+    ):
+        """Create support for cleanup testing."""
+        mock_config = MagicMock()
+        mock_config.cleanup = MagicMock()
+        mock_config.cleanup.without_triage = MagicMock()
+        mock_config.cleanup.without_triage.close_ai_session_tabs = True
+        mock_config.code_review_agent = None
+
+        mock_worktree_manager = MagicMock()
+        kill_session = Mock()
+
+        support = OrchestratorSupport(
+            config=mock_config,
+            events=mock_event_sink,
+            repository_host=mock_repository_host,
+            state=sample_orchestrator_state,
+            event_context=sample_event_context,
+            session_manager=MagicMock(),
+            action_applier=MagicMock(),
+            fact_gatherer=MagicMock(),
+            planner=MagicMock(),
+            worktree_manager=mock_worktree_manager,
+            state_machine_manager=MagicMock(),
+            cleanup_manager=MagicMock(),
+            get_review_machine=Mock(),
+            kill_session=kill_session,
+        )
+        return support
+
+    def test_removes_worktree_on_completed_status(self, support_for_cleanup, tmp_path):
+        """COMPLETED status with close_ai_session_tabs removes worktree."""
+        issue = make_issue(1)
+        session = make_session(issue, tmp_path=tmp_path)
+
+        support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)
+
+        # Should have called worktree remove
+        support_for_cleanup.worktree_manager.remove.assert_called_once()
+
+    def test_kills_session_terminal(self, support_for_cleanup, tmp_path):
+        """_immediate_cleanup always attempts to kill session terminal."""
+        issue = make_issue(1)
+        session = make_session(issue, tmp_path=tmp_path)
+
+        support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)
+
+        # Should have called kill_session
+        support_for_cleanup.kill_session.assert_called_once_with(session.terminal_id)
+
+    def test_handles_cleanup_errors_gracefully(self, support_for_cleanup, tmp_path):
+        """_immediate_cleanup handles errors without raising."""
+        issue = make_issue(1)
+        session = make_session(issue, tmp_path=tmp_path)
+
+        # Make both operations fail
+        support_for_cleanup.worktree_manager.remove.side_effect = Exception("Worktree error")
+        support_for_cleanup.kill_session.side_effect = Exception("Kill error")
+
+        # Should not raise
+        support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Users can use these short names or provide their own "module.path.ClassName"
 BUILTIN_STRATEGIES = {
     "due_date": "issue_orchestrator.control.scheduler.DueDateStrategy",
-    "number": "issue_orchestrator.control.scheduler.NumberStrategy",
+    "milestone_number": "issue_orchestrator.control.scheduler.MilestoneNumberStrategy",
     "pattern": "issue_orchestrator.control.scheduler.PatternStrategy",
     "name": "issue_orchestrator.control.scheduler.NameStrategy",
 }
@@ -60,14 +60,20 @@ class DueDateStrategy:
         return (float("inf"),)
 
 
-class NumberStrategy:
-    """Sort by milestone number (ascending), nulls last."""
+class MilestoneNumberStrategy:
+    """Extract first number from milestone name for sorting.
+
+    Handles common patterns like M1, M10, Sprint 5, v2.0, etc.
+    Sorts numerically so M1 < M2 < M10 (not alphabetically where M10 < M2).
+    """
 
     def get_sort_key(self, issue: Issue) -> SortKey:
-        """Get sort key based on milestone number."""
-        if issue.milestone_number is not None:
-            return (issue.milestone_number,)
-        # No milestone number - sort to end
+        """Get sort key by extracting first number from milestone name."""
+        if issue.milestone:
+            match = re.search(r"(\d+)", issue.milestone)
+            if match:
+                return (int(match.group(1)),)
+        # No milestone or no number found - sort to end
         return (float("inf"),)
 
 
@@ -223,6 +229,7 @@ class Scheduler:
                 report = self.dependency_evaluator.evaluate(
                     issue_number=issue.number,
                     issue_body=issue.body,
+                    source_milestone=issue.milestone,
                 )
                 if not report.runnable:
                     dependency_blocked.append((issue, report.summary()))

@@ -218,7 +218,7 @@ async def snapshot() -> JSONResponse:
 
     from ..control.snapshot_builder import SnapshotBuilder
 
-    builder = SnapshotBuilder(config=_orchestrator.config, repository_host=_orchestrator.repository_host)
+    builder = SnapshotBuilder(config=_orchestrator.config, repository_host=_orchestrator.deps.repository_host)
     snapshot_id = _orchestrator.event_hub.last_event_id
     last_tick_id = _orchestrator._event_context.tick_id
 

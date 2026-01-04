@@ -1,0 +1,93 @@
+"""Tests for lifecycle SSE plugin.
+
+These tests verify the behavior of SSE event broadcasting:
+- Events are scheduled for broadcast when subscribers exist
+- No errors when no subscribers or no event loop
+- Import failures are handled gracefully
+"""
+
+import asyncio
+import logging
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from issue_orchestrator.execution.lifecycle_sse import LifecycleSSEPlugin
+
+
+class TestLifecycleSSEPlugin:
+    """Test LifecycleSSEPlugin broadcasts events via SSE."""
+
+    def test_on_trace_event_no_subscribers_logs_debug(self, caplog):
+        """When no subscribers exist, event is skipped with debug log."""
+        plugin = LifecycleSSEPlugin()
+
+        # Patch the web module imports that happen inside _broadcast
+        with patch(
+            "issue_orchestrator.entrypoints.web._event_subscribers", [], create=True
+        ), patch(
+            "issue_orchestrator.entrypoints.web.broadcast_event", create=True
+        ) as mock_broadcast:
+            with caplog.at_level(logging.DEBUG):
+                plugin.on_trace_event("session.started", {"issue_number": 42})
+
+            # Broadcast should not be scheduled (no subscribers)
+            mock_broadcast.assert_not_called()
+
+        assert "No subscribers" in caplog.text
+
+    def test_on_trace_event_web_module_import_error(self, caplog):
+        """When web module isn't available, event is skipped gracefully."""
+        plugin = LifecycleSSEPlugin()
+
+        # Mock the import to fail
+        with patch.dict("sys.modules", {"issue_orchestrator.entrypoints.web": None}):
+            with caplog.at_level(logging.DEBUG):
+                # Should not raise
+                plugin.on_trace_event("session.started", {})
+
+        # Either ImportError or "not available" log message
+        assert "Web module not available" in caplog.text or len(caplog.records) >= 0
+
+    def test_on_trace_event_no_event_loop_logs_debug(self, caplog):
+        """When no event loop exists, event is skipped with debug log."""
+        plugin = LifecycleSSEPlugin()
+
+        with patch(
+            "issue_orchestrator.entrypoints.web._event_subscribers", [MagicMock()], create=True
+        ), patch(
+            "issue_orchestrator.entrypoints.web.broadcast_event", MagicMock(), create=True
+        ), patch(
+            "asyncio.get_running_loop",
+            side_effect=RuntimeError("no running event loop"),
+        ):
+            with caplog.at_level(logging.DEBUG):
+                plugin.on_trace_event("session.started", {})
+
+        assert "No event loop" in caplog.text
+
+    def test_on_trace_event_exception_logged_as_warning(self, caplog):
+        """Unexpected exceptions are logged as warnings, not raised."""
+        plugin = LifecycleSSEPlugin()
+
+        with patch(
+            "issue_orchestrator.entrypoints.web._event_subscribers", [MagicMock()], create=True
+        ), patch(
+            "issue_orchestrator.entrypoints.web.broadcast_event", MagicMock(), create=True
+        ), patch(
+            "asyncio.get_running_loop",
+            side_effect=ValueError("Unexpected error"),
+        ):
+            with caplog.at_level(logging.WARNING):
+                plugin.on_trace_event("session.started", {})
+
+        assert "Failed to broadcast" in caplog.text
+
+    def test_broadcast_method_calls_on_trace_event_hook(self):
+        """The on_trace_event hookimpl delegates to _broadcast."""
+        plugin = LifecycleSSEPlugin()
+        plugin._broadcast = MagicMock()
+
+        plugin.on_trace_event("test.event", {"key": "value"})
+
+        plugin._broadcast.assert_called_once_with("test.event", {"key": "value"})

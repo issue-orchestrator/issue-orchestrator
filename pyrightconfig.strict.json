@@ -5,7 +5,7 @@
     "src/issue_orchestrator/control",
     "src/issue_orchestrator/events"
   ],
-  "pythonVersion": "3.11",
+  "pythonVersion": "3.14",
   "venvPath": ".",
   "venv": ".venv",
   "typeCheckingMode": "strict",

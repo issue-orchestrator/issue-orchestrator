@@ -80,7 +80,7 @@ markers = [
 
 [tool.pyright]
 include = ["src"]
-pythonVersion = "3.11"
+pythonVersion = "3.14"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "standard"

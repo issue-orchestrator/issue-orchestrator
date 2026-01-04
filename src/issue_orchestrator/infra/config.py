@@ -145,6 +145,8 @@ class Config:
     milestone_sort: str = "due_date"
     # Config passed to strategy via **kwargs (e.g., pattern="M(\\d+)" for PatternStrategy)
     milestone_sort_config: dict = field(default_factory=dict)
+    # Foundation milestone - dependencies must be same milestone OR in foundation
+    foundation_milestone: str = "M0"
 
     # Cleanup configuration - when to close AI session tabs and remove worktrees
     cleanup: CleanupConfig = field(default_factory=CleanupConfig)
@@ -265,6 +267,7 @@ class Config:
             "filter_label": self.filter_label,
             "filter_milestone": self.filter_milestone,
             "filter_milestones": list(self.filter_milestones),
+            "foundation_milestone": self.foundation_milestone,
             "filter_issue": self.filter_issue,
             "e2e_pr_labels": self.e2e_pr_labels,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -492,6 +495,7 @@ class Config:
         # Milestone sorting strategy
         config.milestone_sort = data.get("milestone_sort", "due_date")
         config.milestone_sort_config = data.get("milestone_sort_config", {})
+        config.foundation_milestone = data.get("foundation_milestone", "M0")
 
         # Tab cleanup behavior
         config.close_completed_tabs = data.get("close_completed_tabs", True)

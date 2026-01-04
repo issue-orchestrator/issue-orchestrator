@@ -1,0 +1,80 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Classify changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - src/**
+              - tests/**
+              - tools/**
+              - Makefile
+              - requirements*.txt
+              - pyproject.toml
+              - pyrightconfig*.json
+              - importlinter.toml
+              - .github/workflows/**
+            docs_only:
+              - docs/**
+              - "**/*.md"
+              - LICENSE
+              - .gitignore
+
+  validate:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+
+      - name: Install dependencies
+        if: needs.changes.outputs.python == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Cache tool state
+        if: needs.changes.outputs.python == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            .pytest_cache
+            .pyright
+            ~/.cache/pip
+            ~/.cache/pre-commit
+          key: tooling-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'pyproject.toml', 'pyrightconfig*.json', 'importlinter.toml', 'tools/ast_guardrails.yml', 'Makefile') }}
+
+      - name: Run validate
+        if: needs.changes.outputs.python == 'true'
+        run: make validate
+
+      - name: Skip validation (no Python-impacting changes)
+        if: needs.changes.outputs.python != 'true'
+        run: echo "No Python-impacting changes detected. Skipping."

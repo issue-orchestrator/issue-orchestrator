@@ -174,14 +174,20 @@ class TestDependencyReport:
 class MockIssueChecker:
     """Mock issue checker for testing."""
 
-    def __init__(self):
+    def __init__(self, default_milestone: str | None = "M1"):
         self.issues: dict[int, str] = {}  # issue_number -> state
         self.error_on: set[int] = set()  # issues that raise errors
+        self._default_milestone = default_milestone
 
     def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
         if issue_number in self.error_on:
             raise Exception("API error")
         return self.issues.get(issue_number)
+
+    def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+        if issue_number in self.error_on:
+            raise Exception("API error")
+        return self._default_milestone
 
 
 class CollectingEventSink:
@@ -216,6 +222,7 @@ class TestDependencyEvaluator:
         report = evaluator.evaluate(
             issue_number=1,
             issue_body="Depends-on: #10",
+            source_milestone="M1",
         )
 
         assert report.runnable
@@ -229,6 +236,7 @@ class TestDependencyEvaluator:
         report = evaluator.evaluate(
             issue_number=1,
             issue_body="Depends-on: #10",
+            source_milestone="M1",
         )
 
         assert not report.runnable
@@ -241,6 +249,7 @@ class TestDependencyEvaluator:
         report = evaluator.evaluate(
             issue_number=1,
             issue_body="Depends-on: #99",
+            source_milestone="M1",
         )
 
         assert not report.runnable
@@ -254,6 +263,7 @@ class TestDependencyEvaluator:
         report = evaluator.evaluate(
             issue_number=1,
             issue_body="Depends-on: #10",
+            source_milestone="M1",
         )
 
         assert not report.runnable
@@ -273,6 +283,7 @@ class TestDependencyEvaluator:
             Depends-on: #20
             Depends-on: #30
             """,
+            source_milestone="M1",
         )
 
         assert not report.runnable
@@ -287,6 +298,7 @@ class TestDependencyEvaluator:
         evaluator.evaluate(
             issue_number=1,
             issue_body="Depends-on: #10",
+            source_milestone="M1",
         )
 
         assert len(events.events) == 1
@@ -327,6 +339,7 @@ class TestDependencyGating:
         report = evaluator.evaluate(
             issue_number=200,  # B
             issue_body="Depends-on: #100",  # depends on A
+            source_milestone="M1",
         )
 
         assert not report.runnable, "B should be blocked when A is open"
@@ -338,6 +351,7 @@ class TestDependencyGating:
         report = evaluator.evaluate(
             issue_number=200,  # B
             issue_body="Depends-on: #100",  # depends on A
+            source_milestone="M1",
         )
 
         assert report.runnable, "B should be runnable when A is closed"
@@ -349,6 +363,7 @@ class TestDependencyGating:
         report = evaluator.evaluate(
             issue_number=200,  # B
             issue_body="Depends-on: #100",  # depends on A
+            source_milestone="M1",
         )
 
         assert not report.runnable, "B should be blocked when A is missing"
@@ -361,6 +376,7 @@ class TestDependencyGating:
         report = evaluator.evaluate(
             issue_number=200,  # B
             issue_body="Depends-on: #100",  # depends on A
+            source_milestone="M1",
         )
 
         assert not report.runnable, "B should be blocked when A is unknown"
@@ -375,7 +391,6 @@ class TestPriorityAndDependenciesTogether:
         from issue_orchestrator.domain.models import Issue
         from issue_orchestrator.control.scheduler import Scheduler
         from issue_orchestrator.infra.config import Config
-        from unittest.mock import MagicMock
 
         # Create issue with priority in title AND dependency in body
         issue = Issue(
@@ -387,9 +402,7 @@ class TestPriorityAndDependenciesTogether:
         )
 
         # Verify priority is extracted from title
-        config = MagicMock(spec=Config)
-        config.milestone_sort = "number"
-        config.milestone_sort_config = {}
+        config = Config()
         scheduler = Scheduler(config)
 
         priority = scheduler._get_priority_value(issue)
@@ -407,7 +420,11 @@ class TestPriorityAndDependenciesTogether:
         checker.issues[20] = "closed"  # Second dep is closed
 
         evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
-        report = evaluator.evaluate(issue_number=issue.number, issue_body=issue.body)
+        report = evaluator.evaluate(
+            issue_number=issue.number,
+            issue_body=issue.body,
+            source_milestone="M1",
+        )
 
         assert not report.runnable, "Should be blocked - #10 is still open"
         assert len(report.unsatisfied) == 1
@@ -425,7 +442,7 @@ class TestDependencyStateTransitions:
         issue_body = "Depends-on: #100"
 
         # First evaluation: dependency not found (MISSING)
-        report1 = evaluator.evaluate(issue_number=1, issue_body=issue_body)
+        report1 = evaluator.evaluate(issue_number=1, issue_body=issue_body, source_milestone="M1")
         assert not report1.runnable, "Should be blocked - dependency missing"
         assert len(report1.missing) == 1
         assert report1.missing[0].issue_number == 100
@@ -434,7 +451,7 @@ class TestDependencyStateTransitions:
         checker.issues[100] = "closed"
 
         # Second evaluation: dependency now satisfied
-        report2 = evaluator.evaluate(issue_number=1, issue_body=issue_body)
+        report2 = evaluator.evaluate(issue_number=1, issue_body=issue_body, source_milestone="M1")
         assert report2.runnable, "Should be runnable - dependency now exists and is closed"
         assert len(report2.satisfied) == 1
         assert report2.satisfied[0].issue_number == 100
@@ -447,7 +464,7 @@ class TestDependencyStateTransitions:
         issue_body = "Depends-on: #100"
 
         # First evaluation: dependency not found (MISSING)
-        report1 = evaluator.evaluate(issue_number=1, issue_body=issue_body)
+        report1 = evaluator.evaluate(issue_number=1, issue_body=issue_body, source_milestone="M1")
         assert not report1.runnable
         assert len(report1.missing) == 1
 
@@ -455,7 +472,7 @@ class TestDependencyStateTransitions:
         checker.issues[100] = "open"
 
         # Second evaluation: dependency exists but unsatisfied
-        report2 = evaluator.evaluate(issue_number=1, issue_body=issue_body)
+        report2 = evaluator.evaluate(issue_number=1, issue_body=issue_body, source_milestone="M1")
         assert not report2.runnable, "Should still be blocked - dependency is open"
         assert len(report2.unsatisfied) == 1
         assert report2.unsatisfied[0].issue_number == 100

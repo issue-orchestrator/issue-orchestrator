@@ -591,13 +591,23 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             check_dependencies=self.dependency_evaluator is not None,
         )
 
-        # Record dependency-blocked items
+        # Record dependency-blocked items and add cross-milestone labels
         for issue, reason in dependency_blocked:
             skipped.append(SkippedItem(
                 item_type="issue",
                 number=issue.number,
                 reason=f"dependency: {reason}",
             ))
+            # Add cross-milestone label if this is a milestone scope violation
+            if "cross-milestone" in reason.lower():
+                actions.append(AddLabelAction(
+                    issue_number=issue.number,
+                    label=labels.BLOCKED_CROSS_MILESTONE,
+                    reason=f"dependency violates milestone scope: {reason}",
+                    expected=self._build_expected_for_mutation(
+                        issue.number, snapshot, reason="add cross-milestone label"
+                    ),
+                ))
 
         # Filter out issues already being worked on or just completed (with PRs pending review)
         issues_with_pending_reviews = {r.issue_number for r in snapshot.discovered_reviews}
@@ -802,7 +812,9 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         # Check dependencies
         issue = next((i for i in snapshot.issues if i.number == issue_number), None)
         if issue and self.dependency_evaluator and issue.body:
-            report = self.dependency_evaluator.evaluate(issue.number, issue.body)
+            report = self.dependency_evaluator.evaluate(
+                issue.number, issue.body, source_milestone=issue.milestone
+            )
             if not report.runnable:
                 return f"Blocked by dependencies: {report.summary()}"
 

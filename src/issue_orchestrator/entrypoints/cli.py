@@ -850,7 +850,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
     from .cli_tools.setup_wizard import run_wizard
 
     target_path = Path(args.path).expanduser().resolve() if args.path else None
-    run_wizard(target_path)
+    dry_run = getattr(args, 'dry_run', False)
+    run_wizard(target_path, dry_run=dry_run)
     return 0
 
 
@@ -1629,9 +1630,14 @@ def cmd_demo(args: argparse.Namespace) -> int:
         def __init__(self):
             # Issue #1 is closed (satisfied), others are open
             self.states = {1: "closed", 2: "open", 3: "open", 4: "open", 5: "open"}
+            # All mock issues are in M1 for demo purposes
+            self.milestones = {1: "M1", 2: "M1", 3: "M1", 4: "M1", 5: "M1"}
 
         def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
             return self.states.get(issue_number)
+
+        def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+            return self.milestones.get(issue_number)
 
     class CollectingEventSink:
         """Collects events for display."""
@@ -1643,13 +1649,19 @@ def cmd_demo(args: argparse.Namespace) -> int:
     checker = MockIssueChecker()
     events = CollectingEventSink()
 
-    # Create evaluator and scheduler
-    evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+    # Create config first so we can use foundation_milestone
     config = Config(
         repo="demo/repo",
         repo_root=Path("."),
         agents={"claude": AgentConfig(prompt_path=Path("prompt.txt"), worktree_base=Path("/tmp"))},
         max_concurrent_sessions=2,
+    )
+
+    # Create evaluator and scheduler
+    evaluator = DependencyEvaluator(
+        issue_checker=checker,
+        events=events,
+        foundation_milestone=config.foundation_milestone,
     )
     scheduler = Scheduler(config=config, dependency_evaluator=evaluator)
 
@@ -1665,7 +1677,9 @@ def cmd_demo(args: argparse.Namespace) -> int:
     dep_table.add_column("Runnable?")
 
     for issue in issues:
-        report = evaluator.evaluate(issue.number, issue.body or "")
+        report = evaluator.evaluate(
+            issue.number, issue.body or "", source_milestone=issue.milestone
+        )
         deps = parse_dependencies(issue.body or "")
         dep_str = ", ".join(f"#{d[0]}" for d in deps) if deps else "-"
 
@@ -1975,6 +1989,11 @@ def main() -> int:
         nargs="?",
         default=None,
         help="Project directory to set up (default: prompts interactively)"
+    )
+    setup_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what files would be created/modified without writing them"
     )
     setup_parser.set_defaults(func=cmd_setup)
 

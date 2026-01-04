@@ -98,9 +98,9 @@ def create_test_orchestrator(
         label_sync: Optional LabelSync override for testing
 
     Access mocks via:
-        - orchestrator.events (MockEventSink)
-        - orchestrator.runner (MockSessionRunner)
-        - orchestrator.runner.plugin (MockTerminalPlugin for session call assertions)
+        - orchestrator.deps.events (MockEventSink)
+        - orchestrator.deps.runner (MockSessionRunner)
+        - orchestrator.deps.runner.plugin (MockTerminalPlugin for session call assertions)
     """
     from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
 
@@ -468,8 +468,8 @@ class TestLaunchSession:
         session = orchestrator.launch_session(issue)
 
         # Verify session was created via plugin
-        assert len(orchestrator.runner.plugin.create_session_calls) == 1
-        call = orchestrator.runner.plugin.create_session_calls[0]
+        assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1
+        call = orchestrator.deps.runner.plugin.create_session_calls[0]
         assert call["session_id"] == 1  # issue number
         assert isinstance(call["command"], str)
         assert call["working_dir"] == "/tmp/worktree"
@@ -1355,7 +1355,7 @@ class TestControlMethods:
 
         orchestrator.request_shutdown()
 
-        events = [e for e in orchestrator.events.events if e.name == "orchestrator.shutdown_requested"]
+        events = [e for e in orchestrator.deps.events.events if e.name == "orchestrator.shutdown_requested"]
         assert len(events) == 1
         assert events[0].data["force"] is False
         assert events[0].data["active_session_count"] == 0
@@ -1371,7 +1371,7 @@ class TestControlMethods:
 
         orchestrator.request_shutdown(force=True)
 
-        events = [e for e in orchestrator.events.events if e.name == "orchestrator.shutdown_requested"]
+        events = [e for e in orchestrator.deps.events.events if e.name == "orchestrator.shutdown_requested"]
         assert len(events) == 1
         assert events[0].data["force"] is True
         assert events[0].data["active_session_count"] == 1
@@ -1385,7 +1385,7 @@ class TestControlMethods:
 
         await orchestrator.run_loop()
 
-        event_names = [e.name for e in orchestrator.events.events]
+        event_names = [e.name for e in orchestrator.deps.events.events]
         assert "orchestrator.shutdown_started" in event_names
         assert "orchestrator.shutdown_completed" in event_names
 
@@ -1533,7 +1533,7 @@ class TestGatherTriageFacts:
         sample_config.triage_review_threshold = 5
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
         assert facts is None
 
     def test_gather_triage_facts_returns_none_with_zero_threshold(self, sample_config, mock_repository_host):
@@ -1543,7 +1543,7 @@ class TestGatherTriageFacts:
         sample_config.triage_review_threshold = 0
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
         assert facts is None
 
     def test_gather_triage_facts_returns_facts_below_threshold(self, sample_config, mock_repository_host):
@@ -1559,7 +1559,7 @@ class TestGatherTriageFacts:
         ]
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         # Facts should be returned (Planner decides whether to act)
         assert facts is not None
@@ -1582,7 +1582,7 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         assert facts is not None
         assert facts.pr_count == 3
@@ -1608,7 +1608,7 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = [existing_issue]
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         assert facts is not None
         assert facts.existing_triage_issue == 100
@@ -1628,7 +1628,7 @@ class TestGatherTriageFacts:
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        facts = orchestrator.fact_gatherer.gather_triage_facts(orchestrator.state)
+        facts = orchestrator.deps.fact_gatherer.gather_triage_facts(orchestrator.state)
 
         assert facts is not None
         assert len(facts.prs) == 2
@@ -1705,8 +1705,8 @@ class TestLaunchReviewSession:
         session = orchestrator.launch_review_session(review)
 
         # Verify session was created via plugin
-        assert len(orchestrator.runner.plugin.create_session_calls) == 1
-        call = orchestrator.runner.plugin.create_session_calls[0]
+        assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1
+        call = orchestrator.deps.runner.plugin.create_session_calls[0]
         # Session ID should be review-{pr_number} encoded as integer
         assert call["session_id"] == 123  # PR number
 
@@ -1820,7 +1820,7 @@ class TestLaunchReviewSession:
         orchestrator.launch_review_session(review)
 
         # Should check for review-{pr_number} session
-        assert 123 in orchestrator.runner.plugin.session_exists_calls
+        assert 123 in orchestrator.deps.runner.plugin.session_exists_calls
 
     def test_launch_review_session_returns_none_without_agent_config(self, sample_config):
         """Test that launch_review_session returns None without code_review_agent configured."""

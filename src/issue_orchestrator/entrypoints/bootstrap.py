@@ -187,6 +187,7 @@ def build_orchestrator(
         events=events,
         issue_resolver=issue_resolver,
         repo=config.repo,
+        foundation_milestone=config.foundation_milestone,
     ) if github else None
     session_manager = SessionManager(runner=runner, events=events, config=config)
     label_sync = LabelSync(labels=github, events=events, pr_tracker=github) if github else None

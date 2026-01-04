@@ -846,6 +846,47 @@ class GitHubAdapter:
             logger.debug("Error checking issue %s in %s: %s", issue_number, target_repo, e)
             raise
 
+    def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+        """Get the milestone name of an issue (or None if no milestone).
+
+        This method implements the IssueStateChecker protocol for milestone validation.
+
+        Args:
+            issue_number: The issue number to check.
+            repo: Optional repository in owner/repo format for cross-repo dependencies.
+                  If None, uses this adapter's configured repo.
+
+        Returns:
+            The milestone name (title), or None if the issue has no milestone.
+        """
+        target_repo = repo or self.repo
+        try:
+            if target_repo != self.repo:
+                temp_client = GitHubHttpClient(
+                    GitHubHttpConfig(
+                        repo=target_repo,
+                        token=self._client._config.token,
+                        base_url=self._client._config.base_url,
+                        timeout_seconds=self._client._config.timeout_seconds,
+                    )
+                )
+                output = temp_client.get_issue(issue_number)
+                temp_client.close()
+            else:
+                output = self._client.get_issue(issue_number)
+
+            if isinstance(output, dict):
+                milestone = output.get("milestone")
+                if milestone and isinstance(milestone, dict):
+                    return milestone.get("title")
+            return None
+        except GitHubHttpError as e:
+            logger.debug("Issue %s in %s not found: %s", issue_number, target_repo, e)
+            return None
+        except Exception as e:
+            logger.debug("Error checking milestone for issue %s in %s: %s", issue_number, target_repo, e)
+            raise
+
     def create_issue_key(self, issue_number: int) -> "GitHubIssueKey":
         """Create a GitHubIssueKey for the given issue number.
 

@@ -237,6 +237,7 @@ class SessionLauncher:
                 report = self._dependency_evaluator.evaluate(
                     issue_number=issue.number,
                     issue_body=fresh_issue.body,
+                    source_milestone=fresh_issue.milestone,
                 )
                 if not report.runnable:
                     log_transition(

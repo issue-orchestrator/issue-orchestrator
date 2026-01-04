@@ -48,6 +48,21 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
         """
         ...
 
+    def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+        """Get the milestone name of an issue (or None if no milestone).
+
+        This method is used by DependencyEvaluator to validate milestone scope.
+
+        Args:
+            issue_number: The issue number to check.
+            repo: Optional repository in owner/repo format for cross-repo
+                  dependencies. If None, uses the default repo.
+
+        Returns:
+            The milestone name (title), or None if no milestone assigned.
+        """
+        ...
+
     def create_issue_key(self, issue_number: int) -> "IssueKey":
         """Create an IssueKey for the given issue number.
 

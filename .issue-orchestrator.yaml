@@ -55,7 +55,7 @@ review:
 # Validation gate - blocks push if validation fails
 validation:
   publish_gate:
-    cmd: "make validate-before-push"
+    cmd: "make validate"
     timeout_seconds: 300  # 5 minutes for typecheck + lint + unit tests
 
 validation_policy:

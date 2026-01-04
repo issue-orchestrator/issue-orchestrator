@@ -8,11 +8,8 @@ import pytest
 from unittest.mock import Mock, MagicMock
 
 
-# Import the helper - it's in e2e/conftest.py
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "e2e"))
-from conftest import wait_with_process_check
+# Import the helper - now in e2e/fixtures/assertions.py
+from tests.e2e.fixtures import wait_with_process_check
 
 
 class TestWaitWithProcessCheck:

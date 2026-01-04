@@ -26,6 +26,7 @@ PR_PENDING = "pr-pending"
 BLOCKED = "blocked"                      # generic blocking (deps, external, etc.)
 BLOCKED_FAILED = "blocked-failed"        # session crashed/failed/timed out
 BLOCKED_NEEDS_HUMAN = "blocked-needs-human"  # needs human decision
+BLOCKED_CROSS_MILESTONE = "blocked-cross-milestone"  # dependency violates milestone scope
 
 # Legacy label names (for backwards compatibility during migration)
 LEGACY_NEEDS_HUMAN = "needs-human"

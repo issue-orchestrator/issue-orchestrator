@@ -85,6 +85,38 @@ class DetectedState:
     prompt_candidates: list[Path] = field(default_factory=list)
 
 
+@dataclass
+class PlannedWrite:
+    """A file write that would be performed."""
+
+    path: Path
+    content: str
+    action: str  # "create", "overwrite", or "append"
+
+    def size_display(self) -> str:
+        """Return human-readable size."""
+        size = len(self.content.encode('utf-8'))
+        if size < 1024:
+            return f"{size} B"
+        return f"{size / 1024:.1f} KB"
+
+
+class FileCollector:
+    """Collects planned file writes for dry-run mode."""
+
+    def __init__(self) -> None:
+        self.writes: list[PlannedWrite] = []
+        self.labels: list[tuple[str, str, str]] = []  # (name, color, description)
+
+    def add_write(self, path: Path, content: str, action: str = "create") -> None:
+        """Record a planned file write."""
+        self.writes.append(PlannedWrite(path, content, action))
+
+    def add_label(self, name: str, color: str, description: str) -> None:
+        """Record a planned GitHub label creation."""
+        self.labels.append((name, color, description))
+
+
 def _github_adapter(repo: str):
     """Get a GitHubAdapter for the given repo.
 
@@ -362,22 +394,6 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
 
         prompter.print(f"✓ Added {agent_name}\n")
 
-    # Create agent labels on GitHub
-    prompter.print("--- Agent Labels ---")
-    if prompter.yes_no("Create agent labels on GitHub now?"):
-        client = _github_adapter(str(config["repo"]))
-        for agent_name in config["agents"].keys():
-            try:
-                client.create_label(
-                    agent_name,
-                    color="1D76DB",
-                    description=f"Issues for {agent_name.split(':')[-1]} agent",
-                    force=True,
-                )
-                prompter.print(f"  ✓ {agent_name}")
-            except Exception:
-                prompter.print(f"  ✗ {agent_name} (may already exist)")
-
     # Concurrency
     prompter.print("\n--- Concurrency Settings ---")
     max_sessions = prompter.input("Max concurrent agent sessions", "3")
@@ -385,17 +401,25 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
         "max_concurrent_sessions": int(max_sessions),
     }
 
-    # Milestone sorting
-    prompter.print("\n--- Issue Prioritization ---")
-    prompter.print("How should issues be sorted when multiple are available?\n")
-    prompter.print("  due_date - By milestone due date (earliest first)")
-    prompter.print("  number   - By milestone number (lowest first)")
-    prompter.print("  pattern  - Extract number from milestone name (e.g., 'M13' → 13)")
-    prompter.print("  name     - Alphabetically by milestone name\n")
-    milestone_sort = prompter.input("Milestone sort strategy", "due_date")
-    if milestone_sort not in ("due_date", "number", "pattern", "name"):
-        prompter.print(f"  Invalid strategy '{milestone_sort}', using 'due_date'")
-        milestone_sort = "due_date"
+    # Issue scheduling explanation and milestone sorting
+    prompter.print("\n--- Issue Scheduling ---")
+    prompter.print("Issues are scheduled using a multi-level sort:\n")
+    prompter.print("  1. Dependencies  - Issues with 'blocked by #N' wait for #N to close")
+    prompter.print("  2. Milestone     - Configurable strategy (see below)")
+    prompter.print("  3. Priority tier - From issue title: [P0-x] < [P1-x] < [P2-x] < [P3-x]")
+    prompter.print("  4. Sequence      - The number after Px: [P1-001] < [P1-002]")
+    prompter.print("  5. Issue number  - Tie-breaker (lower first)\n")
+    prompter.print("Milestone sort strategies:")
+    prompter.print("  due_date         - By milestone due date (earliest first)")
+    prompter.print("  milestone_number - Extract number from name (M1 < M2 < M10)")
+    prompter.print("  pattern          - Custom regex to extract number")
+    prompter.print("  name             - Alphabetically by milestone name\n")
+    valid_strategies = ("due_date", "milestone_number", "pattern", "name")
+    while True:
+        milestone_sort = prompter.input("Milestone sort strategy", "due_date")
+        if milestone_sort in valid_strategies:
+            break
+        prompter.print(f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}")
     config["milestone_sort"] = milestone_sort
 
     if milestone_sort == "pattern":
@@ -405,6 +429,12 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
         prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
         pattern = prompter.input("  Pattern", r"M(\d+)")
         config["milestone_sort_config"] = {"pattern": pattern}
+
+    # Foundation milestone for dependency scope
+    prompter.print("\n  Dependencies must be within the same milestone OR in the foundation milestone.")
+    prompter.print("  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues.")
+    foundation_milestone = prompter.input("Foundation milestone", "M0")
+    config["foundation_milestone"] = foundation_milestone
 
     # Worktree location
     prompter.print("\n--- Worktree Location ---")
@@ -456,10 +486,10 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
 
     # Labels - use defaults, can be customized in YAML later
     # Default labels: in-progress, blocked, needs-human
-    prompter.print("\n--- Label Prefix (Optional) ---")
-    prompter.print("Add a prefix to avoid conflicts with existing labels.")
-    prompter.print("  Example: prefix 'bot' → 'bot:in-progress', 'bot:blocked', etc.\n")
-    label_prefix = prompter.input("Label prefix (leave empty for none)", "")
+    prompter.print("\n--- Label Prefix ---")
+    prompter.print("Prefix for status labels to avoid conflicts with existing labels.")
+    prompter.print("  Example: 'io' → 'io:in-progress', 'io:blocked', etc.\n")
+    label_prefix = prompter.input("Label prefix", "io")
     if label_prefix:
         config["labels"] = {"prefix": label_prefix}
         prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
@@ -627,28 +657,6 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                 config["agents"][agent_label] = agent_cfg
                 prompter.print(f"  ✓ Added {agent_label}")
 
-    # Check for configured agents with missing labels on GitHub
-    if configured_agents:
-        missing_labels = [a for a in configured_agents if a not in state.github_labels]
-        if missing_labels:
-            prompter.print(f"\n⚠ These agents are in config but missing GitHub labels:")
-            for label in missing_labels:
-                prompter.print(f"    - {label}")
-            if prompter.yes_no("Create missing labels on GitHub?"):
-                repo = str(config["repo"])
-                client = _github_adapter(repo)
-                for label in missing_labels:
-                    try:
-                        client.create_label(
-                            label,
-                            color="1D76DB",
-                            description=f"Issues for {label.split(':')[-1]} agent",
-                            force=True,
-                        )
-                        prompter.print(f"  ✓ Created {label}")
-                    except Exception:
-                        prompter.print(f"  ✗ Failed to create {label}")
-
     # Ensure we have concurrency settings
     if "concurrency" not in config:
         prompter.print("\n--- Concurrency Settings ---")
@@ -657,16 +665,24 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
 
     # Milestone sorting - only ask if not already configured
     if "milestone_sort" not in config:
-        prompter.print("\n--- Issue Prioritization ---")
-        prompter.print("How should issues be sorted when multiple are available?\n")
-        prompter.print("  due_date - By milestone due date (earliest first)")
-        prompter.print("  number   - By milestone number (lowest first)")
-        prompter.print("  pattern  - Extract number from milestone name (e.g., 'M13' → 13)")
-        prompter.print("  name     - Alphabetically by milestone name\n")
-        milestone_sort = prompter.input("Milestone sort strategy", "due_date")
-        if milestone_sort not in ("due_date", "number", "pattern", "name"):
-            prompter.print(f"  Invalid strategy '{milestone_sort}', using 'due_date'")
-            milestone_sort = "due_date"
+        prompter.print("\n--- Issue Scheduling ---")
+        prompter.print("Issues are scheduled using a multi-level sort:\n")
+        prompter.print("  1. Dependencies  - Issues with 'blocked by #N' wait for #N to close")
+        prompter.print("  2. Milestone     - Configurable strategy (see below)")
+        prompter.print("  3. Priority tier - From issue title: [P0-x] < [P1-x] < [P2-x] < [P3-x]")
+        prompter.print("  4. Sequence      - The number after Px: [P1-001] < [P1-002]")
+        prompter.print("  5. Issue number  - Tie-breaker (lower first)\n")
+        prompter.print("Milestone sort strategies:")
+        prompter.print("  due_date         - By milestone due date (earliest first)")
+        prompter.print("  milestone_number - Extract number from name (M1 < M2 < M10)")
+        prompter.print("  pattern          - Custom regex to extract number")
+        prompter.print("  name             - Alphabetically by milestone name\n")
+        valid_strategies = ("due_date", "milestone_number", "pattern", "name")
+        while True:
+            milestone_sort = prompter.input("Milestone sort strategy", "due_date")
+            if milestone_sort in valid_strategies:
+                break
+            prompter.print(f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}")
         config["milestone_sort"] = milestone_sort
 
         if milestone_sort == "pattern":
@@ -676,6 +692,13 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
             prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
             pattern = prompter.input("  Pattern", r"M(\d+)")
             config["milestone_sort_config"] = {"pattern": pattern}
+
+    # Foundation milestone for dependency scope - only ask if not already configured
+    if "foundation_milestone" not in config:
+        prompter.print("\n  Dependencies must be within the same milestone OR in the foundation milestone.")
+        prompter.print("  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues.")
+        foundation_milestone = prompter.input("Foundation milestone", "M0")
+        config["foundation_milestone"] = foundation_milestone
 
     # Check if agents need worktree_base
     agents_without_worktree = [
@@ -729,12 +752,12 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
         if ui_mode == "web":
             config["web_port"] = int(prompter.input("Web port", "8080"))
 
-    # Label prefix (optional) - only ask if not already configured
+    # Label prefix - only ask if not already configured
     if "labels" not in config or "prefix" not in config.get("labels", {}):
-        prompter.print("\n--- Label Prefix (Optional) ---")
-        prompter.print("Add a prefix to avoid conflicts with existing labels.")
-        prompter.print("  Example: prefix 'bot' → 'bot:in-progress', 'bot:blocked', etc.\n")
-        label_prefix = prompter.input("Label prefix (leave empty for none)", "")
+        prompter.print("\n--- Label Prefix ---")
+        prompter.print("Prefix for status labels to avoid conflicts with existing labels.")
+        prompter.print("  Example: 'io' → 'io:in-progress', 'io:blocked', etc.\n")
+        label_prefix = prompter.input("Label prefix", "io")
         if label_prefix:
             if "labels" not in config:
                 config["labels"] = {}
@@ -783,7 +806,11 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
     return config, updating_existing_path
 
 
-def create_starter_prompt(agent_name: str, path: Path) -> None:
+def create_starter_prompt(
+    agent_name: str,
+    path: Path,
+    file_collector: FileCollector | None = None,
+) -> None:
     """Create a starter prompt file for an agent."""
     agent_short = agent_name.split(":")[-1]
     content = f"""# {agent_short.title()} Agent Prompt
@@ -808,11 +835,19 @@ Your worktree is at: {{worktree}}
 - If blocked, use `agent-done --blocked "reason"`
 - If you need human input, use `agent-done --needs-human "question"`
 """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    if file_collector is not None:
+        file_collector.add_write(path, content, "create")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
 
 
-def create_code_review_prompt(path: Path, code_review_label: str, code_reviewed_label: str) -> None:
+def create_code_review_prompt(
+    path: Path,
+    code_review_label: str,
+    code_reviewed_label: str,
+    file_collector: FileCollector | None = None,
+) -> None:
     """Create a code review prompt with actual label values substituted.
 
     Template variables like {{pr_number}} become {pr_number} in output,
@@ -916,11 +951,19 @@ agent-done completed \\
 4. **Be consistent** - Apply the same standards across all PRs
 5. **Trust but verify** - Check that tests actually test the changes
 """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    if file_collector is not None:
+        file_collector.add_write(path, content, "create")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
 
 
-def create_triage_review_prompt(path: Path, review_label: str, reviewed_label: str) -> None:
+def create_triage_review_prompt(
+    path: Path,
+    review_label: str,
+    reviewed_label: str,
+    file_collector: FileCollector | None = None,
+) -> None:
     """Create a triage review prompt with actual label values substituted."""
     content = f"""# Triage Review Agent
 
@@ -1111,8 +1154,11 @@ agent-done completed \\
 - **Flag, don't approve** - your job is to surface concerns, humans make final decisions
 - **Don't block for style** - focus on correctness and maintainability
 """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    if file_collector is not None:
+        file_collector.add_write(path, content, "create")
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
 
 
 class _NoAliasDumper(yaml.SafeDumper):
@@ -1122,24 +1168,100 @@ class _NoAliasDumper(yaml.SafeDumper):
         return True
 
 
-def write_config(config: dict[str, Any], path: Path) -> None:
-    """Write config to YAML file."""
-    with open(path, "w") as f:
-        yaml.dump(config, f, Dumper=_NoAliasDumper, default_flow_style=False, sort_keys=False, allow_unicode=True)
+def write_config(
+    config: dict[str, Any],
+    path: Path,
+    file_collector: FileCollector | None = None,
+) -> None:
+    """Write config to YAML file.
+
+    Args:
+        config: Configuration dictionary to write.
+        path: Path to write the config file.
+        file_collector: If provided, collect the write instead of executing it.
+    """
+    import io
+    buffer = io.StringIO()
+    yaml.dump(config, buffer, Dumper=_NoAliasDumper, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    content = buffer.getvalue()
+
+    if file_collector is not None:
+        action = "overwrite" if path.exists() else "create"
+        file_collector.add_write(path, content, action)
+    else:
+        with open(path, "w") as f:
+            f.write(content)
 
 
-def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None) -> None:
+def _print_changes_summary(collector: FileCollector, prompter: Prompter, dry_run: bool = False) -> None:
+    """Print summary of changes to be applied."""
+    prompter.print("\n" + "=" * 50)
+    if dry_run:
+        prompter.print("CHANGES THAT WOULD BE APPLIED")
+    else:
+        prompter.print("CHANGES TO APPLY")
+    prompter.print("=" * 50)
+
+    if collector.writes:
+        prompter.print("\nFiles to create/modify:")
+        for write in collector.writes:
+            prompter.print(f"  [{write.action}] {write.path} ({write.size_display()})")
+    else:
+        prompter.print("\nFiles: (none)")
+
+    if collector.labels:
+        prompter.print("\nGitHub labels to create:")
+        for name, color, desc in collector.labels:
+            prompter.print(f"  • {name} - {desc}")
+    else:
+        prompter.print("\nGitHub labels: (none - all exist)")
+
+    prompter.print("")
+
+
+def _apply_changes(collector: FileCollector, repo: str | None, prompter: Prompter) -> None:
+    """Apply all collected changes."""
+    # Write files
+    for write in collector.writes:
+        write.path.parent.mkdir(parents=True, exist_ok=True)
+        if write.action == "append":
+            with open(write.path, "a") as f:
+                f.write(write.content)
+        else:
+            write.path.write_text(write.content)
+        prompter.print(f"  ✓ {write.action.title()}d {write.path}")
+
+    # Create labels
+    if collector.labels and repo:
+        client = _github_adapter(repo)
+        for name, color, desc in collector.labels:
+            client.create_label(name, color=color, description=desc, force=True)
+        prompter.print(f"  ✓ Created {len(collector.labels)} GitHub labels")
+
+
+def run_wizard(
+    target_path: Path | None = None,
+    prompter: Prompter | None = None,
+    dry_run: bool = False,
+) -> None:
     """Main wizard entry point.
 
     Args:
         target_path: Directory to set up. If None, prompts user.
         prompter: Prompter for user interaction. If None, uses ConsolePrompter.
+        dry_run: If True, show what would be done without writing files.
     """
     if prompter is None:
         prompter = ConsolePrompter()
 
+    # Always create file collector to track changes before applying
+    file_collector = FileCollector()
+
     prompter.print("\n" + "=" * 50)
-    prompter.print("  issue-orchestrator Setup Wizard")
+    if dry_run:
+        prompter.print("  issue-orchestrator Setup Wizard (DRY RUN)")
+    else:
+        prompter.print("  issue-orchestrator Setup Wizard")
     prompter.print("=" * 50)
 
     # Determine target directory
@@ -1195,6 +1317,14 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
         if not prompter.yes_no("Continue anyway?", default=False):
             sys.exit(1)
 
+    # Explain the wizard flow
+    if dry_run:
+        prompter.print("\n⚠ DRY RUN MODE - No changes will be made")
+    prompter.print("\nThis wizard will:")
+    prompter.print("  1. Ask questions about your project configuration")
+    prompter.print("  2. Show a summary of all changes")
+    prompter.print("  3. Apply changes only after your approval")
+
     # Choose mode
     prompter.print("\n" + "-" * 50)
     mode = prompter.choice(
@@ -1248,32 +1378,20 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
     prompter.print("=" * 50)
     prompter.print(yaml.dump(config, default_flow_style=False, sort_keys=False))
 
-    # Save configuration - simple confirmation after reviewing summary
-    if not prompter.yes_no("\nSave changes?"):
-        prompter.print("Aborted.")
-        sys.exit(0)
-
+    # Determine config file path and collect the write
+    # Use absolute paths to avoid issues with cwd
     if existing_config_path:
-        # Updating existing config - save to same path
-        output_path = existing_config_path
-        write_config(config, output_path)
-        prompter.print(f"✓ Updated {output_path}")
+        output_path = target_path / existing_config_path if not existing_config_path.is_absolute() else existing_config_path
+    elif dry_run:
+        output_path = target_path / ".issue-orchestrator.yaml"
     else:
-        # New config - ask for filename
         default_path = ".issue-orchestrator.yaml"
-        output_path = Path(prompter.input(f"Config filename ({target_path}/)", default_path))
+        user_path = Path(prompter.input(f"Config filename ({target_path}/)", default_path))
+        output_path = target_path / user_path if not user_path.is_absolute() else user_path
 
-        # Check for existing file
-        if output_path.exists():
-            if not prompter.yes_no(f"{output_path} exists. Overwrite?"):
-                prompter.print("Aborted.")
-                sys.exit(0)
+    write_config(config, output_path, file_collector)
 
-        write_config(config, output_path)
-        prompter.print(f"✓ Saved {output_path}")
-
-    # Create missing prompt files
-    prompter.print("\n--- Prompt Files ---")
+    # Collect prompt file writes (removed intermediate confirmations)
 
     # Get review config (new two-stage fields)
     code_review_agent = config.get("code_review_agent")
@@ -1286,37 +1404,29 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
     all_prompt_paths: list[Path] = []
 
     for agent_name, agent_config in config.get("agents", {}).items():
-        prompt_path = Path(agent_config["prompt"])
-        all_prompt_paths.append(prompt_path)
+        prompt_rel_path = Path(agent_config["prompt"])
+        # Use absolute path for file operations
+        prompt_path = target_path / prompt_rel_path if not prompt_rel_path.is_absolute() else prompt_rel_path
+        all_prompt_paths.append(prompt_rel_path)  # Keep relative for display
 
+        # Collect prompt file writes for missing files
         if not prompt_path.exists():
-            # Check if this is the code review agent
             is_code_review_agent = (
                 code_review_agent and agent_name == code_review_agent
             ) or (agent_name.lower() == "agent:reviewer")
 
-            # Check if this is the triage review agent
             is_triage_review_agent = (
                 triage_review_agent and agent_name == triage_review_agent
             ) or "triage" in agent_name.lower()
 
             if is_code_review_agent and code_review_agent:
-                prompter.print(f"\n  Code review agent reviews each PR for quality, tests, and issues.")
-                if prompter.yes_no(f"  Create code review prompt at {prompt_path}?"):
-                    create_code_review_prompt(prompt_path, code_review_label, code_reviewed_label)
-                    prompter.print(f"    ✓ Created - labels: {code_review_label} → {code_reviewed_label}")
+                create_code_review_prompt(prompt_path, code_review_label, code_reviewed_label, file_collector)
             elif is_triage_review_agent and triage_review_agent:
-                prompter.print(f"\n  Triage agent audits PRs in batch, identifies patterns, flags concerns for humans.")
-                if prompter.yes_no(f"  Create triage audit prompt at {prompt_path}?"):
-                    create_triage_review_prompt(prompt_path, code_reviewed_label, triage_reviewed_label)
-                    prompter.print(f"    ✓ Created - labels: {code_reviewed_label} → {triage_reviewed_label}")
+                create_triage_review_prompt(prompt_path, code_reviewed_label, triage_reviewed_label, file_collector)
             else:
-                prompter.print(f"\n  Work agent implements issues and creates PRs.")
-                if prompter.yes_no(f"  Create starter prompt at {prompt_path}?"):
-                    create_starter_prompt(agent_name, prompt_path)
-                    prompter.print(f"    ✓ Created {prompt_path}")
+                create_starter_prompt(agent_name, prompt_path, file_collector)
 
-    # Create priority and status labels (agent labels handled earlier)
+    # Collect all labels to create on GitHub
     repo = config.get("repo")
     if repo:
         # Gather all labels we want to ensure exist
@@ -1326,6 +1436,12 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
         def prefixed(label: str) -> str:
             """Apply label prefix if configured."""
             return f"{label_prefix}:{label}" if label_prefix else label
+
+        # Agent labels (e.g., agent:developer, agent:reviewer)
+        agent_labels = [
+            (agent_name, "1D76DB", f"Issues for {agent_name.split(':')[-1]} agent")
+            for agent_name in config.get("agents", {}).keys()
+        ]
 
         priority_labels = [
             ("priority:high", "D93F0B", "Urgent - do first"),
@@ -1337,7 +1453,7 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
             (prefixed(labels_config.get("blocked", "blocked")), "B60205", "Agent is blocked"),
             (prefixed(labels_config.get("needs_human", "needs-human")), "FBCA04", "Agent needs human input"),
         ]
-        all_labels = priority_labels + status_labels
+        all_labels = agent_labels + priority_labels + status_labels
 
         # Add review labels if configured (two-stage review workflow)
         if code_review_agent:
@@ -1350,30 +1466,27 @@ def run_wizard(target_path: Path | None = None, prompter: Prompter | None = None
                 (triage_reviewed_label, "1D76DB", "PR has been triage reviewed")
             )
 
-        # Check which labels already exist
+        # Check which labels already exist and collect missing ones
         existing_labels = set(fetch_github_labels(repo))
         missing_labels = [(name, color, desc) for name, color, desc in all_labels if name not in existing_labels]
 
-        if not missing_labels:
-            prompter.print("\n--- GitHub Labels ---")
-            prompter.print("  ✓ All required labels already exist on GitHub")
-        else:
-            prompter.print("\n--- GitHub Labels ---")
-            prompter.print("The following labels are missing from GitHub:")
-            for name, _, desc in missing_labels:
-                prompter.print(f"  • {name} - {desc}")
+        for name, color, desc in missing_labels:
+            file_collector.add_label(name, color, desc)
 
-            if prompter.yes_no(f"\nCreate these {len(missing_labels)} labels on GitHub?"):
-                client = _github_adapter(repo)
-                for name, color, desc in missing_labels:
-                    client.create_label(
-                        name,
-                        color=color,
-                        description=desc,
-                        force=True,
-                    )
-                prompter.print("  ✓ Labels created")
+    # Show summary and ask for confirmation
+    _print_changes_summary(file_collector, prompter, dry_run)
 
+    if dry_run:
+        prompter.print("Run without --dry-run to apply these changes.")
+        return
+
+    if not prompter.yes_no("\nApply these changes?"):
+        prompter.print("Aborted.")
+        sys.exit(0)
+
+    # Apply all changes
+    prompter.print("\nApplying changes...")
+    _apply_changes(file_collector, config.get("repo"), prompter)
 
     prompter.print("\n" + "=" * 50)
     prompter.print("Setup complete! Next steps:")
