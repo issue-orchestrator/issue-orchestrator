@@ -148,15 +148,26 @@ class TestClaudeExecution:
                 f"Claude couldn't read the file: {result.stdout}"
 
 
-class TestShellEscaping:
-    """Test shell escaping without requiring Claude CLI."""
+def is_zsh_available() -> bool:
+    """Check if zsh is available on this system."""
+    result = subprocess.run(["which", "zsh"], capture_output=True)
+    return result.returncode == 0
 
-    def test_shell_single_quote_escaping(self):
-        """Verify our single-quote escaping pattern works in shell."""
-        # This is the pattern: replace ' with '\'' (POSIX standard)
+
+@pytest.mark.skipif(not is_zsh_available(), reason="zsh not available")
+class TestShellEscaping:
+    """Test shell escaping used by iTerm2 adapter (requires zsh)."""
+
+    def test_zsh_single_quote_escaping(self):
+        """Verify our single-quote escaping pattern works in zsh.
+
+        This tests the exact escaping used in _iterm2.py when wrapping
+        commands with: zsh -l -c '{escaped_command}'
+        """
+        # This is the pattern: replace ' with '\''
         original = "echo 'hello world'"
         escaped = original.replace("'", "'\\''")
-        wrapped = f"bash -c '{escaped}'"
+        wrapped = f"zsh -l -c '{escaped}'"
 
         result = subprocess.run(
             ["bash", "-c", wrapped],
@@ -173,7 +184,7 @@ class TestShellEscaping:
         # Simulate the orchestrator command pattern
         command = "echo --flag 'value with spaces' 'another value'"
         escaped = command.replace("'", "'\\''")
-        wrapped = f"bash -c 'cd /tmp && {escaped}'"
+        wrapped = f"zsh -l -c 'cd /tmp && {escaped}'"
 
         result = subprocess.run(
             ["bash", "-c", wrapped],
@@ -194,7 +205,7 @@ class TestShellEscaping:
         escaped_prompt = prompt.replace("'", "'\\''")
         command = f"echo '{escaped_prompt}'"
         escaped = command.replace("'", "'\\''")
-        wrapped = f"bash -c '{escaped}'"
+        wrapped = f"zsh -l -c '{escaped}'"
 
         result = subprocess.run(
             ["bash", "-c", wrapped],
