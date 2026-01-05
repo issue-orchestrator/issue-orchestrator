@@ -23,6 +23,10 @@ Context fields (via extra=):
 - tick_id: Monotonically increasing tick counter
 - issue_key: Stable issue key like "M1-011"
 - session_id: Session identifier
+
+Log file locations:
+- Repo-scoped (preferred): {repo_root}/.issue-orchestrator/state/logs/orchestrator.log
+- Global fallback: ~/.issue-orchestrator.log (only when repo_root unknown)
 """
 
 import logging
@@ -30,11 +34,30 @@ import os
 from pathlib import Path
 from typing import Any
 
-# Default log file location
-DEFAULT_LOG_FILE = Path.home() / ".issue-orchestrator.log"
+# Global fallback log file (used only when repo_root is unknown)
+GLOBAL_LOG_FILE = Path.home() / ".issue-orchestrator.log"
+
+# Deprecated alias for backwards compatibility
+DEFAULT_LOG_FILE = GLOBAL_LOG_FILE
 
 # Flag to track if logging has been set up (for idempotency)
 _logging_configured = False
+_current_log_file: Path | None = None
+
+
+def get_repo_log_path(repo_root: Path | str) -> Path:
+    """Get the repo-scoped log file path.
+
+    Args:
+        repo_root: Path to the repository root
+
+    Returns:
+        Path to {repo_root}/.issue-orchestrator/state/logs/orchestrator.log
+    """
+    repo_path = Path(repo_root).resolve()
+    log_dir = repo_path / ".issue-orchestrator" / "state" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "orchestrator.log"
 
 
 class ContextFormatter(logging.Formatter):
@@ -64,28 +87,48 @@ def setup_logging(
     console_output: bool = False,
     log_file: Path | None = None,
     json_format: bool = False,
-) -> None:
+    repo_root: Path | str | None = None,
+) -> Path | None:
     """Configure logging for the application.
 
     This function is idempotent - calling it multiple times will not
-    duplicate handlers.
+    duplicate handlers, unless repo_root changes (to allow switching
+    from global to repo-scoped logging after config is loaded).
 
     Args:
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         console_output: If True, also log to stderr
-        log_file: Path to log file. Defaults to ~/.issue-orchestrator.log
+        log_file: Path to log file (overrides repo_root-based path)
         json_format: If True, use JSON format (for structured log aggregation)
+        repo_root: Repository root for repo-scoped logging. If provided,
+            logs go to {repo_root}/.issue-orchestrator/state/logs/orchestrator.log
+
+    Returns:
+        Path to the log file being used, or None if file logging failed
     """
-    global _logging_configured
+    global _logging_configured, _current_log_file
 
-    # Make this idempotent
-    if _logging_configured:
-        return
-
+    # Determine target log file
     env_log_file = os.environ.get("ORCHESTRATOR_LOG_FILE")
     if log_file is None and env_log_file:
-        log_file = Path(env_log_file)
-    log_file = log_file or DEFAULT_LOG_FILE
+        target_log_file = Path(env_log_file)
+    elif log_file is not None:
+        target_log_file = log_file
+    elif repo_root is not None:
+        target_log_file = get_repo_log_path(repo_root)
+    else:
+        target_log_file = GLOBAL_LOG_FILE
+
+    # Allow reconfiguration if switching to a different log file (e.g., global -> repo-scoped)
+    if _logging_configured and _current_log_file == target_log_file:
+        return _current_log_file
+
+    # If already configured but switching log files, reset first
+    if _logging_configured and _current_log_file != target_log_file:
+        logging.info("Switching log file from %s to %s", _current_log_file, target_log_file)
+        reset_logging()
+
+    log_file = target_log_file
     log_level = getattr(logging, level.upper(), logging.INFO)
 
     # Get root logger
@@ -132,6 +175,7 @@ def setup_logging(
         root_logger.addHandler(stderr_handler)
 
     _logging_configured = True
+    _current_log_file = log_file if file_handler else None
 
     # Log startup marker
     if fallback_used:
@@ -139,16 +183,19 @@ def setup_logging(
     if not file_handler:
         logging.warning("Log file unavailable, logging to stderr only")
     logging.info("=" * 50)
-    logging.info("issue-orchestrator logging initialized (level=%s)", level)
+    logging.info("issue-orchestrator logging initialized (level=%s, log_file=%s)", level, log_file)
+
+    return _current_log_file
 
 
 def reset_logging() -> None:
-    """Reset logging configuration. For testing only."""
-    global _logging_configured
+    """Reset logging configuration. For testing or switching log files."""
+    global _logging_configured, _current_log_file
     root_logger = logging.getLogger()
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     _logging_configured = False
+    _current_log_file = None
 
 
 def log_context(**kwargs: Any) -> dict[str, Any]:
