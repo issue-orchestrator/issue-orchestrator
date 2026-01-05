@@ -8,6 +8,7 @@ the normal queue refresh cycle.
 import json
 import logging
 import os
+import socket
 import time as _time
 import urllib.error
 import urllib.request
@@ -15,6 +16,13 @@ import urllib.request
 from issue_orchestrator.domain.issue_key import IssueKey
 
 logger = logging.getLogger(__name__)
+
+
+def find_free_port() -> int:
+    """Find an available localhost port for the control API."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def trigger_refresh(
