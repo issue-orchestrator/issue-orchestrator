@@ -96,3 +96,8 @@ class PluggySessionRunner:
         """Send text to a session by name via pluggy hook."""
         result = self._pm.hook.send_to_session_by_name(session_name=session_name, text=text)
         return result if result is not None else False
+
+    def focus_session(self, session_id: int) -> bool:
+        """Focus a terminal session via pluggy hook."""
+        result = self._pm.hook.focus_session(session_id=session_id)
+        return result if result is not None else False

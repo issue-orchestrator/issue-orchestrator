@@ -337,22 +337,21 @@ class TestFocusSessionEndpoint:
         session = create_session(issue)
         mock_orch.state.active_sessions = [session]
 
+        # Mock session_runner.focus_session
+        mock_orch.session_runner.focus_session.return_value = True
         web._orchestrator = mock_orch
 
-        with patch("issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name") as mock_select:
-            mock_select.return_value = True
+        client = TestClient(app)
+        response = client.post("/api/focus/1")
 
-            client = TestClient(app)
-            response = client.post("/api/focus/1")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "focused"
+        assert data["issue_number"] == 1
+        mock_orch.session_runner.focus_session.assert_called_once_with(1)
 
-            assert response.status_code == 200
-            data = response.json()
-            assert data["status"] == "focused"
-            assert data["issue_number"] == 1
-            mock_select.assert_called_once_with("#1")
-
-    def test_focus_session_falls_back_to_tmux(self):
-        """Test focus falls back to tmux if iTerm2 fails."""
+    def test_focus_session_failure(self):
+        """Test focus returns error when focus_session fails."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -360,22 +359,17 @@ class TestFocusSessionEndpoint:
         session = create_session(issue)
         mock_orch.state.active_sessions = [session]
 
+        # Mock session_runner.focus_session returning False (failed to focus)
+        mock_orch.session_runner.focus_session.return_value = False
         web._orchestrator = mock_orch
 
-        with patch("issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name") as mock_select:
-            with patch("issue_orchestrator.adapters.terminal._tmux.get_manager") as mock_get_manager:
-                mock_select.return_value = False
-                mock_manager = MagicMock()
-                mock_manager.select_window.return_value = True
-                mock_get_manager.return_value = mock_manager
+        client = TestClient(app)
+        response = client.post("/api/focus/1")
 
-                client = TestClient(app)
-                response = client.post("/api/focus/1")
-
-                assert response.status_code == 200
-                data = response.json()
-                assert data["status"] == "focused"
-                mock_manager.select_window.assert_called_once_with(1)
+        assert response.status_code == 500
+        data = response.json()
+        assert "error" in data
+        mock_orch.session_runner.focus_session.assert_called_once_with(1)
 
     def test_focus_session_not_found(self):
         """Test focus returns 404 when session not found."""
@@ -388,31 +382,6 @@ class TestFocusSessionEndpoint:
 
         assert response.status_code == 404
         assert "error" in response.json()
-
-    def test_focus_session_fails(self):
-        """Test focus returns 500 when both iTerm2 and tmux fail."""
-        from issue_orchestrator.entrypoints import web
-        mock_orch = create_mock_orchestrator()
-
-        issue = create_issue(1)
-        session = create_session(issue)
-        mock_orch.state.active_sessions = [session]
-
-        web._orchestrator = mock_orch
-
-        with patch("issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name") as mock_select:
-            with patch("issue_orchestrator.adapters.terminal._tmux.get_manager") as mock_get_manager:
-                mock_select.return_value = False
-                mock_manager = MagicMock()
-                mock_manager.select_window.return_value = False
-                mock_get_manager.return_value = mock_manager
-
-                client = TestClient(app)
-                response = client.post("/api/focus/1")
-
-                assert response.status_code == 500
-                assert "error" in response.json()
-
 
 class TestFinderEndpoint:
     """Test the POST /api/finder/{issue_number} endpoint."""

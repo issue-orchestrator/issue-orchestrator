@@ -921,21 +921,27 @@ class GitHubAdapter:
         title: str,
         body: str,
         labels: list[str] | None = None,
-    ) -> int | None:
+        milestone: int | None = None,
+    ) -> dict[str, Any] | None:
         """Create a new issue.
 
         Args:
             title: Issue title
             body: Issue body
             labels: Labels to add
+            milestone: Milestone number to assign
 
         Returns:
-            Issue number if created, None on failure
+            Full issue data dict including number and html_url, or None on failure
         """
-        issue_number = self._client.create_issue(title=title, body=body, labels=labels)
-        if issue_number is None:
+        result = self._client.create_issue(
+            title=title, body=body, labels=labels, milestone=milestone
+        )
+        if result is None:
             return None
-        if labels:
+
+        issue_number = result.get("number")
+        if issue_number and labels:
             last_labels: list[str] = []
 
             def _check() -> bool:
@@ -949,7 +955,7 @@ class GitHubAdapter:
                 detail_fn=lambda: {"labels": last_labels},
                 issue_number=issue_number,
             )
-        return issue_number
+        return result
 
     def get_rate_limit_snapshot(self) -> dict[str, Any] | None:
         snapshot = self._client.get_rate_limit_snapshot()
@@ -1163,3 +1169,14 @@ class GitHubAdapter:
             List of all label dictionaries across all pages.
         """
         return self._client.list_all_labels()
+
+    def list_milestones(self, state: str = "open") -> list[dict[str, Any]]:
+        """List milestones in the repository.
+
+        Args:
+            state: Filter by milestone state ('open', 'closed', 'all')
+
+        Returns:
+            List of milestone dictionaries with 'number', 'title', 'description', etc.
+        """
+        return self._client.list_milestones(state=state)

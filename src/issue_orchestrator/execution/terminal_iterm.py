@@ -8,6 +8,7 @@ from ..adapters.terminal._iterm2 import (
     ITermSessionManager,
     discover_running_sessions,
     cleanup_idle_tabs,
+    select_tab_by_name,
 )
 
 
@@ -69,3 +70,8 @@ class ITermPlugin:
     def send_to_session(self, session_id: int, text: str) -> bool:
         """Send text to an iTerm2 tab."""
         return self._manager.send_to_session(session_id, text)
+
+    @hookimpl
+    def focus_session(self, session_id: int) -> bool:
+        """Focus an iTerm2 tab by issue number."""
+        return select_tab_by_name(f"#{session_id}")

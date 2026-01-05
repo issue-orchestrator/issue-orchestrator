@@ -121,6 +121,16 @@ class Orchestrator:
     def event_hub(self) -> EventHub:
         return self.deps.event_hub
 
+    @property
+    def repository_host(self) -> RepositoryHost:
+        """Access the repository host (GitHub adapter) for issue/PR operations."""
+        return self.deps.repository_host
+
+    @property
+    def session_runner(self) -> SessionRunner:
+        """Access the session runner for terminal operations."""
+        return self.deps.runner
+
     @cached_property
     def _cleanup_manager(self) -> CleanupManager:
         return CleanupManager(

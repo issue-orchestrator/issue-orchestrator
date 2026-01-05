@@ -270,6 +270,9 @@ async def dashboard(
     active_count = len(state.active_sessions) if state else 0
     shutdown_requested = getattr(orchestrator, '_shutdown_requested', False) if orchestrator else False
 
+    # Get agents for the create issue form
+    agents = config.agents if config else {}
+
     html = template.render(
         issues=issues,
         work_items=work_items,
@@ -282,10 +285,12 @@ async def dashboard(
         startup_status=state.startup_status if state else "pending",
         startup_message=state.startup_message if state else "",
         repo=config.repo if config else "",
+        repo_root=str(config.repo_root) if config and config.repo_root else "",
         queue_page=queue_page,
         queue_total_pages=queue_total_pages,
         queue_total=queue_total,
         queue_refresh_seconds=config.queue_refresh_seconds if config else 600,
+        agents=agents,
     )
     total_elapsed = time.time() - request_start
     logger.info("[dashboard] Total request time: %.2fs", total_elapsed)
@@ -436,17 +441,10 @@ async def focus_session(issue_number: int) -> JSONResponse:
     if not session:
         return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
 
-    # Use AppleScript to focus the iTerm2 tab
-    from ..adapters.terminal._iterm2 import select_tab_by_name
-
-    if select_tab_by_name(f"#{issue_number}"):
+    # Use session_runner protocol to focus the terminal session
+    if _orchestrator.session_runner.focus_session(issue_number):
         return JSONResponse({"status": "focused", "issue_number": issue_number})
     else:
-        # Try tmux as fallback
-        from ..adapters.terminal._tmux import get_manager
-        manager = get_manager()
-        if manager.select_window(issue_number):
-            return JSONResponse({"status": "focused", "issue_number": issue_number})
         return JSONResponse({"error": f"Could not focus session #{issue_number}"}, status_code=500)
 
 
@@ -872,6 +870,110 @@ async def get_doctor() -> JSONResponse:
     return JSONResponse(result.to_dict())
 
 
+@app.get("/api/milestones")
+async def get_milestones() -> JSONResponse:
+    """Get available milestones, indicating which are included/excluded."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    config = _orchestrator.config
+
+    try:
+        # Get all milestones from GitHub via repository_host protocol
+        all_milestones = _orchestrator.repository_host.list_milestones(state="open")
+
+        # Get filter milestones from config
+        filter_milestones = config.get_filter_milestones()
+
+        milestones = []
+        for m in all_milestones:
+            title = m.get("title", "")
+            number = m.get("number")
+            is_included = not filter_milestones or title in filter_milestones
+            milestones.append({
+                "title": title,
+                "number": number,
+                "description": m.get("description", ""),
+                "due_on": m.get("due_on"),
+                "open_issues": m.get("open_issues", 0),
+                "included": is_included,
+            })
+
+        return JSONResponse({
+            "milestones": milestones,
+            "filter_active": bool(filter_milestones),
+            "filter_milestones": filter_milestones,
+        })
+    except Exception as e:
+        logger.error("[web] Failed to fetch milestones: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/issues")
+async def create_issue(request: Request) -> JSONResponse:
+    """Create a new issue with specified labels and milestone.
+
+    JSON body:
+        title: str - Issue title (required)
+        body: str - Issue body/description
+        milestone: int - Milestone number (optional)
+        agent: str - Agent label (e.g., "agent:backend")
+        priority: str - Priority label (e.g., "P1")
+        labels: list[str] - Additional labels (optional)
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    config = _orchestrator.config
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    title = body.get("title", "").strip()
+    if not title:
+        return JSONResponse({"error": "Title is required"}, status_code=400)
+
+    issue_body = body.get("body", "")
+    milestone = body.get("milestone")  # milestone number
+    agent = body.get("agent")
+    priority = body.get("priority")
+    extra_labels = body.get("labels", [])
+
+    # Build labels list
+    labels = []
+    if agent:
+        labels.append(agent)
+    if priority:
+        labels.append(priority)
+    labels.extend(extra_labels)
+
+    try:
+        # Create the issue via repository_host protocol
+        result = _orchestrator.repository_host.create_issue(
+            title=title,
+            body=issue_body,
+            labels=labels,
+            milestone=milestone,
+        )
+
+        if result is None:
+            return JSONResponse({"error": "Failed to create issue"}, status_code=500)
+
+        issue_number = result.get("number")
+        issue_url = result.get("html_url")
+
+        return JSONResponse({
+            "status": "created",
+            "issue_number": issue_number,
+            "url": issue_url,
+        })
+    except Exception as e:
+        logger.error("[web] Failed to create issue: %s", e)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     """Check if a port is already in use."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -960,12 +1062,17 @@ def ensure_port_available(port: int, host: str = "127.0.0.1", max_retries: int =
     )
 
 
-async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> None:
+async def run_web_dashboard(
+    orchestrator: "Orchestrator",
+    port: int = 8080,
+    open_browser: bool = True,
+) -> None:
     """Run the web dashboard server.
 
     Args:
         orchestrator: The orchestrator instance
         port: Port to run on (default 8080)
+        open_browser: If True, auto-open browser (default True)
     """
     global _orchestrator, _server
     _orchestrator = orchestrator
@@ -987,20 +1094,25 @@ async def run_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> N
     _server = server  # Store for shutdown access
 
     # Open browser after a very short delay (server needs to be ready)
-    async def open_browser():
-        await asyncio.sleep(0.3)
-        url = f"http://127.0.0.1:{port}"
-        logger.info("[web] Opening browser to %s", url)
-        webbrowser.open(url)
+    if open_browser:
+        async def do_open_browser():
+            await asyncio.sleep(0.3)
+            url = f"http://127.0.0.1:{port}"
+            logger.info("[web] Opening browser to %s", url)
+            webbrowser.open(url)
 
-    asyncio.create_task(open_browser())
+        asyncio.create_task(do_open_browser())
 
     logger.info("[web] Server starting...")
     await server.serve()
     logger.info("[web] Server stopped")
 
 
-async def run_with_web_dashboard(orchestrator: "Orchestrator", port: int = 8080) -> None:
+async def run_with_web_dashboard(
+    orchestrator: "Orchestrator",
+    port: int = 8080,
+    open_browser: bool = True,
+) -> None:
     """Run orchestrator with web dashboard.
 
     The web server starts immediately while startup runs in background.
@@ -1009,6 +1121,7 @@ async def run_with_web_dashboard(orchestrator: "Orchestrator", port: int = 8080)
     Args:
         orchestrator: The orchestrator instance
         port: Port to run web server on
+        open_browser: If True, auto-open browser (default True)
     """
     import time
 
@@ -1050,7 +1163,7 @@ async def run_with_web_dashboard(orchestrator: "Orchestrator", port: int = 8080)
 
     try:
         # Run web server in foreground (available immediately)
-        await run_web_dashboard(orchestrator, port)
+        await run_web_dashboard(orchestrator, port, open_browser=open_browser)
     finally:
         # When web server stops, stop orchestrator
         orchestrator._shutdown_requested = True

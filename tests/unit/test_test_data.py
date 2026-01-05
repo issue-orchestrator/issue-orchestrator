@@ -72,7 +72,7 @@ class TestCreateIssue:
     def test_create_issue_basic(self):
         """Test basic issue creation."""
         client = Mock()
-        client.create_issue.return_value = 123
+        client.create_issue.return_value = {"number": 123, "html_url": "https://github.com/owner/repo/issues/123"}
 
         with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
             with patch("issue_orchestrator.testing.support.test_data._wait_for_issue_visible"):
@@ -84,7 +84,7 @@ class TestCreateIssue:
     def test_create_issue_waits_for_visibility(self):
         """Test that create_issue waits for visibility by default."""
         client = Mock()
-        client.create_issue.return_value = 456
+        client.create_issue.return_value = {"number": 456, "html_url": "https://github.com/owner/repo/issues/456"}
 
         with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
             with patch("issue_orchestrator.testing.support.test_data._wait_for_issue_visible") as mock_wait:
@@ -95,7 +95,7 @@ class TestCreateIssue:
     def test_create_issue_skip_wait(self):
         """Test that wait_visible=False skips waiting."""
         client = Mock()
-        client.create_issue.return_value = 789
+        client.create_issue.return_value = {"number": 789, "html_url": "https://github.com/owner/repo/issues/789"}
 
         with patch("issue_orchestrator.testing.support.test_data._adapter_for", return_value=client):
             with patch("issue_orchestrator.testing.support.test_data._wait_for_issue_visible") as mock_wait:

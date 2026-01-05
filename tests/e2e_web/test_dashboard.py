@@ -229,7 +229,7 @@ class TestModals:
         modal = page.locator("#modalOverlay")
         expect(modal).to_have_class(re.compile(r"visible"))
 
-        page.locator(".modal-close").click()
+        modal.locator(".modal-close").click()
         expect(modal).not_to_have_class(re.compile(r"visible"))
 
     def test_modal_closes_on_overlay_click(self, page: Page):

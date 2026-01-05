@@ -9,7 +9,7 @@ issues, PRs, and labels. It combines IssueTracker, LabelSet, and
 PullRequestTracker into a single interface.
 """
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .issue_tracker import IssueTracker
 from .label_set import LabelSet
@@ -82,16 +82,18 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
         title: str,
         body: str,
         labels: list[str] | None = None,
-    ) -> int | None:
+        milestone: int | None = None,
+    ) -> dict[str, Any] | None:
         """Create a new issue.
 
         Args:
             title: Issue title
             body: Issue body
             labels: Labels to add
+            milestone: Milestone number to assign
 
         Returns:
-            Issue number if created, None on failure
+            Issue data dict with 'number', 'html_url', etc. or None on failure
         """
         ...
 
@@ -99,5 +101,59 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
         """Update cached labels for an issue.
 
         Adapters may implement a local cache to avoid repeated GH reads.
+        """
+        ...
+
+    def list_milestones(self, state: str = "open") -> list[dict[str, Any]]:
+        """List milestones in the repository.
+
+        Args:
+            state: Filter by milestone state ('open', 'closed', 'all')
+
+        Returns:
+            List of milestone dictionaries with 'number', 'title', 'description', etc.
+        """
+        ...
+
+    def list_labels(self) -> list[dict[str, Any]]:
+        """List all labels in the repository.
+
+        Returns:
+            List of label dictionaries with 'name', 'color', 'description' keys.
+        """
+        ...
+
+    def create_label(
+        self,
+        name: str,
+        *,
+        color: str = "ededed",
+        description: str | None = None,
+        force: bool = False,
+    ) -> None:
+        """Create a label in the repository.
+
+        Args:
+            name: Label name
+            color: Hex color code (without #)
+            description: Optional label description
+            force: If True, update existing label; if False, skip if exists
+        """
+        ...
+
+    def update_issue_state(self, issue_number: int, state: str) -> None:
+        """Update an issue's state (open/closed).
+
+        Args:
+            issue_number: The issue number to update.
+            state: New state ("open" or "closed").
+        """
+        ...
+
+    def get_rate_limit_snapshot(self) -> dict[str, Any] | None:
+        """Get current GitHub API rate limit snapshot.
+
+        Returns:
+            Dictionary with rate limit info, or None if unavailable.
         """
         ...

@@ -684,7 +684,7 @@ class TestRunTestSetup:
         config.github_token_env = None
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
-        with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_adapter_factory:
+        with patch('issue_orchestrator.entrypoints.cli._get_repository_host') as mock_adapter_factory:
             adapter = Mock()
             adapter.list_issues.return_value = [_mock_issue(1), _mock_issue(2)]
             adapter.create_issue.return_value = 123
@@ -704,7 +704,7 @@ class TestRunTestSetup:
         config.github_token_env = None
         config.github_api_url = "https://api.github.com"
         config.github_http_timeout_seconds = 20.0
-        with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_adapter_factory:
+        with patch('issue_orchestrator.entrypoints.cli._get_repository_host') as mock_adapter_factory:
             adapter = Mock()
             adapter.list_issues.return_value = []
             mock_adapter_factory.return_value = adapter
@@ -1049,7 +1049,7 @@ class TestCmdInitAdvanced:
     def test_cmd_init_creates_all_labels(self):
         """Verify init creates all required labels."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_client_factory:
+            with patch('issue_orchestrator.entrypoints.cli._get_repository_host') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.agents = {'agent:backend': Mock(), 'agent:frontend': Mock()}
@@ -1074,7 +1074,7 @@ class TestCmdInitAdvanced:
     def test_cmd_init_handles_failures(self):
         """Verify init reports failures correctly."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.entrypoints.cli._github_adapter_for_config') as mock_client_factory:
+            with patch('issue_orchestrator.entrypoints.cli._get_repository_host') as mock_client_factory:
                 mock_config = Mock()
                 mock_config.repo = 'test/repo'
                 mock_config.agents = {'agent:test': Mock()}

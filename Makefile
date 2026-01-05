@@ -98,6 +98,31 @@ validate-quick: typecheck test-unit
 validate: typecheck lint-arch
 	$(PYTEST) tests/unit tests/integration tests/e2e_web -x -q --tb=short
 
+# Parallel validation without e2e - for comparing parallelism benefits vs sequential `validate`
+# Run: time make validate-full-minus-e2e  vs  time make validate
+validate-full-minus-e2e:
+	@mkdir -p .validate
+	@echo "Starting parallel validation (pyright + lint-arch + unit + integration + web-ui)..."
+	@( \
+		$(PYRIGHT) --project pyrightconfig.json --warnings > .validate/pyright.log 2>&1 && \
+		$(PYRIGHT) --project pyrightconfig.strict.json --warnings >> .validate/pyright.log 2>&1 && \
+		echo "✓ pyright passed" || (echo "✗ pyright FAILED (see .validate/pyright.log)" && exit 1) \
+	) & pid1=$$!; \
+	( \
+		$(LINT_IMPORTS) > .validate/lint-arch.log 2>&1 && $(PYTHON) tools/check_arch_guardrails.py src >> .validate/lint-arch.log 2>&1 && echo "✓ lint-arch passed" || (echo "✗ lint-arch FAILED (see .validate/lint-arch.log)" && exit 1) \
+	) & pid2=$$!; \
+	( \
+		$(PYTEST) tests/unit -x -q --tb=short > .validate/unit.log 2>&1 && echo "✓ unit tests passed" || (echo "✗ unit tests FAILED (see .validate/unit.log)" && exit 1) \
+	) & pid3=$$!; \
+	( \
+		$(PYTEST) tests/integration -x -q --tb=short > .validate/integration.log 2>&1 && echo "✓ integration tests passed" || (echo "✗ integration tests FAILED (see .validate/integration.log)" && exit 1) \
+	) & pid4=$$!; \
+	( \
+		$(PYTEST) tests/e2e_web -v --tb=short > .validate/web.log 2>&1 && echo "✓ web-ui tests passed" || (echo "✗ web-ui tests FAILED (see .validate/web.log)" && exit 1) \
+	) & pid5=$$!; \
+	wait $$pid1 && wait $$pid2 && wait $$pid3 && wait $$pid4 && wait $$pid5 || (echo "Validation failed - check .validate/*.log" && exit 1)
+	@echo "All validations passed!"
+
 # Full validation - runs pyright, lint-arch, unit, integration, and e2e all in parallel
 # Logs to .validate/*.log, fails if any component fails
 validate-full:

@@ -275,31 +275,32 @@ class TestIssueOperations:
 
     def test_create_issue(self, adapter, mock_http_client, mock_verification_service):
         """Test creating a new issue."""
-        mock_http_client.create_issue.return_value = 42
+        mock_http_client.create_issue.return_value = {"number": 42, "html_url": "https://github.com/owner/repo/issues/42"}
         mock_http_client.get_issue_labels.return_value = ["bug", "priority:high"]
 
-        issue_number = adapter.create_issue(
+        result = adapter.create_issue(
             title="New Issue",
             body="Issue body",
             labels=["bug", "priority:high"],
         )
 
-        assert issue_number == 42
+        assert result == {"number": 42, "html_url": "https://github.com/owner/repo/issues/42"}
         mock_http_client.create_issue.assert_called_once_with(
             title="New Issue",
             body="Issue body",
             labels=["bug", "priority:high"],
+            milestone=None,
         )
         # Should verify the labels were applied
         mock_verification_service.verify_condition.assert_called_once()
 
     def test_create_issue_without_labels(self, adapter, mock_http_client, mock_verification_service):
         """Test creating issue without labels doesn't trigger verification."""
-        mock_http_client.create_issue.return_value = 42
+        mock_http_client.create_issue.return_value = {"number": 42, "html_url": "https://github.com/owner/repo/issues/42"}
 
-        issue_number = adapter.create_issue(title="New Issue", body="Body", labels=None)
+        result = adapter.create_issue(title="New Issue", body="Body", labels=None)
 
-        assert issue_number == 42
+        assert result == {"number": 42, "html_url": "https://github.com/owner/repo/issues/42"}
         # No verification should occur without labels
         mock_verification_service.verify_condition.assert_not_called()
 

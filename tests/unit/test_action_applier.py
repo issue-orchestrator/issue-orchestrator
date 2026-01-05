@@ -349,7 +349,7 @@ class TestCreateTriageIssueAction:
 
     def test_create_triage_issue_success(self, applier, mock_repository_host, mock_events):
         """Test successful triage issue creation."""
-        mock_repository_host.create_issue.return_value = 100
+        mock_repository_host.create_issue.return_value = {"number": 100, "html_url": "https://github.com/owner/repo/issues/100"}
 
         action = CreateTriageIssueAction(
             title="Batch Review: 5 PRs",

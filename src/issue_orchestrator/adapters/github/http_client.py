@@ -284,16 +284,30 @@ class GitHubHttpClient:
         )
         return payload if isinstance(payload, dict) else None
 
-    def create_issue(self, title: str, body: str, labels: list[str] | None) -> int | None:
+    def create_issue(
+        self,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+        milestone: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Create a new issue.
+
+        Returns the full issue data including number and html_url.
+        """
+        json_body: dict[str, Any] = {"title": title, "body": body, "labels": labels or []}
+        if milestone is not None:
+            json_body["milestone"] = milestone
+
         payload = self._request_json(
             "POST",
             f"/repos/{self._config.repo}/issues",
-            json_body={"title": title, "body": body, "labels": labels or []},
+            json_body=json_body,
             use_cache=False,
             caller="create_issue",
         )
         if isinstance(payload, dict):
-            return payload.get("number")
+            return payload
         return None
 
     def add_label(self, issue_number: int, label: str) -> None:
@@ -377,6 +391,23 @@ class GitHubHttpClient:
         url = f"/repos/{self._config.repo}/labels"
         key = self._cache_key("GET", url, {"per_page": 100})  # Match list_labels params
         self._etag_cache.pop(key, None)
+
+    def list_milestones(self, state: str = "open") -> list[dict[str, Any]]:
+        """List milestones in the repository.
+
+        Args:
+            state: Filter by milestone state ('open', 'closed', 'all')
+
+        Returns:
+            List of milestone dictionaries.
+        """
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/milestones",
+            params={"state": state, "per_page": 100},
+            caller="list_milestones",
+        )
+        return payload if isinstance(payload, list) else []
 
     def create_label(
         self,

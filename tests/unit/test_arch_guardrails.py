@@ -55,3 +55,34 @@ def test_blocks_forbidden_call(tmp_path: Path) -> None:
 def test_blocks_git_subprocess_outside_allowed(tmp_path: Path) -> None:
     code = "import subprocess\nsubprocess.run(['git','status'])\n"
     assert _run(tmp_path, code, "src/issue_orchestrator/control/x.py") == 2
+
+
+def test_allows_subprocess_in_infra_supervisor(tmp_path: Path) -> None:
+    """Supervisor is allowed to use subprocess for process management."""
+    code = "import subprocess\nsubprocess.run(['echo','hi'])\n"
+    assert _run(tmp_path, code, "src/issue_orchestrator/infra/supervisor.py") == 0
+
+
+def test_allows_subprocess_in_infra_ai_diagnose(tmp_path: Path) -> None:
+    """AI diagnose is allowed to use subprocess for invoking claude."""
+    code = "import subprocess\nsubprocess.run(['claude','--print'])\n"
+    assert _run(tmp_path, code, "src/issue_orchestrator/infra/ai_diagnose.py") == 0
+
+
+def test_blocks_subprocess_in_infra_generic(tmp_path: Path) -> None:
+    """Generic infra files should NOT have subprocess access."""
+    code = "import subprocess\nsubprocess.run(['echo','hi'])\n"
+    # This should be blocked because it's not in the allow list
+    assert _run(tmp_path, code, "src/issue_orchestrator/infra/some_other.py") == 2
+
+
+def test_blocks_subprocess_in_domain(tmp_path: Path) -> None:
+    """Domain layer must never use subprocess."""
+    code = "import subprocess\nsubprocess.run(['echo','hi'])\n"
+    assert _run(tmp_path, code, "src/issue_orchestrator/domain/x.py") == 2
+
+
+def test_blocks_subprocess_in_ports(tmp_path: Path) -> None:
+    """Ports layer must never use subprocess."""
+    code = "import subprocess\nsubprocess.run(['echo','hi'])\n"
+    assert _run(tmp_path, code, "src/issue_orchestrator/ports/x.py") == 2

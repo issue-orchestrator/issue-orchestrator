@@ -117,15 +117,15 @@ class FileCollector:
         self.labels.append((name, color, description))
 
 
-def _github_adapter(repo: str):
-    """Get a GitHubAdapter for the given repo.
+def _get_repository_host(repo: str):
+    """Get a RepositoryHost for the given repo.
 
-    All GitHub access in setup wizard is routed through the adapter for
+    All GitHub access in setup wizard is routed through the repository host for
     consistent auditing and rate-limit handling.
     """
-    from ...adapters.github import GitHubAdapter
+    from ...execution.providers import create_repository_host
 
-    return GitHubAdapter(repo=repo)
+    return create_repository_host(repo=repo)
 
 
 def run_git(args: list[str], cwd: Path | None = None) -> tuple[bool, str]:
@@ -153,7 +153,7 @@ def check_prerequisites() -> dict[str, bool]:
 
     # GitHub token
     try:
-        from ...adapters.github.http_client import resolve_github_token
+        from ...execution.providers import resolve_github_token
 
         resolve_github_token(configured_token=None, configured_env=None)
         checks["github_auth"] = True
@@ -198,7 +198,7 @@ def detect_repo(cwd: Path | None = None) -> str | None:
 def fetch_github_labels(repo: str) -> list[str]:
     """Fetch all labels from GitHub repo."""
     try:
-        labels = _github_adapter(repo).list_labels()
+        labels = _get_repository_host(repo).list_labels()
         names: list[str] = []
         for label in labels:
             if not isinstance(label, dict):
@@ -1243,7 +1243,7 @@ def _apply_changes(collector: FileCollector, repo: str | None, prompter: Prompte
 
     # Create labels
     if collector.labels and repo:
-        client = _github_adapter(repo)
+        client = _get_repository_host(repo)
         for name, color, desc in collector.labels:
             client.create_label(name, color=color, description=desc, force=True)
         prompter.print(f"  ✓ Created {len(collector.labels)} GitHub labels")

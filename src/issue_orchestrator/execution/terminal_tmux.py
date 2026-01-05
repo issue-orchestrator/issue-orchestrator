@@ -98,3 +98,8 @@ class TmuxPlugin:
     def send_to_session_by_name(self, session_name: str, text: str) -> bool:
         """Send text to a tmux window by name."""
         return self._manager.send_keys_by_name(session_name, text)
+
+    @hookimpl
+    def focus_session(self, session_id: int) -> bool:
+        """Focus a tmux window by issue number."""
+        return self._manager.select_window(session_id)
