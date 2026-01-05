@@ -5,7 +5,7 @@ Implements the WorktreeManager port using the git worktree implementation.
 
 from pathlib import Path
 
-from ..ports.worktree_manager import WorktreeManager, WorktreeInfo
+from ..ports.worktree_manager import WorktreeInfo
 from ..adapters.worktree._worktree import (
     create_worktree,
     remove_worktree,

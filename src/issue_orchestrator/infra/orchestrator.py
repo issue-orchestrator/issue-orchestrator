@@ -7,25 +7,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, cast
 
 if TYPE_CHECKING:
-    from ..control.planner import Planner, Plan, OrchestratorSnapshot
-    from ..control.session_manager import SessionManager, SessionRef
-    from ..control.label_sync import LabelSync
-    from ..control.action_applier import ActionApplier, ActionResult
-    from ..control.fact_gatherer import FactGatherer
-    from ..control.actions import Action, LaunchSessionAction, EscalateToHumanAction
-    from ..domain.models import TriageFacts
+    from ..control.planner import Plan
+    from ..control.session_manager import SessionRef
     from ..ports.session_runner import DiscoveredSession
 
 from ..events import EventName, EventContext, EventHub
 from ..control.orchestrator_support import (
-    log_transition,
     OrchestratorSupport,
-    PlanApplier,
     run_planning_cycle as _run_planning_cycle_impl,
     run_tick as _run_tick_impl,
     pause_issue_for_reconciliation,
-    clear_discovered_facts as _clear_discovered_facts,
-    emit_heartbeat_if_needed as _emit_heartbeat_if_needed,
     check_health as _check_health,
     init_orchestrator_components,
     handle_signal as _handle_signal,
@@ -38,17 +29,13 @@ logger = logging.getLogger(__name__)
 
 from .config import Config
 from ..ports.issue import Issue
-from ..domain.models import Issue as ConcreteIssue  # For instantiation
-from ..domain.models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, PendingCleanup, AgentConfig, ORCHESTRATOR_PR_MARKER
+from ..domain.models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, AgentConfig, ORCHESTRATOR_PR_MARKER
 from ..observation.observer import SessionObserver
 from ..control.scheduler import Scheduler
 from ..control.dependency_evaluator import DependencyEvaluator
-from ..domain.state_machines.issue_machine import IssueStateMachine, IssueState
-from ..domain.state_machines.session_machine import SessionStateMachine, SessionState
-from ..domain.state_machines.review_machine import ReviewStateMachine, ReviewState
-from ..control.completion_processor import CompletionProcessor
-from ..control.session_controller import SessionController
-from ..control.pr_scanner import PRScanner
+from ..domain.state_machines.issue_machine import IssueStateMachine
+from ..domain.state_machines.session_machine import SessionStateMachine
+from ..domain.state_machines.review_machine import ReviewStateMachine
 from ..control.session_launcher import (
     SessionLauncher,
     handle_session_completion as _handle_session_completion,
@@ -73,14 +60,9 @@ from ..control.completion_handler import (
     launch_triage_by_number as _ch_launch_triage_by_number,
     get_review_machine as _ch_get_review_machine,
 )
-from ..control.session_restorer import SessionRestorer
 from ..control.startup_manager import StartupManager
-from ..control.state_machine_manager import StateMachineManager
-from ..control.reconciliation import ReconciliationRequired, get_pause_label
-from ..observation.observation import SessionObservation
-from ..ports import TraceEvent, RepositoryHost, EventSink, SessionRunner
-from ..ports.worktree_manager import WorktreeManager
-from ..control.health_gate import HealthGate, HealthDecision
+from ..ports import TraceEvent, RepositoryHost, SessionRunner
+from ..control.health_gate import HealthDecision
 from ..control.orchestrator_deps import OrchestratorDeps
 
 

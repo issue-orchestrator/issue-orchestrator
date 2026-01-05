@@ -8,7 +8,6 @@ This is an immutable snapshot of a GitHub issue. Key design:
 """
 
 from dataclasses import dataclass
-from typing import Sequence
 
 from ...domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from ...infra import labels as label_module

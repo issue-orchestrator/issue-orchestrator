@@ -88,8 +88,6 @@ async def dashboard(
     import time
     request_start = time.time()
 
-    from ..control.scheduler import Scheduler
-
     # Get query params
     queue_page = int(request.query_params.get("page", 1))
     if queue_page < 1:
@@ -485,7 +483,6 @@ async def get_session_log(issue_number: int) -> JSONResponse:
 
     Finds the most recent session log from ~/.claude/projects/<worktree-path>/
     """
-    import os
     from pathlib import Path
 
     if not _orchestrator:
@@ -924,7 +921,7 @@ async def create_issue(request: Request) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    config = _orchestrator.config
+    _config = _orchestrator.config
 
     try:
         body = await request.json()

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 from .analysis import analyze_issue
 from .config import Config
-from ..domain.dependencies import DependencyReport, parse_dependencies
+from ..domain.dependencies import parse_dependencies
 from ..ports.issue import Issue
 from ..domain.models import OrchestratorState
 from ..control.scheduler import Scheduler

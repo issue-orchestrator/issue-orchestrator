@@ -10,7 +10,7 @@ Naming convention:
 - The prefix itself carries semantic meaning
 """
 
-from typing import Iterable, Sequence
+from typing import Sequence
 
 # =============================================================================
 # Label Constants - use these instead of string literals

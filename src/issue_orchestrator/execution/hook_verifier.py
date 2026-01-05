@@ -2,7 +2,7 @@
 
 import logging
 
-from ..ports.hook_verifier import HookVerifier, HookVerificationResult
+from ..ports.hook_verifier import HookVerificationResult
 from ..infra.config import Config
 
 logger = logging.getLogger(__name__)

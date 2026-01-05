@@ -15,7 +15,6 @@ from ..ports.verification import (
     ErrorClassification,
     VerificationBudget,
     VerificationResult,
-    VerificationService as VerificationServiceProtocol,
     VerificationState,
 )
 
@@ -116,7 +115,7 @@ class DefaultVerificationService:
             attempt += 1
             elapsed = time.monotonic() - start_time
 
-            state = VerificationState(
+            _state = VerificationState(
                 operation=operation,
                 target=target,
                 attempt=attempt,

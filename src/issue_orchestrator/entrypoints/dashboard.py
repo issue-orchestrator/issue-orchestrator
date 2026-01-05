@@ -7,10 +7,8 @@ from typing import TYPE_CHECKING, Callable, Awaitable
 from textual.app import App, ComposeResult
 
 logger = logging.getLogger(__name__)
-from textual.widgets import Static, DataTable, Footer, Header
-from textual.containers import Container, Horizontal, Vertical
+from textual.widgets import Static, DataTable, Footer
 from textual.binding import Binding
-from textual.reactive import reactive
 from rich.text import Text
 
 if TYPE_CHECKING:

@@ -200,10 +200,6 @@ class ITermSessionManager:
             short_title = title[:20].replace('"', "'")
             tab_name = f"#{issue_number} {short_title}"
 
-        # Escape the command for AppleScript
-        escaped_cmd = command.replace('\\', '\\\\').replace('"', '\\"')
-        escaped_dir = working_dir.replace('\\', '\\\\').replace('"', '\\"')
-
         # Use escape sequence to set tab name (set name to doesn't work reliably)
         escaped_tab_name = tab_name.replace('"', '\\"')
         # Wrap command in zsh -l -c to ensure proper PATH (iTerm may default to bash)

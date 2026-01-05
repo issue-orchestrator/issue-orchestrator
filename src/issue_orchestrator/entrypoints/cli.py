@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 from rich.console import Console
 from rich.table import Table
 
-from ..infra.logging_config import setup_logging, get_repo_log_path, GLOBAL_LOG_FILE
+from ..infra.logging_config import setup_logging, GLOBAL_LOG_FILE
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -370,7 +370,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         console.print(table)
 
         # Summary
-        available, dep_blocked = scheduler.get_available_issues(all_issues, check_dependencies=False)
+        available, _ = scheduler.get_available_issues(all_issues, check_dependencies=False)
         console.print(f"\n[dim]Total issues: {len(all_issues)}[/dim]")
         console.print(f"[dim]Available to process: {len(available)}[/dim]")
         console.print(f"[dim]Would launch up to {config.max_concurrent_sessions} concurrent sessions[/dim]")
@@ -765,8 +765,6 @@ def cmd_restart(args: argparse.Namespace) -> int:
     2. Waits for it to exit
     3. Starts a new orchestrator with --adopt-sessions flag
     """
-    import subprocess
-    import sys
     import time
     import httpx
 
@@ -821,7 +819,6 @@ def cmd_restart(args: argparse.Namespace) -> int:
 
 def _start_with_adopt_sessions(args: argparse.Namespace) -> int:
     """Start orchestrator with --adopt-sessions flag."""
-    import subprocess
     import sys
 
     # Build command to run start with adopt-sessions
@@ -1108,7 +1105,6 @@ def _load_config(args: argparse.Namespace) -> "Config":
 def cmd_audit(args: argparse.Namespace) -> int:
     """Audit the queue - show why issues are queued or skipped."""
     from ..infra.audit import audit_queue, print_audit
-    from ..infra.config import Config
     from ..execution.providers import create_repository_host
     from ..execution.git_working_copy import GitWorkingCopy
     from ..infra.analysis import extract_issue_branches
@@ -1272,7 +1268,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
         detect_agents_from_config,
         get_adapter,
         UnsupportedMetaAgentError,
-        MetaAgentType,
     )
 
     agent_types = detect_agents_from_config(config)

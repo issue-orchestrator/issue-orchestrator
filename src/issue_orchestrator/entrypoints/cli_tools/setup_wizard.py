@@ -2,7 +2,6 @@
 
 import subprocess
 import sys
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Protocol
@@ -1221,7 +1220,7 @@ def _print_changes_summary(collector: FileCollector, prompter: Prompter, dry_run
 
     if collector.labels:
         prompter.print("\nGitHub labels to create:")
-        for name, color, desc in collector.labels:
+        for name, _color, desc in collector.labels:
             prompter.print(f"  • {name} - {desc}")
     else:
         prompter.print("\nGitHub labels: (none - all exist)")
@@ -1303,7 +1302,7 @@ def run_wizard(
 
     # Change to target directory for the rest of the wizard
     import os
-    original_cwd = Path.cwd()
+    _original_cwd = Path.cwd()
     os.chdir(target_path)
     prompter.print(f"\nSetting up: {target_path}\n")
 

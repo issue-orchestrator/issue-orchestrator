@@ -21,7 +21,6 @@ from .repo_identity import normalize_repo_root, state_dir
 from .repo_lock import (
     AlreadyRunning,
     LockInfo,
-    acquire_lock,
     is_locked,
     read_lock,
     release_lock,
