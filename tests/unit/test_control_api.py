@@ -661,3 +661,272 @@ class TestControlAPIServer:
 # - 503 error tests (when orchestrator/event_hub is None)
 # - events_since tests (for event buffering)
 # - The EventHub unit tests in test_event_hub.py
+
+
+# =============================================================================
+# Supervisor Control API Tests
+# =============================================================================
+# These test the /control/orchestrator/* endpoints that use the Supervisor
+# to manage orchestrator processes.
+
+
+import os
+
+
+@pytest.fixture
+def supervisor_client():
+    """Create a test client for supervisor endpoints (no orchestrator needed)."""
+    return TestClient(control_app)
+
+
+class TestSupervisorStatus:
+    """Tests for GET /control/orchestrator/status endpoint."""
+
+    def test_status_returns_stopped_when_no_lock(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return stopped state when no orchestrator is running."""
+        response = supervisor_client.get(
+            "/control/orchestrator/status",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["state"] == "stopped"
+
+    def test_status_returns_running_with_lock(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return running state when lock exists and process is alive."""
+        # Create lock file with current process PID
+        lock_dir = tmp_path / ".issue-orchestrator"
+        lock_dir.mkdir(parents=True)
+        lock_path = lock_dir / "lock.json"
+
+        lock_data = {
+            "repo_root": str(tmp_path),
+            "pid": os.getpid(),
+            "started_at": "2024-01-01T00:00:00Z",
+            "http_port": 8080,
+            "state_dir": str(tmp_path / ".issue-orchestrator" / "state"),
+        }
+        with open(lock_path, "w") as f:
+            json.dump(lock_data, f)
+
+        response = supervisor_client.get(
+            "/control/orchestrator/status",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["state"] == "running"
+        assert data["pid"] == os.getpid()
+        assert data["port"] == 8080
+
+    def test_status_rejects_invalid_repo_root(
+        self, supervisor_client: TestClient
+    ) -> None:
+        """Return 400 for invalid repo_root."""
+        response = supervisor_client.get(
+            "/control/orchestrator/status",
+            params={"repo_root": "/nonexistent/path"},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid" in response.json()["error"]
+
+    def test_status_rejects_missing_repo_root(
+        self, supervisor_client: TestClient
+    ) -> None:
+        """Return 422 when repo_root is missing."""
+        response = supervisor_client.get("/control/orchestrator/status")
+
+        assert response.status_code == 422  # FastAPI validation error
+
+
+class TestSupervisorStop:
+    """Tests for POST /control/orchestrator/stop endpoint."""
+
+    def test_stop_returns_not_running_when_no_lock(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return not_running when no orchestrator is running."""
+        response = supervisor_client.post(
+            "/control/orchestrator/stop",
+            json={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "not_running"
+
+    def test_stop_rejects_invalid_repo_root(
+        self, supervisor_client: TestClient
+    ) -> None:
+        """Return 400 for invalid repo_root."""
+        response = supervisor_client.post(
+            "/control/orchestrator/stop",
+            json={"repo_root": "/nonexistent/path"},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid" in response.json()["error"]
+
+    def test_stop_rejects_invalid_json(self, supervisor_client: TestClient) -> None:
+        """Return 400 for invalid JSON."""
+        response = supervisor_client.post(
+            "/control/orchestrator/stop",
+            content="not json",
+            headers={"Content-Type": "application/json"},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid JSON" in response.json()["error"]
+
+
+class TestSupervisorStart:
+    """Tests for POST /control/orchestrator/start endpoint."""
+
+    def test_start_rejects_invalid_repo_root(
+        self, supervisor_client: TestClient
+    ) -> None:
+        """Return 400 for invalid repo_root."""
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={"repo_root": "/nonexistent/path"},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid" in response.json()["error"]
+
+    def test_start_rejects_invalid_port(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return 400 for invalid port."""
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={"repo_root": str(tmp_path), "port": -1},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid port" in response.json()["error"]
+
+    def test_start_rejects_invalid_port_type(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return 400 for non-integer port."""
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={"repo_root": str(tmp_path), "port": "not a number"},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid port" in response.json()["error"]
+
+
+class TestSupervisorLastFailure:
+    """Tests for GET /control/orchestrator/last_failure endpoint."""
+
+    def test_last_failure_returns_none_when_no_file(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return null when no failure file exists."""
+        response = supervisor_client.get(
+            "/control/orchestrator/last_failure",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["last_failure"] is None
+
+    def test_last_failure_returns_data_when_file_exists(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return failure data when file exists."""
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+        failure_path = state_dir / "last_failure.json"
+
+        failure_data = {
+            "phase": "bootstrap",
+            "message": "Missing token",
+            "suggested_fix": "Set GITHUB_TOKEN",
+        }
+        with open(failure_path, "w") as f:
+            json.dump(failure_data, f)
+
+        response = supervisor_client.get(
+            "/control/orchestrator/last_failure",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()["last_failure"]
+        assert data["phase"] == "bootstrap"
+        assert data["message"] == "Missing token"
+
+
+class TestSupervisorLogTail:
+    """Tests for GET /control/orchestrator/log_tail endpoint."""
+
+    def test_log_tail_returns_empty_when_no_log(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return empty list when no log file exists."""
+        response = supervisor_client.get(
+            "/control/orchestrator/log_tail",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["lines"] == []
+        assert data["total_lines"] == 0
+
+    def test_log_tail_returns_lines_when_log_exists(
+        self, supervisor_client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return log lines when file exists."""
+        log_dir = tmp_path / ".issue-orchestrator" / "state" / "logs"
+        log_dir.mkdir(parents=True)
+        log_path = log_dir / "orchestrator.log"
+
+        # Write some log lines
+        lines = [f"Log line {i}" for i in range(10)]
+        with open(log_path, "w") as f:
+            f.write("\n".join(lines))
+
+        response = supervisor_client.get(
+            "/control/orchestrator/log_tail",
+            params={"repo_root": str(tmp_path), "n": 5},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["lines"]) <= 5
+        assert data["total_lines"] == 10
+
+
+class TestSupervisorRejectsNonlocalRepo:
+    """Security tests: Supervisor Control API should reject non-local paths."""
+
+    def test_rejects_relative_path(self, supervisor_client: TestClient) -> None:
+        """Reject relative paths."""
+        response = supervisor_client.get(
+            "/control/orchestrator/status",
+            params={"repo_root": "../some/path"},
+        )
+
+        # Should resolve and check if exists - ../some/path likely doesn't exist
+        assert response.status_code == 400
+
+    def test_rejects_empty_path(self, supervisor_client: TestClient) -> None:
+        """Reject empty path."""
+        response = supervisor_client.get(
+            "/control/orchestrator/status",
+            params={"repo_root": ""},
+        )
+
+        assert response.status_code == 400

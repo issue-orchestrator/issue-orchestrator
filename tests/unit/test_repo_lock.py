@@ -1,0 +1,245 @@
+"""Tests for repo_lock module."""
+
+import json
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from issue_orchestrator.infra.repo_lock import (
+    AlreadyRunning,
+    LockInfo,
+    acquire_lock,
+    is_locked,
+    read_lock,
+    release_lock,
+)
+
+
+class TestAcquireLock:
+    """Tests for acquire_lock function."""
+
+    def test_acquire_lock_success(self, tmp_path: Path) -> None:
+        """Successfully acquire lock when no lock exists."""
+        info = acquire_lock(tmp_path, port=8080)
+
+        assert info.repo_root == str(tmp_path)
+        assert info.pid == os.getpid()
+        assert info.http_port == 8080
+        assert info.recovered is False
+
+        # Verify lock file was created
+        lock_path = tmp_path / ".issue-orchestrator" / "lock.json"
+        assert lock_path.exists()
+
+        with open(lock_path) as f:
+            data = json.load(f)
+        assert data["pid"] == os.getpid()
+        assert data["http_port"] == 8080
+
+    def test_acquire_lock_stale_lock_recovery(self, tmp_path: Path) -> None:
+        """Recover from stale lock (process no longer running)."""
+        # Create a stale lock with a non-existent PID
+        lock_dir = tmp_path / ".issue-orchestrator"
+        lock_dir.mkdir(parents=True)
+        lock_path = lock_dir / "lock.json"
+
+        stale_lock = {
+            "repo_root": str(tmp_path),
+            "pid": 999999999,  # Very unlikely to be a real process
+            "started_at": "2024-01-01T00:00:00Z",
+            "http_port": 9999,
+            "state_dir": str(tmp_path / ".issue-orchestrator" / "state"),
+            "recovered": False,
+        }
+        with open(lock_path, "w") as f:
+            json.dump(stale_lock, f)
+
+        # Should succeed and mark as recovered
+        info = acquire_lock(tmp_path, port=8080)
+
+        assert info.pid == os.getpid()
+        assert info.http_port == 8080
+        assert info.recovered is True
+
+    def test_acquire_lock_already_running(self, tmp_path: Path) -> None:
+        """Raise AlreadyRunning when another process holds the lock."""
+        # First acquire
+        acquire_lock(tmp_path, port=8080)
+
+        # Second acquire should fail (same process, but simulates another)
+        # We need to mock _is_process_alive to return True for the existing PID
+        with patch(
+            "issue_orchestrator.infra.repo_lock._is_process_alive", return_value=True
+        ):
+            with pytest.raises(AlreadyRunning) as exc_info:
+                acquire_lock(tmp_path, port=9090)
+
+        assert exc_info.value.pid == os.getpid()
+        assert exc_info.value.repo_root == tmp_path
+        assert exc_info.value.port == 8080
+
+    def test_acquire_lock_creates_parent_directories(self, tmp_path: Path) -> None:
+        """Lock acquisition creates .issue-orchestrator directory."""
+        repo_root = tmp_path / "nested" / "repo"
+        repo_root.mkdir(parents=True)
+
+        info = acquire_lock(repo_root, port=8080)
+
+        lock_path = repo_root / ".issue-orchestrator" / "lock.json"
+        assert lock_path.exists()
+        assert info.repo_root == str(repo_root)
+
+
+class TestReleaseLock:
+    """Tests for release_lock function."""
+
+    def test_release_lock_success(self, tmp_path: Path) -> None:
+        """Successfully release a lock owned by current process."""
+        acquire_lock(tmp_path, port=8080)
+
+        result = release_lock(tmp_path)
+
+        assert result is True
+        lock_path = tmp_path / ".issue-orchestrator" / "lock.json"
+        assert not lock_path.exists()
+
+    def test_release_lock_no_lock(self, tmp_path: Path) -> None:
+        """Return False when no lock exists."""
+        result = release_lock(tmp_path)
+        assert result is False
+
+    def test_release_lock_wrong_pid(self, tmp_path: Path) -> None:
+        """Return False when lock belongs to another process."""
+        acquire_lock(tmp_path, port=8080)
+
+        # Try to release with wrong PID
+        result = release_lock(tmp_path, pid=999999999)
+
+        assert result is False
+        # Lock should still exist
+        lock_path = tmp_path / ".issue-orchestrator" / "lock.json"
+        assert lock_path.exists()
+
+
+class TestReadLock:
+    """Tests for read_lock function."""
+
+    def test_read_lock_exists(self, tmp_path: Path) -> None:
+        """Read existing lock file."""
+        acquire_lock(tmp_path, port=8080)
+
+        info = read_lock(tmp_path)
+
+        assert info is not None
+        assert info.pid == os.getpid()
+        assert info.http_port == 8080
+
+    def test_read_lock_not_exists(self, tmp_path: Path) -> None:
+        """Return None when no lock exists."""
+        info = read_lock(tmp_path)
+        assert info is None
+
+    def test_read_lock_invalid_json(self, tmp_path: Path) -> None:
+        """Return None when lock file contains invalid JSON."""
+        lock_dir = tmp_path / ".issue-orchestrator"
+        lock_dir.mkdir(parents=True)
+        lock_path = lock_dir / "lock.json"
+
+        with open(lock_path, "w") as f:
+            f.write("not valid json")
+
+        info = read_lock(tmp_path)
+        assert info is None
+
+
+class TestIsLocked:
+    """Tests for is_locked function."""
+
+    def test_is_locked_with_live_process(self, tmp_path: Path) -> None:
+        """Return True when lock exists and process is alive."""
+        acquire_lock(tmp_path, port=8080)
+
+        result = is_locked(tmp_path)
+        assert result is True
+
+    def test_is_locked_no_lock(self, tmp_path: Path) -> None:
+        """Return False when no lock exists."""
+        result = is_locked(tmp_path)
+        assert result is False
+
+    def test_is_locked_stale_lock(self, tmp_path: Path) -> None:
+        """Return False when lock exists but process is dead."""
+        # Create stale lock
+        lock_dir = tmp_path / ".issue-orchestrator"
+        lock_dir.mkdir(parents=True)
+        lock_path = lock_dir / "lock.json"
+
+        stale_lock = {
+            "repo_root": str(tmp_path),
+            "pid": 999999999,
+            "started_at": "2024-01-01T00:00:00Z",
+            "http_port": 8080,
+            "state_dir": str(tmp_path / ".issue-orchestrator" / "state"),
+        }
+        with open(lock_path, "w") as f:
+            json.dump(stale_lock, f)
+
+        result = is_locked(tmp_path)
+        assert result is False
+
+
+class TestLockInfo:
+    """Tests for LockInfo dataclass."""
+
+    def test_lock_info_to_dict(self) -> None:
+        """Convert LockInfo to dict."""
+        info = LockInfo(
+            repo_root="/path/to/repo",
+            pid=12345,
+            started_at="2024-01-01T00:00:00Z",
+            http_port=8080,
+            state_dir="/path/to/repo/.issue-orchestrator/state",
+            recovered=True,
+        )
+
+        data = info.to_dict()
+
+        assert data["repo_root"] == "/path/to/repo"
+        assert data["pid"] == 12345
+        assert data["http_port"] == 8080
+        assert data["recovered"] is True
+
+    def test_lock_info_from_dict(self) -> None:
+        """Create LockInfo from dict."""
+        data = {
+            "repo_root": "/path/to/repo",
+            "pid": 12345,
+            "started_at": "2024-01-01T00:00:00Z",
+            "http_port": 8080,
+            "state_dir": "/path/to/repo/.issue-orchestrator/state",
+            "recovered": False,
+        }
+
+        info = LockInfo.from_dict(data)
+
+        assert info.repo_root == "/path/to/repo"
+        assert info.pid == 12345
+        assert info.http_port == 8080
+        assert info.recovered is False
+
+    def test_lock_info_from_dict_missing_optional_fields(self) -> None:
+        """Create LockInfo with missing optional fields."""
+        data = {
+            "repo_root": "/path/to/repo",
+            "pid": 12345,
+            "started_at": "2024-01-01T00:00:00Z",
+            "state_dir": "/path/to/repo/.issue-orchestrator/state",
+            # http_port and recovered are optional
+        }
+
+        info = LockInfo.from_dict(data)
+
+        assert info.http_port is None
+        assert info.recovered is False

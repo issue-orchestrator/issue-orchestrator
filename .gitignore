@@ -44,6 +44,8 @@ Thumbs.db
 .issue-orchestrator/validation/
 .issue-orchestrator/completion.json
 .issue-orchestrator/state_machines.json
+.issue-orchestrator/lock.json
+.issue-orchestrator/state/
 .agent-done-marker
 
 # Keep .issue-orchestrator/config.yaml tracked - it's project configuration
