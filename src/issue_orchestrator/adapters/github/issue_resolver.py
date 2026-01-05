@@ -4,27 +4,22 @@ This is the GitHub-specific implementation of IssueResolver.
 It maintains an in-memory cache of external_id -> issue_number
 mappings, built by scanning issues from the IssueTracker.
 
-For other backing stores:
+For other backing stores (hypothetically):
 - DBIssueResolver would resolve to row IDs
 - FileIssueResolver would resolve to file paths
-
-Architecture:
-- Parsing is domain (parse_external_id)
-- Resolution is control+ports (this module)
-- GitHub access is only through adapters (IssueTracker)
 """
 
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..domain.issue_key import IssueKey, IssueHandle, GitHubIssueKey, parse_external_id
-from ..events import EventName
-from ..ports import IssueTracker, EventSink, TraceEvent
-from ..infra import gh_audit
+from ...domain.issue_key import IssueKey, IssueHandle, GitHubIssueKey, parse_external_id
+from ...events import EventName
+from ...ports import IssueTracker, EventSink, TraceEvent
+from ...infra import gh_audit
 
 if TYPE_CHECKING:
-    from ..domain.models import Issue
+    from ...domain.models import Issue
 
 logger = logging.getLogger(__name__)
 

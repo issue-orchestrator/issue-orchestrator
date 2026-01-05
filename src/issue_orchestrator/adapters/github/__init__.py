@@ -17,6 +17,7 @@ from .http_client import (
 )
 from .cache import GitHubCache
 from .github_issue import GitHubIssue
+from .issue_resolver import GitHubIssueResolver
 from .repo import get_repo_from_git, GitRepoError
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "GitHubAuthError",
     "GitHubCache",
     "GitHubIssue",
+    "GitHubIssueResolver",
     "resolve_github_token",
     "get_repo_from_git",
     "GitRepoError",
