@@ -1,4 +1,4 @@
-# ADR: Verification failure policy (retry → pause → quarantine)
+# ADR 0010: Verification failure policy (retry → pause → quarantine)
 **Status:** Proposed / Recommended  
 **Date:** 2025-12-31
 

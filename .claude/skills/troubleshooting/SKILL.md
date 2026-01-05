@@ -18,8 +18,8 @@ This skill provides context for debugging orchestrator issues.
 ## Key Resources
 
 Read these files for context:
-- [docs/DEBUGGING.md](docs/DEBUGGING.md) - Event system architecture and debugging commands
-- [docs/ai/TROUBLESHOOTING.md](docs/ai/TROUBLESHOOTING.md) - Common issues and fixes
+- [docs/development/debugging.md](docs/development/debugging.md) - Event system architecture and debugging commands
+- [docs/development/TROUBLESHOOTING.md](docs/development/TROUBLESHOOTING.md) - Common issues and fixes
 
 ## Event System Architecture
 

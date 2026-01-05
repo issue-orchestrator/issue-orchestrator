@@ -41,7 +41,28 @@ Relying on “agent good behavior” is insufficient. Credential inheritance is 
 - Let orchestrator merge automatically: rejected (violates “humans merge” invariant).
 - Fully server-side execution (GitHub Actions only): future option; not required for local-first flows.
 
-## Follow-ups
-- Document recommended GitHub branch protection settings.
-- Implement and test the “no creds in agent session” verification step.
-- Ensure orchestration writes are always verified by subsequent observation (ADR 0002).
+## Implementation: Isolation Modes
+
+### Standard Mode (default, no sudo)
+- Agents run as the current OS user
+- Orchestrator launches agent sessions with a scrubbed environment and an isolated HOME per worktree
+- A fast **affirmative sandbox verification** runs at worktree/session start
+
+### Hardened Mode (opt-in, sudo once)
+- Agents run under a dedicated low-privilege OS user with no credentials
+- Prevents GitHub API access by construction
+
+### Sandbox Verification (both modes)
+
+Minimum checks before agent session starts:
+- `gh auth status` must fail
+- `git push --dry-run` must fail fast (no prompt)
+- Forbidden env vars absent (`GITHUB_TOKEN`, `GH_TOKEN`, `SSH_AUTH_SOCK`, etc.)
+- Mode-specific: HOME isolated (standard) or `whoami` is sandbox user (hardened)
+
+On verification failure:
+- Refuse to start agent session
+- Emit trace event `sandbox_verification_failed`
+
+## Related ADRs
+- ADR-0002: Write-then-observe (verify orchestration writes)

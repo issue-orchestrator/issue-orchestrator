@@ -1,4 +1,4 @@
-# ADR 0014: GitHub authentication sources (env-first, optional keychain)
+# ADR 0008: GitHub authentication sources (env-first, optional keychain)
 
 **Status:** Accepted  
 **Date:** 2025-12-31

@@ -50,6 +50,6 @@ flowchart LR
 - Adapters perform GitHub/terminal/worktree I/O
 - validate-before-push is authoritative; validation signature skip is preserved
 
-## Links
-- docs/design/BOUNDARIES.md
-- docs/design/adr/
+## Documentation
+- [docs/](docs/README.md) - Full documentation index
+- [docs/architecture/](docs/architecture/README.md) - System design & ADRs

@@ -18,7 +18,7 @@ This skill provides context for the multi-stage review pipeline.
 ## Key Resources
 
 Read this file for context:
-- [docs/ai/REVIEW_WORKFLOW.md](docs/ai/REVIEW_WORKFLOW.md) - Full workflow documentation
+- [docs/development/REVIEW_WORKFLOW.md](docs/development/REVIEW_WORKFLOW.md) - Full workflow documentation
 
 ## Review Pipeline
 

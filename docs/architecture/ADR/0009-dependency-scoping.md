@@ -1,4 +1,4 @@
-# ADR: Dependency scoping policy (same-milestone by default with explicit escape hatch)
+# ADR 0009: Dependency scoping policy (same-milestone by default with explicit escape hatch)
 
 **Status:** Accepted  
 **Date:** 2026-01-03
