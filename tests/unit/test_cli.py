@@ -112,9 +112,9 @@ class TestCmdStart:
         """Verify dry-run mode doesn't create orchestrator."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.adapters.github.github_adapter.GitHubAdapter.list_issues', return_value=[]):
+                with patch('issue_orchestrator.execution.providers.create_repository_host') as mock_create_host:
                     with patch('issue_orchestrator.control.scheduler.Scheduler'):
-                        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
+                        with patch('issue_orchestrator.execution.providers.get_tmux_manager') as mock_get_mgr:
                             with patch('issue_orchestrator.infra.analysis.analyze_all_issues', return_value=[]):
                                 with patch('issue_orchestrator.execution.git_working_copy.GitWorkingCopy.list_remote_branches', return_value=[]):
                                     with patch('issue_orchestrator.infra.analysis.analyze_orphan_branches', return_value=[]):
@@ -133,6 +133,11 @@ class TestCmdStart:
                                         mock_config.queue_refresh_seconds = 0
                                         mock_config.validate.return_value = []  # Pass validation
                                         mock_find.return_value = mock_config
+
+                                        # Mock repository host
+                                        mock_github = Mock()
+                                        mock_github.list_issues.return_value = []
+                                        mock_create_host.return_value = mock_github
 
                                         mock_mgr = Mock()
                                         mock_mgr.window_exists = Mock(return_value=False)
