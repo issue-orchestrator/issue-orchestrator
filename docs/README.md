@@ -7,6 +7,7 @@ Getting started with Issue Orchestrator:
 - [Installation](user/installation.md)
 - [Quickstart](user/quickstart.md)
 - [Configuration](user/configuration.md)
+- [GitHub Token Setup](user/github-permissions.md)
 - [Tutorial](user/tutorial.md)
 
 ### For Developers
