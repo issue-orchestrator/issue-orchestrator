@@ -34,7 +34,7 @@ jobs:
               - requirements*.txt
               - pyproject.toml
               - pyrightconfig*.json
-              - importlinter.toml
+              - tools/ast_guardrails.yml
               - .github/workflows/**
 
   validate:
@@ -67,7 +67,7 @@ jobs:
             .pyright
             ~/.cache/pip
             ~/.cache/pre-commit
-          key: tooling-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'pyproject.toml', 'pyrightconfig*.json', 'importlinter.toml', 'tools/ast_guardrails.yml', 'Makefile') }}
+          key: tooling-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'pyproject.toml', 'pyrightconfig*.json', 'tools/ast_guardrails.yml', 'Makefile') }}
 
       - name: Run validate
         run: make validate PYRIGHT=pyright PYTEST=pytest LINT_IMPORTS=lint-imports PYTHON=python
