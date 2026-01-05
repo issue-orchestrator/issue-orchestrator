@@ -7,17 +7,11 @@ Naming: This is an execution-layer adapter that talks to an external platform.
 """
 
 import logging
-import random
 import re
-import threading
-import time
-from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
-from ...ports.issue_tracker import IssueTracker
-from ...ports.label_set import LabelSet
-from ...ports.pull_request_tracker import PRInfo, PullRequestTracker
+from ...ports.pull_request_tracker import PRInfo
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .http_client import (

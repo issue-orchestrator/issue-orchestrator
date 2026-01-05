@@ -5,9 +5,6 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
-from dataclasses import asdict
-
-from ..ports.session_store import SessionStore
 
 logger = logging.getLogger(__name__)
 

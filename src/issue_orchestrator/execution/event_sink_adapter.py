@@ -7,7 +7,6 @@ pluggy-based plugin system.
 This is the ONLY place pluggy is used for event emission.
 """
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 

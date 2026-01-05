@@ -29,5 +29,5 @@ def install_gh_guard() -> None:
             )
         return _ORIGINAL_SUBPROCESS_RUN(*args, **kwargs)
 
-    subprocess.run = _guarded_run  # type: ignore[assignment]
+    subprocess.run = _guarded_run
     _GH_GUARD_INSTALLED = True

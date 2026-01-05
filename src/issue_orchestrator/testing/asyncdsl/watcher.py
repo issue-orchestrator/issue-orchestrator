@@ -42,7 +42,7 @@ class OrchestratorWatcher:
             _consumer_task=None,
             _snapshot_provider=snapshot_provider,
             _replay_provider=replay_provider,
-        )  # type: ignore
+        )
 
         raw = await snapshot_provider.fetch_snapshot()
         view.apply_snapshot(raw)

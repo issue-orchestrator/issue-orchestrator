@@ -6,7 +6,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from ..ports.command_runner import CommandRunner, CommandResult
+from ..ports.command_runner import CommandResult
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ This is the ONLY place pluggy is used for session management.
 import logging
 from typing import TYPE_CHECKING
 
-from ..ports.session_runner import SessionRunner, DiscoveredSession
+from ..ports.session_runner import DiscoveredSession
 
 if TYPE_CHECKING:
     import pluggy

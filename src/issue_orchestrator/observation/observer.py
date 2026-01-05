@@ -22,7 +22,6 @@ from ..infra.config import Config
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
 from ..ports import EventSink, TraceEvent, NullEventSink
-from ..infra import labels
 from .observation import SessionObservation, SessionObservationResult
 
 logger = logging.getLogger(__name__)

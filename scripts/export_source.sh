@@ -10,8 +10,8 @@ PROJECT_NAME="issue-orchestrator"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 OUTPUT_FILE="${PROJECT_NAME}-source-${TIMESTAMP}.zip"
 
-# Change to project root (script location)
-cd "$(dirname "$0")"
+# Change to project root (parent of scripts directory)
+cd "$(dirname "$0")/.."
 
 # Create zip as peer of project directory
 OUTPUT_PATH="../${OUTPUT_FILE}"

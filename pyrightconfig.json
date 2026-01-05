@@ -11,5 +11,11 @@
   "venv": ".venv",
   "typeCheckingMode": "standard",
   "reportMissingImports": true,
-  "reportMissingTypeStubs": false
+  "reportMissingTypeStubs": false,
+  "reportUnusedImport": "warning",
+  "reportUnusedVariable": "warning",
+  "reportUnusedFunction": "warning",
+  "reportUnusedClass": "warning",
+  "reportDuplicateImport": "warning",
+  "reportUnnecessaryTypeIgnoreComment": "warning"
 }

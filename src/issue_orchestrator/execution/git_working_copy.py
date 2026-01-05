@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 
 from ..ports.working_copy import (
-    WorkingCopy,
     CommitInfo,
     BranchStatus,
     PushResult,
@@ -302,7 +301,7 @@ class GitWorkingCopy:
 
         start = time.monotonic()
         try:
-            result = self._run_git(worktree, args)
+            _result = self._run_git(worktree, args)
             duration = time.monotonic() - start
             logger.info(
                 "Push completed in %.2fs: branch=%s remote=%s skip_hooks=%s",

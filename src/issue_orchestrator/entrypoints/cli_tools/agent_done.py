@@ -29,7 +29,6 @@ from ...domain.models import (
     CompletionOutcome,
     RequestedAction,
     COMPLETION_RECORD_PATH,
-    get_completion_path,
 )
 from ...control.validation import AgentGate, AgentGateResult
 
