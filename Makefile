@@ -1,4 +1,10 @@
-.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-web test-web-headed playwright-install validate validate-quick validate-full clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+
+# GNU make detection - required for parallel validation with grouped output
+# On macOS: brew install make (provides gmake)
+# On Linux: GNU make is the default
+GMAKE := $(shell command -v gmake 2>/dev/null || command -v make)
+GMAKE_VERSION := $(shell $(GMAKE) --version 2>/dev/null | head -1)
 
 # Default target
 help:
@@ -16,18 +22,23 @@ help:
 	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
 	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
-	@echo "  validate            Standard validation (typecheck + lint-arch + unit + integration + web-ui)"
+	@echo "  validate            Parallel validation (~40s): typecheck + lint-arch + unit + integration + web-ui"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
-	@echo "  validate-full       Full validation (parallel: pyright + lint-arch + unit + integration + e2e + web-ui)"
+	@echo "  validate-full       Full parallel validation: validate + e2e tests"
 	@echo "  demo                Run demo showing orchestrator features"
 	@echo "  issues-validate     Check issue naming conventions"
 	@echo "  issues-fix          Apply issue name fixes"
 	@echo "  issues-fix-dry-run  Preview issue name fixes (no changes)"
 	@echo "  issues-create       Create issue (use ARGS='--agent x --milestone n --title y')"
 	@echo "  clean               Remove build artifacts"
+	@echo ""
+	@echo "Using: $(GMAKE_VERSION)"
 
 install:
 	pip install -e ".[dev]"
+	@echo ""
+	@echo "NOTE: On macOS, install GNU make for parallel validation:"
+	@echo "  brew install make"
 
 PYRIGHT ?= .venv/bin/pyright --pythonpath .venv/bin/python
 PYTEST ?= .venv/bin/pytest
@@ -94,35 +105,22 @@ playwright-install:
 # Quick validation for agent_gate (~45s)
 validate-quick: typecheck test-unit
 
-# Standard validation - used by CI and pre-push hook
-validate: typecheck lint-arch
-	$(PYTEST) tests/unit tests/integration tests/e2e_web -x -q --tb=short
+# Standard validation - runs 5 jobs in parallel (~40s vs ~90s sequential)
+# Used by CI and pre-push hook
+validate:
+	@$(GMAKE) -j5 --output-sync=target _validate-impl
 
-# Full validation - runs pyright, lint-arch, unit, integration, and e2e all in parallel
-# Logs to .validate/*.log, fails if any component fails
+# Internal target for parallel execution
+_validate-impl: typecheck lint-arch test-unit test-integration test-web
+	@echo "✓ All validations passed!"
+
+# Full validation including e2e tests - runs 6 jobs in parallel
 validate-full:
-	@mkdir -p .validate
-	@echo "Starting parallel validation (pyright + lint-arch + unit + integration + e2e + web-ui)..."
-	@( \
-		$(PYRIGHT) src/ > .validate/pyright.log 2>&1 && echo "✓ pyright passed" || (echo "✗ pyright FAILED (see .validate/pyright.log)" && exit 1) \
-	) & pid1=$$!; \
-	( \
-		$(LINT_IMPORTS) > .validate/lint-arch.log 2>&1 && $(PYTHON) tools/check_arch_guardrails.py src >> .validate/lint-arch.log 2>&1 && echo "✓ lint-arch passed" || (echo "✗ lint-arch FAILED (see .validate/lint-arch.log)" && exit 1) \
-	) & pid2=$$!; \
-	( \
-		$(PYTEST) tests/unit -x -q --tb=short > .validate/unit.log 2>&1 && echo "✓ unit tests passed" || (echo "✗ unit tests FAILED (see .validate/unit.log)" && exit 1) \
-	) & pid3=$$!; \
-	( \
-		$(PYTEST) tests/integration -x -q --tb=short > .validate/integration.log 2>&1 && echo "✓ integration tests passed" || (echo "✗ integration tests FAILED (see .validate/integration.log)" && exit 1) \
-	) & pid4=$$!; \
-	( \
-		$(PYTEST) tests/e2e -v -s --tb=short -x > .validate/e2e.log 2>&1 && echo "✓ e2e tests passed" || (echo "✗ e2e tests FAILED (see .validate/e2e.log)" && exit 1) \
-	) & pid5=$$!; \
-	( \
-		$(PYTEST) tests/e2e_web -v --tb=short > .validate/web.log 2>&1 && echo "✓ web-ui tests passed" || (echo "✗ web-ui tests FAILED (see .validate/web.log)" && exit 1) \
-	) & pid6=$$!; \
-	wait $$pid1 && wait $$pid2 && wait $$pid3 && wait $$pid4 && wait $$pid5 && wait $$pid6 || (echo "Validation failed - check .validate/*.log" && exit 1)
-	@echo "All validations passed!"
+	@$(GMAKE) -j6 --output-sync=target _validate-full-impl
+
+# Internal target for parallel execution
+_validate-full-impl: typecheck lint-arch test-unit test-integration test-web test-e2e
+	@echo "✓ All validations passed (including e2e)!"
 
 # Demo - show orchestrator features with mock data
 demo:

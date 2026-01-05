@@ -110,10 +110,14 @@ def create_issue(
         _ensure_label(repo, label)
 
     with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_CREATE, scope=gh_audit.AuditScope.TEST):
-        issue_number = adapter.create_issue(title=title, body=body, labels=labels)
+        result = adapter.create_issue(title=title, body=body, labels=labels)
 
-    if issue_number is None:
+    if result is None:
         raise RuntimeError("Failed to create issue")
+
+    issue_number = result.get("number")
+    if issue_number is None:
+        raise RuntimeError("Issue created but no number returned")
 
     # Wait for GitHub eventual consistency
     if wait_visible:

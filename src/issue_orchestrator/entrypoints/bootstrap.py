@@ -41,8 +41,7 @@ from ..control import (
 from ..control.action_applier import ActionApplier
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
-from ..execution import GitHubIssueResolver
-from ..adapters.github.cache import GitHubCache
+from ..adapters.github import GitHubIssueResolver, GitHubCache
 from ..execution.verification_service import DefaultVerificationService
 from ..ports.verification import VerificationBudget
 from ..execution.worktree_adapter import GitWorktreeManager

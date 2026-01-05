@@ -127,6 +127,17 @@ class SessionRunner(Protocol):
         """
         ...
 
+    def focus_session(self, session_id: int) -> bool:
+        """Focus/select a terminal session to bring it to the foreground.
+
+        Args:
+            session_id: Numeric ID (typically issue number)
+
+        Returns:
+            True if focused successfully, False otherwise.
+        """
+        ...
+
 
 class NullSessionRunner:
     """No-op session runner for testing."""
@@ -162,4 +173,7 @@ class NullSessionRunner:
         return False
 
     def send_to_session_by_name(self, session_name: str, text: str) -> bool:
+        return False
+
+    def focus_session(self, session_id: int) -> bool:
         return False

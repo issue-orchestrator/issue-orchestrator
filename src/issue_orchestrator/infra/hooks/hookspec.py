@@ -143,6 +143,17 @@ class TerminalSpec:
             True if sent, False if failed, None to defer to next plugin.
         """
 
+    @hookspec(firstresult=True)
+    def focus_session(self, session_id: int) -> bool | None:
+        """Focus/select a terminal session to bring it to the foreground.
+
+        Args:
+            session_id: Numeric ID (typically issue number)
+
+        Returns:
+            True if focused, False if not found, None to defer to next plugin.
+        """
+
 
 class TraceEventSpec:
     """Hook specification for trace event broadcasting.

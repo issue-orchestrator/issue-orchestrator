@@ -34,7 +34,18 @@
         .status-running { background: #238636; color: #fff; }
         .status-paused { background: #9e6a03; color: #fff; }
         .status-starting { background: #1f6feb; color: #fff; }
-        .controls { display: flex; gap: 8px; }
+        .controls { display: flex; gap: 8px; align-items: center; }
+        .create-issue-btn {
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #fff;
+            background: #238636;
+            border: 1px solid #238636;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .create-issue-btn:hover { background: #2ea043; }
         .controls button {
             padding: 6px 12px;
             border: 1px solid #30363d;
@@ -185,6 +196,232 @@
             text-align: center;
             color: #8b949e;
         }
+
+        /* System Panel */
+        .system-panel { display: none; }
+        .system-panel.active { display: block; }
+        .system-card {
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+        .system-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: #161b22;
+            border-bottom: 1px solid #21262d;
+            font-weight: 600;
+            font-size: 13px;
+        }
+        .system-card-body { padding: 16px; }
+        .system-status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 16px;
+        }
+        .system-stat {
+            padding: 12px;
+            background: #0d1117;
+            border-radius: 6px;
+        }
+        .system-stat-label {
+            font-size: 11px;
+            color: #8b949e;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .system-stat-value {
+            font-size: 16px;
+            font-weight: 600;
+            font-family: monospace;
+        }
+        .system-stat-value.status-running { color: #3fb950; }
+        .system-stat-value.status-stopped { color: #8b949e; }
+        .system-stat-value.status-failed { color: #f85149; }
+        .system-controls {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .system-controls button {
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            border: 1px solid #30363d;
+            background: #21262d;
+            color: #c9d1d9;
+        }
+        .system-controls button:hover:not(:disabled) { background: #30363d; }
+        .system-controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .system-controls button.btn-danger {
+            border-color: #f85149;
+            color: #f85149;
+        }
+        .system-controls button.btn-danger:hover:not(:disabled) {
+            background: #f8514920;
+        }
+        .error-panel {
+            background: #2d1b1b;
+            border: 1px solid #f85149;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .error-panel-title {
+            color: #f85149;
+            font-weight: 600;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .error-panel-body {
+            font-size: 13px;
+            color: #c9d1d9;
+        }
+        .error-panel-fix {
+            margin-top: 12px;
+            padding: 8px 12px;
+            background: #0d1117;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .log-viewer {
+            background: #0d1117;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 11px;
+            max-height: 400px;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        .log-line {
+            padding: 2px 0;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .log-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 8px;
+        }
+        .log-controls label {
+            font-size: 12px;
+            color: #8b949e;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .recovered-badge {
+            background: #9e6a03;
+            color: #fff;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+
+        /* Create Issue Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.visible { display: flex; }
+        .modal {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            max-width: 550px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid #30363d;
+        }
+        .modal-header h2 { font-size: 16px; font-weight: 600; margin: 0; }
+        .modal-close {
+            background: none;
+            border: none;
+            color: #8b949e;
+            font-size: 24px;
+            cursor: pointer;
+            line-height: 1;
+            padding: 0;
+        }
+        .modal-close:hover { color: #c9d1d9; }
+        .modal-body { padding: 20px; }
+        .form-group { margin-bottom: 16px; }
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 6px;
+            color: #c9d1d9;
+        }
+        .form-hint {
+            font-size: 11px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+        .form-input, .form-select, .form-textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            background: #0d1117;
+            color: #c9d1d9;
+            font-size: 14px;
+        }
+        .form-input:focus, .form-select:focus, .form-textarea:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+        .form-textarea { min-height: 100px; resize: vertical; font-family: inherit; }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        .modal-footer {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            padding: 16px 20px;
+            border-top: 1px solid #30363d;
+        }
+        .modal-footer .btn-primary {
+            padding: 10px 24px;
+            font-size: 14px;
+            background: #238636;
+            border: 1px solid #238636;
+            color: #fff;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .modal-footer .btn-primary:hover { background: #2ea043; }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+        .checkbox-group input { width: 16px; height: 16px; }
 
         /* Pagination */
         .pagination {
@@ -424,6 +661,7 @@
                 {% endif %}
             </div>
             <div class="controls">
+                <button class="create-issue-btn" onclick="openCreateIssueModal()">+ Create Issue</button>
                 <button class="settings-btn" onclick="toggleSettingsMenu(event)">☰</button>
             </div>
         </header>
@@ -435,6 +673,9 @@
             <button class="tab {% if active_tab == 'problems' %}active{% endif %}" onclick="switchTab('problems')">
                 Problems
                 <span class="tab-badge {% if problem_count == 0 %}empty{% endif %}">{{ problem_count }}</span>
+            </button>
+            <button class="tab {% if active_tab == 'system' %}active{% endif %}" onclick="switchTab('system')">
+                System
             </button>
         </div>
 
@@ -500,6 +741,142 @@
                 {% endif %}
             </div>
             {% endif %}
+        </div>
+
+        <!-- System Panel (hidden unless system tab is active) -->
+        <div class="system-panel {% if active_tab == 'system' %}active{% endif %}" id="systemPanel">
+            <!-- Error Panel (shown if last startup failed) -->
+            <div class="error-panel" id="errorPanel" style="display:none;">
+                <div class="error-panel-title">
+                    <span>⚠️</span> Last Startup Failed
+                </div>
+                <div class="error-panel-body" id="errorMessage"></div>
+                <div class="error-panel-fix" id="errorFix" style="display:none;"></div>
+            </div>
+
+            <!-- Status Card -->
+            <div class="system-card">
+                <div class="system-card-header">
+                    <span>Orchestrator Status</span>
+                    <span id="recoveredBadge" class="recovered-badge" style="display:none;">Recovered</span>
+                </div>
+                <div class="system-card-body">
+                    <div class="system-status-grid">
+                        <div class="system-stat">
+                            <div class="system-stat-label">State</div>
+                            <div class="system-stat-value status-running" id="systemState">Running</div>
+                        </div>
+                        <div class="system-stat">
+                            <div class="system-stat-label">PID</div>
+                            <div class="system-stat-value" id="systemPid">-</div>
+                        </div>
+                        <div class="system-stat">
+                            <div class="system-stat-label">Port</div>
+                            <div class="system-stat-value" id="systemPort">-</div>
+                        </div>
+                        <div class="system-stat">
+                            <div class="system-stat-label">Started</div>
+                            <div class="system-stat-value" id="systemStarted">-</div>
+                        </div>
+                    </div>
+                    <div class="system-controls" style="margin-top: 16px;">
+                        <button onclick="pauseOrchestrator()" id="pauseBtn">
+                            {% if paused %}▶ Resume{% else %}⏸ Pause{% endif %}
+                        </button>
+                        <button onclick="refreshFromGitHub()">🔄 Refresh</button>
+                        <button onclick="restartOrchestrator()">♻️ Restart</button>
+                        <button onclick="stopOrchestrator()" class="btn-danger">⏹ Stop</button>
+                        <button onclick="forceStopOrchestrator()" class="btn-danger">⚡ Force Stop</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Log Viewer Card -->
+            <div class="system-card">
+                <div class="system-card-header">
+                    <span>Orchestrator Log</span>
+                    <div class="log-controls">
+                        <label>
+                            <input type="checkbox" id="logAutoRefresh" checked>
+                            Auto-refresh
+                        </label>
+                        <button onclick="refreshLogs()" style="font-size:12px;padding:4px 8px;">Refresh</button>
+                    </div>
+                </div>
+                <div class="system-card-body">
+                    <div class="log-viewer" id="logViewer">
+                        <div class="log-line" style="color:#8b949e;">Loading logs...</div>
+                    </div>
+                    <div class="log-controls" style="margin-top:8px;">
+                        <span id="logInfo" style="font-size:11px;color:#8b949e;"></span>
+                        <select id="logLines" onchange="refreshLogs()" style="background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:4px;border-radius:4px;">
+                            <option value="50">50 lines</option>
+                            <option value="100">100 lines</option>
+                            <option value="200" selected>200 lines</option>
+                            <option value="500">500 lines</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Create Issue Modal -->
+        <div class="modal-overlay" id="createIssueModal">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2>Create Issue</h2>
+                    <button class="modal-close" onclick="closeCreateIssueModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label">Title *</label>
+                        <input type="text" id="issueTitle" class="form-input" placeholder="Brief description of what needs to be done">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Description</label>
+                        <textarea id="issueBody" class="form-textarea" placeholder="Detailed description, acceptance criteria, etc."></textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Agent *</label>
+                            <select id="issueAgent" class="form-select">
+                                <option value="">Select an agent...</option>
+                                {% for agent_name in agents.keys() %}
+                                <option value="{{ agent_name }}">{{ agent_name }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Priority</label>
+                            <select id="issuePriority" class="form-select">
+                                <option value="">No priority</option>
+                                <option value="P0">P0 - Critical</option>
+                                <option value="P1">P1 - High</option>
+                                <option value="P2">P2 - Medium</option>
+                                <option value="P3">P3 - Low</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Milestone</label>
+                        <select id="issueMilestone" class="form-select">
+                            <option value="">Loading milestones...</option>
+                        </select>
+                        <div class="form-hint" id="milestoneHint"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-primary" onclick="createIssue()">Create Issue</button>
+                    <label class="checkbox-group">
+                        <input type="checkbox" id="refreshAfterCreate" checked>
+                        <span>Refresh queue after creating</span>
+                    </label>
+                </div>
+            </div>
         </div>
 
         {% if queue_total_pages > 1 %}
@@ -1257,6 +1634,310 @@
             toast.classList.toggle('error', isError);
             toast.classList.add('visible');
             setTimeout(() => toast.classList.remove('visible'), 2500);
+        }
+
+        // System Panel Functions
+        const repoRoot = '{{ repo_root | default("") }}';
+
+        async function loadSystemStatus() {
+            if (!repoRoot) return;
+            try {
+                const res = await fetch(`/control/orchestrator/status?repo_root=${encodeURIComponent(repoRoot)}`);
+                const data = await res.json();
+
+                const stateEl = document.getElementById('systemState');
+                const pidEl = document.getElementById('systemPid');
+                const portEl = document.getElementById('systemPort');
+                const startedEl = document.getElementById('systemStarted');
+                const recoveredEl = document.getElementById('recoveredBadge');
+
+                stateEl.textContent = data.state ? data.state.charAt(0).toUpperCase() + data.state.slice(1) : '-';
+                stateEl.className = 'system-stat-value status-' + (data.state || 'stopped');
+
+                pidEl.textContent = data.pid || '-';
+                portEl.textContent = data.port || '-';
+
+                if (data.started_at) {
+                    const d = new Date(data.started_at);
+                    startedEl.textContent = d.toLocaleTimeString();
+                } else {
+                    startedEl.textContent = '-';
+                }
+
+                if (data.recovered) {
+                    recoveredEl.style.display = 'inline';
+                } else {
+                    recoveredEl.style.display = 'none';
+                }
+
+                // Show error if failed
+                if (data.state === 'failed' && data.error) {
+                    document.getElementById('errorPanel').style.display = 'block';
+                    document.getElementById('errorMessage').textContent = data.error;
+                }
+            } catch (err) {
+                console.error('[system] Failed to load status:', err);
+            }
+        }
+
+        async function loadLastFailure() {
+            if (!repoRoot) return;
+            try {
+                const res = await fetch(`/control/orchestrator/last_failure?repo_root=${encodeURIComponent(repoRoot)}`);
+                const data = await res.json();
+
+                if (data.last_failure) {
+                    const panel = document.getElementById('errorPanel');
+                    const msgEl = document.getElementById('errorMessage');
+                    const fixEl = document.getElementById('errorFix');
+
+                    panel.style.display = 'block';
+                    msgEl.textContent = data.last_failure.message || 'Unknown error';
+
+                    if (data.last_failure.suggested_fix) {
+                        fixEl.style.display = 'block';
+                        fixEl.textContent = data.last_failure.suggested_fix;
+                    }
+                }
+            } catch (err) {
+                console.error('[system] Failed to load last failure:', err);
+            }
+        }
+
+        async function refreshLogs() {
+            if (!repoRoot) return;
+            const logViewer = document.getElementById('logViewer');
+            const logInfo = document.getElementById('logInfo');
+            const n = document.getElementById('logLines').value;
+
+            try {
+                const res = await fetch(`/control/orchestrator/log_tail?repo_root=${encodeURIComponent(repoRoot)}&n=${n}`);
+                const data = await res.json();
+
+                if (data.lines && data.lines.length > 0) {
+                    logViewer.innerHTML = data.lines.map(line =>
+                        `<div class="log-line">${escapeHtml(line)}</div>`
+                    ).join('');
+                    logInfo.textContent = `Showing ${data.returned_lines} of ${data.total_lines} lines`;
+                    // Scroll to bottom
+                    logViewer.scrollTop = logViewer.scrollHeight;
+                } else {
+                    logViewer.innerHTML = '<div class="log-line" style="color:#8b949e;">No log entries</div>';
+                    logInfo.textContent = '';
+                }
+            } catch (err) {
+                logViewer.innerHTML = '<div class="log-line" style="color:#f85149;">Failed to load logs</div>';
+                console.error('[system] Failed to load logs:', err);
+            }
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        async function pauseOrchestrator() {
+            const btn = document.getElementById('pauseBtn');
+            if (isPaused) {
+                await fetch('/api/resume', { method: 'POST' });
+                btn.textContent = '⏸ Pause';
+                isPaused = false;
+                showToast('Orchestrator resumed');
+            } else {
+                await fetch('/api/pause', { method: 'POST' });
+                btn.textContent = '▶ Resume';
+                isPaused = true;
+                showToast('Orchestrator paused');
+            }
+        }
+
+        async function stopOrchestrator() {
+            if (!confirm('Stop the orchestrator? Active sessions will be preserved.')) return;
+            await fetch('/api/shutdown', { method: 'POST' });
+            showToast('Shutdown requested');
+            setTimeout(() => location.reload(), 1000);
+        }
+
+        async function forceStopOrchestrator() {
+            if (!confirm('Force stop the orchestrator? This will immediately terminate the process.')) return;
+            if (!repoRoot) return;
+            try {
+                await fetch('/control/orchestrator/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: repoRoot, force: true })
+                });
+                showToast('Force stopped');
+                setTimeout(() => location.reload(), 1000);
+            } catch (err) {
+                showToast('Force stop failed', true);
+            }
+        }
+
+        async function restartOrchestrator() {
+            if (!confirm('Restart the orchestrator?')) return;
+            showToast('Restarting...');
+            await fetch('/api/shutdown', { method: 'POST' });
+            // The page will become unavailable shortly
+        }
+
+        // Initialize system panel when on system tab
+        const activeTab = '{{ active_tab }}';
+        if (activeTab === 'system') {
+            loadSystemStatus();
+            loadLastFailure();
+            refreshLogs();
+
+            // Auto-refresh logs every 5 seconds if checkbox is checked
+            setInterval(() => {
+                const autoRefresh = document.getElementById('logAutoRefresh');
+                if (autoRefresh && autoRefresh.checked) {
+                    refreshLogs();
+                }
+            }, 5000);
+
+            // Refresh status every 2 seconds
+            setInterval(loadSystemStatus, 2000);
+        }
+
+        // Create Issue Modal Functions
+        async function loadMilestones() {
+            const select = document.getElementById('issueMilestone');
+            if (!select) return;
+
+            try {
+                const res = await fetch('/api/milestones');
+                const data = await res.json();
+
+                if (data.error) {
+                    console.error('[milestones] Error:', data.error);
+                    select.innerHTML = '<option value="">No milestone</option>';
+                    return;
+                }
+
+                // Clear and add default option
+                select.innerHTML = '<option value="">No milestone</option>';
+
+                // Separate included and excluded milestones
+                const included = (data.milestones || []).filter(m => m.included);
+                const excluded = (data.milestones || []).filter(m => !m.included);
+
+                // Add included milestones first
+                for (const m of included) {
+                    const option = document.createElement('option');
+                    option.value = m.number;
+                    option.textContent = m.title;
+                    select.appendChild(option);
+                }
+
+                // Add excluded milestones with clear warning
+                if (excluded.length > 0 && data.filter_active) {
+                    const separator = document.createElement('option');
+                    separator.disabled = true;
+                    separator.textContent = '── Won\'t be picked up by this orchestrator ──';
+                    select.appendChild(separator);
+
+                    for (const m of excluded) {
+                        const option = document.createElement('option');
+                        option.value = m.number;
+                        option.textContent = `${m.title}`;
+                        option.style.color = '#8b949e';
+                        select.appendChild(option);
+                    }
+                }
+
+                // Update hint
+                const hint = document.getElementById('milestoneHint');
+                if (hint) {
+                    if (data.filter_active) {
+                        hint.textContent = `Orchestrator filters to: ${data.filter_milestones.join(', ')}`;
+                    } else {
+                        hint.textContent = '';
+                    }
+                }
+            } catch (err) {
+                console.error('[milestones] Failed to load:', err);
+                select.innerHTML = '<option value="">Failed to load milestones</option>';
+            }
+        }
+
+        async function createIssue() {
+            const title = document.getElementById('issueTitle').value.trim();
+            const body = document.getElementById('issueBody').value.trim();
+            const agent = document.getElementById('issueAgent').value;
+            const priority = document.getElementById('issuePriority').value;
+            const milestone = document.getElementById('issueMilestone').value;
+            const refreshAfter = document.getElementById('refreshAfterCreate').checked;
+
+            if (!title) {
+                showToast('Title is required', true);
+                return;
+            }
+
+            if (!agent) {
+                showToast('Please select an agent', true);
+                return;
+            }
+
+            showToast('Creating issue...');
+
+            try {
+                const res = await fetch('/api/issues', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        title: title,
+                        body: body,
+                        agent: agent,
+                        priority: priority || undefined,
+                        milestone: milestone ? parseInt(milestone) : undefined,
+                    }),
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    showToast(data.error, true);
+                    return;
+                }
+
+                showToast(`Issue #${data.issue_number} created!`);
+
+                // Clear the form
+                document.getElementById('issueTitle').value = '';
+                document.getElementById('issueBody').value = '';
+                document.getElementById('issueAgent').selectedIndex = 0;
+                document.getElementById('issuePriority').selectedIndex = 0;
+                document.getElementById('issueMilestone').selectedIndex = 0;
+
+                // Trigger refresh if requested
+                if (refreshAfter) {
+                    try {
+                        await fetch('/api/refresh', { method: 'POST' });
+                        showToast('Queue refreshed');
+                    } catch (err) {
+                        // Ignore refresh errors
+                    }
+                }
+
+                // Open the issue in a new tab
+                if (data.url) {
+                    window.open(data.url, '_blank');
+                }
+
+            } catch (err) {
+                showToast('Failed to create issue', true);
+            }
+        }
+
+        // Create Issue Modal Functions
+        function openCreateIssueModal() {
+            document.getElementById('createIssueModal').classList.add('visible');
+            loadMilestones();
+        }
+
+        function closeCreateIssueModal() {
+            document.getElementById('createIssueModal').classList.remove('visible');
         }
     </script>
     <div id="toast" class="toast"></div>

@@ -1,12 +1,28 @@
 # AST Guardrails Configuration (Option A: small, high-signal)
 
+# Layer boundary rules: prevent certain paths from importing certain modules
+# This enforces hexagonal architecture by ensuring entrypoints use protocols, not adapters
+layer_boundaries:
+  - name: entrypoints_no_adapters
+    description: "Entrypoints must use protocols, not import adapters directly"
+    deny_in:
+      - src/issue_orchestrator/entrypoints
+    deny_imports:
+      - issue_orchestrator.adapters
+    allow:
+      # bootstrap.py is the composition root - it wires adapters to protocols
+      - src/issue_orchestrator/entrypoints/bootstrap.py
+
 allow_prefixes:
   - src/issue_orchestrator/execution
   - src/issue_orchestrator/adapters
   - src/issue_orchestrator/entrypoints/cli.py
+  - src/issue_orchestrator/entrypoints/control_api.py  # Passthrough calls to orchestrator
   - src/issue_orchestrator/adapters/terminal/_iterm2.py
   - src/issue_orchestrator/adapters/worktree/_worktree.py
   - src/issue_orchestrator/infra/hooks/hooks.py
+  - src/issue_orchestrator/infra/supervisor.py  # Supervisor manages orchestrator subprocesses
+  - src/issue_orchestrator/infra/ai_diagnose.py  # AI diagnosis invokes claude
   - src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py
   - src/issue_orchestrator/entrypoints/web.py
   - src/issue_orchestrator/control/scheduler.py
@@ -18,6 +34,8 @@ allow_git_subprocess_prefixes:
   - src/issue_orchestrator/adapters/worktree/_worktree.py
   - src/issue_orchestrator/infra/hooks/hooks.py
   - src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py
+  # control_api.py uses git for prereq checks (git --version) and setup detection (git remote get-url)
+  - src/issue_orchestrator/entrypoints/control_api.py
 
 deny_imports:
   - subprocess

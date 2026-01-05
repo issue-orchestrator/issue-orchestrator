@@ -79,6 +79,115 @@ def _is_git_subprocess_call(node: ast.Call) -> bool:
     return isinstance(first, ast.Constant) and first.value == "git"
 
 
+def matches_module(import_name: str, deny_patterns: Sequence[str]) -> Optional[str]:
+    """Check if an import matches any of the deny patterns.
+
+    Returns the matching pattern if found, None otherwise.
+    """
+    for pattern in deny_patterns:
+        # Match if import starts with pattern (e.g., 'issue_orchestrator.adapters' matches 'issue_orchestrator.adapters.github')
+        if import_name == pattern or import_name.startswith(pattern + "."):
+            return pattern
+    return None
+
+
+def resolve_relative_import(path: Path, module: Optional[str], level: int) -> Optional[str]:
+    """Resolve a relative import to an absolute module name.
+
+    Args:
+        path: Path to the file containing the import
+        module: The module name from ast.ImportFrom (e.g., 'adapters.github')
+        level: Number of dots (e.g., 2 for 'from ..adapters')
+
+    Returns:
+        Absolute module name (e.g., 'issue_orchestrator.adapters.github')
+    """
+    if level == 0:
+        return module
+
+    # Convert path to module parts
+    # e.g., 'src/issue_orchestrator/entrypoints/web.py' -> ['issue_orchestrator', 'entrypoints', 'web']
+    parts = list(path.with_suffix("").parts)
+
+    # Find 'issue_orchestrator' in path and use that as the root
+    try:
+        root_idx = parts.index("issue_orchestrator")
+        parts = parts[root_idx:]  # Start from issue_orchestrator
+    except ValueError:
+        return module  # Can't resolve, return as-is
+
+    # Remove 'level' number of parts from the end (for the dots)
+    # level=1 means current package, level=2 means parent, etc.
+    if level > len(parts):
+        return module
+    parts = parts[: -level] if level > 0 else parts
+
+    # Append the imported module
+    if module:
+        parts.extend(module.split("."))
+
+    return ".".join(parts)
+
+
+def check_layer_boundaries(path: Path, tree: ast.AST, rules: dict) -> list[Violation]:
+    """Check layer boundary rules (e.g., entrypoints cannot import adapters)."""
+    violations: list[Violation] = []
+    layer_rules = rules.get("layer_boundaries", []) or []
+
+    for rule in layer_rules:
+        deny_in = rule.get("deny_in", []) or []
+        deny_imports = rule.get("deny_imports", []) or []
+        allow = rule.get("allow", []) or []
+        rule_name = rule.get("name", "layer-boundary")
+
+        # Check if this file is in a denied path
+        p = path.as_posix()
+        in_denied_path = any(p.startswith(prefix.rstrip("/")) for prefix in deny_in)
+
+        # Check if this file is explicitly allowed
+        is_allowed_file = any(p == allowed or p.startswith(allowed.rstrip("/") + "/") for allowed in allow)
+
+        if not in_denied_path or is_allowed_file:
+            continue
+
+        # Check imports
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    match = matches_module(alias.name, deny_imports)
+                    if match:
+                        violations.append(
+                            Violation(
+                                path.as_posix(),
+                                node.lineno,
+                                node.col_offset,
+                                rule_name,
+                                f"import {alias.name} (forbidden: {match})",
+                            )
+                        )
+
+            if isinstance(node, ast.ImportFrom):
+                # Resolve relative imports to absolute module names
+                resolved = resolve_relative_import(path, node.module, node.level)
+                if resolved:
+                    match = matches_module(resolved, deny_imports)
+                    if match:
+                        # Format the import for display
+                        dots = "." * node.level
+                        display_module = f"{dots}{node.module}" if node.module else dots
+                        violations.append(
+                            Violation(
+                                path.as_posix(),
+                                node.lineno,
+                                node.col_offset,
+                                rule_name,
+                                f"from {display_module} import ... (forbidden: {match})",
+                            )
+                        )
+
+    return violations
+
+
 def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[Violation]:
     allow_general = is_allowed(path, allow_prefixes)
 
@@ -88,6 +197,10 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
         return [Violation(path.as_posix(), e.lineno or 1, e.offset or 0, "syntax", e.msg)]
 
     violations: list[Violation] = []
+
+    # Check layer boundary rules first
+    violations.extend(check_layer_boundaries(path, tree, rules))
+
     deny_imports = set(rules.get("deny_imports", []) or [])
     deny_dynamic_imports = set(rules.get("deny_dynamic_imports", []) or [])
     deny_calls = set(tuple(x.split(".", 1)) for x in (rules.get("deny_calls", []) or []))

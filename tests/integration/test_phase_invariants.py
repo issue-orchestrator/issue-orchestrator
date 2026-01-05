@@ -1,0 +1,472 @@
+"""Tests for phase invariants.
+
+These tests verify that the phase implementation meets its defining invariants,
+not just that some related files exist.
+
+Phase invariants:
+- Phase 1: Cannot start a second orchestrator for same repo; stale lock recovers.
+- Phase 2: Control API endpoints work even when orchestrator is not running.
+- Phase 3: UI served by control plane, not by a running orchestrator.
+- Phase 4: Failures are structured and visible via control endpoints when orchestrator is down.
+- Phase 5: AI diagnose creates analysis-only report without credentials.
+- Phase 6: AST guardrails enforce subprocess boundaries.
+- Phase 7: Supervisor manages multiple repos from one control center.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+from issue_orchestrator.entrypoints.control_api import control_app
+from issue_orchestrator.infra.repo_lock import acquire_lock, release_lock, AlreadyRunning
+
+
+class TestPhase1LockInvariant:
+    """Phase 1: Cannot start a second orchestrator for same repo; stale lock recovers."""
+
+    def test_cannot_acquire_lock_twice(self, tmp_path: Path) -> None:
+        """Cannot start a second orchestrator for same repo."""
+        import os
+
+        # First lock succeeds (uses current PID)
+        info = acquire_lock(tmp_path, port=8080)
+        assert info.pid == os.getpid()
+
+        # Second lock fails because we're still "running"
+        with pytest.raises(AlreadyRunning) as exc_info:
+            acquire_lock(tmp_path, port=8081)
+
+        assert exc_info.value.pid == os.getpid()
+        assert exc_info.value.port == 8080
+
+        # Cleanup
+        release_lock(tmp_path)
+
+    def test_stale_lock_recovers(self, tmp_path: Path) -> None:
+        """Stale lock from dead process is recovered."""
+        import os
+        from issue_orchestrator.infra.repo_lock import _write_lock, LockInfo
+        from issue_orchestrator.infra.repo_identity import lock_file
+
+        # Manually write a lock with a non-existent PID
+        fake_lock = LockInfo(
+            repo_root=str(tmp_path),
+            pid=999999,  # Non-existent PID
+            started_at="2024-01-01T00:00:00+00:00",
+            http_port=8080,
+            state_dir=str(tmp_path / ".issue-orchestrator" / "state"),
+        )
+        _write_lock(lock_file(tmp_path), fake_lock)
+
+        # acquire_lock should recover from stale lock
+        info = acquire_lock(tmp_path, port=8081)
+        assert info.pid == os.getpid()
+        assert info.recovered is True
+
+        release_lock(tmp_path)
+
+
+class TestPhase2ControlAPIWithoutOrchestrator:
+    """Phase 2: Control API status works when orchestrator is not running."""
+
+    def test_status_works_without_orchestrator(self, tmp_path: Path) -> None:
+        """GET /control/orchestrator/status works without a running orchestrator."""
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/orchestrator/status",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["state"] in ("stopped", "unknown", "failed")
+
+    def test_repos_list_works_without_orchestrator(self) -> None:
+        """GET /control/repos works without any orchestrator running."""
+        client = TestClient(control_app)
+
+        response = client.get("/control/repos")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "repos" in data
+
+
+class TestPhase3ControlCenterUI:
+    """Phase 3: UI served by control plane, not by a running orchestrator."""
+
+    def test_control_center_ui_served_by_control_api(self) -> None:
+        """Control center UI is served at / by control_api."""
+        client = TestClient(control_app)
+
+        response = client.get("/")
+
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+        assert "Control Center" in response.text
+
+    def test_control_center_ui_contains_repo_management(self) -> None:
+        """Control center UI has repo management functionality."""
+        client = TestClient(control_app)
+
+        response = client.get("/")
+
+        assert response.status_code == 200
+        # UI should have setup wizard and discovery
+        assert "openSetupWizard" in response.text
+        assert "discoverRepos" in response.text
+        # UI should have start/stop functionality
+        assert "startRepo" in response.text
+        assert "stopRepo" in response.text
+
+
+class TestPhase4FailureVisibility:
+    """Phase 4: Failures visible via control endpoints when orchestrator is down."""
+
+    def test_last_failure_endpoint_exists(self, tmp_path: Path) -> None:
+        """GET /control/orchestrator/last_failure endpoint exists."""
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/orchestrator/last_failure",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # No failure should return empty
+        assert data.get("last_failure") is None or "message" in data.get("last_failure", {})
+
+    def test_doctor_endpoint_exists(self, tmp_path: Path) -> None:
+        """GET /control/orchestrator/doctor endpoint exists."""
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/orchestrator/doctor",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "overall" in data or "error" in data
+
+
+class TestPhase5AIDiagnoseNoCredentials:
+    """Phase 5: AI diagnose does not receive credentials."""
+
+    def test_get_safe_env_strips_credentials(self) -> None:
+        """_get_safe_env strips all credential environment variables."""
+        from issue_orchestrator.infra.ai_diagnose import _get_safe_env
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GITHUB_TOKEN": "secret1",
+                "GH_TOKEN": "secret2",
+                "ANTHROPIC_API_KEY": "secret3",
+                "ISSUE_ORCH_GITHUB_TOKEN": "secret4",
+                "PATH": "/usr/bin",
+                "HOME": "/home/user",
+            },
+        ):
+            safe_env = _get_safe_env()
+
+        assert "GITHUB_TOKEN" not in safe_env
+        assert "GH_TOKEN" not in safe_env
+        assert "ANTHROPIC_API_KEY" not in safe_env
+        assert "ISSUE_ORCH_GITHUB_TOKEN" not in safe_env
+        assert safe_env.get("PATH") == "/usr/bin"
+        assert safe_env.get("HOME") == "/home/user"
+
+
+class TestPhase7MultiRepoFromControlCenter:
+    """Phase 7: Supervisor manages multiple repos from one control center."""
+
+    def test_discover_repos_endpoint_exists(self, tmp_path: Path) -> None:
+        """GET /control/repos/discover endpoint exists and returns discovered repos."""
+        client = TestClient(control_app)
+
+        # Create a test repo with config
+        test_repo = tmp_path / "test-repo"
+        test_repo.mkdir()
+        (test_repo / ".issue-orchestrator.yaml").write_text("repo: test/repo\n")
+
+        response = client.get(
+            "/control/repos/discover",
+            params={"search_paths": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "discovered" in data
+
+        # Should find our test repo
+        discovered_paths = [r["path"] for r in data["discovered"]]
+        assert str(test_repo.resolve()) in discovered_paths
+
+    def test_can_register_multiple_repos(self, tmp_path: Path) -> None:
+        """Can register multiple repos via control API."""
+        from issue_orchestrator.infra.repo_registry import (
+            load_registry,
+            save_registry,
+            RepoRegistry,
+        )
+
+        # Create test repos
+        repo1 = tmp_path / "repo1"
+        repo2 = tmp_path / "repo2"
+        repo1.mkdir()
+        repo2.mkdir()
+
+        # Mock registry file
+        registry_file = tmp_path / "repos.json"
+
+        with patch(
+            "issue_orchestrator.infra.repo_registry._repos_file",
+            return_value=registry_file,
+        ):
+            client = TestClient(control_app)
+
+            # Add first repo
+            response1 = client.post(
+                "/control/repos",
+                json={"repo_root": str(repo1)},
+            )
+            assert response1.status_code == 200
+            assert response1.json()["status"] == "added"
+
+            # Add second repo
+            response2 = client.post(
+                "/control/repos",
+                json={"repo_root": str(repo2)},
+            )
+            assert response2.status_code == 200
+            assert response2.json()["status"] == "added"
+
+            # List should show both
+            response3 = client.get("/control/repos")
+            assert response3.status_code == 200
+            repos = response3.json()["repos"]
+            paths = [r["path"] for r in repos]
+            assert str(repo1.resolve()) in paths
+            assert str(repo2.resolve()) in paths
+
+
+class TestSetupWizardEndpoints:
+    """Setup wizard API endpoints for GUI configuration."""
+
+    def test_prereqs_endpoint_exists(self) -> None:
+        """GET /control/setup/prereqs endpoint exists."""
+        client = TestClient(control_app)
+
+        response = client.get("/control/setup/prereqs")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "all_ok" in data
+        assert "checks" in data
+        assert "git" in data["checks"]
+        assert "github_auth" in data["checks"]
+        assert "claude" in data["checks"]
+
+    def test_validate_endpoint_exists(self, tmp_path: Path) -> None:
+        """POST /control/repos/validate endpoint exists."""
+        client = TestClient(control_app)
+
+        # Create a repo with config
+        (tmp_path / ".issue-orchestrator.yaml").write_text(
+            "repo: test/repo\nagents:\n  agent:dev:\n    prompt: dev.md\n"
+        )
+
+        response = client.post(
+            "/control/repos/validate",
+            json={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "valid" in data
+        assert "has_config" in data
+
+    def test_detect_endpoint_exists(self, tmp_path: Path) -> None:
+        """GET /control/setup/detect endpoint exists."""
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/setup/detect",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "repo_root" in data
+        assert "existing_config" in data
+
+    def test_preview_endpoint_exists(self) -> None:
+        """POST /control/setup/preview endpoint exists."""
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/control/setup/preview",
+            json={
+                "repo_root": "/tmp/test",
+                "config": {
+                    "repo": "test/repo",
+                    "agents": {"agent:dev": {"prompt": "dev.md", "model": "sonnet"}},
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "yaml" in data
+        assert "files" in data
+        assert "repo: test/repo" in data["yaml"]
+
+    def test_save_endpoint_creates_config(self, tmp_path: Path) -> None:
+        """POST /control/setup/save endpoint creates config file."""
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/control/setup/save",
+            json={
+                "repo_root": str(tmp_path),
+                "config": {
+                    "repo": "test/repo",
+                    "agents": {"agent:dev": {"prompt": ".io/dev.md", "model": "sonnet"}},
+                },
+                "create_prompts": True,
+                "create_labels": False,  # Skip GitHub API calls
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "saved"
+        assert "config_path" in data
+
+        # Config file should exist
+        config_path = tmp_path / ".issue-orchestrator.yaml"
+        assert config_path.exists()
+        content = config_path.read_text()
+        assert "repo: test/repo" in content
+
+    def test_detect_returns_existing_config(self, tmp_path: Path) -> None:
+        """GET /control/setup/detect returns existing_config when present."""
+        client = TestClient(control_app)
+
+        # Create a config file first
+        config_content = """repo: existing/repo
+agents:
+  agent:backend:
+    prompt: backend.md
+    model: opus
+"""
+        (tmp_path / ".issue-orchestrator.yaml").write_text(config_content)
+
+        response = client.get(
+            "/control/setup/detect",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["existing_config"] is not None
+        assert data["existing_config"]["repo"] == "existing/repo"
+        assert "agent:backend" in data["existing_config"]["agents"]
+
+    def test_save_endpoint_updates_existing_config(self, tmp_path: Path) -> None:
+        """POST /control/setup/save can update an existing config file."""
+        client = TestClient(control_app)
+
+        # Create initial config
+        initial_config = "repo: old/repo\nagents:\n  agent:old: {}\n"
+        (tmp_path / ".issue-orchestrator.yaml").write_text(initial_config)
+
+        # Update with new config
+        response = client.post(
+            "/control/setup/save",
+            json={
+                "repo_root": str(tmp_path),
+                "config": {
+                    "repo": "new/repo",
+                    "agents": {"agent:new": {"prompt": "new.md", "model": "sonnet"}},
+                },
+                "create_prompts": False,
+                "create_labels": False,
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "saved"
+
+        # Config should be updated
+        content = (tmp_path / ".issue-orchestrator.yaml").read_text()
+        assert "repo: new/repo" in content
+        assert "agent:new" in content
+        assert "agent:old" not in content  # Old config replaced
+
+
+class TestDashboardRendering:
+    """Tests that the orchestrator dashboard renders without errors."""
+
+    def test_dashboard_renders_without_orchestrator(self) -> None:
+        """Dashboard should render even without a running orchestrator."""
+        from issue_orchestrator.entrypoints.web import app
+
+        client = TestClient(app)
+
+        response = client.get("/")
+
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_dashboard_contains_all_tabs(self) -> None:
+        """Dashboard should have all expected tabs."""
+        from issue_orchestrator.entrypoints.web import app
+
+        client = TestClient(app)
+
+        response = client.get("/")
+
+        assert response.status_code == 200
+        # Check all tabs are present
+        assert "switchTab('work')" in response.text or "Work" in response.text
+        assert "switchTab('system')" in response.text or "System" in response.text
+        assert "switchTab('create')" in response.text or "Create Issue" in response.text
+
+    def test_dashboard_create_issue_form_present(self) -> None:
+        """Dashboard should have the create issue form with all fields."""
+        from issue_orchestrator.entrypoints.web import app
+
+        client = TestClient(app)
+
+        response = client.get("/")
+
+        assert response.status_code == 200
+        # Check form elements are present
+        assert "issueTitle" in response.text
+        assert "issueBody" in response.text
+        assert "issueAgent" in response.text
+        assert "issuePriority" in response.text
+        assert "issueMilestone" in response.text
+        assert "refreshAfterCreate" in response.text
+
+    def test_dashboard_api_endpoints_exist(self) -> None:
+        """Dashboard API endpoints should exist."""
+        from issue_orchestrator.entrypoints.web import app
+
+        client = TestClient(app)
+
+        # These should return 503 (no orchestrator) not 404 (not found)
+        response = client.get("/api/milestones")
+        assert response.status_code == 503  # No orchestrator, but endpoint exists
+
+        response = client.post("/api/issues", json={"title": "test"})
+        assert response.status_code == 503  # No orchestrator, but endpoint exists

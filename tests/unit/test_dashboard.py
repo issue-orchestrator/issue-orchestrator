@@ -528,18 +528,17 @@ class TestDashboardApp:
 
         orchestrator.state.active_sessions = [session1]
         orchestrator.config.ui_mode = "iterm2"
+        # Mock the session_runner.focus_session used by the refactored code
+        orchestrator.session_runner.focus_session.return_value = True
 
         app = DashboardApp(orchestrator)
 
-        with patch('issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name') as mock_select:
-            with patch.object(app, 'notify') as mock_notify:
-                mock_select.return_value = True
+        with patch.object(app, 'notify') as mock_notify:
+            await app.action_attach(1)
 
-                await app.action_attach(1)
-
-                mock_select.assert_called_once_with("#1")
-                mock_notify.assert_called_once()
-                assert "Switched to #1" in mock_notify.call_args[0][0]
+            orchestrator.session_runner.focus_session.assert_called_once_with(1)
+            mock_notify.assert_called_once()
+            assert "Switched to #1" in mock_notify.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_action_attach_tmux_mode(self):
@@ -552,19 +551,16 @@ class TestDashboardApp:
 
         orchestrator.state.active_sessions = [session1]
         orchestrator.config.ui_mode = "tmux"
+        # Mock the session_runner.focus_session used by the refactored code
+        orchestrator.session_runner.focus_session.return_value = True
 
         app = DashboardApp(orchestrator)
 
-        mock_manager = MagicMock()
-        mock_manager.session = MagicMock()
-        mock_manager.select_window.return_value = True
+        with patch.object(app, 'exit') as mock_exit:
+            await app.action_attach(1)
 
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager', return_value=mock_manager):
-            with patch.object(app, 'exit') as mock_exit:
-                await app.action_attach(1)
-
-                mock_manager.select_window.assert_called_once_with(1)
-                mock_exit.assert_called_once()
+            orchestrator.session_runner.focus_session.assert_called_once_with(1)
+            mock_exit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_action_attach_handles_exception(self):
@@ -577,15 +573,16 @@ class TestDashboardApp:
 
         orchestrator.state.active_sessions = [session1]
         orchestrator.config.ui_mode = "tmux"
+        # Mock focus_session to raise an exception
+        orchestrator.session_runner.focus_session.side_effect = Exception("Test error")
 
         app = DashboardApp(orchestrator)
 
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager', side_effect=Exception("Test error")):
-            with patch.object(app, 'notify') as mock_notify:
-                await app.action_attach(1)
+        with patch.object(app, 'notify') as mock_notify:
+            await app.action_attach(1)
 
-                mock_notify.assert_called()
-                assert "Attach failed" in mock_notify.call_args[0][0]
+            mock_notify.assert_called()
+            assert "Attach failed" in mock_notify.call_args[0][0]
 
 
 class TestDashboard:
@@ -634,52 +631,51 @@ class TestDashboard:
     async def test_handle_attach_tmux_mode(self):
         """Test attach handler in tmux mode."""
         orchestrator = create_orchestrator()
+        # Mock session_runner.focus_session
+        orchestrator.session_runner.focus_session.return_value = True
+
         dashboard = Dashboard(orchestrator, ui_mode="tmux")
         dashboard._app = MagicMock()
         dashboard._app.exit = MagicMock()
 
-        mock_manager = MagicMock()
-        mock_manager.session = MagicMock()
+        await dashboard._handle_attach(42)
 
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager', return_value=mock_manager):
-            await dashboard._handle_attach(42)
-
-            mock_manager.select_window.assert_called_once_with(42)
-            assert dashboard.attach_after_exit is True
-            dashboard._app.exit.assert_called_once()
+        orchestrator.session_runner.focus_session.assert_called_once_with(42)
+        assert dashboard.attach_after_exit is True
+        dashboard._app.exit.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_handle_attach_iterm2_mode(self):
         """Test attach handler in iterm2 mode."""
         orchestrator = create_orchestrator()
+        # Mock session_runner.focus_session
+        orchestrator.session_runner.focus_session.return_value = True
+
         dashboard = Dashboard(orchestrator, ui_mode="iterm2")
         dashboard._app = MagicMock()
         dashboard._app.notify = MagicMock()
 
-        with patch('issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name') as mock_select:
-            mock_select.return_value = True
+        await dashboard._handle_attach(42)
 
-            await dashboard._handle_attach(42)
-
-            mock_select.assert_called_once_with("#42")
-            dashboard._app.notify.assert_called_once()
-            assert "Switched to #42" in dashboard._app.notify.call_args[0][0]
+        orchestrator.session_runner.focus_session.assert_called_once_with(42)
+        dashboard._app.notify.assert_called_once()
+        assert "Switched to #42" in dashboard._app.notify.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_handle_attach_iterm2_tab_not_found(self):
         """Test attach handler when iterm2 tab is not found."""
         orchestrator = create_orchestrator()
+        # Mock session_runner.focus_session returning False (tab not found)
+        orchestrator.session_runner.focus_session.return_value = False
+
         dashboard = Dashboard(orchestrator, ui_mode="iterm2")
         dashboard._app = MagicMock()
         dashboard._app.notify = MagicMock()
 
-        with patch('issue_orchestrator.adapters.terminal._iterm2.select_tab_by_name') as mock_select:
-            mock_select.return_value = False
+        await dashboard._handle_attach(42)
 
-            await dashboard._handle_attach(42)
-
-            dashboard._app.notify.assert_called_once()
-            assert "not found" in dashboard._app.notify.call_args[0][0]
+        dashboard._app.notify.assert_called_once()
+        assert "not found" in dashboard._app.notify.call_args[0][0]
 
     def test_stop(self):
         """Test stopping the dashboard."""

@@ -646,12 +646,13 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             )
 
         try:
-            issue_number = self.repository_host.create_issue(
+            result = self.repository_host.create_issue(
                 title=action.title,
                 body=action.body,
                 labels=list(action.labels),
             )
 
+            issue_number = result.get("number") if result else None
             if issue_number:
                 logger.info(
                     "[APPLIER] Created triage issue #%d for %d PRs",

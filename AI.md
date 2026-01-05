@@ -65,7 +65,7 @@ agent-done changes_requested --issues "Missing tests"  # Reviewer
 | Architecture deep-dive | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, DI patterns, adding adapters |
 | Review workflow | [docs/ai/REVIEW_WORKFLOW.md](docs/ai/REVIEW_WORKFLOW.md) | Code review, triage, rework cycles |
 | Troubleshooting | [docs/ai/TROUBLESHOOTING.md](docs/ai/TROUBLESHOOTING.md) | Debugging, common problems |
-| Hook enforcement | [HOOKS.md](HOOKS.md) | Guardrails, agent restrictions |
+| Hook enforcement | [HOOKS.md](docs/hooks2.md) | Guardrails, agent restrictions |
 
 ## Skills (Auto-Invoked)
 

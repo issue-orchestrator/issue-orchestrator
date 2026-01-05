@@ -41,7 +41,7 @@ from .json_store import JsonSessionStore
 from .lifecycle_sse import LifecycleSSEPlugin
 from .event_sink_adapter import PluggyEventSink, CompositeEventSink, LoggingEventSink
 from .session_runner_adapter import PluggySessionRunner
-from .github_issue_resolver import GitHubIssueResolver
+from ..adapters.github.issue_resolver import GitHubIssueResolver
 from .command_runner import LocalCommandRunner
 
 __all__ = [

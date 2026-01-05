@@ -1,0 +1,1426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Issue Orchestrator Control Center</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            min-height: 100vh;
+        }
+        .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #21262d;
+        }
+        h1 { font-size: 20px; font-weight: 600; color: #fff; }
+        .subtitle { font-size: 12px; color: #8b949e; margin-top: 4px; }
+        .header-actions { display: flex; gap: 8px; }
+
+        .card {
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: #161b22;
+            border-bottom: 1px solid #21262d;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .card-body { padding: 16px; }
+
+        .btn {
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid #30363d;
+            background: #21262d;
+            color: #c9d1d9;
+        }
+        .btn:hover:not(:disabled) { background: #30363d; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-primary { background: #238636; border-color: #238636; color: #fff; }
+        .btn-primary:hover:not(:disabled) { background: #2ea043; }
+        .btn-danger { border-color: #f85149; color: #f85149; background: transparent; }
+        .btn-danger:hover:not(:disabled) { background: #f85149; color: #fff; }
+        .btn-sm { padding: 4px 8px; font-size: 11px; }
+
+        .repo-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
+        .repo-header {
+            display: grid;
+            grid-template-columns: 1fr 120px 80px 200px;
+            align-items: center;
+            padding: 10px 16px;
+            background: #161b22;
+            border-bottom: 1px solid #21262d;
+            font-size: 11px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+        }
+        .repo-row {
+            display: grid;
+            grid-template-columns: 1fr 120px 80px 200px;
+            align-items: center;
+            padding: 14px 16px;
+            border-bottom: 1px solid #21262d;
+        }
+        .repo-row:last-child { border-bottom: none; }
+        .repo-row:hover { background: #161b22; }
+        .repo-name { font-weight: 600; color: #58a6ff; font-size: 14px; }
+        .repo-path {
+            font-size: 11px;
+            color: #8b949e;
+            font-family: monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            margin-top: 2px;
+        }
+        .repo-status { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .status-running .status-dot { background: #3fb950; }
+        .status-stopped .status-dot { background: #8b949e; }
+        .status-failed .status-dot { background: #f85149; }
+        .repo-port { font-size: 13px; color: #8b949e; font-family: monospace; }
+        .repo-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+        .repo-actions button { padding: 5px 10px; font-size: 11px; }
+
+        .empty-state {
+            padding: 48px;
+            text-align: center;
+            color: #8b949e;
+        }
+
+        .error-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            font-size: 10px;
+            background: #f8514920;
+            color: #f85149;
+            border-radius: 4px;
+            margin-left: 8px;
+        }
+
+        .discovered-list {
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .discovered-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background: #0d1117;
+            border-bottom: 1px solid #21262d;
+            font-size: 13px;
+        }
+        .discovered-item:last-child { border-bottom: none; }
+        .discovered-item:hover { background: #161b22; }
+        .discovered-name { font-weight: 500; color: #58a6ff; min-width: 150px; }
+        .discovered-path { flex: 1; font-size: 12px; color: #8b949e; font-family: monospace; overflow: hidden; text-overflow: ellipsis; }
+        .discovered-item button { white-space: nowrap; }
+
+        /* Welcome screen */
+        .welcome-screen {
+            text-align: center;
+            padding: 60px 20px;
+        }
+        .welcome-screen h2 {
+            font-size: 24px;
+            margin-bottom: 12px;
+            color: #fff;
+        }
+        .welcome-screen p {
+            color: #8b949e;
+            margin-bottom: 24px;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        /* Setup Wizard Modal */
+        .wizard-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .wizard-overlay.visible { display: flex; }
+        .wizard {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            max-width: 700px;
+            width: 100%;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .wizard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid #30363d;
+        }
+        .wizard-header h2 { font-size: 16px; font-weight: 600; }
+        .wizard-close {
+            background: none;
+            border: none;
+            color: #8b949e;
+            font-size: 24px;
+            cursor: pointer;
+            line-height: 1;
+        }
+        .wizard-close:hover { color: #c9d1d9; }
+        .wizard-progress {
+            display: flex;
+            padding: 16px 20px;
+            gap: 8px;
+            border-bottom: 1px solid #21262d;
+        }
+        .wizard-step {
+            flex: 1;
+            height: 4px;
+            background: #21262d;
+            border-radius: 2px;
+        }
+        .wizard-step.active { background: #238636; }
+        .wizard-step.completed { background: #3fb950; }
+        .wizard-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+        .wizard-footer {
+            display: flex;
+            justify-content: space-between;
+            padding: 16px 20px;
+            border-top: 1px solid #30363d;
+        }
+
+        /* Wizard form elements */
+        .form-group { margin-bottom: 20px; }
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 6px;
+            color: #c9d1d9;
+        }
+        .form-hint {
+            font-size: 11px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+        .form-input {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            background: #0d1117;
+            color: #c9d1d9;
+            font-size: 14px;
+        }
+        .form-input:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+        .form-input::placeholder { color: #484f58; }
+        .form-select {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            background: #0d1117;
+            color: #c9d1d9;
+            font-size: 14px;
+        }
+        .form-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+        .form-checkbox input { width: 16px; height: 16px; }
+
+        .prereq-list { margin-top: 12px; }
+        .prereq-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            background: #0d1117;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+        .prereq-icon { font-size: 16px; }
+        .prereq-ok .prereq-icon { color: #3fb950; }
+        .prereq-fail .prereq-icon { color: #f85149; }
+        .prereq-name { font-weight: 500; }
+        .prereq-detail { font-size: 12px; color: #8b949e; margin-left: auto; }
+
+        .agent-card {
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+        .agent-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            background: #0d1117;
+            cursor: pointer;
+        }
+        .agent-card-header:hover { background: #161b22; }
+        .agent-card-body {
+            padding: 14px;
+            border-top: 1px solid #30363d;
+            display: none;
+        }
+        .agent-card.expanded .agent-card-body { display: block; }
+        .agent-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+
+        .yaml-preview {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: #238636;
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            opacity: 0;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            z-index: 10000;
+        }
+        .toast.visible { transform: translateX(-50%) translateY(0); opacity: 1; }
+        .toast.error { background: #f85149; }
+
+        /* Details panel */
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #21262d;
+        }
+        .info-row:last-child { border-bottom: none; }
+        .info-label { color: #8b949e; }
+        .info-value { font-family: monospace; }
+
+        .log-viewer {
+            background: #0d1117;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 11px;
+            max-height: 300px;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        .log-line { padding: 2px 0; white-space: pre-wrap; word-break: break-all; }
+
+        .error-panel {
+            background: #2d1b1b;
+            border: 1px solid #f85149;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        .error-panel-title {
+            color: #f85149;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+        .error-panel-body { font-size: 13px; }
+
+        .doctor-check { padding: 8px 0; }
+        .doctor-check-status { display: inline-block; width: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container" id="mainContent">
+        <header>
+            <div>
+                <h1>Issue Orchestrator Control Center</h1>
+                <div class="subtitle">Manage orchestrators across repositories</div>
+            </div>
+            <div class="header-actions">
+                <button onclick="openSetupWizard()" class="btn btn-primary">+ New Setup</button>
+                <button onclick="shutdownControlCenter()" class="btn btn-danger">Shutdown</button>
+            </div>
+        </header>
+
+        <!-- Welcome screen (shown when no repos) -->
+        <div id="welcomeScreen" class="welcome-screen" style="display:none;">
+            <h2>Welcome to Issue Orchestrator</h2>
+            <p>Get started by setting up your first repository. The setup wizard will guide you through configuring agents, review workflows, and more.</p>
+            <button onclick="openSetupWizard()" class="btn btn-primary" style="padding:12px 32px;font-size:15px;">
+                Set Up Your First Repository
+            </button>
+        </div>
+
+        <!-- Main content (hidden when welcome screen shown) -->
+        <div id="repoContent">
+            <!-- Discovered Repos Card -->
+            <div class="card" id="discoverCard">
+                <div class="card-header">
+                    <span>Discovered Repositories</span>
+                    <button onclick="discoverRepos()" class="btn btn-sm">Scan</button>
+                </div>
+                <div class="card-body">
+                    <div style="font-size:12px;color:#8b949e;margin-bottom:12px;">
+                        Repos with <code>.issue-orchestrator.yaml</code> not yet registered:
+                    </div>
+                    <div id="discoveredRepos" class="discovered-list">
+                        <div class="empty-state" style="padding:24px;">Click "Scan" to find repositories</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span>Registered Repositories</span>
+                    <button onclick="loadRepos()" class="btn btn-sm">Refresh</button>
+                </div>
+                <div class="card-body">
+                    <div class="repo-list">
+                        <div class="repo-header">
+                            <span>Repository</span>
+                            <span>Status</span>
+                            <span>Port</span>
+                            <span>Actions</span>
+                        </div>
+                        <div id="repoRows">
+                            <div class="empty-state">Loading repositories...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card" id="detailsCard" style="display:none;">
+                <div class="card-header">
+                    <span id="detailsTitle">Repository Details</span>
+                    <button onclick="hideDetails()" class="btn btn-sm">Close</button>
+                </div>
+                <div class="card-body" id="detailsBody"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Setup Wizard Modal -->
+    <div class="wizard-overlay" id="wizardOverlay">
+        <div class="wizard">
+            <div class="wizard-header">
+                <h2 id="wizardTitle">Setup Wizard</h2>
+                <button class="wizard-close" onclick="closeWizard()">&times;</button>
+            </div>
+            <div class="wizard-progress" id="wizardProgress"></div>
+            <div class="wizard-body" id="wizardBody"></div>
+            <div class="wizard-footer">
+                <button class="btn" id="wizardBack" onclick="wizardPrev()">Back</button>
+                <button class="btn btn-primary" id="wizardNext" onclick="wizardNext()">Next</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        // ==================== Utility Functions ====================
+        function escapeHtml(str) {
+            if (!str) return '';
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function showToast(message, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.toggle('error', isError);
+            toast.classList.add('visible');
+            setTimeout(() => toast.classList.remove('visible'), 3000);
+        }
+
+        // ==================== Setup Wizard State ====================
+        const wizardSteps = [
+            { id: 'repo', title: 'Select Repository' },
+            { id: 'prereqs', title: 'Prerequisites' },
+            { id: 'agents', title: 'Agents' },
+            { id: 'settings', title: 'Settings' },
+            { id: 'review', title: 'Review Workflow' },
+            { id: 'preview', title: 'Preview & Save' },
+        ];
+
+        let wizardState = {
+            step: 0,
+            repoRoot: '',
+            repoName: '',
+            detected: null,
+            isEditing: false,
+            config: {
+                repo: '',
+                agents: {},
+                concurrency: { max_concurrent_sessions: 3 },
+                ui_mode: 'web',
+                web_port: 8080,
+                milestone_sort: 'due_date',
+                labels: { prefix: 'io' },
+                review: { enabled: false },
+            },
+        };
+
+        function openSetupWizard(preselectedPath = null, existingConfig = null) {
+            // Reset state
+            wizardState = {
+                step: 0,
+                repoRoot: preselectedPath || '',
+                repoName: preselectedPath ? preselectedPath.split('/').pop() : '',
+                detected: null,
+                isEditing: !!existingConfig,
+                config: existingConfig ? { ...existingConfig } : {
+                    repo: '',
+                    agents: {},
+                    concurrency: { max_concurrent_sessions: 3 },
+                    ui_mode: 'web',
+                    web_port: 8080,
+                    milestone_sort: 'due_date',
+                    labels: { prefix: 'io' },
+                    review: { enabled: false },
+                },
+            };
+
+            // If editing, skip to step 2 (prereqs) since we already have the repo
+            if (existingConfig && preselectedPath) {
+                wizardState.step = 1;
+            }
+
+            document.getElementById('wizardOverlay').classList.add('visible');
+            renderWizardStep();
+        }
+
+        async function openEditWizard(repoPath) {
+            // Fetch the existing config
+            showToast('Loading configuration...');
+            try {
+                const res = await fetch(`/control/setup/detect?repo_root=${encodeURIComponent(repoPath)}`);
+                const data = await res.json();
+
+                if (data.existing_config) {
+                    // Edit existing config
+                    openSetupWizard(repoPath, data.existing_config);
+                } else {
+                    // No config exists, create new with detected info
+                    const newConfig = {
+                        repo: data.repo || '',
+                        agents: {},
+                        concurrency: { max_concurrent_sessions: 3 },
+                        ui_mode: 'web',
+                        web_port: 8080,
+                        milestone_sort: 'due_date',
+                        labels: { prefix: 'io' },
+                        review: { enabled: false },
+                    };
+                    // Pre-populate agents from detected labels
+                    if (data.agent_labels) {
+                        for (const label of data.agent_labels) {
+                            newConfig.agents[label] = {
+                                prompt: `.issue-orchestrator/prompts/${label.split(':')[1]}.md`,
+                                model: 'sonnet',
+                                timeout_minutes: 45,
+                                worktree_base: '../',
+                            };
+                        }
+                    }
+                    openSetupWizard(repoPath, null);  // Create new
+                }
+            } catch (err) {
+                showToast('Failed to load configuration', true);
+            }
+        }
+
+        function closeWizard() {
+            document.getElementById('wizardOverlay').classList.remove('visible');
+        }
+
+        async function wizardNext() {
+            const step = wizardSteps[wizardState.step];
+
+            // Validate current step
+            if (step.id === 'repo') {
+                const input = document.getElementById('wizardRepoPath');
+                if (!input || !input.value.trim()) {
+                    showToast('Please enter a repository path', true);
+                    return;
+                }
+                wizardState.repoRoot = input.value.trim();
+                wizardState.repoName = wizardState.repoRoot.split('/').pop();
+
+                // Detect repo info
+                showToast('Detecting repository...');
+                try {
+                    const res = await fetch(`/control/setup/detect?repo_root=${encodeURIComponent(wizardState.repoRoot)}`);
+                    wizardState.detected = await res.json();
+                    if (wizardState.detected.repo) {
+                        wizardState.config.repo = wizardState.detected.repo;
+                    }
+                    // Pre-populate agents from existing labels
+                    if (wizardState.detected.agent_labels) {
+                        for (const label of wizardState.detected.agent_labels) {
+                            if (!wizardState.config.agents[label]) {
+                                wizardState.config.agents[label] = {
+                                    prompt: `.issue-orchestrator/prompts/${label.split(':')[1]}.md`,
+                                    model: 'sonnet',
+                                    timeout_minutes: 45,
+                                    worktree_base: '../',
+                                };
+                            }
+                        }
+                    }
+                } catch (err) {
+                    showToast('Failed to detect repository', true);
+                    return;
+                }
+            }
+
+            if (step.id === 'agents') {
+                // Ensure at least one agent
+                if (Object.keys(wizardState.config.agents).length === 0) {
+                    showToast('Add at least one agent', true);
+                    return;
+                }
+            }
+
+            if (step.id === 'preview') {
+                // Save!
+                await saveWizardConfig();
+                return;
+            }
+
+            wizardState.step++;
+            renderWizardStep();
+        }
+
+        function wizardPrev() {
+            if (wizardState.step > 0) {
+                wizardState.step--;
+                renderWizardStep();
+            }
+        }
+
+        function renderWizardStep() {
+            const step = wizardSteps[wizardState.step];
+            const modeLabel = wizardState.isEditing ? 'Edit' : 'New';
+
+            // Update progress
+            const progressHtml = wizardSteps.map((s, i) => {
+                let cls = 'wizard-step';
+                if (i < wizardState.step) cls += ' completed';
+                else if (i === wizardState.step) cls += ' active';
+                return `<div class="${cls}" title="${s.title}"></div>`;
+            }).join('');
+            document.getElementById('wizardProgress').innerHTML = progressHtml;
+
+            // Update title with mode indication
+            const titlePrefix = wizardState.isEditing ? '(Editing) ' : '';
+            document.getElementById('wizardTitle').textContent = titlePrefix + step.title;
+
+            // Update buttons - show first step differently when editing
+            const isFirstStep = wizardState.isEditing ? wizardState.step === 1 : wizardState.step === 0;
+            document.getElementById('wizardBack').style.visibility = isFirstStep ? 'hidden' : 'visible';
+            document.getElementById('wizardNext').textContent = step.id === 'preview' ? (wizardState.isEditing ? 'Update' : 'Save') : 'Next';
+
+            // Render step content
+            const body = document.getElementById('wizardBody');
+            if (step.id === 'repo') {
+                body.innerHTML = renderRepoStep();
+            } else if (step.id === 'prereqs') {
+                body.innerHTML = '<div style="text-align:center;padding:20px;">Checking prerequisites...</div>';
+                renderPrereqsStep();
+            } else if (step.id === 'agents') {
+                body.innerHTML = renderAgentsStep();
+            } else if (step.id === 'settings') {
+                body.innerHTML = renderSettingsStep();
+            } else if (step.id === 'review') {
+                body.innerHTML = renderReviewStep();
+            } else if (step.id === 'preview') {
+                body.innerHTML = '<div style="text-align:center;padding:20px;">Generating preview...</div>';
+                renderPreviewStep();
+            }
+        }
+
+        function renderRepoStep() {
+            return `
+                <div class="form-group">
+                    <label class="form-label">Repository Path</label>
+                    <input type="text" id="wizardRepoPath" class="form-input"
+                        placeholder="/path/to/your/repo"
+                        value="${escapeHtml(wizardState.repoRoot)}">
+                    <div class="form-hint">Enter the full path to your git repository</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Or select from discovered repositories:</label>
+                    <div id="wizardRepoList" style="max-height:200px;overflow-y:auto;margin-top:8px;">
+                        <div style="color:#8b949e;font-size:13px;">Loading...</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function renderPrereqsStep() {
+            const body = document.getElementById('wizardBody');
+            try {
+                const res = await fetch('/control/setup/prereqs');
+                const data = await res.json();
+
+                const checks = [
+                    { key: 'git', name: 'Git', detail: data.checks.git?.version || 'Not found' },
+                    { key: 'github_auth', name: 'GitHub Auth', detail: data.checks.github_auth?.ok ? 'Token found' : 'Not configured' },
+                    { key: 'claude', name: 'Claude CLI', detail: data.checks.claude?.version || 'Not found' },
+                ];
+
+                let html = '<div class="prereq-list">';
+                for (const check of checks) {
+                    const ok = data.checks[check.key]?.ok;
+                    html += `
+                        <div class="prereq-item ${ok ? 'prereq-ok' : 'prereq-fail'}">
+                            <span class="prereq-icon">${ok ? '&#10003;' : '&#10007;'}</span>
+                            <span class="prereq-name">${check.name}</span>
+                            <span class="prereq-detail">${escapeHtml(check.detail)}</span>
+                        </div>
+                    `;
+                }
+                html += '</div>';
+
+                if (!data.all_ok) {
+                    html += `
+                        <div style="margin-top:16px;padding:12px;background:#2d1b1b;border-radius:6px;border:1px solid #f85149;">
+                            <div style="color:#f85149;font-weight:500;margin-bottom:8px;">Missing Prerequisites</div>
+                            <div style="font-size:13px;">Some prerequisites are missing. You can continue, but the orchestrator may not work correctly.</div>
+                        </div>
+                    `;
+                }
+
+                body.innerHTML = html;
+            } catch (err) {
+                body.innerHTML = '<div style="color:#f85149;">Failed to check prerequisites</div>';
+            }
+        }
+
+        function renderAgentsStep() {
+            const agents = wizardState.config.agents;
+            let agentsHtml = '';
+
+            for (const [label, cfg] of Object.entries(agents)) {
+                agentsHtml += renderAgentCard(label, cfg);
+            }
+
+            return `
+                <div style="margin-bottom:16px;">
+                    <div style="font-size:13px;color:#8b949e;margin-bottom:12px;">
+                        Agents are identified by GitHub labels (e.g., "agent:backend"). Each agent needs a prompt file with instructions.
+                    </div>
+                    <div id="agentsList">${agentsHtml || '<div style="color:#8b949e;text-align:center;padding:20px;">No agents configured yet</div>'}</div>
+                </div>
+                <div style="border-top:1px solid #30363d;padding-top:16px;">
+                    <div class="form-group" style="margin-bottom:12px;">
+                        <label class="form-label">Add Agent</label>
+                        <div style="display:flex;gap:8px;">
+                            <input type="text" id="newAgentLabel" class="form-input" placeholder="agent:developer" style="flex:1;">
+                            <button onclick="addAgent()" class="btn btn-primary">Add</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderAgentCard(label, cfg) {
+            const shortName = label.split(':')[1] || label;
+            return `
+                <div class="agent-card" id="agent-${escapeHtml(label)}">
+                    <div class="agent-card-header" onclick="toggleAgentCard('${escapeHtml(label)}')">
+                        <span style="font-weight:500;color:#58a6ff;">${escapeHtml(label)}</span>
+                        <button onclick="removeAgent('${escapeHtml(label)}');event.stopPropagation();" style="background:none;border:none;color:#f85149;cursor:pointer;font-size:16px;">&times;</button>
+                    </div>
+                    <div class="agent-card-body">
+                        <div class="agent-row">
+                            <div class="form-group" style="margin-bottom:0;">
+                                <label class="form-label">Model</label>
+                                <select class="form-select" onchange="updateAgent('${escapeHtml(label)}', 'model', this.value)">
+                                    <option value="sonnet" ${cfg.model === 'sonnet' ? 'selected' : ''}>Sonnet</option>
+                                    <option value="opus" ${cfg.model === 'opus' ? 'selected' : ''}>Opus</option>
+                                    <option value="haiku" ${cfg.model === 'haiku' ? 'selected' : ''}>Haiku</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin-bottom:0;">
+                                <label class="form-label">Timeout (minutes)</label>
+                                <input type="number" class="form-input" value="${cfg.timeout_minutes || 45}"
+                                    onchange="updateAgent('${escapeHtml(label)}', 'timeout_minutes', parseInt(this.value))">
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom:0;">
+                            <label class="form-label">Prompt File</label>
+                            <input type="text" class="form-input" value="${escapeHtml(cfg.prompt)}"
+                                onchange="updateAgent('${escapeHtml(label)}', 'prompt', this.value)">
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function toggleAgentCard(label) {
+            const card = document.getElementById(`agent-${label}`);
+            if (card) card.classList.toggle('expanded');
+        }
+
+        function addAgent() {
+            const input = document.getElementById('newAgentLabel');
+            let label = input.value.trim();
+            if (!label) return;
+
+            if (!label.startsWith('agent:')) {
+                label = 'agent:' + label;
+            }
+
+            if (wizardState.config.agents[label]) {
+                showToast('Agent already exists', true);
+                return;
+            }
+
+            const shortName = label.split(':')[1];
+            wizardState.config.agents[label] = {
+                prompt: `.issue-orchestrator/prompts/${shortName}.md`,
+                model: 'sonnet',
+                timeout_minutes: 45,
+                worktree_base: '../',
+            };
+
+            input.value = '';
+            document.getElementById('wizardBody').innerHTML = renderAgentsStep();
+        }
+
+        function removeAgent(label) {
+            delete wizardState.config.agents[label];
+            document.getElementById('wizardBody').innerHTML = renderAgentsStep();
+        }
+
+        function updateAgent(label, field, value) {
+            if (wizardState.config.agents[label]) {
+                wizardState.config.agents[label][field] = value;
+            }
+        }
+
+        function renderSettingsStep() {
+            const cfg = wizardState.config;
+            return `
+                <div class="form-group">
+                    <label class="form-label">GitHub Repository</label>
+                    <input type="text" class="form-input" value="${escapeHtml(cfg.repo)}"
+                        onchange="wizardState.config.repo = this.value"
+                        placeholder="owner/repo">
+                    <div class="form-hint">Detected from git remote, or enter manually</div>
+                </div>
+                <div class="agent-row">
+                    <div class="form-group">
+                        <label class="form-label">Max Concurrent Sessions</label>
+                        <input type="number" class="form-input" value="${cfg.concurrency.max_concurrent_sessions}"
+                            onchange="wizardState.config.concurrency.max_concurrent_sessions = parseInt(this.value)">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">UI Mode</label>
+                        <select class="form-select" onchange="wizardState.config.ui_mode = this.value">
+                            <option value="web" ${cfg.ui_mode === 'web' ? 'selected' : ''}>Web Dashboard</option>
+                            <option value="tmux" ${cfg.ui_mode === 'tmux' ? 'selected' : ''}>tmux</option>
+                            <option value="iterm2" ${cfg.ui_mode === 'iterm2' ? 'selected' : ''}>iTerm2</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="agent-row">
+                    <div class="form-group">
+                        <label class="form-label">Web Port</label>
+                        <input type="number" class="form-input" value="${cfg.web_port}"
+                            onchange="wizardState.config.web_port = parseInt(this.value)">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Label Prefix</label>
+                        <input type="text" class="form-input" value="${escapeHtml(cfg.labels?.prefix || '')}"
+                            onchange="wizardState.config.labels = {...(wizardState.config.labels||{}), prefix: this.value}"
+                            placeholder="io">
+                        <div class="form-hint">e.g., "io" for io:in-progress</div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Milestone Sort Strategy</label>
+                    <select class="form-select" onchange="wizardState.config.milestone_sort = this.value">
+                        <option value="due_date" ${cfg.milestone_sort === 'due_date' ? 'selected' : ''}>By Due Date</option>
+                        <option value="milestone_number" ${cfg.milestone_sort === 'milestone_number' ? 'selected' : ''}>By Number (M1, M2...)</option>
+                        <option value="name" ${cfg.milestone_sort === 'name' ? 'selected' : ''}>Alphabetically</option>
+                    </select>
+                </div>
+            `;
+        }
+
+        function renderReviewStep() {
+            const review = wizardState.config.review || {};
+            return `
+                <div class="form-group">
+                    <label class="form-checkbox">
+                        <input type="checkbox" ${review.enabled ? 'checked' : ''}
+                            onchange="wizardState.config.review = {...(wizardState.config.review||{}), enabled: this.checked}; document.getElementById('wizardBody').innerHTML = renderReviewStep();">
+                        <span>Enable Code Review Workflow</span>
+                    </label>
+                    <div class="form-hint">When enabled, PRs are automatically reviewed by a review agent before merging</div>
+                </div>
+                ${review.enabled ? `
+                    <div style="border-left:2px solid #238636;padding-left:16px;margin-top:16px;">
+                        <div class="form-group">
+                            <label class="form-label">Review Agent</label>
+                            <select class="form-select" onchange="wizardState.config.review.default = this.value">
+                                <option value="">Select an agent...</option>
+                                ${Object.keys(wizardState.config.agents).map(label =>
+                                    `<option value="${escapeHtml(label)}" ${review.default === label ? 'selected' : ''}>${escapeHtml(label)}</option>`
+                                ).join('')}
+                                <option value="agent:reviewer" ${review.default === 'agent:reviewer' ? 'selected' : ''}>agent:reviewer (new)</option>
+                            </select>
+                            <div class="form-hint">Agent that reviews PRs created by work agents</div>
+                        </div>
+                        <div class="agent-row">
+                            <div class="form-group">
+                                <label class="form-label">Needs Review Label</label>
+                                <input type="text" class="form-input" value="${escapeHtml(review.code_review_label || 'needs-code-review')}"
+                                    onchange="wizardState.config.review.code_review_label = this.value">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Reviewed Label</label>
+                                <input type="text" class="form-input" value="${escapeHtml(review.code_reviewed_label || 'code-reviewed')}"
+                                    onchange="wizardState.config.review.code_reviewed_label = this.value">
+                            </div>
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        async function renderPreviewStep() {
+            const body = document.getElementById('wizardBody');
+
+            // Ensure review agent is in agents list if enabled
+            if (wizardState.config.review?.enabled && wizardState.config.review?.default) {
+                const reviewAgent = wizardState.config.review.default;
+                if (!wizardState.config.agents[reviewAgent] && reviewAgent === 'agent:reviewer') {
+                    wizardState.config.agents[reviewAgent] = {
+                        prompt: '.issue-orchestrator/prompts/reviewer.md',
+                        model: 'sonnet',
+                        timeout_minutes: 30,
+                        worktree_base: '../',
+                    };
+                }
+            }
+
+            try {
+                const res = await fetch('/control/setup/preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        repo_root: wizardState.repoRoot,
+                        config: wizardState.config,
+                    }),
+                });
+                const data = await res.json();
+
+                const actionLabel = wizardState.isEditing ? 'Files to update:' : 'Files to create:';
+                let filesHtml = `<div style="margin-bottom:16px;"><strong>${actionLabel}</strong></div>`;
+                filesHtml += '<ul style="font-size:13px;color:#8b949e;margin-left:20px;">';
+                for (const f of data.files || []) {
+                    filesHtml += `<li>${escapeHtml(f.path)}</li>`;
+                }
+                filesHtml += '</ul>';
+
+                const modeNote = wizardState.isEditing
+                    ? '<div style="margin-bottom:16px;padding:10px;background:#1c3a5e;border-radius:6px;font-size:13px;">Updating existing configuration. Prompt files will only be created if they don\'t exist.</div>'
+                    : '';
+
+                body.innerHTML = `
+                    ${modeNote}
+                    ${filesHtml}
+                    <div style="margin-top:16px;margin-bottom:8px;"><strong>Configuration Preview:</strong></div>
+                    <div class="yaml-preview">${escapeHtml(data.yaml)}</div>
+                `;
+            } catch (err) {
+                body.innerHTML = '<div style="color:#f85149;">Failed to generate preview</div>';
+            }
+        }
+
+        async function saveWizardConfig() {
+            const actionLabel = wizardState.isEditing ? 'Updating' : 'Saving';
+            showToast(`${actionLabel} configuration...`);
+
+            try {
+                const res = await fetch('/control/setup/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        repo_root: wizardState.repoRoot,
+                        config: wizardState.config,
+                        create_prompts: true,
+                        create_labels: !wizardState.isEditing,  // Skip label creation when editing
+                    }),
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    showToast(data.detail || data.error, true);
+                    return;
+                }
+
+                // Add to registry (if not already registered)
+                if (!wizardState.isEditing) {
+                    await fetch('/control/repos', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repo_root: wizardState.repoRoot }),
+                    });
+                }
+
+                const successMsg = wizardState.isEditing ? 'Configuration updated!' : 'Configuration saved!';
+                showToast(successMsg);
+                closeWizard();
+                loadRepos();
+                discoverRepos();
+            } catch (err) {
+                showToast('Failed to save configuration', true);
+            }
+        }
+
+        // Load repo list for wizard step 1
+        async function loadWizardRepoList() {
+            const container = document.getElementById('wizardRepoList');
+            if (!container) return;
+
+            try {
+                const res = await fetch('/control/repos/discover?max_depth=3');
+                const data = await res.json();
+
+                // Also get repos without config (to offer setup)
+                const searchPaths = ['~/dev', '~/projects', '~/code'].join(',');
+
+                if (!data.discovered || data.discovered.length === 0) {
+                    container.innerHTML = '<div style="color:#8b949e;font-size:13px;">No repositories found. Enter a path above.</div>';
+                    return;
+                }
+
+                let html = '';
+                for (const repo of data.discovered) {
+                    html += `
+                        <div style="padding:8px 12px;border-bottom:1px solid #21262d;cursor:pointer;display:flex;justify-content:space-between;align-items:center;"
+                            onclick="document.getElementById('wizardRepoPath').value='${escapeHtml(repo.path)}'">
+                            <div>
+                                <div style="font-weight:500;color:#58a6ff;">${escapeHtml(repo.name)}</div>
+                                <div style="font-size:11px;color:#8b949e;">${escapeHtml(repo.path)}</div>
+                            </div>
+                            <span style="font-size:11px;color:#3fb950;">Has config</span>
+                        </div>
+                    `;
+                }
+                container.innerHTML = html || '<div style="color:#8b949e;font-size:13px;">No repositories found</div>';
+            } catch (err) {
+                container.innerHTML = '<div style="color:#f85149;font-size:13px;">Failed to load repositories</div>';
+            }
+        }
+
+        // Watch for wizard step 1 to load repo list
+        const wizardBodyObserver = new MutationObserver(() => {
+            if (document.getElementById('wizardRepoList')) {
+                loadWizardRepoList();
+            }
+        });
+        wizardBodyObserver.observe(document.getElementById('wizardBody'), { childList: true });
+
+        // ==================== Main UI Functions ====================
+        async function loadRepos() {
+            const repoRows = document.getElementById('repoRows');
+
+            try {
+                const res = await fetch('/control/repos');
+                const data = await res.json();
+
+                if (!data.repos || data.repos.length === 0) {
+                    repoRows.innerHTML = '<div class="empty-state">No repositories registered yet</div>';
+                    checkShowWelcome(0);
+                    return;
+                }
+
+                checkShowWelcome(data.repos.length);
+
+                let html = '';
+                for (const repo of data.repos) {
+                    const status = repo.status || { state: 'unknown' };
+                    const isRunning = status.state === 'running';
+                    const isFailed = status.state === 'failed';
+                    const statusClass = isRunning ? 'status-running' : isFailed ? 'status-failed' : 'status-stopped';
+                    const statusLabel = status.state ? status.state.charAt(0).toUpperCase() + status.state.slice(1) : 'Unknown';
+
+                    html += `
+                        <div class="repo-row" data-path="${escapeHtml(repo.path)}">
+                            <div>
+                                <div class="repo-name">${escapeHtml(repo.name)}</div>
+                                <div class="repo-path" title="${escapeHtml(repo.path)}">${escapeHtml(repo.path)}</div>
+                            </div>
+                            <span class="repo-status ${statusClass}">
+                                <span class="status-dot"></span>
+                                ${statusLabel}
+                            </span>
+                            <span class="repo-port">${status.port || '-'}</span>
+                            <div class="repo-actions">
+                                ${isRunning
+                                    ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}')">Stop</button>
+                                       <button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
+                                    : `<button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}')">Start</button>`
+                                }
+                                <button class="btn" onclick="openEditWizard('${escapeHtml(repo.path)}')" title="Edit configuration">Edit</button>
+                                <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
+                                <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')" title="Remove">&times;</button>
+                            </div>
+                        </div>
+                    `;
+                }
+                repoRows.innerHTML = html;
+            } catch (err) {
+                console.error('Failed to load repos:', err);
+                repoRows.innerHTML = '<div class="empty-state" style="color:#f85149;">Failed to load repositories</div>';
+            }
+        }
+
+        function checkShowWelcome(repoCount) {
+            const welcomeScreen = document.getElementById('welcomeScreen');
+            const repoContent = document.getElementById('repoContent');
+
+            if (repoCount === 0) {
+                // Check if there are discovered repos
+                const discoveredList = document.getElementById('discoveredRepos');
+                const hasDiscovered = discoveredList && !discoveredList.querySelector('.empty-state');
+
+                if (!hasDiscovered) {
+                    welcomeScreen.style.display = 'block';
+                    repoContent.style.display = 'none';
+                    return;
+                }
+            }
+
+            welcomeScreen.style.display = 'none';
+            repoContent.style.display = 'block';
+        }
+
+        async function discoverRepos() {
+            const container = document.getElementById('discoveredRepos');
+            container.innerHTML = '<div class="empty-state" style="padding:24px;">Scanning...</div>';
+
+            try {
+                const res = await fetch('/control/repos/discover');
+                const data = await res.json();
+
+                if (!data.discovered || data.discovered.length === 0) {
+                    container.innerHTML = '<div class="empty-state" style="padding:24px;">No new repositories found</div>';
+                    checkShowWelcome(0);
+                    return;
+                }
+
+                // Validate each discovered repo to check if config is valid
+                let html = '';
+                for (const repo of data.discovered) {
+                    // Check config validity
+                    let configValid = true;
+                    let configError = null;
+                    try {
+                        const valRes = await fetch('/control/repos/validate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ repo_root: repo.path }),
+                        });
+                        const valData = await valRes.json();
+                        configValid = valData.valid;
+                        if (!configValid && valData.errors?.length) {
+                            configError = valData.errors[0];
+                        }
+                    } catch (e) {
+                        // Ignore validation errors
+                    }
+
+                    html += `
+                        <div class="discovered-item">
+                            <span class="discovered-name">${escapeHtml(repo.name)}${!configValid ? '<span class="error-badge">Config Error</span>' : ''}</span>
+                            <span class="discovered-path" title="${configError || ''}">${escapeHtml(repo.path)}</span>
+                            ${configValid
+                                ? `<button class="btn btn-primary" onclick="addDiscoveredRepo('${escapeHtml(repo.path)}', this)">+ Add</button>`
+                                : `<button class="btn" style="border-color:#d29922;color:#d29922;" onclick="openEditWizard('${escapeHtml(repo.path)}')">Fix Config</button>`
+                            }
+                        </div>
+                    `;
+                }
+
+                container.innerHTML = html;
+            } catch (err) {
+                console.error('Failed to discover repos:', err);
+                container.innerHTML = '<div class="empty-state" style="padding:24px;color:#f85149;">Failed to scan</div>';
+            }
+        }
+
+        async function addDiscoveredRepo(path, btn) {
+            btn.disabled = true;
+            btn.textContent = '...';
+
+            try {
+                const res = await fetch('/control/repos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path })
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    showToast(data.detail || data.error, true);
+                    btn.disabled = false;
+                    btn.textContent = '+ Add';
+                } else {
+                    showToast('Repository added');
+                    btn.closest('.discovered-item').remove();
+                    loadRepos();
+                }
+            } catch (err) {
+                showToast('Failed to add repository', true);
+                btn.disabled = false;
+                btn.textContent = '+ Add';
+            }
+        }
+
+        async function removeRepo(path) {
+            if (!confirm(`Remove ${path} from the registry?\n\nThis will also stop any running orchestrator.`)) return;
+
+            try {
+                const res = await fetch('/control/repos', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path })
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    showToast(data.error, true);
+                } else {
+                    showToast('Repository removed');
+                    loadRepos();
+                    hideDetails();
+                }
+            } catch (err) {
+                showToast('Failed to remove repository', true);
+            }
+        }
+
+        async function startRepo(path) {
+            showToast('Starting orchestrator...');
+
+            try {
+                const res = await fetch('/control/orchestrator/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path })
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    if (data.error === 'already_running') {
+                        showToast('Already running on port ' + data.port);
+                    } else {
+                        showToast(data.detail || data.error, true);
+                    }
+                } else {
+                    showToast('Started on port ' + data.port);
+                }
+                loadRepos();
+            } catch (err) {
+                showToast('Failed to start orchestrator', true);
+            }
+        }
+
+        async function stopRepo(path) {
+            try {
+                const res = await fetch('/control/orchestrator/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path })
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    showToast(data.error, true);
+                } else {
+                    showToast('Orchestrator stopped');
+                }
+                loadRepos();
+            } catch (err) {
+                showToast('Failed to stop orchestrator', true);
+            }
+        }
+
+        function openRepo(port) {
+            window.open(`http://127.0.0.1:${port}`, `orchestrator-${port}`);
+        }
+
+        function hideDetails() {
+            document.getElementById('detailsCard').style.display = 'none';
+        }
+
+        async function showDetails(path) {
+            const card = document.getElementById('detailsCard');
+            const title = document.getElementById('detailsTitle');
+            const body = document.getElementById('detailsBody');
+
+            title.textContent = path.split('/').pop() + ' - Details';
+            body.innerHTML = '<div style="color:#8b949e;">Loading...</div>';
+            card.style.display = 'block';
+
+            let html = '';
+
+            // Get status
+            try {
+                const statusRes = await fetch(`/control/orchestrator/status?repo_root=${encodeURIComponent(path)}`);
+                const status = await statusRes.json();
+
+                html += `
+                    <div style="margin-bottom:16px;">
+                        <h3 style="font-size:14px;margin-bottom:8px;">Status</h3>
+                        <div class="info-row"><span class="info-label">State</span><span class="info-value">${status.state || 'unknown'}</span></div>
+                        <div class="info-row"><span class="info-label">PID</span><span class="info-value">${status.pid || '-'}</span></div>
+                        <div class="info-row"><span class="info-label">Port</span><span class="info-value">${status.port || '-'}</span></div>
+                        <div class="info-row"><span class="info-label">Started</span><span class="info-value">${status.started_at || '-'}</span></div>
+                        ${status.error ? `<div class="info-row"><span class="info-label">Error</span><span class="info-value" style="color:#f85149;">${escapeHtml(status.error)}</span></div>` : ''}
+                    </div>
+                `;
+            } catch (err) {
+                html += '<div style="color:#f85149;margin-bottom:16px;">Failed to load status</div>';
+            }
+
+            // Get last failure
+            try {
+                const failRes = await fetch(`/control/orchestrator/last_failure?repo_root=${encodeURIComponent(path)}`);
+                const failData = await failRes.json();
+
+                if (failData.last_failure) {
+                    const f = failData.last_failure;
+                    html += `
+                        <div class="error-panel">
+                            <div class="error-panel-title">Last Startup Failure</div>
+                            <div class="error-panel-body">
+                                <strong>Phase:</strong> ${escapeHtml(f.phase || 'unknown')}<br>
+                                <strong>Message:</strong> ${escapeHtml(f.message || 'unknown')}
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (err) {}
+
+            // Get doctor output
+            try {
+                const docRes = await fetch(`/control/orchestrator/doctor?repo_root=${encodeURIComponent(path)}`);
+                const doc = await docRes.json();
+
+                const statusIcon = { 'ok': '&#10003;', 'warning': '&#9888;', 'error': '&#10007;' };
+                const statusColor = { 'ok': '#3fb950', 'warning': '#d29922', 'error': '#f85149' };
+
+                html += `
+                    <div style="margin-bottom:16px;">
+                        <h3 style="font-size:14px;margin-bottom:8px;">Doctor (${doc.overall || 'unknown'})</h3>
+                        ${(doc.checks || []).map(c => `
+                            <div class="doctor-check">
+                                <span class="doctor-check-status" style="color:${statusColor[c.status] || '#8b949e'}">${statusIcon[c.status] || '?'}</span>
+                                <strong>${escapeHtml(c.name)}</strong>: ${escapeHtml(c.detail)}
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            } catch (err) {
+                html += '<div style="color:#8b949e;margin-bottom:16px;">Doctor not available</div>';
+            }
+
+            // Get log tail
+            try {
+                const logRes = await fetch(`/control/orchestrator/log_tail?repo_root=${encodeURIComponent(path)}&n=50`);
+                const logData = await logRes.json();
+
+                if (logData.lines && logData.lines.length > 0) {
+                    html += `
+                        <div>
+                            <h3 style="font-size:14px;margin-bottom:8px;">Recent Logs (${logData.returned_lines} of ${logData.total_lines})</h3>
+                            <div class="log-viewer">
+                                ${logData.lines.map(line => `<div class="log-line">${escapeHtml(line)}</div>`).join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (err) {}
+
+            body.innerHTML = html || '<div style="color:#8b949e;">No details available</div>';
+        }
+
+        async function shutdownControlCenter() {
+            if (!confirm('Shutdown the Control Center?\n\nRunning orchestrators will continue running independently.')) {
+                return;
+            }
+
+            showToast('Shutting down...');
+            try {
+                await fetch('/control/shutdown', { method: 'POST' });
+            } catch (err) {
+                // Expected - server is shutting down
+            }
+        }
+
+        // Initial load
+        loadRepos();
+        discoverRepos();
+
+        // Auto-refresh every 5 seconds
+        setInterval(loadRepos, 5000);
+    </script>
+</body>
+</html>
