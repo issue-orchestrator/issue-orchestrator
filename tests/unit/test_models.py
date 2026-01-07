@@ -154,46 +154,6 @@ class TestAgentConfig:
 
         assert config.model == "sonnet"
         assert config.timeout_minutes == 45
-        assert config.print_mode is False
-
-    def test_agent_config_print_mode_adds_p_flag(self, tmp_path):
-        """Test that print_mode=True adds -p flag to claude command."""
-        prompt_file = tmp_path / "prompt.txt"
-        prompt_file.write_text("Sample prompt")
-
-        config = AgentConfig(
-            prompt_path=prompt_file,
-            print_mode=True,
-        )
-
-        cmd = config.get_command(
-            issue_number=123,
-            issue_title="Test Issue",
-            worktree=tmp_path,
-        )
-
-        assert "-p" in cmd
-        assert "claude -p" in cmd or "claude  -p" in cmd
-
-    def test_agent_config_print_mode_false_no_p_flag(self, tmp_path):
-        """Test that print_mode=False does not add -p flag."""
-        prompt_file = tmp_path / "prompt.txt"
-        prompt_file.write_text("Sample prompt")
-
-        config = AgentConfig(
-            prompt_path=prompt_file,
-            print_mode=False,
-        )
-
-        cmd = config.get_command(
-            issue_number=123,
-            issue_title="Test Issue",
-            worktree=tmp_path,
-        )
-
-        # -p should not be at the start of args (could be in prompt text)
-        assert "claude -p" not in cmd
-        assert "claude  -p" not in cmd
 
 
 class TestSession:

@@ -37,7 +37,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
 ALLOWED_AGENT_FIELDS = {
     'prompt', 'model', 'timeout_minutes',
     'permission_mode', 'skip_review', 'reviewer', 'command',
-    'meta_agent', 'initial_prompt', 'print_mode',
+    'meta_agent', 'initial_prompt',
 }
 
 
@@ -522,7 +522,6 @@ class Config:
                 "skip_review": agent_data.get("skip_review", False),
                 "reviewer": agent_data.get("reviewer"),  # Per-agent reviewer override
                 "meta_agent": agent_data.get("meta_agent"),
-                "print_mode": agent_data.get("print_mode", False),
             }
             if "command" in agent_data:
                 agent_kwargs["command"] = agent_data["command"]
