@@ -1,6 +1,9 @@
 # E2E Test Config: Triage Review Trigger
 #
 # Runs code reviews and batch triage reviews in isolation from shared suite.
+#
+# Note: tmux session is set via ORCHESTRATOR_TMUX_SESSION env var for test isolation.
+# Control API port is dynamically assigned if not specified.
 
 repo: BruceBGordon/issue-orchestrator
 worktree_base: "/tmp/e2e-worktrees"
@@ -10,7 +13,7 @@ queue_refresh_seconds: 600
 gh_audit_enabled: true
 gh_audit_events: true
 gh_audit_file: /tmp/e2e-orchestrator-logs/gh-audit-{pid}.json
-control_api_port: 19081
+# control_api_port: dynamically assigned
 e2e_pr_labels: ["test-data"]
 
 agents:

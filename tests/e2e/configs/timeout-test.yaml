@@ -2,12 +2,15 @@
 #
 # This config uses an agent that does nothing, triggering a timeout.
 # Tests the failure handling and triage review triggering.
+#
+# Note: tmux session is set via ORCHESTRATOR_TMUX_SESSION env var for test isolation.
+# Control API port is dynamically assigned if not specified.
 
 repo: BruceBGordon/issue-orchestrator
 worktree_base: "/tmp/e2e-worktrees"
 
 filter_label: test-data
-control_api_port: 19083
+# control_api_port: dynamically assigned
 e2e_pr_labels: ["test-data"]
 
 agents:

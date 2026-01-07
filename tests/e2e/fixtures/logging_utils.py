@@ -38,10 +38,15 @@ def tail_lines(path: Path, limit: int = 200) -> list[str]:
     return lines[-limit:]
 
 
-def find_recent_worktrees(limit: int = 3) -> list[Path]:
-    """Find recent e2e worktrees for snapshotting."""
+def find_recent_worktrees(limit: int = 3, worktree_base: Path | None = None) -> list[Path]:
+    """Find recent e2e worktrees for snapshotting.
+
+    Args:
+        limit: Maximum number of worktrees to return.
+        worktree_base: Base directory for worktrees. Defaults to /tmp/e2e-worktrees.
+    """
     candidates: list[Path] = []
-    tmp_root = Path("/tmp/e2e-worktrees")
+    tmp_root = worktree_base or Path("/tmp/e2e-worktrees")
     if tmp_root.exists():
         candidates.extend([p for p in tmp_root.iterdir() if p.is_dir()])
 
@@ -67,8 +72,14 @@ def claude_project_dir_for(worktree: Path) -> Path:
     return Path.home() / ".claude" / "projects" / escaped
 
 
-def snapshot_logs(reason: str) -> None:
-    """Persist tail snapshots of the latest logs for aborted/failed sessions."""
+def snapshot_logs(reason: str, tmux_session: str = "orchestrator", worktree_base: Path | None = None) -> None:
+    """Persist tail snapshots of the latest logs for aborted/failed sessions.
+
+    Args:
+        reason: Reason for the snapshot.
+        tmux_session: Name of the tmux session. Defaults to "orchestrator".
+        worktree_base: Base directory for worktrees. Defaults to /tmp/e2e-worktrees.
+    """
     try:
         latest_orch = max(E2E_LOG_DIR.glob("orchestrator-*.log"), key=lambda p: p.stat().st_mtime, default=None)
         latest_e2e = max(E2E_LOG_DIR.glob("e2e-*.log"), key=lambda p: p.stat().st_mtime, default=None)
@@ -94,7 +105,7 @@ def snapshot_logs(reason: str) -> None:
             try:
                 handle.write("[TMUX] list-windows\n")
                 tmux_list = subprocess.run(
-                    ["tmux", "list-windows", "-t", "orchestrator"],
+                    ["tmux", "list-windows", "-t", tmux_session],
                     capture_output=True,
                     text=True,
                 )
@@ -116,7 +127,7 @@ def snapshot_logs(reason: str) -> None:
                     for window_id in tmux_windows:
                         handle.write(f"[TMUX] capture-pane window={window_id}\n")
                         cap = subprocess.run(
-                            ["tmux", "capture-pane", "-t", f"orchestrator:{window_id}", "-p", "-S", "-200"],
+                            ["tmux", "capture-pane", "-t", f"{tmux_session}:{window_id}", "-p", "-S", "-200"],
                             capture_output=True,
                             text=True,
                         )
@@ -128,7 +139,7 @@ def snapshot_logs(reason: str) -> None:
                     handle.write("(tmux capture-pane not available)\n")
 
             # Snapshot recent worktree artifacts
-            for worktree in find_recent_worktrees():
+            for worktree in find_recent_worktrees(worktree_base=worktree_base):
                 handle.write(f"[WORKTREE] {worktree}\n")
                 session_dir = worktree / ".issue-orchestrator"
                 if session_dir.exists():

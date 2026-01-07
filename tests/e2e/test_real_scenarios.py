@@ -51,8 +51,13 @@ E2E_CONFIG_DIR = Path(__file__).parent / "configs"
 # Helpers for special-config tests
 # ---------------------------------------------------------------------------
 
-def cleanup_stale_orchestrators(config_path: Path) -> None:
-    """Kill any stale orchestrator processes from previous test runs."""
+def cleanup_stale_orchestrators(config_path: Path, tmux_session: str = "orchestrator") -> None:
+    """Kill any stale orchestrator processes from previous test runs.
+
+    Args:
+        config_path: Path to the config file.
+        tmux_session: Name of the tmux session to kill. Defaults to "orchestrator".
+    """
     config_name = config_path.name
     result = subprocess.run(
         ["pgrep", "-f", f"issue_orchestrator.*{config_name}"],
@@ -67,12 +72,22 @@ def cleanup_stale_orchestrators(config_path: Path) -> None:
             except (ProcessLookupError, ValueError):
                 pass
         time.sleep(1)
-    subprocess.run(["tmux", "kill-session", "-t", "orchestrator"], capture_output=True)
+    subprocess.run(["tmux", "kill-session", "-t", tmux_session], capture_output=True)
 
 
-def start_orchestrator_with_config(config_path: Path, max_issues: int = 1) -> subprocess.Popen:
-    """Start orchestrator with a specific config file."""
-    cleanup_stale_orchestrators(config_path)
+def start_orchestrator_with_config(
+    config_path: Path,
+    max_issues: int = 1,
+    tmux_session: str = "orchestrator",
+) -> subprocess.Popen:
+    """Start orchestrator with a specific config file.
+
+    Args:
+        config_path: Path to the config file.
+        max_issues: Maximum number of issues to process.
+        tmux_session: Name of the tmux session. Defaults to "orchestrator".
+    """
+    cleanup_stale_orchestrators(config_path, tmux_session=tmux_session)
     ui_mode = os.environ.get("E2E_UI_MODE", "tmux")
 
     project_root = Path(__file__).parent.parent.parent
@@ -100,10 +115,15 @@ def start_orchestrator_with_config(config_path: Path, max_issues: int = 1) -> su
     else:
         cmd.append("--no-dashboard")
 
+    # Set environment with tmux session name for isolation
+    env = os.environ.copy()
+    env["ORCHESTRATOR_TMUX_SESSION"] = tmux_session
+
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=env,
     )
     time.sleep(3)
     return proc

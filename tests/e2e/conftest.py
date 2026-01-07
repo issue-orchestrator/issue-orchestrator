@@ -6,6 +6,7 @@ These fixtures create real GitHub issues and run the orchestrator.
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Generator, AsyncGenerator
 
@@ -239,18 +240,30 @@ def kill_stale_orchestrators():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def e2e_reconciliation_at_session_start():
-    """Comprehensive e2e test reconciliation - clean slate before running tests."""
+def e2e_reconciliation_at_session_start(e2e_tmux_session: str, e2e_worktree_base: Path):
+    """Comprehensive e2e test reconciliation - clean slate before running tests.
+
+    Cleans up:
+    - Default 'orchestrator' tmux session (from non-isolated runs)
+    - Current e2e test session's tmux session
+    - Default /tmp/e2e-worktrees directory
+    - Current e2e test session's worktree directory
+    """
     repo = get_test_repo()
     logger.info("=" * 60)
     logger.info("[E2E RECONCILIATION] Cleaning up artifacts from previous runs...")
+    logger.info("[E2E RECONCILIATION] tmux_session=%s, worktree_base=%s", e2e_tmux_session, e2e_worktree_base)
     logger.info("=" * 60)
 
     if _keep_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping local cleanup (E2E_KEEP_ARTIFACTS=1)")
     else:
+        # Clean up default locations (from non-isolated runs)
         cleanup_local_worktrees()
         cleanup_tmux_sessions()
+        # Clean up this session's isolated resources
+        cleanup_local_worktrees(e2e_worktree_base)
+        cleanup_tmux_sessions(e2e_tmux_session)
 
     if _keep_remote_artifacts():
         logger.info("[E2E RECONCILIATION] Skipping remote cleanup (E2E_KEEP_REMOTE_ARTIFACTS=1)")
@@ -297,20 +310,55 @@ def e2e_session_tmp(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="session")
+def e2e_run_id() -> str:
+    """Unique identifier for this e2e test run.
+
+    Used to isolate e2e test resources (tmux session, worktrees) from
+    a running orchestrator instance.
+    """
+    return f"e2e-{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture(scope="session")
+def e2e_tmux_session(e2e_run_id: str) -> str:
+    """Tmux session name for this e2e test run.
+
+    Isolated from the default 'orchestrator' session to allow running
+    e2e tests while an orchestrator is already running.
+    """
+    return e2e_run_id
+
+
+@pytest.fixture(scope="session")
+def e2e_worktree_base(e2e_run_id: str) -> Path:
+    """Worktree base directory for this e2e test run.
+
+    Isolated from the default '/tmp/e2e-worktrees' to avoid conflicts.
+    """
+    base = Path(f"/tmp/{e2e_run_id}-worktrees")
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+@pytest.fixture(scope="session")
 def filter_label() -> str:
     """Configurable filter label for parallel test runs."""
     return os.environ.get("E2E_FILTER", DEFAULT_E2E_FILTER_LABEL)
 
 
 @pytest.fixture(scope="session")
-def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name: str) -> Config:
+def e2e_session_config(
+    e2e_project_root: Path,
+    e2e_worktree_base: Path,
+    repo_name: str,
+) -> Config:
     """Session-scoped config for single orchestrator."""
     from issue_orchestrator.infra.config import ValidationConfig, ValidationGateConfig
 
     config = Config()
     config.repo = repo_name
     config.repo_root = e2e_project_root
-    config.worktree_base = e2e_session_tmp / "worktrees"
+    config.worktree_base = e2e_worktree_base
     config.ui_mode = "tmux"
     config.max_concurrent_sessions = 4
     config.filter_label = "test-data"
@@ -412,10 +460,11 @@ def e2e_issues(repo_name: str) -> Generator[dict[str, int], None, None]:
 def e2e_orchestrator(
     e2e_session_config: Config,
     e2e_project_root: Path,
+    e2e_tmux_session: str,
     filter_label: str,
 ) -> Generator["OrchestratorProcess", None, None]:
     """Single orchestrator instance for all e2e tests."""
-    proc = OrchestratorProcess(e2e_session_config, e2e_project_root)
+    proc = OrchestratorProcess(e2e_session_config, e2e_project_root, tmux_session=e2e_tmux_session)
     max_issues = int(os.environ.get("E2E_MAX_ISSUES", "50"))
     proc.start(max_issues=max_issues, extra_args=["--label", filter_label])
     time.sleep(2)
@@ -680,9 +729,13 @@ def concurrent_test_run(repo_name: str, request) -> Generator[dict, None, None]:
 
 
 @pytest.fixture
-def orchestrator_process(e2e_config: Config, e2e_project_root: Path) -> Generator[OrchestratorProcess, None, None]:
+def orchestrator_process(
+    e2e_config: Config,
+    e2e_project_root: Path,
+    e2e_tmux_session: str,
+) -> Generator[OrchestratorProcess, None, None]:
     """Create orchestrator process wrapper."""
-    proc = OrchestratorProcess(e2e_config, e2e_project_root)
+    proc = OrchestratorProcess(e2e_config, e2e_project_root, tmux_session=e2e_tmux_session)
     yield proc
     if proc.is_running():
         proc.stop()
