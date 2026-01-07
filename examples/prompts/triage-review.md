@@ -33,6 +33,12 @@ This prompt supports two modes based on the issue:
 gh pr list --label "<review_label>" --json number,title,body,url,headRefName
 ```
 
+**IMPORTANT**: Skip PRs that already have the `<triage_reviewed_label>` label (default: "triage-reviewed"):
+```bash
+# Check if a PR has already been triaged
+gh pr view <number> --json labels --jq '.labels[].name' | grep -q "<triage_reviewed_label>"
+```
+
 ### 2. For Each PR, Review:
 
 ```bash
@@ -75,7 +81,14 @@ After reviewing each PR, flip the label:
 gh pr edit <number> --remove-label "<review_label>" --add-label "<reviewed_label>"
 ```
 
-### 5. Create Batch Report
+### 5. Mark PR as Triaged
+
+After triage analysis is complete, add the `<triage_reviewed_label>` label (default: "triage-reviewed") to prevent re-review in future triage runs:
+```bash
+gh pr edit <number> --add-label "<triage_reviewed_label>"
+```
+
+### 6. Create Batch Report
 
 Create a summary report as a comment on THIS issue:
 
@@ -101,7 +114,7 @@ Create a summary report as a comment on THIS issue:
 - Issue #X: <description>
 ```
 
-### 6. Create Follow-up Issues (if needed)
+### 7. Create Follow-up Issues (if needed)
 
 For process improvements or recurring problems:
 ```bash

@@ -75,6 +75,36 @@ validation_policy:
   publish_requires: "publish_gate"
 ```
 
+## Review
+
+Configure code review and triage workflows:
+
+```yaml
+review:
+  enabled: true
+  default: "agent:reviewer"           # Default reviewer agent
+  code_review_label: "needs-code-review"  # Label for PRs awaiting review
+  code_reviewed_label: "code-reviewed"    # Label after code review complete
+  max_rework_cycles: 2                # Max times an agent can rework a PR
+
+  # Triage (batch review) settings
+  triage_review_agent: "agent:triage"     # Agent that reviews completed work
+  triage_reviewed_label: "triage-reviewed" # Label after triage complete
+  triage_review_threshold: 5              # Auto-trigger triage after N PRs (0 = manual)
+  triage_review_on_failure: true          # Trigger triage when sessions fail
+```
+
+### Triage Labels
+
+The triage agent uses labels to track which PRs have been reviewed:
+
+- **triage_reviewed_label** (default: "triage-reviewed"): Added to PRs after triage analysis to prevent re-review
+
+Create this label in your GitHub repo:
+```bash
+gh label create "triage-reviewed" --description "PR has been batch-reviewed by triage agent" --color "0e8a16"
+```
+
 ## Isolation
 
 ```yaml
