@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
     from .health_gate import HealthGate, HealthDecision
     from ..ports.worktree_manager import WorktreeManager
+    from ..ports.issue import Issue
 
 from ..events import EventName, EventContext
 from ..ports import EventSink, TraceEvent, RepositoryHost
@@ -452,6 +453,7 @@ def run_planning_cycle(
     last_issue_fetch: float,
     refresh_requested: bool,
     inflight_stable_ids: dict[str, float],
+    observer: object | None = None,
 ) -> tuple[float, bool]:
     """Run the planning cycle - extracted from Orchestrator per move map Step 2.
 
@@ -521,7 +523,26 @@ def run_planning_cycle(
 
         state.cached_queue_issues = new_queue
 
-    snapshot = fact_gatherer.create_snapshot(state, state.cached_queue_issues)
+    # Detect stale in-progress issues (label present but no active session)
+    stale_issues = []
+    if observer and hasattr(observer, 'detect_stale_in_progress'):
+        stale_issues = observer.detect_stale_in_progress(
+            state.cached_queue_issues,
+            state.active_sessions,
+        )
+        # Emit events for each stale issue
+        for issue in stale_issues:
+            events.publish(TraceEvent(
+                EventName.STALE_IN_PROGRESS_DETECTED,
+                event_context.enrich({
+                    "issue_number": issue.number,
+                    "labels": list(issue.labels),
+                }),
+            ))
+
+    snapshot = fact_gatherer.create_snapshot(
+        state, state.cached_queue_issues, stale_in_progress_issues=stale_issues
+    )
 
     # Emit facts.gathered
     events.publish(TraceEvent(
@@ -531,6 +552,7 @@ def run_planning_cycle(
             "active_sessions": len(state.active_sessions),
             "pending_reviews": len(state.pending_reviews),
             "pending_reworks": len(state.pending_reworks),
+            "stale_in_progress_count": len(stale_issues),
         }),
     ))
 
@@ -549,9 +571,55 @@ def run_planning_cycle(
         logger.info("[PLAN] %d action(s): %s", plan.action_count, ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}" for a in plan.actions))
 
     apply_plan_fn(plan)
+
+    # Track consecutive stale ticks for escalation (if threshold > 0)
+    _track_stale_ticks(config, events, event_context, state, stale_issues)
+
     clear_discovered_facts_fn()
 
     return last_issue_fetch, refresh_requested
+
+
+def _track_stale_ticks(
+    config: "Config",
+    events: EventSink,
+    event_context: EventContext,
+    state: "OrchestratorState",
+    stale_issues: list["Issue"],
+) -> None:
+    """Track consecutive ticks with stale in-progress labels for escalation.
+
+    Updates state.stale_issue_ticks and emits PERSISTENT_STALE_DETECTED
+    if an issue exceeds the configured threshold.
+    """
+    current_stale = {i.number for i in stale_issues}
+
+    # Increment for current stale issues
+    for issue_num in current_stale:
+        state.stale_issue_ticks[issue_num] = state.stale_issue_ticks.get(issue_num, 0) + 1
+
+    # Clear for no-longer-stale issues
+    for issue_num in list(state.stale_issue_ticks.keys()):
+        if issue_num not in current_stale:
+            del state.stale_issue_ticks[issue_num]
+
+    # Emit event if threshold exceeded (and threshold > 0)
+    threshold = config.stale_escalation_ticks
+    if threshold > 0:
+        for issue_num, ticks in state.stale_issue_ticks.items():
+            if ticks >= threshold:
+                events.publish(TraceEvent(
+                    EventName.PERSISTENT_STALE_DETECTED,
+                    event_context.enrich({
+                        "issue_number": issue_num,
+                        "consecutive_ticks": ticks,
+                        "threshold": threshold,
+                    }),
+                ))
+                logger.warning(
+                    "[STALE] Issue #%d has been stale for %d consecutive ticks (threshold: %d)",
+                    issue_num, ticks, threshold
+                )
 
 
 # Backwards compatibility - keep PlanningCycleRunner as an alias

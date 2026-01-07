@@ -206,7 +206,7 @@ class Orchestrator:
         )
 
     def _run_planning_cycle(self) -> None:
-        self._last_issue_fetch, self._refresh_requested = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, self._refresh_requested, self._inflight_stable_ids)
+        self._last_issue_fetch, self._refresh_requested = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, self._refresh_requested, self._inflight_stable_ids, self.observer)
 
     def _clear_discovered_facts(self) -> None: self._plan_applier._clear_discovered_facts()
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier._emit_heartbeat_if_needed()

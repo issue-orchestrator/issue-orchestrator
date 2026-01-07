@@ -30,7 +30,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'gh_write_verify_max_delay_ms', 'gh_write_verify_backoff', 'gh_write_verify_jitter_ms',
     'gh_rate_limit_startup', 'gh_rate_limit_every_calls', 'gh_rate_limit_warn_fraction',
     'gh_rate_limit_warn_remaining', 'gh_audit_enabled', 'gh_audit_events', 'gh_audit_file',
-    'comment_headings', 'dangerous',
+    'comment_headings', 'dangerous', 'stale_escalation_ticks',
 }
 
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
@@ -282,6 +282,10 @@ class Config:
     # Isolation configuration - how agents are sandboxed
     isolation: IsolationConfig = field(default_factory=IsolationConfig)
 
+    # Stale in-progress escalation threshold (0 = disabled)
+    # If an issue has stale in-progress for K consecutive ticks, emit escalation event
+    stale_escalation_ticks: int = 0
+
     # Path to the config file (set during load)
     config_path: Optional[Path] = None
 
@@ -456,6 +460,7 @@ class Config:
             "dangerous": {
                 "allow_unsupported_agents": self.dangerous.allow_unsupported_agents,
             },
+            "stale_escalation_ticks": self.stale_escalation_ticks,
         }
 
     @classmethod
@@ -710,6 +715,9 @@ class Config:
             config.isolation = IsolationConfig(
                 mode=isolation_data.get("mode", "standard"),
             )
+
+        # Stale in-progress escalation threshold (0 = disabled)
+        config.stale_escalation_ticks = data.get("stale_escalation_ticks", 0)
 
         return config
 

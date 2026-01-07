@@ -1162,6 +1162,193 @@ class TestSchedulerDependencyGating:
         assert "#200" in reason or "#300" in reason
 
 
+def _make_test_session(issue_number: int) -> "Session":
+    """Helper to create a test session for scheduler tests."""
+    from issue_orchestrator.domain.models import Session, SessionStatus
+    from issue_orchestrator.domain.issue_key import FakeIssueKey
+    from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+    from datetime import datetime
+
+    mock_issue = MagicMock()
+    mock_issue.number = issue_number
+    mock_issue.title = f"Test issue #{issue_number}"
+
+    issue_key = FakeIssueKey(name=str(issue_number))
+    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    agent_config = AgentConfig(prompt_path=Path("/tmp/prompt.txt"))
+
+    return Session(
+        key=session_key,
+        issue=mock_issue,
+        agent_config=agent_config,
+        terminal_id=f"test-session-{issue_number}",
+        worktree_path=Path(f"/tmp/wt{issue_number}"),
+        branch_name=f"issue-{issue_number}",
+        started_at=datetime.now(),
+        status=SessionStatus.RUNNING,
+    )
+
+
+class TestSchedulerRuntimeAwareGating:
+    """Tests for scheduler's runtime-aware gating for stale in-progress labels.
+
+    Key invariant: Issues with in-progress label but no active session should
+    NOT be blocked - the label is stale and will be cleaned up by the planner.
+    """
+
+    @pytest.fixture
+    def sample_config(self):
+        return Config(
+            repo="test/repo",
+            repo_root=Path("/tmp/test"),
+            worktree_base=Path("/tmp"),
+            agents={
+                "agent:developer": AgentConfig(
+                    prompt_path=Path("/tmp/prompt.txt"),
+                ),
+            },
+            max_concurrent_sessions=3,
+        )
+
+    def test_in_progress_with_active_session_is_blocked(self, sample_config):
+        """Issue with in-progress label AND active session is correctly blocked."""
+        scheduler = Scheduler(config=sample_config)
+
+        # Create an issue with in-progress label
+        issues = [
+            Issue(
+                number=1,
+                title="Active work",
+                labels=["in-progress"],
+                body="",
+            ),
+        ]
+
+        # Create a session for this issue
+        active_sessions = [_make_test_session(1)]
+
+        available, dep_blocked = scheduler.get_available_issues(
+            issues, active_sessions=active_sessions
+        )
+
+        # Issue should NOT be available (has active session)
+        assert len(available) == 0
+        assert len(dep_blocked) == 0
+
+    def test_in_progress_without_active_session_is_available(self, sample_config):
+        """Issue with in-progress label but NO active session is available (stale label)."""
+        scheduler = Scheduler(config=sample_config)
+
+        # Create an issue with in-progress label
+        issues = [
+            Issue(
+                number=1,
+                title="Stale in-progress",
+                labels=["in-progress"],
+                body="",
+            ),
+        ]
+
+        # No active sessions
+        active_sessions = []
+
+        available, dep_blocked = scheduler.get_available_issues(
+            issues, active_sessions=active_sessions
+        )
+
+        # Issue SHOULD be available (no session running, label is stale)
+        assert len(available) == 1
+        assert available[0].number == 1
+        assert len(dep_blocked) == 0
+
+    def test_in_progress_with_different_session_is_available(self, sample_config):
+        """Issue with in-progress label is available if session is for a DIFFERENT issue."""
+        scheduler = Scheduler(config=sample_config)
+
+        # Issue with in-progress label
+        issues = [
+            Issue(
+                number=1,
+                title="Stale in-progress",
+                labels=["in-progress"],
+                body="",
+            ),
+        ]
+
+        # Session is for a different issue (issue #2, not #1)
+        active_sessions = [_make_test_session(2)]
+
+        available, dep_blocked = scheduler.get_available_issues(
+            issues, active_sessions=active_sessions
+        )
+
+        # Issue #1 should be available (session is for #2, so #1's label is stale)
+        assert len(available) == 1
+        assert available[0].number == 1
+
+    def test_no_in_progress_label_is_available(self, sample_config):
+        """Issue without in-progress label is available regardless of sessions."""
+        scheduler = Scheduler(config=sample_config)
+
+        issues = [
+            Issue(
+                number=1,
+                title="Ready issue",
+                labels=[],  # No in-progress
+                body="",
+            ),
+        ]
+
+        available, dep_blocked = scheduler.get_available_issues(
+            issues, active_sessions=[]
+        )
+
+        assert len(available) == 1
+        assert available[0].number == 1
+
+    def test_backward_compatibility_no_active_sessions_param(self, sample_config):
+        """Backward compatibility: if active_sessions not provided, old behavior applies."""
+        scheduler = Scheduler(config=sample_config)
+
+        # Issue with in-progress label
+        issues = [
+            Issue(
+                number=1,
+                title="In progress",
+                labels=["in-progress"],
+                body="",
+            ),
+        ]
+
+        # Call without active_sessions parameter (backward compat)
+        available, dep_blocked = scheduler.get_available_issues(issues)
+
+        # Old behavior: in-progress would always block
+        # New behavior with None: treat as no sessions, so label is stale
+        assert len(available) == 1  # Available because no sessions to check against
+
+    def test_multiple_issues_mixed_states(self, sample_config):
+        """Multiple issues with mixed in-progress and session states."""
+        scheduler = Scheduler(config=sample_config)
+
+        issues = [
+            Issue(number=1, title="Active", labels=["in-progress"], body=""),
+            Issue(number=2, title="Stale", labels=["in-progress"], body=""),
+            Issue(number=3, title="Ready", labels=[], body=""),
+        ]
+
+        # Session only for issue #1
+        active_sessions = [_make_test_session(1)]
+
+        available, dep_blocked = scheduler.get_available_issues(
+            issues, active_sessions=active_sessions
+        )
+
+        # Issue #1 blocked (has session), #2 available (stale), #3 available (no label)
+        available_numbers = {i.number for i in available}
+        assert available_numbers == {2, 3}
+
+
 class TestLaunchSessionDependencyCAS:
     """Tests for CAS (Compare-And-Swap) dependency check at launch time.
 

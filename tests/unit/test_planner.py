@@ -1897,3 +1897,137 @@ class TestMultiplePendingTypesInteraction:
         # No issue launches (pending work exists)
         issue_launches = [a for a in launch_actions if a.session_type == "issue"]
         assert len(issue_launches) == 0
+
+
+class TestPlanStaleInProgressCleanup:
+    """Tests for planner's stale in-progress label cleanup.
+
+    When an issue has the in-progress label but no active session exists,
+    the planner should generate a RemoveLabelAction to clean up the stale label.
+    """
+
+    def test_no_stale_issues_no_actions(self):
+        """When no stale in-progress issues, no cleanup actions are generated."""
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # No stale issues
+        snapshot = make_snapshot(
+            issues=[make_issue(1)],
+            stale_in_progress_issues=(),  # Empty
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should be no RemoveLabel actions
+        remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
+        assert len(remove_actions) == 0
+
+    def test_stale_issue_generates_remove_label_action(self):
+        """Stale in-progress issue generates RemoveLabelAction."""
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        stale_issue = make_issue(1, labels=["in-progress"])
+
+        snapshot = make_snapshot(
+            issues=[stale_issue],
+            stale_in_progress_issues=(stale_issue,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should have a RemoveLabel action for issue #1
+        remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
+        assert len(remove_actions) == 1
+        assert remove_actions[0].issue_number == 1
+        assert remove_actions[0].label == "in-progress"
+        assert "stale" in remove_actions[0].reason.lower()
+
+    def test_multiple_stale_issues_generate_multiple_actions(self):
+        """Multiple stale issues generate multiple RemoveLabelActions."""
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        stale_issues = [
+            make_issue(1, labels=["in-progress"]),
+            make_issue(2, labels=["in-progress"]),
+            make_issue(3, labels=["in-progress"]),
+        ]
+
+        snapshot = make_snapshot(
+            issues=stale_issues,
+            stale_in_progress_issues=tuple(stale_issues),
+        )
+
+        plan = planner.plan(snapshot)
+
+        remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
+        assert len(remove_actions) == 3
+
+        # Verify all issue numbers are covered
+        issue_numbers = {a.issue_number for a in remove_actions}
+        assert issue_numbers == {1, 2, 3}
+
+    def test_stale_cleanup_runs_when_paused(self):
+        """When orchestrator is paused, no stale cleanup actions are generated."""
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        stale_issue = make_issue(1, labels=["in-progress"])
+
+        snapshot = make_snapshot(
+            issues=[stale_issue],
+            stale_in_progress_issues=(stale_issue,),
+            paused=True,  # Orchestrator is paused
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Paused orchestrator returns empty plan
+        assert plan.action_count == 0
+
+    def test_stale_cleanup_is_phase_1_action(self):
+        """Stale cleanup happens in Phase 1 (queue population), before capacity check."""
+        config = make_config(max_concurrent_sessions=0)  # No capacity
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        stale_issue = make_issue(1, labels=["in-progress"])
+
+        snapshot = make_snapshot(
+            issues=[stale_issue],
+            stale_in_progress_issues=(stale_issue,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Even with no capacity, stale cleanup should happen (Phase 1)
+        remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
+        assert len(remove_actions) == 1
+
+    def test_stale_cleanup_with_active_session_not_stale(self):
+        """Issue with active session is NOT in stale_in_progress_issues."""
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Issue has active session - NOT stale
+        issue_with_session = make_issue(1, labels=["in-progress"])
+        session = make_session(issue_with_session)
+
+        snapshot = make_snapshot(
+            issues=[issue_with_session],
+            active_sessions=[session],
+            stale_in_progress_issues=(),  # Not stale - has session
+        )
+
+        plan = planner.plan(snapshot)
+
+        # No cleanup actions
+        remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
+        assert len(remove_actions) == 0
