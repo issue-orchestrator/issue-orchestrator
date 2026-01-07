@@ -1484,6 +1484,101 @@ def _cmd_auth_clear(args: argparse.Namespace, console) -> int:
     return 0
 
 
+def cmd_keys(args: argparse.Namespace) -> int:
+    """Manage AI provider API keys."""
+    action = getattr(args, "keys_action", None)
+    if action is None:
+        console.print("[yellow]Usage: issue-orchestrator keys <list|set|delete>[/yellow]")
+        return 1
+
+    if action == "list":
+        return _cmd_keys_list(args)
+    elif action == "set":
+        return _cmd_keys_set(args)
+    elif action == "delete":
+        return _cmd_keys_delete(args)
+    else:
+        console.print(f"[red]Unknown keys action: {action}[/red]")
+        return 1
+
+
+def _cmd_keys_list(args: argparse.Namespace) -> int:
+    """List stored AI provider API keys."""
+    from ..infra.ai_keys import list_ai_keys, AI_PROVIDERS
+
+    keys = list_ai_keys()
+    console.print("\n[bold]AI Provider Keys:[/bold]")
+    for key_name, (masked, source) in keys.items():
+        provider_info = AI_PROVIDERS.get(key_name, {})
+        provider_name = provider_info.get("name", key_name)
+        if source == "not set":
+            console.print(f"  {provider_name} ({key_name}): [dim]not configured[/dim]")
+        else:
+            console.print(f"  {provider_name} ({key_name}): {masked} [dim]({source})[/dim] ✓")
+    console.print()
+    return 0
+
+
+def _cmd_keys_set(args: argparse.Namespace) -> int:
+    """Store an AI provider API key in keyring."""
+    from ..infra.ai_keys import store_ai_key, AI_PROVIDERS
+    import getpass
+
+    key_name = args.key_name.upper()
+    # Normalize: 'anthropic' -> 'ANTHROPIC_API_KEY'
+    if not key_name.endswith("_API_KEY"):
+        key_name = f"{key_name}_API_KEY"
+
+    # Show setup help for known providers
+    if key_name in AI_PROVIDERS:
+        info = AI_PROVIDERS[key_name]
+        console.print(f"\n[bold]{info['name']}[/bold]")
+        if info.get("setup_cmd"):
+            console.print(f"  Run in another terminal: [cyan]{info['setup_cmd']}[/cyan]")
+            console.print("  Then paste the key here.")
+        else:
+            console.print(f"  {info.get('setup_help', info.get('url', ''))}")
+        console.print()
+
+    # Prompt for key
+    try:
+        value = getpass.getpass(f"Paste your {key_name}: ")
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[yellow]Cancelled[/yellow]")
+        return 1
+
+    if not value.strip():
+        console.print("[red]No key provided[/red]")
+        return 1
+
+    try:
+        store_ai_key(key_name, value.strip())
+        console.print(f"[green]✓ Stored {key_name} in keyring[/green]")
+        return 0
+    except ImportError:
+        console.print("[red]Error: keyring library not installed[/red]")
+        console.print("[dim]Install with: pip install keyring[/dim]")
+        return 1
+    except Exception as e:
+        console.print(f"[red]Failed to store key: {e}[/red]")
+        return 1
+
+
+def _cmd_keys_delete(args: argparse.Namespace) -> int:
+    """Delete an AI provider API key from keyring."""
+    from ..infra.ai_keys import delete_ai_key
+
+    key_name = args.key_name.upper()
+    if not key_name.endswith("_API_KEY"):
+        key_name = f"{key_name}_API_KEY"
+
+    if delete_ai_key(key_name):
+        console.print(f"[green]✓ Removed {key_name} from keyring[/green]")
+    else:
+        console.print(f"[yellow]{key_name} was not in keyring[/yellow]")
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Run unified diagnostics on configuration and environment."""
     from pathlib import Path
@@ -2074,6 +2169,34 @@ def main() -> int:
     )
 
     auth_parser.set_defaults(func=cmd_auth)
+
+    # keys command (AI provider API keys)
+    keys_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "keys", help="Manage AI provider API keys"
+    )
+    keys_subparsers = keys_parser.add_subparsers(dest="keys_action")
+
+    keys_subparsers.add_parser(
+        "list", help="List stored API keys"
+    )
+
+    keys_set_parser = keys_subparsers.add_parser(
+        "set", help="Store an API key in keyring"
+    )
+    keys_set_parser.add_argument(
+        "key_name",
+        help="Key name (e.g., ANTHROPIC_API_KEY or just 'anthropic')"
+    )
+
+    keys_delete_parser = keys_subparsers.add_parser(
+        "delete", help="Remove an API key from keyring"
+    )
+    keys_delete_parser.add_argument(
+        "key_name",
+        help="Key name to remove"
+    )
+
+    keys_parser.set_defaults(func=cmd_keys)
 
     # doctor command (unified diagnostics)
     doctor_parser: argparse.ArgumentParser = subparsers.add_parser(

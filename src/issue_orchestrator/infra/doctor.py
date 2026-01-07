@@ -369,6 +369,29 @@ def run_doctor(
             detail=token_result.error or "Unknown error",
         ))
 
+    # === AI Provider Keys ===
+    from .ai_keys import list_ai_keys, AI_PROVIDERS
+
+    ai_keys = list_ai_keys()
+    configured = [(k, s) for k, (_, s) in ai_keys.items() if s != "not set"]
+
+    if configured:
+        detail_parts = []
+        for key_name, source in configured:
+            provider_name = AI_PROVIDERS.get(key_name, {}).get("name", key_name)
+            detail_parts.append(f"{provider_name} ({source})")
+        result.checks.append(Check(
+            name="AI Provider Keys",
+            status="ok",
+            detail=", ".join(detail_parts),
+        ))
+    else:
+        result.checks.append(Check(
+            name="AI Provider Keys",
+            status="warning",
+            detail="No AI keys configured. Run: issue-orchestrator keys set <provider>",
+        ))
+
     # === Configuration ===
     if config is None and config_path:
         if config_path.exists():

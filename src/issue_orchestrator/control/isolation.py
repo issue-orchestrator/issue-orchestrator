@@ -106,7 +106,7 @@ def build_isolation_prefix(
     worktree: Path,
     isolation_mode: str = "standard",
     scrub_env: bool = True,
-    isolate_home: bool = True,
+    isolate_home: bool = False,  # Disabled: Claude uses keychain for subscription auth
     git_safe: bool = True,
     set_ipc_socket: bool = True,
 ) -> str:
@@ -151,6 +151,46 @@ def build_isolation_prefix(
     if commands:
         return " && ".join(commands) + " && "
     return ""
+
+
+def install_claude_credentials_symlink(worktree: Path) -> bool:
+    """Symlink ~/.claude.json into the isolated HOME directory.
+
+    This allows Claude Code to authenticate using the user's existing
+    subscription credentials when HOME is isolated to the worktree.
+
+    Args:
+        worktree: Path to the worktree (which becomes HOME)
+
+    Returns:
+        True if symlink was created or already exists, False on failure
+    """
+    source = Path.home() / ".claude.json"
+    target = worktree / ".claude.json"
+
+    # Check if source credentials exist
+    if not source.exists():
+        logger.warning("No ~/.claude.json found - Claude may require login")
+        return False
+
+    # Check if target already exists
+    if target.exists() or target.is_symlink():
+        if target.is_symlink() and target.resolve() == source.resolve():
+            logger.debug("Claude credentials symlink already exists: %s", target)
+            return True
+        else:
+            # Different file/symlink exists - don't overwrite
+            logger.debug("Claude credentials file already exists (not our symlink): %s", target)
+            return True
+
+    # Create symlink
+    try:
+        target.symlink_to(source)
+        logger.info("Created Claude credentials symlink: %s -> %s", target, source)
+        return True
+    except OSError as e:
+        logger.warning("Failed to create Claude credentials symlink: %s", e)
+        return False
 
 
 def verify_env_scrubbed() -> dict[str, bool]:

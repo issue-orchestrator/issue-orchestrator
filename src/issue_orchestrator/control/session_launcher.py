@@ -346,6 +346,7 @@ class SessionLauncher:
         completion_path = get_completion_path(issue.agent_type)
         env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_vars += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
+
         if self.config.e2e_pr_labels:
             labels_str = ",".join(self.config.e2e_pr_labels)
             env_vars += f" E2E_PR_LABELS='{labels_str}'"
@@ -521,6 +522,7 @@ class SessionLauncher:
         completion_path = get_completion_path(agent_label)
         env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_vars += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
+
         command = f"{env_vars} {base_command}"
         logger.info(
             "[launch] Review session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",
@@ -698,6 +700,7 @@ class SessionLauncher:
         completion_path = get_completion_path(rework.agent_type)
         env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_vars += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"
+
         command = f"{env_vars} {base_command}"
         logger.info(
             "[launch] Rework session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",

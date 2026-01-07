@@ -960,6 +960,7 @@ class TestRunWizard:
             # Post-wizard (new flow)
             ".issue-orchestrator.yaml",  # config filename
             True,                   # Apply these changes?
+            False,                  # Set up AI provider API keys now?
         ])
 
         with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
