@@ -59,6 +59,19 @@
         .btn-warning { background: #9e6a03; border-color: #9e6a03; color: #fff; }
         .btn-primary { background: #238636; border-color: #238636; color: #fff; }
 
+        /* Focus styles for keyboard navigation */
+        button:focus-visible,
+        .issue-row:focus-visible,
+        .settings-menu-item:focus-visible,
+        .context-menu-item:focus-visible {
+            outline: 2px solid #58a6ff;
+            outline-offset: 2px;
+        }
+        .tab:focus-visible {
+            outline: 2px solid #58a6ff;
+            outline-offset: -2px;
+        }
+
         /* Tab Bar */
         .tab-bar {
             display: flex;
@@ -200,8 +213,11 @@
             padding: 2px 6px;
             border-radius: 4px;
             transition: all 0.15s ease;
+            background: none;
+            border: none;
         }
-        .issue-kill-btn:hover {
+        .issue-kill-btn:hover,
+        .issue-kill-btn:focus-visible {
             color: #f85149;
             background: rgba(248, 81, 73, 0.15);
         }
@@ -502,8 +518,13 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            width: 100%;
+            background: none;
+            border: none;
+            text-align: left;
         }
-        .context-menu-item:hover { background: #30363d; }
+        .context-menu-item:hover,
+        .context-menu-item:focus-visible { background: #30363d; }
         .context-menu-item.disabled { color: #484f58; cursor: default; }
         .context-menu-item.disabled:hover { background: transparent; }
         .context-menu-divider { height: 1px; background: #30363d; margin: 4px 0; }
@@ -568,8 +589,13 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            width: 100%;
+            background: none;
+            border: none;
+            text-align: left;
         }
-        .settings-menu-item:hover { background: #30363d; }
+        .settings-menu-item:hover,
+        .settings-menu-item:focus-visible { background: #30363d; }
         .settings-divider { height: 1px; background: #30363d; margin: 4px 0; }
 
         /* Modal */
@@ -654,9 +680,26 @@
             opacity: 1;
         }
         .toast.error { background: #f85149; }
+
+        /* Skip link for keyboard navigation */
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            background: #58a6ff;
+            color: #0d1117;
+            padding: 8px 16px;
+            z-index: 10000;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .skip-link:focus {
+            top: 0;
+        }
     </style>
 </head>
 <body>
+    <a href="#issueList" class="skip-link">Skip to main content</a>
     <div class="container">
         <header>
             <div class="header-left">
@@ -689,25 +732,28 @@
             </div>
             <div class="controls">
                 <button class="create-issue-btn" onclick="openCreateIssueModal()">+ Create Issue</button>
-                <button class="settings-btn" onclick="toggleSettingsMenu(event)">☰</button>
+                <button class="settings-btn" onclick="toggleSettingsMenu(event)" aria-label="Open menu" aria-haspopup="true">☰</button>
             </div>
         </header>
 
-        <div class="tab-bar">
-            <button class="tab {% if active_tab == 'work' %}active{% endif %}" onclick="switchTab('work')">
+        <div class="tab-bar" role="tablist" aria-label="Dashboard sections">
+            <button class="tab {% if active_tab == 'work' %}active{% endif %}" onclick="switchTab('work')" role="tab" aria-selected="{% if active_tab == 'work' %}true{% else %}false{% endif %}" aria-controls="issueList">
                 Work
             </button>
-            <button class="tab {% if active_tab == 'problems' %}active{% endif %}" onclick="switchTab('problems')">
-                Problems
-                <span class="tab-badge {% if problem_count == 0 %}empty{% endif %}">{{ problem_count }}</span>
+            <button class="tab {% if active_tab == 'attention' %}active{% endif %}" onclick="switchTab('attention')" role="tab" aria-selected="{% if active_tab == 'attention' %}true{% else %}false{% endif %}" aria-controls="issueList">
+                Needs Attention
+                <span class="tab-badge {% if attention_count == 0 %}empty{% endif %}" aria-label="{{ attention_count }} items need attention">{{ attention_count }}</span>
             </button>
-            <button class="tab {% if active_tab == 'system' %}active{% endif %}" onclick="switchTab('system')">
+            <button class="tab {% if active_tab == 'history' %}active{% endif %}" onclick="switchTab('history')" role="tab" aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}" aria-controls="issueList">
+                History
+            </button>
+            <button class="tab {% if active_tab == 'system' %}active{% endif %}" onclick="switchTab('system')" role="tab" aria-selected="{% if active_tab == 'system' %}true{% else %}false{% endif %}" aria-controls="systemPanel">
                 System
             </button>
         </div>
 
-        <div class="issue-list">
-            <div class="issue-header">
+        <div class="issue-list" id="issueList" role="tabpanel" aria-label="Issue list">
+            <div class="issue-header" role="row" aria-hidden="true">
                 <span>Issue</span>
                 <span>Status</span>
                 <span>Title</span>
@@ -725,6 +771,9 @@
             {% elif issues %}
             {% for issue in issues %}
             <div class="issue-row {% if issue.status == 'active' %}active-row{% elif issue.status == 'slow' %}slow-row{% endif %}"
+                 role="button"
+                 tabindex="0"
+                 aria-label="Issue #{{ issue.issue_number }}: {{ issue.title }}. Status: {{ issue.status_label }}. {{ issue.action_hint }}"
                  data-status="{{ issue.status }}"
                  data-issue="{{ issue.issue_number }}"
                  data-title="{{ issue.title }}"
@@ -741,21 +790,22 @@
                  data-dependency-summary="{{ issue.dependency_summary if issue.dependency_summary else '' }}"
                  title="{{ issue.action_hint }}"
                  onclick="handleClick(this)"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();handleClick(this);}"
                  oncontextmenu="showContextMenu(event, this)">
-                <span class="issue-num">#{{ issue.issue_number }}{% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}">⛓</span>{% endif %}<span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="">⚠</span><span class="stale-warning-icon" id="stale-warning-{{ issue.issue_number }}" style="display:none;" title="">🔄</span></span>
+                <span class="issue-num">#{{ issue.issue_number }}{% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}" aria-label="Has dependencies: {{ issue.dependency_summary }}">⛓</span>{% endif %}<span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">⚠</span><span class="stale-warning-icon" id="stale-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">🔄</span></span>
                 <span class="issue-status status-{{ issue.status }}" title="{{ issue.status_reason if issue.status_reason else '' }}">
-                    <span class="status-dot"></span>
+                    <span class="status-dot" aria-hidden="true"></span>
                     {{ issue.status_label }}
                 </span>
                 <span class="issue-title" title="{{ issue.title }}">{{ issue.title }}</span>
                 <span class="issue-agent">{{ issue.agent_type }}</span>
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
                 {% if issue.has_terminal %}
-                <span class="issue-kill-btn" onclick="killSession({{ issue.issue_number }}, event)" title="Force kill session">
+                <button class="issue-kill-btn" onclick="killSession({{ issue.issue_number }}, event)" aria-label="Force kill session for issue #{{ issue.issue_number }}" title="Force kill session">
                     ⏹
-                </span>
+                </button>
                 {% endif %}
-                <span class="issue-action">
+                <span class="issue-action" aria-hidden="true">
                     {% if issue.action == 'focus' %}
                     <span>👁</span><span class="action-arrow">→</span>
                     {% else %}
@@ -766,10 +816,12 @@
             {% endfor %}
             {% else %}
             <div class="empty-state">
-                {% if active_tab == 'problems' %}
-                No problems - all systems running smoothly! 🎉
+                {% if active_tab == 'attention' %}
+                Nothing needs attention - all systems running smoothly! 🎉
+                {% elif active_tab == 'history' %}
+                No session history yet
                 {% else %}
-                No issues to display
+                No issues in queue
                 {% endif %}
             </div>
             {% endif %}
@@ -926,89 +978,89 @@
     </div>
 
     <!-- Context Menu -->
-    <div class="context-menu" id="contextMenu">
-        <div class="context-menu-item" id="menuFocus">
-            <span>→</span> Focus iTerm2 Tab
+    <div class="context-menu" id="contextMenu" role="menu" aria-label="Issue actions">
+        <div class="context-menu-item" id="menuFocus" role="menuitem" tabindex="0">
+            <span aria-hidden="true">→</span> Focus iTerm2 Tab
         </div>
-        <div class="context-menu-item" id="menuFinder">
-            <span>📂</span> Open Worktree in Finder
+        <div class="context-menu-item" id="menuFinder" role="menuitem" tabindex="0">
+            <span aria-hidden="true">📂</span> Open Worktree in Finder
         </div>
-        <div class="context-menu-item" id="menuLog">
-            <span>📋</span> View Session Log
+        <div class="context-menu-item" id="menuLog" role="menuitem" tabindex="0">
+            <span aria-hidden="true">📋</span> View Session Log
         </div>
-        <div class="context-menu-item" id="menuPrompt">
-            <span>📝</span> Open Agent Prompt
+        <div class="context-menu-item" id="menuPrompt" role="menuitem" tabindex="0">
+            <span aria-hidden="true">📝</span> Open Agent Prompt
         </div>
-        <div class="context-menu-item" id="menuKill" style="display:none;">
-            <span style="color:#f85149;">⏹</span> Kill Session
+        <div class="context-menu-item" id="menuKill" role="menuitem" tabindex="0" style="display:none;">
+            <span style="color:#f85149;" aria-hidden="true">⏹</span> Kill Session
         </div>
-        <div class="context-menu-divider"></div>
-        <div class="context-menu-item" id="menuIssue">
-            <span>🔗</span> Open Issue on GitHub
+        <div class="context-menu-divider" role="separator"></div>
+        <div class="context-menu-item" id="menuIssue" role="menuitem" tabindex="0">
+            <span aria-hidden="true">🔗</span> Open Issue on GitHub
         </div>
-        <div class="context-menu-item" id="menuPR">
-            <span>🔀</span> Open PR on GitHub
+        <div class="context-menu-item" id="menuPR" role="menuitem" tabindex="0">
+            <span aria-hidden="true">🔀</span> Open PR on GitHub
         </div>
-        <div class="context-menu-divider" id="menuDepsDivider" style="display:none;"></div>
+        <div class="context-menu-divider" id="menuDepsDivider" role="separator" style="display:none;"></div>
         <div class="context-menu-label" id="menuDepsLabel" style="display:none;">
-            <span>⛓</span> Dependencies
+            <span aria-hidden="true">⛓</span> Dependencies
         </div>
         <div id="menuDepsContainer">
             <!-- Dependency items will be dynamically inserted here -->
         </div>
-        <div class="context-menu-divider" id="menuHistoryDivider" style="display:none;"></div>
-        <div class="context-menu-item" id="menuRetry" style="display:none;">
-            <span>🔄</span> Retry Issue
+        <div class="context-menu-divider" id="menuHistoryDivider" role="separator" style="display:none;"></div>
+        <div class="context-menu-item" id="menuRetry" role="menuitem" tabindex="0" style="display:none;">
+            <span aria-hidden="true">🔄</span> Retry Issue
         </div>
-        <div class="context-menu-item" id="menuDismiss" style="display:none;">
-            <span>✕</span> Dismiss
+        <div class="context-menu-item" id="menuDismiss" role="menuitem" tabindex="0" style="display:none;">
+            <span aria-hidden="true">✕</span> Dismiss
         </div>
     </div>
 
     <!-- Actions Menu -->
-    <div class="settings-menu" id="settingsMenu">
-        <div class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()">
+    <div class="settings-menu" id="settingsMenu" role="menu" aria-label="Actions menu">
+        <button class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()" role="menuitem">
             {% if paused %}
-            <span>▶</span> Resume
+            <span aria-hidden="true">▶</span> Resume
             {% else %}
-            <span>⏸</span> Pause
+            <span aria-hidden="true">⏸</span> Pause
             {% endif %}
-        </div>
-        <div class="settings-menu-item" onclick="refreshFromGitHub()">
-            <span>🔄</span> Refresh from GitHub
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="shutdown()">
-            <span>⏻</span> Shutdown
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="showInfo()">
-            <span>ℹ</span> About / Version
-        </div>
-        <div class="settings-menu-item" onclick="showConfig()">
-            <span>📄</span> View Config
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="createTestIssues()">
-            <span>🧪</span> Create Test Issues
-        </div>
-        <div class="settings-menu-item" onclick="cleanupTestIssues()">
-            <span>🧹</span> Cleanup Test Issues
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="clearHistory()">
-            <span>🗑</span> Clear History
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="showDoctor()">
-            <span>🩺</span> Run Doctor
-        </div>
-        <div class="settings-menu-item" onclick="showDebug()">
-            <span>🔧</span> Debug Info
-        </div>
-        <div class="settings-menu-item" onclick="openRepo()">
-            <span>↗</span> Open Repo on GitHub
-        </div>
+        </button>
+        <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem">
+            <span aria-hidden="true">🔄</span> Refresh from GitHub
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="shutdown()" role="menuitem">
+            <span aria-hidden="true">⏻</span> Shutdown
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="showInfo()" role="menuitem">
+            <span aria-hidden="true">ℹ</span> About / Version
+        </button>
+        <button class="settings-menu-item" onclick="showConfig()" role="menuitem">
+            <span aria-hidden="true">📄</span> View Config
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="createTestIssues()" role="menuitem">
+            <span aria-hidden="true">🧪</span> Create Test Issues
+        </button>
+        <button class="settings-menu-item" onclick="cleanupTestIssues()" role="menuitem">
+            <span aria-hidden="true">🧹</span> Cleanup Test Issues
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="clearHistory()" role="menuitem">
+            <span aria-hidden="true">🗑</span> Clear History
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="showDoctor()" role="menuitem">
+            <span aria-hidden="true">🩺</span> Run Doctor
+        </button>
+        <button class="settings-menu-item" onclick="showDebug()" role="menuitem">
+            <span aria-hidden="true">🔧</span> Debug Info
+        </button>
+        <button class="settings-menu-item" onclick="openRepo()" role="menuitem">
+            <span aria-hidden="true">↗</span> Open Repo on GitHub
+        </button>
     </div>
 
     <!-- Modal -->
@@ -1383,6 +1435,16 @@
             };
         })();
 
+        // Helper to add keyboard support to menu items
+        function addKeyboardSupport(element) {
+            element.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    element.click();
+                }
+            });
+        }
+
         // Context menu
         const contextMenu = document.getElementById('contextMenu');
         const menuFocus = document.getElementById('menuFocus');
@@ -1399,6 +1461,9 @@
         const menuDepsLabel = document.getElementById('menuDepsLabel');
         const menuDepsContainer = document.getElementById('menuDepsContainer');
         let currentRow = null;
+
+        // Add keyboard support to all context menu items
+        [menuFocus, menuFinder, menuLog, menuPrompt, menuKill, menuIssue, menuPR, menuRetry, menuDismiss].forEach(addKeyboardSupport);
 
         function showContextMenu(e, row) {
             e.preventDefault();
@@ -2096,6 +2161,6 @@
             document.getElementById('createIssueModal').classList.remove('visible');
         }
     </script>
-    <div id="toast" class="toast"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 </body>
 </html>

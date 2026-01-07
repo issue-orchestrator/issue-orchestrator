@@ -119,12 +119,10 @@ async def dashboard(
     state = orchestrator.state if orchestrator else None
     config = orchestrator.config if orchestrator else None
 
-    work_items = []  # Active + Queue + Completed
-    problems = []    # Failed + Blocked + Needs-human + Timed-out
-    seen_issues = set()  # Track issue numbers to avoid duplicates
-
-    # Problem statuses that go to the problems tab
-    PROBLEM_STATUSES = {"failed", "blocked", "needs_human", "timed_out"}
+    work_items = []       # Active + Queue (ready to run)
+    needs_attention = []  # Issues with blocking labels (needs human action)
+    history = []          # Session history (completed, failed, etc.)
+    seen_issues = set()   # Track issue numbers to avoid duplicates
 
     def make_issue_url(issue_number: int) -> str:
         return f"https://github.com/{config.repo}/issues/{issue_number}" if config and config.repo else ""
@@ -208,13 +206,27 @@ async def dashboard(
                 ])
                 dep_summary = dep_info.summary if dep_info else ""
 
+                # Check if issue is blocked (has blocking labels)
+                is_blocked = issue.is_blocked
+                if is_blocked:
+                    status = "blocked"
+                    status_label = "Blocked"
+                    # Show blocking label in tooltip if no dep summary
+                    from ..infra import labels as label_module
+                    blocking = label_module.get_blocking_labels(list(issue.labels))
+                    status_reason = dep_summary or (blocking[0] if blocking else "blocked")
+                else:
+                    status = "queue"
+                    status_label = "Queue"
+                    status_reason = dep_summary
+
                 item = {
                     "issue_number": issue.number,
                     "title": issue.title,
                     "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
-                    "status": "queue",
-                    "status_label": "Queue",
-                    "status_reason": dep_summary,  # Show dependency info in tooltip
+                    "status": status,
+                    "status_label": status_label,
+                    "status_reason": status_reason,
                     "time": "",
                     "action": "open",
                     "action_icon": "↗",
@@ -230,9 +242,13 @@ async def dashboard(
                     "dependencies": deps_json,
                     "dependency_summary": dep_summary,
                 }
-                work_items.append(item)
+                # Blocked issues go to "Needs Attention", others to "Work"
+                if is_blocked:
+                    needs_attention.append(item)
+                else:
+                    work_items.append(item)
 
-        # 3. Session history - separate into work (completed) vs problems
+        # 3. Session history - all goes to history tab
         status_labels = {
             "completed": "Done",
             "failed": "Failed",
@@ -240,11 +256,7 @@ async def dashboard(
             "needs_human": "Human",
             "timed_out": "Timeout",
         }
-        for entry in reversed(state.session_history[-50:]):  # Increased limit for problems
-            if entry.issue_number in seen_issues:
-                continue
-            seen_issues.add(entry.issue_number)
-
+        for entry in reversed(state.session_history[-50:]):
             url = entry.pr_url if entry.pr_url else make_issue_url(entry.issue_number)
             action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
             status_reason = getattr(entry, 'status_reason', None) or status_labels.get(entry.status, entry.status)
@@ -267,14 +279,17 @@ async def dashboard(
                 "has_terminal": False,
                 "worktree_path": "",
             }
+            history.append(item)
 
-            if entry.status in PROBLEM_STATUSES:
-                problems.append(item)
-            elif entry.status == "completed":
-                work_items.append(item)
-
-    # For backwards compatibility, create combined issues list based on active tab
-    issues = work_items if active_tab == "work" else problems
+    # Select issues list based on active tab
+    if active_tab == "work":
+        issues = work_items
+    elif active_tab == "attention":
+        issues = needs_attention
+    elif active_tab == "history":
+        issues = history
+    else:
+        issues = work_items
 
     # Calculate pagination info
     queue_total_pages = (queue_total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE if queue_total > 0 else 1
@@ -292,8 +307,9 @@ async def dashboard(
     html = template.render(
         issues=issues,
         work_items=work_items,
-        problems=problems,
-        problem_count=len(problems),
+        needs_attention=needs_attention,
+        attention_count=len(needs_attention),
+        history=history,
         active_tab=active_tab,
         paused=state.paused if state else False,
         shutdown_requested=shutdown_requested,
