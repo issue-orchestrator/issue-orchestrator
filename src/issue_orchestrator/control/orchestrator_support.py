@@ -598,10 +598,15 @@ def _track_stale_ticks(
     for issue_num in current_stale:
         state.stale_issue_ticks[issue_num] = state.stale_issue_ticks.get(issue_num, 0) + 1
 
-    # Clear for no-longer-stale issues
+    # Clear for no-longer-stale issues and emit cleared event
     for issue_num in list(state.stale_issue_ticks.keys()):
         if issue_num not in current_stale:
             del state.stale_issue_ticks[issue_num]
+            events.publish(TraceEvent(
+                EventName.STALE_IN_PROGRESS_CLEARED,
+                event_context.enrich({"issue_number": issue_num}),
+            ))
+            logger.info("[STALE] Issue #%d is no longer stale", issue_num)
 
     # Emit event if threshold exceeded (and threshold > 0)
     threshold = config.stale_escalation_ticks

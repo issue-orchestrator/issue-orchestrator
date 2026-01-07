@@ -22,6 +22,7 @@ from issue_orchestrator.control.orchestrator_support import (
     check_health,
     run_planning_cycle,
     run_tick,
+    _track_stale_ticks,
 )
 from issue_orchestrator.control.reconciliation import (
     ReconciliationRequired,
@@ -1072,3 +1073,225 @@ class TestImmediateCleanup:
 
         # Should not raise
         support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)
+
+
+# =============================================================================
+# Tests for _track_stale_ticks
+# =============================================================================
+
+
+class TestTrackStaleTicks:
+    """Tests for _track_stale_ticks function."""
+
+    @pytest.fixture
+    def mock_config(self):
+        """Create a mock Config with stale_escalation_ticks."""
+        config = MagicMock()
+        config.stale_escalation_ticks = 3  # Default threshold
+        return config
+
+    def test_increments_tick_count_for_stale_issues(
+        self, mock_config, mock_event_sink, sample_event_context, sample_orchestrator_state
+    ):
+        """_track_stale_ticks increments counter for stale issues."""
+        stale_issues = [make_issue(42), make_issue(43)]
+
+        _track_stale_ticks(
+            config=mock_config,
+            events=mock_event_sink,
+            event_context=sample_event_context,
+            state=sample_orchestrator_state,
+            stale_issues=stale_issues,
+        )
+
+        # Both issues should have tick count of 1
+        assert sample_orchestrator_state.stale_issue_ticks[42] == 1
+        assert sample_orchestrator_state.stale_issue_ticks[43] == 1
+
+    def test_accumulates_ticks_over_multiple_calls(
+        self, mock_config, mock_event_sink, sample_event_context, sample_orchestrator_state
+    ):
+        """_track_stale_ticks accumulates tick counts across calls."""
+        stale_issues = [make_issue(42)]
+
+        # Call three times
+        for _ in range(3):
+            _track_stale_ticks(
+                config=mock_config,
+                events=mock_event_sink,
+                event_context=sample_event_context,
+                state=sample_orchestrator_state,
+                stale_issues=stale_issues,
+            )
+
+        # Tick count should be 3
+        assert sample_orchestrator_state.stale_issue_ticks[42] == 3
+
+    def test_emits_cleared_event_when_issue_leaves_stale_set(
+        self, mock_config, mock_event_sink, sample_event_context, sample_orchestrator_state
+    ):
+        """STALE_IN_PROGRESS_CLEARED is emitted when issue is no longer stale."""
+        # Set up: issue 42 was stale for 2 ticks
+        sample_orchestrator_state.stale_issue_ticks[42] = 2
+
+        # Now call with empty stale list (issue 42 is no longer stale)
+        _track_stale_ticks(
+            config=mock_config,
+            events=mock_event_sink,
+            event_context=sample_event_context,
+            state=sample_orchestrator_state,
+            stale_issues=[],  # Issue 42 is no longer stale
+        )
+
+        # Issue should be removed from tracking
+        assert 42 not in sample_orchestrator_state.stale_issue_ticks
+
+        # Should have emitted STALE_IN_PROGRESS_CLEARED event
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.STALE_IN_PROGRESS_CLEARED in event_names
+
+        # Verify event payload
+        cleared_event = next(
+            e for e in mock_event_sink.events
+            if e.name == EventName.STALE_IN_PROGRESS_CLEARED
+        )
+        assert cleared_event.data["issue_number"] == 42
+
+    def test_emits_persistent_stale_event_when_threshold_exceeded(
+        self, mock_config, mock_event_sink, sample_event_context, sample_orchestrator_state
+    ):
+        """PERSISTENT_STALE_DETECTED is emitted when threshold is exceeded."""
+        mock_config.stale_escalation_ticks = 3
+
+        # Pre-populate: issue has been stale for 2 ticks already
+        sample_orchestrator_state.stale_issue_ticks[42] = 2
+
+        # This call will increment to 3, hitting the threshold
+        _track_stale_ticks(
+            config=mock_config,
+            events=mock_event_sink,
+            event_context=sample_event_context,
+            state=sample_orchestrator_state,
+            stale_issues=[make_issue(42)],
+        )
+
+        # Tick count should now be 3
+        assert sample_orchestrator_state.stale_issue_ticks[42] == 3
+
+        # Should have emitted PERSISTENT_STALE_DETECTED event
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.PERSISTENT_STALE_DETECTED in event_names
+
+        # Verify event payload
+        persistent_event = next(
+            e for e in mock_event_sink.events
+            if e.name == EventName.PERSISTENT_STALE_DETECTED
+        )
+        assert persistent_event.data["issue_number"] == 42
+        assert persistent_event.data["consecutive_ticks"] == 3
+        assert persistent_event.data["threshold"] == 3
+
+    def test_no_persistent_event_when_threshold_disabled(
+        self, mock_config, mock_event_sink, sample_event_context, sample_orchestrator_state
+    ):
+        """No PERSISTENT_STALE_DETECTED when stale_escalation_ticks is 0."""
+        mock_config.stale_escalation_ticks = 0  # Disabled
+
+        # Pre-populate: issue has been stale for many ticks
+        sample_orchestrator_state.stale_issue_ticks[42] = 10
+
+        # Call again
+        _track_stale_ticks(
+            config=mock_config,
+            events=mock_event_sink,
+            event_context=sample_event_context,
+            state=sample_orchestrator_state,
+            stale_issues=[make_issue(42)],
+        )
+
+        # Should NOT emit PERSISTENT_STALE_DETECTED
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.PERSISTENT_STALE_DETECTED not in event_names
+
+    def test_no_persistent_event_below_threshold(
+        self, mock_config, mock_event_sink, sample_event_context, sample_orchestrator_state
+    ):
+        """No PERSISTENT_STALE_DETECTED when below threshold."""
+        mock_config.stale_escalation_ticks = 5
+
+        # Only 2 ticks so far
+        sample_orchestrator_state.stale_issue_ticks[42] = 2
+
+        # Call again (now 3 ticks, but threshold is 5)
+        _track_stale_ticks(
+            config=mock_config,
+            events=mock_event_sink,
+            event_context=sample_event_context,
+            state=sample_orchestrator_state,
+            stale_issues=[make_issue(42)],
+        )
+
+        # Should NOT emit PERSISTENT_STALE_DETECTED
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.PERSISTENT_STALE_DETECTED not in event_names
+
+    def test_clears_multiple_issues_simultaneously(
+        self, mock_config, mock_event_sink, sample_event_context, sample_orchestrator_state
+    ):
+        """Multiple issues can be cleared in one call."""
+        # Set up: multiple issues were stale
+        sample_orchestrator_state.stale_issue_ticks[42] = 2
+        sample_orchestrator_state.stale_issue_ticks[43] = 3
+        sample_orchestrator_state.stale_issue_ticks[44] = 1
+
+        # Now none are stale
+        _track_stale_ticks(
+            config=mock_config,
+            events=mock_event_sink,
+            event_context=sample_event_context,
+            state=sample_orchestrator_state,
+            stale_issues=[],
+        )
+
+        # All should be cleared
+        assert len(sample_orchestrator_state.stale_issue_ticks) == 0
+
+        # Should have 3 STALE_IN_PROGRESS_CLEARED events
+        cleared_events = [
+            e for e in mock_event_sink.events
+            if e.name == EventName.STALE_IN_PROGRESS_CLEARED
+        ]
+        assert len(cleared_events) == 3
+
+        # All issue numbers should be represented
+        cleared_issue_nums = {e.data["issue_number"] for e in cleared_events}
+        assert cleared_issue_nums == {42, 43, 44}
+
+    def test_mixed_scenario_some_cleared_some_escalated(
+        self, mock_config, mock_event_sink, sample_event_context, sample_orchestrator_state
+    ):
+        """Test mixed scenario: some issues cleared, one escalated."""
+        mock_config.stale_escalation_ticks = 3
+
+        # Set up: issue 42 is about to hit threshold, issue 43 will be cleared
+        sample_orchestrator_state.stale_issue_ticks[42] = 2
+        sample_orchestrator_state.stale_issue_ticks[43] = 5  # Will be cleared
+
+        # Issue 42 still stale, issue 43 is not
+        _track_stale_ticks(
+            config=mock_config,
+            events=mock_event_sink,
+            event_context=sample_event_context,
+            state=sample_orchestrator_state,
+            stale_issues=[make_issue(42)],
+        )
+
+        # Issue 42 should be at 3 ticks
+        assert sample_orchestrator_state.stale_issue_ticks[42] == 3
+        # Issue 43 should be cleared
+        assert 43 not in sample_orchestrator_state.stale_issue_ticks
+
+        # Should have both events
+        event_names = [e.name for e in mock_event_sink.events]
+        assert EventName.STALE_IN_PROGRESS_CLEARED in event_names
+        assert EventName.PERSISTENT_STALE_DETECTED in event_names

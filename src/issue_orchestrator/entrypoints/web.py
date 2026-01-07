@@ -681,6 +681,33 @@ async def get_dependency_problems() -> JSONResponse:
     return JSONResponse({"problems": problems})
 
 
+@app.get("/api/stale-issues")
+async def get_stale_issues() -> JSONResponse:
+    """Get issues with stale in-progress labels.
+
+    Returns a dict mapping issue number to stale state details.
+    The web UI fetches this on load and then listens for
+    stale.in_progress_detected/stale.in_progress_cleared events to stay updated.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    state = _orchestrator.state
+    config = _orchestrator.config
+    threshold = config.stale_escalation_ticks
+
+    stale = {}
+    for issue_num, ticks in state.stale_issue_ticks.items():
+        stale[issue_num] = {
+            "issue_number": issue_num,
+            "consecutive_ticks": ticks,
+            "persistent": threshold > 0 and ticks >= threshold,
+            "threshold": threshold,
+        }
+
+    return JSONResponse({"stale": stale})
+
+
 @app.get("/api/info")
 async def get_info() -> JSONResponse:
     """Get orchestrator info for the About modal."""
