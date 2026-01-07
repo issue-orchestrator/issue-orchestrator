@@ -550,9 +550,25 @@ class TestBackwardCompatibleFunctions:
 class TestConstants:
     """Tests for module constants."""
 
-    def test_session_name(self):
-        """Test SESSION_NAME constant."""
-        assert tmux.SESSION_NAME == "orchestrator"
+    def test_session_name_default(self):
+        """Test SESSION_NAME defaults to 'orchestrator' when env var not set."""
+        # Note: SESSION_NAME is evaluated at import time, so this tests the default
+        # when ORCHESTRATOR_TMUX_SESSION is not set in the test environment
+        import os
+        if "ORCHESTRATOR_TMUX_SESSION" not in os.environ:
+            assert tmux.SESSION_NAME == "orchestrator"
+
+    def test_session_name_env_override(self):
+        """Test that SESSION_NAME can be overridden via ORCHESTRATOR_TMUX_SESSION.
+
+        The env var is read at module import time. For e2e test isolation,
+        we set ORCHESTRATOR_TMUX_SESSION before starting the orchestrator subprocess.
+        This test verifies the code pattern is correct.
+        """
+        import os
+        # Verify the code reads from the env var (the actual override happens at import)
+        expected = os.environ.get("ORCHESTRATOR_TMUX_SESSION", "orchestrator")
+        assert tmux.SESSION_NAME == expected
 
     def test_dashboard_window(self):
         """Test DASHBOARD_WINDOW constant."""

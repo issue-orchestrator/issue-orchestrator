@@ -2,12 +2,15 @@
 #
 # Uses script-based agents for fast, deterministic testing.
 # Tests the rework cycle and escalation flow.
+#
+# Note: tmux session is set via ORCHESTRATOR_TMUX_SESSION env var for test isolation.
+# Control API port is dynamically assigned if not specified.
 
 repo: BruceBGordon/issue-orchestrator
 worktree_base: "/tmp/e2e-worktrees"
 
 filter_label: test-data
-control_api_port: 19082
+# control_api_port: dynamically assigned
 e2e_pr_labels: ["test-data"]
 
 # Don't install pre-push hooks for script agents (they don't have pyright in PATH)

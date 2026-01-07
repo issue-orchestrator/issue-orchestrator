@@ -42,9 +42,10 @@ def _keep_remote_artifacts() -> bool:
 class OrchestratorProcess:
     """Wrapper for orchestrator subprocess with IPC support."""
 
-    def __init__(self, config: "Config", project_root: Path):
+    def __init__(self, config: "Config", project_root: Path, tmux_session: str = "orchestrator"):
         self.config = config
         self.project_root = project_root
+        self.tmux_session = tmux_session
         self.process: subprocess.Popen | None = None
         self.ipc_socket_path: Path | None = None
         self._output_lines: list[str] = []
@@ -252,6 +253,8 @@ class OrchestratorProcess:
         env["ORCHESTRATOR_LOG_FILE"] = str(orchestrator_log_file)
         env["PYTHONUNBUFFERED"] = "1"
         env["ORCHESTRATOR_LOG_TO_STDERR"] = "1"
+        # Set tmux session name for e2e test isolation
+        env["ORCHESTRATOR_TMUX_SESSION"] = self.tmux_session
         if os.environ.get("E2E_CLAUDE_ARGS"):
             env["ORCHESTRATOR_CLAUDE_ARGS"] = os.environ["E2E_CLAUDE_ARGS"]
         if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
@@ -355,7 +358,7 @@ class OrchestratorProcess:
             return
         try:
             result = subprocess.run(
-                ["tmux", "list-windows", "-t", "orchestrator", "-F", "#{window_index}:#{window_name}"],
+                ["tmux", "list-windows", "-t", self.tmux_session, "-F", "#{window_index}:#{window_name}"],
                 capture_output=True,
                 text=True,
             )
@@ -368,7 +371,7 @@ class OrchestratorProcess:
                 if "E2E-TEST" in line or "E2E-" in line:
                     window_index = line.split(":")[0]
                     subprocess.run(
-                        ["tmux", "kill-window", "-t", f"orchestrator:{window_index}"],
+                        ["tmux", "kill-window", "-t", f"{self.tmux_session}:{window_index}"],
                         capture_output=True,
                     )
         except Exception:

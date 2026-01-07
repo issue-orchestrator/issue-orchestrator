@@ -16,9 +16,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_E2E_FILTER_LABEL = "test-data"
 
 
-def cleanup_local_worktrees() -> int:
-    """Clean up local e2e worktrees."""
-    worktree_base = Path("/tmp/e2e-worktrees")
+def cleanup_local_worktrees(worktree_base: Path | None = None) -> int:
+    """Clean up local e2e worktrees.
+
+    Args:
+        worktree_base: Base directory for worktrees. Defaults to /tmp/e2e-worktrees.
+    """
+    if worktree_base is None:
+        worktree_base = Path("/tmp/e2e-worktrees")
     if worktree_base.exists():
         count = 0
         for item in worktree_base.iterdir():
@@ -29,18 +34,22 @@ def cleanup_local_worktrees() -> int:
                 except Exception as e:
                     logger.warning("Failed to remove worktree %s: %s", item, e)
         if count > 0:
-            logger.info("[E2E CLEANUP] Removed %d local worktrees", count)
+            logger.info("[E2E CLEANUP] Removed %d local worktrees from %s", count, worktree_base)
     return 0
 
 
-def cleanup_tmux_sessions() -> None:
-    """Clean up tmux sessions from previous e2e runs."""
+def cleanup_tmux_sessions(tmux_session: str = "orchestrator") -> None:
+    """Clean up tmux sessions from previous e2e runs.
+
+    Args:
+        tmux_session: Name of the tmux session to kill. Defaults to "orchestrator".
+    """
     result = subprocess.run(
-        ["tmux", "kill-session", "-t", "orchestrator"],
+        ["tmux", "kill-session", "-t", tmux_session],
         capture_output=True
     )
     if result.returncode == 0:
-        logger.info("[E2E CLEANUP] Killed stale orchestrator tmux session")
+        logger.info("[E2E CLEANUP] Killed stale tmux session: %s", tmux_session)
 
 
 def run_cleanup_step(name: str, fn, timeout_s: int) -> int:

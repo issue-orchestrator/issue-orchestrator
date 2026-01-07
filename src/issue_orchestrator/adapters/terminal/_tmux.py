@@ -14,7 +14,8 @@ from typing import Optional
 import libtmux
 
 # Constants
-SESSION_NAME = "orchestrator"
+# Allow override via environment variable for e2e test isolation
+SESSION_NAME = os.environ.get("ORCHESTRATOR_TMUX_SESSION", "orchestrator")
 DASHBOARD_WINDOW = "dashboard"
 
 
