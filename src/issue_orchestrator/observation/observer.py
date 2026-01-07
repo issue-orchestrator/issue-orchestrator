@@ -17,8 +17,10 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..ports import RepositoryHost, SessionRunner
+    from ..ports.issue import Issue
 
 from ..infra.config import Config
+from ..infra import labels
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
 from ..ports import EventSink, TraceEvent, NullEventSink
@@ -493,6 +495,38 @@ class SessionObserver:
             logger.error(
                 f"Unexpected error in observer completion handling for issue #{issue_number}: {e}"
             )
+
+    def detect_stale_in_progress(
+        self,
+        issues: list["Issue"],
+        active_sessions: list[Session],
+    ) -> list["Issue"]:
+        """Find issues with in-progress label but no running session.
+
+        This is a fact-gathering operation - it detects stale state where
+        an issue has the in-progress label but there's no active session
+        working on it.
+
+        Args:
+            issues: All issues to check
+            active_sessions: Currently active sessions
+
+        Returns:
+            List of issues that have stale in-progress labels
+        """
+        active_issue_numbers = {s.issue.number for s in active_sessions}
+        stale_issues = []
+
+        for issue in issues:
+            if labels.is_in_progress(issue.labels):
+                if issue.number not in active_issue_numbers:
+                    logger.debug(
+                        f"Issue #{issue.number} has stale in-progress: "
+                        f"label present but no active session"
+                    )
+                    stale_issues.append(issue)
+
+        return stale_issues
 
 
 # Backwards compatibility alias (deprecated)

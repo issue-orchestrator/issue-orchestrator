@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Optional, Protocol, Sequence
 
 from ..ports.issue import Issue
+from ..domain.models import Session
 
 # Sort keys can contain floats (timestamps/inf), ints (numbers), or strings (names)
 SortKey = tuple[float | int | str, ...]
@@ -199,12 +200,19 @@ class Scheduler:
         self,
         all_issues: Sequence[Issue],
         check_dependencies: bool = True,
+        active_sessions: Optional[Sequence[Session]] = None,
     ) -> tuple[list[Issue], list[tuple[Issue, str]]]:
         """Filter to issues that can be worked on (not blocked, not in-progress).
+
+        Uses runtime-aware gating: an issue is only considered "in progress" if
+        it has the in-progress label AND there's an active session working on it.
+        If the label exists but no session is running, the issue is considered
+        stale (will be cleaned up by planner) and NOT blocked.
 
         Args:
             all_issues: List of all issues to filter.
             check_dependencies: Whether to check issue dependencies.
+            active_sessions: Currently active sessions (for runtime-aware gating).
 
         Returns:
             Tuple of (available_issues, dependency_blocked) where:
@@ -214,11 +222,24 @@ class Scheduler:
         available = []
         dependency_blocked: list[tuple[Issue, str]] = []
 
+        # Build set of issue numbers with active sessions
+        active_issue_numbers = set()
+        if active_sessions:
+            active_issue_numbers = {s.issue.number for s in active_sessions}
+
         for issue in all_issues:
             if issue.state == "closed":
                 continue
+
+            # Runtime-aware in-progress gating:
+            # Only block if label exists AND session is actually running
             if labels.is_in_progress(issue.labels):
-                continue
+                if issue.number in active_issue_numbers:
+                    # Session actually running - don't schedule
+                    continue
+                # Label exists but no session - stale, will be cleaned up by planner
+                # Don't block scheduling; planner will handle label cleanup
+
             if labels.is_pr_pending(issue.labels):
                 continue
             if labels.is_blocking_any(issue.labels):

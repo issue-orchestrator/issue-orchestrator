@@ -213,6 +213,16 @@ class EventName(str, Enum):
     DEPENDENCIES_EVALUATED = "dependencies.evaluated"
 
     # =========================================================================
+    # Stale in-progress detection and retry
+    # =========================================================================
+    STALE_IN_PROGRESS_DETECTED = "stale.in_progress_detected"
+    STALE_IN_PROGRESS_CLEARED = "stale.in_progress_cleared"
+    RETRY_TRIGGERED = "issue.retry_triggered"
+    RETRY_NOOP_SESSION_RUNNING = "issue.retry_noop"
+    STARTUP_STALE_CLEARED = "orchestrator.startup_stale_cleared"
+    PERSISTENT_STALE_DETECTED = "stale.persistent_detected"
+
+    # =========================================================================
     # Observation (session monitoring)
     # =========================================================================
     OBSERVATION_COMPLETION_DETECTED = "observation.completion_detected"

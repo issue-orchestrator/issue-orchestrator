@@ -112,12 +112,14 @@ class FactGatherer:
         self,
         state: "OrchestratorState",
         issues: list["Issue"],
+        stale_in_progress_issues: list["Issue"] | None = None,
     ) -> "OrchestratorSnapshot":
         """Create an immutable snapshot for planning.
 
         Args:
             state: Current orchestrator state
             issues: Current list of issues from GitHub
+            stale_in_progress_issues: Issues with in-progress label but no running session
 
         Returns:
             Immutable snapshot of orchestrator state for Planner
@@ -140,6 +142,7 @@ class FactGatherer:
             discovered_failures=tuple(state.discovered_failures),
             triage_facts=self.gather_triage_facts(state),
             cleanup_facts=self.gather_cleanup_facts(state),
+            stale_in_progress_issues=tuple(stale_in_progress_issues or []),
         )
 
     def gather_triage_facts(

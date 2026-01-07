@@ -616,6 +616,8 @@ class OrchestratorState:
     discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage
+    # Stale in-progress tracking: issue_number -> consecutive ticks with stale in-progress
+    stale_issue_ticks: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass

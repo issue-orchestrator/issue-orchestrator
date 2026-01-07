@@ -55,6 +55,7 @@ from .actions import (
     Action,
     ActionType,
     AddLabelAction,
+    RemoveLabelAction,
     LaunchSessionAction,
     QueueReviewAction,
     QueueReworkAction,
@@ -93,6 +94,8 @@ class OrchestratorSnapshot:
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
     triage_facts: Optional[TriageFacts] = None
     cleanup_facts: Optional[CleanupFacts] = None
+    # Issues with stale in-progress labels (label present but no active session)
+    stale_in_progress_issues: tuple[Issue, ...] = field(default_factory=tuple)
 
     @property
     def active_count(self) -> int:
@@ -116,6 +119,7 @@ class OrchestratorSnapshot:
         discovered_failures: Sequence[DiscoveredFailure] = (),
         triage_facts: Optional[TriageFacts] = None,
         cleanup_facts: Optional[CleanupFacts] = None,
+        stale_in_progress_issues: Sequence[Issue] = (),
     ) -> "OrchestratorSnapshot":
         """Create snapshot from mutable state.
 
@@ -129,6 +133,7 @@ class OrchestratorSnapshot:
             discovered_failures: Failures discovered from session completions (for triage)
             triage_facts: Facts about triage trigger conditions
             cleanup_facts: Facts about pending cleanups and their review status
+            stale_in_progress_issues: Issues with stale in-progress labels
         """
         return cls(
             issues=tuple(issues),
@@ -146,6 +151,7 @@ class OrchestratorSnapshot:
             discovered_failures=tuple(discovered_failures),
             triage_facts=triage_facts,
             cleanup_facts=cleanup_facts,
+            stale_in_progress_issues=tuple(stale_in_progress_issues),
         )
 
 
@@ -260,28 +266,32 @@ class Planner:
 
         # === PHASE 1: Queue population actions (don't consume capacity) ===
 
-        # 1a. Queue discovered reviews from session completions/scans
+        # 1a. Clean up stale in-progress labels (no session running)
+        stale_cleanup_actions = self._plan_stale_cleanup(snapshot)
+        actions.extend(stale_cleanup_actions)
+
+        # 1b. Queue discovered reviews from session completions/scans
         queue_actions = self._plan_discovered_reviews(snapshot)
         actions.extend(queue_actions)
 
-        # 1b. Queue discovered reworks from scans
+        # 1c. Queue discovered reworks from scans
         rework_queue_actions = self._plan_discovered_reworks(snapshot)
         actions.extend(rework_queue_actions)
 
-        # 1c. Handle escalations (PRs exceeding max rework cycles)
+        # 1d. Handle escalations (PRs exceeding max rework cycles)
         escalation_actions = self._plan_discovered_escalations(snapshot)
         actions.extend(escalation_actions)
 
-        # 1d. Queue triage reviews for session failures
+        # 1e. Queue triage reviews for session failures
         failure_triage_actions = self._plan_discovered_failures(snapshot)
         actions.extend(failure_triage_actions)
 
-        # 1e. Create triage issue if threshold met
+        # 1f. Create triage issue if threshold met
         triage_create_action = self._plan_triage_issue_creation(snapshot)
         if triage_create_action:
             actions.append(triage_create_action)
 
-        # 1f. Process cleanups for reviewed PRs
+        # 1g. Process cleanups for reviewed PRs
         cleanup_actions = self._plan_cleanups(snapshot)
         actions.extend(cleanup_actions)
 
@@ -564,6 +574,33 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         return actions
 
+    def _plan_stale_cleanup(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+        """Plan cleanup actions for issues with stale in-progress labels.
+
+        When an issue has the in-progress label but no active session exists,
+        the label is stale and should be removed. This allows the issue to be
+        retried or processed normally.
+
+        Returns:
+            List of RemoveLabelAction for stale in-progress labels
+        """
+        actions: list[Action] = []
+
+        if not snapshot.stale_in_progress_issues:
+            return actions
+
+        for issue in snapshot.stale_in_progress_issues:
+            actions.append(RemoveLabelAction(
+                issue_number=issue.number,
+                label=labels.IN_PROGRESS,
+                reason="stale - no running session",
+                expected=build_expected_for_mutation(),
+            ))
+            logger.info("Planner: removing stale in-progress label from issue #%d",
+                       issue.number)
+
+        return actions
+
     def _plan_issues(
         self,
         snapshot: OrchestratorSnapshot,
@@ -586,10 +623,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 return actions, skipped, 0
             capacity = min(capacity, remaining)
 
-        # Get available issues (not blocked, not in-progress)
+        # Get available issues (not blocked, not in-progress with running session)
         available, dependency_blocked = self.scheduler.get_available_issues(
             list(snapshot.issues),
             check_dependencies=self.dependency_evaluator is not None,
+            active_sessions=list(snapshot.active_sessions),
         )
 
         # Record dependency-blocked items and add cross-milestone labels
