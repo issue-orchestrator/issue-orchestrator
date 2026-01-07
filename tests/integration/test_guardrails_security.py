@@ -166,6 +166,8 @@ exit(0)
 
         assert result.returncode != 99, f"SECURITY BREACH: Tokens found in env! {result.stdout}"
 
+    # TODO:docker - With Docker isolation, this test could run because the container
+    # would have a separate /proc namespace, preventing access to host environ.
     @pytest.mark.skipif(
         bool(os.environ.get("GITHUB_TOKEN")),
         reason="Cannot test /proc isolation when GITHUB_TOKEN is in parent environ (Linux /proc is readable by same-user processes)",
