@@ -749,10 +749,10 @@ class TestSupervisorStatus:
 class TestSupervisorStop:
     """Tests for POST /control/orchestrator/stop endpoint."""
 
-    def test_stop_returns_not_running_when_no_lock(
+    def test_stop_returns_stopped_when_no_lock(
         self, supervisor_client: TestClient, tmp_path: Path
     ) -> None:
-        """Return not_running when no orchestrator is running."""
+        """Return stopped when no orchestrator is running (goal achieved)."""
         response = supervisor_client.post(
             "/control/orchestrator/stop",
             json={"repo_root": str(tmp_path)},
@@ -760,7 +760,8 @@ class TestSupervisorStop:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "not_running"
+        # When no lock exists, the orchestrator is already stopped - goal achieved
+        assert data["status"] == "stopped"
 
     def test_stop_rejects_invalid_repo_root(
         self, supervisor_client: TestClient

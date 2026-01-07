@@ -209,7 +209,7 @@ signature: sha256(verified_at + hooks_hash + secret)
 ## Configuration
 
 ```yaml
-# .issue-orchestrator.yaml
+# .issue-orchestrator/config/default.yaml
 
 # Verification config (optional)
 verify:

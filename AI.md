@@ -98,7 +98,7 @@ issue-orchestrator status
 curl -s http://localhost:8080/api/status | jq
 ```
 
-**Configuration:** `.issue-orchestrator.yaml` - see `examples/config.example.yaml`
+**Configuration:** `.issue-orchestrator/config/<name>.yaml` - see `examples/config.example.yaml`
 
 ## Events vs Logs (Key Patterns)
 

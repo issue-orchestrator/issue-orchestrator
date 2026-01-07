@@ -40,11 +40,11 @@ class TestOrchestratorWiring:
         config = Config()
         config.repo = "owner/repo"
         config.repo_root = temp_repo
+        config.worktree_base = temp_repo / "worktrees"
         config.ui_mode = "tmux"  # Use tmux so tests can patch create_session
         config.agents = {
             "agent:test": AgentConfig(
                 prompt_path=Path("test.md"),
-                worktree_base=temp_repo / "worktrees",
                 timeout_minutes=5,
             )
         }
@@ -198,10 +198,11 @@ class TestCommentHeadingsWiring:
     def test_config_loads_comment_headings(self, tmp_path):
         """Verify comment headings are loaded from YAML."""
         config_content = """
+worktree_base: "../"
+
 agents:
   "agent:test":
     prompt: "test.md"
-    worktree_base: "../"
 
 comment_headings:
   implementation: "## Done"
@@ -323,7 +324,6 @@ class TestObserverWiring:
             issue=issue,
             agent_config=AgentConfig(
                 prompt_path=Path("test.md"),
-                worktree_base=Path(".."),
                 timeout_minutes=60
             ),
             terminal_id="orchestrator",
@@ -359,7 +359,6 @@ class TestObserverWiring:
             issue=issue,
             agent_config=AgentConfig(
                 prompt_path=Path("test.md"),
-                worktree_base=Path(".."),
                 timeout_minutes=60
             ),
             terminal_id="orchestrator",

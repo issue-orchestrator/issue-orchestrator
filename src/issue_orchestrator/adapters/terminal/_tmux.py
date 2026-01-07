@@ -94,11 +94,19 @@ class TmuxManager:
             start_directory=str(working_dir),
         )
 
-        # Prepend gh-wrapper directory to PATH to intercept unauthorized gh pr create
-        wrapper_dir = Path(__file__).parent / "scripts"
-        path_cmd = f'export PATH="{wrapper_dir}:$PATH"'
+        # Security: Strip credentials and set up isolated environment
+        # Uses the same isolation as iTerm2 for consistency
+        from ...control.isolation import build_isolation_prefix
+        wrapper_dir = Path(__file__).parent.parent.parent / "scripts"
+        isolation_prefix = build_isolation_prefix(
+            worktree=working_dir,
+            isolation_mode="standard",
+            scrub_env=True,
+            isolate_home=True,
+        )
+        setup_cmd = f'export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
-        # Send the PATH setup and then the command
+        # Send the security setup and then the command
         pane = window.active_pane
         if pane is not None:
             # Enable continuous logging to worktree (if directory exists)
@@ -111,7 +119,7 @@ class TmuxManager:
             except OSError:
                 pass  # Skip logging if directory doesn't exist (e.g., in tests)
 
-            pane.send_keys(path_cmd)
+            pane.send_keys(setup_cmd)
             pane.send_keys(command)
 
         return window

@@ -191,9 +191,10 @@ class TestPhase7MultiRepoFromControlCenter:
         """GET /control/repos/discover endpoint exists and returns discovered repos."""
         client = TestClient(control_app)
 
-        # Create a test repo with config
+        # Create a test repo with config and .git directory
         test_repo = tmp_path / "test-repo"
         test_repo.mkdir()
+        (test_repo / ".git").mkdir()  # Discover endpoint only finds git repos
         (test_repo / ".issue-orchestrator.yaml").write_text("repo: test/repo\n")
 
         response = client.get(
@@ -350,8 +351,8 @@ class TestSetupWizardEndpoints:
         assert data["status"] == "saved"
         assert "config_path" in data
 
-        # Config file should exist
-        config_path = tmp_path / ".issue-orchestrator.yaml"
+        # Config file should exist at new location
+        config_path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
         assert config_path.exists()
         content = config_path.read_text()
         assert "repo: test/repo" in content
@@ -360,14 +361,16 @@ class TestSetupWizardEndpoints:
         """GET /control/setup/detect returns existing_config when present."""
         client = TestClient(control_app)
 
-        # Create a config file first
+        # Create a config file at new location
         config_content = """repo: existing/repo
 agents:
   agent:backend:
     prompt: backend.md
     model: opus
 """
-        (tmp_path / ".issue-orchestrator.yaml").write_text(config_content)
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(config_content)
 
         response = client.get(
             "/control/setup/detect",
@@ -384,9 +387,11 @@ agents:
         """POST /control/setup/save can update an existing config file."""
         client = TestClient(control_app)
 
-        # Create initial config
+        # Create initial config at new location
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
         initial_config = "repo: old/repo\nagents:\n  agent:old: {}\n"
-        (tmp_path / ".issue-orchestrator.yaml").write_text(initial_config)
+        (config_dir / "default.yaml").write_text(initial_config)
 
         # Update with new config
         response = client.post(
@@ -407,7 +412,7 @@ agents:
         assert data["status"] == "saved"
 
         # Config should be updated
-        content = (tmp_path / ".issue-orchestrator.yaml").read_text()
+        content = (config_dir / "default.yaml").read_text()
         assert "repo: new/repo" in content
         assert "agent:new" in content
         assert "agent:old" not in content  # Old config replaced

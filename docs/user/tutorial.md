@@ -114,10 +114,10 @@ cd /path/to/your/project
 
 ### Step 2: Create Configuration File
 
-Create `.issue-orchestrator.yaml` in your project root:
+Create `.issue-orchestrator/config/default.yaml` in your project:
 
 ```yaml
-# .issue-orchestrator.yaml
+# .issue-orchestrator/config/default.yaml
 
 # Your GitHub repo (auto-detected if not specified)
 repo: your-username/your-repo

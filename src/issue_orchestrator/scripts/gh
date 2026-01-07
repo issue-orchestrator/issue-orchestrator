@@ -1,77 +1,139 @@
 #!/bin/bash
-# gh-wrapper - intercepts gh commands to block unauthorized operations
+# gh-wrapper - intercepts gh commands to enforce read-only access for agents
 #
-# This wrapper prevents agents from bypassing agent-done by using gh directly.
-# Only agent-done knows the authorization token.
+# WHITELIST APPROACH: Only explicitly allowed commands pass through.
+# Everything else is blocked unless authorized via ORCHESTRATOR_GH_AUTH.
+#
+# Agents should use 'agent-done' for any write operations.
 
-# Check if this is a pr create command
-if [[ "$1" == "pr" && "$2" == "create" ]]; then
-    # Check for authorization token (only agent-done sets this)
-    if [[ "$ORCHESTRATOR_GH_AUTH" != "agent-done-authorized" ]]; then
-        echo "" >&2
-        echo "╔════════════════════════════════════════════════════════════════╗" >&2
-        echo "║  ❌ ERROR: Direct 'gh pr create' is BLOCKED                    ║" >&2
-        echo "╠════════════════════════════════════════════════════════════════╣" >&2
-        echo "║                                                                ║" >&2
-        echo "║  You MUST use 'agent-done' to create PRs.                      ║" >&2
-        echo "║  This ensures proper tracking and code review workflow.        ║" >&2
-        echo "║                                                                ║" >&2
-        echo "║  ✅ Correct usage:                                             ║" >&2
-        echo "║     agent-done completed \\                                     ║" >&2
-        echo "║       --implementation \"What you implemented\" \\                ║" >&2
-        echo "║       --problems \"None\"                                        ║" >&2
-        echo "║                                                                ║" >&2
-        echo "╚════════════════════════════════════════════════════════════════╝" >&2
-        echo "" >&2
-        exit 1
-    fi
-fi
+set -euo pipefail
 
-# Check if this is a pr edit command with label manipulation
-if [[ "$1" == "pr" && "$2" == "edit" ]]; then
-    # Check if --add-label or --remove-label is in the arguments
-    for arg in "$@"; do
-        if [[ "$arg" == "--add-label" || "$arg" == "--remove-label" ]]; then
-            # Check for authorization token (only agent-done sets this)
-            if [[ "$ORCHESTRATOR_GH_AUTH" != "agent-done-authorized" ]]; then
-                echo "" >&2
-                echo "╔════════════════════════════════════════════════════════════════╗" >&2
-                echo "║  ❌ ERROR: Direct label manipulation is BLOCKED                ║" >&2
-                echo "╠════════════════════════════════════════════════════════════════╣" >&2
-                echo "║                                                                ║" >&2
-                echo "║  You MUST use 'agent-done' for label management.               ║" >&2
-                echo "║  This ensures proper workflow state tracking.                  ║" >&2
-                echo "║                                                                ║" >&2
-                echo "║  ✅ For code reviewers:                                        ║" >&2
-                echo "║     agent-done approved --summary \"Review summary\"             ║" >&2
-                echo "║     agent-done changes_requested --issues \"Issues found\"       ║" >&2
-                echo "║                                                                ║" >&2
-                echo "║  ✅ For work agents:                                           ║" >&2
-                echo "║     agent-done completed --implementation \"...\" --problems ... ║" >&2
-                echo "║     agent-done blocked --reason \"...\" --attempted \"...\"        ║" >&2
-                echo "║                                                                ║" >&2
-                echo "╚════════════════════════════════════════════════════════════════╝" >&2
-                echo "" >&2
-                exit 1
-            fi
-            break
+# === WHITELISTED READ-ONLY COMMANDS ===
+# These commands are safe - they only read data, never modify.
+
+is_allowed_command() {
+    local cmd="$1"
+    local subcmd="${2:-}"
+
+    case "$cmd" in
+        # PR read operations
+        pr)
+            case "$subcmd" in
+                view|list|diff|checks|status) return 0 ;;
+            esac
+            ;;
+        # Issue read operations
+        issue)
+            case "$subcmd" in
+                view|list|status) return 0 ;;
+            esac
+            ;;
+        # Repo read operations
+        repo)
+            case "$subcmd" in
+                view|list|clone) return 0 ;;
+            esac
+            ;;
+        # Search (read-only)
+        search)
+            case "$subcmd" in
+                repos|issues|prs|commits|code) return 0 ;;
+            esac
+            ;;
+        # Status/auth checks (read-only)
+        auth)
+            case "$subcmd" in
+                status) return 0 ;;
+            esac
+            ;;
+        status)
+            return 0
+            ;;
+        # Browse (just opens browser, harmless)
+        browse)
+            return 0
+            ;;
+        # Help
+        help|--help|-h)
+            return 0
+            ;;
+        # Version
+        version|--version)
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+# === CHECK AUTHORIZATION ===
+
+# If authorized by agent-done, allow everything
+if [[ "${ORCHESTRATOR_GH_AUTH:-}" == "agent-done-authorized" ]]; then
+    # Find and exec real gh
+    for gh_path in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
+        if [[ -x "$gh_path" ]]; then
+            exec "$gh_path" "$@"
         fi
     done
-fi
 
-# Find and exec real gh (search common locations)
-for gh_path in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
-    if [[ -x "$gh_path" ]]; then
-        exec "$gh_path" "$@"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REAL_GH=$(which -a gh 2>/dev/null | grep -v "$SCRIPT_DIR" | head -1)
+    if [[ -x "$REAL_GH" ]]; then
+        exec "$REAL_GH" "$@"
     fi
-done
 
-# Fallback: try to find gh in PATH (excluding this wrapper)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REAL_GH=$(which -a gh 2>/dev/null | grep -v "$SCRIPT_DIR" | head -1)
-if [[ -x "$REAL_GH" ]]; then
-    exec "$REAL_GH" "$@"
+    echo "ERROR: Could not find real gh executable" >&2
+    exit 1
 fi
 
-echo "ERROR: Could not find real gh executable" >&2
+# === CHECK IF COMMAND IS ALLOWED ===
+
+cmd="${1:-}"
+subcmd="${2:-}"
+
+if is_allowed_command "$cmd" "$subcmd"; then
+    # Allowed - pass through to real gh
+    for gh_path in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
+        if [[ -x "$gh_path" ]]; then
+            exec "$gh_path" "$@"
+        fi
+    done
+
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REAL_GH=$(which -a gh 2>/dev/null | grep -v "$SCRIPT_DIR" | head -1)
+    if [[ -x "$REAL_GH" ]]; then
+        exec "$REAL_GH" "$@"
+    fi
+
+    echo "ERROR: Could not find real gh executable" >&2
+    exit 1
+fi
+
+# === BLOCKED - Show helpful message ===
+
+echo "" >&2
+echo "╔════════════════════════════════════════════════════════════════╗" >&2
+echo "║  ❌ BLOCKED: 'gh $cmd${subcmd:+ $subcmd}' is not allowed                          " >&2
+echo "╠════════════════════════════════════════════════════════════════╣" >&2
+echo "║                                                                ║" >&2
+echo "║  Agents have READ-ONLY access to GitHub.                       ║" >&2
+echo "║  Use 'agent-done' for any write operations.                    ║" >&2
+echo "║                                                                ║" >&2
+echo "║  ✅ Allowed commands (read-only):                              ║" >&2
+echo "║     gh pr view/list/diff/checks/status                         ║" >&2
+echo "║     gh issue view/list/status                                  ║" >&2
+echo "║     gh repo view/list/clone                                    ║" >&2
+echo "║     gh search repos/issues/prs/commits/code                    ║" >&2
+echo "║     gh auth status                                             ║" >&2
+echo "║                                                                ║" >&2
+echo "║  ✅ For completing work:                                       ║" >&2
+echo "║     agent-done completed --implementation \"...\" --problems ... ║" >&2
+echo "║                                                                ║" >&2
+echo "║  ✅ For code review:                                           ║" >&2
+echo "║     agent-done approved --summary \"...\"                        ║" >&2
+echo "║     agent-done changes_requested --issues \"...\"                ║" >&2
+echo "║                                                                ║" >&2
+echo "╚════════════════════════════════════════════════════════════════╝" >&2
+echo "" >&2
 exit 1

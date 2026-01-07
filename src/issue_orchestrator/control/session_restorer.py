@@ -173,15 +173,13 @@ class SessionRestorer:
         worktree_path = None
         branch_name = "unknown"
 
-        # Check all agent repo_roots for the worktree
-        for _agent_label, agent_config in self.config.agents.items():
-            repo_root = agent_config.repo_root or self.config.repo_root
-            candidate_path = repo_root.parent / f"{repo_root.name}-{issue_number}"
-            if candidate_path.exists():
-                worktree_path = candidate_path
-                # Get branch name from worktree
-                branch_name = self._get_branch_name(candidate_path)
-                break
+        # Check the repo_root for the worktree
+        repo_root = self.config.repo_root
+        candidate_path = repo_root.parent / f"{repo_root.name}-{issue_number}"
+        if candidate_path.exists():
+            worktree_path = candidate_path
+            # Get branch name from worktree
+            branch_name = self._get_branch_name(candidate_path)
 
         return worktree_path, branch_name
 

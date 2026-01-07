@@ -35,11 +35,11 @@ def create_mock_orchestrator():
     config.filter_milestone = None
     config.config_path = Path("/tmp/config.yaml")
     config.repo_root = Path("/tmp/repo")
+    config.worktree_base = Path("/tmp/worktrees")  # Top-level worktree_base
 
     # Add a sample agent config
     agent_config = AgentConfig(
         prompt_path=Path("/tmp/prompt.txt"),
-        worktree_base=Path("/tmp/worktrees"),
         model="sonnet",
         timeout_minutes=45,
     )
@@ -80,7 +80,6 @@ def create_session(issue, worktree_path="/tmp/worktree-1", branch_name="feature/
     """Helper to create Session objects for testing."""
     agent_config = AgentConfig(
         prompt_path=Path("/tmp/prompt.txt"),
-        worktree_base=Path("/tmp"),
         model="sonnet",
         timeout_minutes=45,
     )

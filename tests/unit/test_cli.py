@@ -2,6 +2,7 @@
 
 import argparse
 import inspect
+from pathlib import Path
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
 import pytest
 
@@ -10,6 +11,16 @@ from issue_orchestrator.entrypoints.cli import (
     cmd_dashboard, cmd_output, cmd_pause, cmd_resume, cmd_next,
     cmd_test_reset, main, setup_logging, _run_test_setup, _load_config
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_run_doctor():
+    """Auto-patch run_doctor for all tests to return OK result."""
+    mock_doctor_result = Mock()
+    mock_doctor_result.overall = "ok"
+    mock_doctor_result.checks = []
+    with patch('issue_orchestrator.infra.doctor.run_doctor', return_value=mock_doctor_result):
+        yield
 
 
 def _run_and_close(coro):
@@ -50,6 +61,8 @@ class TestCmdStart:
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_config.validate.return_value = []  # Pass validation
+                        mock_config.repo_root = Path("/tmp/test-repo")
+                        mock_config.worktree_base = Path("/tmp/worktrees")
                         mock_find.return_value = mock_config
 
                         # Setup orchestrator
@@ -85,6 +98,8 @@ class TestCmdStart:
                     mock_config.max_concurrent_sessions = 2
                     mock_config.ui_mode = 'tmux'
                     mock_config.validate.return_value = []  # Pass validation
+                    mock_config.repo_root = Path("/tmp/test-repo")
+                    mock_config.worktree_base = Path("/tmp/worktrees")
                     mock_find.return_value = mock_config
 
                     mock_orchestrator = Mock()
@@ -126,7 +141,8 @@ class TestCmdStart:
                                         mock_config.filter_milestone = None
                                         mock_config.filter_milestones = []
                                         mock_config.get_filter_milestones.return_value = []
-                                        mock_config.repo_root = '/tmp'
+                                        mock_config.repo_root = Path("/tmp")
+                                        mock_config.worktree_base = Path("/tmp/worktrees")
                                         mock_config.get_label_in_progress.return_value = 'in-progress'
                                         mock_config.github_api_url = 'https://api.github.com'
                                         mock_config.github_http_timeout_seconds = 20.0
@@ -756,6 +772,8 @@ class TestCmdStartAdvanced:
                             mock_config.max_concurrent_sessions = 2
                             mock_config.ui_mode = 'tmux'
                             mock_config.validate.return_value = []  # Pass validation
+                            mock_config.repo_root = Path("/tmp")
+                            mock_config.worktree_base = Path("/tmp/worktrees")
                             mock_find.return_value = mock_config
 
                             mock_test_setup.return_value = True
@@ -789,6 +807,8 @@ class TestCmdStartAdvanced:
                         mock_config.ui_mode = 'tmux'
                         mock_config.filter_milestone = None
                         mock_config.validate.return_value = []  # Pass validation
+                        mock_config.repo_root = Path("/tmp")
+                        mock_config.worktree_base = Path("/tmp/worktrees")
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.side_effect = _run_and_close
@@ -820,6 +840,8 @@ class TestCmdStartAdvanced:
                         mock_config.filter_milestone = None
                         mock_config.filter_milestones = []
                         mock_config.validate.return_value = []  # Pass validation
+                        mock_config.repo_root = Path("/tmp")
+                        mock_config.worktree_base = Path("/tmp/worktrees")
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.side_effect = _run_and_close
@@ -851,6 +873,8 @@ class TestCmdStartAdvanced:
                             mock_config.max_concurrent_sessions = 2
                             mock_config.ui_mode = 'tmux'
                             mock_config.validate.return_value = []  # Pass validation
+                            mock_config.repo_root = Path("/tmp")
+                            mock_config.worktree_base = Path("/tmp/worktrees")
                             mock_find.return_value = mock_config
 
                             mock_asyncio.run.side_effect = _run_and_close
@@ -883,6 +907,8 @@ class TestCmdStartAdvanced:
                         mock_config.ui_mode = 'tmux'
                         mock_config.queue_refresh_seconds = 600
                         mock_config.validate.return_value = []  # Pass validation
+                        mock_config.repo_root = Path("/tmp")
+                        mock_config.worktree_base = Path("/tmp/worktrees")
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.side_effect = _run_and_close
@@ -913,6 +939,8 @@ class TestCmdStartAdvanced:
                         mock_config.ui_mode = 'tmux'
                         mock_config.max_issues_to_start = 0
                         mock_config.validate.return_value = []  # Pass validation
+                        mock_config.repo_root = Path("/tmp")
+                        mock_config.worktree_base = Path("/tmp/worktrees")
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.side_effect = _run_and_close
@@ -943,6 +971,8 @@ class TestCmdStartAdvanced:
                         mock_config.ui_mode = 'web'
                         mock_config.web_port = 8080
                         mock_config.validate.return_value = []  # Pass validation
+                        mock_config.repo_root = Path("/tmp")
+                        mock_config.worktree_base = Path("/tmp/worktrees")
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.side_effect = _run_and_close
@@ -974,6 +1004,8 @@ class TestCmdStartAdvanced:
                         mock_config.ui_mode = 'web'
                         mock_config.web_port = 8080
                         mock_config.validate.return_value = []  # Pass validation
+                        mock_config.repo_root = Path("/tmp")
+                        mock_config.worktree_base = Path("/tmp/worktrees")
                         mock_find.return_value = mock_config
 
                         mock_asyncio.run.side_effect = _run_and_close
@@ -1004,6 +1036,8 @@ class TestCmdStartAdvanced:
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
                         mock_config.validate.return_value = []  # Pass validation
+                        mock_config.repo_root = Path("/tmp")
+                        mock_config.worktree_base = Path("/tmp/worktrees")
                         mock_find.return_value = mock_config
 
                         mock_build.return_value = Mock()
@@ -1121,15 +1155,15 @@ class TestLoadConfig:
         # Create a test config file
         config_file = tmp_path / "custom-config.yaml"
         config_file.write_text("""
+worktree_base: /tmp
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """)
 
         with patch('issue_orchestrator.infra.config.Config.load') as mock_load:
             mock_config = Mock()
-            mock_config.repo_root_from_yaml = False
+            mock_config.repo_root = tmp_path  # Config.load() now sets this
             mock_load.return_value = mock_config
 
             args = argparse.Namespace(config=str(config_file))
@@ -1139,8 +1173,8 @@ agents:
             # Verify it was called with a Path object
             call_args = mock_load.call_args[0][0]
             assert str(call_args) == str(config_file)
-            # Verify repo_root was set to config file's parent
-            assert mock_config.repo_root == config_file.parent.resolve()
+            # Verify Config.load returns the config with repo_root set
+            assert result.repo_root == tmp_path
 
     def test_load_config_explicit_path_not_found(self, tmp_path):
         """Verify _load_config raises FileNotFoundError for missing config."""

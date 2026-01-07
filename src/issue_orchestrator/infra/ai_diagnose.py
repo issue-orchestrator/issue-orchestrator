@@ -16,6 +16,7 @@ from typing import Any
 from .doctor import run_doctor
 from .repo_identity import state_dir
 from .startup_errors import read_startup_failure
+from ..execution.command_runner import LocalCommandRunner
 
 
 @dataclass
@@ -138,33 +139,34 @@ def create_diagnostic_bundle(repo_root: Path) -> DiagnosticBundle:
 
     # 3. Doctor output
     try:
-        from .config import Config
+        from .config import Config, list_configs, get_config_path
 
         config = None
-        for name in [".issue-orchestrator.yaml", ".issue-orchestrator.yml"]:
-            config_path = repo_root / name
-            if config_path.exists():
-                try:
-                    config = Config.load(config_path)
-                    break
-                except Exception:
-                    pass
+        config_path = None
+        available = list_configs(repo_root)
+        if available:
+            config_path = get_config_path(repo_root, available[0])
+            try:
+                config = Config.load(config_path)
+            except Exception:
+                pass
 
-        result = run_doctor(config=config, config_path=repo_root / ".issue-orchestrator.yaml")
+        result = run_doctor(config=config, config_path=config_path, runner=LocalCommandRunner())
         bundle.doctor_output = result.to_dict()
         with open(bundle_dir / "doctor_output.json", "w") as f:
             json.dump(bundle.doctor_output, f, indent=2)
     except Exception:
         pass
 
-    # 4. Config files
-    for name in [".issue-orchestrator.yaml", ".issue-orchestrator.yml"]:
-        config_path = repo_root / name
-        if config_path.exists():
+    # 4. Config files (from new location)
+    from .config import get_config_dir
+    config_dir = get_config_dir(repo_root)
+    if config_dir.exists():
+        for config_file in config_dir.glob("*.yaml"):
             try:
-                content = config_path.read_text()
-                bundle.config_files[name] = content
-                shutil.copy(config_path, bundle_dir / name)
+                content = config_file.read_text()
+                bundle.config_files[config_file.name] = content
+                shutil.copy(config_file, bundle_dir / config_file.name)
             except OSError:
                 pass
 

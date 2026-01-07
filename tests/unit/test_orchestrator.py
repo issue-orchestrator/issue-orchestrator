@@ -148,7 +148,6 @@ def create_session(issue, worktree_path="/tmp/worktree", branch_name="feature/te
     """Helper to create Session objects for testing."""
     agent_config = AgentConfig(
         prompt_path=Path("/tmp/prompt.txt"),
-        worktree_base=Path("/tmp"),
         model="sonnet",
         timeout_minutes=45,
     )
@@ -541,50 +540,6 @@ class TestLaunchSession:
         # New behavior: SessionLauncher returns graceful failure instead of raising
         session = orchestrator.launch_session(issue)
         assert session is None
-
-    def test_launch_session_uses_agent_repo_root_if_configured(
-        self,
-        sample_config,
-        mock_repository_host,
-    ):
-        """Test that launch_session uses agent-specific repo_root if configured."""
-        runner = MockSessionRunner()
-        runner.plugin.session_exists_override = False
-        mock_worktree_manager = MockWorktreeManager()
-
-        # Configure agent with specific repo_root
-        sample_config.agents["agent:web"].repo_root = Path("/custom/repo/path")
-
-        issue = create_issue(1, labels=["agent:web"])
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
-
-        session = orchestrator.launch_session(issue)
-
-        # Should use agent's repo_root
-        assert mock_worktree_manager.create_calls[0]["repo_root"] == Path("/custom/repo/path")
-
-    def test_launch_session_falls_back_to_config_repo_root(
-        self,
-        sample_config,
-        mock_repository_host,
-    ):
-        """Test that launch_session falls back to config.repo_root if agent doesn't specify."""
-        runner = MockSessionRunner()
-        runner.plugin.session_exists_override = False
-        mock_worktree_manager = MockWorktreeManager()
-
-        # Ensure agent doesn't have repo_root set
-        sample_config.agents["agent:web"].repo_root = None
-        sample_config.repo_root = Path("/default/repo/path")
-
-        issue = create_issue(1, labels=["agent:web"])
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
-
-        session = orchestrator.launch_session(issue)
-
-        # Should use config's repo_root
-        assert mock_worktree_manager.create_calls[0]["repo_root"] == Path("/default/repo/path")
-
 
 class TestHandleSessionCompletion:
     """Test the handle_session_completion method."""
@@ -2544,14 +2499,14 @@ class TestNamingConventions:
 
     def test_get_worktree_path(self, sample_config, tmp_path):
         """Test worktree path derivation."""
-        # Set up config with known repo_root
+        # Set up config with known repo_root and worktree_base
         repo_root = tmp_path / "my-repo"
         repo_root.mkdir()
         sample_config.repo_root = repo_root
+        sample_config.worktree_base = tmp_path / "worktrees"  # Top-level worktree_base
 
         agent_config = AgentConfig(
             prompt_path=tmp_path / "prompt.txt",
-            worktree_base=tmp_path / "worktrees",
             model="sonnet",
             timeout_minutes=45,
         )
@@ -2560,31 +2515,6 @@ class TestNamingConventions:
         path = orchestrator._get_worktree_path(123, agent_config)
 
         assert path == tmp_path / "worktrees" / "my-repo-123"
-
-    def test_get_worktree_path_uses_agent_repo_root(self, sample_config, tmp_path):
-        """Test that agent-specific repo_root is used when set."""
-        # Global repo_root
-        global_repo = tmp_path / "global-repo"
-        global_repo.mkdir()
-        sample_config.repo_root = global_repo
-
-        # Agent-specific repo_root
-        agent_repo = tmp_path / "agent-repo"
-        agent_repo.mkdir()
-
-        agent_config = AgentConfig(
-            prompt_path=tmp_path / "prompt.txt",
-            worktree_base=tmp_path / "worktrees",
-            model="sonnet",
-            timeout_minutes=45,
-            repo_root=agent_repo,
-        )
-
-        orchestrator = create_test_orchestrator(sample_config)
-        path = orchestrator._get_worktree_path(456, agent_config)
-
-        # Should use agent repo name, not global
-        assert path == tmp_path / "worktrees" / "agent-repo-456"
 
 
 class TestDeferredCleanup:
@@ -2881,11 +2811,10 @@ class TestRecoverOrphanedCleanups:
         sample_config.triage_reviewed_label = "triage-reviewed"
         sample_config.cleanup.with_triage.remove_worktrees = True
 
-        # Create agent config with worktree base
+        # Create worktree base (now on config, not agent)
         worktree_base = tmp_path / "worktrees"
         worktree_base.mkdir()
-        agent_config = sample_config.agents["agent:web"]
-        agent_config.worktree_base = worktree_base
+        sample_config.worktree_base = worktree_base
 
         # Create orphaned worktree
         orphaned_worktree = worktree_base / "my-repo-123"
@@ -2923,11 +2852,10 @@ class TestRecoverOrphanedCleanups:
         sample_config.triage_review_agent = "agent:triage"
         sample_config.triage_reviewed_label = "triage-reviewed"
 
-        # Create agent config with worktree base
+        # Create worktree base (now on config, not agent)
         worktree_base = tmp_path / "worktrees"
         worktree_base.mkdir()
-        agent_config = sample_config.agents["agent:web"]
-        agent_config.worktree_base = worktree_base
+        sample_config.worktree_base = worktree_base
 
         # Create worktree
         worktree = worktree_base / "my-repo-123"

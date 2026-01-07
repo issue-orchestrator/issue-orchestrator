@@ -105,13 +105,18 @@ async def run(
     logger.info("Building orchestrator...")
     orchestrator = build_orchestrator(config)
 
-    # Handle signals
-    def handle_signal(signum, frame):
-        logger.info("Received signal %d, requesting shutdown", signum)
-        orchestrator.request_shutdown()
+    # Import here to avoid circular import at module level
+    from .web import trigger_server_shutdown
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+    # Set up asyncio-safe signal handlers (must be done inside running event loop)
+    def handle_signal():
+        logger.info("Received shutdown signal, requesting shutdown")
+        orchestrator.request_shutdown()
+        trigger_server_shutdown()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, handle_signal)
 
     # Run with web dashboard
     logger.info("Starting orchestrator on port %d", port)

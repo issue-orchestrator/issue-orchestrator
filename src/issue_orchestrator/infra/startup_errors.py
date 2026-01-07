@@ -148,8 +148,8 @@ def bootstrap_error_no_config() -> StartupError:
     return StartupError(
         phase="bootstrap",
         message="No configuration file found",
-        suggested_fix="Run: issue-orch init",
-        details="Searched for .issue-orchestrator.yaml in current directory",
+        suggested_fix="Run: issue-orchestrator setup",
+        details="Searched for config in .issue-orchestrator/config/",
     )
 
 
@@ -158,7 +158,7 @@ def bootstrap_error_invalid_config(error: str) -> StartupError:
     return StartupError(
         phase="bootstrap",
         message="Configuration file is invalid",
-        suggested_fix="Check .issue-orchestrator.yaml for syntax errors",
+        suggested_fix="Check your config file in .issue-orchestrator/config/ for syntax errors",
         details=error,
     )
 

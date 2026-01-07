@@ -64,6 +64,7 @@ class OrchestratorProcess:
         data = {
             "repo": self.config.repo,
             "repo_root": str(self.config.repo_root),
+            "worktree_base": str(self.config.worktree_base),
             "filter_label": self.config.filter_label,
             "github_token_env": self.config.github_token_env,
             "ui_mode": self.config.ui_mode,
@@ -86,13 +87,11 @@ class OrchestratorProcess:
             "agents": {
                 label: {
                     "prompt": str(cfg.prompt_path),
-                    "worktree_base": str(cfg.worktree_base),
                     "model": cfg.model,
                     "timeout_minutes": cfg.timeout_minutes,
                     "permission_mode": cfg.permission_mode,
                     "command": cfg.command,
                     "meta_agent": cfg.meta_agent,
-                    "repo_root": str(self.config.repo_root),
                 }
                 for label, cfg in self.config.agents.items()
             },

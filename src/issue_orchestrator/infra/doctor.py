@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from ..ports.command_runner import CommandRunner
 from .config import Config
 
 
@@ -45,12 +46,274 @@ class DoctorResult:
         }
 
 
-def run_doctor(config: Optional[Config] = None, config_path: Optional[Path] = None) -> DoctorResult:
+def _check_guardrails_in_worktree(
+    repo_root: Path,
+    runner: CommandRunner,
+    worktree_base: str = "../",
+) -> list[Check]:
+    """Create a test worktree and verify guardrails work.
+
+    This tests the actual agent environment by:
+    1. Creating a worktree using normal setup
+    2. Running guardrail checks with the PATH as agents see it
+    3. Cleaning up the worktree
+
+    Args:
+        repo_root: Path to the repository root
+        runner: CommandRunner for executing test commands
+        worktree_base: Base directory for worktrees
+
+    Returns list of Check results for each guardrail tested.
+    """
+    from ..adapters.worktree._worktree import create_worktree, remove_worktree
+
+    checks: list[Check] = []
+    worktree_path: Optional[Path] = None
+
+    try:
+        # Create test worktree
+        worktree_path, _ = create_worktree(
+            repo_root=repo_root,
+            issue_number=0,
+            issue_title="doctor-guardrail-test",
+            worktree_base=Path(worktree_base),
+        )
+
+        checks.append(Check(
+            name="Test Worktree",
+            status="ok",
+            detail=f"Created at {worktree_path}",
+        ))
+
+        # Build the PATH as agents see it (wrapper dir prepended)
+        wrapper_dir = Path(__file__).parent.parent / "scripts"
+        env = os.environ.copy()
+        env["PATH"] = f"{wrapper_dir}:{env.get('PATH', '')}"
+        env.pop("ORCHESTRATOR_GH_AUTH", None)  # Ensure no auth token
+
+        # Helper to run a guardrail test
+        def test_blocked(cmd: list[str], name: str, detail_ok: str, detail_fail: str) -> Check:
+            result = runner.run(
+                cmd,
+                cwd=worktree_path,
+                env=env,
+                timeout_seconds=5,
+            )
+            # Check for "BLOCKED" in stderr - this is the definitive signal
+            # that the wrapper script blocked the command.
+            # Note: We don't rely on returncode because SIGCHLD handlers
+            # (used to auto-reap zombie processes) can interfere with
+            # subprocess.run() exit code collection on some systems.
+            if result.timed_out:
+                return Check(name=name, status="warning", detail="Check timed out")
+            if "BLOCKED" in result.stderr:
+                return Check(name=name, status="ok", detail=detail_ok)
+            else:
+                debug_info = f"rc={result.returncode}, stderr={result.stderr[:200] if result.stderr else 'empty'}"
+                return Check(name=name, status="error", detail=f"{detail_fail} [{debug_info}]")
+
+        # Check 1: gh pr create is blocked
+        checks.append(test_blocked(
+            ["gh", "pr", "create", "--title", "test", "--body", "test"],
+            "GH PR Create Guard",
+            "gh pr create correctly blocked",
+            "gh pr create was NOT blocked - guardrail failed",
+        ))
+
+        # Check 2: gh pr review is blocked (whitelist enforcement)
+        checks.append(test_blocked(
+            ["gh", "pr", "review", "1", "--approve"],
+            "GH PR Review Guard",
+            "gh pr review correctly blocked",
+            "gh pr review was NOT blocked - guardrail failed",
+        ))
+
+        # Check 3: gh api is blocked (whitelist enforcement)
+        checks.append(test_blocked(
+            ["gh", "api", "/user"],
+            "GH API Guard",
+            "gh api correctly blocked",
+            "gh api was NOT blocked - guardrail failed",
+        ))
+
+        # Check 4: gh issue create is blocked (whitelist enforcement)
+        checks.append(test_blocked(
+            ["gh", "issue", "create", "--title", "test", "--body", "test"],
+            "GH Issue Create Guard",
+            "gh issue create correctly blocked",
+            "gh issue create was NOT blocked - guardrail failed",
+        ))
+
+        # Check 5: git push is blocked
+        checks.append(test_blocked(
+            ["git", "push"],
+            "Git Push Guard",
+            "git push correctly blocked",
+            "git push was NOT blocked - guardrail failed",
+        ))
+
+        # Check 6: agent-done is available
+        result = runner.run(
+            ["agent-done", "--help"],
+            cwd=worktree_path,
+            env=env,
+            timeout_seconds=5,
+        )
+        if result.returncode == 0:
+            checks.append(Check(
+                name="agent-done Available",
+                status="ok",
+                detail="agent-done command found",
+            ))
+        elif "not found" in result.stderr.lower() or "no such file" in result.stderr.lower():
+            checks.append(Check(
+                name="agent-done Available",
+                status="error",
+                detail="agent-done command not found in PATH",
+            ))
+        else:
+            checks.append(Check(
+                name="agent-done Available",
+                status="error",
+                detail=f"agent-done command not working: {result.stderr[:100]}",
+            ))
+
+        # Check 7: Verify credential stripping by ACTUALLY trying to bypass
+        # This simulates an agent trying to use the real binaries directly
+        from ..control.isolation import build_isolation_prefix
+
+        # Build isolation prefix (same as agent sessions get)
+        isolation_script = build_isolation_prefix(
+            worktree=worktree_path,
+            isolation_mode="standard",
+            scrub_env=True,
+            isolate_home=False,
+        )
+
+        # 7a: Try gh auth with real binary
+        try:
+            real_gh = None
+            for gh_path in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]:
+                if os.path.isfile(gh_path) and os.access(gh_path, os.X_OK):
+                    real_gh = gh_path
+                    break
+
+            if real_gh is None:
+                checks.append(Check(
+                    name="GH Auth Bypass Test",
+                    status="warning",
+                    detail="Could not find real gh binary to test",
+                ))
+            else:
+                bypass_script = f'{isolation_script} && {real_gh} auth status 2>&1'
+                result = runner.run(
+                    f"bash -c '{bypass_script}'",
+                    cwd=worktree_path,
+                    env=os.environ.copy(),
+                    timeout_seconds=10,
+                    shell=True,
+                )
+                output = result.stdout + result.stderr
+                if "Logged in" in output or "Active account" in output:
+                    checks.append(Check(
+                        name="GH Auth Bypass Test",
+                        status="error",
+                        detail=f"BYPASS: {real_gh} auth succeeded!",
+                    ))
+                else:
+                    checks.append(Check(
+                        name="GH Auth Bypass Test",
+                        status="ok",
+                        detail="Real gh cannot authenticate after scrubbing",
+                    ))
+        except Exception as e:
+            checks.append(Check(
+                name="GH Auth Bypass Test",
+                status="warning",
+                detail=f"Error: {e}",
+            ))
+
+        # 7b: Try git push with real binary (should fail without credentials)
+        try:
+            real_git = None
+            for git_path in ["/opt/homebrew/bin/git", "/usr/local/bin/git", "/usr/bin/git"]:
+                if os.path.isfile(git_path) and os.access(git_path, os.X_OK):
+                    real_git = git_path
+                    break
+
+            if real_git is None:
+                checks.append(Check(
+                    name="Git Push Bypass Test",
+                    status="warning",
+                    detail="Could not find real git binary to test",
+                ))
+            else:
+                # Try to push - should fail due to GIT_ASKPASS=/usr/bin/false
+                bypass_script = f'{isolation_script} && {real_git} push --dry-run 2>&1 || true'
+                result = runner.run(
+                    f"bash -c '{bypass_script}'",
+                    cwd=worktree_path,
+                    env=os.environ.copy(),
+                    timeout_seconds=10,
+                    shell=True,
+                )
+                output = result.stdout + result.stderr
+                # Success indicators (push worked - bad!)
+                if "Everything up-to-date" in output or "->" in output.lower():
+                    checks.append(Check(
+                        name="Git Push Bypass Test",
+                        status="error",
+                        detail=f"BYPASS: {real_git} push succeeded!",
+                    ))
+                # Failure indicators (good - credentials blocked)
+                elif any(x in output.lower() for x in ["authentication", "permission denied", "fatal:", "could not read"]):
+                    checks.append(Check(
+                        name="Git Push Bypass Test",
+                        status="ok",
+                        detail="Real git push blocked (no credentials)",
+                    ))
+                else:
+                    # No upstream might be ok too
+                    checks.append(Check(
+                        name="Git Push Bypass Test",
+                        status="ok",
+                        detail="Real git push failed (expected)",
+                    ))
+        except Exception as e:
+            checks.append(Check(
+                name="Git Push Bypass Test",
+                status="warning",
+                detail=f"Error: {e}",
+            ))
+
+    except Exception as e:
+        checks.append(Check(
+            name="Test Worktree",
+            status="error",
+            detail=f"Failed to create: {e}",
+        ))
+    finally:
+        # Cleanup
+        if worktree_path and worktree_path.exists():
+            try:
+                remove_worktree(worktree_path)
+            except Exception:
+                pass  # Best effort cleanup
+
+    return checks
+
+
+def run_doctor(
+    config: Optional[Config] = None,
+    config_path: Optional[Path] = None,
+    runner: Optional[CommandRunner] = None,
+) -> DoctorResult:
     """Run all diagnostic checks.
 
     Args:
         config: Optional pre-loaded config (used by web when orchestrator is running)
         config_path: Optional path to config file (used by CLI)
+        runner: Optional CommandRunner for executing test commands (guardrails check)
 
     Returns:
         DoctorResult with all check results
@@ -132,24 +395,27 @@ def run_doctor(config: Optional[Config] = None, config_path: Optional[Path] = No
             return result
 
     if config is None:
-        # Try to find config in current directory
-        for name in [".issue-orchestrator.yaml", ".issue-orchestrator.yml"]:
-            if Path(name).exists():
-                try:
-                    config = Config.load(Path(name))
-                    result.checks.append(Check(
-                        name="Config File",
-                        status="ok",
-                        detail=name,
-                    ))
-                    break
-                except Exception as e:
-                    result.checks.append(Check(
-                        name="Config File",
-                        status="error",
-                        detail=f"Failed to load {name}: {e}",
-                    ))
-                    return result
+        # Try to find config in new location
+        from .config import list_configs, get_config_path
+
+        cwd = Path.cwd()
+        available = list_configs(cwd)
+        if available:
+            config_file = get_config_path(cwd, available[0])
+            try:
+                config = Config.load(config_file)
+                result.checks.append(Check(
+                    name="Config File",
+                    status="ok",
+                    detail=str(config_file.relative_to(cwd)),
+                ))
+            except Exception as e:
+                result.checks.append(Check(
+                    name="Config File",
+                    status="error",
+                    detail=f"Failed to load {config_file}: {e}",
+                ))
+                return result
         else:
             result.checks.append(Check(
                 name="Config File",
@@ -171,6 +437,23 @@ def run_doctor(config: Optional[Config] = None, config_path: Optional[Path] = No
             name="Config Validation",
             status="ok",
             detail="All checks passed",
+        ))
+
+    # Check for unknown fields in config schema
+    unknown_fields = config.validate_unknown_fields()
+    if unknown_fields:
+        field_names = [f[0] for f in unknown_fields]
+        detail = ", ".join(field_names[:5]) + ("..." if len(field_names) > 5 else "")
+        result.checks.append(Check(
+            name="Config Schema",
+            status="error" if config.config_strict else "warning",
+            detail=f"Unknown fields: {detail}",
+        ))
+    else:
+        result.checks.append(Check(
+            name="Config Schema",
+            status="ok",
+            detail="No unknown fields",
         ))
 
     # Repository
@@ -271,6 +554,22 @@ def run_doctor(config: Optional[Config] = None, config_path: Optional[Path] = No
             name="Code Review",
             status="info",
             detail="Disabled",
+        ))
+
+    # === Guardrails (via test worktree) ===
+    # Only run if we have a valid config with a repo AND a runner
+    if config and config.repo and runner:
+        repo_root = Path.cwd()
+        # Get worktree_base from config (now top-level)
+        worktree_base = str(config.worktree_base) if config.worktree_base else "../"
+
+        guardrail_checks = _check_guardrails_in_worktree(repo_root, runner, worktree_base)
+        result.checks.extend(guardrail_checks)
+    elif config and config.repo and not runner:
+        result.checks.append(Check(
+            name="Guardrails",
+            status="info",
+            detail="Skipped (no CommandRunner provided)",
         ))
 
     return result

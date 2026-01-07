@@ -893,10 +893,10 @@ class TestSchedulerDependencyGating:
         return Config(
             repo="test/repo",
             repo_root=Path("/tmp/test"),
+            worktree_base=Path("/tmp"),  # Top-level worktree_base
             agents={
                 "claude": AgentConfig(
                     prompt_path=Path("/tmp/prompt.txt"),
-                    worktree_base=Path("/tmp"),
                 ),
             },
             max_concurrent_sessions=3,
@@ -1194,7 +1194,8 @@ class TestLaunchSessionDependencyCAS:
         config = MagicMock(spec=Config)
         config.repo = "test/repo"
         config.repo_root = "/tmp"
-        config.agents = {"agent:backend": MagicMock(repo_root="/tmp", worktree_base=None)}
+        config.worktree_base = "/tmp"  # Top-level worktree_base
+        config.agents = {"agent:backend": MagicMock()}  # No per-agent worktree_base/repo_root
         config.setup_worktree = None
 
         # Create a mock repository host
@@ -1257,7 +1258,8 @@ class TestLaunchSessionDependencyCAS:
         config = MagicMock(spec=Config)
         config.repo = "test/repo"
         config.repo_root = "/tmp/repo"
-        config.agents = {"agent:backend": MagicMock(repo_root="/tmp", worktree_base=None)}
+        config.worktree_base = "/tmp"  # Top-level worktree_base
+        config.agents = {"agent:backend": MagicMock()}  # No per-agent worktree_base/repo_root
         config.setup_worktree = None
 
         # Create a mock repository host

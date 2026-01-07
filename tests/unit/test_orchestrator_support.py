@@ -112,7 +112,6 @@ def sample_agent_config(tmp_path):
     prompt_path.write_text("Test prompt")
     return AgentConfig(
         prompt_path=prompt_path,
-        worktree_base=tmp_path,
         model="sonnet",
         timeout_minutes=45,
     )
@@ -139,7 +138,6 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = 
         issue=issue,
         agent_config=AgentConfig(
             prompt_path=Path("/tmp/prompt.md"),
-            worktree_base=Path("/tmp"),
         ),
         terminal_id=f"session-{issue.number}",
         worktree_path=worktree,

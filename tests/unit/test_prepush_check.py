@@ -53,7 +53,9 @@ validation:
 
     def test_returns_cmd_when_fully_configured(self, temp_worktree):
         """Test returns command when fully configured."""
-        config_path = temp_worktree / ".issue-orchestrator" / "config.yaml"
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
   publish_gate:
@@ -69,7 +71,9 @@ validation_policy:
 
     def test_uses_default_timeout(self, temp_worktree):
         """Test uses default timeout when not specified."""
-        config_path = temp_worktree / ".issue-orchestrator" / "config.yaml"
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
   publish_gate:
@@ -136,9 +140,9 @@ class TestRunPrepushCheck:
         import os
 
         # Create config with passing command
-        config_dir = temp_worktree / ".issue-orchestrator"
-        config_dir.mkdir()
-        config_path = config_dir / "config.yaml"
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
   publish_gate:
@@ -161,9 +165,9 @@ validation_policy:
         import os
 
         # Create config with failing command
-        config_dir = temp_worktree / ".issue-orchestrator"
-        config_dir.mkdir()
-        config_path = config_dir / "config.yaml"
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
   publish_gate:
@@ -186,10 +190,10 @@ validation_policy:
         import os
 
         # Create config with command that creates a file (to track runs)
-        config_dir = temp_worktree / ".issue-orchestrator"
-        config_dir.mkdir()
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
         marker_file = temp_worktree / "validation_ran"
-        config_path = config_dir / "config.yaml"
+        config_path = config_dir / "default.yaml"
         config_path.write_text(f"""
 validation:
   publish_gate:

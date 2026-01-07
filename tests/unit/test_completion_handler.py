@@ -68,7 +68,6 @@ def agent_config(tmp_path: Path) -> AgentConfig:
     """Create a minimal agent config."""
     return AgentConfig(
         prompt_path=tmp_path / "prompt.txt",
-        worktree_base=tmp_path,
         timeout_minutes=45,
     )
 

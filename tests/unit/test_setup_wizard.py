@@ -131,43 +131,49 @@ class TestCreateTriageReviewPrompt:
 
         # Check gh commands have correct labels
         assert 'gh pr list --label "my-review-label"' in content
-        assert '--remove-label "my-review-label"' in content
-        assert '--add-label "my-reviewed-label"' in content
+        # Orchestrator handles label updates via agent-done workflow
+        assert "my-review-label" in content
+        assert "my-reviewed-label" in content
 
-    def test_preserves_template_variables(self, tmp_path):
-        """Test that issue_number and issue_title placeholders are preserved."""
+    def test_substitutes_label_variables(self, tmp_path):
+        """Test that label placeholders are substituted with actual values."""
         prompt_path = tmp_path / "triage.md"
 
         create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
-        # These should remain as template variables for runtime substitution
-        assert "{issue_number}" in content
-        assert "{issue_title}" in content
+        # Label placeholders should be substituted
+        assert "{review_label}" not in content
+        assert "{reviewed_label}" not in content
+        # Actual labels should be present
+        assert "review" in content
+        assert "reviewed" in content
 
-    def test_includes_batch_review_workflow(self, tmp_path):
-        """Test that batch review workflow is included."""
+    def test_includes_review_workflow(self, tmp_path):
+        """Test that review workflow is included."""
         prompt_path = tmp_path / "triage.md"
 
         create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
-        assert "Batch Review" in content
-        assert "Triage Audit Report" in content
-        assert "PRs Audited" in content
-        assert "Patterns Observed" in content
+        assert "Review Process" in content
+        assert "Document Your Findings" in content
+        assert "Patterns observed" in content
+        assert "Audit Principles" in content
 
-    def test_includes_single_issue_review(self, tmp_path):
-        """Test that single issue review workflow is included."""
+    def test_includes_pr_investigation_steps(self, tmp_path):
+        """Test that PR investigation steps are included."""
         prompt_path = tmp_path / "cto.md"
 
         create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
-        assert "Single Issue Review" in content
+        assert "gh pr view" in content
+        assert "gh pr diff" in content
+        assert "For Each PR" in content
 
     def test_includes_agent_done_completion(self, tmp_path):
         """Test that agent-done completion instructions are included."""
@@ -325,7 +331,9 @@ class TestFindExistingConfig:
 
     def test_finds_config_in_current_dir(self, tmp_path):
         """Test finding config in current directory."""
-        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "default.yaml"
         config_file.write_text("repo: owner/repo\nagents: {}")
 
         path, config = find_existing_config(tmp_path)
@@ -334,10 +342,10 @@ class TestFindExistingConfig:
         assert config["repo"] == "owner/repo"
 
     def test_finds_config_in_hidden_dir(self, tmp_path):
-        """Test finding config in .issue-orchestrator directory."""
-        hidden_dir = tmp_path / ".issue-orchestrator"
-        hidden_dir.mkdir()
-        config_file = hidden_dir / "config.yaml"
+        """Test finding config in .issue-orchestrator/config directory."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "custom.yaml"
         config_file.write_text("repo: owner/repo")
 
         path, config = find_existing_config(tmp_path)
@@ -352,20 +360,21 @@ class TestFindExistingConfig:
         assert config is None
 
     def test_prefers_root_over_hidden(self, tmp_path):
-        """Test that root config is preferred over hidden directory."""
-        # Create both configs
-        root_config = tmp_path / ".issue-orchestrator.yaml"
-        root_config.write_text("repo: root/repo")
+        """Test that default.yaml is preferred over other yaml files."""
+        # Create default config
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        default_config = config_dir / "default.yaml"
+        default_config.write_text("repo: default/repo")
 
-        hidden_dir = tmp_path / ".issue-orchestrator"
-        hidden_dir.mkdir()
-        hidden_config = hidden_dir / "config.yaml"
-        hidden_config.write_text("repo: hidden/repo")
+        # Create another yaml file
+        other_config = config_dir / "other.yaml"
+        other_config.write_text("repo: other/repo")
 
         path, config = find_existing_config(tmp_path)
 
-        assert path == root_config
-        assert config["repo"] == "root/repo"
+        assert path == default_config
+        assert config["repo"] == "default/repo"
 
 
 class TestScanExistingRepo:
@@ -423,6 +432,7 @@ class TestWizardNewProject:
             "claude",               # agent type
             "sonnet",               # model choice
             "default",              # permission mode
+            False,                  # is this a review agent?
             "",                     # empty to finish agents
             "3",                    # max concurrent sessions
             "due_date",             # milestone sort strategy
@@ -442,8 +452,46 @@ class TestWizardNewProject:
         assert config["agents"]["agent:backend"]["prompt"] == ".prompts/backend.md"
         assert config["agents"]["agent:backend"]["model"] == "sonnet"
         assert config["agents"]["agent:backend"]["timeout_minutes"] == 45
+        # Non-review agent gets work-oriented initial_prompt
+        assert "initial_prompt" in config["agents"]["agent:backend"]
+        assert "Work on issue" in config["agents"]["agent:backend"]["initial_prompt"]
+        assert "{pr_number}" not in config["agents"]["agent:backend"]["initial_prompt"]
         assert config["concurrency"]["max_concurrent_sessions"] == 3
         assert config["ui_mode"] == "web"
+
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
+    @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
+    def test_review_agent_gets_pr_number_in_prompt(self, mock_client_factory, mock_detect_repo):
+        """Test that review agents get initial_prompt with {pr_number}."""
+        mock_detect_repo.return_value = "owner/repo"
+        mock_client_factory.return_value = Mock()
+
+        prompter = MockPrompter([
+            "owner/repo",
+            "agent:reviewer",
+            ".prompts/reviewer.md",
+            "30",                   # timeout
+            "claude",               # agent type
+            "sonnet",               # model
+            "default",              # permission mode
+            True,                   # YES, this IS a review agent
+            "",                     # finish agents
+            "3",
+            "due_date",
+            "M0",
+            "../",
+            "web",
+            "8080",
+            "io",
+            False,
+        ])
+
+        config = wizard_new_project(prompter)
+
+        # Review agent gets review-oriented initial_prompt with pr_number
+        assert "initial_prompt" in config["agents"]["agent:reviewer"]
+        assert "Review PR" in config["agents"]["agent:reviewer"]["initial_prompt"]
+        assert "{pr_number}" in config["agents"]["agent:reviewer"]["initial_prompt"]
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
@@ -461,6 +509,7 @@ class TestWizardNewProject:
             "claude",               # agent type
             "opus",                 # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             "",                     # finish agents
             False,                  # don't create labels
             "2",                    # max concurrent
@@ -493,6 +542,7 @@ class TestWizardNewProject:
             "claude",               # agent type
             "sonnet",               # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             # Second agent
             "agent:backend",
             ".prompts/backend.md",
@@ -501,6 +551,7 @@ class TestWizardNewProject:
             "opus",                 # model
             "bypassPermissions",    # permission mode (different for variety)
             True,                   # confirm bypassPermissions
+            False,                  # is this a review agent?
             # Finish
             "",
             "5",                    # max concurrent
@@ -535,6 +586,7 @@ class TestWizardNewProject:
             "30",                   # timeout
             "custom",               # agent type (custom command)
             "my-agent --issue {issue_number} --prompt {prompt}",  # custom command
+            False,                  # is this a review agent?
             "",                     # finish agents
             False,                  # don't create labels
             "3",
@@ -570,6 +622,7 @@ class TestWizardNewProject:
             "claude",               # agent type
             "sonnet",               # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             "",                     # finish agents
             False,                  # don't create labels
             "3",
@@ -618,6 +671,7 @@ class TestWizardNewProject:
             "claude",               # agent type
             "sonnet",               # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             "",                     # finish
             False,                  # don't create labels
             "3",
@@ -662,6 +716,7 @@ class TestWizardExistingProject:
             "claude",               # agent type
             "sonnet",               # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             "3",                    # max concurrent
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
@@ -712,6 +767,7 @@ class TestWizardExistingProject:
             "claude",               # agent type
             "opus",                 # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             # No more missing agents
             # agent:web is in config but let's say it's in github_labels too (no missing labels)
             # Concurrency already configured - won't ask
@@ -808,6 +864,7 @@ class TestWizardExistingProject:
             "claude",               # agent type
             "sonnet",               # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             # Concurrency (fresh config needs this)
             "2",
             # Milestone sort (fresh config needs this)
@@ -850,6 +907,7 @@ class TestWizardExistingProject:
             "3",                    # concurrency
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
+            "../",                  # worktree base (now top-level config)
             "web",                  # ui mode
             "8080",                 # port (since web mode)
             "io",                   # label prefix
@@ -889,6 +947,7 @@ class TestRunWizard:
             "claude",               # agent type
             "sonnet",               # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             "",                     # finish agents
             "3",
             "due_date",             # milestone sort strategy
@@ -931,6 +990,7 @@ class TestRunWizard:
             "claude",               # agent type
             "sonnet",               # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             "",
             "3",
             "due_date",             # milestone sort strategy
@@ -1001,6 +1061,7 @@ class TestRunWizard:
             "claude",               # agent type
             "sonnet",               # model
             "default",              # permission mode
+            False,                  # is this a review agent?
             "",
             "3",
             "due_date",             # milestone sort strategy
@@ -1144,6 +1205,7 @@ class TestDryRunMode:
             "claude",
             "sonnet",
             "default",
+            False,  # is this a review agent?
             "",  # finish agents
             "3",
             "due_date",
@@ -1184,16 +1246,16 @@ class TestDryRunMode:
             "claude",
             "sonnet",
             "default",
-            "",
-            False,
+            False,  # is this a review agent?
+            "",     # finish agents
             "3",
             "due_date",
             "M0",  # foundation milestone
             "../",
             "web",
             "8080",
-            "",
-            False,
+            "io",   # label prefix
+            False,  # no review workflow
         ])
 
         with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):

@@ -135,11 +135,8 @@ def cmd_start(args: argparse.Namespace) -> int:
 
         # Switch to repo-scoped logging now that we know the repo root
         log_file: Path | None = None
-        if config.config_path and isinstance(config.config_path, Path):
-            repo_root = config.config_path.parent
-            if repo_root.name == ".issue-orchestrator":
-                repo_root = repo_root.parent
-            log_file = setup_logging(level=log_level, console_output=no_dashboard, repo_root=repo_root)
+        if config.repo_root:
+            log_file = setup_logging(level=log_level, console_output=no_dashboard, repo_root=config.repo_root)
 
         if debug and log_file:
             console.print(f"[dim]Debug logging enabled (tail -f {log_file})[/dim]")
@@ -152,6 +149,23 @@ def cmd_start(args: argparse.Namespace) -> int:
                 console.print(f"  [red]• {error}[/red]")
                 logging.error(f"Config validation: {error}")
             return 1
+
+        # Run doctor checks including guardrails - fail fast if environment is broken
+        from ..infra.doctor import run_doctor
+        from ..execution.command_runner import LocalCommandRunner
+        doctor_result = run_doctor(config=config, runner=LocalCommandRunner())
+        if doctor_result.overall == "error":
+            console.print("[red]Startup checks failed:[/red]")
+            for check in doctor_result.checks:
+                if check.status == "error":
+                    console.print(f"  [red]✗ {check.name}: {check.detail}[/red]")
+                    logging.error(f"Doctor check failed: {check.name}: {check.detail}")
+            console.print("\n[yellow]Run 'issue-orchestrator doctor' for full diagnostics[/yellow]")
+            return 1
+        elif doctor_result.overall == "warning":
+            for check in doctor_result.checks:
+                if check.status == "warning":
+                    console.print(f"  [yellow]⚠ {check.name}: {check.detail}[/yellow]")
 
         logger.info(
             "Effective config: repo=%s config_path=%s filter_label=%s ui_mode=%s web_port=%s api_port=%s "
@@ -192,12 +206,12 @@ def cmd_start(args: argparse.Namespace) -> int:
         override_pairs = getattr(args, "set", None) or []
         if override_pairs:
             logger.debug("CLI overrides: %s", override_pairs)
+        logger.debug("Config worktree_base=%s", config.worktree_base)
         for label, agent in config.agents.items():
             logger.debug(
-                "Agent config: label=%s prompt=%s worktree_base=%s model=%s timeout=%s command=%s permission_mode=%s",
+                "Agent config: label=%s prompt=%s model=%s timeout=%s command=%s permission_mode=%s",
                 label,
                 agent.prompt_path,
-                agent.worktree_base,
                 agent.model,
                 agent.timeout_minutes,
                 agent.command,
@@ -207,7 +221,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     except FileNotFoundError as e:
         logging.error(f"Config not found: {e}")
         console.print(f"[red]Error: {e}[/red]")
-        console.print("Create a .issue-orchestrator.yaml config file first.")
+        console.print("No config found. Run 'issue-orchestrator setup' to create one.")
         return 1
     except Exception as e:
         logging.exception(f"Unexpected error loading config: {e}")
@@ -871,7 +885,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         config = _load_config(args)
     except FileNotFoundError as e:
         console.print(f"[red]Error: {e}[/red]")
-        console.print("Create a .issue-orchestrator.yaml config file first.")
+        console.print("No config found. Run 'issue-orchestrator setup' to create one.")
         return 1
 
     try:
@@ -1093,11 +1107,8 @@ def _load_config(args: argparse.Namespace) -> "Config":
     overrides = getattr(args, "set", None) or []
     if hasattr(args, 'config') and args.config:
         config_path = Path(args.config)
-        config = Config.load(config_path, overrides=overrides)
-        if not config.repo_root_from_yaml:
-            # Set repo_root to config file's parent directory
-            config.repo_root = config_path.parent.resolve()
-        return config
+        # Config.load() handles repo_root calculation properly
+        return Config.load(config_path, overrides=overrides)
     else:
         return Config.find_and_load(overrides=overrides)
 
@@ -1354,7 +1365,7 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:
         config = _load_config(args)
     except FileNotFoundError as e:
         console.print(f"[red]Error: {e}[/red]")
-        console.print("Create a .issue-orchestrator.yaml config file first.")
+        console.print("No config found. Run 'issue-orchestrator setup' to create one.")
         return 1
 
     # Detect meta-agents from config
@@ -1478,6 +1489,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from pathlib import Path
     from rich.console import Console
     from ..infra.doctor import run_doctor
+    from ..execution.command_runner import LocalCommandRunner
 
     console = Console()
     console.print("[bold]Issue Orchestrator Doctor[/bold]\n")
@@ -1488,7 +1500,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         config_path = Path(args.config)
 
     # Run diagnostics
-    result = run_doctor(config_path=config_path)
+    result = run_doctor(config_path=config_path, runner=LocalCommandRunner())
 
     # Display results
     for check in result.checks:
@@ -1643,7 +1655,8 @@ def cmd_demo(args: argparse.Namespace) -> int:
     config = Config(
         repo="demo/repo",
         repo_root=Path("."),
-        agents={"claude": AgentConfig(prompt_path=Path("prompt.txt"), worktree_base=Path("/tmp"))},
+        worktree_base=Path("/tmp"),
+        agents={"claude": AgentConfig(prompt_path=Path("prompt.txt"))},
         max_concurrent_sessions=2,
     )
 
@@ -1734,7 +1747,7 @@ def main() -> int:
         "--config", "-c",
         type=str,
         default=None,
-        help="Path to config file (default: search for .issue-orchestrator.yaml)"
+        help="Path to config file (default: .issue-orchestrator/config/default.yaml)"
     )
     parser.add_argument(
         "--set",

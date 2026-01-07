@@ -13,7 +13,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
+import threading
+import time
+import webbrowser
 
 import uvicorn
 
@@ -22,8 +26,21 @@ from .control_api import control_app
 logger = logging.getLogger(__name__)
 
 
+def _open_browser(url: str, delay: float = 1.0) -> None:
+    """Open browser after a short delay to let server start."""
+    time.sleep(delay)
+    webbrowser.open(url)
+
+
 def main() -> int:
     """Run the standalone control center server."""
+    # Auto-reap zombie child processes.
+    # When orchestrators are started via supervisor.start(), they become children
+    # of this process. When they exit (e.g., via /api/shutdown), they become zombies
+    # until we call wait(). Setting SIGCHLD to SIG_IGN auto-reaps them.
+    if hasattr(signal, "SIGCHLD"):  # Unix only
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+
     parser = argparse.ArgumentParser(
         description="Issue Orchestrator Control Center - manage orchestrators",
     )
@@ -44,6 +61,11 @@ def main() -> int:
         action="store_true",
         help="Enable debug logging",
     )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Don't open browser automatically",
+    )
 
     args = parser.parse_args()
 
@@ -54,8 +76,14 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    print(f"Starting Control Center on http://{args.host}:{args.port}/")
+    url = f"http://{args.host}:{args.port}/"
+    print(f"Starting Control Center on {url}")
     print("Press Ctrl+C to stop")
+
+    # Open browser in background thread after server starts
+    if not args.no_browser:
+        thread = threading.Thread(target=_open_browser, args=(url,), daemon=True)
+        thread.start()
 
     try:
         uvicorn.run(

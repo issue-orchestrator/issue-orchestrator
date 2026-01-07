@@ -64,7 +64,6 @@ def _make_session(worktree: Path, timeout_minutes: int = 1) -> Session:
     issue = Issue(number=1, title="Timeout test", labels=["test"])
     agent_config = AgentConfig(
         prompt_path=worktree / "prompt.md",
-        worktree_base=worktree.parent,
         timeout_minutes=timeout_minutes,
     )
     issue_key = FakeIssueKey(name="1")

@@ -4,6 +4,7 @@
 # Tests the rework cycle and escalation flow.
 
 repo: BruceBGordon/issue-orchestrator
+worktree_base: "/tmp/e2e-worktrees"
 
 filter_label: test-data
 control_api_port: 19082
@@ -19,8 +20,6 @@ agents:
     prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
     meta_agent: "claude-code"
     timeout_minutes: 1
-    worktree_base: "/tmp/e2e-worktrees"
-    repo_root: "../../../"
 
   # Script that always requests changes (for testing rework cycles)
   "agent:script-rejects":
@@ -28,8 +27,6 @@ agents:
     prompt: "tests/e2e/fixtures/scripts/always-reject.sh"
     meta_agent: "claude-code"
     timeout_minutes: 1
-    worktree_base: "/tmp/e2e-worktrees"
-    repo_root: "../../../"
 
 concurrency:
   max_concurrent_sessions: 1

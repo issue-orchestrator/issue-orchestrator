@@ -22,7 +22,7 @@ This document defines the authoritative data sources available to triage agents,
 
 | Source | Access | What It Tells You |
 |--------|--------|-------------------|
-| Config file | `cat .issue-orchestrator.yaml` or `cat .issue-orchestrator/config.yaml` | Agent definitions, timeouts, label names, review workflow |
+| Config file | `cat .issue-orchestrator/config/*.yaml` | Agent definitions, timeouts, label names, review workflow |
 | Agent prompts | `cat .issue-orchestrator/prompts/{agent}.md` or path from config | What agents are instructed to do |
 | Agent protocol | `cat AGENT_PROTOCOL.md` | How agents should signal completion |
 

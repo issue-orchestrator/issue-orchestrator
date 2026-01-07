@@ -29,6 +29,9 @@ _orchestrator: "Orchestrator | None" = None
 # Global reference to uvicorn server (for shutdown)
 _server: "Any" = None
 
+# Import shutdown manager for centralized exit handling
+from ..control.shutdown_manager import shutdown_manager
+
 # SSE event subscribers - set of asyncio.Queue objects
 _event_subscribers: set[asyncio.Queue] = set()
 
@@ -65,6 +68,7 @@ def trigger_server_shutdown():
     global _server
     if _server:
         _server.should_exit = True
+        _server.force_exit = True  # Don't wait for graceful shutdown
 
 
 # Template directory (templates are in parent package, not entrypoints)
@@ -77,6 +81,20 @@ def get_templates() -> Environment:
 
 
 QUEUE_PAGE_SIZE = 20
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Serve the logo as favicon."""
+    from fastapi.responses import Response
+
+    logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "logo.svg"
+    if logo_path.exists():
+        return Response(
+            content=logo_path.read_bytes(),
+            media_type="image/svg+xml",
+        )
+    return Response(status_code=204)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -599,10 +617,34 @@ async def shutdown(force: bool = False) -> JSONResponse:
     Args:
         force: If True, kill active sessions immediately instead of waiting.
     """
+    import threading
+
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
     _orchestrator.request_shutdown(force=force)
     active_count = len(_orchestrator.state.active_sessions)
+
+    # Request shutdown via centralized manager
+    shutdown_manager.request_shutdown(reason="API /api/shutdown")
+
+    # Broadcast shutdown event so any connected dashboards can update their UI
+    await broadcast_event("shutdown_requested", {"force": force, "active_sessions": active_count})
+
+    # Trigger uvicorn server shutdown so the process actually exits
+    trigger_server_shutdown()
+
+    # Schedule process exit after a minimal delay to allow the response to be sent
+    # and SSE event to be delivered.
+    # We use threading.Timer because:
+    # 1. asyncio tasks might not run if the event loop is blocked
+    # 2. BackgroundTasks requires FastAPI's dependency injection which isn't always available
+    # 3. Thread pool threads (like startup) can't be cancelled, so we must force exit
+    # The 0.2s delay allows the HTTP response and SSE event to be flushed.
+    timer = threading.Timer(0.2, shutdown_manager.exit)
+    timer.daemon = False  # Don't let the timer be killed when main thread exits
+    timer.start()
+
     return JSONResponse({
         "status": "force_shutdown" if force else "shutdown_requested",
         "active_sessions": active_count,
@@ -842,12 +884,13 @@ async def get_debug() -> JSONResponse:
 async def get_doctor() -> JSONResponse:
     """Run diagnostics and return health status."""
     from ..infra.doctor import run_doctor
+    from ..execution.command_runner import LocalCommandRunner
 
     # Get config from running orchestrator if available
     config = _orchestrator.config if _orchestrator else None
 
     # Run unified doctor
-    result = run_doctor(config=config)
+    result = run_doctor(config=config, runner=LocalCommandRunner())
 
     # Add orchestrator-specific check (only web knows if orchestrator is running)
     if _orchestrator:
@@ -972,8 +1015,13 @@ async def create_issue(request: Request) -> JSONResponse:
 
 
 def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """Check if a port is already in use."""
+    """Check if a port is already in use by another process.
+
+    Uses SO_REUSEADDR to ignore TIME_WAIT state - a port in TIME_WAIT
+    can still be bound by uvicorn (which also uses SO_REUSEADDR).
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
             return False
@@ -1086,6 +1134,7 @@ async def run_web_dashboard(
         host="127.0.0.1",
         port=port,
         log_level="warning",  # Reduce noise, we have our own logging
+        timeout_graceful_shutdown=0,  # Exit immediately when shutdown requested
     )
     server = uvicorn.Server(config)
     _server = server  # Store for shutdown access
@@ -1121,6 +1170,10 @@ async def run_with_web_dashboard(
         open_browser: If True, auto-open browser (default True)
     """
     import time
+
+    # Initialize shutdown manager with repo root for lock cleanup
+    if orchestrator.config.repo_root:
+        shutdown_manager.initialize(orchestrator.config.repo_root)
 
     def run_startup_sync():
         """Run startup synchronously in a thread.
@@ -1163,9 +1216,18 @@ async def run_with_web_dashboard(
         await run_web_dashboard(orchestrator, port, open_browser=open_browser)
     finally:
         # When web server stops, stop orchestrator
+        logger.info("[web] Shutting down orchestrator...")
         orchestrator._shutdown_requested = True
         orchestrator_task.cancel()
         try:
-            await orchestrator_task
-        except asyncio.CancelledError:
-            pass
+            # Give the task 2 seconds to clean up, then exit anyway
+            # (task may be stuck in synchronous GitHub API calls in thread pool)
+            await asyncio.wait_for(orchestrator_task, timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            logger.info("[web] Orchestrator task did not exit cleanly, forcing exit")
+
+        # Force exit - thread pool threads (e.g., startup) can't be cancelled
+        # and would keep the process alive indefinitely
+        logger.info("[web] Shutdown complete, exiting via shutdown_manager")
+        shutdown_manager.request_shutdown(reason="web server stopped")
+        shutdown_manager.exit()

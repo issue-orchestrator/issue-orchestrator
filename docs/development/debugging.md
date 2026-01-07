@@ -86,7 +86,7 @@ cat /tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/session.log
 
 ### Key Config Settings
 ```yaml
-# .issue-orchestrator.yaml
+# .issue-orchestrator/config/default.yaml
 agents:
   "agent:e2e-test":
     prompt: "tests/e2e/fixtures/prompts/e2e-test.md"  # Issue work prompt

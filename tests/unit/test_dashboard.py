@@ -67,7 +67,6 @@ def create_session(issue, worktree_path="/tmp/worktree", branch_name="feature/te
     """Helper to create Session objects for testing."""
     agent_config = AgentConfig(
         prompt_path=Path("/tmp/prompt.txt"),
-        worktree_base=Path("/tmp"),
         model="sonnet",
         timeout_minutes=45,
     )
@@ -94,9 +93,9 @@ def create_orchestrator(config=None):
     if config is None:
         config = Config()
         config.max_concurrent_sessions = 3
+        config.worktree_base = Path("/tmp")  # Top-level worktree_base
         agent_config = AgentConfig(
             prompt_path=Path("/tmp/prompt.txt"),
-            worktree_base=Path("/tmp"),
             model="sonnet",
             timeout_minutes=45,
         )

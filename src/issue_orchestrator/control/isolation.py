@@ -20,6 +20,7 @@ FORBIDDEN_ENV_VARS = [
     # GitHub tokens
     "GH_TOKEN",
     "GITHUB_TOKEN",
+    "ISSUE_ORCH_GITHUB_TOKEN",  # Orchestrator's own token
     "GH_ENTERPRISE_TOKEN",
     "GITHUB_ENTERPRISE_TOKEN",
     # GitHub App credentials

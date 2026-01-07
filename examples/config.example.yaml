@@ -1,5 +1,5 @@
 # Example issue-orchestrator configuration
-# Copy to your repo as .issue-orchestrator.yaml
+# Copy to your repo as .issue-orchestrator/config/default.yaml
 
 # Agent configurations - map issue labels to prompts
 agents:

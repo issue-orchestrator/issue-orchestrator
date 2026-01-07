@@ -298,7 +298,7 @@ For systemic problems found in failure analysis:
    - `agent:backend` - code changes, bug fixes
    - `agent:frontend` - UI/UX fixes
    - `agent:docs` - documentation updates
-   - Check `.issue-orchestrator.yaml` for available agents
+   - Check `.issue-orchestrator/config/` for available agents
 
 2. **Create the issue** with `blocked` + `triage-fix` + agent labels:
 ```bash

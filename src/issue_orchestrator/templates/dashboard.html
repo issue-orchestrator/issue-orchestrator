@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Issue Orchestrator</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Cpath d='M 32 90 Q 64 60, 96 90' fill='none' stroke='%236366f1' stroke-width='3' stroke-linecap='round' opacity='0.4'/%3E%3Cpath d='M 38 80 Q 64 55, 90 80' fill='none' stroke='%236366f1' stroke-width='3' stroke-linecap='round' opacity='0.6'/%3E%3Cpath d='M 44 70 Q 64 50, 84 70' fill='none' stroke='%236366f1' stroke-width='3' stroke-linecap='round' opacity='0.8'/%3E%3Ccircle cx='32' cy='96' r='6' fill='%2322c55e'/%3E%3Ccircle cx='64' cy='96' r='6' fill='%2322c55e'/%3E%3Ccircle cx='96' cy='96' r='6' fill='%2322c55e'/%3E%3Cline x1='40' y1='55' x2='88' y2='25' stroke='%231e293b' stroke-width='4' stroke-linecap='round'/%3E%3Ccircle cx='88' cy='25' r='4' fill='%231e293b'/%3E%3Cellipse cx='38' cy='58' rx='8' ry='5' fill='%231e293b' transform='rotate(-30 38 58)'/%3E%3C/svg%3E">
+    <link rel="icon" type="image/svg+xml" href="/favicon.ico">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -644,7 +644,7 @@
                 </span>
                 {% elif shutdown_requested %}
                 <span class="status-badge status-paused">
-                    Shutdown
+                    Stopped
                 </span>
                 {% elif paused and active_session_count > 0 %}
                 <span class="status-badge status-paused">
@@ -1181,6 +1181,22 @@
                     // Slight delay to let server state settle
                     setTimeout(() => window.location.reload(), 200);
                 });
+            });
+
+            // Listen for shutdown event (show shutdown message instead of reload)
+            evtSource.addEventListener('shutdown_requested', function(e) {
+                console.log('[SSE] Shutdown requested:', e.data);
+                // Update status badge to show stopping
+                const badge = document.querySelector('.status-badge');
+                if (badge) {
+                    badge.textContent = 'Stopping...';
+                    badge.classList.remove('status-running', 'status-starting');
+                    badge.classList.add('status-paused');
+                }
+                // After a brief delay, show shutdown message
+                setTimeout(() => {
+                    document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column;gap:16px;color:#8b949e;"><div style="font-size:48px;">👋</div><h2 style="color:#fff;">Orchestrator Stopped</h2><p>You can close this tab or wait for it to restart.</p></div>';
+                }, 500);
             });
 
             // Listen for queue changes (reload to update issue list)

@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Issue Orchestrator Control Center</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.ico">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -99,6 +100,7 @@
         .status-running .status-dot { background: #3fb950; }
         .status-stopped .status-dot { background: #8b949e; }
         .status-failed .status-dot { background: #f85149; }
+        .status-paused .status-dot { background: #d29922; }
         .repo-port { font-size: 13px; color: #8b949e; font-family: monospace; }
         .repo-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
         .repo-actions button { padding: 5px 10px; font-size: 11px; }
@@ -117,6 +119,15 @@
             color: #f85149;
             border-radius: 4px;
             margin-left: 8px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            font-size: 10px;
+            border-radius: 4px;
+            margin-left: 8px;
+            font-weight: 500;
         }
 
         .discovered-list {
@@ -375,6 +386,64 @@
 
         .doctor-check { padding: 8px 0; }
         .doctor-check-status { display: inline-block; width: 20px; }
+
+        /* Modal styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        .modal {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 24px;
+            min-width: 380px;
+            max-width: 450px;
+        }
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #fff;
+        }
+        .modal-body {
+            margin-bottom: 20px;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        .radio-group { margin: 16px 0; }
+        .radio-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: border-color 0.15s;
+        }
+        .radio-option:hover { border-color: #58a6ff; }
+        .radio-option.selected { border-color: #58a6ff; background: #0d1117; }
+        .radio-option input[type="radio"] {
+            margin-top: 3px;
+            accent-color: #58a6ff;
+        }
+        .radio-label { font-weight: 500; color: #c9d1d9; }
+        .radio-desc { font-size: 12px; color: #8b949e; margin-top: 2px; }
     </style>
 </head>
 <body>
@@ -409,7 +478,7 @@
                 </div>
                 <div class="card-body">
                     <div style="font-size:12px;color:#8b949e;margin-bottom:12px;">
-                        Repos with <code>.issue-orchestrator.yaml</code> not yet registered:
+                        Repos with <code>.issue-orchestrator/config/</code> not yet registered:
                     </div>
                     <div id="discoveredRepos" class="discovered-list">
                         <div class="empty-state" style="padding:24px;">Click "Scan" to find repositories</div>
@@ -431,7 +500,7 @@
                             <span>Actions</span>
                         </div>
                         <div id="repoRows">
-                            <div class="empty-state">Loading repositories...</div>
+                            <div class="loading-state" style="padding:16px;color:#8b949e;text-align:center;">Loading repositories...</div>
                         </div>
                     </div>
                 </div>
@@ -568,9 +637,10 @@
                                 prompt: `.issue-orchestrator/prompts/${label.split(':')[1]}.md`,
                                 model: 'sonnet',
                                 timeout_minutes: 45,
-                                worktree_base: '../',
                             };
                         }
+                        // Set worktree_base at top level
+                        newConfig.worktree_base = '../';
                     }
                     openSetupWizard(repoPath, null);  // Create new
                 }
@@ -612,9 +682,12 @@
                                     prompt: `.issue-orchestrator/prompts/${label.split(':')[1]}.md`,
                                     model: 'sonnet',
                                     timeout_minutes: 45,
-                                    worktree_base: '../',
                                 };
                             }
+                        }
+                        // Ensure worktree_base is set at top level
+                        if (!wizardState.config.worktree_base) {
+                            wizardState.config.worktree_base = '../';
                         }
                     }
                 } catch (err) {
@@ -832,8 +905,11 @@
                 prompt: `.issue-orchestrator/prompts/${shortName}.md`,
                 model: 'sonnet',
                 timeout_minutes: 45,
-                worktree_base: '../',
             };
+            // Ensure worktree_base is set at top level
+            if (!wizardState.config.worktree_base) {
+                wizardState.config.worktree_base = '../';
+            }
 
             input.value = '';
             document.getElementById('wizardBody').innerHTML = renderAgentsStep();
@@ -952,7 +1028,6 @@
                         prompt: '.issue-orchestrator/prompts/reviewer.md',
                         model: 'sonnet',
                         timeout_minutes: 30,
-                        worktree_base: '../',
                     };
                 }
             }
@@ -1077,12 +1152,15 @@
         wizardBodyObserver.observe(document.getElementById('wizardBody'), { childList: true });
 
         // ==================== Main UI Functions ====================
-        async function loadRepos() {
+        async function loadRepos(data = null) {
             const repoRows = document.getElementById('repoRows');
 
             try {
-                const res = await fetch('/control/repos');
-                const data = await res.json();
+                // Use provided data (from SSE) or fetch it
+                if (!data) {
+                    const res = await fetch('/control/repos');
+                    data = await res.json();
+                }
 
                 if (!data.repos || data.repos.length === 0) {
                     repoRows.innerHTML = '<div class="empty-state">No repositories registered yet</div>';
@@ -1097,32 +1175,84 @@
                     const status = repo.status || { state: 'unknown' };
                     const isRunning = status.state === 'running';
                     const isFailed = status.state === 'failed';
-                    const statusClass = isRunning ? 'status-running' : isFailed ? 'status-failed' : 'status-stopped';
-                    const statusLabel = status.state ? status.state.charAt(0).toUpperCase() + status.state.slice(1) : 'Unknown';
+                    const activeSessionCount = status.active_session_count || 0;
+                    // Distinguish between actively draining vs shutdown complete
+                    const isShuttingDown = isRunning && status.shutdown_requested && activeSessionCount > 0;
+                    const isShutdownComplete = isRunning && status.shutdown_requested && activeSessionCount === 0;
+                    const isPaused = isRunning && status.paused && !status.shutdown_requested;
+                    const hasConfigs = repo.configs && repo.configs.length > 0;
 
-                    html += `
-                        <div class="repo-row" data-path="${escapeHtml(repo.path)}">
-                            <div>
-                                <div class="repo-name">${escapeHtml(repo.name)}</div>
-                                <div class="repo-path" title="${escapeHtml(repo.path)}">${escapeHtml(repo.path)}</div>
+                    // Status class for CSS styling
+                    let statusClass;
+                    if (isShuttingDown) statusClass = 'status-paused';  // Yellow for draining
+                    else if (isShutdownComplete) statusClass = 'status-stopped';  // Gray for stopped
+                    else if (isPaused) statusClass = 'status-paused';
+                    else if (isRunning) statusClass = 'status-running';
+                    else if (isFailed) statusClass = 'status-failed';
+                    else statusClass = 'status-stopped';
+
+                    // Status label
+                    let statusLabel;
+                    if (isShuttingDown) statusLabel = `Stopping... (${activeSessionCount})`;
+                    else if (isShutdownComplete) statusLabel = 'Stopped';
+                    else if (isPaused) statusLabel = 'Paused';
+                    else if (status.state) statusLabel = status.state.charAt(0).toUpperCase() + status.state.slice(1);
+                    else statusLabel = 'Unknown';
+
+                    if (!hasConfigs) {
+                        // No config - show setup prompt
+                        html += `
+                            <div class="repo-row" data-path="${escapeHtml(repo.path)}" style="background:#1c1c1e;">
+                                <div>
+                                    <div class="repo-name">${escapeHtml(repo.name)}</div>
+                                    <div class="repo-path" title="${escapeHtml(repo.path)}">${escapeHtml(repo.path)}</div>
+                                </div>
+                                <span class="repo-status" style="color:#d29922;">
+                                    <span style="margin-right:6px;">⚠️</span>
+                                    No config
+                                </span>
+                                <span class="repo-port">-</span>
+                                <div class="repo-actions">
+                                    <button class="btn btn-primary" onclick="openSetupWizard('${escapeHtml(repo.path)}')">Set Up Now</button>
+                                    <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')" title="Remove">&times;</button>
+                                </div>
                             </div>
-                            <span class="repo-status ${statusClass}">
-                                <span class="status-dot"></span>
-                                ${statusLabel}
-                            </span>
-                            <span class="repo-port">${status.port || '-'}</span>
-                            <div class="repo-actions">
-                                ${isRunning
-                                    ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}')">Stop</button>
-                                       <button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
-                                    : `<button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}')">Start</button>`
-                                }
-                                <button class="btn" onclick="openEditWizard('${escapeHtml(repo.path)}')" title="Edit configuration">Edit</button>
-                                <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
-                                <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')" title="Remove">&times;</button>
+                        `;
+                    } else {
+                        // Has config(s) - show normal row with config dropdown
+                        const selectedConfig = repo.selected_config || repo.configs[0];
+                        const configOptions = repo.configs.map(c =>
+                            `<option value="${escapeHtml(c)}" ${c === selectedConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`
+                        ).join('');
+
+                        html += `
+                            <div class="repo-row" data-path="${escapeHtml(repo.path)}">
+                                <div>
+                                    <div class="repo-name">${escapeHtml(repo.name)}</div>
+                                    <div class="repo-path" title="${escapeHtml(repo.path)}">${escapeHtml(repo.path)}</div>
+                                </div>
+                                <span class="repo-status ${statusClass}">
+                                    <span class="status-dot"></span>
+                                    ${statusLabel}
+                                </span>
+                                <span class="repo-port">${status.port || '-'}</span>
+                                <div class="repo-actions">
+                                    ${isRunning && !isShuttingDown && !isShutdownComplete
+                                        ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}')">Stop</button>
+                                           <button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
+                                        : isShuttingDown
+                                            ? `<button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
+                                            : `<select class="btn" style="min-width:100px;" id="config-${escapeHtml(repo.name)}" onchange="updateSelectedConfig('${escapeHtml(repo.path)}', this.value)">${configOptions}</select>
+                                               <button class="btn" onclick="viewConfig('${escapeHtml(repo.path)}', document.getElementById('config-${escapeHtml(repo.name)}').value)" title="View config">View</button>
+                                               <button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}', document.getElementById('config-${escapeHtml(repo.name)}').value)">Start</button>`
+                                    }
+                                    <button class="btn" onclick="checkRepoHealth('${escapeHtml(repo.path)}', ${isRunning ? `'${escapeHtml(selectedConfig)}'` : `document.getElementById('config-${escapeHtml(repo.name)}').value`})" title="Run health check">Check</button>
+                                    <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
+                                    <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')" title="Remove">&times;</button>
+                                </div>
                             </div>
-                        </div>
-                    `;
+                        `;
+                    }
                 }
                 repoRows.innerHTML = html;
             } catch (err) {
@@ -1153,7 +1283,7 @@
 
         async function discoverRepos() {
             const container = document.getElementById('discoveredRepos');
-            container.innerHTML = '<div class="empty-state" style="padding:24px;">Scanning...</div>';
+            container.innerHTML = '<div class="loading-state" style="padding:24px;color:#8b949e;">Scanning...</div>';
 
             try {
                 const res = await fetch('/control/repos/discover');
@@ -1165,35 +1295,55 @@
                     return;
                 }
 
-                // Validate each discovered repo to check if config is valid
+                // Display discovered repos with status badges
                 let html = '';
                 for (const repo of data.discovered) {
-                    // Check config validity
-                    let configValid = true;
-                    let configError = null;
-                    try {
-                        const valRes = await fetch('/control/repos/validate', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ repo_root: repo.path }),
-                        });
-                        const valData = await valRes.json();
-                        configValid = valData.valid;
-                        if (!configValid && valData.errors?.length) {
-                            configError = valData.errors[0];
+                    const status = repo.status || 'needs_setup';
+
+                    // Status badge and action button based on config status
+                    let statusBadge = '';
+                    let actionButton = '';
+
+                    if (status === 'ready') {
+                        // Has config - validate it
+                        let configValid = true;
+                        let configError = null;
+                        try {
+                            const valRes = await fetch('/control/repos/validate', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ repo_root: repo.path }),
+                            });
+                            const valData = await valRes.json();
+                            configValid = valData.valid;
+                            if (!configValid && valData.errors?.length) {
+                                configError = valData.errors[0];
+                            }
+                        } catch (e) {
+                            // Ignore validation errors
                         }
-                    } catch (e) {
-                        // Ignore validation errors
+
+                        if (configValid) {
+                            statusBadge = '<span class="status-badge" style="background:#238636;color:#fff;">Ready</span>';
+                            actionButton = `<button class="btn btn-primary" onclick="addDiscoveredRepo('${escapeHtml(repo.path)}', this)">+ Add</button>`;
+                        } else {
+                            statusBadge = `<span class="status-badge" style="background:#da3633;color:#fff;" title="${configError || ''}">Config Error</span>`;
+                            actionButton = `<button class="btn" style="border-color:#d29922;color:#d29922;" onclick="openEditWizard('${escapeHtml(repo.path)}')">Fix</button>`;
+                        }
+                    } else if (status === 'legacy') {
+                        statusBadge = '<span class="status-badge" style="background:#d29922;color:#fff;">Legacy Config</span>';
+                        actionButton = `<button class="btn" style="border-color:#58a6ff;color:#58a6ff;" onclick="openEditWizard('${escapeHtml(repo.path)}')">Setup</button>`;
+                    } else {
+                        // needs_setup
+                        statusBadge = '<span class="status-badge" style="background:#6e7681;color:#fff;">No Config</span>';
+                        actionButton = `<button class="btn" style="border-color:#58a6ff;color:#58a6ff;" onclick="openEditWizard('${escapeHtml(repo.path)}')">Setup</button>`;
                     }
 
                     html += `
                         <div class="discovered-item">
-                            <span class="discovered-name">${escapeHtml(repo.name)}${!configValid ? '<span class="error-badge">Config Error</span>' : ''}</span>
-                            <span class="discovered-path" title="${configError || ''}">${escapeHtml(repo.path)}</span>
-                            ${configValid
-                                ? `<button class="btn btn-primary" onclick="addDiscoveredRepo('${escapeHtml(repo.path)}', this)">+ Add</button>`
-                                : `<button class="btn" style="border-color:#d29922;color:#d29922;" onclick="openEditWizard('${escapeHtml(repo.path)}')">Fix Config</button>`
-                            }
+                            <span class="discovered-name">${escapeHtml(repo.name)} ${statusBadge}</span>
+                            <span class="discovered-path">${escapeHtml(repo.path)}</span>
+                            ${actionButton}
                         </div>
                     `;
                 }
@@ -1224,6 +1374,7 @@
                 } else {
                     showToast('Repository added');
                     btn.closest('.discovered-item').remove();
+                    ignoreSSEBriefly();
                     loadRepos();
                 }
             } catch (err) {
@@ -1248,6 +1399,7 @@
                     showToast(data.error, true);
                 } else {
                     showToast('Repository removed');
+                    ignoreSSEBriefly();
                     loadRepos();
                     hideDetails();
                 }
@@ -1256,54 +1408,161 @@
             }
         }
 
-        async function startRepo(path) {
-            showToast('Starting orchestrator...');
+        async function startRepo(path, configName = 'default.yaml') {
+            showToast('Checking health before start...');
+
+            // Run health check first
+            try {
+                const healthRes = await fetch('/control/repos/doctor', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path, config_name: configName })
+                });
+                const healthData = await healthRes.json();
+
+                if (healthData.status !== 'valid') {
+                    const errorCount = healthData.errors?.length || 0;
+                    const firstError = healthData.errors?.[0] || 'Unknown error';
+                    showToast(`Cannot start: ${firstError}`, true);
+                    loadRepos();
+                    return;
+                }
+            } catch (err) {
+                showToast('Health check failed', true);
+                return;
+            }
+
+            // Health check passed, proceed with start
+            showToast(`Starting orchestrator with ${configName}...`);
 
             try {
                 const res = await fetch('/control/orchestrator/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path })
+                    body: JSON.stringify({ repo_root: path, config_name: configName })
                 });
                 const data = await res.json();
 
                 if (data.error) {
                     if (data.error === 'already_running') {
                         showToast('Already running on port ' + data.port);
+                    } else if (data.error === 'config_not_found') {
+                        showToast('Config not found: ' + configName, true);
                     } else {
                         showToast(data.detail || data.error, true);
                     }
+                } else if (data.status === 'restarted') {
+                    showToast('Restarted on port ' + data.port);
+                    openRepoWhenReady(data.port);
                 } else {
                     showToast('Started on port ' + data.port);
+                    openRepoWhenReady(data.port);
                 }
+                ignoreSSEBriefly();
                 loadRepos();
             } catch (err) {
                 showToast('Failed to start orchestrator', true);
             }
         }
 
+        async function viewConfig(path, configName) {
+            try {
+                const res = await fetch(`/control/repos/config?repo_root=${encodeURIComponent(path)}&config_name=${encodeURIComponent(configName)}`);
+                const data = await res.json();
+
+                if (data.error) {
+                    showToast(data.detail || data.error, true);
+                    return;
+                }
+
+                // Show modal with config contents
+                const modal = document.createElement('div');
+                modal.className = 'modal-overlay';
+                modal.id = 'configModal';
+                modal.innerHTML = `
+                    <div class="modal" style="max-width:600px;max-height:80vh;">
+                        <div class="modal-title">${escapeHtml(configName)}</div>
+                        <div class="modal-body" style="max-height:60vh;overflow-y:auto;">
+                            <pre style="font-size:12px;background:#0d1117;padding:12px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;">${escapeHtml(data.content)}</pre>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn" onclick="document.getElementById('configModal').remove()">Close</button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            } catch (err) {
+                showToast('Failed to load config', true);
+            }
+        }
+
+        async function updateSelectedConfig(path, configName) {
+            // Persist the selection to the registry so it survives SSE re-renders
+            try {
+                await fetch('/control/repos/select-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path, config_name: configName })
+                });
+            } catch (err) {
+                console.error('Failed to save config selection:', err);
+            }
+        }
+
         async function stopRepo(path) {
+            showToast('Stopping orchestrator...');
+            console.log('[stopRepo] Stopping:', path);
             try {
                 const res = await fetch('/control/orchestrator/stop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ repo_root: path })
                 });
+                console.log('[stopRepo] Response status:', res.status);
                 const data = await res.json();
+                console.log('[stopRepo] Response data:', data);
 
                 if (data.error) {
                     showToast(data.error, true);
+                } else if (data.status === 'not_running') {
+                    showToast('Orchestrator was not running');
                 } else {
                     showToast('Orchestrator stopped');
                 }
+                ignoreSSEBriefly();
                 loadRepos();
             } catch (err) {
-                showToast('Failed to stop orchestrator', true);
+                console.error('[stopRepo] Error:', err);
+                showToast('Failed to stop orchestrator: ' + err.message, true);
             }
         }
 
         function openRepo(port) {
             window.open(`http://127.0.0.1:${port}`, `orchestrator-${port}`);
+        }
+
+        async function openRepoWhenReady(port, maxWaitMs = 5000) {
+            // Poll the orchestrator until it's ready
+            const startTime = Date.now();
+            const pollInterval = 200;
+
+            while (Date.now() - startTime < maxWaitMs) {
+                try {
+                    const resp = await fetch(`http://127.0.0.1:${port}/api/health`, {
+                        method: 'GET',
+                        mode: 'no-cors',  // Avoid CORS issues
+                    });
+                    // With no-cors, we can't read the response, but if fetch doesn't throw, server is up
+                    openRepo(port);
+                    return;
+                } catch (e) {
+                    // Server not ready yet, wait and retry
+                    await new Promise(r => setTimeout(r, pollInterval));
+                }
+            }
+            // Timeout - try opening anyway
+            console.warn('Orchestrator did not become ready in time, opening anyway');
+            openRepo(port);
         }
 
         function hideDetails() {
@@ -1402,16 +1661,142 @@
             body.innerHTML = html || '<div style="color:#8b949e;">No details available</div>';
         }
 
-        async function shutdownControlCenter() {
-            if (!confirm('Shutdown the Control Center?\n\nRunning orchestrators will continue running independently.')) {
-                return;
+        function showShutdownModal() {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'shutdownModal';
+            modal.innerHTML = `
+                <div class="modal">
+                    <div class="modal-title">Shutdown Control Center</div>
+                    <div class="modal-body">
+                        <p style="color:#8b949e;margin-bottom:8px;">What should happen to running orchestrators?</p>
+                        <div class="radio-group">
+                            <label class="radio-option selected" onclick="selectShutdownOption(this, 'keep')">
+                                <input type="radio" name="shutdown-option" value="keep" checked>
+                                <div>
+                                    <div class="radio-label">Keep orchestrators running</div>
+                                    <div class="radio-desc">They'll continue independently in the background</div>
+                                </div>
+                            </label>
+                            <label class="radio-option" onclick="selectShutdownOption(this, 'stop')">
+                                <input type="radio" name="shutdown-option" value="stop">
+                                <div>
+                                    <div class="radio-label">Stop all orchestrators first</div>
+                                    <div class="radio-desc">Gracefully shut down all running orchestrators</div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn" onclick="closeShutdownModal()">Cancel</button>
+                        <button class="btn btn-danger" onclick="confirmShutdown()">Shutdown</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        function selectShutdownOption(label, value) {
+            document.querySelectorAll('#shutdownModal .radio-option').forEach(opt => opt.classList.remove('selected'));
+            label.classList.add('selected');
+            label.querySelector('input').checked = true;
+        }
+
+        function closeShutdownModal() {
+            const modal = document.getElementById('shutdownModal');
+            if (modal) modal.remove();
+        }
+
+        async function confirmShutdown() {
+            const stopOrchestrators = document.querySelector('#shutdownModal input[value="stop"]')?.checked || false;
+            closeShutdownModal();
+
+            // Close SSE connection before shutdown to allow clean server exit
+            if (window._controlSSE) {
+                window._controlSSE.close();
+                window._controlSSE = null;
             }
 
-            showToast('Shutting down...');
+            showToast(stopOrchestrators ? 'Stopping orchestrators and shutting down...' : 'Shutting down...');
             try {
-                await fetch('/control/shutdown', { method: 'POST' });
+                await fetch('/control/shutdown', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stop_orchestrators: stopOrchestrators })
+                });
             } catch (err) {
                 // Expected - server is shutting down
+            }
+
+            // Show disconnected message after a moment
+            setTimeout(() => {
+                document.body.innerHTML = `
+                    <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px;">
+                        <div style="font-size:48px;">👋</div>
+                        <h2 style="color:#fff;">Control Center Stopped</h2>
+                        <p style="color:#8b949e;">You can close this tab now.</p>
+                    </div>
+                `;
+            }, 500);
+        }
+
+        async function shutdownControlCenter() {
+            showShutdownModal();
+        }
+
+        async function checkRepoHealth(path, configName = 'default.yaml') {
+            showToast('Running health check...');
+
+            try {
+                const res = await fetch('/control/repos/doctor', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path, config_name: configName })
+                });
+                const data = await res.json();
+
+                if (data.error) {
+                    showToast(data.error, true);
+                } else if (data.status === 'valid') {
+                    showToast('Health check passed - ready to start');
+                } else {
+                    // Show modal with error details
+                    const errors = data.errors || [];
+                    const warnings = data.warnings || [];
+                    const modal = document.createElement('div');
+                    modal.className = 'modal-overlay';
+                    modal.id = 'healthModal';
+                    modal.innerHTML = `
+                        <div class="modal" style="max-width:600px;">
+                            <div class="modal-title" style="color:#f85149;">Health Check Failed</div>
+                            <div class="modal-body">
+                                ${errors.length ? `
+                                    <div style="margin-bottom:12px;">
+                                        <strong style="color:#f85149;">Errors:</strong>
+                                        <ul style="margin:8px 0;padding-left:20px;">
+                                            ${errors.map(e => `<li style="color:#f85149;">${escapeHtml(e)}</li>`).join('')}
+                                        </ul>
+                                    </div>
+                                ` : ''}
+                                ${warnings.length ? `
+                                    <div>
+                                        <strong style="color:#d29922;">Warnings:</strong>
+                                        <ul style="margin:8px 0;padding-left:20px;">
+                                            ${warnings.map(w => `<li style="color:#d29922;">${escapeHtml(w)}</li>`).join('')}
+                                        </ul>
+                                    </div>
+                                ` : ''}
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn" onclick="document.getElementById('healthModal').remove()">Close</button>
+                            </div>
+                        </div>
+                    `;
+                    document.body.appendChild(modal);
+                }
+                loadRepos();
+            } catch (err) {
+                showToast('Failed to run health check', true);
             }
         }
 
@@ -1419,8 +1804,43 @@
         loadRepos();
         discoverRepos();
 
-        // Auto-refresh every 5 seconds
-        setInterval(loadRepos, 5000);
+        // SSE debounce: ignore SSE updates briefly after user actions
+        // to prevent stale data from overwriting fresh fetches
+        let sseIgnoreUntil = 0;
+        function ignoreSSEBriefly() {
+            sseIgnoreUntil = Date.now() + 3000;  // Ignore for 3 seconds
+        }
+
+        // SSE connection for real-time status updates
+        function connectSSE() {
+            const evtSource = new EventSource('/control/events');
+
+            evtSource.addEventListener('status', (event) => {
+                // Skip if we're in the ignore window (just did an action)
+                if (Date.now() < sseIgnoreUntil) {
+                    console.debug('Ignoring SSE update (recent action)');
+                    return;
+                }
+                try {
+                    const data = JSON.parse(event.data);
+                    loadRepos(data);
+                } catch (err) {
+                    console.error('Failed to parse SSE status:', err);
+                }
+            });
+
+            evtSource.onerror = (err) => {
+                console.warn('SSE connection error, reconnecting in 5s...', err);
+                evtSource.close();
+                setTimeout(connectSSE, 5000);
+            };
+
+            // Store reference for cleanup if needed
+            window._controlSSE = evtSource;
+        }
+
+        // Start SSE connection
+        connectSSE();
     </script>
 </body>
 </html>
