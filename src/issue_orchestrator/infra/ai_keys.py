@@ -9,9 +9,9 @@ KEYRING_SERVICE = "issue-orchestrator"
 AI_PROVIDERS = {
     "ANTHROPIC_API_KEY": {
         "name": "Claude (Anthropic)",
-        "setup_cmd": "claude setup-token",  # Run this in terminal
-        "setup_help": "Run 'claude setup-token' in another terminal, then paste the key here",
-        "url": "https://console.anthropic.com/settings/keys",  # Fallback if CLI not available
+        "setup_cmd": None,  # API key, not CLI token
+        "setup_help": "Get your API key at: https://console.anthropic.com/settings/keys",
+        "url": "https://console.anthropic.com/settings/keys",
     },
     "OPENAI_API_KEY": {
         "name": "OpenAI (Codex/GPT)",

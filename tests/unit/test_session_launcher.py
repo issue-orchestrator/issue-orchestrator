@@ -1447,3 +1447,27 @@ class TestHandleSessionCompletion:
 
         assert len(state.discovered_reviews) == 1
         assert state.discovered_reviews[0].pr_number == 456
+
+
+# =============================================================================
+# Environment Isolation Tests
+# =============================================================================
+
+
+class TestEnvironmentIsolation:
+    """Test that sessions use proper environment isolation."""
+
+    def test_issue_session_launches_successfully(self, session_launcher, sample_issue):
+        """Test that issue sessions launch without HOME isolation.
+
+        HOME isolation is disabled because Claude uses macOS keychain for
+        subscription auth, which requires access to the real HOME.
+        """
+        session_launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        # Verify session was created
+        assert len(session_launcher._create_session_calls) == 1
+
+        # Verify command doesn't contain HOME override
+        command = session_launcher._create_session_calls[0]["cmd"]
+        assert "export HOME=" not in command or "HOME=" not in command.split("&&")[0]

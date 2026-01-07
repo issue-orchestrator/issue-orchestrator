@@ -148,6 +148,88 @@ class TestClaudeExecution:
                 f"Claude couldn't read the file: {result.stdout}"
 
 
+@pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not available")
+class TestClaudeWithEnvironmentIsolation:
+    """Integration tests for Claude with environment isolation (no HOME isolation).
+
+    The orchestrator scrubs sensitive environment variables (GH_TOKEN, AWS_*, etc.)
+    but does NOT isolate HOME. This allows Claude to access macOS Keychain for
+    subscription authentication while still preventing credential leakage.
+    """
+
+    def test_claude_works_with_scrubbed_env(self):
+        """Verify Claude authenticates when dangerous env vars are scrubbed.
+
+        This tests the actual isolation mode: scrub credentials but keep HOME.
+        Claude uses macOS Keychain for subscription auth, not ~/.claude.json.
+        """
+        import os
+        from issue_orchestrator.control.isolation import FORBIDDEN_ENV_VARS
+
+        # Build environment with scrubbed credentials but keeping HOME
+        clean_env = dict(os.environ)
+        for var in FORBIDDEN_ENV_VARS:
+            clean_env.pop(var, None)
+
+        # HOME is NOT changed - Claude can access Keychain
+
+        result = subprocess.run(
+            [
+                "claude",
+                "--print",
+                "Reply with just the word: working",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=clean_env,
+        )
+
+        # Claude should work with subscription auth via Keychain
+        assert result.returncode == 0, f"Claude failed: {result.stderr}"
+        assert "working" in result.stdout.lower(), f"Unexpected output: {result.stdout}"
+
+    def test_claude_fails_with_isolated_home(self, tmp_path):
+        """Document that HOME isolation breaks Claude subscription auth.
+
+        Claude stores OAuth tokens in macOS Keychain, which is tied to HOME.
+        When HOME is isolated to a worktree, Keychain access fails.
+
+        This is why we disabled HOME isolation.
+        """
+        import os
+
+        # Create an isolated HOME directory
+        isolated_home = tmp_path / "isolated_home"
+        isolated_home.mkdir()
+
+        clean_env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(isolated_home),  # This breaks Keychain access
+        }
+
+        result = subprocess.run(
+            [
+                "claude",
+                "--print",
+                "hello",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=clean_env,
+        )
+
+        # Should fail with auth error (expected - documenting the limitation)
+        combined_output = result.stdout + result.stderr
+        assert (
+            result.returncode != 0
+            or "Invalid API key" in combined_output
+            or "API key" in combined_output
+            or "login" in combined_output.lower()
+        ), f"Expected auth failure with isolated HOME, but got: {combined_output}"
+
+
 class TestShellEscaping:
     """Test POSIX single-quote escaping used by iTerm2 adapter.
 
