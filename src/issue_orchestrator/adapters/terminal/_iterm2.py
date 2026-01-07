@@ -226,11 +226,13 @@ class ITermSessionManager:
         # Add sandbox verification before running agent command
         # This confirms isolation is working (gh auth fails, git push fails, etc.)
         # Use verify-agent-sandbox if available, otherwise fall back to Python module
+        # Note: Use double quotes for echo to avoid nested single-quote issues
+        # (the whole command gets wrapped in single quotes for zsh -l -c '...')
         sandbox_check = (
             "if command -v verify-agent-sandbox &> /dev/null; then "
-            "verify-agent-sandbox || { echo 'Sandbox verification failed - aborting'; exit 1; }; "
+            'verify-agent-sandbox || { echo "Sandbox verification failed - aborting"; exit 1; }; '
             "elif python3 -m issue_orchestrator.execution.sandbox_verify 2>/dev/null; then :; "
-            "elif [ $? -eq 1 ]; then echo 'Sandbox verification failed - aborting'; exit 1; fi && "
+            'elif [ $? -eq 1 ]; then echo "Sandbox verification failed - aborting"; exit 1; fi && '
         )
 
         zsh_wrapped_cmd = f"zsh -l -c '{path_prefix}{isolation_prefix}{sandbox_check}cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
