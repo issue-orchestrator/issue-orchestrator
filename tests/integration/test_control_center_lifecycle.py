@@ -13,6 +13,9 @@ This catches the class of bugs where:
 - Status is stale or inconsistent
 - Process is zombie/orphaned
 - Port is still in use after "stop"
+
+Note: These tests require a valid GitHub token because the orchestrator
+subprocess needs to create a GitHubAdapter during startup.
 """
 
 import json
@@ -30,6 +33,34 @@ import httpx
 import pytest
 
 logger = logging.getLogger(__name__)
+
+
+# Check if GitHub token is available - required for orchestrator startup
+def _has_github_token() -> bool:
+    """Check if a GitHub token is available for orchestrator startup.
+
+    Checks environment variables and keyring (same sources as resolve_github_token).
+    """
+    # Check environment variables
+    for env_name in ("ISSUE_ORCH_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+        if os.environ.get(env_name):
+            return True
+    # Check keyring
+    try:
+        import keyring
+        token = keyring.get_password("issue-orchestrator", "github-token")
+        if token:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# Skip entire module if no GitHub token available
+pytestmark = pytest.mark.skipif(
+    not _has_github_token(),
+    reason="Orchestrator requires GitHub token (GITHUB_TOKEN, GH_TOKEN, or ISSUE_ORCH_GITHUB_TOKEN)",
+)
 
 
 # --- Fixtures ---
