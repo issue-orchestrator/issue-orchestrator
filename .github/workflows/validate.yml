@@ -83,3 +83,5 @@ jobs:
 
       - name: Run validate
         run: make validate PYRIGHT=pyright PYTEST=pytest LINT_IMPORTS=lint-imports PYTHON=python
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
