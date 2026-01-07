@@ -1259,6 +1259,50 @@ def _apply_changes(collector: FileCollector, repo: str | None, prompter: Prompte
         prompter.print(f"  ✓ Created {len(collector.labels)} GitHub labels")
 
 
+def setup_ai_providers(prompter: Prompter) -> None:
+    """Ask about AI providers and help store keys in keyring."""
+    from ...infra.ai_keys import AI_PROVIDERS, store_ai_key, read_ai_key
+
+    prompter.print("\n" + "=" * 50)
+    prompter.print("AI PROVIDER SETUP")
+    prompter.print("=" * 50)
+    prompter.print("\nYour agents need API keys to authenticate with AI providers.")
+    prompter.print("Keys are stored securely in your system keyring.\n")
+
+    for key_name, info in AI_PROVIDERS.items():
+        existing = read_ai_key(key_name)
+        if existing:
+            status = "[configured]"
+            prompter.print(f"  {info['name']}: {status}")
+            if not prompter.yes_no(f"  Update {info['name']} key?", default=False):
+                continue
+        else:
+            if not prompter.yes_no(f"Configure {info['name']}?", default=key_name == "ANTHROPIC_API_KEY"):
+                continue
+
+        # Show setup instructions
+        prompter.print(f"\n  --- {info['name']} Setup ---")
+        if info.get("setup_cmd"):
+            prompter.print(f"  Run in another terminal: {info['setup_cmd']}")
+            prompter.print("  Then paste the key here.")
+        else:
+            prompter.print(f"  {info.get('setup_help', '')}")
+        prompter.print(f"  URL: {info.get('url', '')}\n")
+
+        # Prompt for key
+        import getpass
+        value = getpass.getpass(f"  Paste your {key_name}: ")
+        if value.strip():
+            try:
+                store_ai_key(key_name, value.strip())
+                prompter.print(f"  ✓ Stored {key_name} in keyring\n")
+            except Exception as e:
+                prompter.print(f"  ✗ Failed to store key: {e}")
+                prompter.print("    You can set it as an environment variable instead.\n")
+        else:
+            prompter.print("  Skipped (no key provided)\n")
+
+
 def run_wizard(
     target_path: Path | None = None,
     prompter: Prompter | None = None,
@@ -1516,6 +1560,10 @@ def run_wizard(
     # Apply all changes
     prompter.print("\nApplying changes...")
     _apply_changes(file_collector, config.get("repo"), prompter)
+
+    # AI provider key setup
+    if prompter.yes_no("\nSet up AI provider API keys now?", default=True):
+        setup_ai_providers(prompter)
 
     prompter.print("\n" + "=" * 50)
     prompter.print("Setup complete! Next steps:")
