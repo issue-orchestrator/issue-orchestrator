@@ -19,6 +19,11 @@ agents:
     # Available variables: {issue_number}, {issue_title}, {prompt}, {worktree},
     # {model}, {permission_mode}, {pr_number} (review/rework sessions only)
     initial_prompt: "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report your verdict."
+  agent:triage:
+    prompt: .issue-orchestrator/prompts/triage.md
+    model: sonnet
+    timeout_minutes: 60
+    initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report completion."
 
 concurrency:
   max_concurrent_sessions: 6
