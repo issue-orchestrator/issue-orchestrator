@@ -312,6 +312,10 @@ class AgentConfig:
     skip_review: bool = False
     # Per-agent reviewer override (uses review.default if not set)
     reviewer: Optional[str] = None
+    # Use non-interactive mode. For Claude CLI, adds -p flag. Agent exits after completion.
+    # For other providers (Codex, Gemini), customize the command template instead.
+    # Enable for cleaner session lifecycle - no hanging sessions.
+    print_mode: bool = False
     # Command template - {initial_prompt} is passed as positional arg to claude
     command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     # Optional override for hook verification meta-agent (e.g., "claude-code")
@@ -338,6 +342,10 @@ class AgentConfig:
                           If provided, prepended to prompt so agent knows to complete vs restart.
         """
         # Build format kwargs - pr_number only included if provided (fail-fast if used but missing)
+        claude_args = os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip()
+        # Add -p flag for non-interactive print mode (Claude exits after completion)
+        if self.print_mode and "-p" not in claude_args:
+            claude_args = f"-p {claude_args}".strip()
         format_kwargs = {
             "issue_number": issue_number,
             "issue_title": issue_title,
@@ -345,7 +353,7 @@ class AgentConfig:
             "worktree": worktree,
             "model": self.model,
             "permission_mode": self.permission_mode,
-            "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),
+            "claude_args": claude_args,
         }
         if pr_number is not None:
             format_kwargs["pr_number"] = pr_number
