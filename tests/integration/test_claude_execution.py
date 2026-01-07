@@ -4,6 +4,7 @@ These tests verify that we can actually execute Claude Code commands
 and that the command escaping works correctly in real shells.
 """
 
+import os
 import pytest
 import subprocess
 import shutil
@@ -15,7 +16,30 @@ def is_claude_available() -> bool:
     return shutil.which("claude") is not None
 
 
-@pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not available")
+def is_github_ci() -> bool:
+    """Check if running on GitHub Actions."""
+    return os.environ.get("GITHUB_ACTIONS") == "true"
+
+
+@pytest.fixture
+def require_claude():
+    """Fixture that fails with helpful message if Claude not available locally.
+
+    Use this in tests that require Claude. On GitHub CI, tests are skipped
+    via the class-level skipif. Locally, this provides a clear error message.
+    """
+    if not is_claude_available() and not is_github_ci():
+        pytest.fail(
+            "Claude CLI not found! This test MUST run locally.\n"
+            "Install Claude: https://claude.ai/download\n"
+            "Or set GITHUB_ACTIONS=true to skip."
+        )
+
+
+@pytest.mark.skipif(
+    not is_claude_available() and is_github_ci(),
+    reason="Claude CLI not available (OK on GitHub CI)"
+)
 class TestClaudeExecution:
     """Integration tests that actually run Claude Code."""
 
@@ -148,7 +172,10 @@ class TestClaudeExecution:
                 f"Claude couldn't read the file: {result.stdout}"
 
 
-@pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not available")
+@pytest.mark.skipif(
+    not is_claude_available() and is_github_ci(),
+    reason="Claude CLI not available (OK on GitHub CI)"
+)
 class TestClaudeWithEnvironmentIsolation:
     """Integration tests for Claude with environment isolation (no HOME isolation).
 
@@ -296,3 +323,132 @@ class TestShellEscaping:
         assert result.returncode == 0
         # The output should contain the original text (with quotes resolved)
         assert "single" in result.stdout or "double" in result.stdout
+
+
+@pytest.mark.skipif(
+    not is_claude_available() and is_github_ci(),
+    reason="Claude CLI not available (OK on GitHub CI)"
+)
+class TestClaudeViaAdapterPath:
+    """E2E test that runs Claude through the same path as iTerm2/tmux adapters.
+
+    This is the critical test that verifies the full orchestrator session path:
+    1. Create a worktree directory
+    2. Build isolation prefix (scrub env, but NOT isolate HOME)
+    3. Wrap in zsh -l -c '...' like the adapters do
+    4. Run Claude and verify it authenticates via macOS Keychain
+    """
+
+    def test_claude_via_adapter_isolation_path(self, tmp_path, require_claude):
+        """Run Claude through the exact isolation path used by terminal adapters.
+
+        This tests the fix for: "Invalid API key · Please run /login"
+
+        The orchestrator's terminal adapters (iTerm2, tmux) wrap commands like:
+            zsh -l -c '{isolation_prefix}cd "{worktree}" && claude ...'
+
+        With isolate_home=False, Claude can access macOS Keychain for auth.
+        With isolate_home=True (the bug), Keychain access fails.
+
+        VERIFICATION: Claude must create a file we can check, proving it actually ran.
+        """
+        from issue_orchestrator.control.isolation import build_isolation_prefix
+
+        # Create a fake worktree directory (like orchestrator does)
+        worktree = tmp_path / "test-worktree"
+        worktree.mkdir()
+
+        # Create the .issue-orchestrator directory (required for agent-done)
+        io_dir = worktree / ".issue-orchestrator"
+        io_dir.mkdir()
+
+        # Build isolation prefix EXACTLY like the adapters do
+        # This is the critical part - isolate_home=False allows Keychain auth
+        isolation_prefix = build_isolation_prefix(
+            worktree=worktree,
+            isolation_mode="standard",
+            scrub_env=True,
+            isolate_home=False,  # Must be False for Keychain auth
+        )
+
+        # The verification file Claude must create
+        verify_file = worktree / "claude_was_here.txt"
+
+        # Build the claude command - ask Claude to create a file we can verify
+        # This proves Claude actually ran and executed tools, not just responded
+        claude_cmd = (
+            f"claude --print --dangerously-skip-permissions "
+            f"'Create a file at {verify_file} containing exactly the text VERIFIED. "
+            f"Use the Write tool. Reply with DONE when complete.'"
+        )
+
+        # Escape single quotes for zsh wrapper (same as _iterm2.py)
+        escaped_cmd = claude_cmd.replace("'", "'\\''")
+
+        # Build full command like iTerm2 adapter does:
+        # zsh -l -c '{isolation_prefix}cd "{worktree}" && {command}'
+        full_cmd = f'{isolation_prefix}cd "{worktree}" && {escaped_cmd}'
+        zsh_wrapped = f"zsh -l -c '{full_cmd}'"
+
+        # Run it (simulates what iTerm2/tmux sends to the terminal)
+        result = subprocess.run(
+            ["bash", "-c", zsh_wrapped],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        combined = result.stdout + result.stderr
+
+        # Should NOT see auth failure
+        assert "Invalid API key" not in combined, f"Auth failed (HOME isolation bug?): {combined}"
+        assert "Please run /login" not in combined, f"Auth failed: {combined}"
+
+        # Should succeed
+        assert result.returncode == 0, f"Claude failed: {combined}"
+
+        # CRITICAL: Verify Claude actually created the file
+        assert verify_file.exists(), f"Claude did not create verification file. Output: {combined}"
+        content = verify_file.read_text().strip()
+        assert "VERIFIED" in content, f"Verification file has wrong content: {content}"
+
+    def test_claude_via_adapter_path_with_home_isolation_fails(self, tmp_path):
+        """Document that HOME isolation breaks Claude auth (the bug we fixed).
+
+        This test proves WHY isolate_home must be False.
+        """
+        from issue_orchestrator.control.isolation import build_isolation_prefix
+
+        worktree = tmp_path / "isolated-worktree"
+        worktree.mkdir()
+
+        # Build isolation with HOME isolation ENABLED (the bug)
+        isolation_prefix = build_isolation_prefix(
+            worktree=worktree,
+            isolation_mode="standard",
+            scrub_env=True,
+            isolate_home=True,  # This breaks Keychain auth!
+        )
+
+        claude_cmd = "claude --print 'hello'"
+        escaped_cmd = claude_cmd.replace("'", "'\\''")
+        full_cmd = f'{isolation_prefix}cd "{worktree}" && {escaped_cmd}'
+        zsh_wrapped = f"zsh -l -c '{full_cmd}'"
+
+        result = subprocess.run(
+            ["bash", "-c", zsh_wrapped],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        combined = result.stdout + result.stderr
+
+        # Should fail with auth error (expected - documenting the bug)
+        auth_failed = (
+            result.returncode != 0
+            or "Invalid API key" in combined
+            or "API key" in combined
+            or "login" in combined.lower()
+        )
+        assert auth_failed, f"Expected auth failure with HOME isolation, got: {combined}"

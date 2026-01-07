@@ -103,7 +103,7 @@ class TmuxManager:
             worktree=working_dir,
             isolation_mode="standard",
             scrub_env=True,
-            isolate_home=True,
+            isolate_home=False,  # Claude uses macOS Keychain for auth
         )
         setup_cmd = f'export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
