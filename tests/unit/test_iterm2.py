@@ -551,6 +551,41 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
+    def test_create_session_sandbox_check_no_nested_single_quotes(self, mock_subprocess, mock_run_as):
+        """Test that sandbox_check doesn't have nested single quotes that break zsh.
+
+        The sandbox_check string gets embedded in zsh -l -c '...' wrapper.
+        Any single quotes in sandbox_check would break the shell syntax.
+        This test ensures we use double quotes for echo statements.
+        """
+        mock_run_as.return_value = (True, "")
+        mock_subprocess.return_value = MagicMock(stdout="1638360000\n")
+
+        manager = ITermSessionManager()
+        result = manager.create_session(
+            issue_number=42,
+            command="claude",
+            working_dir="/tmp/test",
+        )
+
+        assert result is True
+        script = mock_run_as.call_args[0][0]
+
+        # Extract the zsh command from the script
+        # The script contains: write text "zsh -l -c '...'"
+        assert "zsh -l -c" in script
+
+        # The sandbox verification echo should use double quotes, not single
+        # BAD: echo 'Sandbox verification failed'
+        # GOOD: echo "Sandbox verification failed"
+        assert "echo 'Sandbox" not in script, \
+            "sandbox_check should use double quotes for echo, not single quotes"
+        # Verify the double-quoted version is present
+        assert 'echo \\"Sandbox verification failed' in script or \
+               'echo "Sandbox verification failed' in script
+
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
     def test_create_session_failure(self, mock_subprocess, mock_run_as):
         """Test failed session creation."""
         mock_run_as.return_value = (False, "error message")
