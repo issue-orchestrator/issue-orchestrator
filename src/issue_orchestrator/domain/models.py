@@ -313,6 +313,7 @@ class AgentConfig:
     # Per-agent reviewer override (uses review.default if not set)
     reviewer: Optional[str] = None
     # Command template - {initial_prompt} is passed as positional arg to claude
+    # For non-interactive mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
     command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     # Optional override for hook verification meta-agent (e.g., "claude-code")
     meta_agent: Optional[str] = None

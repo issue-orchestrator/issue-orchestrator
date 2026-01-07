@@ -354,19 +354,24 @@ end tell'''
         return 0
 
     def kill_session(self, issue_number: int) -> bool:
-        """Close the tab for an issue."""
+        """Close the tab for an issue, killing any running process first."""
+        # First send Ctrl+C to interrupt any running process, then close the tab
         script = f'''
         tell application "iTerm"
-            tell current window
-                repeat with t in tabs
+            repeat with w in windows
+                repeat with t in tabs of w
                     tell current session of t
                         if name contains "#{issue_number}" then
+                            -- Send Ctrl+C to interrupt
+                            write text (ASCII character 3)
+                            delay 0.5
+                            -- Now close the tab
                             close t
                             return true
                         end if
                     end tell
                 end repeat
-            end tell
+            end repeat
         end tell
         return false
         '''
