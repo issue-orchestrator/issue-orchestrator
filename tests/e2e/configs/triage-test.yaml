@@ -3,6 +3,7 @@
 # Runs code reviews and batch triage reviews in isolation from shared suite.
 
 repo: BruceBGordon/issue-orchestrator
+worktree_base: "/tmp/e2e-worktrees"
 
 filter_label: test-data
 queue_refresh_seconds: 600
@@ -17,8 +18,6 @@ agents:
     prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
     model: sonnet
     timeout_minutes: 3
-    worktree_base: "/tmp/e2e-worktrees"
-    repo_root: "../../../"
     command: "bash {prompt}"
     meta_agent: "claude-code"
     permission_mode: bypassPermissions
@@ -26,8 +25,6 @@ agents:
     prompt: "tests/e2e/fixtures/scripts/review-decider.sh"
     model: sonnet
     timeout_minutes: 3
-    worktree_base: "/tmp/e2e-worktrees"
-    repo_root: "../../../"
     command: "PR_NUMBER={pr_number} bash {prompt}"
     meta_agent: "claude-code"
     permission_mode: bypassPermissions
@@ -35,8 +32,6 @@ agents:
     prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
     model: sonnet
     timeout_minutes: 3
-    worktree_base: "/tmp/e2e-worktrees"
-    repo_root: "../../../"
     command: "bash {prompt}"
     meta_agent: "claude-code"
     permission_mode: bypassPermissions

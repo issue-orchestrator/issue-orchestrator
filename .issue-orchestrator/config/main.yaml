@@ -1,0 +1,51 @@
+repo: BruceBGordon/issue-orchestrator
+worktree_base: ../
+
+agents:
+  agent:backend:
+    prompt: .issue-orchestrator/prompts/simple-fix.md
+    model: haiku
+  agent:frontend:
+    prompt: .issue-orchestrator/prompts/simple-fix.md
+    model: haiku
+  agent:mobile:
+    prompt: .issue-orchestrator/prompts/simple-fix.md
+    model: haiku
+  agent:reviewer:
+    prompt: .issue-orchestrator/prompts/reviewer.md
+    model: sonnet
+    timeout_minutes: 30
+    # Custom initial_prompt to include PR number for review context
+    # Available variables: {issue_number}, {issue_title}, {prompt}, {worktree},
+    # {model}, {permission_mode}, {pr_number} (review/rework sessions only)
+    initial_prompt: "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report your verdict."
+  agent:triage:
+    prompt: .issue-orchestrator/prompts/triage.md
+    model: sonnet
+    timeout_minutes: 60
+    initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report completion."
+
+concurrency:
+  max_concurrent_sessions: 6
+  session_timeout_minutes: 10
+
+review:
+  enabled: true
+  default: agent:reviewer
+  code_review_label: needs-code-review
+  code_reviewed_label: code-reviewed
+  max_rework_cycles: 2
+
+validation:
+  publish_gate:
+    cmd: make validate
+    timeout_seconds: 300
+
+validation_policy:
+  publish_requires: publish_gate
+
+github_token_env: GITHUB_TOKEN
+milestone_sort: milestone_number
+
+config:
+  strict: true

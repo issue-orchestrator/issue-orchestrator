@@ -135,13 +135,11 @@ class TestAgentConfig:
 
         config = AgentConfig(
             prompt_path=prompt_file,
-            worktree_base=tmp_path,
             model="sonnet",
             timeout_minutes=45,
         )
 
         assert config.prompt_path == prompt_file
-        assert config.worktree_base == tmp_path
         assert config.model == "sonnet"
         assert config.timeout_minutes == 45
 
@@ -152,7 +150,6 @@ class TestAgentConfig:
 
         config = AgentConfig(
             prompt_path=prompt_file,
-            worktree_base=tmp_path,
         )
 
         assert config.model == "sonnet"
@@ -224,7 +221,6 @@ class TestSession:
         issue = sample_issues[0]
         config = AgentConfig(
             prompt_path=sample_agent_config.prompt_path,
-            worktree_base=sample_agent_config.worktree_base,
             timeout_minutes=30,
         )
 

@@ -148,14 +148,17 @@ class TestCreateDiagnosticBundle:
     def test_includes_config_files(self, tmp_path: Path) -> None:
         """Bundle includes config files if present."""
         config_content = "repo: test/repo\nagents: {}"
-        config_path = tmp_path / ".issue-orchestrator.yaml"
+        # Config files are now in .issue-orchestrator/config/
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
         with open(config_path, "w") as f:
             f.write(config_content)
 
         bundle = create_diagnostic_bundle(tmp_path)
 
-        assert ".issue-orchestrator.yaml" in bundle.config_files
-        assert "repo: test/repo" in bundle.config_files[".issue-orchestrator.yaml"]
+        assert "default.yaml" in bundle.config_files
+        assert "repo: test/repo" in bundle.config_files["default.yaml"]
 
     def test_writes_summary_file(self, tmp_path: Path) -> None:
         """Bundle writes summary.md file."""

@@ -128,7 +128,7 @@ class TestIdleStateCalculation:
         """Having active sessions means not idle."""
         issue = make_issue(1)
         mock_repository_host.list_issues.return_value = [issue]
-        agent_config = AgentConfig(prompt_path=tmp_path / "prompt.md", worktree_base=tmp_path)
+        agent_config = AgentConfig(prompt_path=tmp_path / "prompt.md")
 
         session_key = SessionKey(issue=FakeIssueKey(name="1"), task=TaskKind.CODE)
         session = Session(

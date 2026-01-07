@@ -255,15 +255,14 @@ def sample_config(tmp_path):
     config.repo = "test/repo"
     config.repo_root = tmp_path / "repo"
     config.repo_root.mkdir(exist_ok=True)
+    config.worktree_base = tmp_path / "worktrees"  # Top-level worktree_base
     config.agents["agent:web"] = AgentConfig(
         prompt_path=prompt_path,
-        worktree_base=tmp_path / "worktrees",
         model="sonnet",
         timeout_minutes=45,
     )
     config.agents["agent:reviewer"] = AgentConfig(
         prompt_path=prompt_path,
-        worktree_base=tmp_path / "worktrees",
         model="sonnet",
         timeout_minutes=30,
     )
@@ -289,7 +288,6 @@ def sample_agent_config(tmp_path):
     prompt_path.write_text("Test prompt")
     return AgentConfig(
         prompt_path=prompt_path,
-        worktree_base=tmp_path / "worktrees",
         model="sonnet",
         timeout_minutes=45,
     )

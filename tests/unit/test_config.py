@@ -147,9 +147,11 @@ concurrency:
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
-        config_file = tmp_path / ".issue-orchestrator.yaml"
+        # Config is now in .issue-orchestrator/config/default.yaml
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "default.yaml"
         config_file.write_text(config_content)
 
         monkeypatch.chdir(tmp_path)
@@ -164,9 +166,11 @@ agents:
 agents:
   agent:parent:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
-        config_file = tmp_path / ".issue-orchestrator.yaml"
+        # Config is now in .issue-orchestrator/config/default.yaml
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "default.yaml"
         config_file.write_text(config_content)
 
         # Create a subdirectory
@@ -180,17 +184,17 @@ agents:
         assert "agent:parent" in config.agents
 
     def test_config_find_and_load_in_hidden_dir(self, tmp_path, monkeypatch):
-        """Test finding config in .issue-orchestrator subdirectory."""
-        hidden_dir = tmp_path / ".issue-orchestrator"
-        hidden_dir.mkdir()
+        """Test finding config in .issue-orchestrator/config subdirectory."""
+        # Config is now in .issue-orchestrator/config/default.yaml
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
 
         config_content = """
 agents:
   agent:hidden:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
-        config_file = hidden_dir / "config.yaml"
+        config_file = config_dir / "default.yaml"
         config_file.write_text(config_content)
 
         monkeypatch.chdir(tmp_path)
@@ -206,37 +210,26 @@ agents:
         with pytest.raises(FileNotFoundError):
             Config.find_and_load()
 
-    def test_config_find_prefers_root_over_hidden(self, tmp_path, monkeypatch):
-        """Test that root config is preferred over hidden dir config."""
-        # Create root config
-        root_config_content = """
-agents:
-  agent:root:
-    prompt: /tmp/prompt.txt
-    worktree_base: /tmp
-"""
-        root_config_file = tmp_path / ".issue-orchestrator.yaml"
-        root_config_file.write_text(root_config_content)
+    def test_config_find_uses_standard_location(self, tmp_path, monkeypatch):
+        """Test that config is loaded from .issue-orchestrator/config/ directory."""
+        # Config must be in .issue-orchestrator/config/default.yaml
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
 
-        # Create hidden dir config
-        hidden_dir = tmp_path / ".issue-orchestrator"
-        hidden_dir.mkdir()
-
-        hidden_config_content = """
+        config_content = """
 agents:
-  agent:hidden:
+  agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
-        hidden_config_file = hidden_dir / "config.yaml"
-        hidden_config_file.write_text(hidden_config_content)
+        config_file = config_dir / "default.yaml"
+        config_file.write_text(config_content)
 
         monkeypatch.chdir(tmp_path)
 
         config = Config.find_and_load()
 
-        # Should find the root config first
-        assert "agent:root" in config.agents
+        assert "agent:test" in config.agents
+        assert config.config_path == config_file
 
     def test_config_with_custom_repo(self, tmp_path):
         """Test config with custom repo specified."""
@@ -259,10 +252,10 @@ agents:
         prompt_file.write_text("Prompt")
 
         config_content = f"""
+worktree_base: {tmp_path}
 agents:
   agent:full:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
     model: opus
     timeout_minutes: 120
 """
@@ -275,7 +268,7 @@ agents:
         assert agent.model == "opus"
         assert agent.timeout_minutes == 120
         assert agent.prompt_path == prompt_file
-        assert agent.worktree_base == tmp_path
+        assert config.worktree_base == tmp_path  # Now top-level
 
     def test_config_state_file_default(self):
         """Test default state file path."""
@@ -430,52 +423,6 @@ labels:
         assert config.get_label_in_progress() == "orchestrator:in-progress"
         assert config.get_label_blocked() == "orchestrator:blocked"
         assert config.get_label_needs_human() == "orchestrator:needs-human"
-
-    def test_agent_repo_root_override(self, tmp_path):
-        """Test per-agent repo_root configuration."""
-        prompt_file = tmp_path / "prompt.txt"
-        prompt_file.write_text("Prompt")
-        backend_repo = tmp_path / "backend-repo"
-        backend_repo.mkdir()
-
-        config_content = f"""
-agents:
-  agent:backend:
-    prompt: {prompt_file}
-    worktree_base: {tmp_path}
-    repo_root: {backend_repo}
-  agent:frontend:
-    prompt: {prompt_file}
-    worktree_base: {tmp_path}
-"""
-        config_file = tmp_path / ".issue-orchestrator.yaml"
-        config_file.write_text(config_content)
-
-        config = Config.load(config_file)
-
-        # Backend agent should have custom repo_root
-        backend_agent = config.agents["agent:backend"]
-        assert backend_agent.repo_root == backend_repo
-
-        # Frontend agent should have None (uses global repo_root)
-        frontend_agent = config.agents["agent:frontend"]
-        assert frontend_agent.repo_root is None
-
-    def test_agent_repo_root_not_specified(self, tmp_path):
-        """Test that repo_root defaults to None when not specified."""
-        config_content = """
-agents:
-  agent:test:
-    prompt: /tmp/prompt.txt
-    worktree_base: /tmp
-"""
-        config_file = tmp_path / ".issue-orchestrator.yaml"
-        config_file.write_text(config_content)
-
-        config = Config.load(config_file)
-
-        agent = config.agents["agent:test"]
-        assert agent.repo_root is None
 
     def test_queue_refresh_seconds_default(self):
         """Test that queue_refresh_seconds defaults to 600."""
@@ -1088,20 +1035,23 @@ agents:
         prompt_file.write_text("# Test prompt")
 
         config_content = f"""
+worktree_base: ./worktrees
 agents:
   agent:test:
     prompt: {prompt_file}
-    worktree_base: ./worktrees
 """
-        config_file = tmp_path / ".issue-orchestrator.yaml"
+        # Config must be at <repo>/.issue-orchestrator/config/<name>.yaml
+        # so repo_root is correctly calculated (3 levels up)
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "default.yaml"
         config_file.write_text(config_content)
 
         config = Config.load(config_file)
 
-        # Relative path should be resolved to absolute
-        agent = config.agents["agent:test"]
-        assert agent.worktree_base.is_absolute()
-        assert str(agent.worktree_base).startswith(str(tmp_path))
+        # Relative path should be resolved to absolute (top-level worktree_base)
+        assert config.worktree_base.is_absolute()
+        assert str(config.worktree_base).startswith(str(tmp_path))
 
     def test_validate_worktree_base_created_if_missing(self, tmp_path):
         """Test that worktree_base directory is created during load."""
@@ -1110,12 +1060,15 @@ agents:
         worktree_dir = tmp_path / "new-worktrees"
 
         config_content = f"""
+worktree_base: {worktree_dir}
 agents:
   agent:test:
     prompt: {prompt_file}
-    worktree_base: {worktree_dir}
 """
-        config_file = tmp_path / ".issue-orchestrator.yaml"
+        # Config must be at <repo>/.issue-orchestrator/config/<name>.yaml
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "default.yaml"
         config_file.write_text(config_content)
 
         # Directory doesn't exist yet
@@ -1123,9 +1076,10 @@ agents:
 
         config = Config.load(config_file)
 
-        # Directory should be created
+        # Directory should be created (top-level worktree_base)
         assert worktree_dir.exists()
         assert worktree_dir.is_dir()
+        assert config.worktree_base == worktree_dir
 
     def test_validate_invalid_review_agent_reference(self, tmp_path):
         """Test validation catches invalid code_review_agent reference."""

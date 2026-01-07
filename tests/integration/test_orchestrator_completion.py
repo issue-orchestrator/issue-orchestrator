@@ -159,7 +159,6 @@ def session_with_worktree(tmp_path):
         )
         agent_config = AgentConfig(
             prompt_path=worktree / "prompt.md",
-            worktree_base=tmp_path,
             timeout_minutes=30,
         )
         issue_key = FakeIssueKey(name=str(issue_number))

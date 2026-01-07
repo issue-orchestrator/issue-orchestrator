@@ -18,7 +18,7 @@ This skill provides context for working on the system architecture.
 ## Key Resources
 
 Read these files for context:
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - Full architecture documentation
+- [docs/architecture/README.md](docs/architecture/README.md) - Full architecture documentation
 - `src/issue_orchestrator/ports/` - Port definitions (Protocols)
 - `src/issue_orchestrator/execution/` - Adapter implementations
 - `src/issue_orchestrator/bootstrap.py` - Composition root

@@ -271,23 +271,71 @@ async def health() -> JSONResponse:
 
 
 @control_app.post("/control/shutdown")
-async def shutdown_control_center() -> JSONResponse:
+async def shutdown_control_center(request: Request) -> JSONResponse:
     """Shutdown the control center server.
 
     This stops the supervisor/control center process itself.
-    Running orchestrators will continue running independently.
+    Optionally stops all running orchestrators first.
+
+    JSON body (optional):
+        stop_orchestrators: bool - If True, stop all running orchestrators first
     """
     import os
     import signal
     import threading
 
+    from ..infra import supervisor
+    from ..infra.repo_registry import list_repos
+
+    # Parse optional body
+    stop_orchestrators = False
+    try:
+        body = await request.json()
+        stop_orchestrators = body.get("stop_orchestrators", False)
+    except json.JSONDecodeError:
+        pass  # No body is fine, default to not stopping orchestrators
+
+    # Stop orchestrators if requested
+    stopped_repos = []
+    if stop_orchestrators:
+        repos = list_repos()
+        for repo in repos:
+            path = Path(repo.path)
+            if path.exists():
+                status_info = supervisor.status(path)
+                if status_info.state == "running":
+                    logger.info("Stopping orchestrator for %s before shutdown", repo.path)
+                    if supervisor.stop(path):
+                        stopped_repos.append(repo.path)
+
     def delayed_shutdown():
         import time
         time.sleep(0.5)  # Give time for response to be sent
         os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(2)  # Give SIGTERM time to work
+        # Force kill if still alive
+        os.kill(os.getpid(), signal.SIGKILL)
 
-    threading.Thread(target=delayed_shutdown, daemon=True).start()
-    return JSONResponse({"status": "shutting_down"})
+    # daemon=False so thread survives to send SIGKILL if needed
+    threading.Thread(target=delayed_shutdown, daemon=False).start()
+    return JSONResponse({
+        "status": "shutting_down",
+        "stopped_orchestrators": stopped_repos,
+    })
+
+
+@control_app.get("/favicon.ico")
+async def favicon():
+    """Serve the logo as favicon."""
+    from fastapi.responses import Response
+
+    logo_path = Path(__file__).parent.parent.parent.parent / "assets" / "logo.svg"
+    if logo_path.exists():
+        return Response(
+            content=logo_path.read_bytes(),
+            media_type="image/svg+xml",
+        )
+    return Response(status_code=204)
 
 
 @control_app.get("/", response_class=HTMLResponse)
@@ -336,16 +384,40 @@ def _validate_repo_root(repo_root: str | None) -> Path | None:
         return None
 
 
+def _is_shutdown_complete(port: int | None) -> bool:
+    """Check if an orchestrator is in shutdown-complete state.
+
+    Returns True if shutdown_requested=True and no active sessions.
+    """
+    if not port:
+        return False
+    try:
+        import httpx
+        resp = httpx.get(f"http://127.0.0.1:{port}/api/status", timeout=2.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            shutdown_requested = data.get("shutdown_requested", False)
+            active_sessions = data.get("active_sessions", [])
+            return shutdown_requested and len(active_sessions) == 0
+    except Exception:
+        pass
+    return False
+
+
 @control_app.post("/control/orchestrator/start")
 async def control_start(request: Request) -> JSONResponse:
     """Start an orchestrator for a repository.
 
     JSON body:
         repo_root: str - Repository root path
-        port: int (optional) - HTTP port (default: 8080)
+        config_name: str (optional) - Config file name (default: default.yaml)
+
+    If the orchestrator is in shutdown-complete state (shutdown requested,
+    no active sessions), it will be automatically restarted.
     """
     from ..infra import supervisor
     from ..infra.repo_lock import AlreadyRunning
+    from ..infra.repo_registry import set_selected_config
 
     try:
         body = await request.json()
@@ -359,19 +431,60 @@ async def control_start(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    port = body.get("port", 8080)
-    if not isinstance(port, int) or port < 1 or port > 65535:
-        return JSONResponse({"error": "Invalid port"}, status_code=400)
+    # Validate port if provided
+    port = body.get("port")
+    if port is not None:
+        if not isinstance(port, int) or port < 1 or port > 65535:
+            return JSONResponse({"error": "Invalid port"}, status_code=400)
+
+    config_name = body.get("config_name", "default.yaml")
+    if not config_name.endswith(".yaml"):
+        config_name += ".yaml"
 
     try:
-        info = supervisor.start(repo_root, port=port)
+        # Update selected config in registry
+        set_selected_config(repo_root, config_name)
+
+        # Start orchestrator with the selected config
+        info = supervisor.start(repo_root, config_name=config_name)
         return JSONResponse({
             "status": "started",
             "pid": info.pid,
             "port": info.http_port,
             "repo_root": str(repo_root),
+            "config_name": config_name,
         })
+    except FileNotFoundError as e:
+        return JSONResponse({
+            "error": "config_not_found",
+            "detail": str(e),
+        }, status_code=404)
     except AlreadyRunning as e:
+        # Check if the running orchestrator is in shutdown-complete state
+        if _is_shutdown_complete(e.port):
+            # Stop the old instance and restart
+            logger.info("Orchestrator in shutdown-complete state, restarting: %s", repo_root)
+            try:
+                supervisor.stop(repo_root)
+                # Brief pause to allow cleanup
+                import time
+                time.sleep(0.5)
+                # Try starting again
+                info = supervisor.start(repo_root, config_name=config_name)
+                return JSONResponse({
+                    "status": "restarted",
+                    "pid": info.pid,
+                    "port": info.http_port,
+                    "repo_root": str(repo_root),
+                    "config_name": config_name,
+                })
+            except Exception as restart_err:
+                logger.exception("Failed to restart orchestrator for %s", repo_root)
+                return JSONResponse({
+                    "error": "restart_failed",
+                    "detail": str(restart_err),
+                }, status_code=500)
+        # Not in shutdown-complete state, return already_running error
         return JSONResponse({
             "error": "already_running",
             "pid": e.pid,
@@ -396,21 +509,29 @@ async def control_stop(request: Request) -> JSONResponse:
     """
     from ..infra import supervisor
 
+    logger.info("[control_stop] Received stop request")
+
     try:
         body = await request.json()
+        logger.info("[control_stop] Body: %s", body)
     except json.JSONDecodeError:
+        logger.error("[control_stop] Invalid JSON")
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     repo_root = _validate_repo_root(body.get("repo_root"))
     if repo_root is None:
+        logger.error("[control_stop] Invalid repo_root: %s", body.get("repo_root"))
         return JSONResponse(
             {"error": "Invalid or missing repo_root"},
             status_code=400,
         )
 
     force = body.get("force", False)
+    logger.info("[control_stop] Calling supervisor.stop(%s, force=%s)", repo_root, force)
 
     stopped = supervisor.stop(repo_root, force=force)
+    logger.info("[control_stop] supervisor.stop returned: %s", stopped)
+
     if stopped:
         return JSONResponse({"status": "stopped", "repo_root": str(repo_root)})
     else:
@@ -618,6 +739,7 @@ async def control_doctor(repo_root: str = Query(...)) -> JSONResponse:
     """
     from ..infra.config import Config
     from ..infra.doctor import run_doctor
+    from ..execution.command_runner import LocalCommandRunner
 
     path = _validate_repo_root(repo_root)
     if path is None:
@@ -626,18 +748,20 @@ async def control_doctor(repo_root: str = Query(...)) -> JSONResponse:
             status_code=400,
         )
 
-    # Try to load config from repo
-    config = None
-    for name in [".issue-orchestrator.yaml", ".issue-orchestrator.yml"]:
-        config_path = path / name
-        if config_path.exists():
-            try:
-                config = Config.load(config_path)
-                break
-            except Exception:
-                pass
+    # Try to load config from repo (new location)
+    from ..infra.config import get_config_path, list_configs
 
-    result = run_doctor(config=config, config_path=path / ".issue-orchestrator.yaml")
+    config = None
+    config_path = None
+    available = list_configs(path)
+    if available:
+        config_path = get_config_path(path, available[0])
+        try:
+            config = Config.load(config_path)
+        except Exception:
+            pass
+
+    result = run_doctor(config=config, config_path=config_path, runner=LocalCommandRunner())
     return JSONResponse(result.to_dict())
 
 
@@ -746,14 +870,16 @@ async def control_log_tail(
 # These endpoints manage the repo registry for multi-repo supervision.
 
 
-@control_app.get("/control/repos")
-async def list_repos_endpoint() -> JSONResponse:
-    """List all registered repositories with their status.
+def _build_repos_status() -> list[dict[str, Any]]:
+    """Build status data for all registered repos.
 
-    Returns a list of registered repos with their current orchestrator status.
+    Shared by both the REST endpoint and SSE stream.
     """
+    import httpx
+
     from ..infra import supervisor
     from ..infra.repo_registry import list_repos
+    from ..infra.config import list_configs
 
     repos = list_repos()
     result = []
@@ -763,15 +889,91 @@ async def list_repos_endpoint() -> JSONResponse:
         path = Path(repo.path)
         status_info = supervisor.status(path) if path.exists() else None
 
-        result.append({
+        # Get available configs
+        available_configs = list_configs(path) if path.exists() else []
+
+        repo_data = {
             "path": repo.path,
             "name": repo.name,
             "added_at": repo.added_at,
             "exists": path.exists(),
             "status": status_info.to_dict() if status_info else None,
-        })
+            "configs": available_configs,
+            "selected_config": repo.selected_config,  # Last used config
+        }
 
-    return JSONResponse({"repos": result})
+        # If running, fetch internal state from the orchestrator
+        if status_info and status_info.state == "running" and status_info.port:
+            try:
+                resp = httpx.get(
+                    f"http://127.0.0.1:{status_info.port}/api/status",
+                    timeout=2.0,
+                )
+                if resp.status_code == 200:
+                    internal = resp.json()
+                    repo_data["status"]["paused"] = internal.get("paused", False)
+                    repo_data["status"]["shutdown_requested"] = internal.get("shutdown_requested", False)
+                    # Include active session count for shutdown state determination
+                    active_sessions = internal.get("active_sessions", [])
+                    repo_data["status"]["active_session_count"] = len(active_sessions)
+            except Exception:
+                pass  # Keep supervisor status only
+
+        # Include cached health status if available
+        if repo.health:
+            repo_data["health"] = repo.health.to_dict()
+        else:
+            repo_data["health"] = None
+
+        result.append(repo_data)
+
+    return result
+
+
+@control_app.get("/control/repos")
+async def list_repos_endpoint() -> JSONResponse:
+    """List all registered repositories with their status.
+
+    Returns a list of registered repos with their current orchestrator status
+    and cached health information.
+    """
+    return JSONResponse({"repos": _build_repos_status()})
+
+
+@control_app.get("/control/events")
+async def control_events(request: Request):
+    """Server-Sent Events endpoint for Control Center status updates.
+
+    Pushes repository status updates every 10 seconds, eliminating the need
+    for client-side polling.
+
+    Events:
+        - status: Full status snapshot of all repos
+        - heartbeat: Keep-alive ping (every 30s between status updates)
+    """
+    logger.info("[Control SSE] Client connected")
+
+    async def event_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    logger.info("[Control SSE] Client disconnected")
+                    break
+
+                # Build and send status snapshot
+                repos = _build_repos_status()
+                yield {
+                    "event": "status",
+                    "data": json.dumps({"repos": repos}),
+                }
+
+                # Wait 3 seconds before next update (faster for responsive shutdown feedback)
+                await asyncio.sleep(3)
+        except asyncio.CancelledError:
+            logger.info("[Control SSE] Stream cancelled")
+            raise
+
+    return EventSourceResponse(event_generator())
 
 
 @control_app.post("/control/repos")
@@ -878,16 +1080,18 @@ async def remove_repo_endpoint(request: Request) -> JSONResponse:
         }, status_code=404)
 
 
-@control_app.post("/control/repos/validate")
-async def validate_repo_config(request: Request) -> JSONResponse:
-    """Validate a repository's configuration without starting the orchestrator.
+@control_app.post("/control/repos/select-config")
+async def select_config_endpoint(request: Request) -> JSONResponse:
+    """Set the selected config for a repository.
+
+    Called when the user changes the config dropdown. Persists the selection
+    so it survives page re-renders from SSE updates.
 
     JSON body:
         repo_root: str - Repository root path
-
-    Returns validation results with errors and warnings.
+        config_name: str - Config file name to select
     """
-    from ..infra.config import Config, find_config_file
+    from ..infra.repo_registry import set_selected_config
 
     try:
         body = await request.json()
@@ -901,14 +1105,70 @@ async def validate_repo_config(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    # Find config file
-    config_path = find_config_file(repo_root)
-    if not config_path:
+    config_name = body.get("config_name")
+    if not config_name:
+        return JSONResponse(
+            {"error": "Missing config_name"},
+            status_code=400,
+        )
+
+    if not config_name.endswith(".yaml"):
+        config_name += ".yaml"
+
+    if set_selected_config(repo_root, config_name):
+        return JSONResponse({"status": "ok", "config_name": config_name})
+    else:
+        return JSONResponse({"error": "Repo not found"}, status_code=404)
+
+
+@control_app.post("/control/repos/validate")
+async def validate_repo_config(request: Request) -> JSONResponse:
+    """Validate a repository's configuration without starting the orchestrator.
+
+    JSON body:
+        repo_root: str - Repository root path
+        config_name: str (optional) - Config file name (default: default.yaml)
+
+    Returns validation results with errors and warnings.
+    """
+    from ..infra.config import Config, get_config_path, list_configs, CONFIG_DIR
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = _validate_repo_root(body.get("repo_root"))
+    if repo_root is None:
+        return JSONResponse(
+            {"error": "Invalid or missing repo_root"},
+            status_code=400,
+        )
+
+    config_name = body.get("config_name", "default.yaml")
+    if not config_name.endswith(".yaml"):
+        config_name += ".yaml"
+
+    # Check if any configs exist
+    available = list_configs(repo_root)
+    if not available:
         return JSONResponse({
             "valid": False,
             "has_config": False,
             "config_path": None,
-            "errors": ["No .issue-orchestrator.yaml found"],
+            "errors": [f"No configs found in {CONFIG_DIR}/"],
+            "warnings": [],
+        })
+
+    # Get the specific config path
+    config_path = get_config_path(repo_root, config_name)
+    if not config_path.exists():
+        return JSONResponse({
+            "valid": False,
+            "has_config": True,
+            "config_path": None,
+            "available_configs": available,
+            "errors": [f"Config '{config_name}' not found. Available: {', '.join(available)}"],
             "warnings": [],
         })
 
@@ -947,6 +1207,104 @@ async def validate_repo_config(request: Request) -> JSONResponse:
         })
 
 
+@control_app.post("/control/repos/doctor")
+async def doctor_repo(request: Request) -> JSONResponse:
+    """Run full doctor checks for a repository including guardrails.
+
+    This runs the same checks as `issue-orchestrator doctor` and updates
+    the repo's health status in the registry.
+
+    JSON body:
+        repo_root: str - Repository root path
+        config_name: str (optional) - Config file name to check
+
+    Returns health status with errors and warnings.
+    """
+    from ..infra.repo_registry import update_repo_health
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = _validate_repo_root(body.get("repo_root"))
+    if repo_root is None:
+        return JSONResponse(
+            {"error": "Invalid or missing repo_root"},
+            status_code=400,
+        )
+
+    config_name = body.get("config_name")
+    if config_name and not config_name.endswith(".yaml"):
+        config_name += ".yaml"
+
+    try:
+        # Run doctor and update registry
+        health = update_repo_health(repo_root, config_name=config_name)
+        return JSONResponse({
+            "status": health.status,
+            "checked_at": health.checked_at,
+            "errors": health.errors,
+            "warnings": health.warnings,
+            "can_start": health.status == "valid",
+        })
+    except Exception as e:
+        logger.exception("Doctor check failed for %s", repo_root)
+        return JSONResponse({
+            "status": "error",
+            "checked_at": "",
+            "errors": [f"Doctor check failed: {e}"],
+            "warnings": [],
+            "can_start": False,
+        }, status_code=500)
+
+
+@control_app.get("/control/repos/config")
+async def get_repo_config(
+    repo_root: str = Query(..., description="Repository root path"),
+    config_name: str = Query(default="default.yaml", description="Config file name"),
+) -> JSONResponse:
+    """Get the contents of a config file.
+
+    Query params:
+        repo_root: str - Repository root path
+        config_name: str - Config file name (default: default.yaml)
+
+    Returns the config file contents as YAML text.
+    """
+    from ..infra.config import get_config_path
+
+    path = _validate_repo_root(repo_root)
+    if path is None:
+        return JSONResponse(
+            {"error": "Invalid or missing repo_root"},
+            status_code=400,
+        )
+
+    if not config_name.endswith(".yaml"):
+        config_name += ".yaml"
+
+    config_path = get_config_path(path, config_name)
+    if not config_path.exists():
+        return JSONResponse({
+            "error": "config_not_found",
+            "config_name": config_name,
+        }, status_code=404)
+
+    try:
+        content = config_path.read_text()
+        return JSONResponse({
+            "config_name": config_name,
+            "config_path": str(config_path),
+            "content": content,
+        })
+    except Exception as e:
+        return JSONResponse({
+            "error": "read_failed",
+            "detail": str(e),
+        }, status_code=500)
+
+
 @control_app.get("/control/repos/discover")
 async def discover_repos_endpoint(
     search_paths: str = Query(
@@ -955,13 +1313,18 @@ async def discover_repos_endpoint(
     ),
     max_depth: int = Query(default=2, description="Max directory depth to search"),
 ) -> JSONResponse:
-    """Discover repositories with .issue-orchestrator.yaml config files.
+    """Discover git repositories that could be configured with the orchestrator.
 
-    Scans common development directories for repos that have orchestrator configs.
+    Scans common development directories for git repos and categorizes them:
+    - "ready": Has .issue-orchestrator/config/*.yaml (can be added directly)
+    - "legacy": Has .issue-orchestrator.yaml only (needs migration)
+    - "needs_setup": Git repo without any config (needs setup wizard)
+
     Returns repos not yet registered in the registry.
     """
     import os
     from ..infra.repo_registry import load_registry
+    from ..infra.config import list_configs
 
     # Default search paths
     if search_paths:
@@ -983,7 +1346,6 @@ async def discover_repos_endpoint(
     registered_paths = {r.path for r in registry.repos}
 
     discovered = []
-    config_names = [".issue-orchestrator.yaml", ".issue-orchestrator.yml"]
 
     def scan_directory(base: Path, depth: int) -> None:
         if depth > max_depth:
@@ -995,27 +1357,37 @@ async def discover_repos_endpoint(
             for entry in os.scandir(base):
                 if entry.is_dir() and not entry.name.startswith("."):
                     entry_path = Path(entry.path)
+                    git_path = entry_path / ".git"
 
-                    # Check if this directory has a config file
-                    for config_name in config_names:
-                        config_path = entry_path / config_name
-                        if config_path.exists():
-                            # Skip git worktrees (.git is a file, not a directory)
-                            git_path = entry_path / ".git"
-                            if git_path.exists() and git_path.is_file():
-                                # This is a worktree, skip it
-                                break
+                    # Check if this is a git repository
+                    if git_path.exists():
+                        # Skip worktrees (.git is a file pointing elsewhere)
+                        if git_path.is_file():
+                            continue
 
-                            resolved = str(entry_path.resolve())
-                            if resolved not in registered_paths:
-                                discovered.append({
-                                    "path": resolved,
-                                    "name": entry_path.name,
-                                    "config": config_name,
-                                })
-                            break
+                        resolved = str(entry_path.resolve())
+                        if resolved in registered_paths:
+                            continue
+
+                        # Determine config status
+                        configs = list_configs(entry_path)
+                        legacy_config = (entry_path / ".issue-orchestrator.yaml").exists()
+
+                        if configs:
+                            status = "ready"
+                        elif legacy_config:
+                            status = "legacy"
+                        else:
+                            status = "needs_setup"
+
+                        discovered.append({
+                            "path": resolved,
+                            "name": entry_path.name,
+                            "configs": configs,
+                            "status": status,
+                        })
                     else:
-                        # No config found, recurse deeper
+                        # Not a git repo, recurse deeper
                         scan_directory(entry_path, depth + 1)
         except PermissionError:
             pass
@@ -1221,8 +1593,9 @@ async def setup_preview(request: Request) -> JSONResponse:
     repo_root = body.get("repo_root", "")
 
     # Config file
+    from ..infra.config import CONFIG_DIR, DEFAULT_CONFIG_NAME
     files_to_create.append({
-        "path": f"{repo_root}/.issue-orchestrator.yaml",
+        "path": f"{repo_root}/{CONFIG_DIR}/{DEFAULT_CONFIG_NAME}",
         "action": "create",
         "size": len(yaml_content),
     })
@@ -1280,8 +1653,16 @@ async def setup_save(request: Request) -> JSONResponse:
     created_files = []
     created_labels = []
 
-    # Write config file
-    config_path = repo_root / ".issue-orchestrator.yaml"
+    # Get config name (default to default.yaml)
+    config_name = body.get("config_name", "default.yaml")
+    if not config_name.endswith(".yaml"):
+        config_name += ".yaml"
+
+    # Write config file to .issue-orchestrator/config/
+    from ..infra.config import get_config_dir, get_config_path
+    config_dir = get_config_dir(repo_root)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = get_config_path(repo_root, config_name)
 
     class NoAliasDumper(yaml.SafeDumper):
         def ignore_aliases(self, data: Any) -> bool:

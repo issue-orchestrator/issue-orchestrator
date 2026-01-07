@@ -257,10 +257,10 @@ class SessionLauncher:
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
 
         # Create worktree
-        repo_root = agent_config.repo_root or self.config.repo_root
+        repo_root = self.config.repo_root
         step_start = time.time()
         logger.info("[launch] Creating worktree for issue #%d...", issue.number)
-        worktree_base = agent_config.worktree_base
+        worktree_base = self.config.worktree_base
         if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
             base_root = Path(worktree_base) if worktree_base else repo_root.parent
             worktree_base = base_root / session_name
@@ -460,8 +460,8 @@ class SessionLauncher:
         )
 
         # Create worktree
-        repo_root = agent_config.repo_root or self.config.repo_root
-        worktree_base = agent_config.worktree_base
+        repo_root = self.config.repo_root
+        worktree_base = self.config.worktree_base
         if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
             base_root = Path(worktree_base) if worktree_base else repo_root.parent
             worktree_base = base_root / session_name
@@ -635,8 +635,8 @@ class SessionLauncher:
         )
 
         # Create worktree
-        repo_root = agent_config.repo_root or self.config.repo_root
-        worktree_base = agent_config.worktree_base
+        repo_root = self.config.repo_root
+        worktree_base = self.config.worktree_base
         if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
             base_root = Path(worktree_base) if worktree_base else repo_root.parent
             worktree_base = base_root / session_name

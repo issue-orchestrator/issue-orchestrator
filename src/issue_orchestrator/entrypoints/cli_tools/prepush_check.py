@@ -58,7 +58,7 @@ def load_publish_gate_config(worktree: Path) -> tuple[Optional[str], int]:
         timeout = int(env_timeout) if env_timeout else 120
         return env_cmd, timeout
 
-    # Use shared config lookup (checks both .issue-orchestrator.yaml and .issue-orchestrator/config.yaml)
+    # Use shared config lookup (checks .issue-orchestrator/config/)
     validation_config = load_validation_config(worktree)
 
     publish_gate = validation_config["publish_gate"]

@@ -94,15 +94,12 @@ def make_config(
 
 def make_agent_config(
     tmp_path: Path,
-    repo_root: Path | None = None,
 ) -> AgentConfig:
     """Create an AgentConfig for testing."""
     prompt = tmp_path / "prompt.md"
     prompt.write_text("Test prompt")
     return AgentConfig(
         prompt_path=prompt,
-        worktree_base=tmp_path / "worktrees",
-        repo_root=repo_root,
     )
 
 
@@ -117,7 +114,7 @@ class TestRestoreSessionsBasic:
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -153,7 +150,7 @@ class TestRestoreSessionsBasic:
         worktree = tmp_path / "repo-100"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:reviewer": agent_config})
         config.repo_root = repo_root
 
@@ -185,7 +182,7 @@ class TestRestoreSessionsBasic:
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -218,7 +215,7 @@ class TestRestoreSessionsBasic:
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -254,7 +251,7 @@ class TestOrphanedSessionHandling:
         repo_root.mkdir()
         # Note: NO worktree created for issue 123
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -279,7 +276,7 @@ class TestOrphanedSessionHandling:
         repo_root.mkdir()
         # No worktree for issue 123
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -313,7 +310,7 @@ class TestErrorRecovery:
         worktree_200 = tmp_path / "repo-200"
         worktree_200.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -345,7 +342,7 @@ class TestErrorRecovery:
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -402,11 +399,9 @@ class TestStateValidation:
         with caplog.at_level(logging.WARNING):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
 
-        # No session restored - treated as orphaned since no agents means no worktrees found
+        # No session restored - no agent config available means session skipped
         assert len(restored) == 0
-        assert "Could not find worktree" in caplog.text
-        # Orphaned issue cleanup was attempted
-        assert (123, "in-progress") in repo_host.remove_label_calls
+        assert "No agent config available" in caplog.text
 
     def test_skips_session_without_repo_config(self, tmp_path, caplog):
         """Sessions without repo in config are skipped."""
@@ -415,7 +410,7 @@ class TestStateValidation:
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config}, repo=None)
         config.repo = None  # No repo configured
         config.repo_root = repo_root
@@ -443,7 +438,7 @@ class TestStateValidation:
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -471,7 +466,7 @@ class TestStateValidation:
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -502,7 +497,7 @@ class TestBranchNameResolution:
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -534,7 +529,7 @@ class TestWorktreeFinding:
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
         config.repo_root = repo_root
 
@@ -552,35 +547,6 @@ class TestWorktreeFinding:
         assert len(restored) == 1
         assert restored[0].worktree_path == worktree
 
-    def test_checks_agent_specific_repo_root(self, tmp_path):
-        """Uses agent-specific repo_root when configured."""
-        main_repo = tmp_path / "main-repo"
-        main_repo.mkdir()
-        agent_repo = tmp_path / "agent-repo"
-        agent_repo.mkdir()
-        # Worktree is sibling of agent repo
-        worktree = tmp_path / "agent-repo-123"
-        worktree.mkdir()
-
-        agent_config = make_agent_config(tmp_path, repo_root=agent_repo)
-        config = make_config(agents={"agent:web": agent_config})
-        config.repo_root = main_repo  # Global repo_root different from agent
-
-        repo_host = MockRepositoryHost()
-        repo_host.issues[123] = Issue(number=123, title="Test", labels=["agent:web"])
-
-        working_copy = MockWorkingCopy()
-        working_copy.branches[worktree] = "123-feature"
-
-        restorer = SessionRestorer(config, repo_host, working_copy)
-
-        discovered = [make_discovered_session(123)]
-        restored = restorer.restore_sessions(discovered, already_tracked=[])
-
-        assert len(restored) == 1
-        assert restored[0].worktree_path == worktree
-
-
 class TestReviewSessionSpecifics:
     """Tests specific to review session restoration."""
 
@@ -591,7 +557,7 @@ class TestReviewSessionSpecifics:
         worktree = tmp_path / "repo-100"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:reviewer": agent_config})
         config.repo_root = repo_root
 
@@ -618,7 +584,7 @@ class TestReviewSessionSpecifics:
         worktree = tmp_path / "repo-100"
         worktree.mkdir()
 
-        agent_config = make_agent_config(tmp_path, repo_root=repo_root)
+        agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:reviewer": agent_config})
         config.repo_root = repo_root
 

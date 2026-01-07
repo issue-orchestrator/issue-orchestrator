@@ -1,0 +1,54 @@
+#!/bin/bash
+# git-wrapper - intercepts git commands to block push operations for agents
+#
+# Agents can use git locally (commit, branch, etc.) but cannot push.
+# The orchestrator handles pushing via agent-done workflow.
+
+set -euo pipefail
+
+# === CHECK IF COMMAND IS BLOCKED ===
+
+cmd="${1:-}"
+
+# Block push operations unless authorized
+if [[ "$cmd" == "push" ]]; then
+    if [[ "${ORCHESTRATOR_GH_AUTH:-}" != "agent-done-authorized" ]]; then
+        echo "" >&2
+        echo "╔════════════════════════════════════════════════════════════════╗" >&2
+        echo "║  ❌ BLOCKED: 'git push' is not allowed                         ║" >&2
+        echo "╠════════════════════════════════════════════════════════════════╣" >&2
+        echo "║                                                                ║" >&2
+        echo "║  Agents cannot push directly to GitHub.                        ║" >&2
+        echo "║  Use 'agent-done' to complete your work - it handles pushing.  ║" >&2
+        echo "║                                                                ║" >&2
+        echo "║  ✅ Correct usage:                                             ║" >&2
+        echo "║     agent-done completed \\                                     ║" >&2
+        echo "║       --implementation \"What you implemented\" \\                ║" >&2
+        echo "║       --problems \"None\"                                        ║" >&2
+        echo "║                                                                ║" >&2
+        echo "║  Your commits are safe locally. agent-done will push them.     ║" >&2
+        echo "║                                                                ║" >&2
+        echo "╚════════════════════════════════════════════════════════════════╝" >&2
+        echo "" >&2
+        exit 1
+    fi
+fi
+
+# === PASS THROUGH TO REAL GIT ===
+
+# Find and exec real git (search common locations)
+for git_path in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
+    if [[ -x "$git_path" ]]; then
+        exec "$git_path" "$@"
+    fi
+done
+
+# Fallback: try to find git in PATH (excluding this wrapper)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REAL_GIT=$(which -a git 2>/dev/null | grep -v "$SCRIPT_DIR" | head -1)
+if [[ -x "$REAL_GIT" ]]; then
+    exec "$REAL_GIT" "$@"
+fi
+
+echo "ERROR: Could not find real git executable" >&2
+exit 1

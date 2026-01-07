@@ -8,6 +8,96 @@ import yaml
 
 from ..domain.models import AgentConfig, CommentHeadings
 
+# Config directory structure
+CONFIG_DIR = ".issue-orchestrator/config"
+DEFAULT_CONFIG_NAME = "default.yaml"
+
+# Valid top-level config fields (for unknown field validation)
+ALLOWED_TOP_LEVEL_FIELDS = {
+    'repo', 'agents', 'concurrency', 'labels', 'ui_mode', 'web_port',
+    'control_api_port', 'config', 'worktree_base',
+    'github_token', 'github_token_env', 'github_api_url',
+    'github_http_timeout_seconds', 'github_required_scopes', 'github_allowed_scopes',
+    'filter_label', 'filter_milestone', 'filter_milestones', 'filter_issue',
+    'issue_fetch_limit', 'e2e_pr_labels', 'review', 'cleanup', 'validation',
+    'validation_policy', 'isolation', 'setup_worktree', 'milestone_sort',
+    'milestone_sort_config', 'foundation_milestone',
+    'state_file', 'pre_push_hook', 'enforce_hooks', 'queue_refresh_seconds',
+    'terminal_adapter', 'max_issues_to_start', 'close_completed_tabs',
+    'close_failed_tabs', 'session_no_output_seconds', 'session_no_output_tail_lines',
+    'session_no_output_max_bytes', 'session_no_output_repeat_seconds',
+    'gh_write_verify_timeout_seconds', 'gh_write_verify_initial_delay_ms',
+    'gh_write_verify_max_delay_ms', 'gh_write_verify_backoff', 'gh_write_verify_jitter_ms',
+    'gh_rate_limit_startup', 'gh_rate_limit_every_calls', 'gh_rate_limit_warn_fraction',
+    'gh_rate_limit_warn_remaining', 'gh_audit_enabled', 'gh_audit_events', 'gh_audit_file',
+    'comment_headings', 'dangerous',
+}
+
+# Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
+ALLOWED_AGENT_FIELDS = {
+    'prompt', 'model', 'timeout_minutes',
+    'permission_mode', 'skip_review', 'reviewer', 'command',
+    'meta_agent', 'initial_prompt',
+}
+
+
+def repo_root_from_config_path(config_path: Path) -> Path:
+    """Get the repo root from a config file path.
+
+    Configs live at <repo>/.issue-orchestrator/config/<name>.yaml
+    So repo root is 3 levels up from the config file.
+
+    This is the SINGLE SOURCE OF TRUTH for this calculation.
+    """
+    return config_path.parent.parent.parent.resolve()
+
+
+def resolve_relative_path(path: str | Path, repo_root: Path) -> Path:
+    """Resolve a path relative to repo root if not absolute.
+
+    This is the standard way to resolve any user-provided path in config.
+    """
+    p = Path(path)
+    if p.is_absolute():
+        return p.resolve()
+    return (repo_root / p).resolve()
+
+
+def get_config_dir(repo_root: Path) -> Path:
+    """Get the config directory for a repo."""
+    return repo_root / CONFIG_DIR
+
+
+def list_configs(repo_root: Path) -> list[str]:
+    """List available config files in a repo's config directory.
+
+    Returns list of config filenames (e.g., ['default.yaml', 'test.yaml']).
+    Returns empty list if config dir doesn't exist or has no yaml files.
+    """
+    config_dir = get_config_dir(repo_root)
+    if not config_dir.exists():
+        return []
+
+    configs = sorted(
+        f.name for f in config_dir.glob("*.yaml")
+        if f.is_file()
+    )
+    # Put default.yaml first if it exists
+    if DEFAULT_CONFIG_NAME in configs:
+        configs.remove(DEFAULT_CONFIG_NAME)
+        configs.insert(0, DEFAULT_CONFIG_NAME)
+    return configs
+
+
+def get_config_path(repo_root: Path, config_name: str = DEFAULT_CONFIG_NAME) -> Path:
+    """Get the full path to a config file."""
+    return get_config_dir(repo_root) / config_name
+
+
+def config_exists(repo_root: Path, config_name: str = DEFAULT_CONFIG_NAME) -> bool:
+    """Check if a config file exists."""
+    return get_config_path(repo_root, config_name).exists()
+
 
 @dataclass
 class CleanupWithTriage:
@@ -90,6 +180,10 @@ class Config:
     state_file: Path = Path(".issue-orchestrator/state.json")
     repo_root: Path = field(default_factory=Path.cwd)  # Root of the git repository
     repo_root_from_yaml: bool = False  # Internal: YAML explicitly set repo_root
+    worktree_base: Path = Path(".issue-orchestrator/worktrees")  # Base directory for worktrees
+
+    # Config validation
+    config_strict: bool = False  # If True, unknown fields cause validation errors; if False, warnings only
 
     # GitHub settings
     repo: Optional[str] = None  # owner/repo, or None to auto-detect
@@ -190,6 +284,10 @@ class Config:
 
     # Path to the config file (set during load)
     config_path: Optional[Path] = None
+
+    # Raw YAML data for unknown field validation (set during load)
+    _raw_data: dict = field(default_factory=dict)
+    _raw_agents: dict = field(default_factory=dict)
 
     def prefixed_label(self, label: str) -> str:
         """Return label with prefix if configured.
@@ -308,13 +406,13 @@ class Config:
             "agents": {
                 label: {
                     "prompt_path": str(cfg.prompt_path),
-                    "worktree_base": str(cfg.worktree_base),
                     "model": cfg.model,
                     "timeout_minutes": cfg.timeout_minutes,
                     "meta_agent": cfg.meta_agent,
                 }
                 for label, cfg in self.agents.items()
             },
+            "worktree_base": str(self.worktree_base),
             "labels": {
                 "in_progress": self.get_label_in_progress(),
                 "blocked": self.get_label_blocked(),
@@ -374,55 +472,50 @@ class Config:
 
         config = cls()
         config.config_path = config_path.resolve()
-        # Default repo_root to config file's parent directory
-        # (can be overridden in find_and_load or by YAML settings)
-        config.repo_root = config_path.parent.resolve()
+
+        # Determine repo root using centralized helper
+        repo_root = repo_root_from_config_path(config_path)
+
+        # Default repo_root to detected repo root
+        # (can be overridden by YAML settings)
+        config.repo_root = repo_root
         if data.get("repo_root"):
-            repo_root = Path(data["repo_root"])
-            if not repo_root.is_absolute():
-                repo_root = (config_path.parent / repo_root).resolve()
-            config.repo_root = repo_root
+            config.repo_root = resolve_relative_path(data["repo_root"], repo_root)
             config.repo_root_from_yaml = True
 
+        # Parse top-level worktree_base (applies to all agents)
+        worktree_base_raw = data.get("worktree_base")
+        if worktree_base_raw is None:
+            config.worktree_base = repo_root / ".issue-orchestrator" / "worktrees"
+        else:
+            config.worktree_base = resolve_relative_path(worktree_base_raw, repo_root)
+
+        # Validate worktree_base is usable (create if needed, fail fast if not)
+        try:
+            config.worktree_base.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise ValueError(
+                f"worktree_base '{config.worktree_base}' cannot be created: {e}. "
+                f"Specify an absolute path in your config under worktree_base"
+            )
+
+        # Parse config section (strict mode, etc.)
+        config_section = data.get("config", {})
+        config.config_strict = config_section.get("strict", False)
+
+        # Store raw data for unknown field validation
+        config._raw_data = data
+        config._raw_agents = data.get("agents", {})
+
         # Parse agents
+        # All relative paths in agent configs are resolved relative to repo_root
+
         for label, agent_data in data.get("agents", {}).items():
-            # Resolve prompt path relative to repo_root (not worktree) so prompts work
-            # even when the branch doesn't have the prompt file
-            prompt_path = Path(agent_data["prompt"])
-            if not prompt_path.is_absolute():
-                # Get repo_root for this agent (or use config.repo_root which we set below)
-                # If repo_root is relative, resolve it relative to config file location
-                if "repo_root" in agent_data:
-                    agent_repo_root = Path(agent_data["repo_root"])
-                    if not agent_repo_root.is_absolute():
-                        agent_repo_root = (config_path.parent / agent_repo_root).resolve()
-                else:
-                    agent_repo_root = config_path.parent
-                prompt_path = (agent_repo_root / prompt_path).resolve()
-
-            # Resolve worktree_base - MUST be absolute for reliable operation
-            # Relative paths are resolved relative to config file location
-            worktree_base_raw = agent_data.get("worktree_base")
-            if worktree_base_raw is None:
-                # Default to sibling directory of repo
-                worktree_base = (config_path.parent.parent / "worktrees").resolve()
-            else:
-                worktree_base = Path(worktree_base_raw)
-                if not worktree_base.is_absolute():
-                    worktree_base = (config_path.parent / worktree_base).resolve()
-
-            # Validate worktree_base is usable (create if needed, fail fast if not)
-            try:
-                worktree_base.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                raise ValueError(
-                    f"Agent '{label}': worktree_base '{worktree_base}' cannot be created: {e}. "
-                    f"Specify an absolute path in your config under agents.{label}.worktree_base"
-                )
+            # Resolve prompt path relative to repo_root
+            prompt_path = resolve_relative_path(agent_data["prompt"], repo_root)
 
             agent_kwargs = {
                 "prompt_path": prompt_path,
-                "worktree_base": worktree_base,
                 "model": agent_data.get("model", "sonnet"),
                 "timeout_minutes": agent_data.get("timeout_minutes", 45),
                 "permission_mode": agent_data.get("permission_mode", "default"),
@@ -432,12 +525,8 @@ class Config:
             }
             if "command" in agent_data:
                 agent_kwargs["command"] = agent_data["command"]
-            if "repo_root" in agent_data:
-                # Resolve repo_root relative to config file if not absolute
-                repo_root_path = Path(agent_data["repo_root"])
-                if not repo_root_path.is_absolute():
-                    repo_root_path = (config_path.parent / repo_root_path).resolve()
-                agent_kwargs["repo_root"] = repo_root_path
+            if "initial_prompt" in agent_data:
+                agent_kwargs["initial_prompt"] = agent_data["initial_prompt"]
             config.agents[label] = AgentConfig(**agent_kwargs)
 
         # Parse concurrency
@@ -518,7 +607,7 @@ class Config:
         # Enforcement options
         config.enforce_hooks = data.get("enforce_hooks", True)
         if data.get("pre_push_hook"):
-            config.pre_push_hook = Path(data["pre_push_hook"])
+            config.pre_push_hook = resolve_relative_path(data["pre_push_hook"], repo_root)
 
         # Worktree setup commands
         config.setup_worktree = data.get("setup_worktree", [])
@@ -626,23 +715,29 @@ class Config:
 
     @classmethod
     def find_and_load(
-        cls, start_path: Optional[Path] = None, overrides: Optional[list[str]] = None
+        cls,
+        start_path: Optional[Path] = None,
+        config_name: str = DEFAULT_CONFIG_NAME,
+        overrides: Optional[list[str]] = None,
     ) -> "Config":
-        """Find config file in current or parent directories and load it."""
-        config_file = find_config_file(start_path)
+        """Find config file in current or parent directories and load it.
+
+        Args:
+            start_path: Starting path for search (defaults to cwd)
+            config_name: Name of config file to load (default: default.yaml)
+            overrides: CLI overrides in path=value format
+        """
+        config_file = find_config_file(start_path, config_name)
         if not config_file:
             raise FileNotFoundError(
-                "No .issue-orchestrator.yaml found in current or parent directories"
+                f"No config found in {CONFIG_DIR}/ directory. "
+                "Run the setup wizard to create a configuration."
             )
 
         config = cls.load(config_file, overrides=overrides)
-        # Set repo_root to the directory containing the config file
-        # (or parent if config is in .issue-orchestrator/)
+        # Set repo_root using centralized helper if not already set from YAML
         if not config.repo_root_from_yaml:
-            if config_file.parent.name == ".issue-orchestrator":
-                config.repo_root = config_file.parent.parent.resolve()
-            else:
-                config.repo_root = config_file.parent.resolve()
+            config.repo_root = repo_root_from_config_path(config_file)
         return config
 
     def validate(self) -> list[str]:
@@ -657,27 +752,25 @@ class Config:
         if not self.agents:
             errors.append("No agents configured. Add at least one agent under 'agents:' in config.")
 
+        # Validate worktree_base (now top-level)
+        if not self.worktree_base.is_absolute():
+            errors.append(
+                f"worktree_base must be absolute path, got: {self.worktree_base}"
+            )
+        elif not self.worktree_base.exists():
+            errors.append(
+                f"worktree_base does not exist: {self.worktree_base}"
+            )
+        elif not self.worktree_base.is_dir():
+            errors.append(
+                f"worktree_base is not a directory: {self.worktree_base}"
+            )
+
         for label, agent in self.agents.items():
             # Validate prompt file exists
             if not agent.prompt_path.exists():
                 errors.append(
                     f"Agent '{label}': prompt file not found: {agent.prompt_path}"
-                )
-
-            # Validate worktree_base is absolute (should be resolved by load())
-            if not agent.worktree_base.is_absolute():
-                errors.append(
-                    f"Agent '{label}': worktree_base must be absolute path, got: {agent.worktree_base}"
-                )
-
-            # Validate worktree_base exists and is writable
-            if not agent.worktree_base.exists():
-                errors.append(
-                    f"Agent '{label}': worktree_base does not exist: {agent.worktree_base}"
-                )
-            elif not agent.worktree_base.is_dir():
-                errors.append(
-                    f"Agent '{label}': worktree_base is not a directory: {agent.worktree_base}"
                 )
 
             # Validate model is known
@@ -744,7 +837,94 @@ class Config:
                     f"got: '{self.validation_policy.agent_runs}'"
                 )
 
+        # Validate unknown fields (errors or warnings depending on config_strict)
+        unknown_fields = self.validate_unknown_fields()
+        if unknown_fields:
+            import logging
+            logger = logging.getLogger(__name__)
+            for field_path, _ in unknown_fields:
+                msg = f"Unknown config field: '{field_path}'"
+                if self.config_strict:
+                    errors.append(msg)
+                else:
+                    logger.warning(msg)
+
+        # Validate template variables in initial_prompt and command
+        invalid_templates = self.validate_template_variables()
+        for agent_label, field_name, bad_vars in invalid_templates:
+            vars_str = ", ".join(sorted(bad_vars))
+            errors.append(
+                f"Agent '{agent_label}': invalid template variable(s) in {field_name}: {{{vars_str}}}. "
+                f"Valid: issue_number, issue_title, prompt, worktree, model, permission_mode, "
+                f"claude_args, pr_number" + (", initial_prompt" if field_name == "command" else "")
+            )
+
         return errors
+
+    def validate_unknown_fields(self) -> list[tuple[str, str]]:
+        """Check for unknown fields in the raw YAML data.
+
+        Returns list of (field_path, level) tuples where:
+        - field_path is like "repo_root" or "agents.agent:web.worktree_base"
+        - level is "top" or "agent"
+        """
+        unknown = []
+
+        # Check top-level fields
+        for key in self._raw_data.keys():
+            if key not in ALLOWED_TOP_LEVEL_FIELDS:
+                unknown.append((key, "top"))
+
+        # Check per-agent fields
+        for agent_name, agent_data in self._raw_agents.items():
+            if isinstance(agent_data, dict):
+                for key in agent_data.keys():
+                    if key not in ALLOWED_AGENT_FIELDS:
+                        unknown.append((f"agents.{agent_name}.{key}", "agent"))
+
+        return unknown
+
+    def validate_template_variables(self) -> list[tuple[str, str, set[str]]]:
+        """Check for invalid template variables in initial_prompt and command.
+
+        Returns list of (agent_label, field_name, invalid_vars) tuples.
+        """
+        import re
+
+        # Valid variables for initial_prompt (before command rendering)
+        VALID_INITIAL_PROMPT_VARS = {
+            "issue_number",
+            "issue_title",
+            "prompt",
+            "worktree",
+            "model",
+            "permission_mode",
+            "claude_args",
+            "pr_number",  # Only valid for review agents, but we allow it here
+        }
+
+        # Valid variables for command (after initial_prompt is rendered)
+        VALID_COMMAND_VARS = VALID_INITIAL_PROMPT_VARS | {"initial_prompt"}
+
+        # Regex to find {variable_name} patterns (excluding {{ escaped braces }})
+        VAR_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+        invalid = []
+
+        for label, agent in self.agents.items():
+            # Check initial_prompt
+            found_vars = set(VAR_PATTERN.findall(agent.initial_prompt))
+            bad_vars = found_vars - VALID_INITIAL_PROMPT_VARS
+            if bad_vars:
+                invalid.append((label, "initial_prompt", bad_vars))
+
+            # Check command
+            found_vars = set(VAR_PATTERN.findall(agent.command))
+            bad_vars = found_vars - VALID_COMMAND_VARS
+            if bad_vars:
+                invalid.append((label, "command", bad_vars))
+
+        return invalid
 
     def validate_or_raise(self) -> None:
         """Validate configuration, raising ValueError if invalid."""
@@ -755,14 +935,18 @@ class Config:
             )
 
 
-def find_config_file(start_path: Optional[Path] = None) -> Optional[Path]:
+def find_config_file(
+    start_path: Optional[Path] = None,
+    config_name: str = DEFAULT_CONFIG_NAME,
+) -> Optional[Path]:
     """Find the config file by searching up the directory tree.
 
     This is the single source of truth for config file lookup.
-    Checks both `.issue-orchestrator.yaml` and `.issue-orchestrator/config.yaml`.
+    Only looks in .issue-orchestrator/config/ directory.
 
     Args:
         start_path: Starting path for search (defaults to cwd)
+        config_name: Name of config file to find (default: default.yaml)
 
     Returns:
         Path to config file, or None if not found
@@ -770,13 +954,7 @@ def find_config_file(start_path: Optional[Path] = None) -> Optional[Path]:
     search_path = start_path or Path.cwd()
 
     for path in [search_path, *search_path.parents]:
-        # Check .issue-orchestrator.yaml first
-        config_file = path / ".issue-orchestrator.yaml"
-        if config_file.exists():
-            return config_file
-
-        # Then check .issue-orchestrator/config.yaml
-        config_file = path / ".issue-orchestrator" / "config.yaml"
+        config_file = get_config_path(path, config_name)
         if config_file.exists():
             return config_file
 

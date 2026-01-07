@@ -596,7 +596,6 @@ def sample_agent_config(tmp_path):
 
     return AgentConfig(
         prompt_path=prompt_file,
-        worktree_base=tmp_path,
         model="sonnet",
         timeout_minutes=45,
     )
@@ -607,6 +606,8 @@ def sample_config(sample_agent_config, tmp_path):
     """Create a sample Config object for testing."""
     config = Config()
     config.repo = "test/repo"  # Required for session launching
+    config.repo_root = tmp_path  # Set repo_root for worktree operations
+    config.worktree_base = tmp_path  # Top-level worktree_base (no per-agent)
     config.agents["agent:web"] = sample_agent_config
     config.max_concurrent_sessions = 3
     config.session_timeout_minutes = 45
@@ -795,15 +796,15 @@ def mock_github_api():
 def mock_config_yaml(tmp_path):
     """Create a temporary config YAML file."""
     config_content = """
+worktree_base: /path/to/worktrees
+
 agents:
   agent:web:
     prompt: /path/to/web_prompt.txt
-    worktree_base: /path/to/worktrees
     model: sonnet
     timeout_minutes: 45
   agent:mobile:
     prompt: /path/to/mobile_prompt.txt
-    worktree_base: /path/to/worktrees
     model: sonnet
     timeout_minutes: 60
 

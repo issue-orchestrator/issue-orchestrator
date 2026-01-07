@@ -76,6 +76,7 @@ class TestRegisteredRepo:
             "path": "/home/user/projects/my-repo",
             "name": "My Repo",
             "added_at": "2024-01-01T00:00:00+00:00",
+            "selected_config": "default.yaml",  # Default config file name
         }
 
     def test_from_dict(self) -> None:

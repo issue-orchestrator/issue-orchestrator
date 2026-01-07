@@ -910,9 +910,9 @@ class TestAgentGateIntegration:
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
 
         # Create config with passing agent gate
-        config_dir = tmp_path / ".issue-orchestrator"
-        config_dir.mkdir()
-        config_path = config_dir / "config.yaml"
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
   agent_gate:
@@ -955,9 +955,9 @@ validation_policy:
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
 
         # Create config with failing agent gate
-        config_dir = tmp_path / ".issue-orchestrator"
-        config_dir.mkdir()
-        config_path = config_dir / "config.yaml"
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
   agent_gate:
@@ -1006,9 +1006,9 @@ validation_policy:
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
 
         # Create config with agent gate that would fail
-        config_dir = tmp_path / ".issue-orchestrator"
-        config_dir.mkdir()
-        config_path = config_dir / "config.yaml"
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
   agent_gate:

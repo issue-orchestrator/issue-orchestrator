@@ -208,11 +208,11 @@ class ITermSessionManager:
         # In shell, 'foo'\''bar' produces foo'bar (end quote, escaped quote, start quote)
         cmd_with_escaped_quotes = command.replace("'", "'\\''")
 
-        # Prepend gh-wrapper directory to PATH to intercept unauthorized gh pr create
-        # This blocks agents from bypassing agent-done
+        # Security: Prepend wrapper directory to PATH for defense-in-depth
+        # (Primary security is env scrubbing via build_isolation_prefix below)
         from pathlib import Path
         from ...control.isolation import build_isolation_prefix
-        wrapper_dir = Path(__file__).parent / "scripts"
+        wrapper_dir = Path(__file__).parent.parent.parent / "scripts"
         path_prefix = f'export PATH="{wrapper_dir}:$PATH" && '
 
         # Add isolation: scrub credentials, isolate HOME to worktree

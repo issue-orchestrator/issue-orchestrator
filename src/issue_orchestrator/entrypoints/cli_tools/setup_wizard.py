@@ -211,24 +211,42 @@ def fetch_github_labels(repo: str) -> list[str]:
 
 
 def find_existing_config(start_path: Path | None = None) -> tuple[Path | None, dict | None]:
-    """Find existing config file."""
+    """Find existing config file.
+
+    Looks for configs in .issue-orchestrator/config/ only.
+    """
+    from ...infra.config import CONFIG_DIR, DEFAULT_CONFIG_NAME
+
     if start_path is None:
         start_path = Path.cwd()
+
+    # Only look in the canonical config location
     candidates = [
-        ".issue-orchestrator.yaml",
-        ".issue-orchestrator/config.yaml",
+        f"{CONFIG_DIR}/{DEFAULT_CONFIG_NAME}",  # .issue-orchestrator/config/default.yaml
+        f"{CONFIG_DIR}/*.yaml",  # Any yaml in config dir (glob)
     ]
 
     current = start_path
     while current != current.parent:
         for candidate in candidates:
-            config_path = current / candidate
-            if config_path.exists():
-                try:
-                    with open(config_path) as f:
-                        return config_path, yaml.safe_load(f)
-                except yaml.YAMLError:
-                    pass
+            if "*" in candidate:
+                # Glob pattern
+                matches = list(current.glob(candidate))
+                if matches:
+                    config_path = matches[0]  # Take first match
+                    try:
+                        with open(config_path) as f:
+                            return config_path, yaml.safe_load(f)
+                    except yaml.YAMLError:
+                        pass
+            else:
+                config_path = current / candidate
+                if config_path.exists():
+                    try:
+                        with open(config_path) as f:
+                            return config_path, yaml.safe_load(f)
+                    except yaml.YAMLError:
+                        pass
         current = current.parent
 
     return None, None
@@ -245,8 +263,9 @@ def find_prompt_candidates(start_path: Path | None = None) -> list[Path]:
 
     # High-priority patterns (likely prompts)
     high_priority_patterns = [
-        ".issue-orchestrator/**/*.md",
+        ".prompts/**/*.md",
         "**/prompts/*.md",
+        ".issue-orchestrator/prompts/**/*.md",  # Legacy location
         "**/*orchestrator*.md",
         "**/*-agent*.md",
         "**/*_agent*.md",
@@ -336,7 +355,7 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
 
         prompt_path = prompter.input(
             f"Prompt file path for {agent_name}",
-            f".issue-orchestrator/prompts/{agent_name.split(':')[-1]}.md",
+            f".prompts/{agent_name.split(':')[-1]}.md",
         )
 
         timeout = prompter.input("Timeout in minutes", "45")
@@ -378,10 +397,28 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
                     permission_mode = "default"
                     prompter.print("  → Using 'default' mode instead")
 
+        # Ask if this agent does code reviews (affects initial_prompt template)
+        prompter.print("\n  Does this agent do code reviews?")
+        prompter.print("    Review agents need {pr_number} in their prompt template.")
+        is_review_agent = prompter.yes_no("Is this a review agent?", default=False)
+
+        # Generate appropriate initial_prompt based on agent type
+        if is_review_agent:
+            initial_prompt = (
+                "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
+                "Follow the instructions in {prompt}. When done, use agent-done to report your verdict."
+            )
+        else:
+            initial_prompt = (
+                "Work on issue #{issue_number}: {issue_title}. "
+                "Follow the instructions in {prompt}. When done, use agent-done to report completion."
+            )
+
         agent_config: dict[str, Any] = {
             "prompt": prompt_path,
             "model": model,
             "timeout_minutes": int(timeout),
+            "initial_prompt": initial_prompt,
         }
 
         if custom_command:
@@ -443,9 +480,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
     worktree_base = prompter.input("Worktree base directory", "../")
 
-    # Apply to all agents
-    for agent_config in config["agents"].values():
-        agent_config["worktree_base"] = worktree_base
+    # Set at top-level (not per-agent)
+    config["worktree_base"] = worktree_base
 
     # If subdirectory, offer to add to .gitignore
     if not worktree_base.startswith(".."):
@@ -601,7 +637,7 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                 else:
                     prompt_path = prompter.input(
                         "Prompt file path",
-                        f".issue-orchestrator/prompts/{agent_short}.md",
+                        f".prompts/{agent_short}.md",
                     )
 
                 timeout = prompter.input("Timeout (minutes)", "45")
@@ -643,6 +679,23 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                             permission_mode = "default"
                             prompter.print("  → Using 'default' mode instead")
 
+                # Ask if this agent does code reviews (affects initial_prompt template)
+                prompter.print("\n  Does this agent do code reviews?")
+                prompter.print("    Review agents need {pr_number} in their prompt template.")
+                is_review_agent = prompter.yes_no("Is this a review agent?", default=False)
+
+                # Generate appropriate initial_prompt based on agent type
+                if is_review_agent:
+                    initial_prompt = (
+                        "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
+                        "Follow the instructions in {prompt}. When done, use agent-done to report your verdict."
+                    )
+                else:
+                    initial_prompt = (
+                        "Work on issue #{issue_number}: {issue_title}. "
+                        "Follow the instructions in {prompt}. When done, use agent-done to report completion."
+                    )
+
                 if "agents" not in config:
                     config["agents"] = {}
 
@@ -650,6 +703,7 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                     "prompt": prompt_path,
                     "model": model,
                     "timeout_minutes": int(timeout),
+                    "initial_prompt": initial_prompt,
                 }
 
                 if custom_command:
@@ -703,39 +757,43 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
         foundation_milestone = prompter.input("Foundation milestone", "M0")
         config["foundation_milestone"] = foundation_milestone
 
-    # Check if agents need worktree_base
-    agents_without_worktree = [
-        name for name, cfg in config.get("agents", {}).items()
-        if "worktree_base" not in cfg
-    ]
-    if agents_without_worktree:
-        prompter.print("\n--- Worktree Location ---")
-        prompter.print("Each issue gets its own git worktree for isolated work.")
-        prompter.print("Examples:")
-        prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
-        prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
-        worktree_base = prompter.input("Worktree base directory", "../")
+    # Check if config needs worktree_base (now top-level)
+    if "worktree_base" not in config:
+        # Also migrate any per-agent worktree_base to top-level
+        existing_worktree_base = None
+        for _, cfg in config.get("agents", {}).items():
+            if "worktree_base" in cfg:
+                existing_worktree_base = cfg.pop("worktree_base")
 
-        for agent_name in agents_without_worktree:
-            config["agents"][agent_name]["worktree_base"] = worktree_base
+        if existing_worktree_base:
+            config["worktree_base"] = existing_worktree_base
+            prompter.print(f"\n  ✓ Migrated per-agent worktree_base to top-level: {existing_worktree_base}")
+        else:
+            prompter.print("\n--- Worktree Location ---")
+            prompter.print("Each issue gets its own git worktree for isolated work.")
+            prompter.print("Examples:")
+            prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
+            prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
+            worktree_base = prompter.input("Worktree base directory", "../")
+            config["worktree_base"] = worktree_base
 
-        # If subdirectory, offer to add to .gitignore
-        if not worktree_base.startswith(".."):
-            worktree_dir = worktree_base.lstrip("./")
-            gitignore_path = Path(".gitignore")
-            needs_gitignore = True
+            # If subdirectory, offer to add to .gitignore
+            if not worktree_base.startswith(".."):
+                worktree_dir = worktree_base.lstrip("./")
+                gitignore_path = Path(".gitignore")
+                needs_gitignore = True
 
-            if gitignore_path.exists():
-                gitignore_content = gitignore_path.read_text()
-                if worktree_dir in gitignore_content:
-                    needs_gitignore = False
-                    prompter.print(f"  ✓ {worktree_dir} already in .gitignore")
+                if gitignore_path.exists():
+                    gitignore_content = gitignore_path.read_text()
+                    if worktree_dir in gitignore_content:
+                        needs_gitignore = False
+                        prompter.print(f"  ✓ {worktree_dir} already in .gitignore")
 
-            if needs_gitignore:
-                if prompter.yes_no(f"Add '{worktree_dir}/' to .gitignore?"):
-                    with open(gitignore_path, "a") as f:
-                        f.write(f"\n# Issue orchestrator worktrees\n{worktree_dir}/\n")
-                    prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
+                if needs_gitignore:
+                    if prompter.yes_no(f"Add '{worktree_dir}/' to .gitignore?"):
+                        with open(gitignore_path, "a") as f:
+                            f.write(f"\n# Issue orchestrator worktrees\n{worktree_dir}/\n")
+                        prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
 
     # UI mode
     if "ui_mode" not in config:
@@ -832,17 +890,57 @@ You are the {agent_short} agent responsible for implementing changes in this are
 ## Working Directory
 Your worktree is at: {{worktree}}
 
+## Core Principle
+
+**You report intent; the orchestrator executes.**
+
+You do NOT:
+- Push code (`git push` is blocked by hooks)
+- Create PRs
+- Post GitHub comments
+- Mutate labels
+
+The orchestrator handles all GitHub operations after you complete your work.
+
 ## Instructions
 1. Read the issue carefully and understand the requirements
 2. Implement the necessary changes
 3. Write tests if applicable
 4. Run existing tests to ensure nothing is broken
-5. When complete, use `agent-done` to create a PR
+5. Commit your changes locally
+6. Use `agent-done` to signal completion (see below)
 
-## Important
-- Always use `agent-done` when finished (not `git push` directly)
-- If blocked, use `agent-done --blocked "reason"`
-- If you need human input, use `agent-done --needs-human "question"`
+## Completion (MANDATORY)
+
+You MUST use `agent-done` to complete. This runs validation, then the orchestrator pushes your code and creates the PR.
+
+### When work is complete:
+```bash
+agent-done completed \\
+  --implementation "Brief description of what you implemented" \\
+  --problems "Any issues encountered, or 'None'"
+```
+
+### If blocked (cannot proceed):
+```bash
+agent-done blocked \\
+  --reason "Why you cannot proceed" \\
+  --attempted "What you tried"
+```
+
+### If you need human input:
+```bash
+agent-done needs_human \\
+  --question "Specific question for the human"
+```
+
+Run `agent-done --help` for all options.
+
+**What happens after `agent-done`:**
+1. Validation runs (tests, linting) - if it fails, fix and retry
+2. Orchestrator pushes your branch
+3. Orchestrator creates PR and posts comment
+4. Session completes
 """
     if file_collector is not None:
         file_collector.add_write(path, content, "create")
@@ -872,9 +970,20 @@ You are reviewing PR #{{pr_number}} for issue #{{issue_number}}: {{issue_title}}
 
 The PR has the `{code_review_label}` label and needs your review.
 
+## Core Principle
+
+**You report intent; the orchestrator executes.**
+
+You do NOT:
+- Call `gh pr review` or `gh pr edit`
+- Post GitHub comments directly
+- Mutate labels
+
+You analyze the code and report your verdict via `agent-done`. The orchestrator handles all GitHub operations.
+
 ## Review Process
 
-### 1. Fetch PR Details
+### 1. Fetch PR Details (read-only)
 
 ```bash
 gh pr view {{pr_number}} --json title,body,additions,deletions,changedFiles,commits
@@ -900,62 +1009,35 @@ Check each area and note any issues:
 npm test  # or pytest, cargo test, etc.
 ```
 
-### 4. Post Review Comments
+## Completion (MANDATORY)
 
-If you find issues that need fixing:
+Use `agent-done` to report your verdict. The orchestrator will post your review and update labels.
 
-```bash
-gh pr review {{pr_number}} --request-changes --body "## Code Review
-
-### Issues Found
-- Issue 1: description
-- Issue 2: description
-
-### Suggestions
-- Suggestion 1
-- Suggestion 2
-
-Please address these issues and push updates."
-```
-
-If the PR looks good:
+### If the PR looks good:
 
 ```bash
-gh pr review {{pr_number}} --approve --body "## Code Review
-
-LGTM! The implementation looks good.
-
-### What I Checked
-- Code quality and style
-- Test coverage
-- Logic correctness
-
-### Notes
-- Any minor observations (optional)"
+agent-done approved \\
+  --summary "Brief summary of what you reviewed and why it's good" \\
+  --risk low  # or medium, high
 ```
 
-### 5. Update Labels
-
-After approving, update the PR label:
+### If changes are needed:
 
 ```bash
-gh pr edit {{pr_number}} --remove-label "{code_review_label}" --add-label "{code_reviewed_label}"
+agent-done changes_requested \\
+  --issues "Specific issues that need fixing (be detailed)" \\
+  --risk medium  # or low, high
 ```
 
-## Completion
-
-When done reviewing:
-
-```bash
-agent-done completed \\
-  --implementation "Reviewed PR #{{pr_number}}. [Approved/Requested changes]. [Summary of findings]" \\
-  --problems "None" # or describe any concerns
-```
+**What happens after `agent-done`:**
+1. Orchestrator posts your review comment on the PR
+2. Orchestrator updates labels (`{code_review_label}` → `{code_reviewed_label}` or triggers rework)
+3. If changes requested, work agent is re-queued to fix issues
 
 ## Review Principles
 
 1. **Be constructive** - Explain why something should change, not just that it should
-2. **Be specific** - Point to exact lines/files when possible
+2. **Be specific** - Point to exact lines/files in your `--issues` or `--summary`
 3. **Prioritize** - Distinguish blocking issues from nice-to-haves
 4. **Be consistent** - Apply the same standards across all PRs
 5. **Trust but verify** - Check that tests actually test the changes
@@ -976,32 +1058,36 @@ def create_triage_review_prompt(
     """Create a triage review prompt with actual label values substituted."""
     content = f"""# Triage Review Agent
 
-You are a Triage/technical advisor **auditing** work done by AI agents.
+You are a triage/technical advisor **auditing** work done by AI agents.
 
 **Important:** You do NOT approve PRs - that's for humans. Your job is to:
 - Identify patterns across PRs (good and bad)
 - Flag concerns for human review
 - Suggest process improvements
-- Create follow-up issues for recurring problems
 
-## Review Mode
+## Core Principle
 
-This prompt supports two modes based on the issue:
+**You report intent; the orchestrator executes.**
 
-1. **Batch Review** (issue title contains "Batch Review" or "Triage Review"): Audit all PRs with `{review_label}` label
-2. **Single Issue Review**: Audit the specific issue #{{issue_number}}
+You do NOT:
+- Call `gh pr comment` or `gh pr edit`
+- Call `gh issue create`
+- Post GitHub comments directly
+- Mutate labels
 
-## Batch Review Process
+You analyze PRs and report findings via `agent-done`. The orchestrator handles all GitHub operations.
 
-### 1. Find PRs to Audit
+## Review Process
+
+### 1. Find PRs to Audit (read-only)
 
 ```bash
 gh pr list --label "{review_label}" --json number,title,body,url,headRefName
 ```
 
-**If no PRs found:** Document this in your report and complete with "No PRs to review".
+**If no PRs found:** Complete with "No PRs to review".
 
-### 2. For Each PR, Investigate:
+### 2. For Each PR, Investigate (read-only)
 
 ```bash
 # Get PR details
@@ -1020,130 +1106,33 @@ Evaluate:
 - **Testing**: Tests present? Edge cases covered?
 - **Patterns**: Recurring issues across PRs?
 
-### 3. Comment on Each PR
+### 3. Document Your Findings
 
-```bash
-gh pr comment <number> --body "## Triage Audit
+As you review, build a mental report:
 
-### Assessment
-{{status: Reviewed - no concerns / Flagged - minor concerns / Escalate - significant concerns}}
+**For each PR:**
+- PR number and title
+- What you checked
+- Status: No concerns / Minor concerns / Significant concerns
+- Specific feedback
 
-### What I Checked
-- [ ] Code changes
-- [ ] Test coverage
-- [ ] Issue comments/context
-- [ ] Patterns vs other PRs
+**Patterns observed:**
+- Recurring issues across PRs
+- Common mistakes
+- Good practices to encourage
 
-### Feedback
-{{specific constructive feedback, or 'No issues found'}}
+**Process improvements:**
+- Suggestions for agent prompts
+- Workflow improvements
 
-### Good Practices Noted
-{{what was done well - helps agents learn, or 'N/A'}}
-"
-```
+## Completion (MANDATORY)
 
-### 4. Mark PR as Audited
-
-After reviewing each PR, flip the label:
-```bash
-gh pr edit <number> --remove-label "{review_label}" --add-label "{reviewed_label}"
-```
-
-### 5. Create Investigation Log
-
-Create a summary report as a comment on THIS issue. **Always document what you checked, even if nothing was found:**
-
-```markdown
-## Triage Audit Report
-
-### Investigation Summary
-- PRs checked: {{N}} (or "0 - no PRs with '{review_label}' label found")
-- PRs flagged: {{N}} (or "0 - no concerns")
-- Follow-up issues created: {{N}}
-
-### PRs Audited
-| PR | What I Checked | Status | Notes |
-|----|----------------|--------|-------|
-| #N | code, tests, comments | No concerns | Brief note |
-| #N | code, tests | Flagged | Missing test coverage |
-| (none) | - | - | No PRs with '{review_label}' label |
-
-### Patterns Observed
-- {{recurring issues across PRs, or "No patterns identified - insufficient sample size"}}
-- {{common mistakes, or "None"}}
-- {{good practices to encourage, or "None noted"}}
-
-### Process Improvements
-- {{suggestions for agent prompts, or "None needed"}}
-- {{workflow improvements, or "None"}}
-- {{tooling needs, or "None"}}
-
-### Follow-up Actions Created
-- Issue #X: {{description}}
-- (none): No follow-up actions needed
-```
-
-### 6. Create Follow-up Issues (if needed)
-
-For process improvements or recurring problems:
-```bash
-gh issue create --title "Process: {{improvement}}" --body "{{details}}" --label "process"
-```
-
-## Single Issue Review Process
-
-When auditing a specific issue #{{issue_number}}: {{issue_title}}
-
-### 1. Understand the Issue
-```bash
-gh issue view {{issue_number}} --comments
-```
-
-### 2. Find and Review the PR
-Look for PR links in issue comments, then:
-```bash
-gh pr view <number> --json title,body,files
-gh pr diff <number>
-```
-
-**If no PR found:** Document this and note the issue may still be in progress.
-
-### 3. Post Audit Report
-Comment on the issue with your analysis:
-
-```markdown
-## Triage Audit
-
-### What I Checked
-- [ ] Issue requirements
-- [ ] PR code changes
-- [ ] Test coverage
-- [ ] Agent-reported problems
-
-### Summary
-{{brief assessment, or "No PR found for this issue"}}
-
-### Problems Analysis
-- Agent-reported problems: {{from "Problems Encountered" section, or "None reported"}}
-- Additional concerns: {{anything you noticed, or "None"}}
-
-### Recommendations
-{{specific suggestions, or "None - implementation looks good"}}
-
-### Status
-- [ ] Reviewed - no concerns
-- [ ] Flagged for human review: {{why}}
-- [ ] Escalate: {{significant concerns}}
-```
-
-## Completion
-
-When done, use `agent-done`:
+Use `agent-done` to report your findings. The orchestrator will post your report and update labels.
 
 ```bash
 agent-done completed \\
-  --implementation "Audited {{N}} PRs. {{X}} no concerns, {{Y}} flagged for human review. Created {{M}} follow-up issues." \\
-  --problems "{{any process issues found, or 'None'}}"
+  --implementation "Audited N PRs. Summary: X no concerns, Y flagged. Patterns: [key patterns]. Recommendations: [suggestions]" \\
+  --problems "Process issues found, or 'None'"
 ```
 
 **If no PRs to review:**
@@ -1152,6 +1141,11 @@ agent-done completed \\
   --implementation "No PRs with '{review_label}' label found. Nothing to audit." \\
   --problems "None"
 ```
+
+**What happens after `agent-done`:**
+1. Orchestrator posts your triage report as a comment
+2. Orchestrator updates PR labels (`{review_label}` → `{reviewed_label}`)
+3. Session completes
 
 ## Audit Principles
 
@@ -1177,6 +1171,23 @@ class _NoAliasDumper(yaml.SafeDumper):
         return True
 
 
+CONFIG_HEADER = """\
+# Issue Orchestrator Configuration
+#
+# Template variables for initial_prompt and command:
+#   {issue_number}    - GitHub issue number
+#   {issue_title}     - Issue title
+#   {prompt}          - Path to prompt file
+#   {worktree}        - Path to worktree
+#   {model}           - Model name from agent config
+#   {permission_mode} - Claude permission mode
+#   {pr_number}       - PR number (review/rework sessions only)
+#
+# See: https://github.com/anthropics/issue-orchestrator
+
+"""
+
+
 def write_config(
     config: dict[str, Any],
     path: Path,
@@ -1192,7 +1203,7 @@ def write_config(
     import io
     buffer = io.StringIO()
     yaml.dump(config, buffer, Dumper=_NoAliasDumper, default_flow_style=False, sort_keys=False, allow_unicode=True)
-    content = buffer.getvalue()
+    content = CONFIG_HEADER + buffer.getvalue()
 
     if file_collector is not None:
         action = "overwrite" if path.exists() else "create"
@@ -1394,13 +1405,16 @@ def run_wizard(
 
     # Determine config file path and collect the write
     # Use absolute paths to avoid issues with cwd
+    from ...infra.config import CONFIG_DIR, DEFAULT_CONFIG_NAME
+
+    default_config_path = f"{CONFIG_DIR}/{DEFAULT_CONFIG_NAME}"  # .issue-orchestrator/config/default.yaml
+
     if existing_config_path:
         output_path = target_path / existing_config_path if not existing_config_path.is_absolute() else existing_config_path
     elif dry_run:
-        output_path = target_path / ".issue-orchestrator.yaml"
+        output_path = target_path / default_config_path
     else:
-        default_path = ".issue-orchestrator.yaml"
-        user_path = Path(prompter.input(f"Config filename ({target_path}/)", default_path))
+        user_path = Path(prompter.input(f"Config filename ({target_path}/)", default_config_path))
         output_path = target_path / user_path if not user_path.is_absolute() else user_path
 
     write_config(config, output_path, file_collector)

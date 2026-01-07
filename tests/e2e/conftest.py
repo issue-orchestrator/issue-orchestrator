@@ -310,6 +310,7 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
     config = Config()
     config.repo = repo_name
     config.repo_root = e2e_project_root
+    config.worktree_base = e2e_session_tmp / "worktrees"
     config.ui_mode = "tmux"
     config.max_concurrent_sessions = 4
     config.filter_label = "test-data"
@@ -331,7 +332,6 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
     config.agents = {
         "agent:e2e-test": AgentConfig(
             prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
-            worktree_base=e2e_session_tmp / "worktrees",
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
@@ -340,7 +340,6 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
         ),
         "agent:script-completes": AgentConfig(
             prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
-            worktree_base=e2e_session_tmp / "worktrees",
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
@@ -349,7 +348,6 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
         ),
         "agent:script-review": AgentConfig(
             prompt_path=e2e_project_root / "examples" / "scripts" / "review-decider.sh",
-            worktree_base=e2e_session_tmp / "worktrees",
             timeout_minutes=3,
             model="sonnet",
             command="PR_NUMBER={pr_number} bash {prompt}",
@@ -358,7 +356,6 @@ def e2e_session_config(e2e_project_root: Path, e2e_session_tmp: Path, repo_name:
         ),
         "agent:triage-investigator": AgentConfig(
             prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
-            worktree_base=e2e_session_tmp / "worktrees",
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
@@ -576,6 +573,7 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config
     config = Config()
     config.repo = repo_name
     config.repo_root = e2e_project_root
+    config.worktree_base = tmp_path / "worktrees"
     config.ui_mode = "tmux"
     config.max_concurrent_sessions = 1
     config.filter_label = "test-data"
@@ -584,7 +582,6 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config
     config.agents = {
         "agent:e2e-test": AgentConfig(
             prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
-            worktree_base=tmp_path / "worktrees",
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",

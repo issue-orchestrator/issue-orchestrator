@@ -304,10 +304,8 @@ class Issue:
 class AgentConfig:
     """Configuration for an agent type."""
     prompt_path: Path
-    worktree_base: Path
     model: str = "sonnet"
     timeout_minutes: int = 45
-    repo_root: Optional[Path] = None  # Per-agent repo root override
     # Permission mode for Claude CLI: default, acceptEdits, bypassPermissions, plan, dontAsk
     permission_mode: str = "default"
     # Skip code review for this agent (e.g., domain-expert agents that don't produce code)

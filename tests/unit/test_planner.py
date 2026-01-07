@@ -62,7 +62,6 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
 
     agent_config = AgentConfig(
         prompt_path=Path("/tmp/test.md"),
-        worktree_base=Path("/tmp/worktrees"),
     )
     issue_key = FakeIssueKey(name=str(issue.number))
     session_key = SessionKey(issue=issue_key, task=task)

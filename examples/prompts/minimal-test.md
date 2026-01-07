@@ -4,13 +4,13 @@ You are a test agent. Your job is to demonstrate the orchestration workflow work
 
 ## Your Task
 
-You are working on issue #{issue_number}.
+The specific issue number is provided in your initial prompt at runtime.
 
 ## Instructions
 
 1. Create an empty commit:
    ```bash
-   git commit --allow-empty -m "test: minimal fix for #{issue_number}"
+   git commit --allow-empty -m "test: minimal fix for issue"
    ```
 
 2. Complete using `agent-done`:

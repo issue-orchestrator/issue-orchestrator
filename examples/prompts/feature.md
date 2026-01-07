@@ -1,6 +1,6 @@
 # Feature Implementation Worker
 
-You are implementing GitHub issue #{issue_number}: {issue_title}
+You are implementing a GitHub issue. The specific issue number and title are provided in your initial prompt at runtime.
 
 ## Your Task
 

@@ -4,6 +4,7 @@
 # Tests the failure handling and triage review triggering.
 
 repo: BruceBGordon/issue-orchestrator
+worktree_base: "/tmp/e2e-worktrees"
 
 filter_label: test-data
 control_api_port: 19083
@@ -15,8 +16,6 @@ agents:
     prompt: "tests/e2e/fixtures/prompts/e2e-test-timeout.md"
     model: haiku
     timeout_minutes: 1  # Very short - will timeout quickly
-    worktree_base: "/tmp/e2e-worktrees"
-    repo_root: "../../../"  # Prompt paths resolved relative to repo root
     permission_mode: bypassPermissions  # Required for non-interactive e2e tests
 
 concurrency:

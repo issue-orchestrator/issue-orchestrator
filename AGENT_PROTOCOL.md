@@ -1,121 +1,218 @@
-# Issue Orchestrator Agent Protocol v1.0
+# Issue Orchestrator Agent Protocol v2.0
 
 This document defines the contract between issue-orchestrator and AI agents.
-Third-party agents should follow this protocol to work correctly with the orchestrator.
 
-## Overview
+## Who This Is For
 
-The orchestrator launches agents in isolated environments to work on GitHub issues.
-Agents communicate status back via GitHub issue comments and labels.
+**Prompt authors** writing agent prompts for their repo. Agents don't read this file directly - instead, include the relevant `agent-done` commands in your prompt files (see `examples/prompts/` for templates).
+
+When setting up issue-orchestrator for a new repo, use this as a reference for writing your `.issue-orchestrator/prompts/*.md` files.
+
+## Core Principle
+
+**Agents report intent; the orchestrator executes.**
+
+Agents do NOT:
+- Push code
+- Create PRs
+- Post GitHub comments
+- Mutate labels
+- Touch GitHub in any way
+
+The orchestrator handles all external system interactions after validating agent output as untrusted input. See [ADR-0016](docs/architecture/ADR/0016-orchestrator-as-mediator.md).
 
 ## Environment
 
 When launched, agents receive:
-- **Working directory**: An isolated git worktree with a branch for the issue
-- **Branch name**: `{issue_number}-{slugified-title}`
-- **Initial prompt**: Contains issue number, title, and path to detailed instructions
 
-## Expected Behavior
+| Variable | Description |
+|----------|-------------|
+| `ORCHESTRATOR_SESSION_ID` | Unique session identifier |
+| `ORCHESTRATOR_COMPLETION_PATH` | Where to write completion record |
+| Working directory | Isolated git worktree with issue branch |
 
-### 1. Read Instructions
-The agent's initial prompt references a prompt file (e.g., `prompts/simple-fix.md`).
-Read and follow those instructions.
+The branch name follows: `{issue_number}-{slugified-title}`
 
-### 2. Do the Work
-- Implement the fix or feature
-- Write tests
-- Commit changes
-- Create a PR
+## The `agent-done` Command
 
-### 3. Report Results
+Agents signal completion using the `agent-done` CLI command. This is the ONLY sanctioned way to complete work.
 
-Post a comment on the issue using **structured headings**.
+### Completion Statuses
 
-#### On Completion
-```markdown
-## Implementation
-- What was implemented
-- Key files changed
+```bash
+# Work completed successfully
+agent-done completed \
+  --implementation "Added JWT authentication to login endpoint" \
+  --problems "None"
 
-## Problems Encountered
-- Any issues (or "None")
+# Blocked - cannot proceed
+agent-done blocked \
+  --reason "Depends on auth service not yet deployed" \
+  --attempted "Tried to call auth endpoint, got 404"
 
-## Pull Request
-- Link to the PR
+# Need human decision
+agent-done needs_human \
+  --question "Should we use OAuth or API keys?" \
+  --options "OAuth" "API keys" \
+  --default "OAuth after 24h"
+
+# Code review: approved
+agent-done approved \
+  --summary "Clean implementation, tests pass" \
+  --risk low
+
+# Code review: changes requested
+agent-done changes_requested \
+  --issues "Missing error handling in auth.py:45" \
+  --risk medium
 ```
 
-#### If Blocked
-Add the `blocked` label and post:
-```markdown
-## Blocked
-- What was attempted
-- Why it failed
-- What's needed to proceed
+### Required Fields by Status
+
+| Status | Required Fields |
+|--------|-----------------|
+| `completed` | `--implementation`, `--problems` |
+| `blocked` | `--reason`, `--attempted` |
+| `needs_human` | `--question` |
+| `approved` | `--summary`, `--risk` |
+| `changes_requested` | `--issues`, `--risk` |
+
+### What Happens After `agent-done`
+
+1. Validation runs (if configured) - tests, linting, type checks
+2. If validation fails, agent-done exits non-zero - agent can fix and retry
+3. If validation passes, completion record is written to `.issue-orchestrator/completion.json`
+4. Orchestrator detects the file and processes it
+5. Orchestrator executes requested actions (push, create PR, add labels, post comment)
+
+## Validation
+
+Before writing the completion record, `agent-done` runs the configured validation gate:
+
+```
+agent-done completed
+       │
+       ▼
+  Run validation (tests, linting, type checks)
+       │
+  ┌────┴────┐
+  │         │
+PASS      FAIL
+  │         │
+  ▼         ▼
+Write     Exit non-zero
+record    Agent fixes and retries
 ```
 
-#### If Human Input Needed
-Add the `needs-human` label and post:
-```markdown
-## Needs Human Input
-- Specific question
-- Context for the decision
+This gives agents fast feedback. See [ADR-0019](docs/architecture/ADR/0019-agent-done-completion-protocol.md).
+
+## Completion Record Format
+
+The `agent-done` command writes a JSON file:
+
+```json
+{
+  "session_id": "issue-123-abc",
+  "timestamp": "2024-12-21T10:30:00Z",
+  "outcome": "completed",
+  "summary": "Completed: Added JWT authentication...",
+  "requested_actions": ["push_branch", "create_pr", "post_comment"],
+  "implementation": "Added JWT authentication to login endpoint",
+  "problems": "None",
+  "comment_body": "## Implementation\n\nAdded JWT authentication..."
+}
 ```
 
-### 4. Exit
-After posting the appropriate comment, exit cleanly.
+### Outcomes
+
+| Outcome | Meaning | Requested Actions |
+|---------|---------|-------------------|
+| `completed` | Work done, ready for PR | push, create_pr, post_comment |
+| `blocked` | External blocker | push, add_blocked_label, post_comment |
+| `needs_human` | Need clarification | push, add_needs_human_label, post_comment |
+| `review_approved` | Code review passed | add_code_reviewed_label, post_comment |
+| `review_changes_requested` | Needs fixes | add_needs_rework_label, post_comment |
+
+## Session Lifecycle
+
+```
+Orchestrator claims issue
+       │
+       ▼
+Creates worktree + branch
+       │
+       ▼
+Launches agent in terminal (tmux/iTerm2)
+       │
+       ▼
+Agent works...
+       │
+       ▼
+Agent runs: agent-done <status> ...
+       │
+       ▼
+Orchestrator detects completion.json
+       │
+       ▼
+Orchestrator validates record
+       │
+       ▼
+Orchestrator executes actions (push, PR, labels, comment)
+       │
+       ▼
+Session complete
+```
 
 ## Labels
 
-| Label | Meaning | Who Sets It |
-|-------|---------|-------------|
-| `in-progress` | Work is underway | Orchestrator (on launch) |
-| `blocked` | Agent couldn't complete | Agent |
-| `needs-human` | Agent needs clarification | Agent |
+All labels are managed by the orchestrator:
 
-The orchestrator removes `in-progress` when it detects session completion.
-
-## Detection Logic
-
-The orchestrator determines session status by:
-1. **Tmux window exists** → RUNNING
-2. **Tmux window gone + PR exists** → COMPLETED
-3. **Tmux window gone + `blocked` label** → BLOCKED
-4. **Tmux window gone + `needs-human` label** → NEEDS_HUMAN
-5. **Tmux window gone + no PR/labels** → FAILED
-6. **Runtime > timeout** → TIMED_OUT
+| Label | Meaning | Set By |
+|-------|---------|--------|
+| `in-progress` | Work underway | Orchestrator (on launch) |
+| `blocked` | Agent reported blocked | Orchestrator (from completion record) |
+| `needs-human` | Agent needs clarification | Orchestrator (from completion record) |
+| `pr-pending` | PR created, awaiting merge | Orchestrator (after PR creation) |
+| `needs-code-review` | PR ready for review | Orchestrator (configurable) |
+| `needs-rework` | Reviewer requested changes | Orchestrator (from review completion) |
 
 ## Configuration
 
-Agents are configured in `.issue-orchestrator.yaml`:
+Agents are configured in `.issue-orchestrator/config/<name>.yaml`:
 
 ```yaml
 agents:
-  "agent:web":
-    prompt: ".issue-orchestrator/prompts/web.md"
-    worktree_base: "../"
-    timeout_minutes: 45
+  agent:backend:
+    prompt: ".issue-orchestrator/prompts/backend.md"
     model: sonnet
-    # Optional: custom command template
-    command: "claude --model {model} '{initial_prompt}'"
-```
+    timeout_minutes: 45
+    worktree_base: "../"
 
-## Comment Headings (Optional)
+  agent:reviewer:
+    prompt: ".issue-orchestrator/prompts/reviewer.md"
+    model: sonnet
+    timeout_minutes: 30
 
-Projects can customize comment headings for tooling integration:
+validation:
+  agent_gate:
+    cmd: "make validate-fast"
+    timeout_seconds: 300
+  publish_gate:
+    cmd: "make validate"
+    timeout_seconds: 1800
 
-```yaml
-comment_headings:
-  implementation: "## Implementation"
-  problems: "## Problems Encountered"
-  pr_link: "## Pull Request"
-  blocked: "## Blocked"
-  needs_human: "## Needs Human Input"
+review:
+  enabled: true
+  default: agent:reviewer
+  code_review_label: needs-code-review
+  code_reviewed_label: code-reviewed
+  max_rework_cycles: 3
 ```
 
 ## Best Practices
 
-1. **Exit cleanly** - Don't hang or loop forever
-2. **Be specific in comments** - Help humans understand what happened
-3. **Use labels correctly** - Don't forget to add `blocked` or `needs-human`
-4. **Create good PRs** - Include description, link to issue
-5. **Respect timeouts** - Long-running tasks should checkpoint progress
+1. **Always use `agent-done`** - Don't exit without calling it
+2. **Be specific** - Detailed `--implementation` and `--problems` help humans
+3. **Fix validation failures** - If agent-done fails, fix and retry
+4. **Respect timeouts** - Long tasks should complete before timeout
+5. **Don't touch GitHub** - The orchestrator handles all external operations

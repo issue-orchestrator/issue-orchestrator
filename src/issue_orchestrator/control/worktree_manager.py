@@ -20,23 +20,20 @@ logger = logging.getLogger(__name__)
 def get_worktree_path(
     config: Config,
     issue_number: int,
-    agent_config: AgentConfig,
+    agent_config: AgentConfig | None = None,  # Deprecated, kept for compatibility
 ) -> Path:
     """Compute the worktree path for an issue.
 
     Args:
         config: The orchestrator configuration.
         issue_number: The issue number.
-        agent_config: The agent configuration.
+        agent_config: Deprecated, no longer used. Worktree base is now config-level.
 
     Returns:
         The path where the worktree should be created.
     """
-    repo_root = agent_config.repo_root or config.repo_root
-    if agent_config.worktree_base:
-        base = Path(agent_config.worktree_base).resolve()
-    else:
-        base = repo_root.parent
+    repo_root = config.repo_root
+    base = config.worktree_base
     return base / f"{repo_root.name}-{issue_number}"
 
 

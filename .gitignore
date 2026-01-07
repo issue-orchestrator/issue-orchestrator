@@ -48,5 +48,5 @@ Thumbs.db
 .issue-orchestrator/state/
 .agent-done-marker
 
-# Keep .issue-orchestrator/config.yaml tracked - it's project configuration
+# Keep .issue-orchestrator/config/ tracked - it's project configuration
 .validate/
