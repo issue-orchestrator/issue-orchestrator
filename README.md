@@ -16,6 +16,27 @@ Issue-Orchestrator is a local-first control plane that turns GitHub issues into 
 2) **Write->Observe**: correctness-critical writes are verified by observation before state advances.
 3) **Reconciliation-first**: drift pauses/quarantines work; state never "guesses".
 
+## Main first workflow
+Issue-Orchestrator is designed around a main-first development flow.
+
+Currently:
+•	All issues are assumed to work against the main branch.
+•	Worktrees are created from origin/main.
+•	Pull requests target main.
+•	Dependencies are evaluated within this single branch context.
+
+This design keeps the system predictable and easy to reason about, especially during recovery and reconciliation.
+
+Branch-specific workflows
+Branch-specific workflows (for example, targeting release or stabilization branches) are not currently supported.
+
+This is an intentional design choice to avoid:
+•	cross-branch dependency complexity
+•	ambiguous PR targeting
+•	harder recovery and reconciliation logic
+
+Support for issue-specific base branches may be added in the future, with strict constraints, if real-world usage requires it.
+
 ## Quickstart
 ```bash
 python -m venv .venv && source .venv/bin/activate
