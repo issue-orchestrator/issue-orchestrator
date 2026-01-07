@@ -215,12 +215,12 @@ class ITermSessionManager:
         wrapper_dir = Path(__file__).parent.parent.parent / "scripts"
         path_prefix = f'export PATH="{wrapper_dir}:$PATH" && '
 
-        # Add isolation: scrub credentials, isolate HOME to worktree
+        # Add isolation: scrub credentials (but NOT HOME - Claude needs keychain access)
         isolation_prefix = build_isolation_prefix(
             worktree=Path(working_dir),
             isolation_mode="standard",
             scrub_env=True,
-            isolate_home=True,
+            isolate_home=False,  # Claude uses macOS Keychain for auth
         )
 
         # Add sandbox verification before running agent command
