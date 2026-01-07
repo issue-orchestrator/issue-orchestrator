@@ -357,8 +357,8 @@ end tell'''
         """Close the tab for an issue."""
         script = f'''
         tell application "iTerm"
-            tell current window
-                repeat with t in tabs
+            repeat with w in windows
+                repeat with t in tabs of w
                     tell current session of t
                         if name contains "#{issue_number}" then
                             close t
@@ -366,7 +366,7 @@ end tell'''
                         end if
                     end tell
                 end repeat
-            end tell
+            end repeat
         end tell
         return false
         '''
