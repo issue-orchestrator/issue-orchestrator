@@ -489,6 +489,37 @@ def run_doctor(
             detail="Not configured",
         ))
 
+    # === Working Directory ===
+    # Check for uncommitted changes that might confuse users
+    # (agent worktrees will branch from main, not inherit these changes)
+    if runner:
+        repo_root = Path.cwd()
+        status_result = runner.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root,
+            timeout_seconds=10,
+        )
+        if status_result.returncode == 0:
+            has_uncommitted = bool(status_result.stdout.strip())
+            if has_uncommitted:
+                result.checks.append(Check(
+                    name="Working Directory",
+                    status="warning",
+                    detail="Uncommitted changes (won't affect agent worktrees - they branch from main)",
+                ))
+            else:
+                result.checks.append(Check(
+                    name="Working Directory",
+                    status="ok",
+                    detail="Clean",
+                ))
+        else:
+            result.checks.append(Check(
+                name="Working Directory",
+                status="info",
+                detail="Could not check git status",
+            ))
+
     # Agents
     agent_count = len(config.agents)
     if agent_count > 0:

@@ -133,12 +133,15 @@ class TestCreateWorktree:
 
         worktree_base = tmp_path / "worktrees"
 
-        # Mock: prune, find existing worktree, check if branch exists, fetch, create worktree
+        # Mock: prune, find existing worktree, check if branch exists, fetch,
+        # get_default_branch (symbolic-ref fails, rev-parse main succeeds), create worktree
         mock_run.side_effect = [
             MagicMock(returncode=0, stderr=""),  # prune succeeds
             MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch (no match)
             MagicMock(returncode=1, stderr=""),  # branch doesn't exist
             MagicMock(returncode=1, stderr=""),  # fetch fails (branch not on remote)
+            MagicMock(returncode=1, stderr=""),  # symbolic-ref fails (get_default_branch)
+            MagicMock(returncode=0, stderr=""),  # rev-parse main succeeds (get_default_branch)
             MagicMock(returncode=0, stderr=""),  # worktree create succeeds
         ]
 
@@ -152,7 +155,7 @@ class TestCreateWorktree:
         assert worktree_path == worktree_base / "repo-123"
 
         # Check git commands were called correctly
-        assert mock_run.call_count == 5
+        assert mock_run.call_count == 7
 
         # First call: prune stale worktrees
         prune_cmd = mock_run.call_args_list[0][0][0]
@@ -173,13 +176,23 @@ class TestCreateWorktree:
         assert fetch_cmd[:3] == ["git", "-C", str(repo_root)]
         assert fetch_cmd[3] == "fetch"
 
-        # Fifth call: create worktree with new branch (-b flag)
-        worktree_cmd = mock_run.call_args_list[4][0][0]
+        # Fifth call: get_default_branch symbolic-ref (fails)
+        symbolic_ref_cmd = mock_run.call_args_list[4][0][0]
+        assert "symbolic-ref" in symbolic_ref_cmd
+
+        # Sixth call: get_default_branch rev-parse main (succeeds)
+        main_check_cmd = mock_run.call_args_list[5][0][0]
+        assert "rev-parse" in main_check_cmd
+        assert "main" in main_check_cmd
+
+        # Seventh call: create worktree with new branch (-b flag) from default branch
+        worktree_cmd = mock_run.call_args_list[6][0][0]
         assert worktree_cmd[0] == "git"
         assert worktree_cmd[3] == "worktree"
         assert worktree_cmd[4] == "add"
         assert "-b" in worktree_cmd  # New branch flag
         assert "123-add-user-auth" in worktree_cmd
+        assert "main" in worktree_cmd  # Should branch from main
 
     @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
     def test_create_worktree_default_base(self, mock_run, tmp_path):
@@ -355,6 +368,8 @@ class TestCreateWorktree:
             MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch
             MagicMock(returncode=1, stderr=""),  # branch doesn't exist
             MagicMock(returncode=1, stderr=""),  # fetch origin fails
+            MagicMock(returncode=1, stderr=""),  # symbolic-ref fails (get_default_branch)
+            MagicMock(returncode=0, stderr=""),  # rev-parse main succeeds (get_default_branch)
             MagicMock(returncode=0, stderr=""),  # worktree add
         ]
 
