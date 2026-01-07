@@ -849,6 +849,16 @@ class Config:
                 else:
                     logger.warning(msg)
 
+        # Validate template variables in initial_prompt and command
+        invalid_templates = self.validate_template_variables()
+        for agent_label, field_name, bad_vars in invalid_templates:
+            vars_str = ", ".join(sorted(bad_vars))
+            errors.append(
+                f"Agent '{agent_label}': invalid template variable(s) in {field_name}: {{{vars_str}}}. "
+                f"Valid: issue_number, issue_title, prompt, worktree, model, permission_mode, "
+                f"claude_args, pr_number" + (", initial_prompt" if field_name == "command" else "")
+            )
+
         return errors
 
     def validate_unknown_fields(self) -> list[tuple[str, str]]:
@@ -873,6 +883,48 @@ class Config:
                         unknown.append((f"agents.{agent_name}.{key}", "agent"))
 
         return unknown
+
+    def validate_template_variables(self) -> list[tuple[str, str, set[str]]]:
+        """Check for invalid template variables in initial_prompt and command.
+
+        Returns list of (agent_label, field_name, invalid_vars) tuples.
+        """
+        import re
+
+        # Valid variables for initial_prompt (before command rendering)
+        VALID_INITIAL_PROMPT_VARS = {
+            "issue_number",
+            "issue_title",
+            "prompt",
+            "worktree",
+            "model",
+            "permission_mode",
+            "claude_args",
+            "pr_number",  # Only valid for review agents, but we allow it here
+        }
+
+        # Valid variables for command (after initial_prompt is rendered)
+        VALID_COMMAND_VARS = VALID_INITIAL_PROMPT_VARS | {"initial_prompt"}
+
+        # Regex to find {variable_name} patterns (excluding {{ escaped braces }})
+        VAR_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+
+        invalid = []
+
+        for label, agent in self.agents.items():
+            # Check initial_prompt
+            found_vars = set(VAR_PATTERN.findall(agent.initial_prompt))
+            bad_vars = found_vars - VALID_INITIAL_PROMPT_VARS
+            if bad_vars:
+                invalid.append((label, "initial_prompt", bad_vars))
+
+            # Check command
+            found_vars = set(VAR_PATTERN.findall(agent.command))
+            bad_vars = found_vars - VALID_COMMAND_VARS
+            if bad_vars:
+                invalid.append((label, "command", bad_vars))
+
+        return invalid
 
     def validate_or_raise(self) -> None:
         """Validate configuration, raising ValueError if invalid."""

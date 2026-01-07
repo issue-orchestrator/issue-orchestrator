@@ -456,6 +456,25 @@ def run_doctor(
             detail="No unknown fields",
         ))
 
+    # Check for invalid template variables
+    invalid_templates = config.validate_template_variables()
+    if invalid_templates:
+        details = []
+        for agent_label, field_name, bad_vars in invalid_templates[:3]:
+            details.append(f"{agent_label}.{field_name}: {{{', '.join(sorted(bad_vars))}}}")
+        detail = "; ".join(details) + ("..." if len(invalid_templates) > 3 else "")
+        result.checks.append(Check(
+            name="Template Variables",
+            status="error",
+            detail=f"Invalid: {detail}",
+        ))
+    else:
+        result.checks.append(Check(
+            name="Template Variables",
+            status="ok",
+            detail="All template variables valid",
+        ))
+
     # Repository
     if config.repo:
         result.checks.append(Check(
