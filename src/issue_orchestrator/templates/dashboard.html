@@ -154,6 +154,21 @@
         .dep-warning-icon:hover {
             color: #f0b030;
         }
+        .stale-warning-icon {
+            color: #d29922;
+            font-size: 11px;
+            cursor: help;
+            margin-left: 2px;
+        }
+        .stale-warning-icon:hover {
+            color: #f0b030;
+        }
+        .stale-warning-icon.persistent {
+            color: #f85149;
+        }
+        .stale-warning-icon.persistent:hover {
+            color: #ff6b6b;
+        }
         .issue-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
         .status-dot {
             width: 8px; height: 8px; border-radius: 50%;
@@ -727,7 +742,7 @@
                  title="{{ issue.action_hint }}"
                  onclick="handleClick(this)"
                  oncontextmenu="showContextMenu(event, this)">
-                <span class="issue-num">#{{ issue.issue_number }}{% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}">⛓</span>{% endif %}<span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="">⚠</span></span>
+                <span class="issue-num">#{{ issue.issue_number }}{% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}">⛓</span>{% endif %}<span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="">⚠</span><span class="stale-warning-icon" id="stale-warning-{{ issue.issue_number }}" style="display:none;" title="">🔄</span></span>
                 <span class="issue-status status-{{ issue.status }}" title="{{ issue.status_reason if issue.status_reason else '' }}">
                     <span class="status-dot"></span>
                     {{ issue.status_label }}
@@ -1184,6 +1199,49 @@
                 .catch(err => console.error('[deps] Failed to load dependency problems:', err));
         }
 
+        // Stale in-progress tracking
+        let staleIssues = {};  // issue_number -> stale info
+
+        function updateStaleWarning(issueNumber, staleInfo) {
+            const warningIcon = document.getElementById('stale-warning-' + issueNumber);
+            if (warningIcon) {
+                if (staleInfo) {
+                    warningIcon.style.display = 'inline';
+                    const ticks = staleInfo.consecutive_ticks || 1;
+                    const persistent = staleInfo.persistent;
+                    warningIcon.title = persistent
+                        ? `Persistent stale: no session for ${ticks} cycles (needs investigation)`
+                        : `Stale in-progress: no session running (${ticks} cycle${ticks > 1 ? 's' : ''})`;
+                    // Add/remove persistent class for red color
+                    if (persistent) {
+                        warningIcon.classList.add('persistent');
+                    } else {
+                        warningIcon.classList.remove('persistent');
+                    }
+                } else {
+                    warningIcon.style.display = 'none';
+                    warningIcon.title = '';
+                    warningIcon.classList.remove('persistent');
+                }
+            }
+        }
+
+        function loadStaleIssues() {
+            fetch('/api/stale-issues')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.stale) {
+                        staleIssues = data.stale;
+                        console.log('[stale] Loaded', Object.keys(staleIssues).length, 'stale issues');
+                        // Update warning icons for all stale issues
+                        for (const [issueNum, staleInfo] of Object.entries(staleIssues)) {
+                            updateStaleWarning(issueNum, staleInfo);
+                        }
+                    }
+                })
+                .catch(err => console.error('[stale] Failed to load stale issues:', err));
+        }
+
         // Server-Sent Events for real-time updates
         // Always connect - even during startup - so we can receive startup_complete
         // IMPORTANT: Connect first, then fetch initial state on open to avoid race conditions
@@ -1198,6 +1256,7 @@
                 reconnectAttempts = 0;
                 // Fetch initial state AFTER SSE connected - events arriving after this fetch will layer on top
                 loadDependencyProblems();
+                loadStaleIssues();
             };
 
             // Listen for specific events that should trigger refresh
@@ -1266,6 +1325,51 @@
                     updateDependencyWarning(data.issue_number, null);
                 } catch (err) {
                     console.error('[SSE] Failed to parse dependency.unblocked:', err);
+                }
+            });
+
+            // Listen for stale in-progress events
+            evtSource.addEventListener('stale.in_progress_detected', function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+                    console.log('[SSE] Stale in-progress detected:', data);
+                    // Update or add to stale tracking
+                    staleIssues[data.issue_number] = {
+                        issue_number: data.issue_number,
+                        consecutive_ticks: 1,
+                        persistent: false,
+                    };
+                    updateStaleWarning(data.issue_number, staleIssues[data.issue_number]);
+                } catch (err) {
+                    console.error('[SSE] Failed to parse stale.in_progress_detected:', err);
+                }
+            });
+
+            evtSource.addEventListener('stale.in_progress_cleared', function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+                    console.log('[SSE] Stale in-progress cleared:', data);
+                    delete staleIssues[data.issue_number];
+                    updateStaleWarning(data.issue_number, null);
+                } catch (err) {
+                    console.error('[SSE] Failed to parse stale.in_progress_cleared:', err);
+                }
+            });
+
+            evtSource.addEventListener('stale.persistent_detected', function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+                    console.log('[SSE] Persistent stale detected:', data);
+                    // Update to persistent state
+                    staleIssues[data.issue_number] = {
+                        issue_number: data.issue_number,
+                        consecutive_ticks: data.consecutive_ticks,
+                        persistent: true,
+                        threshold: data.threshold,
+                    };
+                    updateStaleWarning(data.issue_number, staleIssues[data.issue_number]);
+                } catch (err) {
+                    console.error('[SSE] Failed to parse stale.persistent_detected:', err);
                 }
             });
 
