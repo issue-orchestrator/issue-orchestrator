@@ -39,6 +39,57 @@ class WorktreeError(Exception):
     pass
 
 
+def get_default_branch(repo_root: Path) -> str:
+    """
+    Get the repository's default branch name (main, master, etc.).
+
+    Attempts to detect from remote HEAD, falls back to 'main'.
+
+    Args:
+        repo_root: Path to the repository root
+
+    Returns:
+        The default branch name (e.g., 'main', 'master')
+    """
+    # Try to get from remote HEAD (refs/remotes/origin/HEAD -> refs/remotes/origin/main)
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "symbolic-ref", "refs/remotes/origin/HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        # refs/remotes/origin/main -> main
+        ref = result.stdout.strip()
+        branch = ref.split("/")[-1]
+        logger.debug("Detected default branch from origin/HEAD: %s", branch)
+        return branch
+
+    # Fallback: check if 'main' exists
+    main_check = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "main"],
+        capture_output=True,
+        check=False,
+    )
+    if main_check.returncode == 0:
+        logger.debug("Default branch fallback: main")
+        return "main"
+
+    # Fallback: check if 'master' exists
+    master_check = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "master"],
+        capture_output=True,
+        check=False,
+    )
+    if master_check.returncode == 0:
+        logger.debug("Default branch fallback: master")
+        return "master"
+
+    # Last resort fallback
+    logger.warning("Could not detect default branch, using 'main'")
+    return "main"
+
+
 def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
     """
     Symlink .venv from main repo into worktree.
@@ -612,8 +663,14 @@ def create_worktree(
                     str(worktree_path), "-b", branch_name, f"origin/{branch_name}"
                 ]
             else:
-                # Create new branch from current HEAD
-                cmd = ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), "-b", branch_name]
+                # Create new branch from default branch (main), NOT from HEAD
+                # This ensures agent worktrees don't inherit commits from user's feature branch
+                default_branch = get_default_branch(repo_root)
+                logger.info("Creating new branch from default branch: %s", default_branch)
+                cmd = [
+                    "git", "-C", str(repo_root), "worktree", "add",
+                    str(worktree_path), "-b", branch_name, default_branch
+                ]
 
         logger.info("Creating worktree: path=%s branch=%s", worktree_path, branch_name)
         result = subprocess.run(

@@ -178,6 +178,18 @@
         }
         .issue-agent { font-size: 12px; color: #8b949e; }
         .issue-time { font-size: 12px; color: #8b949e; font-family: monospace; }
+        .issue-kill-btn {
+            font-size: 12px;
+            color: #8b949e;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+            transition: all 0.15s ease;
+        }
+        .issue-kill-btn:hover {
+            color: #f85149;
+            background: rgba(248, 81, 73, 0.15);
+        }
         .issue-action {
             font-size: 12px;
             color: #8b949e;
@@ -723,6 +735,11 @@
                 <span class="issue-title" title="{{ issue.title }}">{{ issue.title }}</span>
                 <span class="issue-agent">{{ issue.agent_type }}</span>
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
+                {% if issue.has_terminal %}
+                <span class="issue-kill-btn" onclick="killSession({{ issue.issue_number }}, event)" title="Force kill session">
+                    ⏹
+                </span>
+                {% endif %}
                 <span class="issue-action">
                     {% if issue.action == 'focus' %}
                     <span>👁</span><span class="action-arrow">→</span>
@@ -1012,6 +1029,24 @@
             }
         }
 
+        // Kill session handler (inline button)
+        async function killSession(issueNumber, event) {
+            event.stopPropagation();
+            if (!confirm(`Force kill session #${issueNumber}?\n\nThis will terminate the Claude agent immediately.`)) return;
+            try {
+                const res = await fetch(`/api/kill/${issueNumber}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'killed') {
+                    showToast(`Killed session #${issueNumber}`);
+                    location.reload();
+                } else {
+                    showToast(data.error || 'Failed to kill session', true);
+                }
+            } catch (e) {
+                showToast('Failed to kill session: ' + e.message, true);
+            }
+        }
+
         // Auto-refresh during startup
         {% if startup_status != 'complete' %}
         setTimeout(() => location.reload(), 1000);  // Refresh every 1s during startup
@@ -1295,8 +1330,9 @@
                 menuPrompt.classList.add('disabled');
             }
 
-            // Show Kill option for active/slow sessions
-            if (action === 'focus') {
+            // Show Kill option for any session with a terminal (active sessions)
+            const hasTerminal = row.dataset.hasTerminal === 'true';
+            if (hasTerminal) {
                 menuKill.style.display = 'flex';
             } else {
                 menuKill.style.display = 'none';
