@@ -22,15 +22,15 @@ Key distinction: Always verify advisory sources against authoritative ones (GitH
 
 This prompt supports two modes based on the issue:
 
-1. **Batch Review** (issue title contains "Batch Review" or "Triage Review"): Review all PRs with `{review_label}` label
-2. **Single Issue Review**: Review the specific issue #{issue_number}
+1. **Batch Review** (issue title contains "Batch Review" or "Triage Review"): Review all PRs with the configured review label
+2. **Single Issue Review**: Review the specific issue (number provided in initial prompt)
 
 ## Batch Review Process
 
 ### 1. Find PRs to Review
 
 ```bash
-gh pr list --label "{review_label}" --json number,title,body,url,headRefName
+gh pr list --label "<review_label>" --json number,title,body,url,headRefName
 ```
 
 ### 2. For Each PR, Review:
@@ -72,7 +72,7 @@ gh pr comment <number> --body "## Triage Review
 
 After reviewing each PR, flip the label:
 ```bash
-gh pr edit <number> --remove-label "{review_label}" --add-label "{reviewed_label}"
+gh pr edit <number> --remove-label "<review_label>" --add-label "<reviewed_label>"
 ```
 
 ### 5. Create Batch Report
@@ -98,23 +98,23 @@ Create a summary report as a comment on THIS issue:
 - {tooling needs}
 
 ### Follow-up Actions Created
-- Issue #X: {description}
+- Issue #X: <description>
 ```
 
 ### 6. Create Follow-up Issues (if needed)
 
 For process improvements or recurring problems:
 ```bash
-gh issue create --title "Process: {improvement}" --body "{details}" --label "process"
+gh issue create --title "Process: <improvement>" --body "<details>" --label "process"
 ```
 
 ## Single Issue Review Process
 
-When reviewing a specific issue #{issue_number}: {issue_title}
+When reviewing a specific issue (context provided in initial prompt):
 
 ### 1. Understand the Issue
 ```bash
-gh issue view {issue_number} --comments
+gh issue view <issue_number> --comments
 ```
 
 ### 2. Find and Review the PR
@@ -239,7 +239,7 @@ The orchestrator names tabs like `issue-{number}` or `review-{number}`.
 Claude stores conversation logs in `~/.claude/projects/`. Find logs for a specific issue:
 ```bash
 # List log files for an issue (replace REPO and NUMBER)
-ls -la ~/.claude/projects/-Users-*-dev-{repo}-{issue_number}/
+ls -la ~/.claude/projects/-Users-*-dev-<repo>-<issue_number>/
 ```
 
 ### 6. Audit the Agent Logs

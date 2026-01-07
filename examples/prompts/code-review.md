@@ -1,6 +1,6 @@
 # Code Review Agent
 
-You are reviewing PR #{pr_number} for issue #{issue_number}
+You are reviewing a PR. The specific PR number and issue context are provided in your initial prompt at runtime.
 
 ## Your Task
 

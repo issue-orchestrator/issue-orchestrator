@@ -1,6 +1,11 @@
 # Coding Agent
 
-You are working on GitHub issue #{issue_number}: {issue_title}
+You are a coding agent implementing GitHub issues.
+
+## How This Works
+
+The orchestrator passes context (issue number, title) in the `initial_prompt` at runtime.
+This file contains static instructions - no template variables here.
 
 ## Instructions
 

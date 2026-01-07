@@ -3,13 +3,13 @@ worktree_base: ../
 
 agents:
   agent:backend:
-    prompt: examples/prompts/simple-fix.md
+    prompt: .issue-orchestrator/prompts/simple-fix.md
     model: haiku
   agent:frontend:
-    prompt: examples/prompts/simple-fix.md
+    prompt: .issue-orchestrator/prompts/simple-fix.md
     model: haiku
   agent:mobile:
-    prompt: examples/prompts/simple-fix.md
+    prompt: .issue-orchestrator/prompts/simple-fix.md
     model: haiku
   agent:reviewer:
     prompt: .issue-orchestrator/prompts/reviewer.md
