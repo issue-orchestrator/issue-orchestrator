@@ -1,0 +1,14 @@
+{
+  "agent": "agent:backend",
+  "branch": "2643-m3-003-add-unit-tests-for-dependency-evaluator-py",
+  "claude_args": "",
+  "claude_project_dir": "/Users/brucegordon/.claude/projects/-Users-brucegordon-dev-issue-orchestrator-2643",
+  "claude_prompt_mode": "arg",
+  "issue_key": "2643",
+  "issue_number": 2643,
+  "session_key": "code:2643",
+  "session_name": "issue-2643",
+  "task": "code",
+  "timestamp": "2026-01-08T08:48:15Z",
+  "worktree": "/Users/brucegordon/dev/issue-orchestrator-2643"
+}

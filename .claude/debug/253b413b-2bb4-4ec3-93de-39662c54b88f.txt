@@ -1,0 +1,131 @@
+2026-01-07T04:53:56.604Z [DEBUG] [SLOW OPERATION DETECTED] execSyncWithDefaults_DEPRECATED (23.3ms): security find-generic-password -a $USER -w -s "Claude Code"
+2026-01-07T04:53:56.623Z [DEBUG] [SLOW OPERATION DETECTED] execSyncWithDefaults_DEPRECATED (18.5ms): security find-generic-password -a "brucegordon" -w -s "Claude Code-credentials"
+2026-01-07T04:53:56.641Z [DEBUG] Watching for changes in setting files /Users/brucegordon/dev/issue-orchestrator-2643/.claude, /Users/brucegordon/dev/issue-orchestrator-2643/.claude...
+2026-01-07T04:53:56.642Z [ERROR] Failed to save config with lock: Error: ENOENT: no such file or directory, lstat '/Users/brucegordon/dev/issue-orchestrator-2643/.claude.json'
+2026-01-07T04:53:56.642Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636642
+2026-01-07T04:53:56.642Z [DEBUG] Setting permissions for new file: 600
+2026-01-07T04:53:56.642Z [DEBUG] Temp file written successfully, size: 82 bytes
+2026-01-07T04:53:56.642Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636642 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.643Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.647Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636647
+2026-01-07T04:53:56.647Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.647Z [DEBUG] Temp file written successfully, size: 130 bytes
+2026-01-07T04:53:56.647Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.647Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636647 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.647Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.652Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636652
+2026-01-07T04:53:56.652Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.653Z [DEBUG] Temp file written successfully, size: 167 bytes
+2026-01-07T04:53:56.653Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.653Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636652 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.653Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.654Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636654
+2026-01-07T04:53:56.654Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.654Z [DEBUG] Temp file written successfully, size: 202 bytes
+2026-01-07T04:53:56.654Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.654Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636654 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.654Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.655Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636655
+2026-01-07T04:53:56.655Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.655Z [DEBUG] Temp file written successfully, size: 239 bytes
+2026-01-07T04:53:56.655Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.655Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636655 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.655Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.657Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-01-07T04:53:56.657Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-01-07T04:53:56.657Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-01-07T04:53:56.658Z [DEBUG] LSP server manager initialized successfully
+2026-01-07T04:53:56.658Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-01-07T04:53:56.658Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-01-07T04:53:56.662Z [DEBUG] Loading skills from: managed=/Library/Application Support/ClaudeCode/.claude/skills, user=/Users/brucegordon/dev/issue-orchestrator-2643/.claude/skills, project=[]
+2026-01-07T04:53:56.765Z [DEBUG] [SLOW OPERATION DETECTED] execSyncWithDefaults_DEPRECATED (97.1ms): ps aux | grep -E "Visual Studio Code|Code Helper|Cursor Helper|Windsurf Helper|IntelliJ IDEA|PyCharm
+2026-01-07T04:53:56.766Z [DEBUG] installed_plugins.json doesn't exist, returning empty V2 object
+2026-01-07T04:53:56.780Z [DEBUG] Creating shell snapshot for zsh (/bin/zsh)
+2026-01-07T04:53:56.780Z [DEBUG] Looking for shell config file: /Users/brucegordon/dev/issue-orchestrator-2643/.zshrc
+2026-01-07T04:53:56.780Z [DEBUG] Shell config file not found: /Users/brucegordon/dev/issue-orchestrator-2643/.zshrc, creating snapshot with Claude Code defaults only
+2026-01-07T04:53:56.780Z [DEBUG] Snapshots directory: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/shell-snapshots
+2026-01-07T04:53:56.780Z [DEBUG] Creating snapshot at: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/shell-snapshots/snapshot-zsh-1767761636780-7bqb2m.sh
+2026-01-07T04:53:56.780Z [DEBUG] Shell binary exists: true
+2026-01-07T04:53:56.780Z [DEBUG] Execution timeout: 10000ms
+2026-01-07T04:53:56.781Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/253b413b-2bb4-4ec3-93de-39662c54b88f-agent-253b413b-2bb4-4ec3-93de-39662c54b88f.json.tmp.56568.1767761636781
+2026-01-07T04:53:56.782Z [DEBUG] Temp file written successfully, size: 2 bytes
+2026-01-07T04:53:56.782Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/253b413b-2bb4-4ec3-93de-39662c54b88f-agent-253b413b-2bb4-4ec3-93de-39662c54b88f.json.tmp.56568.1767761636781 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/253b413b-2bb4-4ec3-93de-39662c54b88f-agent-253b413b-2bb4-4ec3-93de-39662c54b88f.json
+2026-01-07T04:53:56.782Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/253b413b-2bb4-4ec3-93de-39662c54b88f-agent-253b413b-2bb4-4ec3-93de-39662c54b88f.json written atomically
+2026-01-07T04:53:56.786Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-01-07T04:53:56.786Z [DEBUG] Total plugin skills loaded: 0
+2026-01-07T04:53:56.786Z [DEBUG] Total plugin commands loaded: 0
+2026-01-07T04:53:56.786Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-01-07T04:53:56.788Z [DEBUG] Total plugin agents loaded: 0
+2026-01-07T04:53:56.788Z [DEBUG] Loaded 4 unique skills (managed: 0, user: 4, project: 0, legacy commands: 0)
+2026-01-07T04:53:56.789Z [DEBUG] getSkills returning: 4 skill dir commands, 0 plugin skills
+2026-01-07T04:53:56.984Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636984
+2026-01-07T04:53:56.984Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.984Z [DEBUG] Temp file written successfully, size: 311 bytes
+2026-01-07T04:53:56.985Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.985Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636984 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.985Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.985Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636985
+2026-01-07T04:53:56.985Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.985Z [DEBUG] Temp file written successfully, size: 363 bytes
+2026-01-07T04:53:56.985Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.985Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636985 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.985Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.986Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636986
+2026-01-07T04:53:56.986Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.986Z [DEBUG] Temp file written successfully, size: 401 bytes
+2026-01-07T04:53:56.986Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.986Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636986 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.986Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.986Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636986
+2026-01-07T04:53:56.986Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.986Z [DEBUG] Temp file written successfully, size: 437 bytes
+2026-01-07T04:53:56.986Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.986Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636986 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.987Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.987Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636987
+2026-01-07T04:53:56.987Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.987Z [DEBUG] Temp file written successfully, size: 467 bytes
+2026-01-07T04:53:56.987Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.987Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636987 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.987Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.988Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636988
+2026-01-07T04:53:56.988Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.988Z [DEBUG] Temp file written successfully, size: 497 bytes
+2026-01-07T04:53:56.988Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.988Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636988 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.988Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.988Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636988
+2026-01-07T04:53:56.988Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.988Z [DEBUG] Temp file written successfully, size: 522 bytes
+2026-01-07T04:53:56.988Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.989Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636988 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.989Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:56.991Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636990
+2026-01-07T04:53:56.991Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:56.991Z [DEBUG] Temp file written successfully, size: 694 bytes
+2026-01-07T04:53:56.991Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:56.991Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761636990 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:56.991Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:53:57.017Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761637017
+2026-01-07T04:53:57.017Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:53:57.017Z [DEBUG] Temp file written successfully, size: 52342 bytes
+2026-01-07T04:53:57.017Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:53:57.017Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761637017 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:53:57.017Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:54:00.733Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761640733
+2026-01-07T04:54:00.733Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:54:00.733Z [DEBUG] Temp file written successfully, size: 52409 bytes
+2026-01-07T04:54:00.733Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:54:00.733Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761640733 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:54:00.733Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:54:00.735Z [DEBUG] Git remote URL: https://github.com/BruceBGordon/issue-orchestrator.git
+2026-01-07T04:54:00.735Z [DEBUG] Parsed repository: BruceBGordon/issue-orchestrator from https://github.com/BruceBGordon/issue-orchestrator.git
+2026-01-07T04:54:00.735Z [DEBUG] Parsed repository: BruceBGordon/issue-orchestrator from URL: https://github.com/BruceBGordon/issue-orchestrator.git
+2026-01-07T04:54:00.736Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761640736
+2026-01-07T04:54:00.736Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:54:00.736Z [DEBUG] Temp file written successfully, size: 52539 bytes
+2026-01-07T04:54:00.736Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:54:00.736Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.56568.1767761640736 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:54:00.736Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:54:00.737Z [DEBUG] Added /Users/brucegordon/dev/issue-orchestrator-2643 to tracked paths for repo brucebgordon/issue-orchestrator
+2026-01-07T04:54:00.738Z [DEBUG] Shell snapshot created successfully (946 bytes)

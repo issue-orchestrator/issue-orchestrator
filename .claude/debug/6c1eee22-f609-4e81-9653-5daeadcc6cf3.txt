@@ -1,0 +1,114 @@
+2026-01-07T18:42:19.543Z [DEBUG] [SLOW OPERATION DETECTED] execSyncWithDefaults_DEPRECATED (20.2ms): security find-generic-password -a $USER -w -s "Claude Code"
+2026-01-07T18:42:19.562Z [DEBUG] [SLOW OPERATION DETECTED] execSyncWithDefaults_DEPRECATED (17.9ms): security find-generic-password -a "brucegordon" -w -s "Claude Code-credentials"
+2026-01-07T18:42:19.576Z [DEBUG] Watching for changes in setting files /Users/brucegordon/dev/issue-orchestrator-2643/.claude, /Users/brucegordon/dev/issue-orchestrator-2643/.claude...
+2026-01-07T18:42:19.587Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-01-07T18:42:19.587Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-01-07T18:42:19.587Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-01-07T18:42:19.588Z [DEBUG] LSP server manager initialized successfully
+2026-01-07T18:42:19.588Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-01-07T18:42:19.588Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-01-07T18:42:19.589Z [DEBUG] Stats cache does not exist, returning empty cache
+2026-01-07T18:42:19.590Z [DEBUG] Stats cache empty, processing all historical data in background
+2026-01-07T18:42:19.593Z [DEBUG] Loading skills from: managed=/Library/Application Support/ClaudeCode/.claude/skills, user=/Users/brucegordon/dev/issue-orchestrator-2643/.claude/skills, project=[]
+2026-01-07T18:42:19.685Z [DEBUG] [SLOW OPERATION DETECTED] execSyncWithDefaults_DEPRECATED (89.7ms): ps aux | grep -E "Visual Studio Code|Code Helper|Cursor Helper|Windsurf Helper|IntelliJ IDEA|PyCharm
+2026-01-07T18:42:19.685Z [DEBUG] installed_plugins.json doesn't exist, returning empty V2 object
+2026-01-07T18:42:19.700Z [DEBUG] Creating shell snapshot for zsh (/bin/zsh)
+2026-01-07T18:42:19.700Z [DEBUG] Looking for shell config file: /Users/brucegordon/dev/issue-orchestrator-2643/.zshrc
+2026-01-07T18:42:19.700Z [DEBUG] Shell config file not found: /Users/brucegordon/dev/issue-orchestrator-2643/.zshrc, creating snapshot with Claude Code defaults only
+2026-01-07T18:42:19.700Z [DEBUG] Snapshots directory: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/shell-snapshots
+2026-01-07T18:42:19.700Z [DEBUG] Creating snapshot at: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/shell-snapshots/snapshot-zsh-1767811339700-rt9r9y.sh
+2026-01-07T18:42:19.700Z [DEBUG] Shell binary exists: true
+2026-01-07T18:42:19.700Z [DEBUG] Execution timeout: 10000ms
+2026-01-07T18:42:19.701Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/6c1eee22-f609-4e81-9653-5daeadcc6cf3-agent-6c1eee22-f609-4e81-9653-5daeadcc6cf3.json.tmp.99371.1767811339701
+2026-01-07T18:42:19.702Z [DEBUG] Temp file written successfully, size: 2 bytes
+2026-01-07T18:42:19.702Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/6c1eee22-f609-4e81-9653-5daeadcc6cf3-agent-6c1eee22-f609-4e81-9653-5daeadcc6cf3.json.tmp.99371.1767811339701 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/6c1eee22-f609-4e81-9653-5daeadcc6cf3-agent-6c1eee22-f609-4e81-9653-5daeadcc6cf3.json
+2026-01-07T18:42:19.702Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/6c1eee22-f609-4e81-9653-5daeadcc6cf3-agent-6c1eee22-f609-4e81-9653-5daeadcc6cf3.json written atomically
+2026-01-07T18:42:19.706Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-01-07T18:42:19.706Z [DEBUG] Total plugin skills loaded: 0
+2026-01-07T18:42:19.706Z [DEBUG] Total plugin commands loaded: 0
+2026-01-07T18:42:19.706Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-01-07T18:42:19.709Z [DEBUG] Loaded 4 unique skills (managed: 0, user: 4, project: 0, legacy commands: 0)
+2026-01-07T18:42:19.709Z [DEBUG] getSkills returning: 4 skill dir commands, 0 plugin skills
+2026-01-07T18:42:19.731Z [DEBUG] Git remote URL: https://github.com/BruceBGordon/issue-orchestrator.git
+2026-01-07T18:42:19.731Z [DEBUG] Parsed repository: BruceBGordon/issue-orchestrator from https://github.com/BruceBGordon/issue-orchestrator.git
+2026-01-07T18:42:19.731Z [DEBUG] Parsed repository: BruceBGordon/issue-orchestrator from URL: https://github.com/BruceBGordon/issue-orchestrator.git
+2026-01-07T18:42:19.731Z [DEBUG] Path /Users/brucegordon/dev/issue-orchestrator-2643 already tracked for repo brucebgordon/issue-orchestrator
+2026-01-07T18:42:19.734Z [DEBUG] Shell snapshot created successfully (946 bytes)
+2026-01-07T18:42:19.736Z [DEBUG] Total plugin agents loaded: 0
+2026-01-07T18:42:19.740Z [DEBUG] Initialized versioned plugins system with 0 plugins
+2026-01-07T18:42:19.745Z [DEBUG] Getting matching hook commands for SessionStart with query: startup
+2026-01-07T18:42:19.745Z [DEBUG] Found 0 hook matchers in settings
+2026-01-07T18:42:19.745Z [DEBUG] Matched 0 unique hooks for query "startup" (0 before deduplication)
+2026-01-07T18:42:19.749Z [DEBUG] Total plugin output styles loaded: 0
+2026-01-07T18:42:19.755Z [DEBUG] Getting matching hook commands for SubagentStart with query: Explore
+2026-01-07T18:42:19.755Z [DEBUG] Found 0 hook matchers in settings
+2026-01-07T18:42:19.755Z [DEBUG] Matched 0 unique hooks for query "Explore" (0 before deduplication)
+2026-01-07T18:42:19.757Z [DEBUG] Getting matching hook commands for SubagentStart with query: Plan
+2026-01-07T18:42:19.757Z [DEBUG] Found 0 hook matchers in settings
+2026-01-07T18:42:19.757Z [DEBUG] Matched 0 unique hooks for query "Plan" (0 before deduplication)
+2026-01-07T18:42:19.759Z [DEBUG] Skills and commands included in Skill tool: review-workflow, troubleshooting, e2e-tests, architecture
+2026-01-07T18:42:19.762Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-01-07T18:42:19.762Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-01-07T18:42:19.762Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-01-07T18:42:19.762Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-01-07T18:42:19.764Z [DEBUG] Getting matching hook commands for UserPromptSubmit with query: undefined
+2026-01-07T18:42:19.764Z [DEBUG] Found 0 hook matchers in settings
+2026-01-07T18:42:19.764Z [DEBUG] Matched 0 unique hooks for query "no match query" (0 before deduplication)
+2026-01-07T18:42:19.765Z [ERROR] Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+    at validateHeaders (/$bunfs/root/claude:801:1013)
+    at buildHeaders (/$bunfs/root/claude:801:8517)
+    at async buildRequest (/$bunfs/root/claude:801:7583)
+    at async makeRequest (/$bunfs/root/claude:801:3411)
+    at processTicksAndRejections (native:7:39)
+2026-01-07T18:42:19.935Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.99371.1767811339935
+2026-01-07T18:42:19.935Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T18:42:19.935Z [DEBUG] Temp file written successfully, size: 52585 bytes
+2026-01-07T18:42:19.935Z [DEBUG] Applied original permissions to temp file
+2026-01-07T18:42:19.935Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.99371.1767811339935 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T18:42:19.935Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T18:42:19.948Z [ERROR] Error streaming, falling back to non-streaming mode: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-01-07T18:42:19.949Z [ERROR] Error streaming, falling back to non-streaming mode: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-01-07T18:42:19.949Z [ERROR] Error streaming, falling back to non-streaming mode: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-01-07T18:42:19.949Z [ERROR] Error streaming, falling back to non-streaming mode: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-01-07T18:42:19.951Z [ERROR] Error in non-streaming fallback: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-01-07T18:42:19.951Z [ERROR] Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+    at validateHeaders (/$bunfs/root/claude:801:1013)
+    at buildHeaders (/$bunfs/root/claude:801:8517)
+    at async buildRequest (/$bunfs/root/claude:801:7583)
+    at async makeRequest (/$bunfs/root/claude:801:3411)
+    at processTicksAndRejections (native:7:39)
+2026-01-07T18:42:19.952Z [ERROR] Error in non-streaming fallback: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-01-07T18:42:19.952Z [ERROR] Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+    at validateHeaders (/$bunfs/root/claude:801:1013)
+    at buildHeaders (/$bunfs/root/claude:801:8517)
+    at processTicksAndRejections (native:7:39)
+2026-01-07T18:42:19.952Z [ERROR] Error in non-streaming fallback: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-01-07T18:42:19.952Z [ERROR] Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+    at validateHeaders (/$bunfs/root/claude:801:1013)
+    at buildHeaders (/$bunfs/root/claude:801:8517)
+    at processTicksAndRejections (native:7:39)
+2026-01-07T18:42:19.952Z [ERROR] Error in non-streaming fallback: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+2026-01-07T18:42:19.952Z [ERROR] Error: Error: Could not resolve authentication method. Expected either apiKey or authToken to be set. Or for one of the "X-Api-Key" or "Authorization" headers to be explicitly omitted
+    at validateHeaders (/$bunfs/root/claude:801:1013)
+    at buildHeaders (/$bunfs/root/claude:801:8517)
+    at async buildRequest (/$bunfs/root/claude:801:7583)
+    at async makeRequest (/$bunfs/root/claude:801:3411)
+    at processTicksAndRejections (native:7:39)
+2026-01-07T18:42:19.966Z [DEBUG] Getting matching hook commands for SubagentStop with query: undefined
+2026-01-07T18:42:19.966Z [DEBUG] Found 0 hook matchers in settings
+2026-01-07T18:42:19.966Z [DEBUG] Matched 0 unique hooks for query "no match query" (0 before deduplication)
+2026-01-07T18:42:19.967Z [DEBUG] Getting matching hook commands for Stop with query: undefined
+2026-01-07T18:42:19.967Z [DEBUG] Found 1 hook matchers in settings
+2026-01-07T18:42:19.967Z [DEBUG] Matched 1 unique hooks for query "no match query" (1 before deduplication)
+2026-01-07T18:42:19.970Z [DEBUG] Getting matching hook commands for SubagentStop with query: undefined
+2026-01-07T18:42:19.970Z [DEBUG] Found 0 hook matchers in settings
+2026-01-07T18:42:19.970Z [DEBUG] Matched 0 unique hooks for query "no match query" (0 before deduplication)
+2026-01-07T18:42:19.973Z [DEBUG] Hook output does not start with {, treating as plain text
+2026-01-07T18:42:19.977Z [DEBUG] Getting matching hook commands for SessionEnd with query: other
+2026-01-07T18:42:19.977Z [DEBUG] Found 0 hook matchers in settings
+2026-01-07T18:42:19.977Z [DEBUG] Matched 0 unique hooks for query "other" (0 before deduplication)
+2026-01-07T18:42:19.984Z [DEBUG] Cleaned up session snapshot: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/shell-snapshots/snapshot-zsh-1767811339700-rt9r9y.sh
+2026-01-07T18:42:19.984Z [DEBUG] LSP server manager shut down successfully
+2026-01-07T18:42:19.985Z [DEBUG] BigQuery metrics exporter flush complete
+2026-01-07T18:42:19.985Z [DEBUG] BigQuery metrics exporter flush complete
+2026-01-07T18:42:19.985Z [DEBUG] BigQuery metrics exporter shutdown complete

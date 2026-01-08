@@ -1,0 +1,47 @@
+2026-01-07T04:54:26.929Z [DEBUG] [SLOW OPERATION DETECTED] execSyncWithDefaults_DEPRECATED (18.6ms): security find-generic-password -a $USER -w -s "Claude Code"
+2026-01-07T04:54:26.947Z [DEBUG] [SLOW OPERATION DETECTED] execSyncWithDefaults_DEPRECATED (16.9ms): security find-generic-password -a "brucegordon" -w -s "Claude Code-credentials"
+2026-01-07T04:54:26.962Z [DEBUG] Watching for changes in setting files /Users/brucegordon/dev/issue-orchestrator-2643/.claude, /Users/brucegordon/dev/issue-orchestrator-2643/.claude...
+2026-01-07T04:54:26.972Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-01-07T04:54:26.972Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-01-07T04:54:26.972Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-01-07T04:54:26.974Z [DEBUG] LSP server manager initialized successfully
+2026-01-07T04:54:26.974Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-01-07T04:54:26.974Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-01-07T04:54:26.977Z [DEBUG] Loading skills from: managed=/Library/Application Support/ClaudeCode/.claude/skills, user=/Users/brucegordon/dev/issue-orchestrator-2643/.claude/skills, project=[]
+2026-01-07T04:54:27.072Z [DEBUG] [SLOW OPERATION DETECTED] execSyncWithDefaults_DEPRECATED (92.1ms): ps aux | grep -E "Visual Studio Code|Code Helper|Cursor Helper|Windsurf Helper|IntelliJ IDEA|PyCharm
+2026-01-07T04:54:27.073Z [DEBUG] installed_plugins.json doesn't exist, returning empty V2 object
+2026-01-07T04:54:27.085Z [DEBUG] Creating shell snapshot for zsh (/bin/zsh)
+2026-01-07T04:54:27.085Z [DEBUG] Looking for shell config file: /Users/brucegordon/dev/issue-orchestrator-2643/.zshrc
+2026-01-07T04:54:27.085Z [DEBUG] Shell config file not found: /Users/brucegordon/dev/issue-orchestrator-2643/.zshrc, creating snapshot with Claude Code defaults only
+2026-01-07T04:54:27.085Z [DEBUG] Snapshots directory: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/shell-snapshots
+2026-01-07T04:54:27.085Z [DEBUG] Creating snapshot at: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/shell-snapshots/snapshot-zsh-1767761667085-b4zah7.sh
+2026-01-07T04:54:27.085Z [DEBUG] Shell binary exists: true
+2026-01-07T04:54:27.085Z [DEBUG] Execution timeout: 10000ms
+2026-01-07T04:54:27.086Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/51e090ce-c9d6-4b3f-b1f1-56eaf308e39b-agent-51e090ce-c9d6-4b3f-b1f1-56eaf308e39b.json.tmp.61587.1767761667086
+2026-01-07T04:54:27.087Z [DEBUG] Temp file written successfully, size: 2 bytes
+2026-01-07T04:54:27.087Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/51e090ce-c9d6-4b3f-b1f1-56eaf308e39b-agent-51e090ce-c9d6-4b3f-b1f1-56eaf308e39b.json.tmp.61587.1767761667086 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/51e090ce-c9d6-4b3f-b1f1-56eaf308e39b-agent-51e090ce-c9d6-4b3f-b1f1-56eaf308e39b.json
+2026-01-07T04:54:27.087Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude/todos/51e090ce-c9d6-4b3f-b1f1-56eaf308e39b-agent-51e090ce-c9d6-4b3f-b1f1-56eaf308e39b.json written atomically
+2026-01-07T04:54:27.092Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-01-07T04:54:27.092Z [DEBUG] Total plugin skills loaded: 0
+2026-01-07T04:54:27.092Z [DEBUG] Total plugin commands loaded: 0
+2026-01-07T04:54:27.092Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-01-07T04:54:27.094Z [DEBUG] Loaded 4 unique skills (managed: 0, user: 4, project: 0, legacy commands: 0)
+2026-01-07T04:54:27.094Z [DEBUG] getSkills returning: 4 skill dir commands, 0 plugin skills
+2026-01-07T04:54:27.095Z [DEBUG] Total plugin agents loaded: 0
+2026-01-07T04:54:27.310Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.61587.1767761667310
+2026-01-07T04:54:27.310Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:54:27.310Z [DEBUG] Temp file written successfully, size: 52539 bytes
+2026-01-07T04:54:27.310Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:54:27.310Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.61587.1767761667310 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:54:27.310Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:54:27.319Z [DEBUG] Writing to temp file: /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.61587.1767761667319
+2026-01-07T04:54:27.319Z [DEBUG] Preserving file permissions: 100600
+2026-01-07T04:54:27.319Z [DEBUG] Temp file written successfully, size: 52539 bytes
+2026-01-07T04:54:27.319Z [DEBUG] Applied original permissions to temp file
+2026-01-07T04:54:27.319Z [DEBUG] Renaming /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json.tmp.61587.1767761667319 to /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json
+2026-01-07T04:54:27.320Z [DEBUG] File /Users/brucegordon/dev/issue-orchestrator-2643/.claude.json written atomically
+2026-01-07T04:54:27.369Z [DEBUG] Git remote URL: https://github.com/BruceBGordon/issue-orchestrator.git
+2026-01-07T04:54:27.369Z [DEBUG] Parsed repository: BruceBGordon/issue-orchestrator from https://github.com/BruceBGordon/issue-orchestrator.git
+2026-01-07T04:54:27.369Z [DEBUG] Parsed repository: BruceBGordon/issue-orchestrator from URL: https://github.com/BruceBGordon/issue-orchestrator.git
+2026-01-07T04:54:27.369Z [DEBUG] Path /Users/brucegordon/dev/issue-orchestrator-2643 already tracked for repo brucebgordon/issue-orchestrator
+2026-01-07T04:54:27.370Z [DEBUG] Shell snapshot created successfully (946 bytes)
