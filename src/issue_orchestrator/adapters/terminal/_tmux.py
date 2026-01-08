@@ -389,7 +389,12 @@ class TmuxManager:
         """Ensure a terminal is attached to the tmux session.
 
         On macOS, opens Terminal.app if no client is connected.
+        Disabled during tests (PYTEST_CURRENT_TEST env var).
         """
+        # Don't open terminal windows during tests
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+
         if self.session is None:
             return
 
