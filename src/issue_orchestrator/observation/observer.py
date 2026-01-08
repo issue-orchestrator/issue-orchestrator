@@ -12,6 +12,7 @@ Components that act are named Adapters.
 
 import logging
 import time
+from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -223,23 +224,38 @@ class SessionObserver:
             self._emit_no_output_if_stale(session)
             result = SessionObservationResult.running(runtime_minutes=runtime)
         else:
-            result = SessionObservationResult.terminated(runtime_minutes=runtime)
-            # Capture terminal output for failed sessions (before tab closes)
-            # This helps debug immediate failures like permission prompts
-            if not completion_path.exists() and self._session_runner:
-                try:
-                    terminal_output = self._session_runner.get_session_output(
-                        session.issue.number, lines=100
-                    )
-                    if terminal_output:
-                        logger.warning(
-                            "[FAILURE] Session #%d terminated without completion. "
-                            "Terminal output:\n%s",
-                            session.issue.number,
-                            terminal_output[-2000:] if len(terminal_output) > 2000 else terminal_output,
+            # Grace period: don't mark sessions as terminated too quickly after launch
+            # This prevents race conditions where iTerm tab detection fails during startup
+            # (AppleScript may not find tab immediately, or tab naming not complete)
+            GRACE_PERIOD_SECONDS = 60
+            session_age = (datetime.now() - session.started_at).total_seconds()
+            if session_age < GRACE_PERIOD_SECONDS:
+                logger.info(
+                    "[GRACE_PERIOD] Session #%d only %.0fs old (< %ds grace) - "
+                    "treating as running despite session detection failure",
+                    session.issue.number,
+                    session_age,
+                    GRACE_PERIOD_SECONDS,
+                )
+                result = SessionObservationResult.running(runtime_minutes=runtime)
+            else:
+                result = SessionObservationResult.terminated(runtime_minutes=runtime)
+                # Capture terminal output for failed sessions (before tab closes)
+                # This helps debug immediate failures like permission prompts
+                if not completion_path.exists() and self._session_runner:
+                    try:
+                        terminal_output = self._session_runner.get_session_output(
+                            session.issue.number, lines=100
                         )
-                except Exception as e:
-                    logger.debug("Could not capture terminal output: %s", e)
+                        if terminal_output:
+                            logger.warning(
+                                "[FAILURE] Session #%d terminated without completion. "
+                                "Terminal output:\n%s",
+                                session.issue.number,
+                                terminal_output[-2000:] if len(terminal_output) > 2000 else terminal_output,
+                            )
+                    except Exception as e:
+                        logger.debug("Could not capture terminal output: %s", e)
 
         # Emit observation result for debugging (only for non-running sessions)
         if result.observation != SessionObservation.RUNNING:

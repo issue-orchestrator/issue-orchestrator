@@ -663,15 +663,44 @@ class TestObserveSession:
     def test_observe_session_returns_terminated_when_session_not_exists(
         self, monitor, sample_session, mock_session_runner, tmp_path
     ):
-        """Test that observe_session returns TERMINATED when session doesn't exist."""
+        """Test that observe_session returns TERMINATED when session doesn't exist.
+
+        Note: Sessions must be older than the 60-second grace period to be marked
+        as terminated. This prevents false terminations during startup when
+        iTerm tab detection may be unreliable.
+        """
+        from datetime import datetime, timedelta
         from issue_orchestrator.observation.observation import SessionObservation
 
         sample_session.worktree_path = tmp_path
+        # Set session to be older than the 60-second grace period
+        sample_session.started_at = datetime.now() - timedelta(seconds=120)
         mock_session_runner.session_exists_by_name.return_value = False
 
         result = monitor.observe_session(sample_session)
 
         assert result.observation == SessionObservation.TERMINATED
+
+    def test_observe_session_grace_period_prevents_early_termination(
+        self, monitor, sample_session, mock_session_runner, tmp_path
+    ):
+        """Test that new sessions get a grace period before being marked as terminated.
+
+        This prevents false terminations during startup when iTerm tab detection
+        may be unreliable (e.g., AppleScript can't find the tab immediately).
+        """
+        from datetime import datetime
+        from issue_orchestrator.observation.observation import SessionObservation
+
+        sample_session.worktree_path = tmp_path
+        # Session just started (within grace period)
+        sample_session.started_at = datetime.now()
+        mock_session_runner.session_exists_by_name.return_value = False
+
+        result = monitor.observe_session(sample_session)
+
+        # Should be treated as RUNNING during grace period, not TERMINATED
+        assert result.observation == SessionObservation.RUNNING
 
     def test_observe_session_sends_exit_when_session_has_pr(
         self, monitor, sample_session, mock_session_runner, mock_repository_host, tmp_path
