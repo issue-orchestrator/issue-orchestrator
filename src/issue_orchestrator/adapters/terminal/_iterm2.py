@@ -287,6 +287,25 @@ end tell'''
 
         return has_running
 
+    def session_exists_by_name(self, session_name: str) -> bool:
+        """Check if a session exists by its full name (e.g., 'issue-123', 'review-456').
+
+        Parses the session name to extract the number and delegates to session_exists.
+        """
+        # Parse session name: "issue-123", "review-456", "rework-789", "triage-101"
+        if "-" not in session_name:
+            logger.warning("[SESSION_CHECK] Invalid session name format: %s", session_name)
+            return False
+
+        try:
+            # Extract number from session name
+            parts = session_name.rsplit("-", 1)
+            number = int(parts[1])
+            return self.session_exists(number)
+        except (ValueError, IndexError) as e:
+            logger.warning("[SESSION_CHECK] Failed to parse session name %s: %s", session_name, e)
+            return False
+
     def _has_running_tab_for_issue(self, issue_number: int) -> bool:
         """Check if there's a tab for this issue.
 

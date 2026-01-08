@@ -44,6 +44,11 @@ class ITermPlugin:
         return self._manager.session_exists(session_id)
 
     @hookimpl
+    def session_exists_by_name(self, session_name: str) -> bool:
+        """Check if an iTerm2 tab exists by its full name (e.g., 'issue-123')."""
+        return self._manager.session_exists_by_name(session_name)
+
+    @hookimpl
     def kill_session(self, session_id: int) -> bool:
         """Close an iTerm2 tab."""
         return self._manager.kill_session(session_id)

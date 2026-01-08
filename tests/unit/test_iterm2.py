@@ -685,6 +685,49 @@ class TestITermSessionManager:
         assert 42 not in manager._sessions
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    def test_session_exists_by_name_issue_session(self, mock_run_as):
+        """Test session_exists_by_name for issue sessions (e.g., 'issue-123').
+
+        This is CRITICAL: The observer uses session_exists_by_name, not session_exists.
+        Missing this hook caused sessions to be incorrectly marked as terminated.
+        """
+        mock_run_as.return_value = (True, "exists:#123 Test:processing:true")
+
+        manager = ITermSessionManager()
+        manager._sessions[123] = {"tab_name": "#123"}
+
+        # Must work for issue-N format
+        assert manager.session_exists_by_name("issue-123") is True
+
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    def test_session_exists_by_name_review_session(self, mock_run_as):
+        """Test session_exists_by_name for review sessions (e.g., 'review-456')."""
+        mock_run_as.return_value = (True, "exists:#456 Test:processing:true")
+
+        manager = ITermSessionManager()
+
+        assert manager.session_exists_by_name("review-456") is True
+
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    def test_session_exists_by_name_not_found(self, mock_run_as):
+        """Test session_exists_by_name when session doesn't exist."""
+        mock_run_as.return_value = (True, "not_found")
+
+        manager = ITermSessionManager()
+
+        assert manager.session_exists_by_name("issue-999") is False
+
+    def test_session_exists_by_name_invalid_format(self):
+        """Test session_exists_by_name with invalid session name format."""
+        manager = ITermSessionManager()
+
+        # No hyphen - invalid format
+        assert manager.session_exists_by_name("issue123") is False
+
+        # Non-numeric suffix
+        assert manager.session_exists_by_name("issue-abc") is False
+
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_kill_session_success(self, mock_run_as):
         """Test successful session kill."""
         mock_run_as.return_value = (True, "true")
@@ -894,3 +937,39 @@ class TestGetItermManager:
         manager2 = get_iterm_manager()
 
         assert 42 in manager2._sessions
+
+
+class TestITermPluginHooks:
+    """Test that ITermPlugin correctly wires hooks to ITermSessionManager.
+
+    CRITICAL: These tests ensure that required terminal hooks are implemented.
+    Missing hooks (like session_exists_by_name) cause sessions to be marked
+    as terminated when they're actually still running.
+    """
+
+    def test_session_exists_by_name_hook_exists(self):
+        """Verify ITermPlugin implements session_exists_by_name hook.
+
+        This hook is REQUIRED by the observer to detect running sessions.
+        When missing, all sessions appear terminated immediately.
+        """
+        from issue_orchestrator.execution.terminal_iterm import ITermPlugin
+
+        plugin = ITermPlugin()
+
+        # Verify the hook method exists and is callable
+        assert hasattr(plugin, "session_exists_by_name")
+        assert callable(plugin.session_exists_by_name)
+
+    @patch.object(ITermSessionManager, "session_exists_by_name")
+    def test_session_exists_by_name_hook_delegates_to_manager(self, mock_method):
+        """Verify session_exists_by_name hook delegates to manager."""
+        from issue_orchestrator.execution.terminal_iterm import ITermPlugin
+
+        mock_method.return_value = True
+        plugin = ITermPlugin()
+
+        result = plugin.session_exists_by_name("issue-123")
+
+        assert result is True
+        mock_method.assert_called_once_with("issue-123")
