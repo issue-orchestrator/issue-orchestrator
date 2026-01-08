@@ -35,6 +35,10 @@ from ..control.shutdown_manager import shutdown_manager
 # SSE event subscribers - set of asyncio.Queue objects
 _event_subscribers: set[asyncio.Queue] = set()
 
+# Main event loop reference for thread-safe event broadcasting
+# Set at startup so worker threads can schedule SSE broadcasts
+_main_loop: asyncio.AbstractEventLoop | None = None
+
 
 async def broadcast_event(event_type: str, data: dict | None = None) -> None:
     """Broadcast an event to all SSE subscribers.
@@ -1400,6 +1404,8 @@ async def run_with_web_dashboard(
 
     async def run_startup_and_loop():
         """Run startup then the orchestrator loop."""
+        global _main_loop
+
         # Wait for server to start and serve initial request before running startup
         await asyncio.sleep(0.5)
         try:
@@ -1409,6 +1415,8 @@ async def run_with_web_dashboard(
             logger.info("[web] Starting orchestrator startup in thread pool...")
 
             loop = asyncio.get_running_loop()
+            # Store main loop reference for thread-safe SSE broadcasting
+            _main_loop = loop
             await loop.run_in_executor(None, run_startup_sync)
 
             startup_elapsed = time.time() - startup_start
