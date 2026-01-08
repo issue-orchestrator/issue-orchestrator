@@ -65,6 +65,7 @@ from .fixtures import (
     DEFAULT_E2E_FILTER_LABEL,
     cleanup_local_worktrees,
     cleanup_tmux_sessions,
+    cleanup_all_e2e_tmux_sessions,
     run_cleanup_step,
     verify_cleanup_items,
     cleanup_remote_branches,
@@ -261,6 +262,8 @@ def e2e_reconciliation_at_session_start(e2e_tmux_session: str, e2e_worktree_base
         # Clean up default locations (from non-isolated runs)
         cleanup_local_worktrees()
         cleanup_tmux_sessions()
+        # Clean up ALL stale e2e-* sessions from crashed/aborted test runs
+        cleanup_all_e2e_tmux_sessions()
         # Clean up this session's isolated resources
         cleanup_local_worktrees(e2e_worktree_base)
         cleanup_tmux_sessions(e2e_tmux_session)
