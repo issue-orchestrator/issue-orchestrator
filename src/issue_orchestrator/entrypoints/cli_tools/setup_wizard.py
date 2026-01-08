@@ -507,11 +507,9 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     prompter.print("  web    - Browser dashboard at localhost (recommended)")
     prompter.print("           Best for most users. Visual overview of all agents.")
     prompter.print("  tmux   - Terminal multiplexer sessions")
-    prompter.print("           For terminal power users. Requires tmux installed.")
-    prompter.print("  iterm2 - Native iTerm2 tabs (macOS only)")
-    prompter.print("           Each agent runs in its own iTerm2 tab.\n")
+    prompter.print("           For terminal power users. Requires tmux installed.\n")
     ui_mode = prompter.input("UI mode", "web")
-    if ui_mode not in ("web", "tmux", "iterm2"):
+    if ui_mode not in ("web", "tmux"):
         prompter.print(f"  Invalid mode '{ui_mode}', using 'web'")
         ui_mode = "web"
     config["ui_mode"] = ui_mode
@@ -802,11 +800,9 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
         prompter.print("  web    - Browser dashboard at localhost (recommended)")
         prompter.print("           Best for most users. Visual overview of all agents.")
         prompter.print("  tmux   - Terminal multiplexer sessions")
-        prompter.print("           For terminal power users. Requires tmux installed.")
-        prompter.print("  iterm2 - Native iTerm2 tabs (macOS only)")
-        prompter.print("           Each agent runs in its own iTerm2 tab.\n")
+        prompter.print("           For terminal power users. Requires tmux installed.\n")
         ui_mode = prompter.input("UI mode", "web")
-        if ui_mode not in ("web", "tmux", "iterm2"):
+        if ui_mode not in ("web", "tmux"):
             prompter.print(f"  Invalid mode '{ui_mode}', using 'web'")
             ui_mode = "web"
         config["ui_mode"] = ui_mode

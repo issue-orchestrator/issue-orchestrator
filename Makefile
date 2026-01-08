@@ -18,7 +18,7 @@ help:
 	@echo "  test-integration    Run integration tests"
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
-	@echo "  test-real-claude    Quick test: real Claude execution in tmux + iTerm2"
+	@echo "  test-real-claude    Quick test: real Claude execution in tmux"
 	@echo "  test-web            Run Playwright web UI tests (headless)"
 	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
 	@echo "  playwright-install  Install Playwright browser binaries"
@@ -74,29 +74,20 @@ test-integration:
 # E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
 # Usage: make test-e2e        (stops on first failure)
 #        make test-e2e NOFAST=1  (runs all tests even if some fail)
-#        E2E_UI_MODE=iterm2 make test-e2e  (run with iTerm instead of tmux)
 test-e2e:
 ifdef NOFAST
 	$(PYTEST) tests/e2e -v -s --tb=short
 else
 	$(PYTEST) tests/e2e -v -s --tb=short -x
 endif
-ifeq ($(shell uname),Darwin)
-	@echo "Running terminal adapter test with iterm2 mode (macOS)..."
-	E2E_UI_MODE=iterm2 $(PYTEST) tests/e2e -v -s --tb=short -x -k "terminal_adapter"
-endif
 
-# Quick real Claude test: runs terminal adapter in both tmux and iterm2 modes
+# Quick real Claude test: runs terminal adapter in tmux mode
 # This verifies real Claude agent execution works end-to-end
 test-real-claude:
 	@echo "Testing agent-done invocation from Claude..."
 	$(PYTEST) tests/integration/test_claude_execution.py::TestAgentDoneInvocation -v -s --tb=short -x
 	@echo "Testing real Claude execution in tmux mode..."
 	$(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x
-ifeq ($(shell uname),Darwin)
-	@echo "Testing real Claude execution in iTerm2 mode..."
-	E2E_UI_MODE=iterm2 $(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x
-endif
 	@echo "✓ Real Claude agent execution tests passed!"
 
 # Run a single e2e test by name. Usage: make test-e2e-one TEST=test_code_review_produces_review_comment

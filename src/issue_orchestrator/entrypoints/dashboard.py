@@ -267,7 +267,8 @@ class DashboardApp(App):
                         logger.debug("focus_session succeeded")
                         self.notify(f"Switched to #{session.issue.number}")
                         # In tmux mode, exit dashboard to show the session
-                        if self.orchestrator.config.ui_mode != "iterm2":
+                        # In web mode, keep dashboard open (browser-based)
+                        if self.orchestrator.config.ui_mode == "tmux":
                             logger.debug("Exiting dashboard for tmux mode")
                             self.exit()
                     else:
@@ -307,7 +308,8 @@ class Dashboard:
             if self._app:
                 self._app.notify(f"Switched to #{issue_number}")
             # For tmux mode, exit dashboard after focusing
-            if self.ui_mode != "iterm2":
+            # For web mode, keep dashboard open (browser-based)
+            if self.ui_mode == "tmux":
                 self.attach_after_exit = True
                 if self._app:
                     self._app.exit()
@@ -337,7 +339,7 @@ async def run_with_dashboard(orchestrator: "Orchestrator", ui_mode: str = "tmux"
 
     Args:
         orchestrator: The orchestrator instance
-        ui_mode: "tmux" for pure terminal, "iterm2" for Mac GUI integration
+        ui_mode: "tmux" for pure terminal, "web" for browser dashboard
 
     Returns True if the caller should attach to the tmux session.
     """

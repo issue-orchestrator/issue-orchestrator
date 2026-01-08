@@ -238,14 +238,14 @@ gh issue list --label "blocked-failed" --json number,title,state
 gh issue list --label "blocked" --json number,title,state
 ```
 
-### 4. Check iTerm Sessions (if still open)
+### 4. Check tmux Sessions (if still open)
 
-If the failed session's iTerm tab is still open, check it directly:
+If the failed session's tmux window is still open, check it directly:
 - Look at the terminal output for errors not captured in logs
 - Check if there are shell errors, permission issues, or command failures
 - See if the agent was waiting for input or stuck in a loop
 
-The orchestrator names tabs like `issue-{number}` or `review-{number}`.
+The orchestrator names windows like `issue-{number}` or `review-{number}`.
 
 ### 5. Locate Claude Agent Logs
 

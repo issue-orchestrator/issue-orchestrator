@@ -31,11 +31,6 @@ class ParsedSessionName:
         """Get the terminal_id (e.g., 'issue-123')."""
         return f"{self.session_type.value}-{self.number}"
 
-    @property
-    def iterm_tab_prefix(self) -> str:
-        """Get the iTerm tab name prefix (e.g., '#123')."""
-        return f"#{self.number}"
-
 
 def terminal_id(session_type: str | SessionType, number: int) -> str:
     """Generate terminal_id from session type and number.
@@ -91,49 +86,6 @@ def parse_terminal_id(tid: str) -> ParsedSessionName | None:
         return ParsedSessionName(session_type=session_type, number=number)
     except (ValueError, IndexError):
         return None
-
-
-def iterm_tab_name(number: int, title: str | None = None, max_title_length: int = 20) -> str:
-    """Generate iTerm tab name from issue/PR number and optional title.
-
-    Args:
-        number: Issue or PR number
-        title: Optional title to include (will be truncated)
-        max_title_length: Maximum length for title portion
-
-    Returns:
-        Tab name like "#123" or "#123 Fix authentication bug"
-
-    Example:
-        >>> iterm_tab_name(123)
-        '#123'
-        >>> iterm_tab_name(123, "Fix authentication bug")
-        '#123 Fix authentication '
-    """
-    if title:
-        short_title = title[:max_title_length]
-        return f"#{number} {short_title}"
-    return f"#{number}"
-
-
-def iterm_tab_prefix(number: int) -> str:
-    """Get the iTerm tab name prefix for matching.
-
-    This is used for:
-    - Finding tabs by issue number
-    - Focusing sessions from web UI
-
-    Args:
-        number: Issue or PR number
-
-    Returns:
-        Tab prefix like "#123"
-
-    Example:
-        >>> iterm_tab_prefix(123)
-        '#123'
-    """
-    return f"#{number}"
 
 
 def number_from_terminal_id(tid: str) -> int | None:

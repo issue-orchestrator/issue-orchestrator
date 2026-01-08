@@ -210,7 +210,7 @@ class SessionLauncher:
             return LaunchResult(None, False, "Already in active sessions")
 
         if self._session_exists(session_name):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "iTerm tab already running")
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "terminal session already running")
             return LaunchResult(None, False, "Terminal session already running")
 
         logger.info(
@@ -432,7 +432,7 @@ class SessionLauncher:
             return LaunchResult(None, False, "Already in active sessions")
 
         if self._session_exists(session_name):
-            log_transition("review", review.pr_number, "QUEUED", "SKIP", "iTerm tab already running")
+            log_transition("review", review.pr_number, "QUEUED", "SKIP", "terminal session already running")
             return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
 
         if not self.config.repo:
@@ -611,7 +611,7 @@ class SessionLauncher:
             return LaunchResult(None, False, "Already in active sessions")
 
         if self._session_exists(session_name):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "iTerm tab already running")
+            log_transition("rework", issue_number, "QUEUED", "SKIP", "terminal session already running")
             return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
 
         log_transition("rework", issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")

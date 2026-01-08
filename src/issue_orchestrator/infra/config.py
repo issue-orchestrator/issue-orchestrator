@@ -205,7 +205,7 @@ class Config:
     # Comment headings for structured worker comments
     comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
 
-    # UI mode: "web" (default, browser dashboard), "tmux", "iterm2" (Mac iTerm2 tabs)
+    # UI mode: "web" (default, browser dashboard) or "tmux" (terminal dashboard)
     ui_mode: str = "web"
     web_port: int = 8080  # Port for web dashboard
     control_api_port: int = 19080  # Port for control API (always available, 0 = disabled)
@@ -216,7 +216,7 @@ class Config:
     session_no_output_repeat_seconds: int = 120  # Minimum gap between session_no_output events
 
     # Session detection - be lenient to avoid false terminations
-    # These protect against iTerm AppleScript detection failures during startup
+    # These protect against session detection failures during startup
     session_grace_period_seconds: int = 120  # Don't terminate sessions younger than this
     session_log_activity_seconds: int = 120  # If log modified within this window, session is alive
 
@@ -234,7 +234,7 @@ class Config:
     gh_audit_file: Optional[str] = None  # Path for GH audit report (supports {pid})
 
     # Terminal adapter (optional - overrides ui_mode if set)
-    # Can be "builtin:tmux", "builtin:iterm2", or a full class path
+    # Can be "builtin:tmux" or a full class path for custom adapters
     terminal_adapter: Optional[str] = None
 
     # Session limits

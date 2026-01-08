@@ -38,7 +38,7 @@ This document defines the authoritative data sources available to triage agents,
 
 | Source | Access | What It Tells You |
 |--------|--------|-------------------|
-| iTerm tabs | Named `issue-{N}` or `review-{N}` | Real-time terminal output (if still open) |
+| tmux windows | Named `issue-{N}` or `review-{N}` | Real-time terminal output (if still open) |
 | tmux sessions | `tmux list-sessions` | Active sessions, may have scrollback |
 
 ### Worktree State (Advisory)

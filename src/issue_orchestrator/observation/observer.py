@@ -226,7 +226,7 @@ class SessionObserver:
         else:
             # Check if session should be kept alive despite detection failure
             # Two signals indicate the session may still be running:
-            # 1. Session is new - iTerm detection may be unreliable during startup
+            # 1. Session is new - terminal detection may be unreliable during startup
             # 2. Log file is progressing - Claude is clearly active
             # These thresholds are configurable via YAML to allow tuning
             grace_period = self.config.session_grace_period_seconds

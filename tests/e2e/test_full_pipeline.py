@@ -61,7 +61,7 @@ class TestConcurrentPipeline:
             # Create issues dynamically
             for i in range(num_issues):
                 issue = flow.create_issue(
-                    f"[E2E-CONCURRENT-{i+1}] Concurrent pipeline test",
+                    f"[M0-{800+i:03d}] [E2E-CONCURRENT-{i+1}] Concurrent pipeline test",
                     ["agent:e2e-test", e2e_label(f"concurrent_{i}")],
                 )
                 issues.append(issue)

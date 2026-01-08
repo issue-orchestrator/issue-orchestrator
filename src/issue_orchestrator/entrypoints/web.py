@@ -169,7 +169,7 @@ async def dashboard(
                     "time": f"{runtime} min",
                     "action": "focus",
                     "action_icon": "→",
-                    "action_hint": "Click to focus iTerm2 tab",
+                    "action_hint": "Click to focus terminal session",
                     "url": "",
                     # Quick links
                     "issue_url": make_issue_url(session.issue.number),
@@ -459,7 +459,7 @@ async def kill_session(issue_number: int) -> JSONResponse:
 
 @app.post("/api/focus/{issue_number}")
 async def focus_session(issue_number: int) -> JSONResponse:
-    """Focus the iTerm2 tab for a specific session."""
+    """Focus the terminal session for a specific issue."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 

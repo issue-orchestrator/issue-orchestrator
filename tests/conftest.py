@@ -611,7 +611,7 @@ def sample_config(sample_agent_config, tmp_path):
     config.agents["agent:web"] = sample_agent_config
     config.max_concurrent_sessions = 3
     config.session_timeout_minutes = 45
-    config.ui_mode = "tmux"  # Avoid iTerm2 detection during tests
+    config.ui_mode = "tmux"
     # Use temp directory for state file to isolate tests
     config.state_file = tmp_path / ".issue-orchestrator" / "state.json"
     # Tests are not exercising hook enforcement.

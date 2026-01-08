@@ -667,7 +667,7 @@ class TestObserveSession:
 
         Note: Sessions must be older than the 60-second grace period to be marked
         as terminated. This prevents false terminations during startup when
-        iTerm tab detection may be unreliable.
+        terminal session detection may be unreliable.
         """
         from datetime import datetime, timedelta
         from issue_orchestrator.observation.observation import SessionObservation
@@ -686,8 +686,8 @@ class TestObserveSession:
     ):
         """Test that new sessions get a grace period before being marked as terminated.
 
-        This prevents false terminations during startup when iTerm tab detection
-        may be unreliable (e.g., AppleScript can't find the tab immediately).
+        This prevents false terminations during startup when terminal session detection
+        may be unreliable.
         """
         from datetime import datetime
         from issue_orchestrator.observation.observation import SessionObservation
@@ -708,7 +708,7 @@ class TestObserveSession:
         """Test that active log file prevents termination even after grace period.
 
         If the session log was modified recently, the session is clearly active
-        and shouldn't be terminated just because iTerm detection failed.
+        and shouldn't be terminated just because terminal session detection failed.
         """
         import time
         from datetime import datetime, timedelta

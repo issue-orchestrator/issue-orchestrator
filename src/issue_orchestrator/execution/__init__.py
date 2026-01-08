@@ -15,7 +15,7 @@ The execution layer:
 - Returns facts/results to the caller
 
 Includes a plugin architecture using pluggy for external integrations:
-- Terminal plugins (tmux, iTerm2, etc.)
+- Terminal plugins (tmux, etc.)
 - Platform adapters (GitHub, GitLab, etc.)
 - State storage plugins (JSON, SQLite, etc.)
 
@@ -33,7 +33,6 @@ Usage:
 
 from .manager import PluginManager, create_plugin_manager, BUILTIN_PLUGINS
 from .terminal_tmux import TmuxPlugin
-from .terminal_iterm import ITermPlugin
 from ..adapters.github.github_adapter import GitHubAdapter
 from ..adapters.github.github_issue import GitHubIssue
 from .git_working_copy import GitWorkingCopy
@@ -56,7 +55,6 @@ __all__ = [
     "PluggySessionRunner",
     # Built-in plugins (for direct import if needed)
     "TmuxPlugin",
-    "ITermPlugin",
     # Lifecycle plugins
     "LifecycleSSEPlugin",
     # Platform adapters

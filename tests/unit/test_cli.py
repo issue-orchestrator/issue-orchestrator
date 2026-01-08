@@ -867,33 +867,31 @@ class TestCmdStartAdvanced:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
-                        with patch('issue_orchestrator.adapters.terminal._iterm2.is_running_in_iterm2') as mock_is_iterm2:
-                            mock_config = Mock()
-                            mock_config.agents = {'agent:test': Mock()}
-                            mock_config.max_concurrent_sessions = 2
-                            mock_config.ui_mode = 'tmux'
-                            mock_config.validate.return_value = []  # Pass validation
-                            mock_config.repo_root = Path("/tmp")
-                            mock_config.worktree_base = Path("/tmp/worktrees")
-                            mock_find.return_value = mock_config
+                        mock_config = Mock()
+                        mock_config.agents = {'agent:test': Mock()}
+                        mock_config.max_concurrent_sessions = 2
+                        mock_config.ui_mode = 'tmux'
+                        mock_config.validate.return_value = []  # Pass validation
+                        mock_config.repo_root = Path("/tmp")
+                        mock_config.worktree_base = Path("/tmp/worktrees")
+                        mock_find.return_value = mock_config
 
-                            mock_asyncio.run.side_effect = _run_and_close
-                            mock_build.return_value = Mock()
-                            # Simulate running in iTerm2 to avoid launching it
-                            mock_is_iterm2.return_value = True
+                        mock_asyncio.run.side_effect = _run_and_close
+                        mock_build.return_value = Mock()
 
-                            args = argparse.Namespace(
-                                test_mode=False,
-                                milestone=None,
-                                dry_run=False,
-                                no_dashboard=False,
-                                debug=False,
-                                ui_mode='iterm2',
-                            )
+                        args = argparse.Namespace(
+                            test_mode=False,
+                            milestone=None,
+                            dry_run=False,
+                            no_dashboard=False,
+                            debug=False,
+                            ui_mode='web',
+                            port=8080,
+                        )
 
-                            result = cmd_start(args)
+                        result = cmd_start(args)
 
-                            assert mock_config.ui_mode == 'iterm2'
+                        assert mock_config.ui_mode == 'web'
 
     def test_cmd_start_queue_refresh_override(self):
         """Verify queue_refresh argument overrides config."""

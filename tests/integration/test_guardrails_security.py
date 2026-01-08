@@ -21,7 +21,7 @@ SCRIPTS_DIR = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator"
 def isolated_env():
     """Create an environment exactly like agent sessions get.
 
-    This applies the same isolation that tmux/iTerm2 sessions apply.
+    This applies the same isolation that tmux sessions apply.
     """
     from issue_orchestrator.control.isolation import build_isolation_prefix
 

@@ -16,16 +16,12 @@ logger = logging.getLogger(__name__)
 # Built-in plugin mapping
 BUILTIN_PLUGINS = {
     "tmux": "issue_orchestrator.execution.terminal_tmux:TmuxPlugin",
-    "iterm2": "issue_orchestrator.execution.terminal_iterm:ITermPlugin",
-    "iterm": "issue_orchestrator.execution.terminal_iterm:ITermPlugin",  # alias
 }
 
 # UI mode to plugin mapping (backwards compatibility)
 UI_MODE_PLUGINS = {
     "tmux": "tmux",
-    "iterm2": "iterm2",
-    "iterm": "iterm2",
-    "web": "iterm2",  # Web mode uses iTerm2 for terminals
+    "web": "tmux",  # Web mode uses tmux for terminals
 }
 
 
@@ -59,7 +55,7 @@ def create_plugin_manager(
 
     Args:
         terminal_plugin: Explicit terminal plugin to load.
-            Can be: "tmux", "iterm2", or a class path like "mypackage:MyPlugin"
+            Can be: "tmux" or a class path like "mypackage:MyPlugin"
         ui_mode: Fallback UI mode if terminal_plugin not specified.
         load_entry_points: Whether to load plugins from entry points.
 
@@ -77,7 +73,7 @@ def create_plugin_manager(
         plugin_ref = terminal_plugin
     else:
         # Fall back to UI mode mapping
-        plugin_ref = UI_MODE_PLUGINS.get(ui_mode, "iterm2")
+        plugin_ref = UI_MODE_PLUGINS.get(ui_mode, "tmux")
 
     # Load the terminal plugin
     if plugin_ref in BUILTIN_PLUGINS:

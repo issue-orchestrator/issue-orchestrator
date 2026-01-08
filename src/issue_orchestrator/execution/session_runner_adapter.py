@@ -2,7 +2,7 @@
 
 This adapter implements the SessionRunner port by delegating to pluggy hooks.
 It's the bridge between the core's abstract session management and the concrete
-terminal implementations (tmux, iTerm2, etc.).
+terminal implementations (tmux, etc.).
 
 This is the ONLY place pluggy is used for session management.
 """

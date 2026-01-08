@@ -963,7 +963,7 @@
     <!-- Context Menu -->
     <div class="context-menu" id="contextMenu" role="menu" aria-label="Issue actions">
         <div class="context-menu-item" id="menuFocus" role="menuitem" tabindex="0">
-            <span aria-hidden="true">→</span> Focus iTerm2 Tab
+            <span aria-hidden="true">→</span> Focus Terminal Session
         </div>
         <div class="context-menu-item" id="menuFinder" role="menuitem" tabindex="0">
             <span aria-hidden="true">📂</span> Open Worktree in Finder
@@ -1108,7 +1108,7 @@
                     const res = await fetch(`/api/focus/${issueNumber}`, { method: 'POST' });
                     const data = await res.json();
                     if (data.status === 'focused') {
-                        showToast(`Focused session #${issueNumber} in iTerm2`);
+                        showToast(`Focused session #${issueNumber}`);
                     } else if (data.error) {
                         showToast(`Could not focus: ${data.error}`, 'error');
                     }
@@ -1500,7 +1500,7 @@
             const hasDeps = row.dataset.hasDependencies === 'true';
 
             // Enable/disable menu items based on context
-            // Active sessions (action === 'focus') have iTerm tab and worktree
+            // Active sessions (action === 'focus') have terminal session and worktree
             if (action === 'focus') {
                 menuFocus.classList.remove('disabled');
                 menuFinder.classList.remove('disabled');

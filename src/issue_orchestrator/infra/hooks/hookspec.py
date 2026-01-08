@@ -31,7 +31,7 @@ class TerminalSpec:
     """Hook specifications for terminal/session management.
 
     Terminal plugins manage the execution environment where AI agents run.
-    Examples: tmux windows, iTerm2 tabs, Wezterm panes, Kitty windows.
+    Examples: tmux windows, Wezterm panes, Kitty windows.
 
     All hooks use firstresult=True, meaning the first plugin to return
     a non-None value wins. This allows plugin priority ordering.

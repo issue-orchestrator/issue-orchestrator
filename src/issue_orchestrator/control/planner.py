@@ -7,7 +7,7 @@ what actions should be taken.
 This separation from the orchestrator enables:
 - Pure, fast tests (no mocks for tmux/GitHub)
 - Explainability ("why didn't issue X run?")
-- Reuse across execution strategies (tmux, iTerm, cloud)
+- Reuse across execution strategies (tmux, cloud)
 
 Rule of thumb:
 - "Should we?" → Planner (this module)

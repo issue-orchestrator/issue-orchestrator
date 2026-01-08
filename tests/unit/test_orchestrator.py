@@ -520,7 +520,7 @@ class TestLaunchSession:
     ):
         """Test that launch_session returns None if session already exists."""
         runner = MockSessionRunner()
-        runner.plugin.session_exists_override = True  # Session exists in iTerm/tmux
+        runner.plugin.session_exists_override = True  # Session exists in tmux
 
         issue = create_issue(1, labels=["agent:web"])
         orchestrator = create_test_orchestrator(sample_config, runner=runner)

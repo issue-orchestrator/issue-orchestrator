@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..infra.config import Config
-    from ..infra.orchestrator import Orchestrator
     from ..ports import RepositoryHost
 
 from rich.console import Console
@@ -467,59 +466,7 @@ def cmd_start(args: argparse.Namespace) -> int:
 
         return 0
 
-    # For iterm2 mode, run directly (no tmux wrapper) - agent sessions become iTerm2 tabs
-    if config.ui_mode == "iterm2":
-        import subprocess
-        from ..execution.providers import is_running_in_iterm2
-
-        # If not in iTerm2, launch iTerm2 with our command
-        if not is_running_in_iterm2():
-            import sys
-            # Get the full path to the Python interpreter (in venv)
-            python_path = sys.executable
-            # Get the repo root directory where config lives
-            working_dir = str(config.repo_root)
-            # Build the command using python -m to ensure venv is used
-            # Note: --config is a top-level arg and must come BEFORE the subcommand
-            cmd_args = [python_path, "-m", "issue_orchestrator.entrypoints.cli"]
-            if hasattr(args, 'config') and args.config:
-                cmd_args.extend(["--config", args.config])
-            cmd_args.append("start")
-            if args.test_mode:
-                cmd_args.append("--test-mode")
-            if args.debug:
-                cmd_args.append("--debug")
-            if args.no_dashboard:
-                cmd_args.append("--no-dashboard")
-            cmd_args.extend(["--ui-mode", "iterm2"])
-            cmd_str = f"cd {working_dir} && " + " ".join(cmd_args)
-
-            console.print("[dim]Launching iTerm2...[/dim]")
-            # Use AppleScript to open iTerm2 and run our command directly (no tmux)
-            applescript = f'''tell application "iTerm"
-activate
-if (count of windows) = 0 then
-create window with default profile
-end if
-tell current window
-set newTab to (create tab with default profile)
-tell current session of newTab
-write text "{cmd_str}"
-end tell
-end tell
-end tell'''
-            subprocess.run(["osascript", "-e", applescript])
-            console.print("[green]iTerm2 launched. Switch to iTerm2 to see the dashboard.[/green]")
-            return 0
-
-        # We're in iTerm2 - just continue and run dashboard directly
-        console.print("[dim]Running in iTerm2 native mode (no tmux)[/dim]")
-
     orchestrator = build_orchestrator(config=config)
-
-    # Adopt existing sessions if requested (for restart)
-    if getattr(args, 'adopt_sessions', False) and config.ui_mode == "iterm2":
-        _adopt_iterm2_sessions(orchestrator, config)
 
     # Get control API port (CLI --api-port overrides config)
     api_port = getattr(args, 'api_port', None) or config.control_api_port
@@ -587,7 +534,7 @@ end tell'''
 
             asyncio.run(run_with_signals())
         else:
-            # Run with interactive TUI dashboard (tmux or iterm2 mode)
+            # Run with interactive TUI dashboard (tmux mode)
             if api_port:
                 console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
 
@@ -612,9 +559,8 @@ end tell'''
 
             should_attach = asyncio.run(run_tui_with_control_api())
             if should_attach:
-                # User pressed 1-9 to attach to a session - already in tmux for iterm2 mode
-                if config.ui_mode != "iterm2":
-                    os.execvp("tmux", ["tmux", "attach-session", "-t", "orchestrator"])
+                # User pressed 1-9 to attach to a session
+                os.execvp("tmux", ["tmux", "attach-session", "-t", "orchestrator"])
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutting down...[/yellow]")
 
@@ -772,12 +718,12 @@ def cmd_refresh(args: argparse.Namespace) -> int:
 
 
 def cmd_restart(args: argparse.Namespace) -> int:
-    """Restart the orchestrator, preserving existing iTerm2 sessions.
+    """Restart the orchestrator.
 
     This command:
     1. Sends shutdown to the running orchestrator (via API)
     2. Waits for it to exit
-    3. Starts a new orchestrator with --adopt-sessions flag
+    3. Starts a new orchestrator
     """
     import time
     import httpx
@@ -795,9 +741,9 @@ def cmd_restart(args: argparse.Namespace) -> int:
             console.print(f"[yellow]Orchestrator responded with {resp.status_code}[/yellow]")
     except httpx.ConnectError:
         console.print(f"[yellow]No orchestrator running on port {port}[/yellow]")
-        console.print("[cyan]Starting fresh with --adopt-sessions...[/cyan]")
+        console.print("[cyan]Starting fresh...[/cyan]")
         # Just start fresh
-        return _start_with_adopt_sessions(args)
+        return _start_fresh(args)
 
     # Step 2: Send shutdown request
     console.print("[cyan]Sending shutdown request...[/cyan]")
@@ -826,17 +772,17 @@ def cmd_restart(args: argparse.Namespace) -> int:
     else:
         console.print("[yellow]Orchestrator didn't stop in time, continuing anyway...[/yellow]")
 
-    # Step 4: Start new orchestrator with --adopt-sessions
-    console.print("[cyan]Starting new orchestrator with session adoption...[/cyan]")
-    return _start_with_adopt_sessions(args)
+    # Step 4: Start new orchestrator
+    console.print("[cyan]Starting new orchestrator...[/cyan]")
+    return _start_fresh(args)
 
 
-def _start_with_adopt_sessions(args: argparse.Namespace) -> int:
-    """Start orchestrator with --adopt-sessions flag."""
+def _start_fresh(args: argparse.Namespace) -> int:
+    """Start a fresh orchestrator instance."""
     import sys
 
-    # Build command to run start with adopt-sessions
-    cmd = [sys.executable, "-m", "issue_orchestrator.entrypoints.cli", "start", "--adopt-sessions"]
+    # Build command to run start
+    cmd = [sys.executable, "-m", "issue_orchestrator.entrypoints.cli", "start"]
 
     # Pass through relevant flags
     if hasattr(args, 'config') and args.config:
@@ -992,102 +938,6 @@ def cmd_test_reset(args: argparse.Namespace) -> int:
     console.print("[green]✓ Test reset complete![/green]")
     console.print("\nNow run: [bold]issue-orchestrator start[/bold]")
     return 0
-
-
-def _adopt_iterm2_sessions(orchestrator: "Orchestrator", config: "Config") -> None:
-    """Discover and adopt existing iTerm2 tabs as active sessions.
-
-    This allows restarting the orchestrator without losing track of
-    running Claude sessions.
-    """
-    from ..execution.providers import discover_iterm_issue_tabs, get_iterm_manager, create_repository_host
-    from ..domain.models import Session, Issue
-    from datetime import datetime
-
-    console.print("[cyan]Discovering existing iTerm2 sessions...[/cyan]")
-
-    issue_numbers = discover_iterm_issue_tabs()
-    if not issue_numbers:
-        console.print("[dim]No existing issue tabs found[/dim]")
-        return
-
-    console.print(f"[green]Found {len(issue_numbers)} issue tab(s): {issue_numbers}[/green]")
-
-    # Get the iTerm manager and register discovered sessions
-    iterm_mgr = get_iterm_manager()
-
-    adopted = 0
-    github = create_repository_host(config.repo) if config.repo else None
-
-    for issue_num in issue_numbers:
-        # Try to find the worktree
-        repo_name = config.repo_root.name
-        worktree_path = config.repo_root.parent / f"{repo_name}-{issue_num}"
-
-        if not worktree_path.exists():
-            console.print(f"  [yellow]#{issue_num}: No worktree found, skipping[/yellow]")
-            continue
-
-        # Try to get issue info from GitHub
-        try:
-            if github:
-                issue = github.get_issue(issue_num)
-            else:
-                issue = None
-            if not issue:
-                raise RuntimeError("issue not found")
-        except Exception as e:
-            console.print(f"  [yellow]#{issue_num}: Couldn't fetch issue: {e}[/yellow]")
-            issue = Issue(number=issue_num, title=f"Issue #{issue_num}", labels=[])
-
-        # Find agent config for this issue
-        agent_type = issue.agent_type
-        if not agent_type or agent_type not in config.agents:
-            # Default to first agent
-            agent_type = list(config.agents.keys())[0] if config.agents else None
-
-        if not agent_type:
-            console.print(f"  [yellow]#{issue_num}: No agent config, skipping[/yellow]")
-            continue
-
-        agent_config = config.agents[agent_type]
-
-        # Get branch name from worktree
-        from ..execution.git_working_copy import GitWorkingCopy
-        working_copy = GitWorkingCopy()
-        branch_name = working_copy.get_current_branch(worktree_path) or f"{issue_num}-unknown"
-
-        # Create session with domain identity (CODE task type for adopted sessions)
-        from ..domain.session_key import SessionKey, TaskKind
-        from ..domain.issue_key import GitHubIssueKey
-        if not config.repo:
-            console.print(f"  [yellow]#{issue_num}: No repo configured, skipping[/yellow]")
-            continue
-        issue_key = GitHubIssueKey(repo=config.repo, external_id=str(issue_num))
-        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
-        session = Session(
-            key=session_key,
-            issue=issue,
-            agent_config=agent_config,
-            terminal_id=f"issue-{issue_num}",  # Convention for phase detection
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-            started_at=datetime.now(),  # We don't know real start time
-        )
-
-        # Add to orchestrator's active sessions
-        orchestrator.state.active_sessions.append(session)
-
-        # Register with iTerm manager so it can track the session
-        iterm_mgr._sessions[issue_num] = {
-            "tab_name": f"#{issue_num}",
-            "created_at": "adopted",
-        }
-
-        console.print(f"  [green]#{issue_num}: Adopted ({agent_type})[/green]")
-        adopted += 1
-
-    console.print(f"[green]Adopted {adopted} session(s)[/green]")
 
 
 def _load_config(args: argparse.Namespace) -> "Config":
@@ -1903,9 +1753,9 @@ def main() -> int:
     )
     start_parser.add_argument(
         "--ui-mode",
-        choices=["tmux", "iterm2", "web"],
+        choices=["tmux", "web"],
         default=None,
-        help="UI mode: tmux (default), iterm2 (Mac tabs), or web (browser dashboard)"
+        help="UI mode: tmux (terminal dashboard) or web (browser dashboard, default)"
     )
     start_parser.add_argument(
         "--port",
@@ -1959,11 +1809,6 @@ def main() -> int:
         type=int,
         default=None,
         help="Auto-trigger triage review after N PRs with review label (default: 0=manual only)"
-    )
-    start_parser.add_argument(
-        "--adopt-sessions",
-        action="store_true",
-        help="Adopt existing iTerm2 tabs as active sessions (for restart without losing sessions)"
     )
     start_parser.set_defaults(func=cmd_start)
 
@@ -2046,7 +1891,7 @@ def main() -> int:
 
     # restart command
     restart_parser: argparse.ArgumentParser = subparsers.add_parser(
-        "restart", help="Restart orchestrator, preserving existing iTerm2 sessions"
+        "restart", help="Restart the orchestrator"
     )
     restart_parser.add_argument(
         "--port",
@@ -2056,7 +1901,7 @@ def main() -> int:
     )
     restart_parser.add_argument(
         "--ui-mode",
-        choices=["tmux", "iterm2", "web"],
+        choices=["tmux", "web"],
         default=None,
         help="UI mode for new orchestrator"
     )

@@ -70,8 +70,7 @@ class TmuxPlugin:
     def cleanup_idle_sessions(self) -> int:
         """Clean up idle sessions.
 
-        Tmux doesn't have built-in idle detection like iTerm2's 'is processing'.
-        Returns 0 for now.
+        Tmux doesn't have built-in idle detection. Returns 0 for now.
         """
         return 0
 
