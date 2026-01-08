@@ -64,7 +64,7 @@ labels:
 # Triage creates issues with "blocked" + "triage-fix" labels.
 # Human reviews, then removes "blocked" to approve the fix.
 
-# UI mode: "tmux" (default), "iterm2" (Mac), or "web" (browser dashboard)
+# UI mode: "tmux" (default) or "web" (browser dashboard)
 ui_mode: "tmux"
 web_port: 8080                         # Port for web dashboard (default: 8080)
 

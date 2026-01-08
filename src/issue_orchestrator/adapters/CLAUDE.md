@@ -1,6 +1,6 @@
 # Adapters
 
-**Purpose**: Implementations of external system integrations (GitHub API, tmux/iTerm2, git worktrees).
+**Purpose**: Implementations of external system integrations (GitHub API, tmux, git worktrees).
 
 **Boundaries**:
 - Adapters implement port interfaces from `ports/`

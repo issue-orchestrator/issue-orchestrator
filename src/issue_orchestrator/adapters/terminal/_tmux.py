@@ -96,7 +96,6 @@ class TmuxManager:
         )
 
         # Security: Strip credentials and set up isolated environment
-        # Uses the same isolation as iTerm2 for consistency
         from ...control.isolation import build_isolation_prefix
         wrapper_dir = Path(__file__).parent.parent.parent / "scripts"
         isolation_prefix = build_isolation_prefix(

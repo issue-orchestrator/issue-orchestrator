@@ -1,11 +1,10 @@
 """E2E tests specifically for terminal adapter functionality.
 
-These tests exercise the terminal execution code path (tmux/iTerm2)
-and are run in both modes to catch terminal-specific bugs.
+These tests exercise the terminal execution code path (tmux)
+to catch terminal-specific bugs.
 
 Run with:
-    make test-e2e-one TEST=terminal_adapter  # tmux mode (default)
-    E2E_UI_MODE=iterm2 make test-e2e-one TEST=terminal_adapter  # iTerm2 mode
+    make test-e2e-one TEST=terminal_adapter
 """
 
 import logging
@@ -24,7 +23,7 @@ class TestTerminalAdapterExecution:
     """Test terminal adapter execution paths.
 
     These tests verify that sessions launch correctly in the terminal,
-    exercising the adapter-specific code (tmux vs iTerm2).
+    exercising the adapter-specific code (tmux).
     """
 
     @pytest.mark.asyncio
@@ -45,8 +44,7 @@ class TestTerminalAdapterExecution:
         3. Verifies session starts (in-progress label added)
         4. Waits for session completion
 
-        By running this in both tmux and iTerm2 modes, we catch
-        terminal-specific bugs like sandbox check failures.
+        This catches terminal-specific bugs like sandbox check failures.
         """
         logger.info("Testing terminal adapter in '%s' mode", e2e_ui_mode)
 
@@ -66,8 +64,7 @@ class TestTerminalAdapterExecution:
 
             # Wait for session to start - this exercises the terminal adapter
             # The session launch is where terminal-specific code runs:
-            # - tmux: creates pane, runs claude command
-            # - iTerm2: creates tab, runs sandbox check, runs claude command
+            # - tmux: creates window, runs claude command
             await flow.session_started(issue, timeout_s=60)
             logger.info("Session started for issue #%d in %s mode", issue_number, e2e_ui_mode)
 

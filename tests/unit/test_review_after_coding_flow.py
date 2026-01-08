@@ -11,7 +11,7 @@ This test verifies the end-to-end behavior:
 
 This is a critical path - if any step fails, reviews won't run after coding.
 The bug discovered on 2026-01-07 where sessions got blocked-failed was caused by
-missing session_exists_by_name hook in iTerm plugin, which made sessions appear
+missing session_exists_by_name hook in the terminal plugin, which made sessions appear
 terminated immediately (before completing). This test ensures the happy path works.
 """
 

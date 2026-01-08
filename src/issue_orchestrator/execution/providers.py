@@ -146,48 +146,6 @@ from ..adapters.terminal._tmux import TmuxManager
 
 
 # =============================================================================
-# Terminal Providers (iTerm2)
-# =============================================================================
-
-
-def is_running_in_iterm2() -> bool:
-    """Check if currently running inside iTerm2.
-
-    Returns:
-        True if running in iTerm2
-    """
-    from ..adapters.terminal._iterm2 import is_running_in_iterm2 as _is_iterm
-
-    return _is_iterm()
-
-
-def discover_iterm_issue_tabs() -> list[int]:
-    """Discover iTerm2 tabs that look like issue sessions.
-
-    Returns:
-        List of issue numbers found in tab names
-    """
-    from ..adapters.terminal._iterm2 import discover_issue_tabs
-
-    return discover_issue_tabs()
-
-
-def get_iterm_manager() -> "ITermSessionManager":
-    """Get the iTerm2 session manager.
-
-    Returns:
-        ITermSessionManager instance
-    """
-    from ..adapters.terminal._iterm2 import get_iterm_manager
-
-    return get_iterm_manager()
-
-
-# Import for type annotation
-from ..adapters.terminal._iterm2 import ITermSessionManager
-
-
-# =============================================================================
 # Worktree Providers
 # =============================================================================
 

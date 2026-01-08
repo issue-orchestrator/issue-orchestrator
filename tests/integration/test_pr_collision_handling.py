@@ -310,7 +310,7 @@ class TestReviewLaunchLoopPrevention:
     """Tests for preventing the infinite review launch loop.
 
     The bug: Scanner sees PR as "orphaned" (not in active_sessions),
-    Session launcher sees existing iTerm tab and rejects,
+    Session launcher sees existing terminal session and rejects,
     Next tick: Scanner sees it as orphaned again → infinite loop.
 
     The fix: When session launcher skips due to "already exists",

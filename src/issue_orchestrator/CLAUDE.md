@@ -198,7 +198,7 @@ All GitHub API calls must go through `execution/github_adapter.py` / `execution/
 
 | Layer | Location | Knows About | Never Knows About |
 |-------|----------|-------------|-------------------|
-| Domain | `domain/`, `models.py` | SessionKey, IssueKey, TaskKind, business rules | GitHub, tmux, iTerm2, file paths |
+| Domain | `domain/`, `models.py` | SessionKey, IssueKey, TaskKind, business rules | GitHub, tmux, file paths |
 | Control | `control/`, `orchestrator.py` | Domain types + opaque IDs (terminal_id) | How terminal_id is encoded |
 | Ports | `ports/` | Abstract interfaces | Implementations |
 | Adapters | `execution/` | Port interfaces + external systems | Domain business logic |
@@ -258,7 +258,7 @@ class TmuxAdapter:
         return self._manager.window_exists_by_name(terminal_id)
 ```
 
-This allows swapping tmux → iTerm2 without touching domain/control code.
+This allows swapping terminal implementations without touching domain/control code.
 
 ### Smell Detection
 
@@ -266,7 +266,7 @@ If you see these, stop and refactor:
 
 | Smell | Problem | Fix |
 |-------|---------|-----|
-| `tmux_` or `iterm_` in domain | Infrastructure leak | Use opaque `terminal_id` |
+| `tmux_` prefix in domain | Infrastructure leak | Use opaque `terminal_id` |
 | Parsing session names in control | Control knows too much | Move parsing to adapter |
 | `issue.number` for session lookup | Wrong identity | Use `SessionKey` or `terminal_id` |
 | String literals for task types | No type safety | Use `TaskKind` enum |

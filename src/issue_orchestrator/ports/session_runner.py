@@ -2,7 +2,7 @@
 
 This port defines the interface for managing terminal sessions where AI agents
 run. The orchestrator calls these methods without knowing the implementation
-(tmux, iTerm2, Wezterm, etc.).
+(tmux, Wezterm, etc.).
 
 This abstraction keeps terminal backend details out of the core.
 """
@@ -21,7 +21,7 @@ class DiscoveredSession(TypedDict):
 class SessionRunner(Protocol):
     """Port for managing terminal sessions.
 
-    Implementations may use tmux, iTerm2, or other terminal multiplexers.
+    Implementations may use tmux or other terminal multiplexers.
     The orchestrator doesn't know or care about the specific backend.
     """
 

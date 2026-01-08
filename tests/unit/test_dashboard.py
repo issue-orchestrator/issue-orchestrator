@@ -15,7 +15,7 @@ Test Coverage:
 What's NOT tested (requires integration tests):
 - Actual Textual rendering and display
 - Real keyboard input handling
-- Tmux/iTerm2 integration (mocked)
+- Tmux integration (mocked)
 - The _refresh_loop method (requires running Textual app)
 - The compose() methods (returns Textual widgets)
 
@@ -517,8 +517,8 @@ class TestDashboardApp:
             assert "No session at index 5" in mock_notify.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_action_attach_iterm2_mode(self):
-        """Test attach action in iterm2 mode."""
+    async def test_action_attach_web_mode(self):
+        """Test attach action in web mode (browser-based dashboard stays open)."""
         orchestrator = create_orchestrator()
         issue1 = create_issue(1)
 
@@ -526,7 +526,7 @@ class TestDashboardApp:
         session1.issue = issue1
 
         orchestrator.state.active_sessions = [session1]
-        orchestrator.config.ui_mode = "iterm2"
+        orchestrator.config.ui_mode = "web"
         # Mock the session_runner.focus_session used by the refactored code
         orchestrator.session_runner.focus_session.return_value = True
 
@@ -597,12 +597,12 @@ class TestDashboard:
         assert dashboard._app is None
         assert dashboard.attach_after_exit is False
 
-    def test_init_iterm2_mode(self):
-        """Test Dashboard initialization with iterm2 mode."""
+    def test_init_web_mode(self):
+        """Test Dashboard initialization with web mode."""
         orchestrator = create_orchestrator()
-        dashboard = Dashboard(orchestrator, ui_mode="iterm2")
+        dashboard = Dashboard(orchestrator, ui_mode="web")
 
-        assert dashboard.ui_mode == "iterm2"
+        assert dashboard.ui_mode == "web"
 
     @pytest.mark.asyncio
     async def test_handle_pause(self):
@@ -644,13 +644,13 @@ class TestDashboard:
         dashboard._app.exit.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_handle_attach_iterm2_mode(self):
-        """Test attach handler in iterm2 mode."""
+    async def test_handle_attach_web_mode(self):
+        """Test attach handler in web mode (browser-based dashboard stays open)."""
         orchestrator = create_orchestrator()
         # Mock session_runner.focus_session
         orchestrator.session_runner.focus_session.return_value = True
 
-        dashboard = Dashboard(orchestrator, ui_mode="iterm2")
+        dashboard = Dashboard(orchestrator, ui_mode="web")
         dashboard._app = MagicMock()
         dashboard._app.notify = MagicMock()
 
@@ -661,13 +661,13 @@ class TestDashboard:
         assert "Switched to #42" in dashboard._app.notify.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_handle_attach_iterm2_tab_not_found(self):
-        """Test attach handler when iterm2 tab is not found."""
+    async def test_handle_attach_session_not_found(self):
+        """Test attach handler when session is not found."""
         orchestrator = create_orchestrator()
-        # Mock session_runner.focus_session returning False (tab not found)
+        # Mock session_runner.focus_session returning False (session not found)
         orchestrator.session_runner.focus_session.return_value = False
 
-        dashboard = Dashboard(orchestrator, ui_mode="iterm2")
+        dashboard = Dashboard(orchestrator, ui_mode="web")
         dashboard._app = MagicMock()
         dashboard._app.notify = MagicMock()
 
@@ -781,8 +781,8 @@ class TestRunWithDashboard:
             assert isinstance(result, bool)
 
     @pytest.mark.asyncio
-    async def test_run_with_dashboard_iterm2_mode(self):
-        """Test run_with_dashboard with iterm2 mode."""
+    async def test_run_with_dashboard_web_mode(self):
+        """Test run_with_dashboard with web mode."""
         orchestrator = create_orchestrator()
         orchestrator.run_loop = AsyncMock()
 
@@ -792,10 +792,10 @@ class TestRunWithDashboard:
             mock_dashboard.run = AsyncMock()
             mock_dashboard_class.return_value = mock_dashboard
 
-            await run_with_dashboard(orchestrator, ui_mode="iterm2")
+            await run_with_dashboard(orchestrator, ui_mode="web")
 
-            # Verify Dashboard was created with iterm2 mode
-            mock_dashboard_class.assert_called_once_with(orchestrator, ui_mode="iterm2")
+            # Verify Dashboard was created with web mode
+            mock_dashboard_class.assert_called_once_with(orchestrator, ui_mode="web")
 
 
 class TestStatusBarRendering:

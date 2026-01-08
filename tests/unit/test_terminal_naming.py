@@ -7,8 +7,6 @@ from issue_orchestrator.adapters.terminal.naming import (
     ParsedSessionName,
     terminal_id,
     parse_terminal_id,
-    iterm_tab_name,
-    iterm_tab_prefix,
     number_from_terminal_id,
 )
 
@@ -66,40 +64,6 @@ class TestParseTerminalId:
         assert parse_terminal_id("unknown-123") is None
 
 
-class TestItermTabName:
-    """Tests for iterm_tab_name generation."""
-
-    def test_tab_name_without_title(self):
-        """Generate tab name without title."""
-        assert iterm_tab_name(123) == "#123"
-
-    def test_tab_name_with_short_title(self):
-        """Generate tab name with short title."""
-        assert iterm_tab_name(123, "Fix bug") == "#123 Fix bug"
-
-    def test_tab_name_with_long_title(self):
-        """Generate tab name with long title (truncated)."""
-        long_title = "This is a very long title that should be truncated"
-        result = iterm_tab_name(123, long_title)
-        assert result.startswith("#123 ")
-        assert len(result) <= 25  # "#123 " + 20 chars max
-
-    def test_tab_name_custom_max_length(self):
-        """Generate tab name with custom max title length."""
-        result = iterm_tab_name(123, "Hello World", max_title_length=5)
-        assert result == "#123 Hello"
-
-
-class TestItermTabPrefix:
-    """Tests for iterm_tab_prefix generation."""
-
-    def test_tab_prefix(self):
-        """Generate correct tab prefix."""
-        assert iterm_tab_prefix(123) == "#123"
-        assert iterm_tab_prefix(456) == "#456"
-        assert iterm_tab_prefix(1) == "#1"
-
-
 class TestNumberFromTerminalId:
     """Tests for number_from_terminal_id extraction."""
 
@@ -124,11 +88,6 @@ class TestParsedSessionName:
         """Get terminal_id from parsed session name."""
         parsed = ParsedSessionName(SessionType.ISSUE, 123)
         assert parsed.terminal_id == "issue-123"
-
-    def test_iterm_tab_prefix_property(self):
-        """Get iTerm tab prefix from parsed session name."""
-        parsed = ParsedSessionName(SessionType.REVIEW, 456)
-        assert parsed.iterm_tab_prefix == "#456"
 
     def test_frozen_dataclass(self):
         """ParsedSessionName is immutable."""

@@ -91,7 +91,7 @@ class TestClaudeExecution:
         # Escape single quotes for zsh wrapper (the fix we just made)
         escaped_command = inner_command.replace("'", "'\\''")
 
-        # Wrap in zsh -l -c (like ITermSessionManager.create_session does)
+        # Wrap in zsh -l -c (like TmuxManager.create_session does)
         wrapped_command = f"zsh -l -c '{escaped_command}'"
 
         result = subprocess.run(
@@ -258,7 +258,7 @@ class TestClaudeWithEnvironmentIsolation:
 
 
 class TestShellEscaping:
-    """Test POSIX single-quote escaping used by iTerm2 adapter.
+    """Test POSIX single-quote escaping used by terminal adapters.
 
     The escaping pattern replace("'", "'\\''") is POSIX standard and works
     identically in bash and zsh. Production uses 'zsh -l -c' for login shell
@@ -268,7 +268,7 @@ class TestShellEscaping:
     def test_single_quote_escaping(self):
         """Verify the POSIX single-quote escaping pattern works.
 
-        This tests the escaping used in _iterm2.py: replace("'", "'\\''")
+        This tests the escaping used by terminal adapters: replace("'", "'\\''")
         The pattern: end quote, escaped literal quote, start quote.
         """
         # This is the pattern: replace ' with '\''
@@ -330,7 +330,7 @@ class TestShellEscaping:
     reason="Claude CLI not available (OK on GitHub CI)"
 )
 class TestClaudeViaAdapterPath:
-    """E2E test that runs Claude through the same path as iTerm2/tmux adapters.
+    """E2E test that runs Claude through the same path as tmux adapters.
 
     This is the critical test that verifies the full orchestrator session path:
     1. Create a worktree directory
@@ -344,7 +344,7 @@ class TestClaudeViaAdapterPath:
 
         This tests the fix for: "Invalid API key · Please run /login"
 
-        The orchestrator's terminal adapters (iTerm2, tmux) wrap commands like:
+        The orchestrator's terminal adapters (tmux) wrap commands like:
             zsh -l -c '{isolation_prefix}cd "{worktree}" && claude ...'
 
         With isolate_home=False, Claude can access macOS Keychain for auth.
@@ -382,15 +382,15 @@ class TestClaudeViaAdapterPath:
             f"Use the Write tool. Reply with DONE when complete.'"
         )
 
-        # Escape single quotes for zsh wrapper (same as _iterm2.py)
+        # Escape single quotes for zsh wrapper (same as tmux adapter)
         escaped_cmd = claude_cmd.replace("'", "'\\''")
 
-        # Build full command like iTerm2 adapter does:
+        # Build full command like tmux adapter does:
         # zsh -l -c '{isolation_prefix}cd "{worktree}" && {command}'
         full_cmd = f'{isolation_prefix}cd "{worktree}" && {escaped_cmd}'
         zsh_wrapped = f"zsh -l -c '{full_cmd}'"
 
-        # Run it (simulates what iTerm2/tmux sends to the terminal)
+        # Run it (simulates what tmux sends to the terminal)
         result = subprocess.run(
             ["bash", "-c", zsh_wrapped],
             capture_output=True,

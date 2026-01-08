@@ -186,7 +186,7 @@ class TestCodeReviewRuns:
         # Create issue
         with e2e_timing_stats.phase("Create issue"):
             issue = flow.create_issue(
-                "[E2E-REVIEW] Test that code review runs",
+                "[M0-701] [E2E-REVIEW] Test that code review runs",
                 ["agent:e2e-test", e2e_label("code_review_test")],
             )
         issue_number = int(issue.stable_id())
@@ -299,7 +299,7 @@ class TestTriageReviewTrigger:
             logger.info("Creating %d test issues...", NUM_ISSUES)
             for i in range(NUM_ISSUES):
                 issue = flow.create_issue(
-                    f"[E2E-TRIAGE-{i+1}] Test triage trigger issue {i+1}",
+                    f"[M0-{710+i:03d}] [E2E-TRIAGE-{i+1}] Test triage trigger issue {i+1}",
                     ["agent:e2e-test", e2e_label(f"triage_{i}")],
                 )
                 issues.append(issue)
@@ -398,7 +398,7 @@ class TestReworkCyclesAndEscalation:
             logger.info("Creating test issue...")
             issue_key = create_single_issue(
                 repo_name,
-                "[E2E-REWORK] Test rework cycles and escalation",
+                "[M0-720] [E2E-REWORK] Test rework cycles and escalation",
                 ["agent:script-completes", "test-data", e2e_label("rework_cycles")],
                 watcher=orchestrator_watcher,
             )

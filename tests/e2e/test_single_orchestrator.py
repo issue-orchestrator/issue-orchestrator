@@ -66,7 +66,7 @@ class TestSingleOrchestratorBasic:
         # Create issue dynamically (inflight)
         flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
         issue = flow.create_issue(
-            "[E2E] Inflight creation test",
+            "[M0-700] [E2E] Inflight creation test",
             ["agent:e2e-test", e2e_label(test_label)],
         )
 
