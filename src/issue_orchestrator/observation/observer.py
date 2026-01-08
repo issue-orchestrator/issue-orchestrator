@@ -224,11 +224,26 @@ class SessionObserver:
             self._emit_no_output_if_stale(session)
             result = SessionObservationResult.running(runtime_minutes=runtime)
         else:
-            # Grace period: don't mark sessions as terminated too quickly after launch
-            # This prevents race conditions where iTerm tab detection fails during startup
-            # (AppleScript may not find tab immediately, or tab naming not complete)
+            # Check if session should be kept alive despite detection failure
+            # Two signals indicate the session may still be running:
+            # 1. Session is new (< 60s old) - iTerm detection may be unreliable during startup
+            # 2. Log file is progressing - Claude is clearly active
             GRACE_PERIOD_SECONDS = 60
+            LOG_ACTIVITY_THRESHOLD_SECONDS = 30
             session_age = (datetime.now() - session.started_at).total_seconds()
+
+            # Check log file activity - if log was modified recently, session is active
+            log_path = session.worktree_path / ".issue-orchestrator" / "session.log"
+            log_is_progressing = False
+            log_age = float("inf")  # Default to "very old" if we can't read
+            if log_path.exists():
+                try:
+                    log_mtime = log_path.stat().st_mtime
+                    log_age = time.time() - log_mtime
+                    log_is_progressing = log_age < LOG_ACTIVITY_THRESHOLD_SECONDS
+                except OSError:
+                    pass
+
             if session_age < GRACE_PERIOD_SECONDS:
                 logger.info(
                     "[GRACE_PERIOD] Session #%d only %.0fs old (< %ds grace) - "
@@ -236,6 +251,15 @@ class SessionObserver:
                     session.issue.number,
                     session_age,
                     GRACE_PERIOD_SECONDS,
+                )
+                result = SessionObservationResult.running(runtime_minutes=runtime)
+            elif log_is_progressing:
+                logger.info(
+                    "[LOG_ACTIVE] Session #%d log modified %.0fs ago (< %ds threshold) - "
+                    "treating as running despite session detection failure",
+                    session.issue.number,
+                    log_age,
+                    LOG_ACTIVITY_THRESHOLD_SECONDS,
                 )
                 result = SessionObservationResult.running(runtime_minutes=runtime)
             else:

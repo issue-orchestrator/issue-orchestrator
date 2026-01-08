@@ -702,6 +702,35 @@ class TestObserveSession:
         # Should be treated as RUNNING during grace period, not TERMINATED
         assert result.observation == SessionObservation.RUNNING
 
+    def test_observe_session_log_activity_prevents_termination(
+        self, monitor, sample_session, mock_session_runner, tmp_path
+    ):
+        """Test that active log file prevents termination even after grace period.
+
+        If the session log was modified recently, the session is clearly active
+        and shouldn't be terminated just because iTerm detection failed.
+        """
+        import time
+        from datetime import datetime, timedelta
+        from issue_orchestrator.observation.observation import SessionObservation
+
+        sample_session.worktree_path = tmp_path
+        # Session is older than grace period
+        sample_session.started_at = datetime.now() - timedelta(seconds=120)
+        mock_session_runner.session_exists_by_name.return_value = False
+
+        # Create an active session log (recently modified)
+        log_dir = tmp_path / ".issue-orchestrator"
+        log_dir.mkdir(parents=True)
+        log_file = log_dir / "session.log"
+        log_file.write_text("Claude is working...")
+        # Touch the file to ensure it's "just modified"
+
+        result = monitor.observe_session(sample_session)
+
+        # Should be treated as RUNNING due to active log, not TERMINATED
+        assert result.observation == SessionObservation.RUNNING
+
     def test_observe_session_sends_exit_when_session_has_pr(
         self, monitor, sample_session, mock_session_runner, mock_repository_host, tmp_path
     ):
