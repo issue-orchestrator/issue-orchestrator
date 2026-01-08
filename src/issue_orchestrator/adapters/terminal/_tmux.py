@@ -7,13 +7,20 @@ Uses a session-per-orchestrator architecture:
 - No global state - TmuxManager instances are created via factory
 """
 
+import logging
 import os
+import platform
+import subprocess
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import libtmux
+from libtmux.exc import LibTmuxException
+
+logger = logging.getLogger(__name__)
 
 from issue_orchestrator.domain import ProcessState, ProcessExitInfo
 
@@ -24,6 +31,19 @@ DASHBOARD_WINDOW = "dashboard"
 
 # TTL for cached pane state (milliseconds)
 PANE_STATE_TTL_MS = 500
+
+@dataclass
+class TmuxHealth:
+    """Health status of tmux server and session."""
+
+    server_running: bool
+    session_exists: bool
+    error: str | None = None
+
+    @property
+    def healthy(self) -> bool:
+        """True if tmux server is running and session exists."""
+        return self.server_running and self.session_exists
 
 
 class TmuxPaneState:
@@ -130,6 +150,9 @@ class TmuxManager:
         if self._session is None:
             try:
                 self._session = self.server.sessions.get(session_name=self._session_name)
+            except LibTmuxException as e:
+                logger.warning("[TMUX] Cannot get session - server may be down: %s", str(e).strip())
+                self._session = None
             except Exception:
                 self._session = None
         return self._session
@@ -138,6 +161,99 @@ class TmuxManager:
     def session_name(self) -> str:
         """Get the session name."""
         return self._session_name
+
+    def health_check(self) -> TmuxHealth:
+        """Check health of tmux server and session.
+
+        Returns:
+            TmuxHealth with server_running, session_exists, and any error message.
+        """
+        try:
+            # Check if server is running by listing sessions
+            sessions = self.server.sessions
+            server_running = True
+
+            # Check if our session exists
+            session_exists = any(s.session_name == self._session_name for s in sessions)
+
+            return TmuxHealth(
+                server_running=server_running,
+                session_exists=session_exists,
+            )
+        except LibTmuxException as e:
+            error_msg = str(e).strip()
+            logger.error("[TMUX] Health check failed: %s", error_msg)
+            return TmuxHealth(
+                server_running=False,
+                session_exists=False,
+                error=error_msg,
+            )
+
+    def ensure_server_running(self) -> bool:
+        """Ensure tmux server is running, starting it if necessary.
+
+        This can recover from situations where:
+        - The tmux server was never started
+        - The socket was deleted (e.g., /tmp cleaned)
+        - The server crashed
+
+        Returns:
+            True if server is now running, False if recovery failed.
+        """
+        health = self.health_check()
+        if health.server_running:
+            return True
+
+        logger.warning("[TMUX] Server not running, attempting recovery...")
+
+        # Try to start tmux server by creating a detached session
+        try:
+            result = subprocess.run(
+                ["tmux", "start-server"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                logger.info("[TMUX] Server started successfully")
+                # Reset server connection
+                self._server = None
+                return True
+            else:
+                logger.error("[TMUX] Failed to start server: %s", result.stderr.strip())
+                return False
+        except subprocess.TimeoutExpired:
+            logger.error("[TMUX] Timeout starting tmux server")
+            return False
+        except Exception as e:
+            logger.error("[TMUX] Failed to start server: %s", e)
+            return False
+
+    def ensure_session_exists(self) -> bool:
+        """Ensure our tmux session exists, creating it if necessary.
+
+        This provides auto-recovery when the session was killed or server restarted.
+
+        Returns:
+            True if session now exists, False if creation failed.
+        """
+        # First ensure server is running
+        if not self.ensure_server_running():
+            return False
+
+        health = self.health_check()
+        if health.session_exists:
+            return True
+
+        logger.warning("[TMUX] Session '%s' not found, creating...", self._session_name)
+
+        try:
+            self.create_orchestrator_session()
+            logger.info("[TMUX] Session '%s' created successfully", self._session_name)
+            return True
+        except Exception as e:
+            logger.error("[TMUX] Failed to create session: %s", e)
+            return False
 
     def create_orchestrator_session(self) -> libtmux.Session:
         """Create the tmux session for this orchestrator.
@@ -269,20 +385,28 @@ class TmuxManager:
         """Find window for an issue by number (handles both naming conventions)."""
         if self.session is None:
             return None
-        # Check new format: #{number}-{title}
-        for window in self.session.windows:
-            if window.name and window.name.startswith(f"#{issue_number}-"):
-                return window
-        # Check old format: issue-{number}
-        windows = self.session.windows.filter(window_name=f"issue-{issue_number}")
-        return windows[0] if windows else None
+        try:
+            # Check new format: #{number}-{title}
+            for window in self.session.windows:
+                if window.name and window.name.startswith(f"#{issue_number}-"):
+                    return window
+            # Check old format: issue-{number}
+            windows = self.session.windows.filter(window_name=f"issue-{issue_number}")
+            return windows[0] if windows else None
+        except LibTmuxException as e:
+            logger.warning("[TMUX] _find_issue_window(%d) failed: %s", issue_number, str(e).strip())
+            return None
 
     def _find_window_by_name(self, session_name: str) -> Optional[libtmux.Window]:
         """Find window by its full session name (issue-N, review-N, rework-N, etc)."""
         if self.session is None:
             return None
-        windows = self.session.windows.filter(window_name=session_name)
-        return windows[0] if windows else None
+        try:
+            windows = self.session.windows.filter(window_name=session_name)
+            return windows[0] if windows else None
+        except LibTmuxException as e:
+            logger.warning("[TMUX] _find_window_by_name(%s) failed: %s", session_name, str(e).strip())
+            return None
 
     def window_exists(self, issue_number: int) -> bool:
         """Check if a window exists for the given issue."""
@@ -311,7 +435,9 @@ class TmuxManager:
             window.kill()
 
     def select_window(self, issue_number: int) -> bool:
-        """Switch to the window for an issue.
+        """Switch to the window for an issue and open terminal if needed.
+
+        On macOS, opens Terminal.app with tmux attached if no client is connected.
 
         Returns:
             True if window was selected, False if it doesn't exist
@@ -319,8 +445,87 @@ class TmuxManager:
         window = self.get_window(issue_number)
         if window:
             window.select()
+            # Open terminal if no client is attached
+            self._ensure_terminal_attached()
             return True
         return False
+
+    def _ensure_terminal_attached(self) -> None:
+        """Ensure a terminal is attached to the tmux session.
+
+        On macOS, opens Terminal.app if no client is connected.
+        """
+        if self.session is None:
+            return
+
+        # Check if any client is attached by listing clients for this session
+        try:
+            result = subprocess.run(
+                ["tmux", "list-clients", "-t", self._session_name],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                logger.debug("Client already attached to tmux session")
+                return
+        except Exception:
+            pass  # Proceed to open terminal
+
+        # Open terminal based on platform
+        if platform.system() == "Darwin":
+            self._open_macos_terminal()
+        else:
+            logger.info(
+                "No terminal attached. Attach manually with: tmux attach -t %s",
+                self._session_name,
+            )
+
+    def _open_macos_terminal(self) -> None:
+        """Open Terminal.app on macOS and attach to tmux session.
+
+        Creates a temporary shell script and uses 'open' to launch Terminal.
+        This avoids AppleScript which has proven unreliable.
+        """
+        import tempfile
+
+        session_name = self._session_name
+
+        # Create a temp script that attaches to tmux
+        script_content = f"""#!/bin/bash
+tmux attach-session -t {session_name}
+"""
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".command", delete=False
+            ) as f:
+                f.write(script_content)
+                script_path = f.name
+
+            # Make executable
+            os.chmod(script_path, 0o755)
+
+            # Open with Terminal.app (macOS opens .command files in Terminal)
+            subprocess.Popen(
+                ["open", script_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            logger.info("Opened Terminal.app with tmux session %s", session_name)
+
+            # Clean up script after a delay (give Terminal time to read it)
+            def cleanup_script():
+                time.sleep(2)
+                try:
+                    os.unlink(script_path)
+                except Exception:
+                    pass
+
+            import threading
+            threading.Thread(target=cleanup_script, daemon=True).start()
+
+        except Exception as e:
+            logger.warning("Failed to open Terminal.app: %s", e)
 
     def select_dashboard(self) -> bool:
         """Switch to the dashboard window.

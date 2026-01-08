@@ -3,11 +3,14 @@
 Implements terminal hooks using tmux as the backend.
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 
 from ..infra.hooks.hookspec import hookimpl
-from ..adapters.terminal._tmux import TmuxManager, create_tmux_manager
+from ..adapters.terminal._tmux import TmuxManager, TmuxHealth, create_tmux_manager
+
+logger = logging.getLogger(__name__)
 
 
 class TmuxPlugin:
@@ -47,8 +50,58 @@ class TmuxPlugin:
 
     @hookimpl
     def on_orchestrator_startup(self) -> None:
-        """Called when orchestrator starts - create tmux session."""
-        self._manager.create_orchestrator_session()
+        """Called when orchestrator starts - create tmux session.
+
+        Logs health status and attempts recovery if needed.
+        """
+        logger.info("[TMUX] Initializing tmux backend...")
+
+        # Check initial health
+        health = self._manager.health_check()
+        if not health.server_running:
+            logger.warning("[TMUX] Server not running: %s", health.error)
+            logger.info("[TMUX] Attempting to start tmux server...")
+            if not self._manager.ensure_server_running():
+                logger.error("[TMUX] FAILED to start tmux server - sessions will not work!")
+                return
+
+        # Create session
+        try:
+            self._manager.create_orchestrator_session()
+            health = self._manager.health_check()
+            if health.healthy:
+                logger.info(
+                    "[TMUX] Ready - server running, session '%s' created",
+                    self._manager.session_name,
+                )
+            else:
+                logger.error("[TMUX] Session creation may have failed: %s", health.error)
+        except Exception as e:
+            logger.error("[TMUX] Failed to create session: %s", e)
+
+    def health_check(self) -> TmuxHealth:
+        """Check health of tmux backend.
+
+        Returns:
+            TmuxHealth with server_running, session_exists, and error details.
+        """
+        return self._manager.health_check()
+
+    @hookimpl
+    def terminal_health_check(self) -> dict:
+        """Hook implementation for terminal health check.
+
+        Returns health status as a dict for the hook system.
+        """
+        health = self._manager.health_check()
+        return {
+            "healthy": health.healthy,
+            "server_running": health.server_running,
+            "session_exists": health.session_exists,
+            "error": health.error,
+            "backend": "tmux",
+            "session_name": self._manager.session_name,
+        }
 
     @hookimpl
     def on_orchestrator_shutdown(self) -> None:
