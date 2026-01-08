@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
+import httpx
+
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
+
+logger = logging.getLogger(__name__)
 from issue_orchestrator.testing.asyncdsl import (
     OrchestratorWatcher,
     SSEEventStream,

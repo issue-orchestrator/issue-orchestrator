@@ -49,8 +49,8 @@ class TestLifecycleSSEPlugin:
         # Either ImportError or "not available" log message
         assert "Web module not available" in caplog.text or len(caplog.records) >= 0
 
-    def test_on_trace_event_no_event_loop_logs_debug(self, caplog):
-        """When no event loop exists, event is skipped with debug log."""
+    def test_on_trace_event_no_event_loop_no_main_loop_logs_debug(self, caplog):
+        """When no event loop and no main loop, event is skipped with debug log."""
         plugin = LifecycleSSEPlugin()
 
         with patch(
@@ -58,13 +58,39 @@ class TestLifecycleSSEPlugin:
         ), patch(
             "issue_orchestrator.entrypoints.web.broadcast_event", MagicMock(), create=True
         ), patch(
+            "issue_orchestrator.entrypoints.web._main_loop", None, create=True
+        ), patch(
             "asyncio.get_running_loop",
             side_effect=RuntimeError("no running event loop"),
         ):
             with caplog.at_level(logging.DEBUG):
                 plugin.on_trace_event("session.started", {})
 
-        assert "No event loop" in caplog.text
+        assert "No main loop available" in caplog.text
+
+    def test_on_trace_event_worker_thread_uses_main_loop(self, caplog):
+        """When called from worker thread, uses _main_loop.call_soon_threadsafe."""
+        plugin = LifecycleSSEPlugin()
+
+        mock_main_loop = MagicMock()
+        mock_broadcast = MagicMock()
+
+        with patch(
+            "issue_orchestrator.entrypoints.web._event_subscribers", [MagicMock()], create=True
+        ), patch(
+            "issue_orchestrator.entrypoints.web.broadcast_event", mock_broadcast, create=True
+        ), patch(
+            "issue_orchestrator.entrypoints.web._main_loop", mock_main_loop, create=True
+        ), patch(
+            "asyncio.get_running_loop",
+            side_effect=RuntimeError("no running event loop"),
+        ):
+            with caplog.at_level(logging.DEBUG):
+                plugin.on_trace_event("session.started", {"issue_number": 42})
+
+        # Should use call_soon_threadsafe to schedule on main loop
+        mock_main_loop.call_soon_threadsafe.assert_called_once()
+        assert "Thread-safe scheduled broadcast" in caplog.text
 
     def test_on_trace_event_exception_logged_as_warning(self, caplog):
         """Unexpected exceptions are logged as warnings, not raised."""

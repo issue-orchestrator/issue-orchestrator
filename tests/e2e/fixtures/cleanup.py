@@ -58,6 +58,32 @@ def cleanup_tmux_sessions(tmux_session: str = "orchestrator") -> None:
         pass
 
 
+def cleanup_all_e2e_tmux_sessions() -> int:
+    """Clean up ALL e2e-* tmux sessions from previous (possibly crashed) test runs.
+
+    Returns:
+        Number of sessions killed.
+    """
+    killed = 0
+    try:
+        server = Server()
+        for session in list(server.sessions):
+            name = session.session_name or ""
+            if name.startswith("e2e-"):
+                try:
+                    session.kill()
+                    killed += 1
+                    logger.debug("[E2E CLEANUP] Killed stale e2e session: %s", name)
+                except (LibTmuxException, ObjectDoesNotExist):
+                    pass
+        if killed > 0:
+            logger.info("[E2E CLEANUP] Killed %d stale e2e tmux sessions", killed)
+    except (LibTmuxException, ObjectDoesNotExist):
+        # Server not running - that's fine
+        pass
+    return killed
+
+
 def run_cleanup_step(name: str, fn, timeout_s: int) -> int:
     """Run a cleanup step with a hard wall-clock timeout."""
     start = time.monotonic()
@@ -349,6 +375,7 @@ __all__ = [
     "DEFAULT_E2E_FILTER_LABEL",
     "cleanup_local_worktrees",
     "cleanup_tmux_sessions",
+    "cleanup_all_e2e_tmux_sessions",
     "run_cleanup_step",
     "verify_cleanup_items",
     "cleanup_remote_branches",
