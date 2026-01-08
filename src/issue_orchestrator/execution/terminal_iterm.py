@@ -76,4 +76,5 @@ class ITermPlugin:
     @hookimpl
     def focus_session(self, session_id: int) -> bool:
         """Focus an iTerm2 tab by issue number."""
-        return select_tab_by_name(f"#{session_id}")
+        from ..adapters.terminal.naming import iterm_tab_prefix
+        return select_tab_by_name(iterm_tab_prefix(session_id))

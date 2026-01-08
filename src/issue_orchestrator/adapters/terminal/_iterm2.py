@@ -195,10 +195,10 @@ class ITermSessionManager:
             logger.warning("Skipping session creation for #%d - active Claude session already exists in iTerm2", issue_number)
             return False
 
-        tab_name = f"#{issue_number}"
-        if title:
-            short_title = title[:20].replace('"', "'")
-            tab_name = f"#{issue_number} {short_title}"
+        from .naming import iterm_tab_name
+        # Escape quotes in title for AppleScript
+        safe_title = title.replace('"', "'") if title else None
+        tab_name = iterm_tab_name(issue_number, safe_title)
 
         # Use escape sequence to set tab name (set name to doesn't work reliably)
         escaped_tab_name = tab_name.replace('"', '\\"')
@@ -290,21 +290,16 @@ end tell'''
     def session_exists_by_name(self, session_name: str) -> bool:
         """Check if a session exists by its full name (e.g., 'issue-123', 'review-456').
 
-        Parses the session name to extract the number and delegates to session_exists.
+        Uses centralized naming module to parse terminal_id and delegates to session_exists.
         """
-        # Parse session name: "issue-123", "review-456", "rework-789", "triage-101"
-        if "-" not in session_name:
+        from .naming import number_from_terminal_id
+
+        number = number_from_terminal_id(session_name)
+        if number is None:
             logger.warning("[SESSION_CHECK] Invalid session name format: %s", session_name)
             return False
 
-        try:
-            # Extract number from session name
-            parts = session_name.rsplit("-", 1)
-            number = int(parts[1])
-            return self.session_exists(number)
-        except (ValueError, IndexError) as e:
-            logger.warning("[SESSION_CHECK] Failed to parse session name %s: %s", session_name, e)
-            return False
+        return self.session_exists(number)
 
     def _has_running_tab_for_issue(self, issue_number: int) -> bool:
         """Check if there's a tab for this issue.
@@ -319,12 +314,15 @@ end tell'''
         If no completion.json and tab exists, the session is still working (or stuck,
         in which case the timeout will handle it).
         """
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
         check_exists_script = f'''
         tell application "iTerm"
             repeat with w in windows
                 repeat with t in tabs of w
                     tell current session of t
-                        if name starts with "#{issue_number} " or name is "#{issue_number}" then
+                        if name starts with "{tab_prefix} " or name is "{tab_prefix}" then
                             return "exists:" & name & ":processing:" & (is processing as string)
                         end if
                     end tell
@@ -367,6 +365,9 @@ end tell'''
         Returns:
             Number of tabs closed
         """
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
         # AppleScript to close only IDLE tabs with this issue number
         script = f'''
         tell application "iTerm"
@@ -375,7 +376,7 @@ end tell'''
                 set tabsToClose to {{}}
                 repeat with t in tabs of w
                     tell current session of t
-                        if name starts with "#{issue_number} " or name is "#{issue_number}" then
+                        if name starts with "{tab_prefix} " or name is "{tab_prefix}" then
                             -- Only close if idle (Claude has exited)
                             if is processing is false then
                                 set end of tabsToClose to t
@@ -405,13 +406,16 @@ end tell'''
 
     def kill_session(self, issue_number: int) -> bool:
         """Close the tab for an issue, killing any running process first."""
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
         # First send Ctrl+C to interrupt any running process, then close the tab
         script = f'''
         tell application "iTerm"
             repeat with w in windows
                 repeat with t in tabs of w
                     tell current session of t
-                        if name contains "#{issue_number}" then
+                        if name contains "{tab_prefix}" then
                             -- Send Ctrl+C to interrupt
                             write text (ASCII character 3)
                             delay 0.5
@@ -432,7 +436,8 @@ end tell'''
 
     def select_session(self, issue_number: int) -> bool:
         """Switch to the tab for an issue."""
-        return select_tab_by_name(f"#{issue_number}")
+        from .naming import iterm_tab_prefix
+        return select_tab_by_name(iterm_tab_prefix(issue_number))
 
     def send_to_session(self, issue_number: int, text: str) -> bool:
         """Send text to a specific session by issue number.
@@ -444,6 +449,9 @@ end tell'''
         Returns:
             True if text was sent successfully
         """
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
         escaped_text = text.replace('"', '\\"')
         # Use "tell application id" to avoid activating iTerm and stealing focus
         script = f'''
@@ -451,7 +459,7 @@ end tell'''
             tell current window
                 repeat with t in tabs
                     tell current session of t
-                        if name contains "#{issue_number}" then
+                        if name contains "{tab_prefix}" then
                             write text "{escaped_text}"
                             return true
                         end if
@@ -479,13 +487,16 @@ end tell'''
         Returns:
             Terminal output as string, or None if not available
         """
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
         # Use "tell application id" to avoid activating iTerm and stealing focus
         script = f'''
         tell application id "com.googlecode.iterm2"
             tell current window
                 repeat with t in tabs
                     tell current session of t
-                        if name contains "#{issue_number}" then
+                        if name contains "{tab_prefix}" then
                             set sessionContents to contents
                             return sessionContents
                         end if
