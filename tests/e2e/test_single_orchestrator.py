@@ -53,9 +53,7 @@ class TestSingleOrchestratorBasic:
     async def test_inflight_issue_creation(
         self,
         e2e_orchestrator,
-        orchestrator_watcher,
-        repo_name,
-        filter_label,
+        e2e_flow,
         test_label,
     ):
         """Test creating an issue while orchestrator is running.
@@ -69,9 +67,8 @@ class TestSingleOrchestratorBasic:
         are full. That's valid - we just verify it was created and orchestrator
         didn't crash.
         """
-        # Create issue dynamically (inflight)
-        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
-        issue, _issue_num = flow.create_issue(
+        # Create issue dynamically (inflight) - e2e_flow fixture handles cleanup
+        issue, _issue_num = e2e_flow.create_issue(
             "[M0-700] [E2E] Inflight creation test",
             ["agent:e2e-test", e2e_label(test_label)],
         )
@@ -81,7 +78,7 @@ class TestSingleOrchestratorBasic:
         assert issue.stable_id(), "Issue should have a valid ID"
 
         # Give orchestrator time to process the refresh and see the issue
-        await flow.issue_seen(issue, timeout_s=60)
+        await e2e_flow.issue_seen(issue, timeout_s=60)
 
         # Verify orchestrator is still running (didn't crash on new issue)
         assert e2e_orchestrator.is_running(), (

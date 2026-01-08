@@ -632,6 +632,21 @@ def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
 
 
 @pytest.fixture
+def e2e_flow(repo_name: str, orchestrator_watcher, filter_label: str):
+    """E2EFlow fixture with automatic cleanup on teardown.
+
+    This ensures issues created during the test are cleaned up even if
+    the test fails or times out.
+    """
+    from tests.e2e.flows import E2EFlow
+
+    flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
+    yield flow
+    # Cleanup runs even if test fails
+    flow.cleanup_created_issues()
+
+
+@pytest.fixture
 def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mode: str) -> Config:
     """Create e2e test config with e2e-test agent."""
     from issue_orchestrator.infra.config import ValidationConfig, ValidationGateConfig
