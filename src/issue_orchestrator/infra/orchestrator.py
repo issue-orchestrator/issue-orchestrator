@@ -227,7 +227,10 @@ class Orchestrator:
 
         while not self._shutdown_requested:
             try:
-                if not self.tick():
+                # Run tick in thread pool to avoid blocking the event loop
+                # during long-running operations like git push with hooks
+                should_continue = await asyncio.to_thread(self.tick)
+                if not should_continue:
                     break
             except Exception as e:
                 logger.exception("[LOOP] Error in iteration %d: %s", self._loop_iteration, e)
