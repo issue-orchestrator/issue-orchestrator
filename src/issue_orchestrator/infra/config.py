@@ -214,6 +214,12 @@ class Config:
     session_no_output_tail_lines: int = 50  # Max tail lines to include in session_no_output
     session_no_output_max_bytes: int = 10000  # Max bytes of tail content
     session_no_output_repeat_seconds: int = 120  # Minimum gap between session_no_output events
+
+    # Session detection - be lenient to avoid false terminations
+    # These protect against iTerm AppleScript detection failures during startup
+    session_grace_period_seconds: int = 120  # Don't terminate sessions younger than this
+    session_log_activity_seconds: int = 120  # If log modified within this window, session is alive
+
     gh_write_verify_timeout_seconds: int = 20
     gh_write_verify_initial_delay_ms: int = 250
     gh_write_verify_max_delay_ms: int = 2000

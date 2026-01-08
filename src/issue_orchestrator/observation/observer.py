@@ -226,10 +226,11 @@ class SessionObserver:
         else:
             # Check if session should be kept alive despite detection failure
             # Two signals indicate the session may still be running:
-            # 1. Session is new (< 60s old) - iTerm detection may be unreliable during startup
+            # 1. Session is new - iTerm detection may be unreliable during startup
             # 2. Log file is progressing - Claude is clearly active
-            GRACE_PERIOD_SECONDS = 60
-            LOG_ACTIVITY_THRESHOLD_SECONDS = 30
+            # These thresholds are configurable via YAML to allow tuning
+            grace_period = self.config.session_grace_period_seconds
+            log_activity_threshold = self.config.session_log_activity_seconds
             session_age = (datetime.now() - session.started_at).total_seconds()
 
             # Check log file activity - if log was modified recently, session is active
@@ -240,17 +241,17 @@ class SessionObserver:
                 try:
                     log_mtime = log_path.stat().st_mtime
                     log_age = time.time() - log_mtime
-                    log_is_progressing = log_age < LOG_ACTIVITY_THRESHOLD_SECONDS
+                    log_is_progressing = log_age < log_activity_threshold
                 except OSError:
                     pass
 
-            if session_age < GRACE_PERIOD_SECONDS:
+            if session_age < grace_period:
                 logger.info(
                     "[GRACE_PERIOD] Session #%d only %.0fs old (< %ds grace) - "
                     "treating as running despite session detection failure",
                     session.issue.number,
                     session_age,
-                    GRACE_PERIOD_SECONDS,
+                    grace_period,
                 )
                 result = SessionObservationResult.running(runtime_minutes=runtime)
             elif log_is_progressing:
@@ -259,7 +260,7 @@ class SessionObserver:
                     "treating as running despite session detection failure",
                     session.issue.number,
                     log_age,
-                    LOG_ACTIVITY_THRESHOLD_SECONDS,
+                    log_activity_threshold,
                 )
                 result = SessionObservationResult.running(runtime_minutes=runtime)
             else:
