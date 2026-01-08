@@ -68,6 +68,15 @@ labels:
 ui_mode: "tmux"
 web_port: 8080                         # Port for web dashboard (default: 8080)
 
+# Tmux layout configuration (optional)
+# tmuxp: ".issue-orchestrator/tmux.yaml"  # Custom tmuxp config for layout
+
+# Tmux key bindings (applied after session creation)
+# Default: double-click to zoom/unzoom panes
+# tmux_bindings:
+#   - "bind-key -T root DoubleClick1Pane resize-pane -Z -t ="
+# Set to empty list to disable: tmux_bindings: []
+
 # Tab/window cleanup behavior
 close_completed_tabs: true         # Auto-close tabs for successful completions
 close_failed_tabs: false           # Keep failed tabs open for investigation

@@ -41,6 +41,29 @@ def mock_window():
     return window
 
 
+@pytest.fixture
+def mock_pane():
+    """Create a mock libtmux Pane."""
+    pane = MagicMock()
+    pane.pane_title = "issue-42"
+    pane.pane_dead = "0"
+    pane.pane_current_command = "bash"
+    return pane
+
+
+@pytest.fixture
+def mock_agents_window(mock_pane):
+    """Create a mock agents window with panes."""
+    window = MagicMock()
+    window.name = tmux.AGENTS_WINDOW
+    # Initial empty pane
+    empty_pane = MagicMock()
+    empty_pane.pane_title = ""
+    empty_pane.pane_current_command = "bash"
+    window.panes = [empty_pane]
+    return window
+
+
 class TestTmuxManager:
     """Tests for TmuxManager class."""
 
@@ -127,50 +150,63 @@ class TestTmuxManager:
         mock_server.sessions.get.return_value = None
         assert manager.has_session() is False
 
-    def test_create_issue_window_success(self, mock_session, mock_window):
-        """Test create_issue_window successfully creates a window."""
+    def test_create_issue_window_success(self, mock_session, mock_agents_window):
+        """Test create_issue_window successfully creates a pane."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []
-        mock_session.new_window.return_value = mock_window
+
+        # Mock the agents window lookup
+        mock_session.windows.filter.return_value = [mock_agents_window]
+
+        # Mock the empty pane (will be reused)
+        empty_pane = mock_agents_window.panes[0]
+        empty_pane.pane_title = ""
+        empty_pane.pane_current_command = "bash"
 
         working_dir = Path("/test/dir")
-        window = manager.create_issue_window(42, "echo test", working_dir)
+        pane = manager.create_issue_window(42, "echo test", working_dir)
 
-        assert window == mock_window
-        mock_session.windows.filter.assert_called_once_with(window_name="issue-42")
-        mock_session.new_window.assert_called_once_with(
-            window_name="issue-42",
-            start_directory=str(working_dir),
-        )
+        # Should reuse the empty pane
+        assert pane == empty_pane
         # send_keys is called twice: first to add scripts to PATH, then to run command
-        assert mock_window.active_pane.send_keys.call_count == 2
+        assert empty_pane.send_keys.call_count == 2
         # Second (last) call should be the actual command
-        mock_window.active_pane.send_keys.assert_called_with("echo test")
+        empty_pane.send_keys.assert_called_with("echo test")
 
-    def test_create_issue_window_already_exists(self, mock_session, mock_window):
-        """Test create_issue_window raises error if window exists."""
+    def test_create_issue_window_already_exists(self, mock_session, mock_agents_window, mock_pane):
+        """Test create_issue_window raises error if pane exists."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
 
-        with pytest.raises(ValueError, match="Window issue-42 already exists"):
+        # Mock the agents window with an existing pane
+        mock_pane.pane_title = "issue-42"
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
+
+        with pytest.raises(ValueError, match="Pane issue-42 already exists"):
             manager.create_issue_window(42, "echo test", Path("/test/dir"))
 
-    def test_window_exists_true(self, mock_session, mock_window):
-        """Test window_exists returns True when window exists."""
+    def test_window_exists_true(self, mock_session, mock_agents_window, mock_pane):
+        """Test window_exists returns True when pane exists."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
+
+        # Mock the agents window with a matching pane
+        mock_pane.pane_title = "issue-42"
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         assert manager.window_exists(42) is True
-        mock_session.windows.filter.assert_called_once_with(window_name="issue-42")
 
-    def test_window_exists_false(self, mock_session):
-        """Test window_exists returns False when window doesn't exist."""
+    def test_window_exists_false(self, mock_session, mock_agents_window):
+        """Test window_exists returns False when pane doesn't exist."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []
+        # Agents window exists but has no matching pane
+        empty_pane = MagicMock()
+        empty_pane.pane_title = ""
+        mock_agents_window.panes = [empty_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         assert manager.window_exists(42) is False
 
@@ -180,23 +216,28 @@ class TestTmuxManager:
         manager._session = None
         assert manager.window_exists(42) is False
 
-    def test_get_window_success(self, mock_session, mock_window):
-        """Test get_window returns window when it exists."""
+    def test_get_window_success(self, mock_session, mock_agents_window, mock_pane):
+        """Test get_window returns pane when it exists."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
+        mock_pane.pane_title = "issue-42"
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
-        window = manager.get_window(42)
-        assert window == mock_window
+        pane = manager.get_window(42)
+        assert pane == mock_pane
 
-    def test_get_window_not_found(self, mock_session):
-        """Test get_window returns None when window doesn't exist."""
+    def test_get_window_not_found(self, mock_session, mock_agents_window):
+        """Test get_window returns None when pane doesn't exist."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []
+        empty_pane = MagicMock()
+        empty_pane.pane_title = ""
+        mock_agents_window.panes = [empty_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
-        window = manager.get_window(42)
-        assert window is None
+        pane = manager.get_window(42)
+        assert pane is None
 
     def test_get_window_no_session(self):
         """Test get_window returns None when no session."""
@@ -204,39 +245,49 @@ class TestTmuxManager:
         manager._session = None
         assert manager.get_window(42) is None
 
-    def test_kill_window_success(self, mock_session, mock_window):
-        """Test kill_window kills the window."""
+    def test_kill_window_success(self, mock_session, mock_agents_window, mock_pane):
+        """Test kill_window kills the pane."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
+        mock_pane.pane_title = "issue-42"
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         manager.kill_window(42)
-        mock_window.kill.assert_called_once()
+        mock_pane.kill.assert_called_once()
 
-    def test_kill_window_not_found(self, mock_session):
-        """Test kill_window does nothing when window doesn't exist."""
+    def test_kill_window_not_found(self, mock_session, mock_agents_window):
+        """Test kill_window does nothing when pane doesn't exist."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []
+        empty_pane = MagicMock()
+        empty_pane.pane_title = ""
+        mock_agents_window.panes = [empty_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         # Should not raise error
         manager.kill_window(42)
 
-    def test_select_window_success(self, mock_session, mock_window):
-        """Test select_window selects the window."""
+    def test_select_window_success(self, mock_session, mock_agents_window, mock_pane):
+        """Test select_window selects the pane."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
+        mock_pane.pane_title = "issue-42"
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         result = manager.select_window(42)
         assert result is True
-        mock_window.select.assert_called_once()
+        mock_pane.select.assert_called_once()
 
-    def test_select_window_not_found(self, mock_session):
-        """Test select_window returns False when window doesn't exist."""
+    def test_select_window_not_found(self, mock_session, mock_agents_window):
+        """Test select_window returns False when pane doesn't exist."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []
+        empty_pane = MagicMock()
+        empty_pane.pane_title = ""
+        mock_agents_window.panes = [empty_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         result = manager.select_window(42)
         assert result is False
@@ -273,18 +324,17 @@ class TestTmuxManager:
         mock_server.sessions.get.return_value = None
         assert manager.select_dashboard() is False
 
-    def test_list_issue_windows(self, mock_session):
+    def test_list_issue_windows(self, mock_session, mock_agents_window):
         """Test list_issue_windows returns all issue numbers."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
 
-        window1 = MagicMock()
-        window1.name = "issue-42"
-        window2 = MagicMock()
-        window2.name = "issue-123"
-        dashboard = MagicMock()
-        dashboard.name = "dashboard"
-        mock_session.windows = [window1, window2, dashboard]
+        pane1 = MagicMock()
+        pane1.pane_title = "issue-42"
+        pane2 = MagicMock()
+        pane2.pane_title = "issue-123"
+        mock_agents_window.panes = [pane1, pane2]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         issues = manager.list_issue_windows()
         assert issues == [42, 123]
@@ -307,68 +357,80 @@ class TestTmuxManager:
         manager._session = None
         assert manager.list_issue_windows() == []
 
-    def test_list_issue_windows_skips_invalid_names(self, mock_session):
-        """Test list_issue_windows skips windows with invalid names."""
+    def test_list_issue_windows_skips_invalid_names(self, mock_session, mock_agents_window):
+        """Test list_issue_windows skips panes with invalid titles."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
 
-        window1 = MagicMock()
-        window1.name = "issue-42"
-        window2 = MagicMock()
-        window2.name = "issue-invalid"
-        window3 = MagicMock()
-        window3.name = "issue-123"
-        mock_session.windows = [window1, window2, window3]
+        pane1 = MagicMock()
+        pane1.pane_title = "issue-42"
+        pane2 = MagicMock()
+        pane2.pane_title = "issue-invalid"
+        pane3 = MagicMock()
+        pane3.pane_title = "issue-123"
+        mock_agents_window.panes = [pane1, pane2, pane3]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         issues = manager.list_issue_windows()
         assert issues == [42, 123]
 
-    def test_capture_pane_output_success(self, mock_session, mock_window):
+    def test_capture_pane_output_success(self, mock_session, mock_agents_window, mock_pane):
         """Test capture_pane_output captures output."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
-        mock_window.active_pane.capture_pane.return_value = ["line1", "line2", "line3"]
+        mock_pane.pane_title = "issue-42"
+        mock_pane.capture_pane.return_value = ["line1", "line2", "line3"]
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         output = manager.capture_pane_output(42, lines=10)
         assert output == "line1\nline2\nline3"
-        mock_window.active_pane.capture_pane.assert_called_once_with(start=-10)
+        mock_pane.capture_pane.assert_called_once_with(start=-10)
 
-    def test_capture_pane_output_default_lines(self, mock_session, mock_window):
+    def test_capture_pane_output_default_lines(self, mock_session, mock_agents_window, mock_pane):
         """Test capture_pane_output uses default lines."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
-        mock_window.active_pane.capture_pane.return_value = ["line1"]
+        mock_pane.pane_title = "issue-42"
+        mock_pane.capture_pane.return_value = ["line1"]
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         output = manager.capture_pane_output(42)
-        mock_window.active_pane.capture_pane.assert_called_once_with(start=-20)
+        mock_pane.capture_pane.assert_called_once_with(start=-20)
 
-    def test_capture_pane_output_empty(self, mock_session, mock_window):
+    def test_capture_pane_output_empty(self, mock_session, mock_agents_window, mock_pane):
         """Test capture_pane_output handles empty output."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
-        mock_window.active_pane.capture_pane.return_value = []
+        mock_pane.pane_title = "issue-42"
+        mock_pane.capture_pane.return_value = []
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         output = manager.capture_pane_output(42)
         assert output == ""
 
-    def test_capture_pane_output_none(self, mock_session, mock_window):
+    def test_capture_pane_output_none(self, mock_session, mock_agents_window, mock_pane):
         """Test capture_pane_output handles None output."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
-        mock_window.active_pane.capture_pane.return_value = None
+        mock_pane.pane_title = "issue-42"
+        mock_pane.capture_pane.return_value = None
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         output = manager.capture_pane_output(42)
         assert output == ""
 
-    def test_capture_pane_output_no_window(self, mock_session):
-        """Test capture_pane_output returns None when window doesn't exist."""
+    def test_capture_pane_output_no_window(self, mock_session, mock_agents_window):
+        """Test capture_pane_output returns None when pane doesn't exist."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []
+        empty_pane = MagicMock()
+        empty_pane.pane_title = ""
+        mock_agents_window.panes = [empty_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         output = manager.capture_pane_output(42)
         assert output is None
@@ -667,28 +729,31 @@ class TestTerminalObserverMethods:
     """Tests for TerminalObserver methods in TmuxManager."""
 
     @pytest.fixture
-    def mock_manager_with_window(self, mock_server, mock_session, mock_window):
-        """Create a manager with a mock window."""
+    def mock_manager_with_pane(self, mock_server, mock_session, mock_agents_window):
+        """Create a manager with a mock pane in the agents window."""
         manager = tmux.TmuxManager()
         manager._server = mock_server
         manager._session = mock_session
-        mock_session.windows.filter.return_value = [mock_window]
-        return manager, mock_window
+        # Create a mock pane with title "issue-42"
+        mock_pane = MagicMock()
+        mock_pane.pane_title = "issue-42"
+        mock_pane.pane_dead = "0"
+        mock_agents_window.panes = [mock_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
+        return manager, mock_pane
 
-    def test_get_process_state_running(self, mock_manager_with_window):
+    def test_get_process_state_running(self, mock_manager_with_pane):
         """Test get_process_state returns RUNNING when process is alive."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.pane_dead = "0"
 
         from issue_orchestrator.domain import ProcessState
         state = manager.get_process_state("issue-42")
         assert state == ProcessState.RUNNING
 
-    def test_get_process_state_exited(self, mock_manager_with_window):
+    def test_get_process_state_exited(self, mock_manager_with_pane):
         """Test get_process_state returns EXITED when process exited normally."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.pane_dead = "1"
         mock_pane.pane_dead_signal = None
 
@@ -696,10 +761,9 @@ class TestTerminalObserverMethods:
         state = manager.get_process_state("issue-42")
         assert state == ProcessState.EXITED
 
-    def test_get_process_state_signaled(self, mock_manager_with_window):
+    def test_get_process_state_signaled(self, mock_manager_with_pane):
         """Test get_process_state returns SIGNALED when process killed by signal."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.pane_dead = "1"
         mock_pane.pane_dead_signal = "SIGKILL"
 
@@ -707,21 +771,24 @@ class TestTerminalObserverMethods:
         state = manager.get_process_state("issue-42")
         assert state == ProcessState.SIGNALED
 
-    def test_get_process_state_unknown_no_window(self, mock_server, mock_session):
-        """Test get_process_state returns UNKNOWN when window doesn't exist."""
+    def test_get_process_state_unknown_no_window(self, mock_server, mock_session, mock_agents_window):
+        """Test get_process_state returns UNKNOWN when pane doesn't exist."""
         manager = tmux.TmuxManager()
         manager._server = mock_server
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []  # No matching window
+        # Agents window exists but no matching pane
+        empty_pane = MagicMock()
+        empty_pane.pane_title = ""
+        mock_agents_window.panes = [empty_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         from issue_orchestrator.domain import ProcessState
         state = manager.get_process_state("nonexistent")
         assert state == ProcessState.UNKNOWN
 
-    def test_get_exit_info_success(self, mock_manager_with_window):
+    def test_get_exit_info_success(self, mock_manager_with_pane):
         """Test get_exit_info returns exit info for terminated process."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.pane_dead = "1"
         mock_pane.pane_dead_status = "1"
         mock_pane.pane_dead_signal = None
@@ -732,10 +799,9 @@ class TestTerminalObserverMethods:
         assert exit_info.signal is None
         assert exit_info.exit_time is not None
 
-    def test_get_exit_info_with_signal(self, mock_manager_with_window):
+    def test_get_exit_info_with_signal(self, mock_manager_with_pane):
         """Test get_exit_info captures signal information."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.pane_dead = "1"
         mock_pane.pane_dead_status = "137"
         mock_pane.pane_dead_signal = "SIGKILL"
@@ -745,84 +811,87 @@ class TestTerminalObserverMethods:
         assert exit_info.exit_code == 137
         assert exit_info.signal == "SIGKILL"
 
-    def test_get_exit_info_none_when_running(self, mock_manager_with_window):
+    def test_get_exit_info_none_when_running(self, mock_manager_with_pane):
         """Test get_exit_info returns None when process is still running."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.pane_dead = "0"
 
         exit_info = manager.get_exit_info("issue-42")
         assert exit_info is None
 
-    def test_get_exit_info_none_when_no_window(self, mock_server, mock_session):
-        """Test get_exit_info returns None when window doesn't exist."""
+    def test_get_exit_info_none_when_no_window(self, mock_server, mock_session, mock_agents_window):
+        """Test get_exit_info returns None when pane doesn't exist."""
         manager = tmux.TmuxManager()
         manager._server = mock_server
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []
+        empty_pane = MagicMock()
+        empty_pane.pane_title = ""
+        mock_agents_window.panes = [empty_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         exit_info = manager.get_exit_info("nonexistent")
         assert exit_info is None
 
-    def test_is_process_alive_true(self, mock_manager_with_window):
+    def test_is_process_alive_true(self, mock_manager_with_pane):
         """Test is_process_alive returns True when process is running."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.pane_dead = "0"
 
         assert manager.is_process_alive("issue-42") is True
 
-    def test_is_process_alive_false_exited(self, mock_manager_with_window):
+    def test_is_process_alive_false_exited(self, mock_manager_with_pane):
         """Test is_process_alive returns False when process exited."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.pane_dead = "1"
         mock_pane.pane_dead_signal = None
 
         assert manager.is_process_alive("issue-42") is False
 
-    def test_is_process_alive_false_no_window(self, mock_server, mock_session):
-        """Test is_process_alive returns False when window doesn't exist."""
+    def test_is_process_alive_false_no_window(self, mock_server, mock_session, mock_agents_window):
+        """Test is_process_alive returns False when pane doesn't exist."""
         manager = tmux.TmuxManager()
         manager._server = mock_server
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []
+        empty_pane = MagicMock()
+        empty_pane.pane_title = ""
+        mock_agents_window.panes = [empty_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         assert manager.is_process_alive("nonexistent") is False
 
-    def test_capture_full_output_success(self, mock_manager_with_window):
+    def test_capture_full_output_success(self, mock_manager_with_pane):
         """Test capture_full_output returns full scrollback."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.capture_pane.return_value = ["line1", "line2", "line3"]
 
         output = manager.capture_full_output("issue-42")
         assert output == "line1\nline2\nline3"
         mock_pane.capture_pane.assert_called_once_with(start="-")
 
-    def test_capture_full_output_empty(self, mock_manager_with_window):
+    def test_capture_full_output_empty(self, mock_manager_with_pane):
         """Test capture_full_output handles empty output."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.capture_pane.return_value = []
 
         output = manager.capture_full_output("issue-42")
         assert output == ""
 
-    def test_capture_full_output_none_no_window(self, mock_server, mock_session):
-        """Test capture_full_output returns None when window doesn't exist."""
+    def test_capture_full_output_none_no_window(self, mock_server, mock_session, mock_agents_window):
+        """Test capture_full_output returns None when pane doesn't exist."""
         manager = tmux.TmuxManager()
         manager._server = mock_server
         manager._session = mock_session
-        mock_session.windows.filter.return_value = []
+        empty_pane = MagicMock()
+        empty_pane.pane_title = ""
+        mock_agents_window.panes = [empty_pane]
+        mock_session.windows.filter.return_value = [mock_agents_window]
 
         output = manager.capture_full_output("nonexistent")
         assert output is None
 
-    def test_capture_full_output_handles_exception(self, mock_manager_with_window):
+    def test_capture_full_output_handles_exception(self, mock_manager_with_pane):
         """Test capture_full_output returns None on exception."""
-        manager, mock_window = mock_manager_with_window
-        mock_pane = mock_window.active_pane
+        manager, mock_pane = mock_manager_with_pane
         mock_pane.capture_pane.side_effect = Exception("tmux error")
 
         output = manager.capture_full_output("issue-42")
