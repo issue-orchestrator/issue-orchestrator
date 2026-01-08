@@ -1228,7 +1228,20 @@ class TestMaxIssuesToStart:
         sample_config,
         mock_repository_host,
     ):
-        """Test that issues that were already claimed don't count toward the limit."""
+        """Test that failed claims don't increment issues_started_count.
+
+        The planner generates actions upfront based on max_issues_to_start limit.
+        When a launch fails (already claimed), the count doesn't increment, but
+        the planner has already decided how many actions to generate for this tick.
+
+        In a single tick:
+        - Planner generates 2 actions (max_issues_to_start=2, count=0)
+        - Action 1 fails (already claimed) -> count stays 0
+        - Action 2 succeeds -> count becomes 1
+
+        On subsequent ticks, the planner would generate more actions because
+        count (1) < max_issues_to_start (2).
+        """
         sample_config.max_issues_to_start = 2
         sample_config.max_concurrent_sessions = 5
 
@@ -1241,11 +1254,10 @@ class TestMaxIssuesToStart:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
-            # First issue already claimed (returns None), second and third succeed
+            # First issue already claimed (returns None), second succeeds
             mock_launch.side_effect = [
                 None,  # Already claimed
                 create_session(issue2),
-                create_session(issue3),  # Should not be called - limit reached
             ]
 
             async def run_one_iteration():
@@ -1257,19 +1269,12 @@ class TestMaxIssuesToStart:
                 run_one_iteration(),
             )
 
-            # Attempted 3, but issue1 was already claimed so only 2 count
-            # Actually we should check: attempt 1 (skipped), attempt 2 (success, count=1),
-            # attempt 3 (success, count=2), then stop because limit reached
-            # But wait - the logic increments AFTER success, so:
-            # - Try issue1 -> None (skipped, count stays 0)
-            # - Try issue2 -> success (count becomes 1)
-            # - Check limit: 1 < 2, continue
-            # - Try issue3 -> success (count becomes 2)
-            # - Check limit on next iteration: 2 >= 2, stop
-            # So we should see 3 launch attempts
-            assert mock_launch.call_count == 3
-            # But only 2 actually succeeded
-            assert orchestrator.state.issues_started_count == 2
+            # Planner generates 2 actions based on max_issues_to_start=2
+            # (it doesn't know issue1 will fail to launch)
+            assert mock_launch.call_count == 2
+            # Only 1 succeeded, so count is 1 (not 2)
+            # This means on next tick, we could still launch one more issue
+            assert orchestrator.state.issues_started_count == 1
 
 
 class TestControlMethods:

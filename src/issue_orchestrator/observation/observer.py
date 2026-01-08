@@ -12,6 +12,7 @@ Components that act are named Adapters.
 
 import logging
 import time
+from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -223,23 +224,63 @@ class SessionObserver:
             self._emit_no_output_if_stale(session)
             result = SessionObservationResult.running(runtime_minutes=runtime)
         else:
-            result = SessionObservationResult.terminated(runtime_minutes=runtime)
-            # Capture terminal output for failed sessions (before tab closes)
-            # This helps debug immediate failures like permission prompts
-            if not completion_path.exists() and self._session_runner:
+            # Check if session should be kept alive despite detection failure
+            # Two signals indicate the session may still be running:
+            # 1. Session is new - iTerm detection may be unreliable during startup
+            # 2. Log file is progressing - Claude is clearly active
+            # These thresholds are configurable via YAML to allow tuning
+            grace_period = self.config.session_grace_period_seconds
+            log_activity_threshold = self.config.session_log_activity_seconds
+            session_age = (datetime.now() - session.started_at).total_seconds()
+
+            # Check log file activity - if log was modified recently, session is active
+            log_path = session.worktree_path / ".issue-orchestrator" / "session.log"
+            log_is_progressing = False
+            log_age = float("inf")  # Default to "very old" if we can't read
+            if log_path.exists():
                 try:
-                    terminal_output = self._session_runner.get_session_output(
-                        session.issue.number, lines=100
-                    )
-                    if terminal_output:
-                        logger.warning(
-                            "[FAILURE] Session #%d terminated without completion. "
-                            "Terminal output:\n%s",
-                            session.issue.number,
-                            terminal_output[-2000:] if len(terminal_output) > 2000 else terminal_output,
+                    log_mtime = log_path.stat().st_mtime
+                    log_age = time.time() - log_mtime
+                    log_is_progressing = log_age < log_activity_threshold
+                except OSError:
+                    pass
+
+            if session_age < grace_period:
+                logger.info(
+                    "[GRACE_PERIOD] Session #%d only %.0fs old (< %ds grace) - "
+                    "treating as running despite session detection failure",
+                    session.issue.number,
+                    session_age,
+                    grace_period,
+                )
+                result = SessionObservationResult.running(runtime_minutes=runtime)
+            elif log_is_progressing:
+                logger.info(
+                    "[LOG_ACTIVE] Session #%d log modified %.0fs ago (< %ds threshold) - "
+                    "treating as running despite session detection failure",
+                    session.issue.number,
+                    log_age,
+                    log_activity_threshold,
+                )
+                result = SessionObservationResult.running(runtime_minutes=runtime)
+            else:
+                result = SessionObservationResult.terminated(runtime_minutes=runtime)
+                # Capture terminal output for failed sessions (before tab closes)
+                # This helps debug immediate failures like permission prompts
+                if not completion_path.exists() and self._session_runner:
+                    try:
+                        terminal_output = self._session_runner.get_session_output(
+                            session.issue.number, lines=100
                         )
-                except Exception as e:
-                    logger.debug("Could not capture terminal output: %s", e)
+                        if terminal_output:
+                            logger.warning(
+                                "[FAILURE] Session #%d terminated without completion. "
+                                "Terminal output:\n%s",
+                                session.issue.number,
+                                terminal_output[-2000:] if len(terminal_output) > 2000 else terminal_output,
+                            )
+                    except Exception as e:
+                        logger.debug("Could not capture terminal output: %s", e)
 
         # Emit observation result for debugging (only for non-running sessions)
         if result.observation != SessionObservation.RUNNING:
