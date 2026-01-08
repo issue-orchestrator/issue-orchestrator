@@ -7,6 +7,8 @@ allows isinstance() verification in tests.
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from typing import Any
+
 if TYPE_CHECKING:
     from issue_orchestrator.infra.config import Config
     from issue_orchestrator.domain.models import OrchestratorState
@@ -40,4 +42,12 @@ class OrchestratorForWeb(Protocol):
     @property
     def event_hub(self) -> "EventHub":
         """Access to event hub for SSE subscriptions."""
+        ...
+
+    def get_failure_diagnosis(self, issue_number: int) -> dict[str, Any]:
+        """Get failure diagnosis for a session.
+
+        Returns diagnostic info for debugging failed sessions as a dict
+        ready for JSON serialization.
+        """
         ...
