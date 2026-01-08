@@ -1321,3 +1321,167 @@ class TestCheckSessionPRLookupOnExit:
         # PR check failed, so should check labels next
         mock_repository_host.get_issue_labels.assert_called()
         assert status == SessionStatus.FAILED
+
+
+class TestTerminalObserverIntegration:
+    """Tests for TerminalObserver integration in observe_session."""
+
+    @pytest.fixture
+    def mock_terminal_observer(self):
+        """Create a mock TerminalObserver."""
+        from issue_orchestrator.domain import ProcessState, ProcessExitInfo
+        observer = MagicMock()
+        observer.get_process_state.return_value = ProcessState.UNKNOWN
+        observer.get_exit_info.return_value = None
+        observer.is_process_alive.return_value = False
+        observer.capture_full_output.return_value = None
+        return observer
+
+    @pytest.fixture
+    def monitor_with_terminal_observer(
+        self, mock_config, mock_session_runner, mock_repository_host, mock_terminal_observer
+    ):
+        """Create a SessionObserver with terminal observer."""
+        return SessionObserver(
+            mock_config,
+            session_runner=mock_session_runner,
+            repository_host=mock_repository_host,
+            terminal_observer=mock_terminal_observer,
+        )
+
+    def test_observe_uses_terminal_observer_running(
+        self, monitor_with_terminal_observer, sample_session, mock_terminal_observer,
+        mock_session_runner, tmp_path
+    ):
+        """Test observe_session uses pane_dead for RUNNING detection."""
+        from issue_orchestrator.domain import ProcessState
+        from issue_orchestrator.observation.observation import SessionObservation
+
+        sample_session.worktree_path = tmp_path
+        mock_terminal_observer.get_process_state.return_value = ProcessState.RUNNING
+        # Window check returns False - but pane_dead says RUNNING should win
+        mock_session_runner.session_exists_by_name.return_value = False
+
+        result = monitor_with_terminal_observer.observe_session(sample_session)
+
+        # TerminalObserver says process is running, so should be RUNNING
+        assert result.observation == SessionObservation.RUNNING
+        mock_terminal_observer.get_process_state.assert_called_with(sample_session.terminal_id)
+
+    def test_observe_uses_terminal_observer_exited(
+        self, monitor_with_terminal_observer, sample_session, mock_terminal_observer,
+        mock_session_runner, tmp_path
+    ):
+        """Test observe_session uses pane_dead for EXITED detection."""
+        from issue_orchestrator.domain import ProcessState, ProcessExitInfo
+        from issue_orchestrator.observation.observation import SessionObservation
+        from datetime import datetime
+
+        sample_session.worktree_path = tmp_path
+        sample_session.started_at = datetime.now()
+        mock_terminal_observer.get_process_state.return_value = ProcessState.EXITED
+        mock_terminal_observer.get_exit_info.return_value = ProcessExitInfo(exit_code=1)
+        # Window still exists (remain-on-exit), but process is dead
+        mock_session_runner.session_exists_by_name.return_value = True
+
+        result = monitor_with_terminal_observer.observe_session(sample_session)
+
+        # TerminalObserver says process exited, so should be TERMINATED
+        assert result.observation == SessionObservation.TERMINATED
+        mock_terminal_observer.get_exit_info.assert_called_with(sample_session.terminal_id)
+
+    def test_observe_uses_terminal_observer_signaled(
+        self, monitor_with_terminal_observer, sample_session, mock_terminal_observer,
+        mock_session_runner, tmp_path
+    ):
+        """Test observe_session uses pane_dead for SIGNALED detection."""
+        from issue_orchestrator.domain import ProcessState, ProcessExitInfo
+        from issue_orchestrator.observation.observation import SessionObservation
+        from datetime import datetime
+
+        sample_session.worktree_path = tmp_path
+        sample_session.started_at = datetime.now()
+        mock_terminal_observer.get_process_state.return_value = ProcessState.SIGNALED
+        mock_terminal_observer.get_exit_info.return_value = ProcessExitInfo(
+            exit_code=137, signal="SIGKILL"
+        )
+        mock_session_runner.session_exists_by_name.return_value = True
+
+        result = monitor_with_terminal_observer.observe_session(sample_session)
+
+        # Process was signaled, so should be TERMINATED
+        assert result.observation == SessionObservation.TERMINATED
+
+    def test_observe_fallback_to_window_check_on_unknown(
+        self, monitor_with_terminal_observer, sample_session, mock_terminal_observer,
+        mock_session_runner, tmp_path
+    ):
+        """Test observe_session falls back to window check when process state is UNKNOWN."""
+        from issue_orchestrator.domain import ProcessState
+        from issue_orchestrator.observation.observation import SessionObservation
+
+        sample_session.worktree_path = tmp_path
+        mock_terminal_observer.get_process_state.return_value = ProcessState.UNKNOWN
+        # Window exists, so treat as running
+        mock_session_runner.session_exists_by_name.return_value = True
+
+        result = monitor_with_terminal_observer.observe_session(sample_session)
+
+        # UNKNOWN state falls back to window check, which returns True
+        assert result.observation == SessionObservation.RUNNING
+
+    def test_observe_without_terminal_observer_uses_window_check(
+        self, monitor, sample_session, mock_session_runner, tmp_path
+    ):
+        """Test observe_session uses window check when no terminal observer."""
+        from issue_orchestrator.observation.observation import SessionObservation
+
+        sample_session.worktree_path = tmp_path
+        mock_session_runner.session_exists_by_name.return_value = True
+
+        result = monitor.observe_session(sample_session)
+
+        assert result.observation == SessionObservation.RUNNING
+        # No terminal observer, just window check
+        mock_session_runner.session_exists_by_name.assert_called_with(sample_session.terminal_id)
+
+    def test_observe_emits_exit_info_in_event(
+        self, mock_config, mock_session_runner, mock_repository_host,
+        mock_terminal_observer, sample_session, tmp_path
+    ):
+        """Test observe_session includes exit info in observation event."""
+        from issue_orchestrator.domain import ProcessState, ProcessExitInfo
+        from issue_orchestrator.events import EventName
+        from datetime import datetime
+
+        mock_events = MagicMock()
+        monitor = SessionObserver(
+            mock_config,
+            events=mock_events,
+            session_runner=mock_session_runner,
+            repository_host=mock_repository_host,
+            terminal_observer=mock_terminal_observer,
+        )
+
+        sample_session.worktree_path = tmp_path
+        sample_session.started_at = datetime.now()
+        mock_terminal_observer.get_process_state.return_value = ProcessState.EXITED
+        mock_terminal_observer.get_exit_info.return_value = ProcessExitInfo(
+            exit_code=1, signal=None
+        )
+        mock_session_runner.session_exists_by_name.return_value = True
+
+        monitor.observe_session(sample_session)
+
+        # Check that event was emitted with exit info
+        calls = mock_events.publish.call_args_list
+        observation_event = None
+        for call_obj in calls:
+            event = call_obj[0][0]
+            if event.name == EventName.OBSERVATION_RESULT:
+                observation_event = event
+                break
+
+        assert observation_event is not None
+        assert observation_event.data.get("exit_code") == 1
+        assert observation_event.data.get("exit_signal") is None

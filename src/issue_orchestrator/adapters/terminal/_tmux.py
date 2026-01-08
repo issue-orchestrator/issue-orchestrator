@@ -1,29 +1,120 @@
 """Tmux session management using libtmux.
 
-Uses a single-session, multi-window architecture:
-- One tmux session named "orchestrator"
-- Each issue gets its own window
-- Dashboard runs in window 0
-- Easy switching between windows
+Uses a session-per-orchestrator architecture:
+- Each orchestrator instance owns one tmux session
+- Each agent session (code, review, rework, triage) gets its own window
+- Atomic cleanup: kill_session() removes ALL windows at once
+- No global state - TmuxManager instances are created via factory
 """
 
 import os
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import libtmux
 
+from issue_orchestrator.domain import ProcessState, ProcessExitInfo
+
 # Constants
-# Allow override via environment variable for e2e test isolation
+# Allow override via environment variable for e2e test isolation (legacy)
 SESSION_NAME = os.environ.get("ORCHESTRATOR_TMUX_SESSION", "orchestrator")
 DASHBOARD_WINDOW = "dashboard"
 
+# TTL for cached pane state (milliseconds)
+PANE_STATE_TTL_MS = 500
+
+
+class TmuxPaneState:
+    """Cached pane state with TTL refresh.
+
+    Caches pane attributes like pane_dead, pane_dead_status to avoid
+    repeated tmux queries. Uses TTL-based refresh for efficiency.
+
+    tmux pane attributes used:
+    - pane_dead: '1' if process exited, '0' if running
+    - pane_dead_status: Exit code as string (e.g., '0', '1', '137')
+    - pane_dead_signal: Signal name if killed by signal (e.g., 'SIGTERM')
+    """
+
+    def __init__(self, pane: libtmux.Pane, ttl_ms: int = PANE_STATE_TTL_MS):
+        """Initialize pane state wrapper.
+
+        Args:
+            pane: The libtmux Pane to observe
+            ttl_ms: Cache TTL in milliseconds
+        """
+        self._pane = pane
+        self._ttl_ms = ttl_ms
+        self._last_refresh: float = 0
+
+    def _ensure_fresh(self) -> None:
+        """Refresh pane attributes if TTL expired."""
+        now = time.monotonic() * 1000  # Convert to milliseconds
+        if now - self._last_refresh > self._ttl_ms:
+            self._pane.refresh()
+            self._last_refresh = now
+
+    @property
+    def is_dead(self) -> bool:
+        """True if the process in the pane has exited."""
+        self._ensure_fresh()
+        return getattr(self._pane, "pane_dead", "0") == "1"
+
+    @property
+    def exit_code(self) -> int | None:
+        """Exit code of the process, or None if still running or unknown."""
+        self._ensure_fresh()
+        status = getattr(self._pane, "pane_dead_status", None)
+        if status is not None and status != "":
+            try:
+                return int(status)
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    @property
+    def signal(self) -> str | None:
+        """Signal that killed the process, or None if not signaled."""
+        self._ensure_fresh()
+        sig = getattr(self._pane, "pane_dead_signal", None)
+        if sig and sig != "":
+            return sig
+        return None
+
+    @property
+    def pane(self) -> libtmux.Pane:
+        """The underlying pane object."""
+        return self._pane
+
 
 class TmuxManager:
-    """Manages the orchestrator's tmux session and windows."""
+    """Manages one tmux session for an orchestrator instance.
 
-    def __init__(self):
-        self._server: Optional[libtmux.Server] = None
+    Session-per-orchestrator architecture:
+    - Each TmuxManager owns one tmux session
+    - Multiple windows (agent sessions) within that session
+    - kill_session() provides atomic cleanup of all windows
+
+    Mappings are handled at the orchestrator level:
+    - issue_number → terminal_id: via state.active_sessions
+    - terminal_id → window: via _find_window_by_name() (iterates windows)
+    """
+
+    def __init__(
+        self,
+        server: Optional[libtmux.Server] = None,
+        session_name: str = SESSION_NAME,
+    ):
+        """Initialize TmuxManager.
+
+        Args:
+            server: libtmux Server instance. If None, creates default server.
+            session_name: Name for the tmux session this manager owns.
+        """
+        self._server = server
+        self._session_name = session_name
         self._session: Optional[libtmux.Session] = None
 
     @property
@@ -38,21 +129,64 @@ class TmuxManager:
         """Get the orchestrator session if it exists."""
         if self._session is None:
             try:
-                self._session = self.server.sessions.get(session_name=SESSION_NAME)
+                self._session = self.server.sessions.get(session_name=self._session_name)
             except Exception:
                 self._session = None
         return self._session
 
-    def ensure_session(self) -> libtmux.Session:
-        """Ensure the orchestrator session exists, create if needed."""
-        if self.session is None:
-            self._session = self.server.new_session(
-                session_name=SESSION_NAME,
-                window_name=DASHBOARD_WINDOW,
-            )
-        # At this point, self._session is guaranteed to be a Session (not None)
-        assert self._session is not None
+    @property
+    def session_name(self) -> str:
+        """Get the session name."""
+        return self._session_name
+
+    def create_orchestrator_session(self) -> libtmux.Session:
+        """Create the tmux session for this orchestrator.
+
+        Creates a new session or reuses existing one with the same name.
+        This should be called once at orchestrator startup.
+
+        Returns:
+            The tmux session.
+        """
+        if self._session is not None:
+            return self._session
+
+        # Try to find existing session first
+        try:
+            existing = self.server.sessions.get(session_name=self._session_name)
+            if existing:
+                self._session = existing
+                return self._session
+        except Exception:
+            pass
+
+        # Create new session
+        self._session = self.server.new_session(
+            session_name=self._session_name,
+            window_name=DASHBOARD_WINDOW,
+        )
         return self._session
+
+    def kill_orchestrator_session(self) -> None:
+        """Kill the entire orchestrator session.
+
+        This atomically removes ALL agent windows in this session.
+        Should be called at orchestrator shutdown for guaranteed cleanup.
+        """
+        if self._session is not None:
+            try:
+                self._session.kill()
+            except Exception:
+                pass  # Session may already be killed
+            self._session = None
+
+    # Legacy compatibility methods
+    def ensure_session(self) -> libtmux.Session:
+        """Ensure the orchestrator session exists, create if needed.
+
+        Legacy method - prefer create_orchestrator_session() for new code.
+        """
+        return self.create_orchestrator_session()
 
     def has_session(self) -> bool:
         """Check if the orchestrator session exists."""
@@ -94,6 +228,13 @@ class TmuxManager:
             window_name=window_name,
             start_directory=str(working_dir),
         )
+
+        # Enable remain-on-exit so pane stays after process exits.
+        # This allows us to capture exit code and scrollback for debugging.
+        try:
+            window.set_option("remain-on-exit", "on")
+        except Exception:
+            pass  # Non-critical - exit detection still works without it
 
         # Security: Strip credentials and set up isolated environment
         from ...control.isolation import build_isolation_prefix
@@ -294,22 +435,145 @@ class TmuxManager:
         return True
 
     def kill_session(self) -> None:
-        """Kill the entire orchestrator session."""
-        if self.session:
-            self.session.kill()
-            self._session = None
+        """Kill the entire orchestrator session.
+
+        Alias for kill_orchestrator_session() for backward compatibility.
+        """
+        self.kill_orchestrator_session()
+
+    # -------------------------------------------------------------------------
+    # TerminalObserver implementation
+    # -------------------------------------------------------------------------
+
+    def _get_pane_by_terminal_id(self, terminal_id: str) -> Optional[libtmux.Pane]:
+        """Get pane for a terminal_id (window name)."""
+        window = self._find_window_by_name(terminal_id)
+        if window is None:
+            return None
+        return window.active_pane
+
+    def get_process_state(self, terminal_id: str) -> ProcessState:
+        """Get the current state of the process in a terminal.
+
+        Args:
+            terminal_id: Window name (e.g., 'issue-123', 'review-456')
+
+        Returns:
+            ProcessState indicating whether process is running, exited, signaled, or unknown.
+        """
+        pane = self._get_pane_by_terminal_id(terminal_id)
+        if pane is None:
+            return ProcessState.UNKNOWN
+
+        state = TmuxPaneState(pane)
+        if not state.is_dead:
+            return ProcessState.RUNNING
+
+        # Process is dead - determine how it exited
+        if state.signal:
+            return ProcessState.SIGNALED
+        return ProcessState.EXITED
+
+    def get_exit_info(self, terminal_id: str) -> ProcessExitInfo | None:
+        """Get exit information for a terminated process.
+
+        Args:
+            terminal_id: Window name (e.g., 'issue-123', 'review-456')
+
+        Returns:
+            ProcessExitInfo with exit code/signal details, or None if unavailable.
+        """
+        pane = self._get_pane_by_terminal_id(terminal_id)
+        if pane is None:
+            return None
+
+        state = TmuxPaneState(pane)
+        if not state.is_dead:
+            return None  # Still running, no exit info yet
+
+        return ProcessExitInfo(
+            exit_code=state.exit_code,
+            signal=state.signal,
+            exit_time=datetime.now(),  # Best approximation - actual exit time not available
+        )
+
+    def is_process_alive(self, terminal_id: str) -> bool:
+        """Quick check if the process is still running.
+
+        Args:
+            terminal_id: Window name (e.g., 'issue-123', 'review-456')
+
+        Returns:
+            True if process is definitely running, False otherwise.
+        """
+        return self.get_process_state(terminal_id) == ProcessState.RUNNING
+
+    def capture_full_output(self, terminal_id: str) -> str | None:
+        """Capture full scrollback output from a terminal.
+
+        Args:
+            terminal_id: Window name (e.g., 'issue-123', 'review-456')
+
+        Returns:
+            Full terminal output as string, or None if not available.
+        """
+        pane = self._get_pane_by_terminal_id(terminal_id)
+        if pane is None:
+            return None
+
+        try:
+            # start="-" means from the beginning of scrollback
+            output = pane.capture_pane(start="-")
+            return "\n".join(output) if output else ""
+        except Exception:
+            return None
 
 
-# Global manager instance
+# ---------------------------------------------------------------------------
+# Factory and Global Manager (transitional pattern)
+# ---------------------------------------------------------------------------
+
+# Global manager instance (legacy - prefer factory for new code)
 _manager: Optional[TmuxManager] = None
 
 
 def get_manager() -> TmuxManager:
-    """Get the global TmuxManager instance."""
+    """Get the global TmuxManager instance.
+
+    Legacy function - prefer create_tmux_manager() for new code.
+    """
     global _manager
     if _manager is None:
         _manager = TmuxManager()
     return _manager
+
+
+def create_tmux_manager(
+    session_name: str = SESSION_NAME,
+    server: Optional[libtmux.Server] = None,
+) -> TmuxManager:
+    """Factory function to create a TmuxManager.
+
+    Use this instead of the global get_manager() for better testability
+    and session isolation.
+
+    Args:
+        session_name: Name for the tmux session.
+        server: Optional libtmux Server instance (useful for test isolation).
+
+    Returns:
+        New TmuxManager instance.
+    """
+    return TmuxManager(server=server, session_name=session_name)
+
+
+def reset_global_manager() -> None:
+    """Reset the global manager instance.
+
+    Useful for testing to ensure clean state between tests.
+    """
+    global _manager
+    _manager = None
 
 
 # Backward-compatible functions (for existing code)

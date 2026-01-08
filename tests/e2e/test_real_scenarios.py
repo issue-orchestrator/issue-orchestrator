@@ -21,6 +21,9 @@ import time
 from pathlib import Path
 
 import pytest
+from libtmux import Server
+from libtmux.exc import LibTmuxException
+from libtmux._internal.query_list import ObjectDoesNotExist
 
 from tests.e2e.conftest import (
     OrchestratorProcess,
@@ -72,7 +75,15 @@ def cleanup_stale_orchestrators(config_path: Path, tmux_session: str = "orchestr
             except (ProcessLookupError, ValueError):
                 pass
         time.sleep(1)
-    subprocess.run(["tmux", "kill-session", "-t", tmux_session], capture_output=True)
+    # Kill tmux session using libtmux
+    try:
+        server = Server()
+        session = server.sessions.get(session_name=tmux_session)
+        if session:
+            session.kill()
+    except (LibTmuxException, ObjectDoesNotExist):
+        # Session doesn't exist or server not running - that's fine
+        pass
 
 
 def start_orchestrator_with_config(
@@ -144,8 +155,12 @@ def create_single_issue(
     title: str,
     labels: list[str],
     watcher=None,
-) -> IssueKey:
-    """Create a single test issue (with labels ensured)."""
+) -> tuple[IssueKey, int]:
+    """Create a single test issue (with labels ensured).
+
+    Returns:
+        Tuple of (IssueKey, issue_number)
+    """
     flow = E2EFlow(repo=repo, watcher=watcher)
     return flow.create_issue(title, labels, body=f"Automated test issue.\n\nLabels: {', '.join(labels)}")
 
@@ -176,7 +191,13 @@ class TestCodeReviewRuns:
         1. PR is created
         2. Code review agent picks it up
         3. code-reviewed OR needs-rework label is applied
+
+        Note: Requires real PRs - skipped in dry-run mode.
         """
+        dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
+        if dry_run:
+            pytest.skip("Code review test requires real PRs (not dry-run mode)")
+
         logger.info("=" * 60)
         logger.info("CODE REVIEW TEST: Verify Review Actually Runs")
         logger.info("=" * 60)
@@ -185,11 +206,10 @@ class TestCodeReviewRuns:
 
         # Create issue
         with e2e_timing_stats.phase("Create issue"):
-            issue = flow.create_issue(
+            issue, issue_number = flow.create_issue(
                 "[M0-701] [E2E-REVIEW] Test that code review runs",
                 ["agent:e2e-test", e2e_label("code_review_test")],
             )
-        issue_number = int(issue.stable_id())
         pr_number = None
 
         try:
@@ -250,13 +270,21 @@ class TestTriageReviewTrigger:
         e2e_project_root: Path,
         e2e_session_config,
     ):
-        """Test that triage review is triggered after code_reviewed PRs reach threshold."""
+        """Test that triage review is triggered after code_reviewed PRs reach threshold.
+
+        Note: Requires real PRs and code reviews - skipped in dry-run mode.
+        """
+        dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
+        if dry_run:
+            pytest.skip("Triage test requires real PRs (not dry-run mode)")
+
         logger.info("=" * 60)
         logger.info("TRIAGE TEST: Verify Triage Triggered After Batch Threshold")
         logger.info("=" * 60)
 
         NUM_ISSUES = 3
         issues = []
+        issue_numbers: list[int] = []
         pr_numbers = []
         runtime = None
         flow: E2EFlow | None = None
@@ -298,12 +326,13 @@ class TestTriageReviewTrigger:
             # Create multiple issues
             logger.info("Creating %d test issues...", NUM_ISSUES)
             for i in range(NUM_ISSUES):
-                issue = flow.create_issue(
+                issue, issue_num = flow.create_issue(
                     f"[M0-{710+i:03d}] [E2E-TRIAGE-{i+1}] Test triage trigger issue {i+1}",
                     ["agent:e2e-test", e2e_label(f"triage_{i}")],
                 )
                 issues.append(issue)
-                logger.info("  Created issue #%s", issue.stable_id())
+                issue_numbers.append(issue_num)
+                logger.info("  Created issue #%d (%s)", issue_num, issue.stable_id())
             # Wait for all PRs to be created
             logger.info("Waiting for all PRs to be created...")
             pr_numbers = await asyncio.gather(*[
@@ -356,8 +385,8 @@ class TestTriageReviewTrigger:
                         except Exception:
                             pass
             # Always close issues to prevent accumulation
-            for issue in issues:
-                close_issue(repo_name, int(issue.stable_id()), "E2E triage test completed")
+            for issue_num in issue_numbers:
+                close_issue(repo_name, issue_num, "E2E triage test completed")
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +410,14 @@ class TestReworkCyclesAndEscalation:
         e2e_orchestrator,
         orchestrator_watcher,
     ):
-        """Test that rework cycles lead to escalation after max cycles."""
+        """Test that rework cycles lead to escalation after max cycles.
+
+        Note: Requires real PRs and rework cycles - skipped in dry-run mode.
+        """
+        dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
+        if dry_run:
+            pytest.skip("Rework test requires real PRs (not dry-run mode)")
+
         logger.info("=" * 60)
         logger.info("REWORK TEST: Rework Cycles → Escalation to needs-human")
         logger.info("=" * 60)
@@ -396,13 +432,12 @@ class TestReworkCyclesAndEscalation:
         try:
             # Create issue
             logger.info("Creating test issue...")
-            issue_key = create_single_issue(
+            issue_key, issue_number = create_single_issue(
                 repo_name,
                 "[M0-720] [E2E-REWORK] Test rework cycles and escalation",
                 ["agent:script-completes", "test-data", e2e_label("rework_cycles")],
                 watcher=orchestrator_watcher,
             )
-            issue_number = int(issue_key.stable_id())
             logger.info("  Created issue #%d", issue_number)
 
             # Wait for PR creation

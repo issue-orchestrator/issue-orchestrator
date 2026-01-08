@@ -40,6 +40,7 @@ def make_pending_review(pr_number: int, issue_number: int) -> PendingReview:
         issue_key=FakeIssueKey(name=str(issue_number)),
         pr_url=f"https://github.com/test/repo/pull/{pr_number}",
         branch_name=f"issue-{issue_number}",
+        _issue_number=issue_number,
     )
 
 

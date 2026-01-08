@@ -1686,6 +1686,7 @@ class TestDashboardWithPendingReviews:
             pr_number=10,
             pr_url="https://github.com/owner/repo/pull/10",
             branch_name="feature/issue-1",
+            _issue_number=1,
         )
         mock_orch.state.pending_reviews = [review]
 

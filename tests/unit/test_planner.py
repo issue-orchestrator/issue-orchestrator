@@ -237,7 +237,7 @@ class TestPlanReviews:
         mock_decision.should_launch = True
         mock_decision.skip_reason = None
         mock_decision.reviews_to_launch = [
-            PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch"),
+            PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch", _issue_number=1),
         ]
         mock_workflow.should_launch_reviews.return_value = mock_decision
 
@@ -249,7 +249,7 @@ class TestPlanReviews:
 
         snapshot = make_snapshot(
             pending_reviews=[
-                PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch"),
+                PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch", _issue_number=1),
             ],
         )
 
@@ -413,6 +413,7 @@ class TestPlanDiscoveredReviews:
             pr_number=100,
             pr_url="https://github.com/test/repo/pull/100",
             branch_name="feature/issue-42",
+            _issue_number=42,
         )
 
         snapshot = make_snapshot(
@@ -1078,7 +1079,7 @@ class TestActionPriority:
         mock_decision.should_launch = True
         mock_decision.skip_reason = None
         mock_decision.reviews_to_launch = [
-            PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch"),
+            PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch", _issue_number=1),
         ]
         mock_review_workflow.should_launch_reviews.return_value = mock_decision
 
@@ -1092,7 +1093,7 @@ class TestActionPriority:
         snapshot = make_snapshot(
             issues=[make_issue(2)],  # Issue waiting
             pending_reviews=[
-                PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch"),
+                PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="branch", _issue_number=1),
             ],
         )
 
@@ -1175,7 +1176,7 @@ class TestActionPriority:
         snapshot = make_snapshot(
             issues=[make_issue(1), make_issue(2)],
             pending_reviews=[
-                PendingReview(issue_key=FakeIssueKey(name="10"), pr_number=100, pr_url="url", branch_name="branch"),
+                PendingReview(issue_key=FakeIssueKey(name="10"), pr_number=100, pr_url="url", branch_name="branch", _issue_number=10),
             ],
         )
 
@@ -1315,6 +1316,7 @@ class TestEdgeCases:
             pr_number=pr_number,
             pr_url="url",
             branch_name="branch",
+            _issue_number=42,
         )
 
         snapshot = make_snapshot(
@@ -1414,9 +1416,9 @@ class TestEdgeCases:
         mock_review_workflow = Mock()
         mock_review_workflow.is_configured.return_value = True
         reviews = [
-            PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=101, pr_url="u1", branch_name="b1"),
-            PendingReview(issue_key=FakeIssueKey(name="2"), pr_number=102, pr_url="u2", branch_name="b2"),
-            PendingReview(issue_key=FakeIssueKey(name="3"), pr_number=103, pr_url="u3", branch_name="b3"),
+            PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=101, pr_url="u1", branch_name="b1", _issue_number=1),
+            PendingReview(issue_key=FakeIssueKey(name="2"), pr_number=102, pr_url="u2", branch_name="b2", _issue_number=2),
+            PendingReview(issue_key=FakeIssueKey(name="3"), pr_number=103, pr_url="u3", branch_name="b3", _issue_number=3),
         ]
         mock_review_workflow.should_launch_reviews.return_value = Mock(
             should_launch=True,
@@ -1702,7 +1704,7 @@ class TestSnapshotFromState:
         state.priority_queue = [1, 2, 3]
         state.issues_started_count = 5
 
-        review = PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="b")
+        review = PendingReview(issue_key=FakeIssueKey(name="1"), pr_number=100, pr_url="url", branch_name="b", _issue_number=1)
         state.pending_reviews = [review]
 
         rework = PendingRework(issue_key=FakeIssueKey(name="2"), agent_type="agent:dev", rework_cycle=1)
@@ -1859,6 +1861,7 @@ class TestMultiplePendingTypesInteraction:
             pr_number=101,
             pr_url="url",
             branch_name="b",
+            _issue_number=1,
         )
         pending_rework = PendingRework(
             issue_key=FakeIssueKey(name="2"),

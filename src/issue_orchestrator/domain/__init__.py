@@ -21,6 +21,10 @@ from .session_key import (
     TaskKind,
     SessionKey,
 )
+from .process_state import (
+    ProcessState,
+    ProcessExitInfo,
+)
 
 __all__ = [
     # Events
@@ -47,4 +51,7 @@ __all__ = [
     # Session identity
     "TaskKind",
     "SessionKey",
+    # Process observation
+    "ProcessState",
+    "ProcessExitInfo",
 ]

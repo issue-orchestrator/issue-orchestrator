@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
+from libtmux import Server
+from libtmux.exc import LibTmuxException
+from libtmux._internal.query_list import ObjectDoesNotExist
 
 from .inflight_tracker import trigger_refresh
 
@@ -364,23 +367,22 @@ class OrchestratorProcess:
         if _keep_artifacts():
             return
         try:
-            result = subprocess.run(
-                ["tmux", "list-windows", "-t", self.tmux_session, "-F", "#{window_index}:#{window_name}"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
+            server = Server()
+            session = server.sessions.get(session_name=self.tmux_session)
+            if not session:
                 return
 
-            for line in result.stdout.strip().split("\n"):
-                if not line:
-                    continue
-                if "E2E-TEST" in line or "E2E-" in line:
-                    window_index = line.split(":")[0]
-                    subprocess.run(
-                        ["tmux", "kill-window", "-t", f"{self.tmux_session}:{window_index}"],
-                        capture_output=True,
-                    )
+            # Iterate through windows and kill e2e test windows
+            for window in list(session.windows):
+                window_name = window.window_name or ""
+                if "E2E-TEST" in window_name or "E2E-" in window_name:
+                    try:
+                        window.kill()
+                    except (LibTmuxException, ObjectDoesNotExist):
+                        pass
+        except (LibTmuxException, ObjectDoesNotExist):
+            # Session doesn't exist or server not running - that's fine
+            pass
         except Exception:
             pass
 

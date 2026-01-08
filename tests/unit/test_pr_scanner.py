@@ -89,6 +89,7 @@ def make_pending_review(
         pr_number=pr_number,
         pr_url=f"https://github.com/owner/repo/pull/{pr_number}",
         branch_name=branch,
+        _issue_number=issue_number,
     )
 
 

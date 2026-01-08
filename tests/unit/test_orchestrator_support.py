@@ -302,6 +302,7 @@ class TestClearDiscoveredFacts:
                 pr_number=100,
                 pr_url="url",
                 branch_name="branch",
+                _issue_number=1,
             )
         ]
 
@@ -638,6 +639,7 @@ class TestUpdateStateAfterAction:
             pr_number=100,
             pr_url="https://github.com/test/repo/pull/100",
             branch_name="issue-42",
+            _issue_number=42,
         )
         support_with_state.state.pending_reviews.append(existing)
 

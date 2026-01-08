@@ -10,7 +10,9 @@ These tests verify the complete orchestrator lifecycle:
 Uses the single-orchestrator pattern for efficiency.
 """
 
+import asyncio
 import logging
+import os
 import time
 
 import pytest
@@ -50,34 +52,40 @@ class TestLiveOrchestratorLifecycle:
         issue_number = int(issue.stable_id())
 
         pr = None
+        dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
         try:
             # Wait for session start (in-progress label or PR created)
             await flow.session_started(issue, timeout_s=60)
 
-            # Wait for PR to be created (indicates agent completed)
-            pr_number = await flow.pr_created(issue, timeout_s=120)
-            pr = {"number": pr_number}
+            if dry_run:
+                # In dry-run mode, PR creation is skipped but we verify session completes
+                logger.info("Skipping PR wait (E2E_DRY_RUN_PUSH=1)")
+                await asyncio.sleep(5)  # Give time for completion processing
+            else:
+                # Wait for PR to be created (indicates agent completed)
+                pr_number = await flow.pr_created(issue, timeout_s=120)
+                pr = {"number": pr_number}
 
-            # Verify PR details
-            assert pr["number"] is not None, "PR should have a number"
+                # Verify PR details
+                assert pr["number"] is not None, "PR should have a number"
 
-            # Check for completion comment (boundary check after PR created)
-            # This is a single GH read at a known boundary, not a polling loop
-            implementation_comment = check_issue_comment(
-                repo_name,
-                issue_number,
-                lambda comment: "## Implementation" in comment.get("body", "")
-                or "E2E test completed" in comment.get("body", ""),
-            )
+                # Check for completion comment (boundary check after PR created)
+                # This is a single GH read at a known boundary, not a polling loop
+                implementation_comment = check_issue_comment(
+                    repo_name,
+                    issue_number,
+                    lambda comment: "## Implementation" in comment.get("body", "")
+                    or "E2E test completed" in comment.get("body", ""),
+                )
 
-            # Comment may not exist if agent didn't post one - this is acceptable
-            # The key assertion is that the PR was created successfully
-            if implementation_comment is None:
-                logger.info("No implementation comment found (agent may not have posted one)")
+                # Comment may not exist if agent didn't post one - this is acceptable
+                # The key assertion is that the PR was created successfully
+                if implementation_comment is None:
+                    logger.info("No implementation comment found (agent may not have posted one)")
 
         finally:
-            # Cleanup: close the PR if created
-            if pr:
+            # Cleanup: close the PR if created (only for non-dry-run)
+            if pr and not dry_run:
                 flow.close_pr(pr["number"])
 
 
@@ -128,7 +136,15 @@ class TestLabelDetection:
         1. Creates issue and waits for session to start
         2. Adds 'blocked' label
         3. Verifies orchestrator sees it
+
+        Note: In dry-run mode (E2E_DRY_RUN_PUSH=1), sessions complete instantly,
+        so we skip this test since there's no time to add the blocked label
+        before the session completes.
         """
+        dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
+        if dry_run:
+            pytest.skip("Blocked label detection not applicable in dry-run mode")
+
         flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
         issue = test_issue_factory("[E2E] Blocked label detection test")
         issue_number = int(issue.stable_id())

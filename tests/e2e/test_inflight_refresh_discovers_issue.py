@@ -77,7 +77,7 @@ async def test_inflight_refresh_discovers_issue(
         logger.info("Creating test issue while orchestrator is running...")
 
         # Create issue and register as inflight (flow handles registration)
-        issue_key = flow.create_issue(title=title, labels=labels)
+        issue_key, _issue_num = flow.create_issue(title=title, labels=labels)
         logger.info("Created issue: %s (stable_id=%s)", title, issue_key.stable_id())
 
         # Trigger refresh with inflight IDs - this is the key mechanism

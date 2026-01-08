@@ -857,6 +857,7 @@ def handle_session_completion(
     worktree_manager: Optional[WorktreeManager],
     kill_session_fn: Callable[[str], None],
     config: Config,
+    pr_url_hint: Optional[str] = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
 
@@ -870,6 +871,7 @@ def handle_session_completion(
         worktree_manager: For worktree removal
         kill_session_fn: Function to kill terminal session
         config: Configuration
+        pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
     """
     from ..domain.models import DiscoveredReview, DiscoveredFailure
 
@@ -883,7 +885,7 @@ def handle_session_completion(
     # Process completion through CompletionHandler (includes policy decisions)
     if status == SessionStatus.COMPLETED:
         state.completed_today.append(session.issue.number)
-    result = completion_handler.process_completion(session, status)
+    result = completion_handler.process_completion(session, status, pr_url_hint=pr_url_hint)
 
     # Apply completion actions (from CompletionHandler policy)
     if result.actions:
@@ -1126,9 +1128,13 @@ def process_active_sessions(
             obs, session.worktree_path, session.issue.number,
             session.issue.title, session.terminal_id, session.completion_path
         )
+        # Extract pr_url from completion processor result if available
+        pr_url_hint = None
+        if decision.processing_result and decision.processing_result.pr_url:
+            pr_url_hint = decision.processing_result.pr_url
         handle_session_completion(
             session, decision.status, state, completion_handler, action_applier,
-            observer, worktree_manager, kill_session_fn, config
+            observer, worktree_manager, kill_session_fn, config, pr_url_hint=pr_url_hint
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:

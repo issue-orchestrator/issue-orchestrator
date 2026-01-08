@@ -154,6 +154,7 @@ class TestIdleStateCalculation:
             pr_number=100,
             pr_url="https://github.com/test/repo/pull/100",
             branch_name="1-feature",
+            _issue_number=1,
         )
         state = OrchestratorState(pending_reviews=[review])
 

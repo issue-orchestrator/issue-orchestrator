@@ -75,6 +75,24 @@ class MockSessionRunner:
             return f"Output for session {session_id}"
         return None
 
+    def session_exists_by_name(self, session_name: str) -> bool:
+        return False
+
+    def send_to_session(self, session_id: int, text: str) -> bool:
+        return False
+
+    def send_to_session_by_name(self, session_name: str, text: str) -> bool:
+        return False
+
+    def focus_session(self, session_id: int) -> bool:
+        return False
+
+    def on_orchestrator_startup(self) -> None:
+        pass
+
+    def on_orchestrator_shutdown(self) -> None:
+        pass
+
 
 class TestSessionRef:
     """Test the SessionRef dataclass."""

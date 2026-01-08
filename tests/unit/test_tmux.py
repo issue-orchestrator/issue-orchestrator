@@ -547,6 +547,288 @@ class TestBackwardCompatibleFunctions:
             mock_manager.get_window.assert_not_called()
 
 
+class TestTmuxPaneState:
+    """Tests for TmuxPaneState class."""
+
+    def test_init(self):
+        """Test TmuxPaneState initialization."""
+        mock_pane = MagicMock()
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state._pane == mock_pane
+        assert state._ttl_ms == tmux.PANE_STATE_TTL_MS
+        assert state._last_refresh == 0
+
+    def test_init_custom_ttl(self):
+        """Test TmuxPaneState with custom TTL."""
+        mock_pane = MagicMock()
+        state = tmux.TmuxPaneState(mock_pane, ttl_ms=1000)
+        assert state._ttl_ms == 1000
+
+    def test_is_dead_true(self):
+        """Test is_dead returns True when pane_dead is '1'."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead = "1"
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.is_dead is True
+
+    def test_is_dead_false(self):
+        """Test is_dead returns False when pane_dead is '0'."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead = "0"
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.is_dead is False
+
+    def test_is_dead_missing_attribute(self):
+        """Test is_dead handles missing pane_dead attribute."""
+        mock_pane = MagicMock()
+        # Remove pane_dead attribute to simulate missing
+        del mock_pane.pane_dead
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.is_dead is False  # Default when attribute missing
+
+    def test_exit_code_numeric(self):
+        """Test exit_code returns integer from pane_dead_status."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead_status = "137"
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.exit_code == 137
+
+    def test_exit_code_zero(self):
+        """Test exit_code returns 0 for successful exit."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead_status = "0"
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.exit_code == 0
+
+    def test_exit_code_none_when_running(self):
+        """Test exit_code returns None when process is running."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead_status = None
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.exit_code is None
+
+    def test_exit_code_none_when_empty(self):
+        """Test exit_code returns None when pane_dead_status is empty."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead_status = ""
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.exit_code is None
+
+    def test_signal_present(self):
+        """Test signal returns signal name."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead_signal = "SIGTERM"
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.signal == "SIGTERM"
+
+    def test_signal_none_when_normal_exit(self):
+        """Test signal returns None for normal exit."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead_signal = None
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.signal is None
+
+    def test_signal_none_when_empty(self):
+        """Test signal returns None when pane_dead_signal is empty."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead_signal = ""
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.signal is None
+
+    def test_pane_property(self):
+        """Test pane property returns underlying pane."""
+        mock_pane = MagicMock()
+        state = tmux.TmuxPaneState(mock_pane)
+        assert state.pane == mock_pane
+
+    def test_ensure_fresh_refreshes_on_first_access(self):
+        """Test _ensure_fresh calls refresh on first access."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead = "0"
+        state = tmux.TmuxPaneState(mock_pane)
+
+        _ = state.is_dead
+        mock_pane.refresh.assert_called_once()
+
+    def test_ensure_fresh_uses_cache(self):
+        """Test _ensure_fresh uses cached value within TTL."""
+        mock_pane = MagicMock()
+        mock_pane.pane_dead = "0"
+        state = tmux.TmuxPaneState(mock_pane, ttl_ms=10000)  # Long TTL
+
+        _ = state.is_dead
+        _ = state.exit_code
+        _ = state.signal
+        # Should only refresh once due to TTL
+        assert mock_pane.refresh.call_count == 1
+
+
+class TestTerminalObserverMethods:
+    """Tests for TerminalObserver methods in TmuxManager."""
+
+    @pytest.fixture
+    def mock_manager_with_window(self, mock_server, mock_session, mock_window):
+        """Create a manager with a mock window."""
+        manager = tmux.TmuxManager()
+        manager._server = mock_server
+        manager._session = mock_session
+        mock_session.windows.filter.return_value = [mock_window]
+        return manager, mock_window
+
+    def test_get_process_state_running(self, mock_manager_with_window):
+        """Test get_process_state returns RUNNING when process is alive."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.pane_dead = "0"
+
+        from issue_orchestrator.domain import ProcessState
+        state = manager.get_process_state("issue-42")
+        assert state == ProcessState.RUNNING
+
+    def test_get_process_state_exited(self, mock_manager_with_window):
+        """Test get_process_state returns EXITED when process exited normally."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.pane_dead = "1"
+        mock_pane.pane_dead_signal = None
+
+        from issue_orchestrator.domain import ProcessState
+        state = manager.get_process_state("issue-42")
+        assert state == ProcessState.EXITED
+
+    def test_get_process_state_signaled(self, mock_manager_with_window):
+        """Test get_process_state returns SIGNALED when process killed by signal."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.pane_dead = "1"
+        mock_pane.pane_dead_signal = "SIGKILL"
+
+        from issue_orchestrator.domain import ProcessState
+        state = manager.get_process_state("issue-42")
+        assert state == ProcessState.SIGNALED
+
+    def test_get_process_state_unknown_no_window(self, mock_server, mock_session):
+        """Test get_process_state returns UNKNOWN when window doesn't exist."""
+        manager = tmux.TmuxManager()
+        manager._server = mock_server
+        manager._session = mock_session
+        mock_session.windows.filter.return_value = []  # No matching window
+
+        from issue_orchestrator.domain import ProcessState
+        state = manager.get_process_state("nonexistent")
+        assert state == ProcessState.UNKNOWN
+
+    def test_get_exit_info_success(self, mock_manager_with_window):
+        """Test get_exit_info returns exit info for terminated process."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.pane_dead = "1"
+        mock_pane.pane_dead_status = "1"
+        mock_pane.pane_dead_signal = None
+
+        exit_info = manager.get_exit_info("issue-42")
+        assert exit_info is not None
+        assert exit_info.exit_code == 1
+        assert exit_info.signal is None
+        assert exit_info.exit_time is not None
+
+    def test_get_exit_info_with_signal(self, mock_manager_with_window):
+        """Test get_exit_info captures signal information."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.pane_dead = "1"
+        mock_pane.pane_dead_status = "137"
+        mock_pane.pane_dead_signal = "SIGKILL"
+
+        exit_info = manager.get_exit_info("issue-42")
+        assert exit_info is not None
+        assert exit_info.exit_code == 137
+        assert exit_info.signal == "SIGKILL"
+
+    def test_get_exit_info_none_when_running(self, mock_manager_with_window):
+        """Test get_exit_info returns None when process is still running."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.pane_dead = "0"
+
+        exit_info = manager.get_exit_info("issue-42")
+        assert exit_info is None
+
+    def test_get_exit_info_none_when_no_window(self, mock_server, mock_session):
+        """Test get_exit_info returns None when window doesn't exist."""
+        manager = tmux.TmuxManager()
+        manager._server = mock_server
+        manager._session = mock_session
+        mock_session.windows.filter.return_value = []
+
+        exit_info = manager.get_exit_info("nonexistent")
+        assert exit_info is None
+
+    def test_is_process_alive_true(self, mock_manager_with_window):
+        """Test is_process_alive returns True when process is running."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.pane_dead = "0"
+
+        assert manager.is_process_alive("issue-42") is True
+
+    def test_is_process_alive_false_exited(self, mock_manager_with_window):
+        """Test is_process_alive returns False when process exited."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.pane_dead = "1"
+        mock_pane.pane_dead_signal = None
+
+        assert manager.is_process_alive("issue-42") is False
+
+    def test_is_process_alive_false_no_window(self, mock_server, mock_session):
+        """Test is_process_alive returns False when window doesn't exist."""
+        manager = tmux.TmuxManager()
+        manager._server = mock_server
+        manager._session = mock_session
+        mock_session.windows.filter.return_value = []
+
+        assert manager.is_process_alive("nonexistent") is False
+
+    def test_capture_full_output_success(self, mock_manager_with_window):
+        """Test capture_full_output returns full scrollback."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.capture_pane.return_value = ["line1", "line2", "line3"]
+
+        output = manager.capture_full_output("issue-42")
+        assert output == "line1\nline2\nline3"
+        mock_pane.capture_pane.assert_called_once_with(start="-")
+
+    def test_capture_full_output_empty(self, mock_manager_with_window):
+        """Test capture_full_output handles empty output."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.capture_pane.return_value = []
+
+        output = manager.capture_full_output("issue-42")
+        assert output == ""
+
+    def test_capture_full_output_none_no_window(self, mock_server, mock_session):
+        """Test capture_full_output returns None when window doesn't exist."""
+        manager = tmux.TmuxManager()
+        manager._server = mock_server
+        manager._session = mock_session
+        mock_session.windows.filter.return_value = []
+
+        output = manager.capture_full_output("nonexistent")
+        assert output is None
+
+    def test_capture_full_output_handles_exception(self, mock_manager_with_window):
+        """Test capture_full_output returns None on exception."""
+        manager, mock_window = mock_manager_with_window
+        mock_pane = mock_window.active_pane
+        mock_pane.capture_pane.side_effect = Exception("tmux error")
+
+        output = manager.capture_full_output("issue-42")
+        assert output is None
+
+
 class TestConstants:
     """Tests for module constants."""
 

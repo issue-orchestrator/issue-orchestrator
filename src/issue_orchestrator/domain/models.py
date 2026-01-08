@@ -464,12 +464,13 @@ class PendingReview:
     pr_number: int
     pr_url: str
     branch_name: str
+    _issue_number: int  # The actual GitHub issue number (stable_id may not be numeric)
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
 
     @property
     def issue_number(self) -> int:
-        """Backwards-compatible access to issue number."""
-        return int(self.issue_key.stable_id())
+        """Access to issue number (stored explicitly, not derived from stable_id)."""
+        return self._issue_number
 
 
 @dataclass(frozen=True)

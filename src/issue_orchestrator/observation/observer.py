@@ -17,9 +17,10 @@ from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
-    from ..ports import RepositoryHost, SessionRunner
+    from ..ports import RepositoryHost, SessionRunner, TerminalObserver
     from ..ports.issue import Issue
 
+from ..domain import ProcessState
 from ..infra.config import Config
 from ..infra import labels
 from ..events import EventName
@@ -48,6 +49,7 @@ class SessionObserver:
         events: EventSink | None = None,
         session_runner: Optional["SessionRunner"] = None,
         repository_host: Optional["RepositoryHost"] = None,
+        terminal_observer: Optional["TerminalObserver"] = None,
     ) -> None:
         """Initialize the observer with configuration.
 
@@ -57,12 +59,14 @@ class SessionObserver:
             events: Optional EventSink for emitting trace events
             session_runner: SessionRunner port for terminal operations
             repository_host: RepositoryHost port for GitHub operations
+            terminal_observer: Optional TerminalObserver for process state detection
         """
         self.config = config
         self.session_machines = session_machines or {}
         self.events = events or NullEventSink()
         self._session_runner = session_runner
         self._repository_host = repository_host
+        self._terminal_observer = terminal_observer
 
     def _extract_session_number(self, session_name: str) -> int:
         """Extract the numeric ID from a session name (handles both issue- and review- prefixes)."""
@@ -137,6 +141,13 @@ class SessionObserver:
         This method only gathers facts. It does NOT decide outcomes.
         The controller uses these observations + completion.json to decide.
 
+        Detection hierarchy:
+        1. PRIMARY: Process state via terminal observer (pane_dead attribute)
+           - RUNNING: process is alive
+           - EXITED/SIGNALED: process terminated, capture exit info
+        2. SECONDARY: completion.json for agent outcome
+        3. TERTIARY: Window existence (fallback for terminals without pane_dead)
+
         Returns:
             SessionObservationResult with observed facts:
             - RUNNING: Session exists and not timed out
@@ -160,9 +171,32 @@ class SessionObserver:
         elif session.is_timed_out:
             timeout_exceeded = True
 
-        # Check if session exists - use session name, not issue number
-        # (review sessions use PR number, not issue number)
+        # PRIMARY: Check process state via terminal observer (pane_dead)
+        # This is the most authoritative signal for whether the process is alive
+        process_alive: bool | None = None  # None means we don't know (fallback needed)
+        detection_authoritative = False  # True when pane_dead gives definitive answer
+        exit_info = None
+        if self._terminal_observer:
+            process_state = self._terminal_observer.get_process_state(session.terminal_id)
+            if process_state == ProcessState.RUNNING:
+                process_alive = True
+                detection_authoritative = True  # pane_dead says running - trust it
+            elif process_state in (ProcessState.EXITED, ProcessState.SIGNALED):
+                process_alive = False
+                detection_authoritative = True  # pane_dead says dead - trust it
+                exit_info = self._terminal_observer.get_exit_info(session.terminal_id)
+                if exit_info:
+                    logger.info(
+                        f"[PANE_DEAD] Session #{session.issue.number} process exited: {exit_info}"
+                    )
+            # ProcessState.UNKNOWN means we can't determine - fall back to window check
+
+        # FALLBACK: Check if window exists (for terminals without pane_dead support)
+        # Also used when TerminalObserver is not available
         exists = self._session_exists_by_name(session.terminal_id)
+        if process_alive is None:
+            # No process state available - use window existence as signal
+            process_alive = exists
 
         # Check for completion.json - this is the source of truth for agent completion
         # If it exists AND is valid JSON, the agent called agent-done and work is done
@@ -200,7 +234,7 @@ class SessionObserver:
 
         # If session is running and has PR, try to send /exit (side effect)
         # This helps sessions that completed but forgot to exit
-        if exists and not session.exit_sent:
+        if process_alive and not session.exit_sent:
             try:
                 prs = self._get_open_prs_for_branch(session.branch_name)
                 if prs:
@@ -220,50 +254,60 @@ class SessionObserver:
                 timeout_minutes=timeout,
                 session_exists=exists,
             )
-        elif exists:
+        elif process_alive:
             self._emit_no_output_if_stale(session)
             result = SessionObservationResult.running(runtime_minutes=runtime)
         else:
-            # Check if session should be kept alive despite detection failure
-            # Two signals indicate the session may still be running:
-            # 1. Session is new - terminal detection may be unreliable during startup
-            # 2. Log file is progressing - Claude is clearly active
-            # These thresholds are configurable via YAML to allow tuning
-            grace_period = self.config.session_grace_period_seconds
-            log_activity_threshold = self.config.session_log_activity_seconds
-            session_age = (datetime.now() - session.started_at).total_seconds()
+            # process_alive is False - process appears to be dead
+            # Apply grace period heuristics ONLY when detection is uncertain
+            # (i.e., falling back to window check because pane_dead wasn't available)
+            # When pane_dead authoritatively says dead, trust it immediately
+            apply_grace_period = not detection_authoritative
 
-            # Check log file activity - if log was modified recently, session is active
-            log_path = session.worktree_path / ".issue-orchestrator" / "session.log"
-            log_is_progressing = False
-            log_age = float("inf")  # Default to "very old" if we can't read
-            if log_path.exists():
-                try:
-                    log_mtime = log_path.stat().st_mtime
-                    log_age = time.time() - log_mtime
-                    log_is_progressing = log_age < log_activity_threshold
-                except OSError:
-                    pass
+            if apply_grace_period:
+                # Check if session should be kept alive despite detection failure
+                # Two signals indicate the session may still be running:
+                # 1. Session is new - terminal detection may be unreliable during startup
+                # 2. Log file is progressing - Claude is clearly active
+                # These thresholds are configurable via YAML to allow tuning
+                grace_period = self.config.session_grace_period_seconds
+                log_activity_threshold = self.config.session_log_activity_seconds
+                session_age = (datetime.now() - session.started_at).total_seconds()
 
-            if session_age < grace_period:
-                logger.info(
-                    "[GRACE_PERIOD] Session #%d only %.0fs old (< %ds grace) - "
-                    "treating as running despite session detection failure",
-                    session.issue.number,
-                    session_age,
-                    grace_period,
-                )
-                result = SessionObservationResult.running(runtime_minutes=runtime)
-            elif log_is_progressing:
-                logger.info(
-                    "[LOG_ACTIVE] Session #%d log modified %.0fs ago (< %ds threshold) - "
-                    "treating as running despite session detection failure",
-                    session.issue.number,
-                    log_age,
-                    log_activity_threshold,
-                )
-                result = SessionObservationResult.running(runtime_minutes=runtime)
+                # Check log file activity - if log was modified recently, session is active
+                log_path = session.worktree_path / ".issue-orchestrator" / "session.log"
+                log_is_progressing = False
+                log_age = float("inf")  # Default to "very old" if we can't read
+                if log_path.exists():
+                    try:
+                        log_mtime = log_path.stat().st_mtime
+                        log_age = time.time() - log_mtime
+                        log_is_progressing = log_age < log_activity_threshold
+                    except OSError:
+                        pass
+
+                if session_age < grace_period:
+                    logger.info(
+                        "[GRACE_PERIOD] Session #%d only %.0fs old (< %ds grace) - "
+                        "treating as running despite session detection failure",
+                        session.issue.number,
+                        session_age,
+                        grace_period,
+                    )
+                    result = SessionObservationResult.running(runtime_minutes=runtime)
+                elif log_is_progressing:
+                    logger.info(
+                        "[LOG_ACTIVE] Session #%d log modified %.0fs ago (< %ds threshold) - "
+                        "treating as running despite session detection failure",
+                        session.issue.number,
+                        log_age,
+                        log_activity_threshold,
+                    )
+                    result = SessionObservationResult.running(runtime_minutes=runtime)
+                else:
+                    result = SessionObservationResult.terminated(runtime_minutes=runtime)
             else:
+                # Authoritative detection (pane_dead) says process is dead - trust it
                 result = SessionObservationResult.terminated(runtime_minutes=runtime)
                 # Capture terminal output for failed sessions (before tab closes)
                 # This helps debug immediate failures like permission prompts
@@ -284,19 +328,21 @@ class SessionObserver:
 
         # Emit observation result for debugging (only for non-running sessions)
         if result.observation != SessionObservation.RUNNING:
-            self.events.publish(TraceEvent(
-                EventName.OBSERVATION_RESULT,
-                {
-                    "issue_number": session.issue.number,
-                    "session_name": session.terminal_id,
-                    "observation": result.observation.value,
-                    "session_exists": result.session_exists,
-                    "runtime_minutes": result.runtime_minutes,
-                    "timeout_minutes": result.timeout_minutes,
-                    "worktree_path": str(session.worktree_path),
-                    "completion_json_exists": completion_path.exists(),
-                },
-            ))
+            event_data = {
+                "issue_number": session.issue.number,
+                "session_name": session.terminal_id,
+                "observation": result.observation.value,
+                "session_exists": result.session_exists,
+                "runtime_minutes": result.runtime_minutes,
+                "timeout_minutes": result.timeout_minutes,
+                "worktree_path": str(session.worktree_path),
+                "completion_json_exists": completion_path.exists(),
+            }
+            # Include exit info if available (from pane_dead detection)
+            if exit_info:
+                event_data["exit_code"] = exit_info.exit_code
+                event_data["exit_signal"] = exit_info.signal
+            self.events.publish(TraceEvent(EventName.OBSERVATION_RESULT, event_data))
 
         return result
 
