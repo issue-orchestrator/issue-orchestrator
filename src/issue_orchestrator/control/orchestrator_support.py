@@ -523,6 +523,14 @@ def run_planning_cycle(
 
         state.cached_queue_issues = new_queue
 
+        # Clear failed_this_cycle on cache refresh - GitHub now has the blocked-failed labels
+        if state.failed_this_cycle:
+            logger.info(
+                "[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)",
+                state.failed_this_cycle,
+            )
+            state.failed_this_cycle.clear()
+
     # Detect stale in-progress issues (label present but no active session)
     stale_issues = []
     if observer and hasattr(observer, 'detect_stale_in_progress'):

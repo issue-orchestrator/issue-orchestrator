@@ -1,0 +1,91 @@
+# Default AI Systems Configuration
+#
+# This file defines how to find and parse logs from different AI coding assistants.
+# Users can override or extend this in:
+#   - ~/.issue-orchestrator/ai-systems.yaml (user-level)
+#   - .issue-orchestrator/ai-systems.yaml (project-level)
+#
+# Variables available in log_pattern:
+#   {home}            - User home directory
+#   {worktree}        - Session worktree path
+#   {escaped_worktree} - Worktree path with leading / removed and / replaced with -
+#   {project_hash}    - MD5 hash of worktree path (for Gemini)
+#   {date_path}       - Current date as YYYY/MM/DD (for Codex)
+#   {issue_number}    - Issue number
+#
+# To use a custom AI system, add ai_system: <name> to your agent config in main YAML.
+
+ai_systems:
+  claude-code:
+    description: "Anthropic Claude Code CLI"
+    log_pattern: "{home}/.claude/projects/{escaped_worktree}/*.jsonl"
+    log_format: jsonl
+    console_tags:
+      - "claude"
+      - "Claude Code"
+      - "anthropic"
+      - "Anthropic"
+    # Fields to extract from JSONL for failure context
+    error_patterns:
+      - "error"
+      - "permission"
+      - "denied"
+      - "failed"
+    completion_marker: "agent-done"
+
+  codex:
+    description: "OpenAI Codex CLI"
+    log_pattern: "{home}/.codex/sessions/{date_path}/*.jsonl"
+    log_format: jsonl
+    console_tags:
+      - "codex"
+      - "openai"
+      - "OpenAI"
+      - "gpt-4"
+      - "GPT"
+    error_patterns:
+      - "error"
+      - "failed"
+    completion_marker: null  # Codex doesn't use agent-done
+
+  gemini:
+    description: "Google Gemini CLI"
+    log_pattern: "{home}/.gemini/tmp/{project_hash}/chats/*.json"
+    log_format: json
+    console_tags:
+      - "gemini"
+      - "Gemini"
+      - "google"
+      - "Google"
+    error_patterns:
+      - "error"
+      - "failed"
+    completion_marker: null
+
+  aider:
+    description: "Aider AI pair programming"
+    log_pattern: "{worktree}/.aider.chat.history.md"
+    log_format: markdown
+    console_tags:
+      - "aider"
+      - "Aider"
+    error_patterns:
+      - "error"
+      - "failed"
+      - "exception"
+    completion_marker: null
+
+  cursor:
+    description: "Cursor AI editor"
+    log_pattern: "{home}/.cursor/logs/*.log"
+    log_format: text
+    console_tags:
+      - "cursor"
+      - "Cursor"
+    error_patterns:
+      - "error"
+      - "failed"
+    completion_marker: null
+
+# Default AI system to use when detection fails
+default_ai_system: claude-code

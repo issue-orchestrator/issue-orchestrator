@@ -74,6 +74,14 @@ class QueueProjection:
             # Update state
             state.cached_queue_issues = queue_issues
 
+            # Clear failed_this_cycle on cache refresh - GitHub now has the blocked-failed labels
+            if state.failed_this_cycle:
+                logger.info(
+                    "[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)",
+                    state.failed_this_cycle,
+                )
+                state.failed_this_cycle.clear()
+
             if added_numbers or removed_numbers:
                 added = [i for i in queue_issues if i.number in added_numbers]
                 change = QueueChange(added=added, removed=list(removed_numbers), total=len(queue_issues))

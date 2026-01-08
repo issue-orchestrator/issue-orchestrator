@@ -439,7 +439,8 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
-    def test_create_session_basic(self, mock_subprocess, mock_run_as):
+    @patch.object(ITermSessionManager, "_has_running_tab_for_issue", return_value=False)
+    def test_create_session_basic(self, mock_has_running, mock_subprocess, mock_run_as):
         """Test creating a basic session."""
         mock_run_as.return_value = (True, "")
         mock_subprocess.return_value = MagicMock(stdout="1638360000\n")
@@ -457,7 +458,8 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
-    def test_create_session_with_title(self, mock_subprocess, mock_run_as):
+    @patch.object(ITermSessionManager, "_has_running_tab_for_issue", return_value=False)
+    def test_create_session_with_title(self, mock_has_running, mock_subprocess, mock_run_as):
         """Test creating a session with a title."""
         mock_run_as.return_value = (True, "")
         mock_subprocess.return_value = MagicMock(stdout="1638360000\n")
@@ -477,7 +479,8 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
-    def test_create_session_long_title(self, mock_subprocess, mock_run_as):
+    @patch.object(ITermSessionManager, "_has_running_tab_for_issue", return_value=False)
+    def test_create_session_long_title(self, mock_has_running, mock_subprocess, mock_run_as):
         """Test creating a session with a very long title."""
         mock_run_as.return_value = (True, "")
         mock_subprocess.return_value = MagicMock(stdout="1638360000\n")
@@ -497,7 +500,8 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
-    def test_create_session_escaping(self, mock_subprocess, mock_run_as):
+    @patch.object(ITermSessionManager, "_has_running_tab_for_issue", return_value=False)
+    def test_create_session_escaping(self, mock_has_running, mock_subprocess, mock_run_as):
         """Test that special characters are properly escaped."""
         mock_run_as.return_value = (True, "")
         mock_subprocess.return_value = MagicMock(stdout="1638360000\n")
@@ -511,13 +515,15 @@ class TestITermSessionManager:
         )
 
         assert result is True
+        # The only run_applescript call is the tab creation
         script = mock_run_as.call_args[0][0]
         # Check that quotes are escaped
         assert '\\"' in script
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
-    def test_create_session_single_quote_escaping(self, mock_subprocess, mock_run_as):
+    @patch.object(ITermSessionManager, "_has_running_tab_for_issue", return_value=False)
+    def test_create_session_single_quote_escaping(self, mock_has_running, mock_subprocess, mock_run_as):
         """Test that single quotes in commands are properly escaped for zsh wrapper.
 
         This is critical: the command gets wrapped in zsh -l -c '...' so any
@@ -537,6 +543,7 @@ class TestITermSessionManager:
         )
 
         assert result is True
+        # The only run_applescript call is the tab creation
         script = mock_run_as.call_args[0][0]
 
         # The script contains a zsh -l -c wrapper with properly escaped quotes
@@ -551,7 +558,8 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     @patch("issue_orchestrator.adapters.terminal._iterm2.subprocess.run")
-    def test_create_session_sandbox_check_no_nested_single_quotes(self, mock_subprocess, mock_run_as):
+    @patch.object(ITermSessionManager, "_has_running_tab_for_issue", return_value=False)
+    def test_create_session_sandbox_check_no_nested_single_quotes(self, mock_has_running, mock_subprocess, mock_run_as):
         """Test that sandbox_check doesn't have nested single quotes that break zsh.
 
         The sandbox_check string gets embedded in zsh -l -c '...' wrapper.
@@ -569,6 +577,7 @@ class TestITermSessionManager:
         )
 
         assert result is True
+        # The only run_applescript call is the tab creation
         script = mock_run_as.call_args[0][0]
 
         # Extract the zsh command from the script
@@ -603,8 +612,8 @@ class TestITermSessionManager:
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_running(self, mock_run_as):
         """Test session_exists when session is running."""
-        # _has_running_tab_for_issue expects "true" in output
-        mock_run_as.return_value = (True, "true")
+        # _has_running_tab_for_issue expects "exists:name:processing:true" format
+        mock_run_as.return_value = (True, "exists:#42 Test:processing:true")
 
         manager = ITermSessionManager()
         manager._sessions[42] = {"tab_name": "#42"}
@@ -613,21 +622,27 @@ class TestITermSessionManager:
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_idle(self, mock_run_as):
-        """Test session_exists when session is idle (not running)."""
-        # _has_running_tab_for_issue returns False when no "true" in output
-        mock_run_as.return_value = (True, "false")
+        """Test session_exists when tab exists but is idle (not processing).
+
+        With hybrid detection: tab exists = session exists, regardless of is_processing.
+        The observer uses completion.json as the source of truth for completion.
+        """
+        # Tab exists but is_processing=false (between API calls)
+        mock_run_as.return_value = (True, "exists:#42 Test:processing:false")
 
         manager = ITermSessionManager()
         manager._sessions[42] = {"tab_name": "#42"}
 
-        assert manager.session_exists(42) is False
-        # Session should be cleaned up
-        assert 42 not in manager._sessions
+        # NEW BEHAVIOR: Tab exists = session exists
+        # is_processing oscillates; completion.json is the real source of truth
+        assert manager.session_exists(42) is True
+        # Session stays tracked since tab still exists
+        assert 42 in manager._sessions
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_not_found(self, mock_run_as):
         """Test session_exists when tab is not found."""
-        mock_run_as.return_value = (True, "false")
+        mock_run_as.return_value = (True, "not_found")
 
         manager = ITermSessionManager()
         manager._sessions[42] = {"tab_name": "#42"}
@@ -643,7 +658,7 @@ class TestITermSessionManager:
         This is the critical case: orchestrator restarted, lost tracking,
         but session is still running. Should detect it via iTerm directly.
         """
-        mock_run_as.return_value = (True, "true")
+        mock_run_as.return_value = (True, "exists:#42 Test:processing:true")
         manager = ITermSessionManager()
         # NOT in _sessions - simulates orchestrator restart
 
@@ -652,7 +667,7 @@ class TestITermSessionManager:
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_session_exists_not_tracked_not_running(self, mock_run_as):
         """Test session_exists for untracked session that is NOT running."""
-        mock_run_as.return_value = (True, "false")
+        mock_run_as.return_value = (True, "not_found")
         manager = ITermSessionManager()
 
         assert manager.session_exists(42) is False
@@ -668,6 +683,49 @@ class TestITermSessionManager:
         assert manager.session_exists(42) is False
         # Session should be cleaned up
         assert 42 not in manager._sessions
+
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    def test_session_exists_by_name_issue_session(self, mock_run_as):
+        """Test session_exists_by_name for issue sessions (e.g., 'issue-123').
+
+        This is CRITICAL: The observer uses session_exists_by_name, not session_exists.
+        Missing this hook caused sessions to be incorrectly marked as terminated.
+        """
+        mock_run_as.return_value = (True, "exists:#123 Test:processing:true")
+
+        manager = ITermSessionManager()
+        manager._sessions[123] = {"tab_name": "#123"}
+
+        # Must work for issue-N format
+        assert manager.session_exists_by_name("issue-123") is True
+
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    def test_session_exists_by_name_review_session(self, mock_run_as):
+        """Test session_exists_by_name for review sessions (e.g., 'review-456')."""
+        mock_run_as.return_value = (True, "exists:#456 Test:processing:true")
+
+        manager = ITermSessionManager()
+
+        assert manager.session_exists_by_name("review-456") is True
+
+    @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
+    def test_session_exists_by_name_not_found(self, mock_run_as):
+        """Test session_exists_by_name when session doesn't exist."""
+        mock_run_as.return_value = (True, "not_found")
+
+        manager = ITermSessionManager()
+
+        assert manager.session_exists_by_name("issue-999") is False
+
+    def test_session_exists_by_name_invalid_format(self):
+        """Test session_exists_by_name with invalid session name format."""
+        manager = ITermSessionManager()
+
+        # No hyphen - invalid format
+        assert manager.session_exists_by_name("issue123") is False
+
+        # Non-numeric suffix
+        assert manager.session_exists_by_name("issue-abc") is False
 
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_kill_session_success(self, mock_run_as):
@@ -786,8 +844,14 @@ class TestITermSessionManager:
     @patch("issue_orchestrator.adapters.terminal._iterm2.run_applescript")
     def test_list_sessions_all_valid(self, mock_run_as):
         """Test listing sessions when all are valid (running)."""
-        # All sessions running - _has_running_tab_for_issue expects "true"
-        mock_run_as.return_value = (True, "true")
+        def side_effect(script):
+            # Parse the issue number from the script and return processing:true
+            for i in [1, 2, 3]:
+                if f"#{i} " in script or f'"#{i}"' in script:
+                    return (True, f"exists:#{i} Test:processing:true")
+            return (True, "not_found")
+
+        mock_run_as.side_effect = side_effect
 
         manager = ITermSessionManager()
         manager._sessions = {
@@ -806,9 +870,9 @@ class TestITermSessionManager:
         def side_effect(script):
             # _has_running_tab_for_issue checks for specific issue number
             if "#1 " in script or '"#1"' in script:
-                return (True, "true")  # Running
+                return (True, "exists:#1 Test:processing:true")  # Running
             else:
-                return (True, "false")  # Not running
+                return (True, "not_found")  # Not found
 
         mock_run_as.side_effect = side_effect
 
@@ -873,3 +937,39 @@ class TestGetItermManager:
         manager2 = get_iterm_manager()
 
         assert 42 in manager2._sessions
+
+
+class TestITermPluginHooks:
+    """Test that ITermPlugin correctly wires hooks to ITermSessionManager.
+
+    CRITICAL: These tests ensure that required terminal hooks are implemented.
+    Missing hooks (like session_exists_by_name) cause sessions to be marked
+    as terminated when they're actually still running.
+    """
+
+    def test_session_exists_by_name_hook_exists(self):
+        """Verify ITermPlugin implements session_exists_by_name hook.
+
+        This hook is REQUIRED by the observer to detect running sessions.
+        When missing, all sessions appear terminated immediately.
+        """
+        from issue_orchestrator.execution.terminal_iterm import ITermPlugin
+
+        plugin = ITermPlugin()
+
+        # Verify the hook method exists and is callable
+        assert hasattr(plugin, "session_exists_by_name")
+        assert callable(plugin.session_exists_by_name)
+
+    @patch.object(ITermSessionManager, "session_exists_by_name")
+    def test_session_exists_by_name_hook_delegates_to_manager(self, mock_method):
+        """Verify session_exists_by_name hook delegates to manager."""
+        from issue_orchestrator.execution.terminal_iterm import ITermPlugin
+
+        mock_method.return_value = True
+        plugin = ITermPlugin()
+
+        result = plugin.session_exists_by_name("issue-123")
+
+        assert result is True
+        mock_method.assert_called_once_with("issue-123")

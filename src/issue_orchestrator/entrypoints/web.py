@@ -119,12 +119,10 @@ async def dashboard(
     state = orchestrator.state if orchestrator else None
     config = orchestrator.config if orchestrator else None
 
-    work_items = []  # Active + Queue + Completed
-    problems = []    # Failed + Blocked + Needs-human + Timed-out
-    seen_issues = set()  # Track issue numbers to avoid duplicates
-
-    # Problem statuses that go to the problems tab
-    PROBLEM_STATUSES = {"failed", "blocked", "needs_human", "timed_out"}
+    work_items = []       # Active + Queue (ready to run)
+    needs_attention = []  # Issues with blocking labels (needs human action)
+    history = []          # Session history (completed, failed, etc.)
+    seen_issues = set()   # Track issue numbers to avoid duplicates
 
     def make_issue_url(issue_number: int) -> str:
         return f"https://github.com/{config.repo}/issues/{issue_number}" if config and config.repo else ""
@@ -208,13 +206,27 @@ async def dashboard(
                 ])
                 dep_summary = dep_info.summary if dep_info else ""
 
+                # Check if issue is blocked (has blocking labels)
+                is_blocked = issue.is_blocked
+                if is_blocked:
+                    status = "blocked"
+                    status_label = "Blocked"
+                    # Show blocking label in tooltip if no dep summary
+                    from ..infra import labels as label_module
+                    blocking = label_module.get_blocking_labels(list(issue.labels))
+                    status_reason = dep_summary or (blocking[0] if blocking else "blocked")
+                else:
+                    status = "queue"
+                    status_label = "Queue"
+                    status_reason = dep_summary
+
                 item = {
                     "issue_number": issue.number,
                     "title": issue.title,
                     "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
-                    "status": "queue",
-                    "status_label": "Queue",
-                    "status_reason": dep_summary,  # Show dependency info in tooltip
+                    "status": status,
+                    "status_label": status_label,
+                    "status_reason": status_reason,
                     "time": "",
                     "action": "open",
                     "action_icon": "↗",
@@ -230,9 +242,13 @@ async def dashboard(
                     "dependencies": deps_json,
                     "dependency_summary": dep_summary,
                 }
-                work_items.append(item)
+                # Blocked issues go to "Needs Attention", others to "Work"
+                if is_blocked:
+                    needs_attention.append(item)
+                else:
+                    work_items.append(item)
 
-        # 3. Session history - separate into work (completed) vs problems
+        # 3. Session history - all goes to history tab
         status_labels = {
             "completed": "Done",
             "failed": "Failed",
@@ -240,11 +256,7 @@ async def dashboard(
             "needs_human": "Human",
             "timed_out": "Timeout",
         }
-        for entry in reversed(state.session_history[-50:]):  # Increased limit for problems
-            if entry.issue_number in seen_issues:
-                continue
-            seen_issues.add(entry.issue_number)
-
+        for entry in reversed(state.session_history[-50:]):
             url = entry.pr_url if entry.pr_url else make_issue_url(entry.issue_number)
             action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
             status_reason = getattr(entry, 'status_reason', None) or status_labels.get(entry.status, entry.status)
@@ -267,14 +279,17 @@ async def dashboard(
                 "has_terminal": False,
                 "worktree_path": "",
             }
+            history.append(item)
 
-            if entry.status in PROBLEM_STATUSES:
-                problems.append(item)
-            elif entry.status == "completed":
-                work_items.append(item)
-
-    # For backwards compatibility, create combined issues list based on active tab
-    issues = work_items if active_tab == "work" else problems
+    # Select issues list based on active tab
+    if active_tab == "work":
+        issues = work_items
+    elif active_tab == "attention":
+        issues = needs_attention
+    elif active_tab == "history":
+        issues = history
+    else:
+        issues = work_items
 
     # Calculate pagination info
     queue_total_pages = (queue_total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE if queue_total > 0 else 1
@@ -292,8 +307,9 @@ async def dashboard(
     html = template.render(
         issues=issues,
         work_items=work_items,
-        problems=problems,
-        problem_count=len(problems),
+        needs_attention=needs_attention,
+        attention_count=len(needs_attention),
+        history=history,
         active_tab=active_tab,
         paused=state.paused if state else False,
         shutdown_requested=shutdown_requested,
@@ -868,6 +884,177 @@ async def retry_issue(issue_number: int) -> JSONResponse:
     if issue_number in state.completed_today:
         state.completed_today.remove(issue_number)
     return JSONResponse({"retrying": issue_number, "message": "Issue will be picked up on next cycle"})
+
+
+@app.get("/api/blocked-issues")
+async def get_blocked_issues() -> JSONResponse:
+    """Get all blocked issues with their blocking labels and context.
+
+    Returns detailed information for the "Manage Blocked Issues" modal.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..infra import labels as label_module
+
+    state = _orchestrator.state
+    config = _orchestrator.config
+
+    def make_issue_url(issue_number: int) -> str:
+        return f"https://github.com/{config.repo}/issues/{issue_number}" if config.repo else ""
+
+    blocked_issues = []
+
+    # Get blocked issues from cached queue
+    if state.startup_status == "complete":
+        for issue in state.cached_queue_issues:
+            if not issue.is_blocked:
+                continue
+
+            blocking_labels = label_module.get_blocking_labels(list(issue.labels))
+            blocking_label = blocking_labels[0] if blocking_labels else "blocked"
+            needs_human = label_module.requires_human_any(list(issue.labels))
+
+            # Try to get failure reason from history
+            failure_reason = None
+            for entry in reversed(state.session_history):
+                if entry.issue_number == issue.number:
+                    failure_reason = getattr(entry, 'status_reason', None) or entry.status
+                    break
+
+            blocked_issues.append({
+                "issue_number": issue.number,
+                "title": issue.title,
+                "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
+                "blocking_label": blocking_label,
+                "all_blocking_labels": blocking_labels,
+                "needs_human": needs_human,
+                "failure_reason": failure_reason,
+                "issue_url": make_issue_url(issue.number),
+            })
+
+    return JSONResponse({"blocked_issues": blocked_issues})
+
+
+@app.get("/api/failure-diagnosis/{issue_number}")
+async def get_failure_diagnosis(issue_number: int) -> JSONResponse:
+    """Get detailed failure diagnosis for an issue.
+
+    Analyzes AI session logs to provide actionable insights about why a session failed.
+    Returns the log path so users can open it directly.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    diagnosis = _orchestrator.get_failure_diagnosis(issue_number)
+    return JSONResponse(diagnosis)
+
+
+@app.post("/api/open-file")
+async def open_file(request: Request) -> JSONResponse:
+    """Open a file in the default system application.
+
+    JSON body:
+        path: str - Path to the file to open
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    file_path = body.get("path")
+    if not file_path:
+        return JSONResponse({"error": "path is required"}, status_code=400)
+
+    # Security: only allow opening files in known safe directories
+    safe_prefixes = [
+        str(Path.home() / ".claude"),
+        str(Path.home() / ".issue-orchestrator"),
+        "/tmp/",
+    ]
+    if not any(file_path.startswith(prefix) for prefix in safe_prefixes):
+        return JSONResponse({"error": "Cannot open files outside safe directories"}, status_code=403)
+
+    if not Path(file_path).exists():
+        return JSONResponse({"error": "File not found"}, status_code=404)
+
+    try:
+        # Use macOS 'open' command to open in default app
+        subprocess.run(["open", file_path], check=True)
+        return JSONResponse({"status": "opened", "path": file_path})
+    except subprocess.CalledProcessError as e:
+        return JSONResponse({"error": f"Failed to open file: {e}"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/unblock-retry")
+async def unblock_and_retry(request: Request) -> JSONResponse:
+    """Remove blocking labels from issues and trigger a refresh.
+
+    JSON body:
+        issues: list[int] - Issue numbers to unblock
+
+    Removes all blocking labels from each issue, clears them from history,
+    and triggers a single refresh so they'll be picked up on the next cycle.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..infra import labels as label_module
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    issue_numbers = body.get("issues", [])
+    if not issue_numbers or not isinstance(issue_numbers, list):
+        return JSONResponse({"error": "issues must be a non-empty list"}, status_code=400)
+
+    state = _orchestrator.state
+    repository_host = _orchestrator.repository_host
+
+    unblocked = []
+    failed = []
+
+    for issue_number in issue_numbers:
+        try:
+            # Get current labels to find blocking ones
+            current_labels = repository_host.get_issue_labels(issue_number)
+            blocking_labels = label_module.get_blocking_labels(current_labels)
+
+            if blocking_labels:
+                for label in blocking_labels:
+                    try:
+                        repository_host.remove_label(issue_number, label)
+                        logger.info("[unblock] Removed label '%s' from issue #%d", label, issue_number)
+                    except Exception as e:
+                        logger.warning("[unblock] Failed to remove label '%s' from #%d: %s", label, issue_number, e)
+
+            # Also remove from history so it's eligible for processing
+            state.session_history = [
+                entry for entry in state.session_history
+                if entry.issue_number != issue_number
+            ]
+            if issue_number in state.completed_today:
+                state.completed_today.remove(issue_number)
+
+            unblocked.append(issue_number)
+        except Exception as e:
+            logger.error("[unblock] Failed to unblock issue #%d: %s", issue_number, e)
+            failed.append({"issue": issue_number, "error": str(e)})
+
+    # Trigger a single refresh so the orchestrator picks up the unblocked issues
+    if unblocked:
+        _orchestrator.request_refresh()
+        logger.info("[unblock] Unblocked %d issues, refresh triggered", len(unblocked))
+
+    return JSONResponse({
+        "unblocked": unblocked,
+        "failed": failed,
+        "refresh_triggered": len(unblocked) > 0,
+    })
 
 
 @app.get("/api/debug")

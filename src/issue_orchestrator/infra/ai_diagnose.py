@@ -13,10 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .doctor import run_doctor
 from .repo_identity import state_dir
 from .startup_errors import read_startup_failure
-from ..execution.command_runner import LocalCommandRunner
 
 
 @dataclass
@@ -140,6 +138,8 @@ def create_diagnostic_bundle(repo_root: Path) -> DiagnosticBundle:
     # 3. Doctor output
     try:
         from .config import Config, list_configs, get_config_path
+        from .doctor import run_doctor
+        from ..execution.command_runner import LocalCommandRunner
 
         config = None
         config_path = None

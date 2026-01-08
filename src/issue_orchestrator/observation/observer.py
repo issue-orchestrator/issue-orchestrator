@@ -224,6 +224,22 @@ class SessionObserver:
             result = SessionObservationResult.running(runtime_minutes=runtime)
         else:
             result = SessionObservationResult.terminated(runtime_minutes=runtime)
+            # Capture terminal output for failed sessions (before tab closes)
+            # This helps debug immediate failures like permission prompts
+            if not completion_path.exists() and self._session_runner:
+                try:
+                    terminal_output = self._session_runner.get_session_output(
+                        session.issue.number, lines=100
+                    )
+                    if terminal_output:
+                        logger.warning(
+                            "[FAILURE] Session #%d terminated without completion. "
+                            "Terminal output:\n%s",
+                            session.issue.number,
+                            terminal_output[-2000:] if len(terminal_output) > 2000 else terminal_output,
+                        )
+                except Exception as e:
+                    logger.debug("Could not capture terminal output: %s", e)
 
         # Emit observation result for debugging (only for non-running sessions)
         if result.observation != SessionObservation.RUNNING:

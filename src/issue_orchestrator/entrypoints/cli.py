@@ -14,14 +14,10 @@ if TYPE_CHECKING:
 from rich.console import Console
 from rich.table import Table
 
-from ..infra.logging_config import setup_logging, GLOBAL_LOG_FILE
+from ..infra.logging_config import setup_logging
 
 console = Console()
 logger = logging.getLogger(__name__)
-
-# Re-export LOG_FILE for backward compatibility (e.g., --show-logs command)
-# Note: This is the global fallback; prefer repo-scoped logs via get_repo_log_path()
-LOG_FILE = GLOBAL_LOG_FILE
 
 
 def _resolve_repo(config: "Config") -> str:
@@ -119,24 +115,24 @@ def _run_test_setup(config: "Config") -> bool:
 
 def cmd_start(args: argparse.Namespace) -> int:
     """Start the orchestrator."""
-    # Set up logging first (global fallback until we know repo root)
     debug = getattr(args, 'debug', False)
     no_dashboard = getattr(args, 'no_dashboard', False)
     log_level = "DEBUG" if debug else "INFO"
-    # Enable console output when not using dashboard (safe to log to stderr)
-    setup_logging(level=log_level, console_output=no_dashboard)
 
     console.print("[green]Starting issue-orchestrator...[/green]")
 
     try:
         from .bootstrap import build_orchestrator
 
+        # Load config first - repo_root is derived from config file location
         config = _load_config(args)
 
-        # Switch to repo-scoped logging now that we know the repo root
-        log_file: Path | None = None
-        if config.repo_root:
-            log_file = setup_logging(level=log_level, console_output=no_dashboard, repo_root=config.repo_root)
+        # Set up logging to repo-scoped log file
+        log_file = setup_logging(
+            repo_root=config.repo_root,
+            level=log_level,
+            console_output=no_dashboard,
+        )
 
         if debug and log_file:
             console.print(f"[dim]Debug logging enabled (tail -f {log_file})[/dim]")
@@ -484,7 +480,11 @@ def cmd_start(args: argparse.Namespace) -> int:
             # Get the repo root directory where config lives
             working_dir = str(config.repo_root)
             # Build the command using python -m to ensure venv is used
-            cmd_args = [python_path, "-m", "issue_orchestrator.cli", "start"]
+            # Note: --config is a top-level arg and must come BEFORE the subcommand
+            cmd_args = [python_path, "-m", "issue_orchestrator.entrypoints.cli"]
+            if hasattr(args, 'config') and args.config:
+                cmd_args.extend(["--config", args.config])
+            cmd_args.append("start")
             if args.test_mode:
                 cmd_args.append("--test-mode")
             if args.debug:
@@ -836,7 +836,7 @@ def _start_with_adopt_sessions(args: argparse.Namespace) -> int:
     import sys
 
     # Build command to run start with adopt-sessions
-    cmd = [sys.executable, "-m", "issue_orchestrator.cli", "start", "--adopt-sessions"]
+    cmd = [sys.executable, "-m", "issue_orchestrator.entrypoints.cli", "start", "--adopt-sessions"]
 
     # Pass through relevant flags
     if hasattr(args, 'config') and args.config:

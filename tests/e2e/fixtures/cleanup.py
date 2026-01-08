@@ -52,6 +52,102 @@ def cleanup_tmux_sessions(tmux_session: str = "orchestrator") -> None:
         logger.info("[E2E CLEANUP] Killed stale tmux session: %s", tmux_session)
 
 
+def cleanup_iterm_sessions() -> None:
+    """Clean up iTerm2 tabs from previous e2e runs (macOS only)."""
+    import platform
+    if platform.system() != "Darwin":
+        return
+
+    # Close iTerm tabs that have e2e-related content in their buffer
+    # Use Python to do the text matching since AppleScript's contains is unreliable
+    get_tabs_script = '''
+    tell application "iTerm"
+        set tabInfo to ""
+        set tabIndex to 0
+        repeat with w in windows
+            set winIndex to 0
+            repeat with t in tabs of w
+                try
+                    set s to current session of t
+                    set cmdText to text of s
+                    set tabInfo to tabInfo & "WIN:" & winIndex & ":TAB:" & tabIndex & ":" & cmdText & "|||ENDTAB|||"
+                    set tabIndex to tabIndex + 1
+                end try
+            end repeat
+            set winIndex to winIndex + 1
+        end repeat
+        return tabInfo
+    end tell
+    '''
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", get_tabs_script],
+            capture_output=True,
+            timeout=10,
+            text=True,
+        )
+        if result.returncode != 0:
+            return
+
+        # Find tabs with e2e markers
+        markers = ["issue_orchestrator", "e2e-orchestrator", "E2E_DRY_RUN", "e2e-worktree", "pytest-"]
+        tabs_to_close = []
+        for tab_info in result.stdout.split("|||ENDTAB|||"):
+            if not tab_info.strip():
+                continue
+            for marker in markers:
+                if marker in tab_info:
+                    # Extract tab reference - close by sending keys since direct close is unreliable
+                    tabs_to_close.append(tab_info)
+                    break
+
+        if not tabs_to_close:
+            return
+
+        # Close tabs by selecting and closing them
+        # This is more aggressive - close all tabs matching the pattern
+        close_script = '''
+        tell application "iTerm"
+            set closedCount to 0
+            repeat with w in windows
+                set tabsToClose to {}
+                repeat with t in tabs of w
+                    try
+                        set s to current session of t
+                        set cmdText to text of s
+                        if cmdText contains "issue_orchestrator" or cmdText contains "e2e-orchestrator" or cmdText contains "E2E_DRY_RUN" or cmdText contains "pytest-" then
+                            set end of tabsToClose to t
+                        end if
+                    end try
+                end repeat
+                -- Close tabs in reverse order to avoid index shifting issues
+                repeat with i from (count of tabsToClose) to 1 by -1
+                    try
+                        close item i of tabsToClose
+                        set closedCount to closedCount + 1
+                    end try
+                end repeat
+            end repeat
+            return closedCount
+        end tell
+        '''
+        result = subprocess.run(
+            ["osascript", "-e", close_script],
+            capture_output=True,
+            timeout=10,
+            text=True,
+        )
+        if result.returncode == 0:
+            count = result.stdout.strip()
+            if count and count != "0":
+                logger.info("[E2E CLEANUP] Closed %s stale iTerm2 tabs", count)
+            else:
+                logger.info("[E2E CLEANUP] Closed stale iTerm2 tabs")
+    except Exception as e:
+        logger.debug("[E2E CLEANUP] iTerm cleanup skipped: %s", e)
+
+
 def run_cleanup_step(name: str, fn, timeout_s: int) -> int:
     """Run a cleanup step with a hard wall-clock timeout."""
     start = time.monotonic()
@@ -343,6 +439,7 @@ __all__ = [
     "DEFAULT_E2E_FILTER_LABEL",
     "cleanup_local_worktrees",
     "cleanup_tmux_sessions",
+    "cleanup_iterm_sessions",
     "run_cleanup_step",
     "verify_cleanup_items",
     "cleanup_remote_branches",

@@ -44,6 +44,11 @@ class ITermPlugin:
         return self._manager.session_exists(session_id)
 
     @hookimpl
+    def session_exists_by_name(self, session_name: str) -> bool:
+        """Check if an iTerm2 tab exists by its full name (e.g., 'issue-123')."""
+        return self._manager.session_exists_by_name(session_name)
+
+    @hookimpl
     def kill_session(self, session_id: int) -> bool:
         """Close an iTerm2 tab."""
         return self._manager.kill_session(session_id)
@@ -60,11 +65,8 @@ class ITermPlugin:
 
     @hookimpl
     def get_session_output(self, session_id: int, lines: int) -> str | None:
-        """Get recent output from an iTerm2 tab.
-
-        Note: Not currently implemented for iTerm2.
-        """
-        return None
+        """Get recent output from an iTerm2 tab."""
+        return self._manager.get_session_output(session_id, lines)
 
     @hookimpl
     def send_to_session(self, session_id: int, text: str) -> bool:
@@ -74,4 +76,5 @@ class ITermPlugin:
     @hookimpl
     def focus_session(self, session_id: int) -> bool:
         """Focus an iTerm2 tab by issue number."""
-        return select_tab_by_name(f"#{session_id}")
+        from ..adapters.terminal.naming import iterm_tab_prefix
+        return select_tab_by_name(iterm_tab_prefix(session_id))

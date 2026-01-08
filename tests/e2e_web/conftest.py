@@ -92,6 +92,22 @@ class MockOrchestratorForWeb:
     def request_refresh(self, inflight_stable_ids=None):
         pass  # No-op for UI tests
 
+    def get_failure_diagnosis(self, issue_number: int) -> dict:
+        """Return mock failure diagnosis for testing."""
+        return {
+            "issue_number": issue_number,
+            "ai_system": "claude-code",
+            "permission_mode": "default",
+            "worktree_path": None,
+            "log_path": None,
+            "log_exists": False,
+            "log_context": None,
+            "history_status": None,
+            "history_reason": None,
+            "warnings": [],
+            "suggestions": [],
+        }
+
     # Helper methods for tests to populate state
     def add_active_session(
         self, issue_number: int, title: str, agent_type: str = "agent:web"
@@ -113,10 +129,18 @@ class MockOrchestratorForWeb:
         return session
 
     def add_queue_issue(
-        self, issue_number: int, title: str, agent_type: str = "agent:web"
+        self, issue_number: int, title: str, agent_type: str = "agent:web",
+        blocked: bool = False
     ) -> Issue:
-        """Add a queued issue for testing."""
-        issue = Issue(number=issue_number, title=title, labels=[agent_type])
+        """Add a queued issue for testing.
+
+        Args:
+            blocked: If True, add 'blocked' label to make issue appear in attention tab
+        """
+        labels = [agent_type]
+        if blocked:
+            labels.append("blocked")
+        issue = Issue(number=issue_number, title=title, labels=labels)
         self.state.cached_queue_issues.append(issue)
         return issue
 

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from .analysis import analyze_issue
 from .config import Config
+from . import labels as label_utils
 from ..domain.dependencies import parse_dependencies
 from ..ports.issue import Issue
 from ..domain.models import OrchestratorState
@@ -179,13 +180,13 @@ def audit_queue(
 
     # Audit each issue
     for issue in all_issues:
-        entry = _audit_issue(issue, config, history_numbers, active_numbers, issue_branches)
+        entry = audit_issue(issue, config, history_numbers, active_numbers, issue_branches)
         entries.append(entry)
 
     return entries
 
 
-def _audit_issue(
+def audit_issue(
     issue: Issue,
     config: Config,
     history_numbers: set[int],
@@ -202,9 +203,8 @@ def _audit_issue(
     if issue.number in active_numbers:
         return IssueAuditEntry(issue, SkipReason.ACTIVE_SESSION)
 
-    # Check labels - use same logic as scheduler.get_available_issues()
+    # Check labels - use centralized label_utils for blocking check
     label_in_progress = config.get_label_in_progress()
-    label_blocked = config.get_label_blocked()
     label_needs_human = config.get_label_needs_human()
 
     if label_in_progress in issue.labels or "in-progress" in issue.labels:
@@ -225,8 +225,13 @@ def _audit_issue(
         # Fallback if no branches info
         return IssueAuditEntry(issue, SkipReason.IN_PROGRESS, "work in progress")
 
-    if label_blocked in issue.labels or "blocked" in issue.labels:
-        return IssueAuditEntry(issue, SkipReason.BLOCKED)
+    # Use centralized blocking check - catches blocked, blocked-failed, blocked-needs-human, etc.
+    blocking_labels = label_utils.get_blocking_labels(issue.labels)
+    if blocking_labels:
+        # Return specific reason based on blocking label
+        if label_utils.requires_human_any(issue.labels):
+            return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN, f"label: {blocking_labels[0]}")
+        return IssueAuditEntry(issue, SkipReason.BLOCKED, f"label: {blocking_labels[0]}")
 
     if label_needs_human in issue.labels or "needs-human" in issue.labels:
         return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN)

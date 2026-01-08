@@ -179,7 +179,7 @@ class TestDashboardEndpoint:
             web._orchestrator = None
 
     def test_dashboard_with_session_history(self):
-        """Test dashboard displays session history."""
+        """Test dashboard displays session history on the History tab."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -197,7 +197,8 @@ class TestDashboardEndpoint:
         web._orchestrator = mock_orch
         try:
             client = TestClient(app)
-            response = client.get("/")
+            # History now lives on the History tab, not the Work tab
+            response = client.get("/?tab=history")
 
             assert response.status_code == 200
             assert "Completed Issue" in response.text

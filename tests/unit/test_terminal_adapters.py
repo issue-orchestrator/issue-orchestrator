@@ -287,9 +287,13 @@ class TestITermPlugin:
             assert result == 3
 
     def test_get_session_output(self, iterm_plugin, mock_iterm_manager):
-        """get_session_output returns None (not implemented for iTerm2)."""
+        """get_session_output delegates to manager."""
+        mock_iterm_manager.get_session_output.return_value = "some output"
+
         result = iterm_plugin.get_session_output(session_id=42, lines=50)
-        assert result is None
+
+        assert result == "some output"
+        mock_iterm_manager.get_session_output.assert_called_once_with(42, 50)
 
     def test_send_to_session(self, iterm_plugin, mock_iterm_manager):
         """send_to_session delegates to manager."""
@@ -815,7 +819,7 @@ class TestITermSessionManagerIntegration:
         # Mock calls: close existing, check running, create tab
         mock_applescript.side_effect = [
             (True, "0"),  # _close_existing_tabs_for_issue - no tabs closed
-            (True, "false"),  # _has_running_tab_for_issue - no running tab
+            (True, "not_found"),  # _has_running_tab_for_issue - no running tab
             (True, ""),  # create_session - success
         ]
 
@@ -858,11 +862,11 @@ class TestITermSessionManagerIntegration:
     ):
         """create_session closes idle tabs before creating new one."""
         # First call: close existing idle tabs (returns 1 = 1 tab closed)
-        # Second call: check for running tabs (returns false = none running)
+        # Second call: check for running tabs (returns not_found = none running)
         # Third call: create new tab
         mock_applescript.side_effect = [
             (True, "1"),  # _close_existing_tabs_for_issue
-            (True, "false"),  # _has_running_tab_for_issue
+            (True, "not_found"),  # _has_running_tab_for_issue
             (True, ""),  # create tab
         ]
 
@@ -882,10 +886,10 @@ class TestITermSessionManagerIntegration:
     ):
         """create_session returns False if running tab already exists."""
         # First call: close idle tabs (none closed)
-        # Second call: check for running tabs (returns true = already running)
+        # Second call: check for running tabs (returns exists:...:processing:true)
         mock_applescript.side_effect = [
             (True, "0"),  # _close_existing_tabs_for_issue
-            (True, "true"),  # _has_running_tab_for_issue
+            (True, "exists:#42 Test:processing:true"),  # _has_running_tab_for_issue
         ]
 
         with caplog.at_level(logging.WARNING):
@@ -901,36 +905,41 @@ class TestITermSessionManagerIntegration:
 
     def test_session_exists_true(self, iterm_manager, mock_applescript):
         """session_exists returns True when running tab exists."""
-        mock_applescript.return_value = (True, "true")
+        mock_applescript.return_value = (True, "exists:#42 Test:processing:true")
 
         result = iterm_manager.session_exists(42)
 
         assert result is True
         # Verify AppleScript checks "is processing"
         script = mock_applescript.call_args[0][0]
-        assert "is processing is true" in script
+        assert "is processing" in script
 
     def test_session_exists_false(self, iterm_manager, mock_applescript):
         """session_exists returns False when tab is idle or doesn't exist."""
-        mock_applescript.return_value = (True, "false")
+        mock_applescript.return_value = (True, "not_found")
 
         result = iterm_manager.session_exists(42)
 
         assert result is False
 
     def test_session_exists_updates_tracking(self, iterm_manager, mock_applescript):
-        """session_exists cleans up in-memory tracking for idle sessions."""
+        """session_exists keeps tracking when tab exists, regardless of is_processing.
+
+        With hybrid detection: tab exists = session exists.
+        is_processing oscillates between API calls; completion.json is the source of truth.
+        """
         # Setup: track a session
         iterm_manager._sessions[42] = {"tab_name": "#42", "created_at": "123"}
 
-        # Mock: tab is idle (not running)
-        mock_applescript.return_value = (True, "false")
+        # Mock: tab exists but is_processing=false (between API calls)
+        mock_applescript.return_value = (True, "exists:#42 Test:processing:false")
 
         result = iterm_manager.session_exists(42)
 
-        assert result is False
-        # Session should be removed from tracking
-        assert 42 not in iterm_manager._sessions
+        # NEW BEHAVIOR: Tab exists = session exists
+        assert result is True
+        # Session stays tracked since tab exists
+        assert 42 in iterm_manager._sessions
 
     def test_kill_session_success(self, iterm_manager, mock_applescript):
         """kill_session closes the tab."""
@@ -974,9 +983,9 @@ class TestITermSessionManagerIntegration:
 
         # Mock: only 42 and 123 are still running
         mock_applescript.side_effect = [
-            (True, "true"),  # 42 exists
-            (True, "false"),  # 99 doesn't exist
-            (True, "true"),  # 123 exists
+            (True, "exists:#42 Test:processing:true"),  # 42 exists
+            (True, "not_found"),  # 99 doesn't exist
+            (True, "exists:#123 Test:processing:true"),  # 123 exists
         ]
 
         result = iterm_manager.list_sessions()

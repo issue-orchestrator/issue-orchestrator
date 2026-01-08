@@ -296,6 +296,24 @@ class Orchestrator:
             self._event_context.enrich({}),
         ))
 
+    def get_failure_diagnosis(self, issue_number: int) -> dict:
+        """Get failure diagnosis for a session.
+
+        This provides diagnostic info for debugging failed sessions,
+        used by the web UI's failure diagnosis endpoint.
+
+        Returns a dict ready for JSON serialization.
+        """
+        from .session_failure_diagnosis import create_session_failure_diagnosis
+        diagnosis = create_session_failure_diagnosis(
+            issue_number=issue_number,
+            session_history=self.state.session_history,
+            active_sessions=self.state.active_sessions,
+            config=self.config,
+            agents=self.config.agents,
+        )
+        return diagnosis.to_dict()
+
     def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None: pause_issue_for_reconciliation(self.deps.events, self.deps.repository_host, self._event_context, issue_number, reason)
     def _apply_plan(self, plan: "Plan") -> None: self._plan_applier._apply_plan(plan, self._pause_issue_for_reconciliation)
     def _fetch_all_issues(self, required_stable_ids: set[str] | None = None) -> list[Issue]: return self._github_workflow.fetch_all_issues(self._get_milestone_filter(), required_stable_ids)

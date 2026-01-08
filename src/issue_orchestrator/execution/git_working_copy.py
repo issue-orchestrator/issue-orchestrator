@@ -7,6 +7,7 @@ Part of the execution layer - performs actions, does not make decisions.
 """
 
 import logging
+import os
 import re
 import subprocess
 import time
@@ -279,6 +280,21 @@ class GitWorkingCopy:
             skip_hooks: Skip pre-push hooks with --no-verify (default: False).
         """
         branch = self.get_current_branch(worktree)
+
+        # E2E dry-run mode: verify push would be called but don't actually push
+        # This avoids running pre-push hooks (make validate) in e2e tests
+        if os.environ.get("E2E_DRY_RUN_PUSH") == "1":
+            logger.info(
+                "[E2E_DRY_RUN] Push skipped (would push branch=%s to remote=%s)",
+                branch,
+                remote,
+            )
+            return PushResult(
+                success=True,
+                branch=branch or "unknown",
+                remote=remote,
+                message=f"[DRY_RUN] Would push {branch} to {remote}",
+            )
         if not branch:
             return PushResult(
                 success=False,

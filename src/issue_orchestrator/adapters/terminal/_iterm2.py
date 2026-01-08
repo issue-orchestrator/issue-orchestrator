@@ -195,10 +195,10 @@ class ITermSessionManager:
             logger.warning("Skipping session creation for #%d - active Claude session already exists in iTerm2", issue_number)
             return False
 
-        tab_name = f"#{issue_number}"
-        if title:
-            short_title = title[:20].replace('"', "'")
-            tab_name = f"#{issue_number} {short_title}"
+        from .naming import iterm_tab_name
+        # Escape quotes in title for AppleScript
+        safe_title = title.replace('"', "'") if title else None
+        tab_name = iterm_tab_name(issue_number, safe_title)
 
         # Use escape sequence to set tab name (set name to doesn't work reliably)
         escaped_tab_name = tab_name.replace('"', '\\"')
@@ -225,14 +225,14 @@ class ITermSessionManager:
 
         # Add sandbox verification before running agent command
         # This confirms isolation is working (gh auth fails, git push fails, etc.)
-        # Use verify-agent-sandbox if available, otherwise fall back to Python module
-        # Note: Use double quotes for echo to avoid nested single-quote issues
-        # (the whole command gets wrapped in single quotes for zsh -l -c '...')
+        # Only use verify-agent-sandbox if available - skip verification otherwise
+        # Note: The python module fallback was removed because it fails with
+        # "ModuleNotFoundError" from worktrees (exit code 1), which is
+        # indistinguishable from actual verification failure.
         sandbox_check = (
             "if command -v verify-agent-sandbox &> /dev/null; then "
             'verify-agent-sandbox || { echo "Sandbox verification failed - aborting"; exit 1; }; '
-            "elif python3 -m issue_orchestrator.execution.sandbox_verify 2>/dev/null; then :; "
-            'elif [ $? -eq 1 ]; then echo "Sandbox verification failed - aborting"; exit 1; fi && '
+            "fi && "
         )
 
         zsh_wrapped_cmd = f"zsh -l -c '{path_prefix}{isolation_prefix}{sandbox_check}cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
@@ -287,26 +287,74 @@ end tell'''
 
         return has_running
 
+    def session_exists_by_name(self, session_name: str) -> bool:
+        """Check if a session exists by its full name (e.g., 'issue-123', 'review-456').
+
+        Uses centralized naming module to parse terminal_id and delegates to session_exists.
+        """
+        from .naming import number_from_terminal_id
+
+        number = number_from_terminal_id(session_name)
+        if number is None:
+            logger.warning("[SESSION_CHECK] Invalid session name format: %s", session_name)
+            return False
+
+        return self.session_exists(number)
+
     def _has_running_tab_for_issue(self, issue_number: int) -> bool:
-        """Check if there's a running (Claude active) tab for this issue."""
-        script = f'''
+        """Check if there's a tab for this issue.
+
+        IMPORTANT: This returns True if the tab EXISTS, regardless of is_processing.
+
+        Why? is_processing returns false between API calls (2-second window).
+        If we returned false based on is_processing, we'd kill sessions that are
+        just waiting for API responses.
+
+        The observer checks completion.json first, so we won't miss completed sessions.
+        If no completion.json and tab exists, the session is still working (or stuck,
+        in which case the timeout will handle it).
+        """
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
+        check_exists_script = f'''
         tell application "iTerm"
             repeat with w in windows
                 repeat with t in tabs of w
                     tell current session of t
-                        if name starts with "#{issue_number} " or name is "#{issue_number}" then
-                            if is processing is true then
-                                return true
-                            end if
+                        if name starts with "{tab_prefix} " or name is "{tab_prefix}" then
+                            return "exists:" & name & ":processing:" & (is processing as string)
                         end if
                     end tell
                 end repeat
             end repeat
-            return false
+            return "not_found"
         end tell
         '''
-        success, output = run_applescript(script)
-        return success and "true" in output.lower()
+        success, output = run_applescript(check_exists_script)
+
+        if not success:
+            logger.warning("[SESSION_CHECK] AppleScript failed for #%d: %s", issue_number, output)
+            return False
+
+        output = output.strip().lower()
+
+        if "not_found" in output:
+            logger.info("[SESSION_CHECK] Tab #%d not found in iTerm", issue_number)
+            return False
+
+        if "exists:" in output:
+            # Tab exists - return True regardless of is_processing
+            # is_processing oscillates between API calls; completion.json is source of truth
+            is_processing = "processing:true" in output
+            logger.info("[SESSION_CHECK] Tab #%d exists, is_processing=%s (returning True)",
+                       issue_number, is_processing)
+            return True  # Tab exists = session exists
+
+        # Fallback - unexpected response, assume tab exists to be safe
+        logger.warning("[SESSION_CHECK] Unexpected response for #%d: %s (assuming exists)",
+                      issue_number, output)
+        return True
 
     def _close_existing_tabs_for_issue(self, issue_number: int) -> int:
         """Close IDLE existing tabs for an issue number (prevents zombie duplicates).
@@ -317,6 +365,9 @@ end tell'''
         Returns:
             Number of tabs closed
         """
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
         # AppleScript to close only IDLE tabs with this issue number
         script = f'''
         tell application "iTerm"
@@ -325,7 +376,7 @@ end tell'''
                 set tabsToClose to {{}}
                 repeat with t in tabs of w
                     tell current session of t
-                        if name starts with "#{issue_number} " or name is "#{issue_number}" then
+                        if name starts with "{tab_prefix} " or name is "{tab_prefix}" then
                             -- Only close if idle (Claude has exited)
                             if is processing is false then
                                 set end of tabsToClose to t
@@ -355,13 +406,16 @@ end tell'''
 
     def kill_session(self, issue_number: int) -> bool:
         """Close the tab for an issue, killing any running process first."""
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
         # First send Ctrl+C to interrupt any running process, then close the tab
         script = f'''
         tell application "iTerm"
             repeat with w in windows
                 repeat with t in tabs of w
                     tell current session of t
-                        if name contains "#{issue_number}" then
+                        if name contains "{tab_prefix}" then
                             -- Send Ctrl+C to interrupt
                             write text (ASCII character 3)
                             delay 0.5
@@ -382,7 +436,8 @@ end tell'''
 
     def select_session(self, issue_number: int) -> bool:
         """Switch to the tab for an issue."""
-        return select_tab_by_name(f"#{issue_number}")
+        from .naming import iterm_tab_prefix
+        return select_tab_by_name(iterm_tab_prefix(issue_number))
 
     def send_to_session(self, issue_number: int, text: str) -> bool:
         """Send text to a specific session by issue number.
@@ -394,6 +449,9 @@ end tell'''
         Returns:
             True if text was sent successfully
         """
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
         escaped_text = text.replace('"', '\\"')
         # Use "tell application id" to avoid activating iTerm and stealing focus
         script = f'''
@@ -401,7 +459,7 @@ end tell'''
             tell current window
                 repeat with t in tabs
                     tell current session of t
-                        if name contains "#{issue_number}" then
+                        if name contains "{tab_prefix}" then
                             write text "{escaped_text}"
                             return true
                         end if
@@ -416,6 +474,48 @@ end tell'''
             logger.info("Sent text to session #%d", issue_number)
             return True
         return False
+
+    def get_session_output(self, issue_number: int, lines: int = 50) -> str | None:
+        """Get recent output from an iTerm2 tab.
+
+        Uses AppleScript to retrieve terminal content from the session.
+
+        Args:
+            issue_number: The issue number identifying the session
+            lines: Number of lines to retrieve (default 50)
+
+        Returns:
+            Terminal output as string, or None if not available
+        """
+        from .naming import iterm_tab_prefix
+        tab_prefix = iterm_tab_prefix(issue_number)
+
+        # Use "tell application id" to avoid activating iTerm and stealing focus
+        script = f'''
+        tell application id "com.googlecode.iterm2"
+            tell current window
+                repeat with t in tabs
+                    tell current session of t
+                        if name contains "{tab_prefix}" then
+                            set sessionContents to contents
+                            return sessionContents
+                        end if
+                    end tell
+                end repeat
+            end tell
+        end tell
+        return ""
+        '''
+        success, output = run_applescript(script)
+        if not success or not output:
+            logger.debug("Could not get output for session #%d: %s", issue_number, output if not success else "empty")
+            return None
+
+        # Return last N lines
+        all_lines = output.strip().split('\n')
+        if len(all_lines) > lines:
+            return '\n'.join(all_lines[-lines:])
+        return output.strip()
 
     def list_sessions(self) -> list[int]:
         """List all tracked issue numbers."""

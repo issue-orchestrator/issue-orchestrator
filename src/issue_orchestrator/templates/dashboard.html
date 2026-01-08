@@ -59,6 +59,19 @@
         .btn-warning { background: #9e6a03; border-color: #9e6a03; color: #fff; }
         .btn-primary { background: #238636; border-color: #238636; color: #fff; }
 
+        /* Focus styles for keyboard navigation */
+        button:focus-visible,
+        .issue-row:focus-visible,
+        .settings-menu-item:focus-visible,
+        .context-menu-item:focus-visible {
+            outline: 2px solid #58a6ff;
+            outline-offset: 2px;
+        }
+        .tab:focus-visible {
+            outline: 2px solid #58a6ff;
+            outline-offset: -2px;
+        }
+
         /* Tab Bar */
         .tab-bar {
             display: flex;
@@ -200,8 +213,11 @@
             padding: 2px 6px;
             border-radius: 4px;
             transition: all 0.15s ease;
+            background: none;
+            border: none;
         }
-        .issue-kill-btn:hover {
+        .issue-kill-btn:hover,
+        .issue-kill-btn:focus-visible {
             color: #f85149;
             background: rgba(248, 81, 73, 0.15);
         }
@@ -222,136 +238,6 @@
             padding: 48px;
             text-align: center;
             color: #8b949e;
-        }
-
-        /* System Panel */
-        .system-panel { display: none; }
-        .system-panel.active { display: block; }
-        .system-card {
-            border: 1px solid #21262d;
-            border-radius: 8px;
-            margin-bottom: 16px;
-            overflow: hidden;
-        }
-        .system-card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px 16px;
-            background: #161b22;
-            border-bottom: 1px solid #21262d;
-            font-weight: 600;
-            font-size: 13px;
-        }
-        .system-card-body { padding: 16px; }
-        .system-status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 16px;
-        }
-        .system-stat {
-            padding: 12px;
-            background: #0d1117;
-            border-radius: 6px;
-        }
-        .system-stat-label {
-            font-size: 11px;
-            color: #8b949e;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-        }
-        .system-stat-value {
-            font-size: 16px;
-            font-weight: 600;
-            font-family: monospace;
-        }
-        .system-stat-value.status-running { color: #3fb950; }
-        .system-stat-value.status-stopped { color: #8b949e; }
-        .system-stat-value.status-failed { color: #f85149; }
-        .system-controls {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .system-controls button {
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 13px;
-            cursor: pointer;
-            border: 1px solid #30363d;
-            background: #21262d;
-            color: #c9d1d9;
-        }
-        .system-controls button:hover:not(:disabled) { background: #30363d; }
-        .system-controls button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .system-controls button.btn-danger {
-            border-color: #f85149;
-            color: #f85149;
-        }
-        .system-controls button.btn-danger:hover:not(:disabled) {
-            background: #f8514920;
-        }
-        .error-panel {
-            background: #2d1b1b;
-            border: 1px solid #f85149;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 16px;
-        }
-        .error-panel-title {
-            color: #f85149;
-            font-weight: 600;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .error-panel-body {
-            font-size: 13px;
-            color: #c9d1d9;
-        }
-        .error-panel-fix {
-            margin-top: 12px;
-            padding: 8px 12px;
-            background: #0d1117;
-            border-radius: 4px;
-            font-size: 12px;
-            font-family: monospace;
-        }
-        .log-viewer {
-            background: #0d1117;
-            border-radius: 6px;
-            font-family: monospace;
-            font-size: 11px;
-            max-height: 400px;
-            overflow-y: auto;
-            padding: 12px;
-        }
-        .log-line {
-            padding: 2px 0;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-        .log-controls {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 8px;
-        }
-        .log-controls label {
-            font-size: 12px;
-            color: #8b949e;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .recovered-badge {
-            background: #9e6a03;
-            color: #fff;
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 4px;
-            text-transform: uppercase;
         }
 
         /* Create Issue Modal */
@@ -450,6 +336,194 @@
         }
         .checkbox-group input { width: 16px; height: 16px; }
 
+        /* Blocked Issues Modal */
+        .blocked-modal { max-width: 700px; }
+        .blocked-modal .modal-body { padding: 0; }
+        .blocked-item-actions { display: flex; gap: 8px; margin-left: auto; }
+        .blocked-item-actions .diagnose-btn {
+            font-size: 11px;
+            padding: 2px 8px;
+            background: var(--accent-bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            cursor: pointer;
+            color: var(--fg);
+        }
+        .blocked-item-actions .diagnose-btn:hover {
+            background: var(--border);
+        }
+        .diagnosis-panel {
+            background: var(--dim-bg);
+            padding: 12px;
+            margin: 8px 0 0 28px;
+            border-radius: 4px;
+            font-size: 12px;
+            display: none;
+        }
+        .diagnosis-panel.visible { display: block; }
+        .diagnosis-panel .diagnosis-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+        .diagnosis-panel .diagnosis-label {
+            color: var(--dim);
+            min-width: 100px;
+        }
+        .diagnosis-panel .diagnosis-value {
+            word-break: break-all;
+        }
+        .diagnosis-panel .diagnosis-warning {
+            color: var(--badge-warning-bg);
+            margin-top: 8px;
+            padding: 4px 8px;
+            background: rgba(255, 152, 0, 0.1);
+            border-radius: 4px;
+        }
+        .diagnosis-panel .diagnosis-suggestion {
+            color: var(--accent);
+            margin-top: 4px;
+        }
+        .diagnosis-panel .open-log-btn {
+            margin-top: 8px;
+            padding: 4px 12px;
+            font-size: 11px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .diagnosis-panel .open-log-btn:hover { opacity: 0.9; }
+        .diagnosis-panel .open-log-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .blocked-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 20px;
+            border-bottom: 1px solid #30363d;
+            background: #0d1117;
+        }
+        .blocked-select-all {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #c9d1d9;
+        }
+        .blocked-select-all input { width: 16px; height: 16px; cursor: pointer; }
+        .blocked-list { max-height: 400px; overflow-y: auto; }
+        .blocked-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 20px;
+            border-bottom: 1px solid #21262d;
+            transition: background 0.15s;
+        }
+        .blocked-item:hover { background: #161b22; }
+        .blocked-item input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            margin-top: 2px;
+            flex-shrink: 0;
+        }
+        .blocked-item-content { flex: 1; min-width: 0; }
+        .blocked-item-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 4px;
+        }
+        .blocked-item-num {
+            font-weight: 600;
+            color: #58a6ff;
+            text-decoration: none;
+        }
+        .blocked-item-num:hover { text-decoration: underline; }
+        .blocked-item-label {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: #b62324;
+            color: #fff;
+        }
+        .blocked-item-label.needs-human {
+            background: #9e6a03;
+        }
+        .blocked-item-title {
+            font-size: 13px;
+            color: #c9d1d9;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .blocked-item-reason {
+            font-size: 12px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+        .blocked-warning {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: #1c1407;
+            border-top: 1px solid #3d2f05;
+            font-size: 12px;
+            color: #d29922;
+        }
+        .blocked-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            padding: 16px 20px;
+            border-top: 1px solid #30363d;
+        }
+        .blocked-footer .btn-cancel {
+            padding: 10px 20px;
+            font-size: 14px;
+            background: transparent;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .blocked-footer .btn-cancel:hover { border-color: #8b949e; }
+        .blocked-footer .btn-unblock {
+            padding: 10px 20px;
+            font-size: 14px;
+            background: #238636;
+            border: 1px solid #238636;
+            color: #fff;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .blocked-footer .btn-unblock:hover { background: #2ea043; }
+        .blocked-footer .btn-unblock:disabled {
+            background: #21262d;
+            border-color: #30363d;
+            color: #8b949e;
+            cursor: not-allowed;
+        }
+        .blocked-empty {
+            padding: 40px 20px;
+            text-align: center;
+            color: #8b949e;
+        }
+        .manage-blocked-btn {
+            padding: 4px 10px;
+            font-size: 12px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-left: 12px;
+        }
+        .manage-blocked-btn:hover { background: #30363d; border-color: #8b949e; }
+
         /* Pagination */
         .pagination {
             display: flex;
@@ -502,8 +576,13 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            width: 100%;
+            background: none;
+            border: none;
+            text-align: left;
         }
-        .context-menu-item:hover { background: #30363d; }
+        .context-menu-item:hover,
+        .context-menu-item:focus-visible { background: #30363d; }
         .context-menu-item.disabled { color: #484f58; cursor: default; }
         .context-menu-item.disabled:hover { background: transparent; }
         .context-menu-divider { height: 1px; background: #30363d; margin: 4px 0; }
@@ -568,8 +647,13 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            width: 100%;
+            background: none;
+            border: none;
+            text-align: left;
         }
-        .settings-menu-item:hover { background: #30363d; }
+        .settings-menu-item:hover,
+        .settings-menu-item:focus-visible { background: #30363d; }
         .settings-divider { height: 1px; background: #30363d; margin: 4px 0; }
 
         /* Modal */
@@ -654,9 +738,26 @@
             opacity: 1;
         }
         .toast.error { background: #f85149; }
+
+        /* Skip link for keyboard navigation */
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            background: #58a6ff;
+            color: #0d1117;
+            padding: 8px 16px;
+            z-index: 10000;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .skip-link:focus {
+            top: 0;
+        }
     </style>
 </head>
 <body>
+    <a href="#issueList" class="skip-link">Skip to main content</a>
     <div class="container">
         <header>
             <div class="header-left">
@@ -689,25 +790,30 @@
             </div>
             <div class="controls">
                 <button class="create-issue-btn" onclick="openCreateIssueModal()">+ Create Issue</button>
-                <button class="settings-btn" onclick="toggleSettingsMenu(event)">☰</button>
+                <button class="settings-btn" onclick="toggleSettingsMenu(event)" aria-label="Open menu" aria-haspopup="true">☰</button>
             </div>
         </header>
 
-        <div class="tab-bar">
-            <button class="tab {% if active_tab == 'work' %}active{% endif %}" onclick="switchTab('work')">
+        <div class="tab-bar" role="tablist" aria-label="Dashboard sections">
+            <button class="tab {% if active_tab == 'work' %}active{% endif %}" onclick="switchTab('work')" role="tab" aria-selected="{% if active_tab == 'work' %}true{% else %}false{% endif %}" aria-controls="issueList">
                 Work
             </button>
-            <button class="tab {% if active_tab == 'problems' %}active{% endif %}" onclick="switchTab('problems')">
-                Problems
-                <span class="tab-badge {% if problem_count == 0 %}empty{% endif %}">{{ problem_count }}</span>
+            <button class="tab {% if active_tab == 'attention' %}active{% endif %}" onclick="switchTab('attention')" role="tab" aria-selected="{% if active_tab == 'attention' %}true{% else %}false{% endif %}" aria-controls="issueList">
+                Needs Attention
+                <span class="tab-badge {% if attention_count == 0 %}empty{% endif %}" aria-label="{{ attention_count }} items need attention">{{ attention_count }}</span>
             </button>
-            <button class="tab {% if active_tab == 'system' %}active{% endif %}" onclick="switchTab('system')">
-                System
+            {% if attention_count > 0 %}
+            <button class="manage-blocked-btn" onclick="openBlockedModal()" title="Manage blocked issues">
+                Manage Blocked
+            </button>
+            {% endif %}
+            <button class="tab {% if active_tab == 'history' %}active{% endif %}" onclick="switchTab('history')" role="tab" aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}" aria-controls="issueList">
+                History
             </button>
         </div>
 
-        <div class="issue-list">
-            <div class="issue-header">
+        <div class="issue-list" id="issueList" role="tabpanel" aria-label="Issue list">
+            <div class="issue-header" role="row" aria-hidden="true">
                 <span>Issue</span>
                 <span>Status</span>
                 <span>Title</span>
@@ -725,6 +831,9 @@
             {% elif issues %}
             {% for issue in issues %}
             <div class="issue-row {% if issue.status == 'active' %}active-row{% elif issue.status == 'slow' %}slow-row{% endif %}"
+                 role="button"
+                 tabindex="0"
+                 aria-label="Issue #{{ issue.issue_number }}: {{ issue.title }}. Status: {{ issue.status_label }}. {{ issue.action_hint }}"
                  data-status="{{ issue.status }}"
                  data-issue="{{ issue.issue_number }}"
                  data-title="{{ issue.title }}"
@@ -741,21 +850,22 @@
                  data-dependency-summary="{{ issue.dependency_summary if issue.dependency_summary else '' }}"
                  title="{{ issue.action_hint }}"
                  onclick="handleClick(this)"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();handleClick(this);}"
                  oncontextmenu="showContextMenu(event, this)">
-                <span class="issue-num">#{{ issue.issue_number }}{% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}">⛓</span>{% endif %}<span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="">⚠</span><span class="stale-warning-icon" id="stale-warning-{{ issue.issue_number }}" style="display:none;" title="">🔄</span></span>
+                <span class="issue-num">#{{ issue.issue_number }}{% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}" aria-label="Has dependencies: {{ issue.dependency_summary }}">⛓</span>{% endif %}<span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">⚠</span><span class="stale-warning-icon" id="stale-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">🔄</span></span>
                 <span class="issue-status status-{{ issue.status }}" title="{{ issue.status_reason if issue.status_reason else '' }}">
-                    <span class="status-dot"></span>
+                    <span class="status-dot" aria-hidden="true"></span>
                     {{ issue.status_label }}
                 </span>
                 <span class="issue-title" title="{{ issue.title }}">{{ issue.title }}</span>
                 <span class="issue-agent">{{ issue.agent_type }}</span>
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
                 {% if issue.has_terminal %}
-                <span class="issue-kill-btn" onclick="killSession({{ issue.issue_number }}, event)" title="Force kill session">
+                <button class="issue-kill-btn" onclick="killSession({{ issue.issue_number }}, event)" aria-label="Force kill session for issue #{{ issue.issue_number }}" title="Force kill session">
                     ⏹
-                </span>
+                </button>
                 {% endif %}
-                <span class="issue-action">
+                <span class="issue-action" aria-hidden="true" title="{{ issue.action_hint }}">
                     {% if issue.action == 'focus' %}
                     <span>👁</span><span class="action-arrow">→</span>
                     {% else %}
@@ -766,90 +876,15 @@
             {% endfor %}
             {% else %}
             <div class="empty-state">
-                {% if active_tab == 'problems' %}
-                No problems - all systems running smoothly! 🎉
+                {% if active_tab == 'attention' %}
+                Nothing needs attention - all systems running smoothly! 🎉
+                {% elif active_tab == 'history' %}
+                No session history yet
                 {% else %}
-                No issues to display
+                No issues in queue
                 {% endif %}
             </div>
             {% endif %}
-        </div>
-
-        <!-- System Panel (hidden unless system tab is active) -->
-        <div class="system-panel {% if active_tab == 'system' %}active{% endif %}" id="systemPanel">
-            <!-- Error Panel (shown if last startup failed) -->
-            <div class="error-panel" id="errorPanel" style="display:none;">
-                <div class="error-panel-title">
-                    <span>⚠️</span> Last Startup Failed
-                </div>
-                <div class="error-panel-body" id="errorMessage"></div>
-                <div class="error-panel-fix" id="errorFix" style="display:none;"></div>
-            </div>
-
-            <!-- Status Card -->
-            <div class="system-card">
-                <div class="system-card-header">
-                    <span>Orchestrator Status</span>
-                    <span id="recoveredBadge" class="recovered-badge" style="display:none;">Recovered</span>
-                </div>
-                <div class="system-card-body">
-                    <div class="system-status-grid">
-                        <div class="system-stat">
-                            <div class="system-stat-label">State</div>
-                            <div class="system-stat-value status-running" id="systemState">Running</div>
-                        </div>
-                        <div class="system-stat">
-                            <div class="system-stat-label">PID</div>
-                            <div class="system-stat-value" id="systemPid">-</div>
-                        </div>
-                        <div class="system-stat">
-                            <div class="system-stat-label">Port</div>
-                            <div class="system-stat-value" id="systemPort">-</div>
-                        </div>
-                        <div class="system-stat">
-                            <div class="system-stat-label">Started</div>
-                            <div class="system-stat-value" id="systemStarted">-</div>
-                        </div>
-                    </div>
-                    <div class="system-controls" style="margin-top: 16px;">
-                        <button onclick="pauseOrchestrator()" id="pauseBtn">
-                            {% if paused %}▶ Resume{% else %}⏸ Pause{% endif %}
-                        </button>
-                        <button onclick="refreshFromGitHub()">🔄 Refresh</button>
-                        <button onclick="restartOrchestrator()">♻️ Restart</button>
-                        <button onclick="stopOrchestrator()" class="btn-danger">⏹ Stop</button>
-                        <button onclick="forceStopOrchestrator()" class="btn-danger">⚡ Force Stop</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Log Viewer Card -->
-            <div class="system-card">
-                <div class="system-card-header">
-                    <span>Orchestrator Log</span>
-                    <div class="log-controls">
-                        <label>
-                            <input type="checkbox" id="logAutoRefresh" checked>
-                            Auto-refresh
-                        </label>
-                        <button onclick="refreshLogs()" style="font-size:12px;padding:4px 8px;">Refresh</button>
-                    </div>
-                </div>
-                <div class="system-card-body">
-                    <div class="log-viewer" id="logViewer">
-                        <div class="log-line" style="color:#8b949e;">Loading logs...</div>
-                    </div>
-                    <div class="log-controls" style="margin-top:8px;">
-                        <span id="logInfo" style="font-size:11px;color:#8b949e;"></span>
-                        <select id="logLines" onchange="refreshLogs()" style="background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:4px;border-radius:4px;">
-                            <option value="50">50 lines</option>
-                            <option value="100">100 lines</option>
-                            <option value="200" selected>200 lines</option>
-                            <option value="500">500 lines</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
         </div>
 
         <!-- Create Issue Modal -->
@@ -926,89 +961,89 @@
     </div>
 
     <!-- Context Menu -->
-    <div class="context-menu" id="contextMenu">
-        <div class="context-menu-item" id="menuFocus">
-            <span>→</span> Focus iTerm2 Tab
+    <div class="context-menu" id="contextMenu" role="menu" aria-label="Issue actions">
+        <div class="context-menu-item" id="menuFocus" role="menuitem" tabindex="0">
+            <span aria-hidden="true">→</span> Focus iTerm2 Tab
         </div>
-        <div class="context-menu-item" id="menuFinder">
-            <span>📂</span> Open Worktree in Finder
+        <div class="context-menu-item" id="menuFinder" role="menuitem" tabindex="0">
+            <span aria-hidden="true">📂</span> Open Worktree in Finder
         </div>
-        <div class="context-menu-item" id="menuLog">
-            <span>📋</span> View Session Log
+        <div class="context-menu-item" id="menuLog" role="menuitem" tabindex="0">
+            <span aria-hidden="true">📋</span> View Session Log
         </div>
-        <div class="context-menu-item" id="menuPrompt">
-            <span>📝</span> Open Agent Prompt
+        <div class="context-menu-item" id="menuPrompt" role="menuitem" tabindex="0">
+            <span aria-hidden="true">📝</span> Open Agent Prompt
         </div>
-        <div class="context-menu-item" id="menuKill" style="display:none;">
-            <span style="color:#f85149;">⏹</span> Kill Session
+        <div class="context-menu-item" id="menuKill" role="menuitem" tabindex="0" style="display:none;">
+            <span style="color:#f85149;" aria-hidden="true">⏹</span> Kill Session
         </div>
-        <div class="context-menu-divider"></div>
-        <div class="context-menu-item" id="menuIssue">
-            <span>🔗</span> Open Issue on GitHub
+        <div class="context-menu-divider" role="separator"></div>
+        <div class="context-menu-item" id="menuIssue" role="menuitem" tabindex="0">
+            <span aria-hidden="true">🔗</span> Open Issue on GitHub
         </div>
-        <div class="context-menu-item" id="menuPR">
-            <span>🔀</span> Open PR on GitHub
+        <div class="context-menu-item" id="menuPR" role="menuitem" tabindex="0">
+            <span aria-hidden="true">🔀</span> Open PR on GitHub
         </div>
-        <div class="context-menu-divider" id="menuDepsDivider" style="display:none;"></div>
+        <div class="context-menu-divider" id="menuDepsDivider" role="separator" style="display:none;"></div>
         <div class="context-menu-label" id="menuDepsLabel" style="display:none;">
-            <span>⛓</span> Dependencies
+            <span aria-hidden="true">⛓</span> Dependencies
         </div>
         <div id="menuDepsContainer">
             <!-- Dependency items will be dynamically inserted here -->
         </div>
-        <div class="context-menu-divider" id="menuHistoryDivider" style="display:none;"></div>
-        <div class="context-menu-item" id="menuRetry" style="display:none;">
-            <span>🔄</span> Retry Issue
+        <div class="context-menu-divider" id="menuHistoryDivider" role="separator" style="display:none;"></div>
+        <div class="context-menu-item" id="menuRetry" role="menuitem" tabindex="0" style="display:none;">
+            <span aria-hidden="true">🔄</span> Retry Issue
         </div>
-        <div class="context-menu-item" id="menuDismiss" style="display:none;">
-            <span>✕</span> Dismiss
+        <div class="context-menu-item" id="menuDismiss" role="menuitem" tabindex="0" style="display:none;">
+            <span aria-hidden="true">✕</span> Dismiss
         </div>
     </div>
 
     <!-- Actions Menu -->
-    <div class="settings-menu" id="settingsMenu">
-        <div class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()">
+    <div class="settings-menu" id="settingsMenu" role="menu" aria-label="Actions menu">
+        <button class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()" role="menuitem">
             {% if paused %}
-            <span>▶</span> Resume
+            <span aria-hidden="true">▶</span> Resume
             {% else %}
-            <span>⏸</span> Pause
+            <span aria-hidden="true">⏸</span> Pause
             {% endif %}
-        </div>
-        <div class="settings-menu-item" onclick="refreshFromGitHub()">
-            <span>🔄</span> Refresh from GitHub
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="shutdown()">
-            <span>⏻</span> Shutdown
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="showInfo()">
-            <span>ℹ</span> About / Version
-        </div>
-        <div class="settings-menu-item" onclick="showConfig()">
-            <span>📄</span> View Config
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="createTestIssues()">
-            <span>🧪</span> Create Test Issues
-        </div>
-        <div class="settings-menu-item" onclick="cleanupTestIssues()">
-            <span>🧹</span> Cleanup Test Issues
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="clearHistory()">
-            <span>🗑</span> Clear History
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-menu-item" onclick="showDoctor()">
-            <span>🩺</span> Run Doctor
-        </div>
-        <div class="settings-menu-item" onclick="showDebug()">
-            <span>🔧</span> Debug Info
-        </div>
-        <div class="settings-menu-item" onclick="openRepo()">
-            <span>↗</span> Open Repo on GitHub
-        </div>
+        </button>
+        <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem">
+            <span aria-hidden="true">🔄</span> Refresh from GitHub
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="shutdown()" role="menuitem">
+            <span aria-hidden="true">⏻</span> Shutdown
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="showInfo()" role="menuitem">
+            <span aria-hidden="true">ℹ</span> About / Version
+        </button>
+        <button class="settings-menu-item" onclick="showConfig()" role="menuitem">
+            <span aria-hidden="true">📄</span> View Config
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="createTestIssues()" role="menuitem">
+            <span aria-hidden="true">🧪</span> Create Test Issues
+        </button>
+        <button class="settings-menu-item" onclick="cleanupTestIssues()" role="menuitem">
+            <span aria-hidden="true">🧹</span> Cleanup Test Issues
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="clearHistory()" role="menuitem">
+            <span aria-hidden="true">🗑</span> Clear History
+        </button>
+        <div class="settings-divider" role="separator"></div>
+        <button class="settings-menu-item" onclick="showDoctor()" role="menuitem">
+            <span aria-hidden="true">🩺</span> Run Doctor
+        </button>
+        <button class="settings-menu-item" onclick="showDebug()" role="menuitem">
+            <span aria-hidden="true">🔧</span> Debug Info
+        </button>
+        <button class="settings-menu-item" onclick="openRepo()" role="menuitem">
+            <span aria-hidden="true">↗</span> Open Repo on GitHub
+        </button>
     </div>
 
     <!-- Modal -->
@@ -1020,6 +1055,37 @@
             </div>
             <div class="modal-body" id="modalBody">
                 <!-- Content loaded dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Blocked Issues Modal -->
+    <div class="modal-overlay" id="blockedModal" onclick="closeBlockedModal(event)">
+        <div class="modal blocked-modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Blocked Issues</h2>
+                <button class="modal-close" onclick="closeBlockedModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="blocked-header-row">
+                    <label class="blocked-select-all">
+                        <input type="checkbox" id="blockedSelectAll" onchange="toggleSelectAllBlocked()">
+                        <span id="blockedSelectAllLabel">Select All</span>
+                    </label>
+                </div>
+                <div class="blocked-list" id="blockedList">
+                    <!-- Items populated by JavaScript -->
+                </div>
+                <div class="blocked-warning" id="blockedWarning" style="display: none;">
+                    <span aria-hidden="true">⚠️</span>
+                    <span id="blockedWarningText"></span>
+                </div>
+            </div>
+            <div class="blocked-footer">
+                <button class="btn-cancel" onclick="closeBlockedModal()">Cancel</button>
+                <button class="btn-unblock" id="blockedUnblockBtn" onclick="unblockSelectedIssues()" disabled>
+                    Unblock &amp; Retry (0)
+                </button>
             </div>
         </div>
     </div>
@@ -1038,7 +1104,17 @@
             const url = row.dataset.url;
 
             if (action === 'focus') {
-                await fetch(`/api/focus/${issueNumber}`, { method: 'POST' });
+                try {
+                    const res = await fetch(`/api/focus/${issueNumber}`, { method: 'POST' });
+                    const data = await res.json();
+                    if (data.status === 'focused') {
+                        showToast(`Focused session #${issueNumber} in iTerm2`);
+                    } else if (data.error) {
+                        showToast(`Could not focus: ${data.error}`, 'error');
+                    }
+                } catch (err) {
+                    showToast('Failed to focus session', 'error');
+                }
             } else if (url) {
                 window.open(url, '_blank');
             }
@@ -1383,6 +1459,16 @@
             };
         })();
 
+        // Helper to add keyboard support to menu items
+        function addKeyboardSupport(element) {
+            element.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    element.click();
+                }
+            });
+        }
+
         // Context menu
         const contextMenu = document.getElementById('contextMenu');
         const menuFocus = document.getElementById('menuFocus');
@@ -1399,6 +1485,9 @@
         const menuDepsLabel = document.getElementById('menuDepsLabel');
         const menuDepsContainer = document.getElementById('menuDepsContainer');
         let currentRow = null;
+
+        // Add keyboard support to all context menu items
+        [menuFocus, menuFinder, menuLog, menuPrompt, menuKill, menuIssue, menuPR, menuRetry, menuDismiss].forEach(addKeyboardSupport);
 
         function showContextMenu(e, row) {
             e.preventDefault();
@@ -1663,6 +1752,285 @@
             }
         }
 
+        // Blocked Issues Modal Functions
+        let blockedIssuesData = [];
+        const blockedModal = document.getElementById('blockedModal');
+        const blockedList = document.getElementById('blockedList');
+        const blockedSelectAll = document.getElementById('blockedSelectAll');
+        const blockedSelectAllLabel = document.getElementById('blockedSelectAllLabel');
+        const blockedWarning = document.getElementById('blockedWarning');
+        const blockedWarningText = document.getElementById('blockedWarningText');
+        const blockedUnblockBtn = document.getElementById('blockedUnblockBtn');
+
+        async function openBlockedModal() {
+            // Fetch blocked issues
+            try {
+                const res = await fetch('/api/blocked-issues');
+                const data = await res.json();
+                blockedIssuesData = data.blocked_issues || [];
+            } catch (err) {
+                console.error('Failed to fetch blocked issues:', err);
+                blockedIssuesData = [];
+            }
+
+            renderBlockedList();
+            blockedModal.classList.add('visible');
+        }
+
+        function closeBlockedModal(e) {
+            if (!e || e.target === blockedModal) {
+                blockedModal.classList.remove('visible');
+            }
+        }
+
+        function renderBlockedList() {
+            if (blockedIssuesData.length === 0) {
+                blockedList.innerHTML = '<div class="blocked-empty">No blocked issues found</div>';
+                blockedSelectAll.checked = false;
+                blockedSelectAll.disabled = true;
+                updateBlockedButton();
+                return;
+            }
+
+            blockedSelectAll.disabled = false;
+            const needsHumanCount = blockedIssuesData.filter(i => i.needs_human).length;
+
+            let html = '';
+            for (const issue of blockedIssuesData) {
+                const labelClass = issue.needs_human ? 'needs-human' : '';
+                const reason = issue.failure_reason || issue.blocking_label;
+                html += `
+                    <div class="blocked-item-container" id="blocked-container-${issue.issue_number}">
+                        <div class="blocked-item">
+                            <input type="checkbox"
+                                   id="blocked-${issue.issue_number}"
+                                   data-issue="${issue.issue_number}"
+                                   data-needs-human="${issue.needs_human}"
+                                   ${issue.needs_human ? '' : 'checked'}
+                                   onchange="updateBlockedSelection()">
+                            <div class="blocked-item-content">
+                                <div class="blocked-item-header">
+                                    <a href="${issue.issue_url}" target="_blank" class="blocked-item-num">#${issue.issue_number}</a>
+                                    <span class="blocked-item-label ${labelClass}">${issue.blocking_label}</span>
+                                </div>
+                                <div class="blocked-item-title">${escapeHtml(issue.title)}</div>
+                                ${reason ? `<div class="blocked-item-reason">${escapeHtml(reason)}</div>` : ''}
+                            </div>
+                            <div class="blocked-item-actions">
+                                <button class="diagnose-btn" onclick="toggleDiagnosis(${issue.issue_number}, event)">Diagnose</button>
+                            </div>
+                        </div>
+                        <div class="diagnosis-panel" id="diagnosis-${issue.issue_number}">
+                            <div class="diagnosis-loading">Loading diagnosis...</div>
+                        </div>
+                    </div>
+                `;
+            }
+            blockedList.innerHTML = html;
+
+            // Show warning if there are needs-human issues
+            if (needsHumanCount > 0) {
+                blockedWarning.style.display = 'flex';
+                blockedWarningText.textContent = `${needsHumanCount} issue${needsHumanCount > 1 ? 's' : ''} marked 'needs-human' - review before retrying`;
+            } else {
+                blockedWarning.style.display = 'none';
+            }
+
+            updateBlockedSelection();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function toggleSelectAllBlocked() {
+            const checkboxes = blockedList.querySelectorAll('input[type="checkbox"]');
+            const isChecked = blockedSelectAll.checked;
+            checkboxes.forEach(cb => cb.checked = isChecked);
+            updateBlockedButton();
+        }
+
+        function updateBlockedSelection() {
+            const checkboxes = blockedList.querySelectorAll('input[type="checkbox"]');
+            const checkedBoxes = blockedList.querySelectorAll('input[type="checkbox"]:checked');
+            const allChecked = checkboxes.length > 0 && checkboxes.length === checkedBoxes.length;
+            const someChecked = checkedBoxes.length > 0;
+
+            blockedSelectAll.checked = allChecked;
+            blockedSelectAll.indeterminate = someChecked && !allChecked;
+            blockedSelectAllLabel.textContent = `Select All (${blockedIssuesData.length})`;
+
+            updateBlockedButton();
+        }
+
+        function updateBlockedButton() {
+            const checkedBoxes = blockedList.querySelectorAll('input[type="checkbox"]:checked');
+            const count = checkedBoxes.length;
+            blockedUnblockBtn.disabled = count === 0;
+            blockedUnblockBtn.textContent = `Unblock & Retry (${count})`;
+        }
+
+        async function unblockSelectedIssues() {
+            const checkedBoxes = blockedList.querySelectorAll('input[type="checkbox"]:checked');
+            const issueNumbers = Array.from(checkedBoxes).map(cb => parseInt(cb.dataset.issue));
+
+            if (issueNumbers.length === 0) return;
+
+            // Confirm
+            const needsHumanSelected = Array.from(checkedBoxes).filter(cb => cb.dataset.needsHuman === 'true').length;
+            let confirmMsg = `Unblock and retry ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}?`;
+            if (needsHumanSelected > 0) {
+                confirmMsg += `\n\n⚠️ ${needsHumanSelected} issue${needsHumanSelected > 1 ? 's have' : ' has'} 'needs-human' label - make sure you've addressed the concern.`;
+            }
+            if (!confirm(confirmMsg)) return;
+
+            // Disable button during request
+            blockedUnblockBtn.disabled = true;
+            blockedUnblockBtn.textContent = 'Unblocking...';
+
+            try {
+                const res = await fetch('/api/unblock-retry', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ issues: issueNumbers }),
+                });
+                const data = await res.json();
+
+                if (data.unblocked && data.unblocked.length > 0) {
+                    showToast(`Unblocked ${data.unblocked.length} issue${data.unblocked.length > 1 ? 's' : ''}`);
+                    closeBlockedModal();
+                    // Reload to show updated state
+                    setTimeout(() => location.reload(), 500);
+                } else if (data.failed && data.failed.length > 0) {
+                    showToast(`Failed to unblock some issues: ${data.failed.map(f => f.error).join(', ')}`, 'error');
+                }
+            } catch (err) {
+                console.error('Failed to unblock issues:', err);
+                showToast('Failed to unblock issues', 'error');
+            }
+
+            updateBlockedButton();
+        }
+
+        // Diagnosis functionality
+        const diagnosisCache = {};  // Cache diagnosis data
+
+        async function toggleDiagnosis(issueNumber, event) {
+            event.stopPropagation();
+            const panel = document.getElementById(`diagnosis-${issueNumber}`);
+            const btn = event.target;
+
+            if (panel.classList.contains('visible')) {
+                panel.classList.remove('visible');
+                btn.textContent = 'Diagnose';
+                return;
+            }
+
+            // Show loading
+            panel.classList.add('visible');
+            btn.textContent = 'Hide';
+            panel.innerHTML = '<div class="diagnosis-loading">Analyzing session logs...</div>';
+
+            // Fetch diagnosis if not cached
+            if (!diagnosisCache[issueNumber]) {
+                try {
+                    const res = await fetch(`/api/failure-diagnosis/${issueNumber}`);
+                    diagnosisCache[issueNumber] = await res.json();
+                } catch (err) {
+                    panel.innerHTML = `<div class="diagnosis-error">Failed to load diagnosis: ${err.message}</div>`;
+                    return;
+                }
+            }
+
+            renderDiagnosis(issueNumber, diagnosisCache[issueNumber]);
+        }
+
+        function renderDiagnosis(issueNumber, data) {
+            const panel = document.getElementById(`diagnosis-${issueNumber}`);
+            if (!panel) return;
+
+            let html = '<div class="diagnosis-content">';
+
+            // Basic info
+            html += `
+                <div class="diagnosis-row">
+                    <span class="diagnosis-label">AI System:</span>
+                    <span class="diagnosis-value">${data.ai_system || 'unknown'}</span>
+                </div>
+                <div class="diagnosis-row">
+                    <span class="diagnosis-label">Permission Mode:</span>
+                    <span class="diagnosis-value">${data.permission_mode || 'unknown'}</span>
+                </div>
+            `;
+
+            // Warnings
+            if (data.warnings && data.warnings.length > 0) {
+                html += '<div class="diagnosis-warnings">';
+                for (const warning of data.warnings) {
+                    html += `<div class="diagnosis-warning">⚠️ ${escapeHtml(warning)}</div>`;
+                }
+                html += '</div>';
+            }
+
+            // Suggestions
+            if (data.suggestions && data.suggestions.length > 0) {
+                html += '<div class="diagnosis-suggestions">';
+                for (const suggestion of data.suggestions) {
+                    html += `<div class="diagnosis-suggestion">💡 ${escapeHtml(suggestion)}</div>`;
+                }
+                // Add suggestion to try without -p flag for debugging
+                html += `<div class="diagnosis-suggestion">💡 To debug interactively, remove -p flag from agent command to see Claude's UI directly</div>`;
+                html += '</div>';
+            }
+
+            // Log context preview
+            if (data.log_context) {
+                html += `
+                    <div class="diagnosis-row" style="margin-top: 8px;">
+                        <span class="diagnosis-label">Log Analysis:</span>
+                    </div>
+                    <pre style="font-size: 11px; max-height: 200px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 4px; white-space: pre-wrap;">${escapeHtml(data.log_context)}</pre>
+                `;
+            }
+
+            // Open log button
+            if (data.log_path && data.log_exists) {
+                html += `
+                    <button class="open-log-btn" onclick="openLogFile('${escapeHtml(data.log_path)}')">
+                        Open Log File
+                    </button>
+                `;
+            } else {
+                html += `
+                    <div style="margin-top: 8px; font-size: 11px; color: var(--dim);">
+                        Log file: ${data.log_path ? 'Not found at ' + escapeHtml(data.log_path) : 'No log path available'}
+                    </div>
+                `;
+            }
+
+            html += '</div>';
+            panel.innerHTML = html;
+        }
+
+        function openLogFile(path) {
+            // Use macOS 'open' command via a simple API call
+            fetch('/api/open-file', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: path }),
+            }).then(res => res.json()).then(data => {
+                if (data.error) {
+                    showToast(`Could not open file: ${data.error}`, 'error');
+                } else {
+                    showToast('Opening log file...');
+                }
+            }).catch(err => {
+                showToast(`Failed to open file: ${err.message}`, 'error');
+            });
+        }
+
         async function showInfo() {
             settingsMenu.classList.remove('visible');
             const res = await fetch('/api/info');
@@ -1790,171 +2158,6 @@
             toast.classList.toggle('error', isError);
             toast.classList.add('visible');
             setTimeout(() => toast.classList.remove('visible'), 2500);
-        }
-
-        // System Panel Functions
-        const repoRoot = '{{ repo_root | default("") }}';
-
-        async function loadSystemStatus() {
-            if (!repoRoot) return;
-            try {
-                const res = await fetch(`/control/orchestrator/status?repo_root=${encodeURIComponent(repoRoot)}`);
-                const data = await res.json();
-
-                const stateEl = document.getElementById('systemState');
-                const pidEl = document.getElementById('systemPid');
-                const portEl = document.getElementById('systemPort');
-                const startedEl = document.getElementById('systemStarted');
-                const recoveredEl = document.getElementById('recoveredBadge');
-
-                stateEl.textContent = data.state ? data.state.charAt(0).toUpperCase() + data.state.slice(1) : '-';
-                stateEl.className = 'system-stat-value status-' + (data.state || 'stopped');
-
-                pidEl.textContent = data.pid || '-';
-                portEl.textContent = data.port || '-';
-
-                if (data.started_at) {
-                    const d = new Date(data.started_at);
-                    startedEl.textContent = d.toLocaleTimeString();
-                } else {
-                    startedEl.textContent = '-';
-                }
-
-                if (data.recovered) {
-                    recoveredEl.style.display = 'inline';
-                } else {
-                    recoveredEl.style.display = 'none';
-                }
-
-                // Show error if failed
-                if (data.state === 'failed' && data.error) {
-                    document.getElementById('errorPanel').style.display = 'block';
-                    document.getElementById('errorMessage').textContent = data.error;
-                }
-            } catch (err) {
-                console.error('[system] Failed to load status:', err);
-            }
-        }
-
-        async function loadLastFailure() {
-            if (!repoRoot) return;
-            try {
-                const res = await fetch(`/control/orchestrator/last_failure?repo_root=${encodeURIComponent(repoRoot)}`);
-                const data = await res.json();
-
-                if (data.last_failure) {
-                    const panel = document.getElementById('errorPanel');
-                    const msgEl = document.getElementById('errorMessage');
-                    const fixEl = document.getElementById('errorFix');
-
-                    panel.style.display = 'block';
-                    msgEl.textContent = data.last_failure.message || 'Unknown error';
-
-                    if (data.last_failure.suggested_fix) {
-                        fixEl.style.display = 'block';
-                        fixEl.textContent = data.last_failure.suggested_fix;
-                    }
-                }
-            } catch (err) {
-                console.error('[system] Failed to load last failure:', err);
-            }
-        }
-
-        async function refreshLogs() {
-            if (!repoRoot) return;
-            const logViewer = document.getElementById('logViewer');
-            const logInfo = document.getElementById('logInfo');
-            const n = document.getElementById('logLines').value;
-
-            try {
-                const res = await fetch(`/control/orchestrator/log_tail?repo_root=${encodeURIComponent(repoRoot)}&n=${n}`);
-                const data = await res.json();
-
-                if (data.lines && data.lines.length > 0) {
-                    logViewer.innerHTML = data.lines.map(line =>
-                        `<div class="log-line">${escapeHtml(line)}</div>`
-                    ).join('');
-                    logInfo.textContent = `Showing ${data.returned_lines} of ${data.total_lines} lines`;
-                    // Scroll to bottom
-                    logViewer.scrollTop = logViewer.scrollHeight;
-                } else {
-                    logViewer.innerHTML = '<div class="log-line" style="color:#8b949e;">No log entries</div>';
-                    logInfo.textContent = '';
-                }
-            } catch (err) {
-                logViewer.innerHTML = '<div class="log-line" style="color:#f85149;">Failed to load logs</div>';
-                console.error('[system] Failed to load logs:', err);
-            }
-        }
-
-        function escapeHtml(str) {
-            const div = document.createElement('div');
-            div.textContent = str;
-            return div.innerHTML;
-        }
-
-        async function pauseOrchestrator() {
-            const btn = document.getElementById('pauseBtn');
-            if (isPaused) {
-                await fetch('/api/resume', { method: 'POST' });
-                btn.textContent = '⏸ Pause';
-                isPaused = false;
-                showToast('Orchestrator resumed');
-            } else {
-                await fetch('/api/pause', { method: 'POST' });
-                btn.textContent = '▶ Resume';
-                isPaused = true;
-                showToast('Orchestrator paused');
-            }
-        }
-
-        async function stopOrchestrator() {
-            if (!confirm('Stop the orchestrator? Active sessions will be preserved.')) return;
-            await fetch('/api/shutdown', { method: 'POST' });
-            showToast('Shutdown requested');
-            setTimeout(() => location.reload(), 1000);
-        }
-
-        async function forceStopOrchestrator() {
-            if (!confirm('Force stop the orchestrator? This will immediately terminate the process.')) return;
-            if (!repoRoot) return;
-            try {
-                await fetch('/control/orchestrator/stop', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: repoRoot, force: true })
-                });
-                showToast('Force stopped');
-                setTimeout(() => location.reload(), 1000);
-            } catch (err) {
-                showToast('Force stop failed', true);
-            }
-        }
-
-        async function restartOrchestrator() {
-            if (!confirm('Restart the orchestrator?')) return;
-            showToast('Restarting...');
-            await fetch('/api/shutdown', { method: 'POST' });
-            // The page will become unavailable shortly
-        }
-
-        // Initialize system panel when on system tab
-        const activeTab = '{{ active_tab }}';
-        if (activeTab === 'system') {
-            loadSystemStatus();
-            loadLastFailure();
-            refreshLogs();
-
-            // Auto-refresh logs every 5 seconds if checkbox is checked
-            setInterval(() => {
-                const autoRefresh = document.getElementById('logAutoRefresh');
-                if (autoRefresh && autoRefresh.checked) {
-                    refreshLogs();
-                }
-            }, 5000);
-
-            // Refresh status every 2 seconds
-            setInterval(loadSystemStatus, 2000);
         }
 
         // Create Issue Modal Functions
@@ -2096,6 +2299,6 @@
             document.getElementById('createIssueModal').classList.remove('visible');
         }
     </script>
-    <div id="toast" class="toast"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 </body>
 </html>

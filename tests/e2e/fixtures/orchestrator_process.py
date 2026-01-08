@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Suppress httpx INFO logs (pollutes output with API health checks)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -261,6 +264,10 @@ class OrchestratorProcess:
             env["ORCHESTRATOR_CLAUDE_PROMPT_MODE"] = os.environ["E2E_CLAUDE_PROMPT_MODE"]
         env["ORCHESTRATOR_WORKTREE_PER_SESSION"] = os.environ.get("E2E_WORKTREE_PER_SESSION", "1")
         env["ORCHESTRATOR_DISABLE_WORKTREE_REUSE"] = os.environ.get("E2E_DISABLE_WORKTREE_REUSE", "1")
+        # Explicitly pass dry-run mode for e2e tests (skips git push and PR creation)
+        if os.environ.get("E2E_DRY_RUN_PUSH"):
+            env["E2E_DRY_RUN_PUSH"] = os.environ["E2E_DRY_RUN_PUSH"]
+            print(f"  [E2E] E2E_DRY_RUN_PUSH={env['E2E_DRY_RUN_PUSH']}", flush=True)
 
         print(f"  [E2E] Starting orchestrator: {' '.join(cmd)}", flush=True)
         self._log_handle.write(f"Command: {' '.join(cmd)}\n\n")
@@ -292,6 +299,15 @@ class OrchestratorProcess:
 
         # Stop the log reader thread
         self._stop_logging = True
+
+        # For iTerm2 mode, the launcher process has already exited - just do cleanup
+        if self.config.ui_mode == "iterm2":
+            # Send SIGTERM to any running orchestrator process in the iTerm2 tab
+            self._cleanup_iterm_tabs()
+            self._cleanup_log_tailers()
+            self._close_log_file()
+            print(f"  [E2E] Orchestrator stopped gracefully", flush=True)
+            return "", ""
 
         # Send SIGTERM for graceful shutdown
         self.process.send_signal(signal.SIGTERM)
@@ -377,6 +393,11 @@ class OrchestratorProcess:
         except Exception:
             pass
 
+    def _cleanup_iterm_tabs(self) -> None:
+        """Clean up iTerm2 tabs created by e2e tests."""
+        from .cleanup import cleanup_iterm_sessions
+        cleanup_iterm_sessions()
+
     def _cleanup_log_tailers(self) -> None:
         """Stop lingering session.log tail processes from tmux pipe-pane."""
         if _keep_artifacts():
@@ -406,10 +427,30 @@ class OrchestratorProcess:
                 continue
 
     def is_running(self) -> bool:
-        """Check if process is still running."""
+        """Check if orchestrator is still running.
+
+        For iTerm2 mode, the launcher process exits after opening the tab,
+        so we check the API instead of process status.
+        """
+        if self.config.ui_mode == "iterm2":
+            # In iTerm2 mode, the launcher exits - check API instead
+            return self._check_api_running()
         if self.process is None:
             return False
         return self.process.poll() is None
+
+    def _check_api_running(self) -> bool:
+        """Check if the orchestrator API is responding."""
+        import httpx
+        api_port = self.config.control_api_port
+        if not api_port:
+            # No API port configured, assume running if we got this far
+            return True
+        try:
+            resp = httpx.get(f"http://127.0.0.1:{api_port}/api/status", timeout=2)
+            return resp.status_code == 200
+        except Exception:
+            return False
 
     def request_refresh(self) -> bool:
         """Request the orchestrator to refresh issues on next tick via control API."""

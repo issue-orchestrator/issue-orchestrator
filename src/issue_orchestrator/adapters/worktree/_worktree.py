@@ -286,7 +286,10 @@ total_start=$(date +%s)
 audit "Pre-push hook started (commit: $(git rev-parse --short HEAD))"
 
 # Run project's pre-push hook first (lint, tests, etc.)
-if [ -x "$HOOKS_DIR/pre-push.project" ]; then
+# Skip if ORCHESTRATOR_SKIP_PROJECT_HOOK=1 (used by e2e tests)
+if [ "${{ORCHESTRATOR_SKIP_PROJECT_HOOK:-0}}" = "1" ]; then
+    audit "Skipping project hook (ORCHESTRATOR_SKIP_PROJECT_HOOK=1)"
+elif [ -x "$HOOKS_DIR/pre-push.project" ]; then
     audit "Running project pre-push hook..."
     project_start=$(date +%s)
     if "$HOOKS_DIR/pre-push.project" "$@"; then
