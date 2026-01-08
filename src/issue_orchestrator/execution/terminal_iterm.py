@@ -60,11 +60,8 @@ class ITermPlugin:
 
     @hookimpl
     def get_session_output(self, session_id: int, lines: int) -> str | None:
-        """Get recent output from an iTerm2 tab.
-
-        Note: Not currently implemented for iTerm2.
-        """
-        return None
+        """Get recent output from an iTerm2 tab."""
+        return self._manager.get_session_output(session_id, lines)
 
     @hookimpl
     def send_to_session(self, session_id: int, text: str) -> bool:

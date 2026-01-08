@@ -367,11 +367,15 @@ class CompletionProcessor:
                     logger.info("Created PR #%d for issue #%d: %s", pr.number, issue_number, pr_url)
 
                     # Apply extra labels to the PR if specified
-                    if record.pr_labels:
+                    # Skip for fake/dry-run PRs (numbers 90000-99999)
+                    is_dry_run_pr = 90000 <= pr.number <= 99999
+                    if record.pr_labels and not is_dry_run_pr:
                         for label in record.pr_labels:
                             self.label_adapter.add_label(pr.number, label)
                             logger.info("Added label '%s' to PR #%d", label, pr.number)
                         actions_taken.append(f"Added labels to PR: {record.pr_labels}")
+                    elif record.pr_labels and is_dry_run_pr:
+                        logger.info("[E2E_DRY_RUN] Skipping PR label addition for fake PR #%d", pr.number)
 
                 elif action == RequestedAction.POST_COMMENT:
                     if record.comment_body:

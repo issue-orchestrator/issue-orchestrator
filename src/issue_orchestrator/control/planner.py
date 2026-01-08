@@ -96,6 +96,8 @@ class OrchestratorSnapshot:
     cleanup_facts: Optional[CleanupFacts] = None
     # Issues with stale in-progress labels (label present but no active session)
     stale_in_progress_issues: tuple[Issue, ...] = field(default_factory=tuple)
+    # Issues that failed this cycle - skip until cache refresh (prevents immediate retry)
+    failed_this_cycle: frozenset[int] = field(default_factory=frozenset)
 
     @property
     def active_count(self) -> int:
@@ -152,6 +154,7 @@ class OrchestratorSnapshot:
             triage_facts=triage_facts,
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues),
+            failed_this_cycle=frozenset(state.failed_this_cycle),
         )
 
 
@@ -648,14 +651,29 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     ),
                 ))
 
-        # Filter out issues already being worked on or just completed (with PRs pending review)
+        # Filter out issues already being worked on, just completed, or failed this cycle
         issues_with_pending_reviews = {r.issue_number for r in snapshot.discovered_reviews}
         issues_with_pending_reworks = {r.issue_number for r in snapshot.discovered_reworks}
-        excluded_issues = snapshot.active_issue_numbers | issues_with_pending_reviews | issues_with_pending_reworks
+        excluded_issues = (
+            snapshot.active_issue_numbers |
+            issues_with_pending_reviews |
+            issues_with_pending_reworks |
+            snapshot.failed_this_cycle  # Skip issues that failed until cache refresh
+        )
         not_active = [
             issue for issue in available
             if issue.number not in excluded_issues
         ]
+
+        # Log if we're skipping issues due to recent failure
+        skipped_due_to_failure = [i for i in available if i.number in snapshot.failed_this_cycle]
+        for issue in skipped_due_to_failure:
+            skipped.append(SkippedItem(
+                item_type="issue",
+                number=issue.number,
+                reason="failed this cycle - waiting for cache refresh",
+            ))
+            logger.debug("Planner: skipping issue #%d - failed this cycle", issue.number)
 
         # Pick next batch based on priority
         to_launch = self.scheduler.pick_next_batch(

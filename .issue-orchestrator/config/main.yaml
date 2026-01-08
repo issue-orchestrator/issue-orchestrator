@@ -5,20 +5,25 @@ agents:
   agent:backend:
     prompt: .issue-orchestrator/prompts/simple-fix.md
     model: haiku
-    # Non-interactive mode: Claude exits after completion (no hanging sessions)
-    command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
+    permission_mode: bypassPermissions  # Required for non-interactive orchestrator sessions
+    # DEBUG: Removed -p flag so session stays open for debugging
+    # TODO: Re-add -p once we understand the failure mode
+    command: "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
   agent:frontend:
     prompt: .issue-orchestrator/prompts/simple-fix.md
     model: haiku
+    permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
   agent:mobile:
     prompt: .issue-orchestrator/prompts/simple-fix.md
     model: haiku
+    permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
   agent:reviewer:
     prompt: .issue-orchestrator/prompts/reviewer.md
     model: sonnet
     timeout_minutes: 30
+    permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     # Custom initial_prompt to include PR number for review context
     # Available variables: {issue_number}, {issue_title}, {prompt}, {worktree},
@@ -28,6 +33,7 @@ agents:
     prompt: .issue-orchestrator/prompts/triage.md
     model: sonnet
     timeout_minutes: 60
+    permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report completion."
 

@@ -644,7 +644,7 @@ class TestSetupLogging:
                     mock_handler = Mock()
                     mock_file_handler.return_value = mock_handler
 
-                    setup_logging(level="INFO")
+                    setup_logging(repo_root="/tmp/test-repo", level="INFO")
 
                     mock_logger.setLevel.assert_called_once()
                     mock_logger.addHandler.assert_called_once_with(mock_handler)
@@ -661,7 +661,7 @@ class TestSetupLogging:
                     mock_handler = Mock()
                     mock_file_handler.return_value = mock_handler
 
-                    setup_logging(level="DEBUG")
+                    setup_logging(repo_root="/tmp/test-repo", level="DEBUG")
 
                     # Verify debug level was set
                     import logging
@@ -681,7 +681,7 @@ class TestSetupLogging:
                     mock_handler = Mock()
                     mock_file_handler.return_value = mock_handler
 
-                    setup_logging(level="INFO")
+                    setup_logging(repo_root="/tmp/test-repo", level="INFO")
 
                     # Should remove existing handler
                     mock_logger.removeHandler.assert_called_once_with(existing_handler)

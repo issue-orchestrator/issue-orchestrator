@@ -452,3 +452,126 @@ class TestClaudeViaAdapterPath:
             or "login" in combined.lower()
         )
         assert auth_failed, f"Expected auth failure with HOME isolation, got: {combined}"
+
+
+@pytest.mark.skipif(
+    not is_claude_available() and is_github_ci(),
+    reason="Claude CLI not available (OK on GitHub CI)"
+)
+class TestAgentDoneInvocation:
+    """Integration tests for agent-done invocation from Claude.
+
+    These tests verify the critical path: Claude can invoke agent-done
+    and write completion.json, which is how sessions signal completion.
+    """
+
+    def test_agent_done_invocable_from_claude(self, tmp_path):
+        """Verify Claude can invoke agent-done in worktree-like environment.
+
+        This tests the exact mechanism the orchestrator relies on:
+        1. PATH includes scripts directory with agent-done wrapper
+        2. Claude runs with -p flag (non-interactive)
+        3. Claude invokes agent-done via Bash
+        4. completion.json is written
+
+        If this test fails, sessions will fail without completion.
+        """
+        import json
+        from pathlib import Path
+
+        # Get the scripts directory (where agent-done wrapper lives)
+        repo_root = Path(__file__).parent.parent.parent
+        scripts_dir = repo_root / "src" / "issue_orchestrator" / "scripts"
+
+        # Create worktree-like structure
+        worktree = tmp_path / "test-worktree"
+        worktree.mkdir()
+        completion_dir = worktree / ".issue-orchestrator"
+        completion_dir.mkdir()
+
+        # Build environment like orchestrator does:
+        # - Prepend scripts directory to PATH
+        # - Set completion path
+        import os
+        env = dict(os.environ)
+        env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
+        env["ORCHESTRATOR_COMPLETION_PATH"] = str(completion_dir / "completion.json")
+
+        # Run Claude with -p asking it to invoke agent-done
+        prompt = (
+            "You are in a test. Run this exact bash command and nothing else:\n"
+            "agent-done completed --implementation 'test' --problems 'none'\n"
+            "Do not explain, just run the command."
+        )
+
+        result = subprocess.run(
+            [
+                "claude",
+                "-p",
+                "--permission-mode", "bypassPermissions",
+                prompt,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(worktree),
+            env=env,
+        )
+
+        # Log output for debugging
+        print(f"Claude stdout: {result.stdout}")
+        print(f"Claude stderr: {result.stderr}")
+        print(f"Return code: {result.returncode}")
+
+        # Check for completion.json
+        completion_files = list(completion_dir.glob("completion*.json"))
+        assert len(completion_files) > 0, (
+            f"No completion.json written!\n"
+            f"Claude stdout: {result.stdout}\n"
+            f"Claude stderr: {result.stderr}\n"
+            f"Return code: {result.returncode}\n"
+            f"Files in {completion_dir}: {list(completion_dir.iterdir())}"
+        )
+
+        # Validate completion record
+        completion_path = completion_files[0]
+        completion_data = json.loads(completion_path.read_text())
+        assert completion_data.get("outcome") == "completed", (
+            f"Unexpected outcome: {completion_data}"
+        )
+
+    def test_agent_done_wrapper_resolves_correctly(self):
+        """Verify the agent-done wrapper script finds the real command.
+
+        This tests the wrapper at scripts/agent-done can locate
+        and execute the venv-installed agent-done.
+        """
+        import os
+        from pathlib import Path
+
+        repo_root = Path(__file__).parent.parent.parent
+        wrapper = repo_root / "src" / "issue_orchestrator" / "scripts" / "agent-done"
+        venv_agent_done = repo_root / ".venv" / "bin" / "agent-done"
+
+        # Wrapper should exist and be executable
+        assert wrapper.exists(), f"Wrapper not found at {wrapper}"
+        assert os.access(wrapper, os.X_OK), f"Wrapper not executable: {wrapper}"
+
+        # Venv agent-done should exist (if venv is set up)
+        if venv_agent_done.exists():
+            # Run wrapper with --help to verify it forwards correctly
+            env = dict(os.environ)
+            env["PATH"] = f"{wrapper.parent}:{env.get('PATH', '')}"
+
+            result = subprocess.run(
+                ["agent-done", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=env,
+            )
+
+            assert result.returncode == 0, f"agent-done --help failed: {result.stderr}"
+            assert "completed" in result.stdout.lower(), (
+                f"Unexpected help output: {result.stdout}"
+            )

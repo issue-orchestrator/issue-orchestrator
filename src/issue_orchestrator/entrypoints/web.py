@@ -886,6 +886,266 @@ async def retry_issue(issue_number: int) -> JSONResponse:
     return JSONResponse({"retrying": issue_number, "message": "Issue will be picked up on next cycle"})
 
 
+@app.get("/api/blocked-issues")
+async def get_blocked_issues() -> JSONResponse:
+    """Get all blocked issues with their blocking labels and context.
+
+    Returns detailed information for the "Manage Blocked Issues" modal.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..infra import labels as label_module
+
+    state = _orchestrator.state
+    config = _orchestrator.config
+
+    def make_issue_url(issue_number: int) -> str:
+        return f"https://github.com/{config.repo}/issues/{issue_number}" if config.repo else ""
+
+    blocked_issues = []
+
+    # Get blocked issues from cached queue
+    if state.startup_status == "complete":
+        for issue in state.cached_queue_issues:
+            if not issue.is_blocked:
+                continue
+
+            blocking_labels = label_module.get_blocking_labels(list(issue.labels))
+            blocking_label = blocking_labels[0] if blocking_labels else "blocked"
+            needs_human = label_module.requires_human_any(list(issue.labels))
+
+            # Try to get failure reason from history
+            failure_reason = None
+            for entry in reversed(state.session_history):
+                if entry.issue_number == issue.number:
+                    failure_reason = getattr(entry, 'status_reason', None) or entry.status
+                    break
+
+            blocked_issues.append({
+                "issue_number": issue.number,
+                "title": issue.title,
+                "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
+                "blocking_label": blocking_label,
+                "all_blocking_labels": blocking_labels,
+                "needs_human": needs_human,
+                "failure_reason": failure_reason,
+                "issue_url": make_issue_url(issue.number),
+            })
+
+    return JSONResponse({"blocked_issues": blocked_issues})
+
+
+@app.get("/api/failure-diagnosis/{issue_number}")
+async def get_failure_diagnosis(issue_number: int) -> JSONResponse:
+    """Get detailed failure diagnosis for an issue.
+
+    Analyzes AI session logs to provide actionable insights about why a session failed.
+    Returns the log path so users can open it directly.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..adapters.session_log.registry import get_log_provider
+    from ..ports.session_log import detect_ai_system_from_command
+
+    state = _orchestrator.state
+
+    # Find the session history entry for this issue
+    history_entry = None
+    for entry in reversed(state.session_history):
+        if entry.issue_number == issue_number:
+            history_entry = entry
+            break
+
+    # Find worktree path - check active sessions, history, or construct it
+    worktree_path = None
+    agent_config = None
+
+    # Check active sessions first
+    for session in state.active_sessions:
+        if session.issue.number == issue_number:
+            worktree_path = session.worktree_path
+            agent_config = session.agent_config
+            break
+
+    # If not found, try to construct from config
+    if not worktree_path:
+        config = _orchestrator.config
+        worktree_base = config.worktree_base or Path.cwd().parent
+        repo_name = config.repo.split("/")[-1] if config.repo else "unknown"
+        worktree_path = Path(worktree_base) / f"{repo_name}-{issue_number}"
+
+    # Detect AI system and get provider
+    ai_system = "claude-code"  # default
+    permission_mode = "unknown"
+    if agent_config:
+        ai_system = detect_ai_system_from_command(agent_config.command) or "claude-code"
+        permission_mode = agent_config.permission_mode
+    elif history_entry:
+        # Try to get agent config from history
+        agent_label = history_entry.agent_type
+        if agent_label in _orchestrator.config.agents:
+            cfg = _orchestrator.config.agents[agent_label]
+            ai_system = detect_ai_system_from_command(cfg.command) or "claude-code"
+            permission_mode = cfg.permission_mode
+
+    provider = get_log_provider(ai_system)
+
+    # Get log path and context
+    log_path = None
+    log_context = None
+    if provider and worktree_path:
+        log_path = provider.get_log_path(Path(worktree_path), f"issue-{issue_number}")
+        if log_path:
+            log_context = provider.get_failure_context(log_path)
+
+    # Build diagnosis
+    diagnosis = {
+        "issue_number": issue_number,
+        "ai_system": ai_system,
+        "permission_mode": permission_mode,
+        "worktree_path": str(worktree_path) if worktree_path else None,
+        "log_path": str(log_path) if log_path else None,
+        "log_exists": log_path.exists() if log_path else False,
+        "log_context": log_context,
+        "history_status": history_entry.status if history_entry else None,
+        "history_reason": history_entry.status_reason if history_entry else None,
+        "warnings": [],
+        "suggestions": [],
+    }
+
+    # Add warnings and suggestions
+    if permission_mode == "default":
+        diagnosis["warnings"].append(
+            "permission_mode is 'default' - Claude prompts for permissions in non-interactive mode"
+        )
+        diagnosis["suggestions"].append(
+            "Add 'permission_mode: bypassPermissions' to your agent config in YAML"
+        )
+
+    if not log_path or not (log_path and log_path.exists()):
+        diagnosis["warnings"].append("No AI session log found for this issue")
+        diagnosis["suggestions"].append(
+            f"Check ~/.claude/projects/ for logs related to {worktree_path}"
+        )
+
+    if log_context and "permission" in log_context.lower():
+        diagnosis["warnings"].append("Permission-related errors detected in log")
+        diagnosis["suggestions"].append(
+            "Consider using 'permission_mode: bypassPermissions' for non-interactive sessions"
+        )
+
+    return JSONResponse(diagnosis)
+
+
+@app.post("/api/open-file")
+async def open_file(request: Request) -> JSONResponse:
+    """Open a file in the default system application.
+
+    JSON body:
+        path: str - Path to the file to open
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    file_path = body.get("path")
+    if not file_path:
+        return JSONResponse({"error": "path is required"}, status_code=400)
+
+    # Security: only allow opening files in known safe directories
+    safe_prefixes = [
+        str(Path.home() / ".claude"),
+        str(Path.home() / ".issue-orchestrator"),
+        "/tmp/",
+    ]
+    if not any(file_path.startswith(prefix) for prefix in safe_prefixes):
+        return JSONResponse({"error": "Cannot open files outside safe directories"}, status_code=403)
+
+    if not Path(file_path).exists():
+        return JSONResponse({"error": "File not found"}, status_code=404)
+
+    try:
+        # Use macOS 'open' command to open in default app
+        subprocess.run(["open", file_path], check=True)
+        return JSONResponse({"status": "opened", "path": file_path})
+    except subprocess.CalledProcessError as e:
+        return JSONResponse({"error": f"Failed to open file: {e}"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/unblock-retry")
+async def unblock_and_retry(request: Request) -> JSONResponse:
+    """Remove blocking labels from issues and trigger a refresh.
+
+    JSON body:
+        issues: list[int] - Issue numbers to unblock
+
+    Removes all blocking labels from each issue, clears them from history,
+    and triggers a single refresh so they'll be picked up on the next cycle.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..infra import labels as label_module
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    issue_numbers = body.get("issues", [])
+    if not issue_numbers or not isinstance(issue_numbers, list):
+        return JSONResponse({"error": "issues must be a non-empty list"}, status_code=400)
+
+    state = _orchestrator.state
+    repository_host = _orchestrator.repository_host
+
+    unblocked = []
+    failed = []
+
+    for issue_number in issue_numbers:
+        try:
+            # Get current labels to find blocking ones
+            current_labels = repository_host.get_issue_labels(issue_number)
+            blocking_labels = label_module.get_blocking_labels(current_labels)
+
+            if blocking_labels:
+                for label in blocking_labels:
+                    try:
+                        repository_host.remove_label(issue_number, label)
+                        logger.info("[unblock] Removed label '%s' from issue #%d", label, issue_number)
+                    except Exception as e:
+                        logger.warning("[unblock] Failed to remove label '%s' from #%d: %s", label, issue_number, e)
+
+            # Also remove from history so it's eligible for processing
+            state.session_history = [
+                entry for entry in state.session_history
+                if entry.issue_number != issue_number
+            ]
+            if issue_number in state.completed_today:
+                state.completed_today.remove(issue_number)
+
+            unblocked.append(issue_number)
+        except Exception as e:
+            logger.error("[unblock] Failed to unblock issue #%d: %s", issue_number, e)
+            failed.append({"issue": issue_number, "error": str(e)})
+
+    # Trigger a single refresh so the orchestrator picks up the unblocked issues
+    if unblocked:
+        _orchestrator.request_refresh()
+        logger.info("[unblock] Unblocked %d issues, refresh triggered", len(unblocked))
+
+    return JSONResponse({
+        "unblocked": unblocked,
+        "failed": failed,
+        "refresh_triggered": len(unblocked) > 0,
+    })
+
+
 @app.get("/api/debug")
 async def get_debug() -> JSONResponse:
     """Get debug info for troubleshooting."""

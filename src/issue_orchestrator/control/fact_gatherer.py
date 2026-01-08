@@ -143,6 +143,7 @@ class FactGatherer:
             triage_facts=self.gather_triage_facts(state),
             cleanup_facts=self.gather_cleanup_facts(state),
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
+            failed_this_cycle=frozenset(state.failed_this_cycle),
         )
 
     def gather_triage_facts(

@@ -74,17 +74,17 @@ class TestTabSwitching:
         work_tab = page.locator(".tab").first
         expect(work_tab).to_have_class("tab active")
 
-    def test_switch_to_problems_tab(self, page: Page, web_server):
-        """Click Problems tab switches view and updates URL."""
-        # Add a failed item so problems tab has something
-        web_server["orchestrator"].add_history_entry(100, "Failed Issue", "failed")
+    def test_switch_to_attention_tab(self, page: Page, web_server):
+        """Click Attention tab switches view and updates URL."""
+        # Add a blocked queue item so attention tab has something
+        web_server["orchestrator"].add_queue_issue(100, "Blocked Issue", blocked=True)
         page.reload()
 
-        problems_tab = page.locator(".tab:has-text('Problems')")
-        problems_tab.click()
+        attention_tab = page.locator(".tab:has-text('Attention')")
+        attention_tab.click()
 
-        # URL should have tab=problems
-        expect(page).to_have_url(re.compile(r"tab=problems"))
+        # URL should have tab=attention
+        expect(page).to_have_url(re.compile(r"tab=attention"))
 
 
 class TestSettingsMenu:
@@ -165,9 +165,9 @@ class TestContextMenus:
         expect(issue_link).to_contain_text("Open Issue on GitHub")
 
     def test_context_menu_retry_for_failed_items(self, page: Page, web_server):
-        """Retry option visible for failed items in problems tab."""
+        """Retry option visible for failed items in history tab."""
         web_server["orchestrator"].add_history_entry(100, "Failed Issue", "failed")
-        page.goto(f"{web_server['url']}?tab=problems")
+        page.goto(f"{web_server['url']}?tab=history")
 
         row = page.locator(".issue-row").first
         row.click(button="right")
@@ -178,7 +178,7 @@ class TestContextMenus:
     def test_context_menu_dismiss_for_history_items(self, page: Page, web_server):
         """Dismiss option visible for history items."""
         web_server["orchestrator"].add_history_entry(100, "Failed Issue", "failed")
-        page.goto(f"{web_server['url']}?tab=problems")
+        page.goto(f"{web_server['url']}?tab=history")
 
         row = page.locator(".issue-row").first
         row.click(button="right")
@@ -290,38 +290,38 @@ class TestPagination:
         expect(page).to_have_url(re.compile(r"page=1"))
 
 
-class TestProblemsTab:
-    """Tests for the Problems tab."""
+class TestAttentionTab:
+    """Tests for the Attention tab (blocked queue items)."""
 
-    def test_problems_badge_shows_count(self, page: Page, web_server):
-        """Problems tab badge shows correct count."""
-        web_server["orchestrator"].add_history_entry(100, "Failed 1", "failed")
-        web_server["orchestrator"].add_history_entry(101, "Blocked 1", "blocked")
+    def test_attention_badge_shows_count(self, page: Page, web_server):
+        """Attention tab badge shows correct count of blocked queue items."""
+        web_server["orchestrator"].add_queue_issue(100, "Blocked 1", blocked=True)
+        web_server["orchestrator"].add_queue_issue(101, "Blocked 2", blocked=True)
         page.reload()
 
         badge = page.locator(".tab-badge")
         expect(badge).to_have_text("2")
 
-    def test_problems_badge_empty_class(self, page: Page):
-        """Problems badge has empty class when count is 0."""
+    def test_attention_badge_empty_class(self, page: Page):
+        """Attention badge has empty class when count is 0."""
         badge = page.locator(".tab-badge")
         expect(badge).to_have_class(re.compile(r"empty"))
 
-    def test_failed_issue_in_problems_tab(self, page: Page, web_server):
-        """Failed issues appear in problems tab."""
-        web_server["orchestrator"].add_history_entry(100, "Failed Issue", "failed")
-        page.goto(f"{web_server['url']}?tab=problems")
+    def test_blocked_queue_issue_in_attention_tab(self, page: Page, web_server):
+        """Blocked queue issues appear in attention tab."""
+        web_server["orchestrator"].add_queue_issue(100, "Blocked Issue", blocked=True)
+        page.goto(f"{web_server['url']}?tab=attention")
 
         expect(page.locator(".issue-row")).to_be_visible()
         expect(page.locator(".issue-num")).to_contain_text("#100")
 
-    def test_blocked_issue_in_problems_tab(self, page: Page, web_server):
-        """Blocked issues appear in problems tab."""
-        web_server["orchestrator"].add_history_entry(101, "Blocked Issue", "blocked")
-        page.goto(f"{web_server['url']}?tab=problems")
+    def test_multiple_blocked_issues_in_attention_tab(self, page: Page, web_server):
+        """Multiple blocked queue issues appear in attention tab."""
+        web_server["orchestrator"].add_queue_issue(100, "Blocked Issue 1", blocked=True)
+        web_server["orchestrator"].add_queue_issue(101, "Blocked Issue 2", blocked=True)
+        page.goto(f"{web_server['url']}?tab=attention")
 
-        expect(page.locator(".issue-row")).to_be_visible()
-        expect(page.locator(".issue-num")).to_contain_text("#101")
+        expect(page.locator(".issue-row")).to_have_count(2)
 
 
 class TestStatusIndicators:
@@ -366,12 +366,12 @@ class TestSSEConnection:
 
 
 class TestHistoryDisplay:
-    """Tests for session history display."""
+    """Tests for session history display in the history tab."""
 
-    def test_completed_session_shows_in_work_tab(self, page: Page, web_server):
-        """Completed sessions appear in work tab history."""
+    def test_completed_session_shows_in_history_tab(self, page: Page, web_server):
+        """Completed sessions appear in history tab."""
         web_server["orchestrator"].add_history_entry(200, "Completed Issue", "completed")
-        page.reload()
+        page.goto(f"{web_server['url']}?tab=history")
 
         expect(page.locator(".issue-row")).to_be_visible()
         expect(page.locator(".issue-num")).to_contain_text("#200")
@@ -379,7 +379,7 @@ class TestHistoryDisplay:
     def test_history_shows_runtime(self, page: Page, web_server):
         """History entries show runtime."""
         web_server["orchestrator"].add_history_entry(200, "Completed Issue", "completed")
-        page.reload()
+        page.goto(f"{web_server['url']}?tab=history")
 
         time_cell = page.locator(".issue-time")
         expect(time_cell).to_contain_text("15")  # 15 minutes from mock

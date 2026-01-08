@@ -24,21 +24,17 @@ Context fields (via extra=):
 - issue_key: Stable issue key like "M1-011"
 - session_id: Session identifier
 
-Log file locations:
-- Repo-scoped (preferred): {repo_root}/.issue-orchestrator/state/logs/orchestrator.log
-- Global fallback: ~/.issue-orchestrator.log (only when repo_root unknown)
+Log file location:
+- {repo_root}/.issue-orchestrator/state/logs/orchestrator.log
+
+repo_root is REQUIRED - it's derived from the config file location.
+One orchestrator = one repo = one log file. No fallback.
 """
 
 import logging
 import os
 from pathlib import Path
 from typing import Any
-
-# Global fallback log file (used only when repo_root is unknown)
-GLOBAL_LOG_FILE = Path.home() / ".issue-orchestrator.log"
-
-# Deprecated alias for backwards compatibility
-DEFAULT_LOG_FILE = GLOBAL_LOG_FILE
 
 # Flag to track if logging has been set up (for idempotency)
 _logging_configured = False
@@ -83,25 +79,24 @@ class ContextFormatter(logging.Formatter):
 
 
 def setup_logging(
+    repo_root: Path | str,
     level: str = "INFO",
     console_output: bool = False,
     log_file: Path | None = None,
     json_format: bool = False,
-    repo_root: Path | str | None = None,
 ) -> Path | None:
     """Configure logging for the application.
 
     This function is idempotent - calling it multiple times will not
-    duplicate handlers, unless repo_root changes (to allow switching
-    from global to repo-scoped logging after config is loaded).
+    duplicate handlers.
 
     Args:
+        repo_root: Repository root (REQUIRED). Logs go to
+            {repo_root}/.issue-orchestrator/state/logs/orchestrator.log
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         console_output: If True, also log to stderr
         log_file: Path to log file (overrides repo_root-based path)
         json_format: If True, use JSON format (for structured log aggregation)
-        repo_root: Repository root for repo-scoped logging. If provided,
-            logs go to {repo_root}/.issue-orchestrator/state/logs/orchestrator.log
 
     Returns:
         Path to the log file being used, or None if file logging failed
@@ -110,22 +105,20 @@ def setup_logging(
 
     # Determine target log file
     env_log_file = os.environ.get("ORCHESTRATOR_LOG_FILE")
-    if log_file is None and env_log_file:
-        target_log_file = Path(env_log_file)
-    elif log_file is not None:
+    if log_file is not None:
         target_log_file = log_file
-    elif repo_root is not None:
-        target_log_file = get_repo_log_path(repo_root)
+    elif env_log_file:
+        target_log_file = Path(env_log_file)
     else:
-        target_log_file = GLOBAL_LOG_FILE
+        target_log_file = get_repo_log_path(repo_root)
 
-    # Allow reconfiguration if switching to a different log file (e.g., global -> repo-scoped)
+    # Idempotent - if already configured with same file, return early
     if _logging_configured and _current_log_file == target_log_file:
         return _current_log_file
 
-    # If already configured but switching log files, reset first
+    # If already configured but switching log files (shouldn't happen), reset first
     if _logging_configured and _current_log_file != target_log_file:
-        logging.info("Switching log file from %s to %s", _current_log_file, target_log_file)
+        logging.warning("Unexpected log file switch from %s to %s", _current_log_file, target_log_file)
         reset_logging()
 
     log_file = target_log_file

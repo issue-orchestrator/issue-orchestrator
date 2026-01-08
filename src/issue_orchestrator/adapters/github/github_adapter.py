@@ -7,6 +7,7 @@ Naming: This is an execution-layer adapter that talks to an external platform.
 """
 
 import logging
+import os
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -724,6 +725,28 @@ class GitHubAdapter:
         Raises:
             GitHubHttpError: If there's an error creating the PR and no existing PR found.
         """
+        # E2E dry-run mode: return fake PR without creating one
+        # Used with E2E_DRY_RUN_PUSH to skip actual GitHub operations
+        dry_run = os.environ.get("E2E_DRY_RUN_PUSH")
+        logger.debug("create_pr: E2E_DRY_RUN_PUSH=%r", dry_run)
+        if dry_run == "1":
+            import random
+            fake_pr_number = random.randint(90000, 99999)
+            logger.info(
+                "[E2E_DRY_RUN] PR creation skipped (would create PR for head=%s base=%s)",
+                head,
+                base,
+            )
+            return PRInfo(
+                number=fake_pr_number,
+                title=title,
+                url=f"https://github.com/{self.repo}/pull/{fake_pr_number}",
+                branch=head,
+                body=body,
+                state="open",
+                labels=[],
+            )
+
         # First, check if a PR already exists for this branch
         existing_prs = self.get_prs_for_branch(head)
         if existing_prs:

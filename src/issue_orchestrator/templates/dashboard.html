@@ -240,136 +240,6 @@
             color: #8b949e;
         }
 
-        /* System Panel */
-        .system-panel { display: none; }
-        .system-panel.active { display: block; }
-        .system-card {
-            border: 1px solid #21262d;
-            border-radius: 8px;
-            margin-bottom: 16px;
-            overflow: hidden;
-        }
-        .system-card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px 16px;
-            background: #161b22;
-            border-bottom: 1px solid #21262d;
-            font-weight: 600;
-            font-size: 13px;
-        }
-        .system-card-body { padding: 16px; }
-        .system-status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 16px;
-        }
-        .system-stat {
-            padding: 12px;
-            background: #0d1117;
-            border-radius: 6px;
-        }
-        .system-stat-label {
-            font-size: 11px;
-            color: #8b949e;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-        }
-        .system-stat-value {
-            font-size: 16px;
-            font-weight: 600;
-            font-family: monospace;
-        }
-        .system-stat-value.status-running { color: #3fb950; }
-        .system-stat-value.status-stopped { color: #8b949e; }
-        .system-stat-value.status-failed { color: #f85149; }
-        .system-controls {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-        .system-controls button {
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 13px;
-            cursor: pointer;
-            border: 1px solid #30363d;
-            background: #21262d;
-            color: #c9d1d9;
-        }
-        .system-controls button:hover:not(:disabled) { background: #30363d; }
-        .system-controls button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .system-controls button.btn-danger {
-            border-color: #f85149;
-            color: #f85149;
-        }
-        .system-controls button.btn-danger:hover:not(:disabled) {
-            background: #f8514920;
-        }
-        .error-panel {
-            background: #2d1b1b;
-            border: 1px solid #f85149;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 16px;
-        }
-        .error-panel-title {
-            color: #f85149;
-            font-weight: 600;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .error-panel-body {
-            font-size: 13px;
-            color: #c9d1d9;
-        }
-        .error-panel-fix {
-            margin-top: 12px;
-            padding: 8px 12px;
-            background: #0d1117;
-            border-radius: 4px;
-            font-size: 12px;
-            font-family: monospace;
-        }
-        .log-viewer {
-            background: #0d1117;
-            border-radius: 6px;
-            font-family: monospace;
-            font-size: 11px;
-            max-height: 400px;
-            overflow-y: auto;
-            padding: 12px;
-        }
-        .log-line {
-            padding: 2px 0;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-        .log-controls {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-top: 8px;
-        }
-        .log-controls label {
-            font-size: 12px;
-            color: #8b949e;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .recovered-badge {
-            background: #9e6a03;
-            color: #fff;
-            font-size: 10px;
-            padding: 2px 6px;
-            border-radius: 4px;
-            text-transform: uppercase;
-        }
-
         /* Create Issue Modal */
         .modal-overlay {
             display: none;
@@ -465,6 +335,194 @@
             font-size: 13px;
         }
         .checkbox-group input { width: 16px; height: 16px; }
+
+        /* Blocked Issues Modal */
+        .blocked-modal { max-width: 700px; }
+        .blocked-modal .modal-body { padding: 0; }
+        .blocked-item-actions { display: flex; gap: 8px; margin-left: auto; }
+        .blocked-item-actions .diagnose-btn {
+            font-size: 11px;
+            padding: 2px 8px;
+            background: var(--accent-bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            cursor: pointer;
+            color: var(--fg);
+        }
+        .blocked-item-actions .diagnose-btn:hover {
+            background: var(--border);
+        }
+        .diagnosis-panel {
+            background: var(--dim-bg);
+            padding: 12px;
+            margin: 8px 0 0 28px;
+            border-radius: 4px;
+            font-size: 12px;
+            display: none;
+        }
+        .diagnosis-panel.visible { display: block; }
+        .diagnosis-panel .diagnosis-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+        .diagnosis-panel .diagnosis-label {
+            color: var(--dim);
+            min-width: 100px;
+        }
+        .diagnosis-panel .diagnosis-value {
+            word-break: break-all;
+        }
+        .diagnosis-panel .diagnosis-warning {
+            color: var(--badge-warning-bg);
+            margin-top: 8px;
+            padding: 4px 8px;
+            background: rgba(255, 152, 0, 0.1);
+            border-radius: 4px;
+        }
+        .diagnosis-panel .diagnosis-suggestion {
+            color: var(--accent);
+            margin-top: 4px;
+        }
+        .diagnosis-panel .open-log-btn {
+            margin-top: 8px;
+            padding: 4px 12px;
+            font-size: 11px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .diagnosis-panel .open-log-btn:hover { opacity: 0.9; }
+        .diagnosis-panel .open-log-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .blocked-header-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 20px;
+            border-bottom: 1px solid #30363d;
+            background: #0d1117;
+        }
+        .blocked-select-all {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #c9d1d9;
+        }
+        .blocked-select-all input { width: 16px; height: 16px; cursor: pointer; }
+        .blocked-list { max-height: 400px; overflow-y: auto; }
+        .blocked-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 20px;
+            border-bottom: 1px solid #21262d;
+            transition: background 0.15s;
+        }
+        .blocked-item:hover { background: #161b22; }
+        .blocked-item input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            margin-top: 2px;
+            flex-shrink: 0;
+        }
+        .blocked-item-content { flex: 1; min-width: 0; }
+        .blocked-item-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 4px;
+        }
+        .blocked-item-num {
+            font-weight: 600;
+            color: #58a6ff;
+            text-decoration: none;
+        }
+        .blocked-item-num:hover { text-decoration: underline; }
+        .blocked-item-label {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: #b62324;
+            color: #fff;
+        }
+        .blocked-item-label.needs-human {
+            background: #9e6a03;
+        }
+        .blocked-item-title {
+            font-size: 13px;
+            color: #c9d1d9;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .blocked-item-reason {
+            font-size: 12px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+        .blocked-warning {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            background: #1c1407;
+            border-top: 1px solid #3d2f05;
+            font-size: 12px;
+            color: #d29922;
+        }
+        .blocked-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            padding: 16px 20px;
+            border-top: 1px solid #30363d;
+        }
+        .blocked-footer .btn-cancel {
+            padding: 10px 20px;
+            font-size: 14px;
+            background: transparent;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .blocked-footer .btn-cancel:hover { border-color: #8b949e; }
+        .blocked-footer .btn-unblock {
+            padding: 10px 20px;
+            font-size: 14px;
+            background: #238636;
+            border: 1px solid #238636;
+            color: #fff;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .blocked-footer .btn-unblock:hover { background: #2ea043; }
+        .blocked-footer .btn-unblock:disabled {
+            background: #21262d;
+            border-color: #30363d;
+            color: #8b949e;
+            cursor: not-allowed;
+        }
+        .blocked-empty {
+            padding: 40px 20px;
+            text-align: center;
+            color: #8b949e;
+        }
+        .manage-blocked-btn {
+            padding: 4px 10px;
+            font-size: 12px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-left: 12px;
+        }
+        .manage-blocked-btn:hover { background: #30363d; border-color: #8b949e; }
 
         /* Pagination */
         .pagination {
@@ -744,11 +802,13 @@
                 Needs Attention
                 <span class="tab-badge {% if attention_count == 0 %}empty{% endif %}" aria-label="{{ attention_count }} items need attention">{{ attention_count }}</span>
             </button>
+            {% if attention_count > 0 %}
+            <button class="manage-blocked-btn" onclick="openBlockedModal()" title="Manage blocked issues">
+                Manage Blocked
+            </button>
+            {% endif %}
             <button class="tab {% if active_tab == 'history' %}active{% endif %}" onclick="switchTab('history')" role="tab" aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}" aria-controls="issueList">
                 History
-            </button>
-            <button class="tab {% if active_tab == 'system' %}active{% endif %}" onclick="switchTab('system')" role="tab" aria-selected="{% if active_tab == 'system' %}true{% else %}false{% endif %}" aria-controls="systemPanel">
-                System
             </button>
         </div>
 
@@ -805,7 +865,7 @@
                     ⏹
                 </button>
                 {% endif %}
-                <span class="issue-action" aria-hidden="true">
+                <span class="issue-action" aria-hidden="true" title="{{ issue.action_hint }}">
                     {% if issue.action == 'focus' %}
                     <span>👁</span><span class="action-arrow">→</span>
                     {% else %}
@@ -825,83 +885,6 @@
                 {% endif %}
             </div>
             {% endif %}
-        </div>
-
-        <!-- System Panel (hidden unless system tab is active) -->
-        <div class="system-panel {% if active_tab == 'system' %}active{% endif %}" id="systemPanel">
-            <!-- Error Panel (shown if last startup failed) -->
-            <div class="error-panel" id="errorPanel" style="display:none;">
-                <div class="error-panel-title">
-                    <span>⚠️</span> Last Startup Failed
-                </div>
-                <div class="error-panel-body" id="errorMessage"></div>
-                <div class="error-panel-fix" id="errorFix" style="display:none;"></div>
-            </div>
-
-            <!-- Status Card -->
-            <div class="system-card">
-                <div class="system-card-header">
-                    <span>Orchestrator Status</span>
-                    <span id="recoveredBadge" class="recovered-badge" style="display:none;">Recovered</span>
-                </div>
-                <div class="system-card-body">
-                    <div class="system-status-grid">
-                        <div class="system-stat">
-                            <div class="system-stat-label">State</div>
-                            <div class="system-stat-value status-running" id="systemState">Running</div>
-                        </div>
-                        <div class="system-stat">
-                            <div class="system-stat-label">PID</div>
-                            <div class="system-stat-value" id="systemPid">-</div>
-                        </div>
-                        <div class="system-stat">
-                            <div class="system-stat-label">Port</div>
-                            <div class="system-stat-value" id="systemPort">-</div>
-                        </div>
-                        <div class="system-stat">
-                            <div class="system-stat-label">Started</div>
-                            <div class="system-stat-value" id="systemStarted">-</div>
-                        </div>
-                    </div>
-                    <div class="system-controls" style="margin-top: 16px;">
-                        <button onclick="pauseOrchestrator()" id="pauseBtn">
-                            {% if paused %}▶ Resume{% else %}⏸ Pause{% endif %}
-                        </button>
-                        <button onclick="refreshFromGitHub()">🔄 Refresh</button>
-                        <button onclick="restartOrchestrator()">♻️ Restart</button>
-                        <button onclick="stopOrchestrator()" class="btn-danger">⏹ Stop</button>
-                        <button onclick="forceStopOrchestrator()" class="btn-danger">⚡ Force Stop</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Log Viewer Card -->
-            <div class="system-card">
-                <div class="system-card-header">
-                    <span>Orchestrator Log</span>
-                    <div class="log-controls">
-                        <label>
-                            <input type="checkbox" id="logAutoRefresh" checked>
-                            Auto-refresh
-                        </label>
-                        <button onclick="refreshLogs()" style="font-size:12px;padding:4px 8px;">Refresh</button>
-                    </div>
-                </div>
-                <div class="system-card-body">
-                    <div class="log-viewer" id="logViewer">
-                        <div class="log-line" style="color:#8b949e;">Loading logs...</div>
-                    </div>
-                    <div class="log-controls" style="margin-top:8px;">
-                        <span id="logInfo" style="font-size:11px;color:#8b949e;"></span>
-                        <select id="logLines" onchange="refreshLogs()" style="background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:4px;border-radius:4px;">
-                            <option value="50">50 lines</option>
-                            <option value="100">100 lines</option>
-                            <option value="200" selected>200 lines</option>
-                            <option value="500">500 lines</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
         </div>
 
         <!-- Create Issue Modal -->
@@ -1076,6 +1059,37 @@
         </div>
     </div>
 
+    <!-- Blocked Issues Modal -->
+    <div class="modal-overlay" id="blockedModal" onclick="closeBlockedModal(event)">
+        <div class="modal blocked-modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Blocked Issues</h2>
+                <button class="modal-close" onclick="closeBlockedModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="blocked-header-row">
+                    <label class="blocked-select-all">
+                        <input type="checkbox" id="blockedSelectAll" onchange="toggleSelectAllBlocked()">
+                        <span id="blockedSelectAllLabel">Select All</span>
+                    </label>
+                </div>
+                <div class="blocked-list" id="blockedList">
+                    <!-- Items populated by JavaScript -->
+                </div>
+                <div class="blocked-warning" id="blockedWarning" style="display: none;">
+                    <span aria-hidden="true">⚠️</span>
+                    <span id="blockedWarningText"></span>
+                </div>
+            </div>
+            <div class="blocked-footer">
+                <button class="btn-cancel" onclick="closeBlockedModal()">Cancel</button>
+                <button class="btn-unblock" id="blockedUnblockBtn" onclick="unblockSelectedIssues()" disabled>
+                    Unblock &amp; Retry (0)
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // Helper to hide settings menu (used by multiple functions)
         function hideSettingsMenu() {
@@ -1090,7 +1104,17 @@
             const url = row.dataset.url;
 
             if (action === 'focus') {
-                await fetch(`/api/focus/${issueNumber}`, { method: 'POST' });
+                try {
+                    const res = await fetch(`/api/focus/${issueNumber}`, { method: 'POST' });
+                    const data = await res.json();
+                    if (data.status === 'focused') {
+                        showToast(`Focused session #${issueNumber} in iTerm2`);
+                    } else if (data.error) {
+                        showToast(`Could not focus: ${data.error}`, 'error');
+                    }
+                } catch (err) {
+                    showToast('Failed to focus session', 'error');
+                }
             } else if (url) {
                 window.open(url, '_blank');
             }
@@ -1728,6 +1752,285 @@
             }
         }
 
+        // Blocked Issues Modal Functions
+        let blockedIssuesData = [];
+        const blockedModal = document.getElementById('blockedModal');
+        const blockedList = document.getElementById('blockedList');
+        const blockedSelectAll = document.getElementById('blockedSelectAll');
+        const blockedSelectAllLabel = document.getElementById('blockedSelectAllLabel');
+        const blockedWarning = document.getElementById('blockedWarning');
+        const blockedWarningText = document.getElementById('blockedWarningText');
+        const blockedUnblockBtn = document.getElementById('blockedUnblockBtn');
+
+        async function openBlockedModal() {
+            // Fetch blocked issues
+            try {
+                const res = await fetch('/api/blocked-issues');
+                const data = await res.json();
+                blockedIssuesData = data.blocked_issues || [];
+            } catch (err) {
+                console.error('Failed to fetch blocked issues:', err);
+                blockedIssuesData = [];
+            }
+
+            renderBlockedList();
+            blockedModal.classList.add('visible');
+        }
+
+        function closeBlockedModal(e) {
+            if (!e || e.target === blockedModal) {
+                blockedModal.classList.remove('visible');
+            }
+        }
+
+        function renderBlockedList() {
+            if (blockedIssuesData.length === 0) {
+                blockedList.innerHTML = '<div class="blocked-empty">No blocked issues found</div>';
+                blockedSelectAll.checked = false;
+                blockedSelectAll.disabled = true;
+                updateBlockedButton();
+                return;
+            }
+
+            blockedSelectAll.disabled = false;
+            const needsHumanCount = blockedIssuesData.filter(i => i.needs_human).length;
+
+            let html = '';
+            for (const issue of blockedIssuesData) {
+                const labelClass = issue.needs_human ? 'needs-human' : '';
+                const reason = issue.failure_reason || issue.blocking_label;
+                html += `
+                    <div class="blocked-item-container" id="blocked-container-${issue.issue_number}">
+                        <div class="blocked-item">
+                            <input type="checkbox"
+                                   id="blocked-${issue.issue_number}"
+                                   data-issue="${issue.issue_number}"
+                                   data-needs-human="${issue.needs_human}"
+                                   ${issue.needs_human ? '' : 'checked'}
+                                   onchange="updateBlockedSelection()">
+                            <div class="blocked-item-content">
+                                <div class="blocked-item-header">
+                                    <a href="${issue.issue_url}" target="_blank" class="blocked-item-num">#${issue.issue_number}</a>
+                                    <span class="blocked-item-label ${labelClass}">${issue.blocking_label}</span>
+                                </div>
+                                <div class="blocked-item-title">${escapeHtml(issue.title)}</div>
+                                ${reason ? `<div class="blocked-item-reason">${escapeHtml(reason)}</div>` : ''}
+                            </div>
+                            <div class="blocked-item-actions">
+                                <button class="diagnose-btn" onclick="toggleDiagnosis(${issue.issue_number}, event)">Diagnose</button>
+                            </div>
+                        </div>
+                        <div class="diagnosis-panel" id="diagnosis-${issue.issue_number}">
+                            <div class="diagnosis-loading">Loading diagnosis...</div>
+                        </div>
+                    </div>
+                `;
+            }
+            blockedList.innerHTML = html;
+
+            // Show warning if there are needs-human issues
+            if (needsHumanCount > 0) {
+                blockedWarning.style.display = 'flex';
+                blockedWarningText.textContent = `${needsHumanCount} issue${needsHumanCount > 1 ? 's' : ''} marked 'needs-human' - review before retrying`;
+            } else {
+                blockedWarning.style.display = 'none';
+            }
+
+            updateBlockedSelection();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function toggleSelectAllBlocked() {
+            const checkboxes = blockedList.querySelectorAll('input[type="checkbox"]');
+            const isChecked = blockedSelectAll.checked;
+            checkboxes.forEach(cb => cb.checked = isChecked);
+            updateBlockedButton();
+        }
+
+        function updateBlockedSelection() {
+            const checkboxes = blockedList.querySelectorAll('input[type="checkbox"]');
+            const checkedBoxes = blockedList.querySelectorAll('input[type="checkbox"]:checked');
+            const allChecked = checkboxes.length > 0 && checkboxes.length === checkedBoxes.length;
+            const someChecked = checkedBoxes.length > 0;
+
+            blockedSelectAll.checked = allChecked;
+            blockedSelectAll.indeterminate = someChecked && !allChecked;
+            blockedSelectAllLabel.textContent = `Select All (${blockedIssuesData.length})`;
+
+            updateBlockedButton();
+        }
+
+        function updateBlockedButton() {
+            const checkedBoxes = blockedList.querySelectorAll('input[type="checkbox"]:checked');
+            const count = checkedBoxes.length;
+            blockedUnblockBtn.disabled = count === 0;
+            blockedUnblockBtn.textContent = `Unblock & Retry (${count})`;
+        }
+
+        async function unblockSelectedIssues() {
+            const checkedBoxes = blockedList.querySelectorAll('input[type="checkbox"]:checked');
+            const issueNumbers = Array.from(checkedBoxes).map(cb => parseInt(cb.dataset.issue));
+
+            if (issueNumbers.length === 0) return;
+
+            // Confirm
+            const needsHumanSelected = Array.from(checkedBoxes).filter(cb => cb.dataset.needsHuman === 'true').length;
+            let confirmMsg = `Unblock and retry ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}?`;
+            if (needsHumanSelected > 0) {
+                confirmMsg += `\n\n⚠️ ${needsHumanSelected} issue${needsHumanSelected > 1 ? 's have' : ' has'} 'needs-human' label - make sure you've addressed the concern.`;
+            }
+            if (!confirm(confirmMsg)) return;
+
+            // Disable button during request
+            blockedUnblockBtn.disabled = true;
+            blockedUnblockBtn.textContent = 'Unblocking...';
+
+            try {
+                const res = await fetch('/api/unblock-retry', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ issues: issueNumbers }),
+                });
+                const data = await res.json();
+
+                if (data.unblocked && data.unblocked.length > 0) {
+                    showToast(`Unblocked ${data.unblocked.length} issue${data.unblocked.length > 1 ? 's' : ''}`);
+                    closeBlockedModal();
+                    // Reload to show updated state
+                    setTimeout(() => location.reload(), 500);
+                } else if (data.failed && data.failed.length > 0) {
+                    showToast(`Failed to unblock some issues: ${data.failed.map(f => f.error).join(', ')}`, 'error');
+                }
+            } catch (err) {
+                console.error('Failed to unblock issues:', err);
+                showToast('Failed to unblock issues', 'error');
+            }
+
+            updateBlockedButton();
+        }
+
+        // Diagnosis functionality
+        const diagnosisCache = {};  // Cache diagnosis data
+
+        async function toggleDiagnosis(issueNumber, event) {
+            event.stopPropagation();
+            const panel = document.getElementById(`diagnosis-${issueNumber}`);
+            const btn = event.target;
+
+            if (panel.classList.contains('visible')) {
+                panel.classList.remove('visible');
+                btn.textContent = 'Diagnose';
+                return;
+            }
+
+            // Show loading
+            panel.classList.add('visible');
+            btn.textContent = 'Hide';
+            panel.innerHTML = '<div class="diagnosis-loading">Analyzing session logs...</div>';
+
+            // Fetch diagnosis if not cached
+            if (!diagnosisCache[issueNumber]) {
+                try {
+                    const res = await fetch(`/api/failure-diagnosis/${issueNumber}`);
+                    diagnosisCache[issueNumber] = await res.json();
+                } catch (err) {
+                    panel.innerHTML = `<div class="diagnosis-error">Failed to load diagnosis: ${err.message}</div>`;
+                    return;
+                }
+            }
+
+            renderDiagnosis(issueNumber, diagnosisCache[issueNumber]);
+        }
+
+        function renderDiagnosis(issueNumber, data) {
+            const panel = document.getElementById(`diagnosis-${issueNumber}`);
+            if (!panel) return;
+
+            let html = '<div class="diagnosis-content">';
+
+            // Basic info
+            html += `
+                <div class="diagnosis-row">
+                    <span class="diagnosis-label">AI System:</span>
+                    <span class="diagnosis-value">${data.ai_system || 'unknown'}</span>
+                </div>
+                <div class="diagnosis-row">
+                    <span class="diagnosis-label">Permission Mode:</span>
+                    <span class="diagnosis-value">${data.permission_mode || 'unknown'}</span>
+                </div>
+            `;
+
+            // Warnings
+            if (data.warnings && data.warnings.length > 0) {
+                html += '<div class="diagnosis-warnings">';
+                for (const warning of data.warnings) {
+                    html += `<div class="diagnosis-warning">⚠️ ${escapeHtml(warning)}</div>`;
+                }
+                html += '</div>';
+            }
+
+            // Suggestions
+            if (data.suggestions && data.suggestions.length > 0) {
+                html += '<div class="diagnosis-suggestions">';
+                for (const suggestion of data.suggestions) {
+                    html += `<div class="diagnosis-suggestion">💡 ${escapeHtml(suggestion)}</div>`;
+                }
+                // Add suggestion to try without -p flag for debugging
+                html += `<div class="diagnosis-suggestion">💡 To debug interactively, remove -p flag from agent command to see Claude's UI directly</div>`;
+                html += '</div>';
+            }
+
+            // Log context preview
+            if (data.log_context) {
+                html += `
+                    <div class="diagnosis-row" style="margin-top: 8px;">
+                        <span class="diagnosis-label">Log Analysis:</span>
+                    </div>
+                    <pre style="font-size: 11px; max-height: 200px; overflow: auto; background: var(--bg); padding: 8px; border-radius: 4px; white-space: pre-wrap;">${escapeHtml(data.log_context)}</pre>
+                `;
+            }
+
+            // Open log button
+            if (data.log_path && data.log_exists) {
+                html += `
+                    <button class="open-log-btn" onclick="openLogFile('${escapeHtml(data.log_path)}')">
+                        Open Log File
+                    </button>
+                `;
+            } else {
+                html += `
+                    <div style="margin-top: 8px; font-size: 11px; color: var(--dim);">
+                        Log file: ${data.log_path ? 'Not found at ' + escapeHtml(data.log_path) : 'No log path available'}
+                    </div>
+                `;
+            }
+
+            html += '</div>';
+            panel.innerHTML = html;
+        }
+
+        function openLogFile(path) {
+            // Use macOS 'open' command via a simple API call
+            fetch('/api/open-file', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: path }),
+            }).then(res => res.json()).then(data => {
+                if (data.error) {
+                    showToast(`Could not open file: ${data.error}`, 'error');
+                } else {
+                    showToast('Opening log file...');
+                }
+            }).catch(err => {
+                showToast(`Failed to open file: ${err.message}`, 'error');
+            });
+        }
+
         async function showInfo() {
             settingsMenu.classList.remove('visible');
             const res = await fetch('/api/info');
@@ -1855,171 +2158,6 @@
             toast.classList.toggle('error', isError);
             toast.classList.add('visible');
             setTimeout(() => toast.classList.remove('visible'), 2500);
-        }
-
-        // System Panel Functions
-        const repoRoot = '{{ repo_root | default("") }}';
-
-        async function loadSystemStatus() {
-            if (!repoRoot) return;
-            try {
-                const res = await fetch(`/control/orchestrator/status?repo_root=${encodeURIComponent(repoRoot)}`);
-                const data = await res.json();
-
-                const stateEl = document.getElementById('systemState');
-                const pidEl = document.getElementById('systemPid');
-                const portEl = document.getElementById('systemPort');
-                const startedEl = document.getElementById('systemStarted');
-                const recoveredEl = document.getElementById('recoveredBadge');
-
-                stateEl.textContent = data.state ? data.state.charAt(0).toUpperCase() + data.state.slice(1) : '-';
-                stateEl.className = 'system-stat-value status-' + (data.state || 'stopped');
-
-                pidEl.textContent = data.pid || '-';
-                portEl.textContent = data.port || '-';
-
-                if (data.started_at) {
-                    const d = new Date(data.started_at);
-                    startedEl.textContent = d.toLocaleTimeString();
-                } else {
-                    startedEl.textContent = '-';
-                }
-
-                if (data.recovered) {
-                    recoveredEl.style.display = 'inline';
-                } else {
-                    recoveredEl.style.display = 'none';
-                }
-
-                // Show error if failed
-                if (data.state === 'failed' && data.error) {
-                    document.getElementById('errorPanel').style.display = 'block';
-                    document.getElementById('errorMessage').textContent = data.error;
-                }
-            } catch (err) {
-                console.error('[system] Failed to load status:', err);
-            }
-        }
-
-        async function loadLastFailure() {
-            if (!repoRoot) return;
-            try {
-                const res = await fetch(`/control/orchestrator/last_failure?repo_root=${encodeURIComponent(repoRoot)}`);
-                const data = await res.json();
-
-                if (data.last_failure) {
-                    const panel = document.getElementById('errorPanel');
-                    const msgEl = document.getElementById('errorMessage');
-                    const fixEl = document.getElementById('errorFix');
-
-                    panel.style.display = 'block';
-                    msgEl.textContent = data.last_failure.message || 'Unknown error';
-
-                    if (data.last_failure.suggested_fix) {
-                        fixEl.style.display = 'block';
-                        fixEl.textContent = data.last_failure.suggested_fix;
-                    }
-                }
-            } catch (err) {
-                console.error('[system] Failed to load last failure:', err);
-            }
-        }
-
-        async function refreshLogs() {
-            if (!repoRoot) return;
-            const logViewer = document.getElementById('logViewer');
-            const logInfo = document.getElementById('logInfo');
-            const n = document.getElementById('logLines').value;
-
-            try {
-                const res = await fetch(`/control/orchestrator/log_tail?repo_root=${encodeURIComponent(repoRoot)}&n=${n}`);
-                const data = await res.json();
-
-                if (data.lines && data.lines.length > 0) {
-                    logViewer.innerHTML = data.lines.map(line =>
-                        `<div class="log-line">${escapeHtml(line)}</div>`
-                    ).join('');
-                    logInfo.textContent = `Showing ${data.returned_lines} of ${data.total_lines} lines`;
-                    // Scroll to bottom
-                    logViewer.scrollTop = logViewer.scrollHeight;
-                } else {
-                    logViewer.innerHTML = '<div class="log-line" style="color:#8b949e;">No log entries</div>';
-                    logInfo.textContent = '';
-                }
-            } catch (err) {
-                logViewer.innerHTML = '<div class="log-line" style="color:#f85149;">Failed to load logs</div>';
-                console.error('[system] Failed to load logs:', err);
-            }
-        }
-
-        function escapeHtml(str) {
-            const div = document.createElement('div');
-            div.textContent = str;
-            return div.innerHTML;
-        }
-
-        async function pauseOrchestrator() {
-            const btn = document.getElementById('pauseBtn');
-            if (isPaused) {
-                await fetch('/api/resume', { method: 'POST' });
-                btn.textContent = '⏸ Pause';
-                isPaused = false;
-                showToast('Orchestrator resumed');
-            } else {
-                await fetch('/api/pause', { method: 'POST' });
-                btn.textContent = '▶ Resume';
-                isPaused = true;
-                showToast('Orchestrator paused');
-            }
-        }
-
-        async function stopOrchestrator() {
-            if (!confirm('Stop the orchestrator? Active sessions will be preserved.')) return;
-            await fetch('/api/shutdown', { method: 'POST' });
-            showToast('Shutdown requested');
-            setTimeout(() => location.reload(), 1000);
-        }
-
-        async function forceStopOrchestrator() {
-            if (!confirm('Force stop the orchestrator? This will immediately terminate the process.')) return;
-            if (!repoRoot) return;
-            try {
-                await fetch('/control/orchestrator/stop', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: repoRoot, force: true })
-                });
-                showToast('Force stopped');
-                setTimeout(() => location.reload(), 1000);
-            } catch (err) {
-                showToast('Force stop failed', true);
-            }
-        }
-
-        async function restartOrchestrator() {
-            if (!confirm('Restart the orchestrator?')) return;
-            showToast('Restarting...');
-            await fetch('/api/shutdown', { method: 'POST' });
-            // The page will become unavailable shortly
-        }
-
-        // Initialize system panel when on system tab
-        const activeTab = '{{ active_tab }}';
-        if (activeTab === 'system') {
-            loadSystemStatus();
-            loadLastFailure();
-            refreshLogs();
-
-            // Auto-refresh logs every 5 seconds if checkbox is checked
-            setInterval(() => {
-                const autoRefresh = document.getElementById('logAutoRefresh');
-                if (autoRefresh && autoRefresh.checked) {
-                    refreshLogs();
-                }
-            }, 5000);
-
-            // Refresh status every 2 seconds
-            setInterval(loadSystemStatus, 2000);
         }
 
         // Create Issue Modal Functions

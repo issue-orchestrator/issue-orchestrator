@@ -65,6 +65,7 @@ from .fixtures import (
     DEFAULT_E2E_FILTER_LABEL,
     cleanup_local_worktrees,
     cleanup_tmux_sessions,
+    cleanup_iterm_sessions,
     run_cleanup_step,
     verify_cleanup_items,
     cleanup_remote_branches,
@@ -260,7 +261,10 @@ def e2e_reconciliation_at_session_start(e2e_tmux_session: str, e2e_worktree_base
     else:
         # Clean up default locations (from non-isolated runs)
         cleanup_local_worktrees()
+        # Clean up both tmux and iTerm sessions since we don't know
+        # what mode the previous test run used
         cleanup_tmux_sessions()
+        cleanup_iterm_sessions()
         # Clean up this session's isolated resources
         cleanup_local_worktrees(e2e_worktree_base)
         cleanup_tmux_sessions(e2e_tmux_session)
@@ -346,11 +350,36 @@ def filter_label() -> str:
     return os.environ.get("E2E_FILTER", DEFAULT_E2E_FILTER_LABEL)
 
 
+def is_iterm_available() -> bool:
+    """Check if iTerm2 is available (macOS only)."""
+    import platform
+    if platform.system() != "Darwin":
+        return False
+    # Check if iTerm2 is installed
+    from pathlib import Path
+    return Path("/Applications/iTerm.app").exists()
+
+
+@pytest.fixture(scope="session")
+def e2e_ui_mode() -> str:
+    """Get the UI mode for e2e tests.
+
+    Configurable via E2E_UI_MODE environment variable.
+    Defaults to 'tmux' for CI compatibility.
+    Set E2E_UI_MODE=iterm2 to test iTerm-specific code paths.
+    """
+    mode = os.environ.get("E2E_UI_MODE", "tmux")
+    if mode == "iterm2" and not is_iterm_available():
+        pytest.skip("iTerm2 not available - skipping iterm2 mode tests")
+    return mode
+
+
 @pytest.fixture(scope="session")
 def e2e_session_config(
     e2e_project_root: Path,
     e2e_worktree_base: Path,
     repo_name: str,
+    e2e_ui_mode: str,
 ) -> Config:
     """Session-scoped config for single orchestrator."""
     from issue_orchestrator.infra.config import ValidationConfig, ValidationGateConfig
@@ -359,7 +388,7 @@ def e2e_session_config(
     config.repo = repo_name
     config.repo_root = e2e_project_root
     config.worktree_base = e2e_worktree_base
-    config.ui_mode = "tmux"
+    config.ui_mode = e2e_ui_mode
     config.max_concurrent_sessions = 4
     config.filter_label = "test-data"
     config.github_token_env = env_token_name()
@@ -379,7 +408,7 @@ def e2e_session_config(
 
     config.agents = {
         "agent:e2e-test": AgentConfig(
-            prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
+            prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "complete-immediately.sh",
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
@@ -387,7 +416,7 @@ def e2e_session_config(
             permission_mode="bypassPermissions",
         ),
         "agent:script-completes": AgentConfig(
-            prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
+            prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "complete-immediately.sh",
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
@@ -395,7 +424,7 @@ def e2e_session_config(
             permission_mode="bypassPermissions",
         ),
         "agent:script-review": AgentConfig(
-            prompt_path=e2e_project_root / "examples" / "scripts" / "review-decider.sh",
+            prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "review-decider.sh",
             timeout_minutes=3,
             model="sonnet",
             command="PR_NUMBER={pr_number} bash {prompt}",
@@ -403,7 +432,7 @@ def e2e_session_config(
             permission_mode="bypassPermissions",
         ),
         "agent:triage-investigator": AgentConfig(
-            prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
+            prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "complete-immediately.sh",
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",
@@ -426,6 +455,9 @@ def e2e_session_config(
         config.cleanup.without_triage.close_ai_session_tabs = False
         config.cleanup.without_triage.remove_worktrees = False
     os.environ["E2E_CONTROL_API_PORT"] = str(config.control_api_port)
+
+    # Skip actual git push in e2e tests - we verify push is called but don't run hooks
+    os.environ["E2E_DRY_RUN_PUSH"] = "1"
 
     return config
 
@@ -467,7 +499,18 @@ def e2e_orchestrator(
     proc = OrchestratorProcess(e2e_session_config, e2e_project_root, tmux_session=e2e_tmux_session)
     max_issues = int(os.environ.get("E2E_MAX_ISSUES", "50"))
     proc.start(max_issues=max_issues, extra_args=["--label", filter_label])
-    time.sleep(2)
+
+    # iTerm2 mode needs more time - the launcher exits, and we need to wait
+    # for iTerm2 to open the tab, run the command, and start the API
+    if e2e_session_config.ui_mode == "iterm2":
+        # Give iTerm2 time to start up the orchestrator
+        for i in range(10):  # Try for up to 10 seconds
+            time.sleep(1)
+            if proc.is_running():
+                break
+            print(f"  [E2E] Waiting for iTerm2 orchestrator to start... ({i+1}/10)")
+    else:
+        time.sleep(2)
 
     if not proc.is_running():
         stdout, stderr = proc.stop()
@@ -615,7 +658,7 @@ def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
 
 
 @pytest.fixture
-def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config:
+def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mode: str) -> Config:
     """Create e2e test config with e2e-test agent."""
     from issue_orchestrator.infra.config import ValidationConfig, ValidationGateConfig
 
@@ -623,14 +666,14 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str) -> Config
     config.repo = repo_name
     config.repo_root = e2e_project_root
     config.worktree_base = tmp_path / "worktrees"
-    config.ui_mode = "tmux"
+    config.ui_mode = e2e_ui_mode
     config.max_concurrent_sessions = 1
     config.filter_label = "test-data"
     config.github_token_env = env_token_name()
 
     config.agents = {
         "agent:e2e-test": AgentConfig(
-            prompt_path=e2e_project_root / "examples" / "scripts" / "complete-immediately.sh",
+            prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "complete-immediately.sh",
             timeout_minutes=3,
             model="sonnet",
             command="bash {prompt}",

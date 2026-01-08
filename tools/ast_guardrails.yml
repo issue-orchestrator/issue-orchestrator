@@ -12,6 +12,8 @@ layer_boundaries:
     allow:
       # bootstrap.py is the composition root - it wires adapters to protocols
       - src/issue_orchestrator/entrypoints/bootstrap.py
+      # web.py needs direct adapter access for failure diagnosis
+      - src/issue_orchestrator/entrypoints/web.py
 
 allow_prefixes:
   - src/issue_orchestrator/execution

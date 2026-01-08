@@ -113,10 +113,18 @@ class MockOrchestratorForWeb:
         return session
 
     def add_queue_issue(
-        self, issue_number: int, title: str, agent_type: str = "agent:web"
+        self, issue_number: int, title: str, agent_type: str = "agent:web",
+        blocked: bool = False
     ) -> Issue:
-        """Add a queued issue for testing."""
-        issue = Issue(number=issue_number, title=title, labels=[agent_type])
+        """Add a queued issue for testing.
+
+        Args:
+            blocked: If True, add 'blocked' label to make issue appear in attention tab
+        """
+        labels = [agent_type]
+        if blocked:
+            labels.append("blocked")
+        issue = Issue(number=issue_number, title=title, labels=labels)
         self.state.cached_queue_issues.append(issue)
         return issue
 

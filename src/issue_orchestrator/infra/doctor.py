@@ -556,10 +556,14 @@ def run_doctor(
         missing_scripts = []
         for name, agent_cfg in config.agents.items():
             cmd_parts = agent_cfg.command.split()
-            if cmd_parts:
-                script = cmd_parts[0]
-                if not shutil.which(script) and not Path(script).exists():
-                    missing_scripts.append(f"{name}: {script}")
+            # Skip env var assignments (VAR=value or VAR={template}) to find actual command
+            script = None
+            for part in cmd_parts:
+                if "=" not in part or part.startswith("{"):
+                    script = part
+                    break
+            if script and not shutil.which(script) and not Path(script).exists():
+                missing_scripts.append(f"{name}: {script}")
 
         if missing_scripts:
             result.checks.append(Check(

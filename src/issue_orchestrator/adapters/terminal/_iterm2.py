@@ -225,14 +225,14 @@ class ITermSessionManager:
 
         # Add sandbox verification before running agent command
         # This confirms isolation is working (gh auth fails, git push fails, etc.)
-        # Use verify-agent-sandbox if available, otherwise fall back to Python module
-        # Note: Use double quotes for echo to avoid nested single-quote issues
-        # (the whole command gets wrapped in single quotes for zsh -l -c '...')
+        # Only use verify-agent-sandbox if available - skip verification otherwise
+        # Note: The python module fallback was removed because it fails with
+        # "ModuleNotFoundError" from worktrees (exit code 1), which is
+        # indistinguishable from actual verification failure.
         sandbox_check = (
             "if command -v verify-agent-sandbox &> /dev/null; then "
             'verify-agent-sandbox || { echo "Sandbox verification failed - aborting"; exit 1; }; '
-            "elif python3 -m issue_orchestrator.execution.sandbox_verify 2>/dev/null; then :; "
-            'elif [ $? -eq 1 ]; then echo "Sandbox verification failed - aborting"; exit 1; fi && '
+            "fi && "
         )
 
         zsh_wrapped_cmd = f"zsh -l -c '{path_prefix}{isolation_prefix}{sandbox_check}cd \"{working_dir}\" && {cmd_with_escaped_quotes}'"
@@ -288,25 +288,56 @@ end tell'''
         return has_running
 
     def _has_running_tab_for_issue(self, issue_number: int) -> bool:
-        """Check if there's a running (Claude active) tab for this issue."""
-        script = f'''
+        """Check if there's a tab for this issue.
+
+        IMPORTANT: This returns True if the tab EXISTS, regardless of is_processing.
+
+        Why? is_processing returns false between API calls (2-second window).
+        If we returned false based on is_processing, we'd kill sessions that are
+        just waiting for API responses.
+
+        The observer checks completion.json first, so we won't miss completed sessions.
+        If no completion.json and tab exists, the session is still working (or stuck,
+        in which case the timeout will handle it).
+        """
+        check_exists_script = f'''
         tell application "iTerm"
             repeat with w in windows
                 repeat with t in tabs of w
                     tell current session of t
                         if name starts with "#{issue_number} " or name is "#{issue_number}" then
-                            if is processing is true then
-                                return true
-                            end if
+                            return "exists:" & name & ":processing:" & (is processing as string)
                         end if
                     end tell
                 end repeat
             end repeat
-            return false
+            return "not_found"
         end tell
         '''
-        success, output = run_applescript(script)
-        return success and "true" in output.lower()
+        success, output = run_applescript(check_exists_script)
+
+        if not success:
+            logger.warning("[SESSION_CHECK] AppleScript failed for #%d: %s", issue_number, output)
+            return False
+
+        output = output.strip().lower()
+
+        if "not_found" in output:
+            logger.info("[SESSION_CHECK] Tab #%d not found in iTerm", issue_number)
+            return False
+
+        if "exists:" in output:
+            # Tab exists - return True regardless of is_processing
+            # is_processing oscillates between API calls; completion.json is source of truth
+            is_processing = "processing:true" in output
+            logger.info("[SESSION_CHECK] Tab #%d exists, is_processing=%s (returning True)",
+                       issue_number, is_processing)
+            return True  # Tab exists = session exists
+
+        # Fallback - unexpected response, assume tab exists to be safe
+        logger.warning("[SESSION_CHECK] Unexpected response for #%d: %s (assuming exists)",
+                      issue_number, output)
+        return True
 
     def _close_existing_tabs_for_issue(self, issue_number: int) -> int:
         """Close IDLE existing tabs for an issue number (prevents zombie duplicates).
@@ -416,6 +447,45 @@ end tell'''
             logger.info("Sent text to session #%d", issue_number)
             return True
         return False
+
+    def get_session_output(self, issue_number: int, lines: int = 50) -> str | None:
+        """Get recent output from an iTerm2 tab.
+
+        Uses AppleScript to retrieve terminal content from the session.
+
+        Args:
+            issue_number: The issue number identifying the session
+            lines: Number of lines to retrieve (default 50)
+
+        Returns:
+            Terminal output as string, or None if not available
+        """
+        # Use "tell application id" to avoid activating iTerm and stealing focus
+        script = f'''
+        tell application id "com.googlecode.iterm2"
+            tell current window
+                repeat with t in tabs
+                    tell current session of t
+                        if name contains "#{issue_number}" then
+                            set sessionContents to contents
+                            return sessionContents
+                        end if
+                    end tell
+                end repeat
+            end tell
+        end tell
+        return ""
+        '''
+        success, output = run_applescript(script)
+        if not success or not output:
+            logger.debug("Could not get output for session #%d: %s", issue_number, output if not success else "empty")
+            return None
+
+        # Return last N lines
+        all_lines = output.strip().split('\n')
+        if len(all_lines) > lines:
+            return '\n'.join(all_lines[-lines:])
+        return output.strip()
 
     def list_sessions(self) -> list[int]:
         """List all tracked issue numbers."""

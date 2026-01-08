@@ -318,6 +318,9 @@ class AgentConfig:
     # Optional override for hook verification meta-agent (e.g., "claude-code")
     meta_agent: Optional[str] = None
     initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit."
+    # AI system type for log retrieval (e.g., "claude-code", "codex", "gemini", "aider")
+    # If not set, auto-detected from command. Must match an entry in ai-systems.yaml.
+    ai_system: Optional[str] = None
 
     def get_command(
         self,
@@ -599,6 +602,7 @@ class OrchestratorState:
     """Persisted state of the orchestrator."""
     active_sessions: list[Session] = field(default_factory=list)
     completed_today: list[int] = field(default_factory=list)  # issue numbers (to migrate: set[IssueKey])
+    failed_this_cycle: set[int] = field(default_factory=set)  # issues that failed since last refresh (prevent immediate retry)
     paused: bool = False
     priority_queue: list[int] = field(default_factory=list)  # manual priority overrides (to migrate: list[IssueKey])
     session_history: list[SessionHistoryEntry] = field(default_factory=list)  # This session's history
