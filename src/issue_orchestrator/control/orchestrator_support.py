@@ -303,10 +303,11 @@ class OrchestratorSupport:
             if not any(r.pr_number == a.pr_number for r in self.state.pending_reviews):
                 self.state.pending_reviews.append(
                     PendingReview(
-                        self.repository_host.create_issue_key(a.issue_number),
-                        a.pr_number,
-                        a.pr_url,
-                        a.branch_name,
+                        issue_key=self.repository_host.create_issue_key(a.issue_number),
+                        pr_number=a.pr_number,
+                        pr_url=a.pr_url,
+                        branch_name=a.branch_name,
+                        _issue_number=a.issue_number,
                         agent_label=a.agent_label,
                     )
                 )

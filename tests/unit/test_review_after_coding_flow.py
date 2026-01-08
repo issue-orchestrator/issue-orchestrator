@@ -199,6 +199,7 @@ class TestReviewAfterCodingFlow:
             pr_number=456,
             pr_url="https://github.com/test/repo/pull/456",
             branch_name="123-feature",
+            _issue_number=123,
         )
 
         # Create a mock review workflow that allows launching

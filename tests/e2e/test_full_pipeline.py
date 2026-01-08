@@ -10,6 +10,7 @@ Uses the single-orchestrator pattern for efficiency.
 
 import asyncio
 import logging
+import os
 import time
 
 import pytest
@@ -60,7 +61,7 @@ class TestConcurrentPipeline:
         try:
             # Create issues dynamically
             for i in range(num_issues):
-                issue = flow.create_issue(
+                issue, _issue_num = flow.create_issue(
                     f"[M0-{800+i:03d}] [E2E-CONCURRENT-{i+1}] Concurrent pipeline test",
                     ["agent:e2e-test", e2e_label(f"concurrent_{i}")],
                 )
@@ -81,27 +82,36 @@ class TestConcurrentPipeline:
                 for issue in issues
             ])
 
-            # Phase 2: Wait for all PRs to be created
-            logger.info("Phase 2: Waiting for all PRs to be created...")
-            pr_numbers = await asyncio.gather(*[
-                flow.pr_created(issue)
-                for issue in issues
-            ])
-            created_prs = [{"number": pr_num} for pr_num in pr_numbers]
+            # Phase 2: Wait for PRs or skip in dry-run mode
+            dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
+            if dry_run:
+                logger.info("Phase 2: Skipping PR wait (E2E_DRY_RUN_PUSH=1)")
+                # In dry-run mode, wait briefly for completion processing
+                await asyncio.sleep(5)
+            else:
+                logger.info("Phase 2: Waiting for all PRs to be created...")
+                pr_numbers = await asyncio.gather(*[
+                    flow.pr_created(issue)
+                    for issue in issues
+                ])
+                created_prs = [{"number": pr_num} for pr_num in pr_numbers]
 
-            # Phase 3: Wait for code review outcomes so later tests can launch new work
-            logger.info("Phase 3: Waiting for code review outcomes...")
-            await flow.review_outcomes_any_of(
-                issues=issues,
-                any_of_labels=["code-reviewed", "needs-rework"],
-            )
+                # Phase 3: Wait for code review outcomes so later tests can launch new work
+                logger.info("Phase 3: Waiting for code review outcomes...")
+                await flow.review_outcomes_any_of(
+                    issues=issues,
+                    any_of_labels=["code-reviewed", "needs-rework"],
+                )
 
             # Summary
             total_time = time.time() - start_time
             logger.info("=== Summary ===")
             logger.info("Total time: %.1fs", total_time)
             logger.info("Issues processed: %d", num_issues)
-            logger.info("PRs created: %d", len(created_prs))
+            if dry_run:
+                logger.info("PRs: skipped (dry-run mode)")
+            else:
+                logger.info("PRs created: %d", len(created_prs))
 
             # Verify concurrency
             if num_issues > 1:
@@ -111,9 +121,10 @@ class TestConcurrentPipeline:
                     logger.info("✓ Processing was concurrent (avg < 45s per issue)")
 
         finally:
-            # Cleanup: close all PRs
-            for pr in created_prs:
-                flow.close_pr(pr["number"])
+            # Cleanup: close all PRs (only if we created real ones)
+            if not dry_run:
+                for pr in created_prs:
+                    flow.close_pr(pr["number"])
 
 
 # ---------------------------------------------------------------------------

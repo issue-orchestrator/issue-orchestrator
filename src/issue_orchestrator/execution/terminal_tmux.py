@@ -4,20 +4,59 @@ Implements terminal hooks using tmux as the backend.
 """
 
 from pathlib import Path
+from typing import Optional
 
 from ..infra.hooks.hookspec import hookimpl
-from ..adapters.terminal._tmux import TmuxManager
+from ..adapters.terminal._tmux import TmuxManager, create_tmux_manager
 
 
 class TmuxPlugin:
     """Terminal plugin for tmux backend.
 
-    Uses the existing TmuxManager which manages a single tmux session
-    with multiple windows (one per issue).
+    Uses session-per-orchestrator architecture:
+    - Each TmuxPlugin owns one TmuxManager
+    - TmuxManager owns one tmux session
+    - Multiple windows (agent sessions) within that session
+    - Atomic cleanup on shutdown via kill_orchestrator_session()
     """
 
-    def __init__(self):
-        self._manager = TmuxManager()
+    def __init__(
+        self,
+        manager: Optional[TmuxManager] = None,
+        session_name: Optional[str] = None,
+    ):
+        """Initialize the TmuxPlugin.
+
+        Args:
+            manager: Optional pre-configured TmuxManager (for testing/DI).
+            session_name: Session name if creating a new manager.
+        """
+        if manager is not None:
+            self._manager = manager
+        elif session_name is not None:
+            self._manager = create_tmux_manager(session_name=session_name)
+        else:
+            self._manager = TmuxManager()  # Default: uses SESSION_NAME
+
+    @property
+    def manager(self) -> TmuxManager:
+        """Get the underlying TmuxManager."""
+        return self._manager
+
+    # Lifecycle hooks
+
+    @hookimpl
+    def on_orchestrator_startup(self) -> None:
+        """Called when orchestrator starts - create tmux session."""
+        self._manager.create_orchestrator_session()
+
+    @hookimpl
+    def on_orchestrator_shutdown(self) -> None:
+        """Called when orchestrator shuts down - kill tmux session.
+
+        This atomically removes ALL agent windows for guaranteed cleanup.
+        """
+        self._manager.kill_orchestrator_session()
 
     @hookimpl
     def create_session(

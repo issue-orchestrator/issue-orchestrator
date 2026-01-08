@@ -667,6 +667,7 @@ class TestLaunchReviewSession:
             pr_number=456,
             pr_url="https://github.com/test/repo/pull/456",
             branch_name="123-feature",
+            _issue_number=123,
         )
 
         result = session_launcher.launch_review_session(review, active_sessions=[])
@@ -684,6 +685,7 @@ class TestLaunchReviewSession:
             pr_number=456,
             pr_url="https://github.com/test/repo/pull/456",
             branch_name="123-feature",
+            _issue_number=123,
         )
 
         result = session_launcher.launch_review_session(review, active_sessions=[])
@@ -699,6 +701,7 @@ class TestLaunchReviewSession:
             pr_number=456,
             pr_url="https://github.com/test/repo/pull/456",
             branch_name="123-feature",
+            _issue_number=123,
         )
 
         result = session_launcher.launch_review_session(review, active_sessions=[])
@@ -714,6 +717,7 @@ class TestLaunchReviewSession:
             pr_number=456,
             pr_url="https://github.com/test/repo/pull/456",
             branch_name="123-feature",
+            _issue_number=123,
         )
 
         result = session_launcher.launch_review_session(review, active_sessions=[])
@@ -729,6 +733,7 @@ class TestLaunchReviewSession:
             pr_number=456,
             pr_url="https://github.com/test/repo/pull/456",
             branch_name="123-feature",
+            _issue_number=123,
         )
 
         result = session_launcher.launch_review_session(review, active_sessions=[])
@@ -743,6 +748,7 @@ class TestLaunchReviewSession:
             pr_number=456,
             pr_url="https://github.com/test/repo/pull/456",
             branch_name="123-feature",
+            _issue_number=123,
         )
 
         result = session_launcher.launch_review_session(review, active_sessions=[])
@@ -759,6 +765,7 @@ class TestLaunchReviewSession:
                 pr_number=456,
                 pr_url="https://github.com/test/repo/pull/456",
                 branch_name="123-feature",
+                _issue_number=123,
             )
 
             result = session_launcher.launch_review_session(review, active_sessions=[])
@@ -973,6 +980,7 @@ class TestOrchestratorLaunchReviewSession:
             pr_number=456,
             pr_url="https://github.com/test/repo/pull/456",
             branch_name="123-feature",
+            _issue_number=123,
         )
         state = OrchestratorState()
         state.pending_reviews = [review]
@@ -993,6 +1001,7 @@ class TestOrchestratorLaunchReviewSession:
             pr_number=456,
             pr_url="https://github.com/test/repo/pull/456",
             branch_name="123-feature",
+            _issue_number=123,
         )
         state = OrchestratorState()
         state.pending_reviews = [review]

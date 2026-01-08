@@ -1,4 +1,4 @@
-.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-real-claude test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -18,6 +18,7 @@ help:
 	@echo "  test-integration    Run integration tests"
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
+	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
 	@echo "  test-real-claude    Quick test: real Claude execution in tmux"
 	@echo "  test-web            Run Playwright web UI tests (headless)"
 	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
@@ -97,6 +98,19 @@ ifdef NOFAST
 	$(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)"
 else
 	$(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)"
+endif
+
+# Run e2e tests with REAL PR creation on GitHub (no dry run)
+# WARNING: This creates actual PRs and branches on the target repo!
+# Use TEST= to run a specific test, e.g.: make test-e2e-live TEST=test_code_review
+test-e2e-live:
+	@echo "⚠️  Running e2e tests with REAL PR creation (no dry run)!"
+	@echo "   This will create actual PRs and branches on GitHub."
+	@echo ""
+ifdef TEST
+	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)"
+else
+	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x
 endif
 
 test:

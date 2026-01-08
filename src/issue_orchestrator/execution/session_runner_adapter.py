@@ -101,3 +101,23 @@ class PluggySessionRunner:
         """Focus a terminal session via pluggy hook."""
         result = self._pm.hook.focus_session(session_id=session_id)
         return result if result is not None else False
+
+    # Lifecycle hooks for terminal backend initialization and cleanup
+
+    def on_orchestrator_startup(self) -> None:
+        """Call the orchestrator startup hook.
+
+        Terminal plugins should create their session/environment here.
+        For tmux: creates the tmux session.
+        """
+        logger.info("Calling on_orchestrator_startup hook")
+        self._pm.hook.on_orchestrator_startup()
+
+    def on_orchestrator_shutdown(self) -> None:
+        """Call the orchestrator shutdown hook.
+
+        Terminal plugins should clean up their session/environment here.
+        For tmux: kills the entire session (atomic cleanup of all windows).
+        """
+        logger.info("Calling on_orchestrator_shutdown hook")
+        self._pm.hook.on_orchestrator_shutdown()

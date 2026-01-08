@@ -109,6 +109,7 @@ class TestFactGathererCreateSnapshot:
             pr_number=10,
             pr_url="https://github.com/owner/repo/pull/10",
             branch_name="1-issue-1",
+            _issue_number=1,
         )
         sample_state.pending_reviews = [review]
 

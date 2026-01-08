@@ -200,26 +200,42 @@ def cleanup_test_issues(repo: str) -> int:
     to ensure all test artifacts are cleaned up.
 
     Returns:
-        Number of issues closed
+        Number of issues closed (includes issues where close succeeded even if comment failed)
     """
     adapter = _adapter_for(repo)
     count = 0
+    errors = 0
     seen: set[int] = set()
 
     for label in ["test-data", "agent:e2e-test"]:
-        with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_LIST, scope=gh_audit.AuditScope.TEST):
-            issues = adapter.list_issues(labels=[label], state="open", limit=100)
+        try:
+            with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_LIST, scope=gh_audit.AuditScope.TEST):
+                issues = adapter.list_issues(labels=[label], state="open", limit=100)
+            gh_audit.update_last_call(items_returned=len(issues))
+        except Exception as exc:
+            logger.warning("Failed to list issues with label '%s': %s", label, exc)
+            continue
 
-        gh_audit.update_last_call(items_returned=len(issues))
         for issue in issues:
             num = issue.number
             if num not in seen:
                 seen.add(num)
-                with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_CLOSE, scope=gh_audit.AuditScope.TEST):
-                    adapter.add_comment(num, "Closed by test cleanup.")
-                    adapter.update_issue_state(num, "closed")
-                count += 1
+                try:
+                    with gh_audit.context(reason=gh_audit.AuditReason.TEST_DATA_CLOSE, scope=gh_audit.AuditScope.TEST):
+                        # Try to add comment, but don't fail if it times out
+                        try:
+                            adapter.add_comment(num, "Closed by test cleanup.")
+                        except Exception as exc:
+                            logger.warning("Failed to add comment to issue #%d: %s", num, exc)
+                        # Always try to close even if comment failed
+                        adapter.update_issue_state(num, "closed")
+                    count += 1
+                except Exception as exc:
+                    logger.warning("Failed to close issue #%d: %s", num, exc)
+                    errors += 1
 
+    if errors:
+        logger.warning("Cleanup completed with %d errors (closed %d issues)", errors, count)
     return count
 
 

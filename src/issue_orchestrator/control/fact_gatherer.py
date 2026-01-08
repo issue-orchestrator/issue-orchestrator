@@ -73,6 +73,9 @@ class FactGatherer:
 
         all_issues: list["Issue"] = []
         seen: set[int] = set()
+        # Track which required IDs still need to be found across all agent types
+        # Once an ID is found in any query, remove it from the required set
+        still_needed = set(required_stable_ids) if required_stable_ids else None
         for agent_label in self.config.agents.keys():
             labels = list(labels_for_agent)
             labels.append(agent_label)
@@ -81,13 +84,16 @@ class FactGatherer:
                     labels=labels,
                     milestone=milestone_name,
                     limit=self.config.issue_fetch_limit,
-                    required_stable_ids=required_stable_ids,
+                    required_stable_ids=still_needed,
                 )
                 for issue in issues:
                     if issue.number in seen:
                         continue
                     seen.add(issue.number)
                     all_issues.append(issue)
+                    # Remove found IDs from the still_needed set
+                    if still_needed and issue.key.stable_id() in still_needed:
+                        still_needed.discard(issue.key.stable_id())
                 if self.events:
                     self.events.publish(TraceEvent(EventName.ISSUES_FETCHED, {
                         "agent": agent_label,
@@ -144,6 +150,7 @@ class FactGatherer:
             cleanup_facts=self.gather_cleanup_facts(state),
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
             failed_this_cycle=frozenset(state.failed_this_cycle),
+            session_history_issue_numbers=frozenset(e.issue_number for e in state.session_history),
         )
 
     def gather_triage_facts(

@@ -154,6 +154,24 @@ class TerminalSpec:
             True if focused, False if not found, None to defer to next plugin.
         """
 
+    # Lifecycle hooks for terminal backend initialization and cleanup
+
+    @hookspec
+    def on_orchestrator_startup(self) -> None:
+        """Called when the orchestrator starts up.
+
+        Terminal plugins should create their session/environment here.
+        For tmux: creates the tmux session.
+        """
+
+    @hookspec
+    def on_orchestrator_shutdown(self) -> None:
+        """Called when the orchestrator shuts down.
+
+        Terminal plugins should clean up their session/environment here.
+        For tmux: kills the entire session (atomic cleanup of all windows).
+        """
+
 
 class TraceEventSpec:
     """Hook specification for trace event broadcasting.

@@ -206,13 +206,22 @@ class Orchestrator:
         )
 
     def _run_planning_cycle(self) -> None:
-        self._last_issue_fetch, self._refresh_requested = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, self._refresh_requested, self._inflight_stable_ids, self.observer)
+        # Capture and clear the refresh flag before the cycle.
+        # If request_refresh() is called during the cycle, it will set
+        # _refresh_requested = True again. We must NOT overwrite that
+        # new value when the cycle returns.
+        refresh_to_process = self._refresh_requested
+        self._refresh_requested = False
+        self._last_issue_fetch, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, refresh_to_process, self._inflight_stable_ids, self.observer)
 
     def _clear_discovered_facts(self) -> None: self._plan_applier._clear_discovered_facts()
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier._emit_heartbeat_if_needed()
 
     async def run_loop(self) -> None:
         logger.info("Starting orchestration loop")
+
+        # Initialize terminal backend (creates tmux session for this orchestrator)
+        self.deps.runner.on_orchestrator_startup()
 
         # Emit orchestrator.started
         self.deps.events.publish(TraceEvent(
@@ -254,6 +263,9 @@ class Orchestrator:
                 "iterations": self._loop_iteration,
             }),
         ))
+
+        # Clean up terminal backend (kills tmux session - atomic cleanup of all windows)
+        self.deps.runner.on_orchestrator_shutdown()
 
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""

@@ -56,6 +56,7 @@ def inflight_update(
     add_labels: list[str] | None = None,
     remove_labels: list[str] | None = None,
     port: int | None = None,
+    issue_number: int | None = None,
 ) -> None:
     """Update an issue while orchestrator is running.
 
@@ -64,8 +65,17 @@ def inflight_update(
         add_labels: Labels to add
         remove_labels: Labels to remove
         port: Control API port for refresh (defaults to Config.control_api_port)
+        issue_number: GitHub issue number (required if stable_id is not numeric)
     """
-    issue_number = int(issue.stable_id())
+    if issue_number is None:
+        # Try parsing stable_id - works for test_issue_factory keys where stable_id is the issue number
+        try:
+            issue_number = int(issue.stable_id())
+        except ValueError:
+            raise ValueError(
+                f"Cannot derive issue_number from stable_id '{issue.stable_id()}'. "
+                "Pass issue_number explicitly for issues with non-numeric stable_ids."
+            )
     update_issue(issue.scope(), issue_number, add_labels, remove_labels)
     trigger_refresh(port)
 
@@ -74,6 +84,7 @@ def inflight_close(
     issue: IssueKey,
     comment: str | None = None,
     port: int | None = None,
+    issue_number: int | None = None,
 ) -> None:
     """Close an issue while orchestrator is running.
 
@@ -81,7 +92,16 @@ def inflight_close(
         issue: The issue to close
         comment: Optional comment when closing
         port: Control API port for refresh (defaults to Config.control_api_port)
+        issue_number: GitHub issue number (required if stable_id is not numeric)
     """
-    issue_number = int(issue.stable_id())
+    if issue_number is None:
+        # Try parsing stable_id - works for test_issue_factory keys where stable_id is the issue number
+        try:
+            issue_number = int(issue.stable_id())
+        except ValueError:
+            raise ValueError(
+                f"Cannot derive issue_number from stable_id '{issue.stable_id()}'. "
+                "Pass issue_number explicitly for issues with non-numeric stable_ids."
+            )
     close_issue(issue.scope(), issue_number, comment)
     trigger_refresh(port)

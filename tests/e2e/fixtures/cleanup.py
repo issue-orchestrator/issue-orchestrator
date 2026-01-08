@@ -2,10 +2,13 @@
 
 import logging
 import shutil
-import subprocess
 import threading
 import time
 from pathlib import Path
+
+from libtmux import Server
+from libtmux.exc import LibTmuxException
+from libtmux._internal.query_list import ObjectDoesNotExist
 
 from .github_client import _github_adapter
 from .orchestrator_process import _keep_artifacts, _keep_remote_artifacts
@@ -44,12 +47,15 @@ def cleanup_tmux_sessions(tmux_session: str = "orchestrator") -> None:
     Args:
         tmux_session: Name of the tmux session to kill. Defaults to "orchestrator".
     """
-    result = subprocess.run(
-        ["tmux", "kill-session", "-t", tmux_session],
-        capture_output=True
-    )
-    if result.returncode == 0:
-        logger.info("[E2E CLEANUP] Killed stale tmux session: %s", tmux_session)
+    try:
+        server = Server()
+        session = server.sessions.get(session_name=tmux_session)
+        if session:
+            session.kill()
+            logger.info("[E2E CLEANUP] Killed stale tmux session: %s", tmux_session)
+    except (LibTmuxException, ObjectDoesNotExist):
+        # Session doesn't exist or server not running - that's fine
+        pass
 
 
 def run_cleanup_step(name: str, fn, timeout_s: int) -> int:

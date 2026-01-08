@@ -98,6 +98,8 @@ class OrchestratorSnapshot:
     stale_in_progress_issues: tuple[Issue, ...] = field(default_factory=tuple)
     # Issues that failed this cycle - skip until cache refresh (prevents immediate retry)
     failed_this_cycle: frozenset[int] = field(default_factory=frozenset)
+    # Issues that completed this session (have session_history entries)
+    session_history_issue_numbers: frozenset[int] = field(default_factory=frozenset)
 
     @property
     def active_count(self) -> int:
@@ -375,8 +377,10 @@ class Planner:
                     reason=f"session completed with PR #{review.pr_number} - awaiting merge",
                     expected=build_expected_for_mutation(),
                 ))
-                # Only queue review if code review agent is configured
-                if self.config.code_review_agent:
+                # Skip review for dry-run PRs (fake PR numbers 90000-99999)
+                is_dry_run_pr = 90000 <= review.pr_number <= 99999
+                # Only queue review if code review agent is configured AND not dry-run
+                if self.config.code_review_agent and not is_dry_run_pr:
                     actions.append(QueueReviewAction(
                         issue_number=review.issue_number,
                         pr_number=review.pr_number,
@@ -658,7 +662,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             snapshot.active_issue_numbers |
             issues_with_pending_reviews |
             issues_with_pending_reworks |
-            snapshot.failed_this_cycle  # Skip issues that failed until cache refresh
+            snapshot.failed_this_cycle |  # Skip issues that failed until cache refresh
+            snapshot.session_history_issue_numbers  # Skip issues with completed sessions
         )
         not_active = [
             issue for issue in available

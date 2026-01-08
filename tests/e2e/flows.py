@@ -282,7 +282,13 @@ class E2EFlow:
         title: str,
         labels: list[str],
         body: str = "Created mid-test.",
-    ) -> IssueKey:
+    ) -> tuple[IssueKey, int]:
+        """Create a GitHub issue and return (key, issue_number).
+
+        Returns:
+            Tuple of (IssueKey, issue_number) - the key uses external_id from title prefix,
+            issue_number is the GitHub issue number
+        """
         merged = list(labels)
         if self.filter_label and self.filter_label not in merged:
             merged.append(self.filter_label)
@@ -290,7 +296,7 @@ class E2EFlow:
         self._created_issues.append(issue_number)
         if self.watcher is not None:
             register_inflight_issue(issue_key)
-        return issue_key
+        return issue_key, issue_number
 
     def cleanup_created_issues(self) -> None:
         """Close all issues created by this flow."""
@@ -367,8 +373,9 @@ class E2EFlow:
     def close_pr(self, pr_number: int) -> None:
         close_pr(self.repo, pr_number)
 
-    def close_issue(self, issue: IssueKey, comment: str) -> None:
-        close_issue(self.repo, int(issue.stable_id()), comment)
+    def close_issue(self, issue_number: int, comment: str) -> None:
+        """Close an issue by its GitHub issue number."""
+        close_issue(self.repo, issue_number, comment)
 
     def ensure_labels(self, labels: Iterable[str]) -> None:
         for label in labels:

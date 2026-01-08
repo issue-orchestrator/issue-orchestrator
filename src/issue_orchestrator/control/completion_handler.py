@@ -79,12 +79,14 @@ class CompletionHandler:
         self,
         session: Session,
         status: SessionStatus,
+        pr_url_hint: Optional[str] = None,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
         Args:
             session: The completed session
             status: The completion status
+            pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
 
         Returns:
             CompletionResult with history entry and cleanup decision
@@ -101,8 +103,8 @@ class CompletionHandler:
             extra=log_context(issue_key=issue_key, session_id=session.terminal_id),
         )
 
-        # Fetch PR info if completed
-        pr_url, pr_number, pr_infos = self._fetch_pr_info(session, status)
+        # Fetch PR info if completed (or use hint from completion processor)
+        pr_url, pr_number, pr_infos = self._fetch_pr_info(session, status, pr_url_hint=pr_url_hint)
         if pr_infos:
             self._emit_pr_view_changed(pr_infos[0], session.issue.number)
 
@@ -123,7 +125,7 @@ class CompletionHandler:
         )
 
         # Determine if we should queue code review
-        should_queue_review = self._should_queue_review(session, status, pr_url)
+        should_queue_review = self._should_queue_review(session, status, pr_url, pr_number)
 
         # Generate actions for label/comment changes (policy logic)
         completion_actions = self.generate_completion_actions(session, status)
@@ -155,32 +157,54 @@ class CompletionHandler:
         self,
         session: Session,
         status: SessionStatus,
+        pr_url_hint: Optional[str] = None,
     ) -> tuple[Optional[str], Optional[int], Optional[list[Any]]]:
         """Fetch PR info for a completed session.
+
+        Args:
+            session: The completed session
+            status: The completion status
+            pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
 
         Returns:
             Tuple of (pr_url, pr_number, prs_list)
         """
+        import re
+
         pr_url = None
         pr_number = None
         prs = None
 
         if status == SessionStatus.COMPLETED:
-            logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
-            start = time.monotonic()
-            pr_infos = self.repository_host.get_prs_for_branch(session.branch_name)
-            duration = time.monotonic() - start
-            logger.info(
-                "Fetched PRs for branch in %.2fs: branch=%s count=%d",
-                duration,
-                session.branch_name,
-                len(pr_infos),
-                extra=log_context(issue_key=session.key.issue.stable_id(), session_id=session.terminal_id),
-            )
-            if pr_infos:
-                pr_url = pr_infos[0].url
-                pr_number = pr_infos[0].number
-                prs = list(pr_infos)
+            # If we have a pr_url_hint from completion processor, use it (dry-run mode)
+            if pr_url_hint:
+                pr_url = pr_url_hint
+                # Extract PR number from URL
+                match = re.search(r"/pull/(\d+)", pr_url)
+                if match:
+                    pr_number = int(match.group(1))
+                logger.info(
+                    "[PR_HINT] Using PR from completion processor: %s (number=%s)",
+                    pr_url,
+                    pr_number,
+                    extra=log_context(issue_key=session.key.issue.stable_id(), session_id=session.terminal_id),
+                )
+            else:
+                logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
+                start = time.monotonic()
+                pr_infos = self.repository_host.get_prs_for_branch(session.branch_name)
+                duration = time.monotonic() - start
+                logger.info(
+                    "Fetched PRs for branch in %.2fs: branch=%s count=%d",
+                    duration,
+                    session.branch_name,
+                    len(pr_infos),
+                    extra=log_context(issue_key=session.key.issue.stable_id(), session_id=session.terminal_id),
+                )
+                if pr_infos:
+                    pr_url = pr_infos[0].url
+                    pr_number = pr_infos[0].number
+                    prs = list(pr_infos)
 
         return pr_url, pr_number, prs
 
@@ -459,8 +483,13 @@ class CompletionHandler:
         session: Session,
         status: SessionStatus,
         pr_url: Optional[str],
+        pr_number: Optional[int] = None,
     ) -> bool:
-        """Determine if code review should be queued for this session."""
+        """Determine if session should be added to discovered_reviews.
+
+        Note: This returns True even for dry-run PRs (so pr-pending label gets added).
+        The actual review queuing is controlled by the planner, which skips dry-run PRs.
+        """
         is_review_session = session.terminal_id.startswith("review-")
 
         if pr_url and self.config.code_review_agent and not session.agent_config.skip_review and not is_review_session:

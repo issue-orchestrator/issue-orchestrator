@@ -1005,8 +1005,6 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
 def cmd_verify(args: argparse.Namespace) -> int:
     """Verify the orchestrator setup works correctly."""
-    import subprocess
-
     console.print("[bold cyan]Orchestrator Setup Verification[/bold cyan]\n")
 
     errors = []
@@ -1108,13 +1106,45 @@ def cmd_verify(args: argparse.Namespace) -> int:
     tmux_path = shutil.which("tmux")
     if tmux_path:
         console.print(f"  [green]✓[/green] tmux found: {tmux_path}")
-        # Check version
-        version_check = subprocess.run(
-            ["tmux", "-V"],
-            capture_output=True, text=True
-        )
-        if version_check.returncode == 0:
-            console.print(f"  [cyan]ℹ[/cyan] Version: {version_check.stdout.strip()}")
+        # Check version - require 3.6a+ for pane_dead, pane_dead_status, pane_dead_signal
+        version_str = None
+        from libtmux import Server
+        from libtmux.exc import LibTmuxException
+        try:
+            server = Server()
+            result = server.cmd('display', '-p', '#{version}')
+            if result.stdout:
+                version_str = f"tmux {result.stdout[0]}"
+        except LibTmuxException:
+            pass  # Fall back to no version info
+        if version_str:
+            console.print(f"  [cyan]ℹ[/cyan] Version: {version_str}")
+            # Parse version: "tmux 3.6a" -> "3.6a" or "tmux 3.3" -> "3.3"
+            parts = version_str.split()
+            if len(parts) >= 2:
+                ver = parts[1].lstrip("v")  # Handle "v3.6" format
+                # Check minimum version (3.6a required for reliable pane_dead support)
+                try:
+                    # Extract numeric parts (e.g., "3.6a" -> (3, 6))
+                    import re
+                    match = re.match(r"(\d+)\.(\d+)", ver)
+                    if match:
+                        major, minor = int(match.group(1)), int(match.group(2))
+                        if major < 3 or (major == 3 and minor < 6):
+                            console.print(
+                                f"  [red]✗[/red] tmux 3.6a or later required (found {ver})"
+                            )
+                            console.print(
+                                f"      Older versions lack reliable pane_dead_status support"
+                            )
+                            if config.ui_mode == "tmux":
+                                errors.append(f"tmux 3.6a+ required, found {ver}")
+                            else:
+                                warnings.append(f"tmux 3.6a+ recommended, found {ver}")
+                        else:
+                            console.print(f"  [green]✓[/green] Version {ver} meets minimum (3.6a)")
+                except (ValueError, AttributeError):
+                    pass  # Can't parse version, skip check
     else:
         if config.ui_mode == "tmux":
             console.print(f"  [red]✗[/red] tmux not found (required for ui_mode: tmux)")

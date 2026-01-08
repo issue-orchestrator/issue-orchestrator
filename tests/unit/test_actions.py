@@ -80,6 +80,24 @@ class MockSessionRunner:
     def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
         return None
 
+    def session_exists_by_name(self, session_name: str) -> bool:
+        return False
+
+    def send_to_session(self, session_id: int, text: str) -> bool:
+        return False
+
+    def send_to_session_by_name(self, session_name: str, text: str) -> bool:
+        return False
+
+    def focus_session(self, session_id: int) -> bool:
+        return False
+
+    def on_orchestrator_startup(self) -> None:
+        pass
+
+    def on_orchestrator_shutdown(self) -> None:
+        pass
+
 
 class TestActionDataclasses:
     """Test the Action dataclasses."""

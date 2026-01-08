@@ -9,6 +9,7 @@ Naming: This is an execution-layer adapter that talks to an external platform.
 import logging
 import os
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
@@ -354,16 +355,35 @@ class GitHubAdapter:
                     raw_issues = _fetch(use_cache=False)
                     issues = _to_issues(raw_issues)
 
-                    # Log final result
+                    # Check if still missing and retry with backoff for eventual consistency
                     found_ids = {i.key.stable_id() for i in issues}
                     still_missing = required_stable_ids - found_ids
                     if still_missing:
+                        # GitHub has eventual consistency - retry with exponential backoff
+                        # Total ~63s of retries to avoid flaky failures
+                        backoff_delays = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+                        for delay in backoff_delays:
+                            logger.info(
+                                "[INFLIGHT] Waiting %.1fs for GitHub eventual consistency, missing: %s",
+                                delay, sorted(still_missing)
+                            )
+                            time.sleep(delay)
+                            raw_issues = _fetch(use_cache=False)
+                            issues = _to_issues(raw_issues)
+                            found_ids = {i.key.stable_id() for i in issues}
+                            still_missing = required_stable_ids - found_ids
+                            if not still_missing:
+                                logger.info("[INFLIGHT] All required IDs discovered after retry")
+                                break
+
+                    # Log final result
+                    if still_missing:
                         logger.warning(
-                            "[INFLIGHT] Still missing %d required IDs after uncached fetch: %s",
+                            "[INFLIGHT] Still missing %d required IDs after retries: %s",
                             len(still_missing), sorted(still_missing)
                         )
                     else:
-                        logger.info("[INFLIGHT] All required IDs discovered after uncached fetch")
+                        logger.info("[INFLIGHT] All required IDs discovered")
 
             return issues
         except GitHubHttpError as e:
@@ -737,7 +757,7 @@ class GitHubAdapter:
                 head,
                 base,
             )
-            return PRInfo(
+            pr_info = PRInfo(
                 number=fake_pr_number,
                 title=title,
                 url=f"https://github.com/{self.repo}/pull/{fake_pr_number}",
@@ -746,6 +766,9 @@ class GitHubAdapter:
                 state="open",
                 labels=[],
             )
+            # Cache the dry-run PR so get_prs_for_issue() doesn't hit GitHub API
+            self._cache_pr_info(pr_info)
+            return pr_info
 
         # First, check if a PR already exists for this branch
         existing_prs = self.get_prs_for_branch(head)

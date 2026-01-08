@@ -138,6 +138,24 @@ class SessionRunner(Protocol):
         """
         ...
 
+    # Lifecycle hooks for terminal backend initialization and cleanup
+
+    def on_orchestrator_startup(self) -> None:
+        """Called when the orchestrator starts up.
+
+        Terminal backends should create their session/environment here.
+        For tmux: creates the tmux session.
+        """
+        ...
+
+    def on_orchestrator_shutdown(self) -> None:
+        """Called when the orchestrator shuts down.
+
+        Terminal backends should clean up their session/environment here.
+        For tmux: kills the entire session (atomic cleanup of all windows).
+        """
+        ...
+
 
 class NullSessionRunner:
     """No-op session runner for testing."""
@@ -177,3 +195,9 @@ class NullSessionRunner:
 
     def focus_session(self, session_id: int) -> bool:
         return False
+
+    def on_orchestrator_startup(self) -> None:
+        pass
+
+    def on_orchestrator_shutdown(self) -> None:
+        pass

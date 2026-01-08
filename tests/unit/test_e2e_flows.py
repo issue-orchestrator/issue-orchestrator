@@ -21,9 +21,10 @@ def test_flow_create_issue_includes_filter_label(monkeypatch):
     monkeypatch.setattr(flows, "inflight_create", fake_create)
 
     flow = flows.E2EFlow(repo="owner/repo", watcher=None, filter_label="test-data")
-    issue = flow.create_issue("Test issue", ["agent:e2e-test"])
+    issue, issue_num = flow.create_issue("Test issue", ["agent:e2e-test"])
 
     assert issue is not None
+    assert issue_num == 123
     assert called["labels"] == ["agent:e2e-test", "test-data"]
 
 
