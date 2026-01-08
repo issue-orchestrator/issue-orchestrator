@@ -480,7 +480,8 @@ class TestTmuxManagerIntegration:
         """ensure_session creates new session if it doesn't exist."""
         mock_server = mock_libtmux_server["server"]
         mock_session = mock_libtmux_server["session"]
-        mock_server.sessions.get.side_effect = Exception("Session not found")
+        # libtmux sessions.get() returns None when session not found (not an exception)
+        mock_server.sessions.get.return_value = None
 
         result = tmux_manager.ensure_session()
 

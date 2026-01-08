@@ -20,9 +20,11 @@ from typing import Optional
 import libtmux
 from libtmux.exc import LibTmuxException
 
-logger = logging.getLogger(__name__)
-
 from issue_orchestrator.domain import ProcessState, ProcessExitInfo
+
+from ._tmux_retry import tmux_retry
+
+logger = logging.getLogger(__name__)
 
 # Constants
 # Allow override via environment variable for e2e test isolation (legacy)
@@ -165,69 +167,23 @@ class TmuxManager:
     def health_check(self) -> TmuxHealth:
         """Check health of tmux server and session.
 
-        Returns:
-            TmuxHealth with server_running, session_exists, and any error message.
+        Note: No retry - health_check should report actual state, not mask failures.
         """
         try:
-            # Check if server is running by listing sessions
             sessions = self.server.sessions
-            server_running = True
-
-            # Check if our session exists
             session_exists = any(s.session_name == self._session_name for s in sessions)
-
-            return TmuxHealth(
-                server_running=server_running,
-                session_exists=session_exists,
-            )
+            return TmuxHealth(server_running=True, session_exists=session_exists)
         except LibTmuxException as e:
-            error_msg = str(e).strip()
-            logger.error("[TMUX] Health check failed: %s", error_msg)
-            return TmuxHealth(
-                server_running=False,
-                session_exists=False,
-                error=error_msg,
-            )
+            return TmuxHealth(server_running=False, session_exists=False, error=str(e).strip())
 
+    @tmux_retry
     def ensure_server_running(self) -> bool:
-        """Ensure tmux server is running, starting it if necessary.
-
-        This can recover from situations where:
-        - The tmux server was never started
-        - The socket was deleted (e.g., /tmp cleaned)
-        - The server crashed
-
-        Returns:
-            True if server is now running, False if recovery failed.
-        """
-        health = self.health_check()
-        if health.server_running:
+        """Ensure tmux server is running, creating fresh connection if needed."""
+        if self.server.is_alive():
             return True
-
-        logger.warning("[TMUX] Server not running, attempting recovery...")
-
-        # Try to start tmux server by creating a detached session
-        try:
-            result = subprocess.run(
-                ["tmux", "start-server"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                logger.info("[TMUX] Server started successfully")
-                # Reset server connection
-                self._server = None
-                return True
-            else:
-                logger.error("[TMUX] Failed to start server: %s", result.stderr.strip())
-                return False
-        except subprocess.TimeoutExpired:
-            logger.error("[TMUX] Timeout starting tmux server")
-            return False
-        except Exception as e:
-            logger.error("[TMUX] Failed to start server: %s", e)
-            return False
+        # Create fresh server connection (libtmux starts server on first command)
+        self._server = libtmux.Server()
+        return self._server.is_alive()
 
     def ensure_session_exists(self) -> bool:
         """Ensure our tmux session exists, creating it if necessary.
@@ -255,26 +211,17 @@ class TmuxManager:
             logger.error("[TMUX] Failed to create session: %s", e)
             return False
 
+    @tmux_retry
     def create_orchestrator_session(self) -> libtmux.Session:
-        """Create the tmux session for this orchestrator.
-
-        Creates a new session or reuses existing one with the same name.
-        This should be called once at orchestrator startup.
-
-        Returns:
-            The tmux session.
-        """
+        """Create the tmux session for this orchestrator, or reuse existing."""
         if self._session is not None:
             return self._session
 
         # Try to find existing session first
-        try:
-            existing = self.server.sessions.get(session_name=self._session_name)
-            if existing:
-                self._session = existing
-                return self._session
-        except Exception:
-            pass
+        existing = self.server.sessions.get(session_name=self._session_name)
+        if existing:
+            self._session = existing
+            return self._session
 
         # Create new session
         self._session = self.server.new_session(
@@ -308,6 +255,7 @@ class TmuxManager:
         """Check if the orchestrator session exists."""
         return self.session is not None
 
+    @tmux_retry
     def create_issue_window(
         self,
         issue_number: int,
@@ -315,19 +263,10 @@ class TmuxManager:
         working_dir: Path,
         title: str | None = None,
     ) -> libtmux.Window:
-        """Create a new window for an issue and run the command.
-
-        Args:
-            issue_number: GitHub issue number
-            command: Command to run (e.g., claude with prompt)
-            working_dir: Working directory for the window
-            title: Optional issue title to include in window name
-
-        Returns:
-            The created window
-        """
+        """Create a new window for an issue and run the command."""
         session = self.ensure_session()
-        # Include truncated title in window name for readability
+
+        # Build window name
         if title:
             short_title = title[:20].replace(" ", "-").replace(":", "")
             window_name = f"#{issue_number}-{short_title}"
@@ -339,42 +278,38 @@ class TmuxManager:
         if existing:
             raise ValueError(f"Window {window_name} already exists")
 
-        # Create new window
+        # Create window
         window = session.new_window(
             window_name=window_name,
             start_directory=str(working_dir),
         )
 
-        # Enable remain-on-exit so pane stays after process exits.
-        # This allows us to capture exit code and scrollback for debugging.
+        # Enable remain-on-exit for exit code capture
         try:
             window.set_option("remain-on-exit", "on")
         except Exception:
-            pass  # Non-critical - exit detection still works without it
+            pass
 
-        # Security: Strip credentials and set up isolated environment
+        # Set up isolated environment and run command
         from ...control.isolation import build_isolation_prefix
         wrapper_dir = Path(__file__).parent.parent.parent / "scripts"
         isolation_prefix = build_isolation_prefix(
             worktree=working_dir,
             isolation_mode="standard",
             scrub_env=True,
-            isolate_home=False,  # Claude uses macOS Keychain for auth
+            isolate_home=False,
         )
         setup_cmd = f'export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
-        # Send the security setup and then the command
         pane = window.active_pane
         if pane is not None:
-            # Enable continuous logging to worktree (if directory exists)
+            # Enable logging
             try:
                 log_dir = working_dir / ".issue-orchestrator"
                 log_dir.mkdir(exist_ok=True)
-                log_file = log_dir / "session.log"
-                # Use tmux pipe-pane for continuous logging
-                pane.cmd("pipe-pane", f"cat >> '{log_file}'")
+                pane.cmd("pipe-pane", f"cat >> '{log_dir / 'session.log'}'")
             except OSError:
-                pass  # Skip logging if directory doesn't exist (e.g., in tests)
+                pass
 
             pane.send_keys(setup_cmd)
             pane.send_keys(command)
