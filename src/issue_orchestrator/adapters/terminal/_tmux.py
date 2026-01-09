@@ -853,9 +853,8 @@ class TmuxManager:
         if session is None:
             return False
 
-        # Use duck typing for mock compatibility
-        if hasattr(session, "pane_title"):
-            # Pane mode: select agents window, then pane
+        # In pane mode, select agents window first, then the pane
+        if self._is_pane_mode():
             agents_window = self._get_agents_window()
             if agents_window:
                 agents_window.select()
