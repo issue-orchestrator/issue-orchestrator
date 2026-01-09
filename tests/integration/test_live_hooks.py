@@ -27,6 +27,18 @@ def fixtures_path() -> Path:
     return Path(__file__).parent.parent / "fixtures"
 
 
+def _clean_git_env() -> dict[str, str]:
+    """Return environment with git variables cleared to prevent leaking to test repos.
+
+    Without this, GIT_DIR/GIT_WORK_TREE from parent processes can cause
+    git commands in test repos to write config to the wrong repository.
+    """
+    env = os.environ.copy()
+    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"]:
+        env.pop(var, None)
+    return env
+
+
 @pytest.fixture
 def test_repo_with_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
     """Create a test git repo with hooks installed.
@@ -38,6 +50,9 @@ def test_repo_with_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
 
     Returns the path to the working repo.
     """
+    # Clean environment to prevent git config leaking to main repo
+    clean_env = _clean_git_env()
+
     # Create bare "remote" repo
     remote = tmp_path / "remote.git"
     remote.mkdir()
@@ -46,6 +61,7 @@ def test_repo_with_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
         cwd=remote,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     # Create working repo
@@ -56,6 +72,7 @@ def test_repo_with_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     # Configure git user
@@ -64,10 +81,12 @@ def test_repo_with_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test User"],
         cwd=work,
+        env=clean_env,
         capture_output=True,
         check=True,
     )
@@ -78,6 +97,7 @@ def test_repo_with_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     # Copy hooks from fixture
@@ -92,29 +112,32 @@ def test_repo_with_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
     # Create initial commit and push to establish branch
     readme = work / "README.md"
     readme.write_text("# Test Repo\n")
-    subprocess.run(["git", "add", "."], cwd=work, capture_output=True, check=True)
+    subprocess.run(["git", "add", "."], cwd=work, capture_output=True, check=True, env=clean_env)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
     subprocess.run(
         ["git", "push", "-u", "origin", "main"],
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     # Create a new commit ready to push (for testing)
     test_file = work / "test.txt"
     test_file.write_text("test content\n")
-    subprocess.run(["git", "add", "test.txt"], cwd=work, capture_output=True, check=True)
+    subprocess.run(["git", "add", "test.txt"], cwd=work, capture_output=True, check=True, env=clean_env)
     subprocess.run(
         ["git", "commit", "-m", "Test commit"],
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     return work
@@ -129,6 +152,9 @@ def test_repo_without_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
 
     Returns the path to the working repo.
     """
+    # Clean environment to prevent git config leaking to main repo
+    clean_env = _clean_git_env()
+
     # Create bare "remote" repo
     remote = tmp_path / "remote.git"
     remote.mkdir()
@@ -137,6 +163,7 @@ def test_repo_without_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
         cwd=remote,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     # Create working repo
@@ -147,6 +174,7 @@ def test_repo_without_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     # Configure git user
@@ -155,12 +183,14 @@ def test_repo_without_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test User"],
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     # Add remote
@@ -169,6 +199,7 @@ def test_repo_without_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     # Copy content from fixture (but NO .claude directory)
@@ -177,28 +208,31 @@ def test_repo_without_hooks(tmp_path: Path, fixtures_path: Path) -> Path:
     shutil.copy(src_readme, dst_readme)
 
     # Create initial commit and push
-    subprocess.run(["git", "add", "."], cwd=work, capture_output=True, check=True)
+    subprocess.run(["git", "add", "."], cwd=work, capture_output=True, check=True, env=clean_env)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
     subprocess.run(
         ["git", "push", "-u", "origin", "main"],
         cwd=work,
         capture_output=True,
         check=True,
+        env=clean_env,
     )
 
     # Create a new commit ready to push
     test_file = work / "test.txt"
     test_file.write_text("test content\n")
-    subprocess.run(["git", "add", "test.txt"], cwd=work, capture_output=True, check=True)
+    subprocess.run(["git", "add", "test.txt"], cwd=work, capture_output=True, check=True, env=clean_env)
     subprocess.run(
         ["git", "commit", "-m", "Test commit"],
         cwd=work,
         capture_output=True,
+        env=clean_env,
         check=True,
     )
 
