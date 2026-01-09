@@ -87,6 +87,53 @@ class TestWorktreeConfigIsolation:
             elif result.returncode == 0 and result.stdout.strip():
                 pytest.fail(f"Dangerous config leaked to main repo: {result.stdout.strip()}")
 
+    def test_worktree_config_points_to_correct_path(self, tmp_path: Path):
+        """Worktree's core.worktree config should point to the actual worktree path.
+
+        This is a regression test for a bug where symlink resolution issues
+        (/tmp vs /private/tmp on macOS) caused core.worktree to point to the
+        wrong directory, making git see unrelated files as changes.
+        """
+        # Create a main repo
+        main_repo = tmp_path / "main_repo"
+        main_repo.mkdir()
+        subprocess.run(["git", "init"], cwd=main_repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-m", "init"],
+            cwd=main_repo, capture_output=True, check=True,
+            env={**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@test.com",
+                 "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@test.com"}
+        )
+
+        # Create a worktree
+        worktree_path = tmp_path / "worktree"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "test-branch"],
+            cwd=main_repo, capture_output=True, check=True
+        )
+
+        # Install hooks (this sets core.worktree in the worktree config)
+        install_hooks(worktree_path)
+
+        # Get the worktree's core.worktree config
+        result = subprocess.run(
+            ["git", "config", "--worktree", "--get", "core.worktree"],
+            cwd=worktree_path, capture_output=True, text=True, check=False
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            configured_path = Path(result.stdout.strip())
+            # Resolve both paths to handle symlinks (/tmp vs /private/tmp)
+            actual_resolved = worktree_path.resolve()
+            configured_resolved = configured_path.resolve()
+
+            assert configured_resolved == actual_resolved, (
+                f"Worktree core.worktree points to wrong path!\n"
+                f"Expected: {actual_resolved}\n"
+                f"Got: {configured_resolved}\n"
+                f"Raw config value: {result.stdout.strip()}"
+            )
+
     def test_worktree_config_stays_in_worktree(self, tmp_path: Path):
         """Config set in a worktree should not appear in another worktree."""
         # Create main repo
