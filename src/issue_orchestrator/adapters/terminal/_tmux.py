@@ -315,10 +315,12 @@ class TmuxManager:
         Returns:
             The agents window, or None if session doesn't exist or no agents window.
         """
-        if self._session is None:
+        # Use session property to trigger re-lookup if _session is None
+        sess = self.session
+        if sess is None:
             return None
         try:
-            windows = self._session.windows.filter(window_name=AGENTS_WINDOW)
+            windows = sess.windows.filter(window_name=AGENTS_WINDOW)
             return windows[0] if windows else None
         except Exception:
             return None
