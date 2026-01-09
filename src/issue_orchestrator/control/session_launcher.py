@@ -344,13 +344,14 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         completion_path = get_completion_path(issue.agent_type)
-        env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        env_vars += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
+        # Export env vars so child processes (like agent-done) can access them
+        env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
+        env_exports += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
 
         if self.config.e2e_pr_labels:
             labels_str = ",".join(self.config.e2e_pr_labels)
-            env_vars += f" E2E_PR_LABELS='{labels_str}'"
-        command = f"{env_vars} {base_command}"
+            env_exports += f" E2E_PR_LABELS='{labels_str}'"
+        command = f"{env_exports} && {base_command}"
         logger.info(
             "[launch] Issue session command: issue=%s session=%s worktree=%s completion=%s command=%s",
             issue.number,
@@ -520,10 +521,11 @@ class SessionLauncher:
             pr_number=review.pr_number,
         )
         completion_path = get_completion_path(agent_label)
-        env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        env_vars += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
+        # Export env vars so child processes (like agent-done) can access them
+        env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
+        env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
 
-        command = f"{env_vars} {base_command}"
+        command = f"{env_exports} && {base_command}"
         logger.info(
             "[launch] Review session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",
             review.issue_number,
@@ -698,10 +700,11 @@ class SessionLauncher:
             pr_number=pr_number,
         )
         completion_path = get_completion_path(rework.agent_type)
-        env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        env_vars += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"
+        # Export env vars so child processes (like agent-done) can access them
+        env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
+        env_exports += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"
 
-        command = f"{env_vars} {base_command}"
+        command = f"{env_exports} && {base_command}"
         logger.info(
             "[launch] Rework session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",
             issue_number,
