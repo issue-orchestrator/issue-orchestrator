@@ -238,9 +238,9 @@ class TmuxManager:
             return self._session
 
         # Try to find existing session first
-        existing = self.server.sessions.get(session_name=self._session_name)
-        if existing:
-            self._session = existing
+        existing_sessions = self.server.sessions.filter(session_name=self._session_name)
+        if existing_sessions:
+            self._session = existing_sessions[0]
             return self._session
 
         # Create new session with dashboard window

@@ -128,8 +128,8 @@ class TestTmuxManager:
         """Test ensure_session creates new session if needed."""
         manager = tmux.TmuxManager()
         manager._server = mock_server
-        # libtmux sessions.get() returns None when session not found (not an exception)
-        mock_server.sessions.get.return_value = None
+        # sessions.filter() returns empty list when session not found
+        mock_server.sessions.filter.return_value = []
         mock_server.new_session.return_value = mock_session
 
         session = manager.ensure_session()
