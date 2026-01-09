@@ -611,7 +611,8 @@ class TmuxManager:
             scrub_env=True,
             isolate_home=False,
         )
-        setup_cmd = f'export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
+        # CRITICAL: cd to working directory first, then set up isolation
+        setup_cmd = f'cd "{working_dir}" && export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
         # Enable logging
         try:
