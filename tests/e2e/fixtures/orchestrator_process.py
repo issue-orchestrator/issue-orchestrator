@@ -233,8 +233,9 @@ class OrchestratorProcess:
 
         # Add dashboard flags based on UI mode
         if ui_mode == "web":
-            cmd.extend(["--port", os.environ.get("E2E_WEB_PORT", "8080")])
-            print(f"  [E2E] Web UI available at http://localhost:{os.environ.get('E2E_WEB_PORT', '8080')}", flush=True)
+            web_port = self.config.web_port
+            cmd.extend(["--port", str(web_port)])
+            print(f"  [E2E] Web UI available at http://localhost:{web_port}", flush=True)
         else:
             cmd.append("--no-dashboard")  # Don't start TUI in tests
 

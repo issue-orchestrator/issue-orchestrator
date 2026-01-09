@@ -382,6 +382,9 @@ def e2e_session_config(
     config.queue_refresh_seconds = 600
     env_port = os.environ.get("E2E_CONTROL_API_PORT")
     config.control_api_port = int(env_port) if env_port else find_free_port()
+    # Auto-select web port to avoid conflict with running orchestrator (default 8080)
+    env_web_port = os.environ.get("E2E_WEB_PORT")
+    config.web_port = int(env_web_port) if env_web_port else find_free_port()
     config.e2e_pr_labels = ["test-data"]
     config.code_review_agent = "agent:script-review"
     config.code_review_label = "needs-code-review"
@@ -442,6 +445,7 @@ def e2e_session_config(
         config.cleanup.without_triage.close_ai_session_tabs = False
         config.cleanup.without_triage.remove_worktrees = False
     os.environ["E2E_CONTROL_API_PORT"] = str(config.control_api_port)
+    os.environ["E2E_WEB_PORT"] = str(config.web_port)
 
     # Skip actual git push unless explicitly set to "false" for live tests
     if os.environ.get("E2E_DRY_RUN_PUSH", "1") != "false":
