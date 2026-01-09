@@ -257,6 +257,8 @@ class OrchestratorProcess:
             env["ORCHESTRATOR_CLAUDE_PROMPT_MODE"] = os.environ["E2E_CLAUDE_PROMPT_MODE"]
         env["ORCHESTRATOR_WORKTREE_PER_SESSION"] = os.environ.get("E2E_WORKTREE_PER_SESSION", "1")
         env["ORCHESTRATOR_DISABLE_WORKTREE_REUSE"] = os.environ.get("E2E_DISABLE_WORKTREE_REUSE", "1")
+        # Ensure worktrees are created from main (which has all our test fixes)
+        env["ORCHESTRATOR_WORKTREE_BASE_BRANCH"] = "main"
         # Explicitly pass dry-run mode for e2e tests (skips git push and PR creation)
         if os.environ.get("E2E_DRY_RUN_PUSH"):
             env["E2E_DRY_RUN_PUSH"] = os.environ["E2E_DRY_RUN_PUSH"]
