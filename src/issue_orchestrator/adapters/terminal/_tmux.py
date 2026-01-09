@@ -5,6 +5,26 @@ Uses a session-per-orchestrator architecture:
 - Each agent session (code, review, rework, triage) gets its own window
 - Atomic cleanup: kill_session() removes ALL windows at once
 - No global state - TmuxManager instances are created via factory
+
+LIBTMUX QUIRKS (documented with tests in tests/integration/test_tmux_live.py):
+==============================================================================
+
+1. pane.pane_title is ALWAYS None:
+   - libtmux does NOT auto-populate the pane_title attribute
+   - You MUST use pane.cmd("display-message", "-p", "#{pane_title}") to get it
+   - This is the root cause of many session lookup/focus/kill bugs
+   - Use self._get_pane_title(pane) helper method, NEVER getattr(pane, "pane_title")
+
+2. server.sessions.filter() returns empty list, not exception:
+   - filter(session_name="nonexistent") returns [] not raises
+   - Contrast with .get() which may raise
+   - Always check len() of filter result
+
+3. Use libtmux API for all tmux operations:
+   - server.new_session() instead of subprocess.run(["tmux", "new-session", ...])
+   - session.new_window() instead of subprocess.run(["tmux", "new-window", ...])
+   - session.kill() instead of subprocess.run(["tmux", "kill-session", ...])
+   - pane.cmd("select-pane", "-T", title) to set pane title
 """
 
 import logging
@@ -310,6 +330,25 @@ class TmuxManager:
         """
         return self._get_agents_window() is not None
 
+    def _get_pane_title(self, pane: libtmux.Pane) -> str:
+        """Get the title of a pane.
+
+        libtmux doesn't automatically fetch pane_title, so we use cmd to get it.
+
+        Args:
+            pane: The pane to get the title from.
+
+        Returns:
+            The pane title, or empty string if unavailable.
+        """
+        try:
+            result = pane.cmd("display-message", "-p", "#{pane_title}")
+            if result.stdout:
+                return result.stdout[0]
+        except Exception:
+            pass
+        return ""
+
     def _find_pane_by_title(self, title: str) -> libtmux.Pane | None:
         """Find a pane in the agents window by its title.
 
@@ -324,7 +363,7 @@ class TmuxManager:
             return None
         try:
             for pane in agents_window.panes:
-                pane_title = getattr(pane, "pane_title", None)
+                pane_title = self._get_pane_title(pane)
                 if pane_title == title:
                     return pane
             return None
@@ -543,7 +582,7 @@ class TmuxManager:
             return None
         try:
             for pane in agents_window.panes:
-                pane_title = getattr(pane, "pane_title", None) or ""
+                pane_title = self._get_pane_title(pane)
                 if pane_title.startswith(f"#{issue_number}-"):
                     return pane
                 if pane_title == f"issue-{issue_number}":
@@ -583,7 +622,7 @@ class TmuxManager:
             return None
         try:
             for pane in agents_window.panes:
-                pane_title = getattr(pane, "pane_title", None) or ""
+                pane_title = self._get_pane_title(pane)
                 if pane_title == terminal_id:
                     return pane
             return None
@@ -827,7 +866,7 @@ tmux attach-session -t {session_name}
             return []
         issue_numbers = []
         for pane in agents_window.panes:
-            pane_title = getattr(pane, "pane_title", None) or ""
+            pane_title = self._get_pane_title(pane)
             if not pane_title:
                 continue
             # New format: #{number}-{title}

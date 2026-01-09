@@ -15,6 +15,20 @@ from unittest.mock import MagicMock, Mock, patch, call
 import pytest
 
 
+def _setup_pane_title(pane: MagicMock, title: str) -> None:
+    """Configure a mock pane to return the given title via cmd().
+
+    libtmux doesn't fetch pane_title as an attribute, so we need to mock
+    the cmd("display-message", "-p", "#{pane_title}") call.
+    """
+    pane.pane_title = title  # For duck typing checks (hasattr)
+
+    # Mock cmd to return title when display-message is called
+    cmd_result = MagicMock()
+    cmd_result.stdout = [title] if title else []
+    pane.cmd.return_value = cmd_result
+
+
 class TestTmuxPlugin:
     """Tests for TmuxPlugin which wraps TmuxManager.
 
@@ -452,7 +466,7 @@ class TestTmuxManagerIntegration:
 
             # Create an initial empty pane in agents window
             empty_pane = MagicMock()
-            empty_pane.pane_title = ""
+            _setup_pane_title(empty_pane, "")
             empty_pane.pane_current_command = "bash"
             mock_agents_window.panes = [empty_pane]
 
@@ -532,7 +546,7 @@ class TestTmuxManagerIntegration:
 
         # Set up existing pane with matching title
         existing_pane = MagicMock()
-        existing_pane.pane_title = "issue-42"
+        _setup_pane_title(existing_pane, "issue-42")
         mock_agents_window.panes = [existing_pane]
 
         tmux_manager._session = mock_session  # Set directly
@@ -552,7 +566,7 @@ class TestTmuxManagerIntegration:
 
         # Set up pane with matching title
         mock_pane = MagicMock()
-        mock_pane.pane_title = "review-456"
+        _setup_pane_title(mock_pane, "review-456")
         mock_agents_window.panes = [mock_pane]
 
         tmux_manager._session = mock_session  # Set directly
@@ -568,7 +582,7 @@ class TestTmuxManagerIntegration:
 
         # Set up pane with matching title
         mock_pane = MagicMock()
-        mock_pane.pane_title = "#42-test"
+        _setup_pane_title(mock_pane, "#42-test")
         mock_agents_window.panes = [mock_pane]
 
         tmux_manager._session = mock_session  # Set directly
@@ -588,7 +602,7 @@ class TestTmuxManagerIntegration:
 
         # Set up pane with matching title
         mock_pane = MagicMock()
-        mock_pane.pane_title = "review-456"
+        _setup_pane_title(mock_pane, "review-456")
         mock_agents_window.panes = [mock_pane]
 
         tmux_manager._session = mock_session  # Set directly
@@ -605,7 +619,7 @@ class TestTmuxManagerIntegration:
 
         # Set up pane with matching title
         mock_pane = MagicMock()
-        mock_pane.pane_title = "review-456"
+        _setup_pane_title(mock_pane, "review-456")
         mock_agents_window.panes = [mock_pane]
 
         tmux_manager._session = mock_session  # Set directly
@@ -622,9 +636,9 @@ class TestTmuxManagerIntegration:
 
         # Set up panes with new format titles
         pane1 = MagicMock()
-        pane1.pane_title = "#42-fix-bug"
+        _setup_pane_title(pane1, "#42-fix-bug")
         pane2 = MagicMock()
-        pane2.pane_title = "#123-add-feature"
+        _setup_pane_title(pane2, "#123-add-feature")
         mock_agents_window.panes = [pane1, pane2]
 
         tmux_manager._session = mock_session  # Set directly
@@ -640,9 +654,9 @@ class TestTmuxManagerIntegration:
 
         # Set up panes with old format titles
         pane1 = MagicMock()
-        pane1.pane_title = "issue-42"
+        _setup_pane_title(pane1, "issue-42")
         pane2 = MagicMock()
-        pane2.pane_title = "issue-123"
+        _setup_pane_title(pane2, "issue-123")
         mock_agents_window.panes = [pane1, pane2]
 
         tmux_manager._session = mock_session  # Set directly
@@ -660,7 +674,7 @@ class TestTmuxManagerIntegration:
         panes = []
         for title in ["#42-fix", "issue-99", "dashboard", "random"]:
             p = MagicMock()
-            p.pane_title = title
+            _setup_pane_title(p, title)
             panes.append(p)
         mock_agents_window.panes = panes
 
@@ -677,7 +691,7 @@ class TestTmuxManagerIntegration:
 
         # Set up pane with matching title
         mock_pane = MagicMock()
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_pane.capture_pane.return_value = ["line1", "line2", "line3"]
         mock_agents_window.panes = [mock_pane]
 
