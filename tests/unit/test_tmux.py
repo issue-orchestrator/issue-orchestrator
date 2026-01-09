@@ -42,11 +42,25 @@ def mock_window():
     return window
 
 
+def _setup_pane_title(pane: MagicMock, title: str) -> None:
+    """Configure a mock pane to return the given title via cmd().
+
+    libtmux doesn't fetch pane_title as an attribute, so we need to mock
+    the cmd("display-message", "-p", "#{pane_title}") call.
+    """
+    pane.pane_title = title  # For duck typing checks (hasattr)
+
+    # Mock cmd to return title when display-message is called
+    cmd_result = MagicMock()
+    cmd_result.stdout = [title] if title else []
+    pane.cmd.return_value = cmd_result
+
+
 @pytest.fixture
 def mock_pane():
     """Create a mock libtmux Pane."""
     pane = MagicMock()
-    pane.pane_title = "issue-42"
+    _setup_pane_title(pane, "issue-42")
     pane.pane_dead = "0"
     pane.pane_current_command = "bash"
     return pane
@@ -59,7 +73,7 @@ def mock_agents_window(mock_pane):
     window.name = tmux.AGENTS_WINDOW
     # Initial empty pane
     empty_pane = MagicMock()
-    empty_pane.pane_title = ""
+    _setup_pane_title(empty_pane, "")
     empty_pane.pane_current_command = "bash"
     window.panes = [empty_pane]
     return window
@@ -167,7 +181,7 @@ class TestTmuxManager:
 
         # Mock the empty pane (will be reused)
         empty_pane = mock_agents_window.panes[0]
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         empty_pane.pane_current_command = "bash"
 
         working_dir = Path("/test/dir")
@@ -187,8 +201,8 @@ class TestTmuxManager:
         manager = tmux.TmuxManager()
         manager._session = mock_session
 
-        # Mock the agents window with an existing pane
-        mock_pane.pane_title = "issue-42"
+        # Mock the agents window with an existing pane (mock_pane already has "issue-42")
+        _setup_pane_title(mock_pane, "issue-42")
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -201,7 +215,7 @@ class TestTmuxManager:
         manager._session = mock_session
 
         # Mock the agents window with a matching pane
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -213,7 +227,7 @@ class TestTmuxManager:
         manager._session = mock_session
         # Agents window exists but has no matching pane
         empty_pane = MagicMock()
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         mock_agents_window.panes = [empty_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -229,7 +243,7 @@ class TestTmuxManager:
         """Test get_window returns pane when it exists."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -241,7 +255,7 @@ class TestTmuxManager:
         manager = tmux.TmuxManager()
         manager._session = mock_session
         empty_pane = MagicMock()
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         mock_agents_window.panes = [empty_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -258,7 +272,7 @@ class TestTmuxManager:
         """Test kill_window kills the pane."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -270,7 +284,7 @@ class TestTmuxManager:
         manager = tmux.TmuxManager()
         manager._session = mock_session
         empty_pane = MagicMock()
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         mock_agents_window.panes = [empty_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -281,7 +295,7 @@ class TestTmuxManager:
         """Test select_window selects the pane."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -294,7 +308,7 @@ class TestTmuxManager:
         manager = tmux.TmuxManager()
         manager._session = mock_session
         empty_pane = MagicMock()
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         mock_agents_window.panes = [empty_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -342,9 +356,9 @@ class TestTmuxManager:
         manager._session = mock_session
 
         pane1 = MagicMock()
-        pane1.pane_title = "issue-42"
+        _setup_pane_title(pane1, "issue-42")
         pane2 = MagicMock()
-        pane2.pane_title = "issue-123"
+        _setup_pane_title(pane2, "issue-123")
         mock_agents_window.panes = [pane1, pane2]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -375,11 +389,11 @@ class TestTmuxManager:
         manager._session = mock_session
 
         pane1 = MagicMock()
-        pane1.pane_title = "issue-42"
+        _setup_pane_title(pane1, "issue-42")
         pane2 = MagicMock()
-        pane2.pane_title = "issue-invalid"
+        _setup_pane_title(pane2, "issue-invalid")
         pane3 = MagicMock()
-        pane3.pane_title = "issue-123"
+        _setup_pane_title(pane3, "issue-123")
         mock_agents_window.panes = [pane1, pane2, pane3]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -390,7 +404,7 @@ class TestTmuxManager:
         """Test capture_pane_output captures output."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_pane.capture_pane.return_value = ["line1", "line2", "line3"]
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
@@ -403,7 +417,7 @@ class TestTmuxManager:
         """Test capture_pane_output uses default lines."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_pane.capture_pane.return_value = ["line1"]
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
@@ -415,7 +429,7 @@ class TestTmuxManager:
         """Test capture_pane_output handles empty output."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_pane.capture_pane.return_value = []
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
@@ -427,7 +441,7 @@ class TestTmuxManager:
         """Test capture_pane_output handles None output."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_pane.capture_pane.return_value = None
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
@@ -440,7 +454,7 @@ class TestTmuxManager:
         manager = tmux.TmuxManager()
         manager._session = mock_session
         empty_pane = MagicMock()
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         mock_agents_window.panes = [empty_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -748,7 +762,7 @@ class TestTerminalObserverMethods:
         manager._session = mock_session
         # Create a mock pane with title "issue-42"
         mock_pane = MagicMock()
-        mock_pane.pane_title = "issue-42"
+        _setup_pane_title(mock_pane, "issue-42")
         mock_pane.pane_dead = "0"
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
@@ -790,7 +804,7 @@ class TestTerminalObserverMethods:
         manager._session = mock_session
         # Agents window exists but no matching pane
         empty_pane = MagicMock()
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         mock_agents_window.panes = [empty_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -837,7 +851,7 @@ class TestTerminalObserverMethods:
         manager._server = mock_server
         manager._session = mock_session
         empty_pane = MagicMock()
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         mock_agents_window.panes = [empty_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -865,7 +879,7 @@ class TestTerminalObserverMethods:
         manager._server = mock_server
         manager._session = mock_session
         empty_pane = MagicMock()
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         mock_agents_window.panes = [empty_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
@@ -894,7 +908,7 @@ class TestTerminalObserverMethods:
         manager._server = mock_server
         manager._session = mock_session
         empty_pane = MagicMock()
-        empty_pane.pane_title = ""
+        _setup_pane_title(empty_pane, "")
         mock_agents_window.panes = [empty_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 

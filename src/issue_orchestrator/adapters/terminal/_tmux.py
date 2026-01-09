@@ -310,6 +310,25 @@ class TmuxManager:
         """
         return self._get_agents_window() is not None
 
+    def _get_pane_title(self, pane: libtmux.Pane) -> str:
+        """Get the title of a pane.
+
+        libtmux doesn't automatically fetch pane_title, so we use cmd to get it.
+
+        Args:
+            pane: The pane to get the title from.
+
+        Returns:
+            The pane title, or empty string if unavailable.
+        """
+        try:
+            result = pane.cmd("display-message", "-p", "#{pane_title}")
+            if result.stdout:
+                return result.stdout[0]
+        except Exception:
+            pass
+        return ""
+
     def _find_pane_by_title(self, title: str) -> libtmux.Pane | None:
         """Find a pane in the agents window by its title.
 
@@ -324,7 +343,7 @@ class TmuxManager:
             return None
         try:
             for pane in agents_window.panes:
-                pane_title = getattr(pane, "pane_title", None)
+                pane_title = self._get_pane_title(pane)
                 if pane_title == title:
                     return pane
             return None
@@ -543,7 +562,7 @@ class TmuxManager:
             return None
         try:
             for pane in agents_window.panes:
-                pane_title = getattr(pane, "pane_title", None) or ""
+                pane_title = self._get_pane_title(pane)
                 if pane_title.startswith(f"#{issue_number}-"):
                     return pane
                 if pane_title == f"issue-{issue_number}":
@@ -583,7 +602,7 @@ class TmuxManager:
             return None
         try:
             for pane in agents_window.panes:
-                pane_title = getattr(pane, "pane_title", None) or ""
+                pane_title = self._get_pane_title(pane)
                 if pane_title == terminal_id:
                     return pane
             return None
@@ -827,7 +846,7 @@ tmux attach-session -t {session_name}
             return []
         issue_numbers = []
         for pane in agents_window.panes:
-            pane_title = getattr(pane, "pane_title", None) or ""
+            pane_title = self._get_pane_title(pane)
             if not pane_title:
                 continue
             # New format: #{number}-{title}
