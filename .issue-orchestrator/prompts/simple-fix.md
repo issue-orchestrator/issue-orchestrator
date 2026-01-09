@@ -123,28 +123,48 @@ agent-done needs_human \
 
 ## CRITICAL: Observe agent-done Results
 
-`agent-done` runs validation automatically (type checks, linting, ALL tests).
+When you run `agent-done completed`, it automatically runs full validation (type checks, linting, ALL tests).
 
 **This is different from just running your new tests!** Even if the tests you wrote pass, agent-done can still fail because:
-- Pre-existing tests broke
-- Type errors in your changes
+- Pre-existing tests broke due to your changes
+- Type errors in your code
 - Lint errors
 - Import errors
 
-**You MUST check if agent-done itself succeeded or failed.**
+### What agent-done failure looks like:
 
-### If agent-done fails validation:
+```
+============================================================
+❌ VALIDATION FAILED - agent-done cannot complete
+============================================================
 
-1. **Read the error message** - it tells you what failed
-2. **Try to fix the issue** - fix tests, lint errors, type errors
-3. **Run agent-done again** after fixing
+Reason: Validation suite 'agent_gate' failed (exit_code=1)
 
-### If you CANNOT fix the validation failures after 2-3 attempts:
+--- STDERR (what failed) ---
+FAILED tests/unit/test_foo.py::test_something - AssertionError
+--- END STDERR ---
+
+============================================================
+TO FIX: Read the errors above, fix them, then run agent-done again.
+If you CANNOT fix after 2-3 attempts, use:
+  agent-done blocked --reason "Validation failing: <error>" --attempted "..."
+============================================================
+```
+
+### How to respond to validation failure:
+
+1. **Read the error output** - it shows exactly what failed
+2. **Fix the issue** - update your code to fix tests/types/lint
+3. **Run agent-done completed again** - retry after fixing
+
+### If you CANNOT fix after 2-3 attempts:
+
+Use `agent-done blocked` - this SKIPS validation (since you're reporting a problem):
 
 ```bash
 agent-done blocked \
-  --reason "Validation failing: [specific error]" \
-  --attempted "Tried: [what you attempted to fix it]"
+  --reason "Validation failing: test_foo.py AssertionError on line 42" \
+  --attempted "Tried fixing the assertion, checked related code, but issue persists"
 ```
 
 **DO NOT** keep looping forever trying to fix unfixable issues.
