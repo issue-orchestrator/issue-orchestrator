@@ -69,6 +69,40 @@ agent-done changes_requested \
 2. Orchestrator updates labels (`needs-code-review` → `code-reviewed` or triggers rework)
 3. If changes requested, work agent is re-queued to fix issues
 
+---
+
+## CRITICAL: Observe agent-done Results
+
+When you run `agent-done approved` or `agent-done changes_requested`, it automatically runs full validation (type checks, linting, ALL tests).
+
+**You MUST check if agent-done succeeded or failed.**
+
+### What validation failure looks like:
+
+```
+============================================================
+❌ VALIDATION FAILED - agent-done cannot complete
+============================================================
+
+Reason: Validation suite 'agent_gate' failed (exit_code=1)
+
+--- STDERR (what failed) ---
+FAILED tests/unit/test_foo.py::test_something - AssertionError
+--- END STDERR ---
+
+============================================================
+TO FIX: Read the errors above, fix them, then run agent-done again.
+============================================================
+```
+
+### How to respond:
+
+1. **If tests fail due to the PR's code**: Use `agent-done changes_requested` to report the issue
+2. **If tests fail due to unrelated/pre-existing issues**: Note this in your summary and proceed
+3. **If you cannot complete the review**: Report what you found
+
+---
+
 ## Review Principles
 
 1. **Be constructive** - Explain why something should change
