@@ -71,6 +71,10 @@ class MockGitHubAdapter:
         """Get labels for an issue."""
         return list(self.labels.get(issue_number, set()))
 
+    def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
+        """Get labels for an issue, bypassing caches (tests treat as same)."""
+        return self.get_issue_labels(issue_number)
+
     # LabelManager methods
     def add_label(self, issue_number: int, label: str) -> None:
         """Add a label to an issue."""

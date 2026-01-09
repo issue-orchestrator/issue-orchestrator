@@ -17,6 +17,9 @@ from .orchestrator_process import (
 from .github_client import (
     _github_adapter,
     get_issue_comments,
+    get_issue_labels,
+    poll_issue_label,
+    POLL_BACKOFF_SECONDS,
 )
 from .assertions import (
     wait_with_process_check,
@@ -103,6 +106,9 @@ __all__ = [
     # github_client
     "_github_adapter",
     "get_issue_comments",
+    "get_issue_labels",
+    "poll_issue_label",
+    "POLL_BACKOFF_SECONDS",
     # assertions
     "wait_with_process_check",
     "FATAL_ERROR_PATTERNS",

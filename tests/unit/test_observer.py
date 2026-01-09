@@ -50,7 +50,7 @@ def mock_repository_host():
     """Create a mock RepositoryHost port."""
     host = MagicMock()
     host.get_prs_for_branch.return_value = []
-    host.get_issue_labels.return_value = []
+    host.get_issue_labels_fresh.return_value = []
     host.add_label.return_value = None
     host.remove_label.return_value = None
     return host
@@ -309,7 +309,7 @@ class TestCheckSession:
         """Test check_session returns BLOCKED when issue has blocked label."""
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
-        mock_repository_host.get_issue_labels.return_value = ["blocked"]
+        mock_repository_host.get_issue_labels_fresh.return_value = ["blocked"]
 
         status = monitor.check_session(sample_session)
 
@@ -321,7 +321,7 @@ class TestCheckSession:
         """Test check_session returns NEEDS_HUMAN when issue has needs-human label."""
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
-        mock_repository_host.get_issue_labels.return_value = ["needs-human"]
+        mock_repository_host.get_issue_labels_fresh.return_value = ["needs-human"]
 
         status = monitor.check_session(sample_session)
 
@@ -333,7 +333,7 @@ class TestCheckSession:
         """Test check_session returns FAILED when no success markers."""
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
-        mock_repository_host.get_issue_labels.return_value = []
+        mock_repository_host.get_issue_labels_fresh.return_value = []
 
         status = monitor.check_session(sample_session)
 
@@ -1093,7 +1093,7 @@ class TestCheckSessionExceptionHandling:
         """Test check_session falls back to stale labels on exception."""
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
-        mock_repository_host.get_issue_labels.side_effect = Exception("API error")
+        mock_repository_host.get_issue_labels_fresh.side_effect = Exception("API error")
 
         # Should not raise, should use fallback (empty labels -> FAILED)
         status = monitor.check_session(sample_session)
@@ -1319,7 +1319,7 @@ class TestCheckSessionPRLookupOnExit:
         status = monitor.check_session(sample_session)
 
         # PR check failed, so should check labels next
-        mock_repository_host.get_issue_labels.assert_called()
+        mock_repository_host.get_issue_labels_fresh.assert_called()
         assert status == SessionStatus.FAILED
 
 

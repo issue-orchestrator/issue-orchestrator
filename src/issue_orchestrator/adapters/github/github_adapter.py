@@ -96,7 +96,7 @@ class GitHubAdapter:
         self._verify_jitter_ms = config.gh_write_verify_jitter_ms if config else 0
 
         # Use injected cache or create one with config-based TTL
-        cache_ttl = float(max(0, int(getattr(config, "queue_refresh_seconds", 0)))) if config else 0.0
+        cache_ttl = float(max(0, int(getattr(config, "github_cache_ttl_seconds", 0)))) if config else 0.0
         self._cache = cache if cache is not None else GitHubCache(default_ttl=cache_ttl)
         self._cache_enabled = cache_ttl > 0
 
@@ -464,9 +464,17 @@ class GitHubAdapter:
             cached = self._get_cached_labels(issue_number)
             if cached is not None:
                 return cached
-            return self._get_issue_labels_fresh(issue_number)
+            return self._get_issue_labels_cached(issue_number)
         except Exception as e:
             logger.error(f"Failed to get labels for issue {issue_number}: {e}")
+            return []
+
+    def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
+        """Get labels for a specific issue, bypassing adapter/ETag caches."""
+        try:
+            return self._get_issue_labels_fresh(issue_number)
+        except Exception as e:
+            logger.error(f"Failed to get fresh labels for issue {issue_number}: {e}")
             return []
 
     def _get_cached_labels(self, issue_number: int) -> list[str] | None:
@@ -475,13 +483,23 @@ class GitHubAdapter:
             return None
         return self._cache.get_issue_labels(issue_number)
 
+    def _get_issue_labels_cached(self, issue_number: int) -> list[str]:
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.GH_READ,
+            issue_key=str(issue_number),
+            scope=gh_audit.AuditScope.UNKNOWN,
+        ):
+            labels = self._client.get_issue_labels(issue_number, use_cache=True)
+        self.update_label_cache(issue_number, list(labels))
+        return labels
+
     def _get_issue_labels_fresh(self, issue_number: int) -> list[str]:
         with gh_audit.context(
             reason=gh_audit.AuditReason.GH_READ,
             issue_key=str(issue_number),
             scope=gh_audit.AuditScope.UNKNOWN,
         ):
-            labels = self._client.get_issue_labels(issue_number)
+            labels = self._client.get_issue_labels(issue_number, use_cache=False)
         self.update_label_cache(issue_number, list(labels))
         return labels
 

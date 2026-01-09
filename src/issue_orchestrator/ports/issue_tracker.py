@@ -82,6 +82,24 @@ class IssueTracker(Protocol):
         """
         ...
 
+    def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
+        """Get the labels for a specific issue, bypassing caches.
+
+        This method is intended for correctness-critical reads where stale
+        labels could cause incorrect state transitions.
+
+        Args:
+            issue_number: The issue number to get labels for.
+
+        Returns:
+            A list of label names for the issue. Returns empty list if
+            issue not found or has no labels.
+
+        Raises:
+            RepositoryError: If there's an error accessing the data source.
+        """
+        ...
+
 
 # Backwards compatibility alias
 IssueRepository = IssueTracker

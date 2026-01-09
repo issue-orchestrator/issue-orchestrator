@@ -187,6 +187,7 @@ class Config:
     github_token_env: Optional[str] = None  # Env var name for token (overrides defaults)
     github_api_url: str = "https://api.github.com"
     github_http_timeout_seconds: float = 20.0
+    github_cache_ttl_seconds: int = 300  # Cache TTL for GitHub adapter responses
     github_required_scopes: list[str] = field(default_factory=list)
     github_allowed_scopes: list[str] = field(default_factory=list)
     filter_label: Optional[str] = None  # Only consider issues with this label (e.g., "test-data")

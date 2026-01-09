@@ -323,11 +323,12 @@ class GitHubHttpClient:
             caller="remove_label",
         )
 
-    def get_issue_labels(self, issue_number: int) -> list[str]:
+    def get_issue_labels(self, issue_number: int, *, use_cache: bool = True) -> list[str]:
         payload = self._request_json(
             "GET",
             f"/repos/{self._config.repo}/issues/{issue_number}/labels",
             params={"per_page": 100},
+            use_cache=use_cache,
             caller="get_issue_labels",
         )
         if isinstance(payload, list):

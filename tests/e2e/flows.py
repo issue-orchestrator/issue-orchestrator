@@ -34,6 +34,7 @@ from tests.e2e.conftest import (
     get_issue_comments,
     OrchestratorProcess,
     _github_adapter,
+    poll_issue_label,
 )
 
 
