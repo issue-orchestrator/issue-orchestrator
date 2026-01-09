@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 import libtmux
+from libtmux import Window as LibtmuxWindow
 from libtmux.exc import LibTmuxException
 from libtmux.constants import PaneDirection
 
@@ -291,7 +292,7 @@ class TmuxManager:
         """Get the agents window where all agent panes live.
 
         Returns:
-            The agents window, or None if session doesn't exist.
+            The agents window, or None if session doesn't exist or no agents window.
         """
         if self._session is None:
             return None
@@ -300,6 +301,14 @@ class TmuxManager:
             return windows[0] if windows else None
         except Exception:
             return None
+
+    def _is_pane_mode(self) -> bool:
+        """Check if we're in pane mode (agents window exists) or window mode.
+
+        Returns:
+            True if agents window exists (pane mode), False otherwise (window mode).
+        """
+        return self._get_agents_window() is not None
 
     def _find_pane_by_title(self, title: str) -> libtmux.Pane | None:
         """Find a pane in the agents window by its title.
@@ -372,54 +381,64 @@ class TmuxManager:
         command: str,
         working_dir: Path,
         title: str | None = None,
-    ) -> libtmux.Pane:
-        """Create a new pane for an issue and run the command.
+    ) -> libtmux.Pane | libtmux.Window:
+        """Create a new pane or window for an issue and run the command.
 
-        Creates a pane in the shared "agents" window instead of a separate window.
-        All agent sessions appear as panes in a tiled layout.
+        Adaptive mode:
+        - If "agents" window exists (pane mode): creates a pane in tiled layout
+        - If no "agents" window (window mode): creates a separate window/tab
 
         Args:
             issue_number: The GitHub issue number.
-            command: The command to run in the pane.
+            command: The command to run.
             working_dir: Working directory for the command.
-            title: Optional title for the issue (used in pane title).
+            title: Optional title for the issue.
 
         Returns:
-            The created pane.
+            The created pane (pane mode) or window (window mode).
 
         Raises:
-            ValueError: If a pane with the same title already exists.
+            PaneAlreadyExistsError: If a session with the same ID already exists.
         """
         session = self.ensure_session()
 
-        # Build pane title for identification
+        # Build session identifier
         if title:
             short_title = title[:20].replace(" ", "-").replace(":", "")
-            pane_title = f"#{issue_number}-{short_title}"
+            session_id = f"#{issue_number}-{short_title}"
         else:
-            pane_title = f"issue-{issue_number}"
+            session_id = f"issue-{issue_number}"
 
-        # Check if pane already exists
-        existing = self._find_pane_by_title(pane_title)
-        if existing:
-            raise PaneAlreadyExistsError(f"Pane {pane_title} already exists")
+        # Check if session already exists (works for both modes)
+        if self._find_session_by_id(session_id) is not None:
+            raise PaneAlreadyExistsError(f"Session {session_id} already exists")
 
-        # Get the agents window (create if needed)
+        # Adaptive: use pane mode if agents window exists, otherwise window mode
+        if self._is_pane_mode():
+            return self._create_pane(session, session_id, command, working_dir)
+        else:
+            return self._create_window(session, session_id, command, working_dir)
+
+    def _create_pane(
+        self,
+        session: libtmux.Session,
+        session_id: str,
+        command: str,
+        working_dir: Path,
+    ) -> libtmux.Pane:
+        """Create a pane in the agents window (pane mode)."""
         agents_window = self._get_agents_window()
-        if agents_window is None:
-            agents_window = session.new_window(window_name=AGENTS_WINDOW)
+        assert agents_window is not None  # Caller verified pane mode
 
         # Create pane: reuse empty placeholder pane or split from last pane
         panes = agents_window.panes
         if len(panes) == 1 and self._is_pane_empty(panes[0]):
-            # Reuse the empty placeholder pane
             pane = panes[0]
         else:
-            # Split from the last pane to add a new one
             pane = panes[-1].split(direction=PaneDirection.Right)
 
         # Set pane title for identification
-        pane.cmd("select-pane", "-T", pane_title)
+        pane.cmd("select-pane", "-T", session_id)
 
         # Enable remain-on-exit for exit code capture
         try:
@@ -427,10 +446,44 @@ class TmuxManager:
         except Exception:
             pass
 
-        # Apply tiled layout to evenly distribute all panes
+        # Apply tiled layout
         agents_window.select_layout("tiled")
 
-        # Set up isolated environment and run command
+        # Set up and run
+        self._setup_and_run(pane, command, working_dir)
+        return pane
+
+    def _create_window(
+        self,
+        session: libtmux.Session,
+        session_id: str,
+        command: str,
+        working_dir: Path,
+    ) -> libtmux.Window:
+        """Create a separate window (window mode)."""
+        window = session.new_window(window_name=session_id)
+        pane = window.active_pane
+        if pane is None:
+            # Shouldn't happen, but handle gracefully
+            raise RuntimeError(f"New window {session_id} has no active pane")
+
+        # Enable remain-on-exit for exit code capture
+        try:
+            pane.cmd("set-option", "-p", "remain-on-exit", "on")
+        except Exception:
+            pass
+
+        # Set up and run
+        self._setup_and_run(pane, command, working_dir)
+        return window
+
+    def _setup_and_run(
+        self,
+        pane: libtmux.Pane,
+        command: str,
+        working_dir: Path,
+    ) -> None:
+        """Set up isolated environment and run command in pane."""
         from ...control.isolation import build_isolation_prefix
         wrapper_dir = Path(__file__).parent.parent.parent / "scripts"
         isolation_prefix = build_isolation_prefix(
@@ -453,35 +506,78 @@ class TmuxManager:
         pane.send_keys(setup_cmd)
         pane.send_keys(command)
 
-        return pane
+    def _find_session_by_id(self, session_id: str) -> libtmux.Pane | libtmux.Window | None:
+        """Find a session (pane or window) by its ID.
 
-    def _find_issue_pane(self, issue_number: int) -> Optional[libtmux.Pane]:
-        """Find pane for an issue by number (handles both naming conventions).
-
-        Searches the agents window for a pane with matching title.
+        Adaptive: searches panes in pane mode, windows in window mode.
         """
+        if self._is_pane_mode():
+            return self._find_pane_by_title(session_id)
+        else:
+            return self._find_window_by_session_id(session_id)
+
+    def _find_window_by_session_id(self, session_id: str) -> libtmux.Window | None:
+        """Find a window by its name (window mode)."""
+        if self._session is None:
+            return None
+        try:
+            windows = self._session.windows.filter(window_name=session_id)
+            return windows[0] if windows else None
+        except Exception:
+            return None
+
+    def _find_issue_session(self, issue_number: int) -> libtmux.Pane | libtmux.Window | None:
+        """Find session for an issue by number (adaptive: pane or window mode).
+
+        Handles both naming conventions: #{number}-{title} and issue-{number}.
+        """
+        if self._is_pane_mode():
+            return self._find_issue_pane_internal(issue_number)
+        else:
+            return self._find_issue_window_internal(issue_number)
+
+    def _find_issue_pane_internal(self, issue_number: int) -> libtmux.Pane | None:
+        """Find pane for an issue in agents window (pane mode)."""
         agents_window = self._get_agents_window()
         if agents_window is None:
             return None
         try:
             for pane in agents_window.panes:
                 pane_title = getattr(pane, "pane_title", None) or ""
-                # Check new format: #{number}-{title}
                 if pane_title.startswith(f"#{issue_number}-"):
                     return pane
-                # Check old format: issue-{number}
                 if pane_title == f"issue-{issue_number}":
                     return pane
             return None
         except LibTmuxException as e:
-            logger.warning("[TMUX] _find_issue_pane(%d) failed: %s", issue_number, str(e).strip())
+            logger.warning("[TMUX] _find_issue_pane_internal(%d) failed: %s", issue_number, str(e).strip())
             return None
 
-    def _find_pane_by_name(self, terminal_id: str) -> Optional[libtmux.Pane]:
-        """Find pane by its terminal_id (issue-N, review-N, rework-N, etc).
+    def _find_issue_window_internal(self, issue_number: int) -> libtmux.Window | None:
+        """Find window for an issue (window mode)."""
+        if self._session is None:
+            return None
+        try:
+            for window in self._session.windows:
+                name = window.window_name or ""
+                if name.startswith(f"#{issue_number}-"):
+                    return window
+                if name == f"issue-{issue_number}":
+                    return window
+            return None
+        except LibTmuxException as e:
+            logger.warning("[TMUX] _find_issue_window_internal(%d) failed: %s", issue_number, str(e).strip())
+            return None
 
-        Searches the agents window for a pane with matching title.
-        """
+    def _find_session_by_name(self, terminal_id: str) -> libtmux.Pane | libtmux.Window | None:
+        """Find session by terminal_id (adaptive: pane or window mode)."""
+        if self._is_pane_mode():
+            return self._find_pane_by_name_internal(terminal_id)
+        else:
+            return self._find_window_by_session_id(terminal_id)
+
+    def _find_pane_by_name_internal(self, terminal_id: str) -> libtmux.Pane | None:
+        """Find pane by its terminal_id in agents window (pane mode)."""
         agents_window = self._get_agents_window()
         if agents_window is None:
             return None
@@ -492,41 +588,85 @@ class TmuxManager:
                     return pane
             return None
         except LibTmuxException as e:
-            logger.warning("[TMUX] _find_pane_by_name(%s) failed: %s", terminal_id, str(e).strip())
+            logger.warning("[TMUX] _find_pane_by_name_internal(%s) failed: %s", terminal_id, str(e).strip())
             return None
 
-    # Legacy window methods - now search panes instead
-    def _find_issue_window(self, issue_number: int) -> Optional[libtmux.Pane]:
-        """Find pane for an issue by number (legacy name, returns Pane)."""
-        return self._find_issue_pane(issue_number)
+    # Legacy aliases
+    def _find_issue_pane(self, issue_number: int) -> libtmux.Pane | libtmux.Window | None:
+        """Find session for an issue (adaptive)."""
+        return self._find_issue_session(issue_number)
 
-    def _find_window_by_name(self, session_name: str) -> Optional[libtmux.Pane]:
-        """Find pane by name (legacy name, returns Pane)."""
-        return self._find_pane_by_name(session_name)
+    def _find_pane_by_name(self, terminal_id: str) -> libtmux.Pane | libtmux.Window | None:
+        """Find session by name (adaptive)."""
+        return self._find_session_by_name(terminal_id)
+
+    def _get_issue_pane_for_io(self, issue_number: int) -> libtmux.Pane | None:
+        """Get pane for an issue, for I/O operations (capture, send_keys).
+
+        In window mode, extracts the active pane from the window.
+        """
+        session = self._find_issue_session(issue_number)
+        if session is None:
+            return None
+        if isinstance(session, LibtmuxWindow):
+            # Window mode: get active pane
+            return session.active_pane
+        # Pane mode or compatible mock
+        return session
+
+    def _get_pane_for_io_by_name(self, terminal_id: str) -> libtmux.Pane | None:
+        """Get pane by terminal_id, for I/O operations (capture, send_keys).
+
+        In window mode, extracts the active pane from the window.
+        """
+        session = self._find_session_by_name(terminal_id)
+        if session is None:
+            return None
+        if isinstance(session, LibtmuxWindow):
+            # Window mode: get active pane
+            return session.active_pane
+        # Pane mode or compatible mock
+        return session
+
+    def _find_issue_window(self, issue_number: int) -> libtmux.Pane | libtmux.Window | None:
+        """Find session for an issue (legacy alias)."""
+        return self._find_issue_session(issue_number)
+
+    def _find_window_by_name(self, session_name: str) -> libtmux.Pane | libtmux.Window | None:
+        """Find session by name (legacy alias)."""
+        return self._find_session_by_name(session_name)
 
     def window_exists(self, issue_number: int) -> bool:
-        """Check if a pane exists for the given issue."""
-        return self._find_issue_pane(issue_number) is not None
+        """Check if a session exists for the given issue (adaptive)."""
+        return self._find_issue_session(issue_number) is not None
 
     def window_exists_by_name(self, session_name: str) -> bool:
-        """Check if a pane exists by its terminal_id (e.g., 'review-456')."""
-        return self._find_pane_by_name(session_name) is not None
+        """Check if a session exists by terminal_id (adaptive)."""
+        return self._find_session_by_name(session_name) is not None
 
-    def get_window(self, issue_number: int) -> Optional[libtmux.Pane]:
-        """Get the pane for an issue, or None if it doesn't exist."""
-        return self._find_issue_pane(issue_number)
+    def get_window(self, issue_number: int) -> libtmux.Pane | libtmux.Window | None:
+        """Get the session for an issue (adaptive)."""
+        return self._find_issue_session(issue_number)
 
     def kill_window(self, issue_number: int) -> None:
-        """Kill the pane for an issue."""
-        pane = self._find_issue_pane(issue_number)
-        if pane:
-            self._kill_pane(pane)
+        """Kill the session for an issue (adaptive)."""
+        session = self._find_issue_session(issue_number)
+        if session:
+            self._kill_session_item(session)
 
     def kill_window_by_name(self, session_name: str) -> None:
-        """Kill a pane by its terminal_id."""
-        pane = self._find_pane_by_name(session_name)
-        if pane:
-            self._kill_pane(pane)
+        """Kill a session by its terminal_id (adaptive)."""
+        session = self._find_session_by_name(session_name)
+        if session:
+            self._kill_session_item(session)
+
+    def _kill_session_item(self, item: libtmux.Pane | libtmux.Window) -> None:
+        """Kill a pane or window (adaptive)."""
+        # Use duck typing: panes have pane_title, windows have window_name
+        if hasattr(item, "pane_title"):
+            self._kill_pane(item)  # type: ignore[arg-type]
+        else:
+            self._kill_window_item(item)  # type: ignore[arg-type]
 
     def _kill_pane(self, pane: libtmux.Pane) -> None:
         """Kill a pane and re-tile the remaining panes."""
@@ -548,27 +688,41 @@ class TmuxManager:
             except Exception:
                 pass
 
-    def select_window(self, issue_number: int) -> bool:
-        """Switch to the pane for an issue and open terminal if needed.
+    def _kill_window_item(self, window: libtmux.Window) -> None:
+        """Kill a window."""
+        # Stop logging on active pane first
+        try:
+            if window.active_pane:
+                window.active_pane.cmd("pipe-pane")
+        except Exception:
+            pass
+        # Kill the window
+        try:
+            window.kill()
+        except Exception:
+            pass
 
-        Selects the agents window and focuses the specific pane.
-        On macOS, opens Terminal.app with tmux attached if no client is connected.
+    def select_window(self, issue_number: int) -> bool:
+        """Switch to the session for an issue and open terminal if needed (adaptive).
 
         Returns:
-            True if pane was selected, False if it doesn't exist
+            True if session was selected, False if it doesn't exist
         """
-        pane = self._find_issue_pane(issue_number)
-        if pane:
-            # Select the agents window first
+        session = self._find_issue_session(issue_number)
+        if session is None:
+            return False
+
+        # Use duck typing for mock compatibility
+        if hasattr(session, "pane_title"):
+            # Pane mode: select agents window, then pane
             agents_window = self._get_agents_window()
             if agents_window:
                 agents_window.select()
-            # Select the specific pane
-            pane.select()
-            # Open terminal if no client is attached
-            self._ensure_terminal_attached()
-            return True
-        return False
+        session.select()
+
+        # Open terminal if no client is attached
+        self._ensure_terminal_attached()
+        return True
 
     def _ensure_terminal_attached(self) -> None:
         """Ensure a terminal is attached to the tmux session.
@@ -715,7 +869,7 @@ tmux attach-session -t {session_name}
         Returns:
             The captured output, or None if pane doesn't exist
         """
-        pane = self._find_issue_pane(issue_number)
+        pane = self._get_issue_pane_for_io(issue_number)
         if pane is None:
             return None
         output = pane.capture_pane(start=-lines)
@@ -729,7 +883,7 @@ tmux attach-session -t {session_name}
             keys: Keys/text to send
             enter: Whether to press enter after sending
         """
-        pane = self._find_issue_pane(issue_number)
+        pane = self._get_issue_pane_for_io(issue_number)
         if pane is None:
             return
         if enter:
@@ -748,7 +902,7 @@ tmux attach-session -t {session_name}
         Returns:
             True if keys were sent, False if pane not found
         """
-        pane = self._find_pane_by_name(session_name)
+        pane = self._get_pane_for_io_by_name(session_name)
         if pane is None:
             return False
         if enter:
@@ -769,8 +923,8 @@ tmux attach-session -t {session_name}
     # -------------------------------------------------------------------------
 
     def _get_pane_by_terminal_id(self, terminal_id: str) -> Optional[libtmux.Pane]:
-        """Get pane for a terminal_id (pane title)."""
-        return self._find_pane_by_name(terminal_id)
+        """Get pane for a terminal_id (adaptive: pane or window mode)."""
+        return self._get_pane_for_io_by_name(terminal_id)
 
     def get_process_state(self, terminal_id: str) -> ProcessState:
         """Get the current state of the process in a terminal.

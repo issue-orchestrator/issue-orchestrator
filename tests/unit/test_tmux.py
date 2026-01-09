@@ -192,7 +192,7 @@ class TestTmuxManager:
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
-        with pytest.raises(PaneAlreadyExistsError, match="Pane issue-42 already exists"):
+        with pytest.raises(PaneAlreadyExistsError, match="Session issue-42 already exists"):
             manager.create_issue_window(42, "echo test", Path("/test/dir"))
 
     def test_window_exists_true(self, mock_session, mock_agents_window, mock_pane):

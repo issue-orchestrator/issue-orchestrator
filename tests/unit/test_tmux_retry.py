@@ -187,15 +187,15 @@ class TestRetryWithTmuxManager:
         mock_server = MagicMock()
         manager._server = mock_server
 
-        # Server raises BadSessionName (invalid character in name)
-        mock_server.sessions.get.side_effect = BadSessionName("invalid:name")
+        # Server's sessions.filter raises BadSessionName (invalid character in name)
+        mock_server.sessions.filter.side_effect = BadSessionName("invalid:name")
         mock_server.new_session.side_effect = BadSessionName("invalid:name")
 
         with pytest.raises(BadSessionName):
             manager.create_orchestrator_session()
 
         # Should only try once
-        assert mock_server.sessions.get.call_count == 1
+        assert mock_server.sessions.filter.call_count == 1
 
     def test_ensure_server_running_retries(self):
         """Test that ensure_server_running retries transient failures."""
