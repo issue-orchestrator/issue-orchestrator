@@ -471,3 +471,8 @@ class TestPaneIdentificationWithClaudeCode:
             f"Session ID option should not change! "
             f"Original: {original_session_id}, Final: {final_session_id}"
         )
+
+
+# NOTE: Real Claude Code e2e test is in tests/e2e/test_terminal_adapter.py
+# The test_terminal_adapter_session_launch test verifies pane identification
+# works with real Claude Code running in a real worktree.
