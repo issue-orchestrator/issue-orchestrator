@@ -146,7 +146,7 @@ class TestCreateWorktree:
         ]
 
         # Execute
-        worktree_path, branch_name = create_worktree(
+        worktree_path, branch_name, _ = create_worktree(
             repo_root, 123, "Add user auth", worktree_base
         )
 
@@ -206,7 +206,7 @@ class TestCreateWorktree:
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         # Execute (no worktree_base specified)
-        worktree_path, branch_name = create_worktree(repo_root, 456, "Fix bug")
+        worktree_path, branch_name, _ = create_worktree(repo_root, 456, "Fix bug")
 
         # Verify - should use parent of repo_root as base
         expected_path = tmp_path / "repo-456"
@@ -261,7 +261,7 @@ class TestCreateWorktree:
         mock_run.side_effect = mock_subprocess
 
         # Execute - should reuse existing worktree instead of raising error
-        path, branch = create_worktree(repo_root, 123, "Test", worktree_base)
+        path, branch, _ = create_worktree(repo_root, 123, "Test", worktree_base)
 
         # Verify it returned the existing worktree
         assert path == existing_worktree
@@ -417,7 +417,7 @@ class TestCreateWorktree:
 
         # Execute with complex title
         complex_title = "Fix bug in @user's profile (100% coverage) 🎉"
-        worktree_path, branch_name = create_worktree(repo_root, 999, complex_title)
+        worktree_path, branch_name, _ = create_worktree(repo_root, 999, complex_title)
 
         # Verify branch name is properly slugified
         assert branch_name == "999-fix-bug-in-user-s-profile-100-coverage"
@@ -947,7 +947,7 @@ class TestIntegrationScenarios:
         mock_run.side_effect = mock_git_command
 
         # Create worktree
-        worktree_path, branch_name = create_worktree(
+        worktree_path, branch_name, _ = create_worktree(
             repo_root, 123, "Test feature", worktree_base
         )
 
@@ -987,7 +987,7 @@ class TestIntegrationScenarios:
         ]
 
         for issue_num, title, expected_branch in edge_cases:
-            worktree_path, branch_name = create_worktree(
+            worktree_path, branch_name, _ = create_worktree(
                 repo_root, issue_num, title, tmp_path / "worktrees"
             )
             assert branch_name == expected_branch

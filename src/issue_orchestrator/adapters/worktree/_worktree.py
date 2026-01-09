@@ -601,7 +601,7 @@ def create_worktree(
     enforce_hooks: bool = True,
     pre_push_hook: Path | None = None,
     branch_name: str | None = None,
-) -> tuple[Path, str]:
+) -> tuple[Path, str, bool]:
     """
     Create a new git worktree for the given issue.
 
@@ -615,7 +615,8 @@ def create_worktree(
         branch_name: Specific branch to use (for checking out existing branches like PR reviews)
 
     Returns:
-        Tuple of (worktree_path, branch_name)
+        Tuple of (worktree_path, branch_name, rebase_failed) where rebase_failed
+        is True if an existing worktree couldn't be rebased onto main (merge conflict)
 
     Raises:
         WorktreeError: If worktree creation fails
@@ -693,12 +694,12 @@ def create_worktree(
         if existing_worktree and existing_worktree.exists():
             logger.info("Reusing existing worktree for branch=%s path=%s", branch_name, existing_worktree)
             # Rebase onto latest main (critical for reruns with stale branches)
-            _update_worktree_onto_main(existing_worktree, repo_root)
+            rebase_ok = _update_worktree_onto_main(existing_worktree, repo_root)
             # Reinstall hooks if needed
             if enforce_hooks:
                 install_hooks(existing_worktree, pre_push_hook)
-            logger.info("Worktree reuse complete: path=%s branch=%s", existing_worktree, branch_name)
-            return existing_worktree, branch_name
+            logger.info("Worktree reuse complete: path=%s branch=%s rebase_ok=%s", existing_worktree, branch_name, rebase_ok)
+            return existing_worktree, branch_name, not rebase_ok
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
     if worktree_path.exists() and not disable_reuse:
@@ -716,12 +717,12 @@ def create_worktree(
                 existing_branch = branch_result.stdout.strip()
                 logger.info("Existing worktree branch: path=%s branch=%s", worktree_path, existing_branch)
                 # Rebase onto latest main (critical for reruns with stale branches)
-                _update_worktree_onto_main(worktree_path, repo_root)
+                rebase_ok = _update_worktree_onto_main(worktree_path, repo_root)
                 # Reinstall hooks (ensures latest hook chaining logic is applied)
                 if enforce_hooks:
                     install_hooks(worktree_path, pre_push_hook)
-                logger.info("Worktree reuse complete: path=%s branch=%s", worktree_path, existing_branch)
-                return worktree_path, existing_branch
+                logger.info("Worktree reuse complete: path=%s branch=%s rebase_ok=%s", worktree_path, existing_branch, rebase_ok)
+                return worktree_path, existing_branch, not rebase_ok
         # Invalid worktree directory - remove it
         logger.warning("Removing invalid worktree directory at %s", worktree_path)
         shutil.rmtree(worktree_path, ignore_errors=True)
@@ -793,7 +794,7 @@ def create_worktree(
         install_venv_symlink(worktree_path, repo_root)
 
         logger.info("Worktree created: path=%s branch=%s", worktree_path, branch_name)
-        return worktree_path, branch_name
+        return worktree_path, branch_name, False  # No rebase failure - new worktree
 
     except Exception as e:
         if isinstance(e, WorktreeError):

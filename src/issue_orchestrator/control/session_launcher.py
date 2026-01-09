@@ -331,10 +331,25 @@ class SessionLauncher:
         label_time = time.time() - step_start
         logger.info("[launch] Label added in %.1fs", label_time)
 
-        # Check for existing work
+        # Check for existing work and rebase status
         existing_work = detect_existing_work(worktree_path, self._working_copy)
         if existing_work:
             logger.info("[launch] Found existing work - agent will evaluate before starting fresh")
+
+        # Add merge conflict warning if rebase failed
+        if worktree_info.rebase_failed:
+            conflict_warning = (
+                "WARNING: This branch could not be rebased onto main due to merge conflicts. "
+                "The code is out of date. You should resolve the conflicts by running: "
+                "git fetch origin main && git rebase origin/main. "
+                "If conflicts occur, resolve them and continue with: git rebase --continue. "
+                "This is critical to ensure tests pass with the latest code."
+            )
+            if existing_work:
+                existing_work = f"{existing_work}\n\n{conflict_warning}"
+            else:
+                existing_work = conflict_warning
+            logger.warning("[launch] Rebase failed - agent will need to resolve merge conflicts")
 
         # Build command
         base_command = agent_config.get_command(
@@ -512,12 +527,23 @@ class SessionLauncher:
             },
         )
 
+        # Check if rebase failed (PR branch couldn't be updated to latest main)
+        existing_work: str | None = None
+        if worktree_info.rebase_failed:
+            existing_work = (
+                "WARNING: This PR branch could not be rebased onto main due to merge conflicts. "
+                "The branch is behind main. When reviewing, consider whether merge conflicts "
+                "need to be resolved before the PR can be merged."
+            )
+            logger.warning("[launch] Rebase failed for review - PR branch is behind main")
+
         # Build command
         base_command = agent_config.get_command(
             issue_number=review.issue_number,
             issue_title=f"Review PR #{review.pr_number}",
             worktree=worktree_path,
             pr_number=review.pr_number,
+            existing_work=existing_work,
         )
         completion_path = get_completion_path(agent_label)
         env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
@@ -690,12 +716,25 @@ class SessionLauncher:
             },
         )
 
+        # Check if rebase failed (rework branch couldn't be updated to latest main)
+        existing_work: str | None = None
+        if worktree_info.rebase_failed:
+            existing_work = (
+                "WARNING: This branch could not be rebased onto main due to merge conflicts. "
+                "The code is out of date. You should resolve the conflicts by running: "
+                "git fetch origin main && git rebase origin/main. "
+                "If conflicts occur, resolve them and continue with: git rebase --continue. "
+                "This is critical to ensure tests pass with the latest code."
+            )
+            logger.warning("[launch] Rebase failed for rework - agent will need to resolve merge conflicts")
+
         # Build command
         base_command = agent_config.get_command(
             issue_number=issue_number,
             issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
             worktree=worktree_path,
             pr_number=pr_number,
+            existing_work=existing_work,
         )
         completion_path = get_completion_path(rework.agent_type)
         env_vars = f"ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
