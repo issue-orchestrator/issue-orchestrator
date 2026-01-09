@@ -1031,3 +1031,107 @@ validation:
             assert "Running validation" not in captured.out
         finally:
             os.chdir(original_cwd)
+
+    def test_validation_failure_shows_stderr_inline(self, tmp_path, capsys):
+        """Test that validation failure shows the actual error output inline.
+
+        This verifies Claude can see what failed without reading separate files.
+        """
+        # Create fake git repo
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Create config with validation that outputs error to stderr
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        # This command outputs to stderr and exits with error
+        config_path.write_text("""
+validation:
+  cmd: "echo 'FAILED test_something.py::test_case - AssertionError' >&2 && exit 1"
+  timeout_seconds: 10
+""")
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch('sys.argv', [
+                'agent-done', 'completed',
+                '--implementation', 'Added feature',
+                '--problems', 'None',
+            ]):
+                with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    assert exc_info.value.code == 1
+
+            captured = capsys.readouterr()
+
+            # Verify the new output format
+            assert "VALIDATION FAILED" in captured.out
+            assert "agent-done cannot complete" in captured.out
+            assert "--- STDERR (what failed) ---" in captured.out
+            assert "FAILED test_something.py::test_case - AssertionError" in captured.out
+            assert "--- END STDERR ---" in captured.out
+            assert "TO FIX:" in captured.out
+            assert 'agent-done blocked --reason "Validation failing:' in captured.out
+        finally:
+            os.chdir(original_cwd)
+
+    def test_blocked_status_skips_validation(self, tmp_path, capsys):
+        """Test that blocked status skips validation entirely.
+
+        This is important because if tests fail and agent can't fix them,
+        they should be able to report blocked without validation blocking them.
+        """
+        # Create fake git repo
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Create config with validation that would fail
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "exit 1"
+  timeout_seconds: 10
+""")
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch('sys.argv', [
+                'agent-done', 'blocked',
+                '--reason', 'Tests failing and cannot fix',
+                '--attempted', 'Tried multiple fixes',
+            ]):
+                with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                    # Should NOT raise - blocked skips validation
+                    main()
+
+            captured = capsys.readouterr()
+            # Should indicate validation was skipped
+            assert "Skipping validation for 'blocked' status" in captured.out
+            # Should still write completion record
+            assert "Completion record written to" in captured.out
+        finally:
+            os.chdir(original_cwd)
