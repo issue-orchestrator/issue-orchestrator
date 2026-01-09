@@ -75,6 +75,8 @@ def main() -> int:
         level=log_level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    # Suppress httpx INFO logging (polls orchestrator status every 3s)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     url = f"http://{args.host}:{args.port}/"
     print(f"Starting Control Center on {url}")

@@ -23,7 +23,7 @@ from libtmux.constants import PaneDirection
 
 from issue_orchestrator.domain import ProcessState, ProcessExitInfo
 
-from ._tmux_retry import tmux_retry
+from ._tmux_retry import tmux_retry, PaneAlreadyExistsError
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,11 @@ class TmuxManager:
 
     @property
     def session(self) -> Optional[libtmux.Session]:
-        """Get the orchestrator session if it exists."""
+        """Get the orchestrator session if it exists.
+
+        Note: Session cache is cleared by @tmux_retry on operation failures,
+        handling the case where tmux session was killed externally.
+        """
         if self._session is None:
             try:
                 self._session = self.server.sessions.get(session_name=self._session_name)
@@ -398,7 +402,7 @@ class TmuxManager:
         # Check if pane already exists
         existing = self._find_pane_by_title(pane_title)
         if existing:
-            raise ValueError(f"Pane {pane_title} already exists")
+            raise PaneAlreadyExistsError(f"Pane {pane_title} already exists")
 
         # Get the agents window (create if needed)
         agents_window = self._get_agents_window()

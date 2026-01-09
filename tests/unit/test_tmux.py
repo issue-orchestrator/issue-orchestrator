@@ -29,6 +29,7 @@ def mock_session():
     """Create a mock libtmux Session."""
     session = MagicMock()
     session.name = tmux.SESSION_NAME
+    session.session_name = tmux.SESSION_NAME  # Used for validation
     return session
 
 
@@ -106,10 +107,13 @@ class TestTmuxManager:
         session = manager.session
         assert session is None
 
-    def test_session_property_returns_cached(self, mock_session):
+    def test_session_property_returns_cached(self, mock_server, mock_session):
         """Test session property returns cached session."""
         manager = tmux.TmuxManager()
+        manager._server = mock_server
         manager._session = mock_session
+        # Server should report session still exists for validation
+        mock_server.sessions = [mock_session]
         assert manager.session == mock_session
 
     def test_ensure_session_returns_existing(self, mock_session):
@@ -135,10 +139,13 @@ class TestTmuxManager:
             window_name=tmux.DASHBOARD_WINDOW,
         )
 
-    def test_has_session_true(self, mock_session):
+    def test_has_session_true(self, mock_server, mock_session):
         """Test has_session returns True when session exists."""
         manager = tmux.TmuxManager()
+        manager._server = mock_server
         manager._session = mock_session
+        # Server should report session still exists for validation
+        mock_server.sessions = [mock_session]
         assert manager.has_session() is True
 
     def test_has_session_false(self, mock_server):
@@ -175,6 +182,8 @@ class TestTmuxManager:
 
     def test_create_issue_window_already_exists(self, mock_session, mock_agents_window, mock_pane):
         """Test create_issue_window raises error if pane exists."""
+        from issue_orchestrator.adapters.terminal._tmux_retry import PaneAlreadyExistsError
+
         manager = tmux.TmuxManager()
         manager._session = mock_session
 
@@ -183,7 +192,7 @@ class TestTmuxManager:
         mock_agents_window.panes = [mock_pane]
         mock_session.windows.filter.return_value = [mock_agents_window]
 
-        with pytest.raises(ValueError, match="Pane issue-42 already exists"):
+        with pytest.raises(PaneAlreadyExistsError, match="Pane issue-42 already exists"):
             manager.create_issue_window(42, "echo test", Path("/test/dir"))
 
     def test_window_exists_true(self, mock_session, mock_agents_window, mock_pane):
@@ -292,10 +301,13 @@ class TestTmuxManager:
         result = manager.select_window(42)
         assert result is False
 
-    def test_select_dashboard_success(self, mock_session, mock_window):
+    def test_select_dashboard_success(self, mock_server, mock_session, mock_window):
         """Test select_dashboard selects the dashboard window."""
         manager = tmux.TmuxManager()
+        manager._server = mock_server
         manager._session = mock_session
+        # Server should report session still exists for validation
+        mock_server.sessions = [mock_session]
         dashboard_window = MagicMock()
         mock_session.windows.filter.return_value = [dashboard_window]
 
