@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 SESSION_NAME = os.environ.get("ORCHESTRATOR_TMUX_SESSION", "orchestrator")
 DASHBOARD_WINDOW = "dashboard"
 AGENTS_WINDOW = "agents"  # Window where all agent panes live
+PANE_SESSION_ID_OPTION = "@orchestrator-session-id"  # Custom tmux option for session ID
 
 # TTL for cached pane state (milliseconds)
 PANE_STATE_TTL_MS = 500
@@ -349,26 +350,97 @@ class TmuxManager:
             pass
         return ""
 
-    def _find_pane_by_title(self, title: str) -> libtmux.Pane | None:
-        """Find a pane in the agents window by its title.
+    def _set_pane_session_id(self, pane: libtmux.Pane, session_id: str) -> None:
+        """Set the orchestrator session ID on a pane.
+
+        Uses a custom tmux option (@orchestrator-session-id) that applications
+        cannot overwrite, unlike pane_title which Claude Code modifies.
 
         Args:
-            title: The pane title to search for.
+            pane: The pane to set the session ID on.
+            session_id: The session identifier (e.g., "#123-issue-title").
+        """
+        try:
+            pane.cmd("set-option", "-p", PANE_SESSION_ID_OPTION, session_id)
+        except Exception as e:
+            logger.warning("[TMUX] Failed to set session ID on pane: %s", e)
+
+    def _get_pane_session_id(self, pane: libtmux.Pane) -> str:
+        """Get the orchestrator session ID from a pane.
+
+        Reads the custom tmux option that we set when creating the pane.
+        This is more reliable than pane_title which can be overwritten.
+
+        Args:
+            pane: The pane to get the session ID from.
 
         Returns:
-            The pane with matching title, or None if not found.
+            The session ID, or empty string if not set.
+        """
+        try:
+            result = pane.cmd("show-options", "-p", "-v", PANE_SESSION_ID_OPTION)
+            if result.stdout:
+                return result.stdout[0]
+        except Exception:
+            pass
+        return ""
+
+    def _find_pane_by_session_id(self, session_id: str) -> libtmux.Pane | None:
+        """Find a pane by its orchestrator session ID.
+
+        Uses the custom @orchestrator-session-id option which is reliable,
+        unlike pane_title which Claude Code can overwrite.
+
+        Args:
+            session_id: The session identifier to search for.
+
+        Returns:
+            The pane with matching session ID, or None if not found.
         """
         agents_window = self._get_agents_window()
         if agents_window is None:
             return None
         try:
             for pane in agents_window.panes:
-                pane_title = self._get_pane_title(pane)
-                if pane_title == title:
+                pane_session_id = self._get_pane_session_id(pane)
+                if pane_session_id == session_id:
                     return pane
             return None
         except Exception:
             return None
+
+    def _find_pane(self, session_id: str) -> libtmux.Pane | None:
+        """Find a pane in the agents window by its session ID.
+
+        First checks the @orchestrator-session-id option (reliable), then
+        falls back to pane_title (for backwards compatibility with old panes).
+
+        Args:
+            session_id: The session identifier to search for.
+
+        Returns:
+            The pane with matching session ID, or None if not found.
+        """
+        # First try by session ID option (reliable, not affected by Claude Code)
+        pane = self._find_pane_by_session_id(session_id)
+        if pane is not None:
+            return pane
+
+        # Fall back to pane title (for old panes without session ID option)
+        agents_window = self._get_agents_window()
+        if agents_window is None:
+            return None
+        try:
+            for pane in agents_window.panes:
+                pane_title = self._get_pane_title(pane)
+                if pane_title == session_id:
+                    return pane
+            return None
+        except Exception:
+            return None
+
+    # Backwards compatibility alias
+    _find_pane_by_title = _find_pane
 
     def _is_pane_empty(self, pane: libtmux.Pane) -> bool:
         """Check if a pane is the initial empty/waiting pane.
@@ -476,8 +548,11 @@ class TmuxManager:
         else:
             pane = panes[-1].split(direction=PaneDirection.Right)
 
-        # Set pane title for identification
+        # Set pane title for display (may be overwritten by Claude Code)
         pane.cmd("select-pane", "-T", session_id)
+
+        # Set session ID option for reliable identification (not affected by Claude)
+        self._set_pane_session_id(pane, session_id)
 
         # Enable remain-on-exit for exit code capture
         try:
@@ -576,12 +651,24 @@ class TmuxManager:
             return self._find_issue_window_internal(issue_number)
 
     def _find_issue_pane_internal(self, issue_number: int) -> libtmux.Pane | None:
-        """Find pane for an issue in agents window (pane mode)."""
+        """Find pane for an issue in agents window (pane mode).
+
+        Checks @orchestrator-session-id option first (reliable), then
+        falls back to pane_title (for backwards compatibility).
+        """
         agents_window = self._get_agents_window()
         if agents_window is None:
             return None
         try:
             for pane in agents_window.panes:
+                # Check session ID option first (reliable)
+                session_id = self._get_pane_session_id(pane)
+                if session_id.startswith(f"#{issue_number}-"):
+                    return pane
+                if session_id == f"issue-{issue_number}":
+                    return pane
+
+                # Fall back to pane title (for old panes)
                 pane_title = self._get_pane_title(pane)
                 if pane_title.startswith(f"#{issue_number}-"):
                     return pane
@@ -616,12 +703,22 @@ class TmuxManager:
             return self._find_window_by_session_id(terminal_id)
 
     def _find_pane_by_name_internal(self, terminal_id: str) -> libtmux.Pane | None:
-        """Find pane by its terminal_id in agents window (pane mode)."""
+        """Find pane by its terminal_id in agents window (pane mode).
+
+        Checks @orchestrator-session-id option first (reliable), then
+        falls back to pane_title (for backwards compatibility).
+        """
         agents_window = self._get_agents_window()
         if agents_window is None:
             return None
         try:
             for pane in agents_window.panes:
+                # Check session ID option first (reliable)
+                session_id = self._get_pane_session_id(pane)
+                if session_id == terminal_id:
+                    return pane
+
+                # Fall back to pane title (for old panes)
                 pane_title = self._get_pane_title(pane)
                 if pane_title == terminal_id:
                     return pane
@@ -860,12 +957,35 @@ tmux attach-session -t {session_name}
         return False
 
     def list_issue_windows(self) -> list[int]:
-        """List all issue numbers that have active panes."""
+        """List all issue numbers that have active panes.
+
+        Checks @orchestrator-session-id option first (reliable), then
+        falls back to pane_title (for backwards compatibility).
+        """
         agents_window = self._get_agents_window()
         if agents_window is None:
             return []
         issue_numbers = []
         for pane in agents_window.panes:
+            # Try session ID option first (reliable)
+            session_id = self._get_pane_session_id(pane)
+            if session_id:
+                if session_id.startswith("#"):
+                    try:
+                        num = int(session_id.split("-")[0][1:])
+                        issue_numbers.append(num)
+                        continue
+                    except (ValueError, IndexError):
+                        pass
+                elif session_id.startswith("issue-"):
+                    try:
+                        num = int(session_id.replace("issue-", ""))
+                        issue_numbers.append(num)
+                        continue
+                    except ValueError:
+                        pass
+
+            # Fall back to pane title (for old panes)
             pane_title = self._get_pane_title(pane)
             if not pane_title:
                 continue

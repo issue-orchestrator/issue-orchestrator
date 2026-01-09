@@ -362,3 +362,112 @@ class TestTmuxSessionLifecycle:
         # Note: Need to clear any cached state
         manager._session = None  # Clear cache to force re-lookup
         assert manager.window_exists(456) is False, "Window should not exist after kill"
+
+
+class TestPaneIdentificationWithClaudeCode:
+    """Test that pane identification works even when Claude Code changes the title.
+
+    Claude Code modifies the pane title to show its current task (e.g., "✳ Unit tests").
+    Our session ID option (@orchestrator-session-id) must persist and be used for lookup.
+    """
+
+    TEST_SESSION = "test-claude-title-change"
+
+    @pytest.fixture(autouse=True)
+    def cleanup_session(self):
+        """Clean up any existing test session."""
+        server = _get_server()
+        _kill_session_if_exists(server, self.TEST_SESSION)
+        yield
+        _kill_session_if_exists(server, self.TEST_SESSION)
+
+    def test_pane_found_after_title_overwrite(self, tmp_path):
+        """CRITICAL: Pane must be findable even after application changes title.
+
+        This tests the real-world scenario where:
+        1. We create a pane with session_id "#999-test"
+        2. Claude Code changes pane_title to something else
+        3. We must still be able to find the pane by session_id
+        """
+        from issue_orchestrator.adapters.terminal._tmux import (
+            TmuxManager,
+            PANE_SESSION_ID_OPTION,
+        )
+
+        manager = TmuxManager(session_name=self.TEST_SESSION)
+        session = manager.ensure_session()
+
+        # Create an issue window - this sets both title and session_id option
+        pane = manager.create_issue_window(
+            issue_number=999,
+            command="echo 'test'",
+            working_dir=tmp_path,
+            title="Test Issue For Title Overwrite",
+        )
+        assert pane is not None
+
+        # Verify we can find it initially
+        found = manager._find_issue_session(999)
+        assert found is not None, "Should find issue 999 initially"
+
+        # Get the session_id that was set
+        session_id = manager._get_pane_session_id(pane)
+        assert session_id.startswith("#999-"), f"Session ID should start with #999-, got {session_id}"
+
+        # SIMULATE: Claude Code changes the pane title (like it does in production)
+        # This is what breaks lookup when relying on pane_title
+        pane.cmd("select-pane", "-T", "✳ Working on something completely different")
+
+        # Verify the pane title WAS changed
+        new_title = _get_pane_title(pane)
+        assert "Working on something" in new_title, "Title should have been changed"
+        assert "#999" not in new_title, "Title should NOT contain our session ID anymore"
+
+        # CRITICAL: We must STILL be able to find the pane by issue number
+        # This is what was broken before - lookup relied on pane_title
+        manager._session = None  # Clear any cache
+        found_after = manager._find_issue_session(999)
+        assert found_after is not None, (
+            "CRITICAL: Must find issue 999 even after title was changed! "
+            "The @orchestrator-session-id option should persist."
+        )
+
+        # Should still show in list
+        issues = manager.list_issue_windows()
+        assert 999 in issues, f"Issue 999 should still be in list after title change, got {issues}"
+
+        # Should be able to focus it
+        assert manager.select_window(999) is True, "Should be able to focus issue 999"
+
+    def test_session_id_option_not_affected_by_application(self, tmp_path):
+        """Verify the @orchestrator-session-id option persists through title changes."""
+        from issue_orchestrator.adapters.terminal._tmux import (
+            TmuxManager,
+            PANE_SESSION_ID_OPTION,
+        )
+
+        manager = TmuxManager(session_name=self.TEST_SESSION)
+        session = manager.ensure_session()
+
+        pane = manager.create_issue_window(
+            issue_number=888,
+            command="sleep 1",
+            working_dir=tmp_path,
+            title="Persistence Test",
+        )
+
+        # Record the session ID
+        original_session_id = manager._get_pane_session_id(pane)
+        assert original_session_id.startswith("#888-"), f"Got: {original_session_id}"
+
+        # Change title multiple times (simulating Claude Code updates)
+        for title in ["✳ First task", "✳ Second task", "Something else entirely"]:
+            pane.cmd("select-pane", "-T", title)
+            time.sleep(0.05)
+
+        # Session ID option must NOT have changed
+        final_session_id = manager._get_pane_session_id(pane)
+        assert final_session_id == original_session_id, (
+            f"Session ID option should not change! "
+            f"Original: {original_session_id}, Final: {final_session_id}"
+        )
