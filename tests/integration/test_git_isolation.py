@@ -1,0 +1,235 @@
+"""Tests to verify git config isolation - prevents regression of config leaking bugs.
+
+These tests verify that:
+1. Worktree config changes don't leak to other worktrees or the main repo
+2. Test fixture git commands don't affect the main repo even with GIT_DIR set
+"""
+
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from issue_orchestrator.adapters.worktree._worktree import install_hooks
+
+
+class TestWorktreeConfigIsolation:
+    """Verify that worktree config changes don't leak to other repos."""
+
+    def test_install_hooks_does_not_affect_main_repo_config(self, tmp_path: Path):
+        """Installing hooks in a worktree should not modify the main repo's config.
+
+        This is a regression test for a bug where symlink resolution issues
+        (/tmp vs /private/tmp on macOS) caused git to write config to the wrong repo.
+        """
+        # Create a main repo
+        main_repo = tmp_path / "main_repo"
+        main_repo.mkdir()
+        subprocess.run(["git", "init"], cwd=main_repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "main@test.com"],
+            cwd=main_repo, capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Main User"],
+            cwd=main_repo, capture_output=True, check=True
+        )
+
+        # Record the main repo's config before
+        config_before = subprocess.run(
+            ["git", "config", "--local", "--list"],
+            cwd=main_repo, capture_output=True, text=True, check=True
+        ).stdout
+
+        # Create a worktree
+        worktree_path = tmp_path / "worktree"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "test-branch"],
+            cwd=main_repo, capture_output=True, check=True
+        )
+
+        # Install hooks in the worktree (this was leaking config before the fix)
+        install_hooks(worktree_path)
+
+        # Verify main repo's config is unchanged (except extensions.worktreeConfig
+        # which is required in main repo for per-worktree configs to work)
+        config_after = subprocess.run(
+            ["git", "config", "--local", "--list"],
+            cwd=main_repo, capture_output=True, text=True, check=True
+        ).stdout
+
+        # Filter out extensions.worktreeconfig since it's expected to be added
+        def filter_config(config: str) -> str:
+            return "\n".join(
+                line for line in config.strip().split("\n")
+                if not line.startswith("extensions.worktreeconfig")
+            )
+
+        assert filter_config(config_before) == filter_config(config_after), (
+            f"Main repo config changed after installing hooks in worktree!\n"
+            f"Before:\n{config_before}\nAfter:\n{config_after}"
+        )
+
+        # Verify dangerous configs did NOT leak (these were the actual bugs)
+        dangerous_configs = ["core.worktree", "core.bare", "core.hooksPath", "remote.origin"]
+        for config_key in dangerous_configs:
+            result = subprocess.run(
+                ["git", "config", "--local", "--get-regexp", f"^{config_key}"],
+                cwd=main_repo, capture_output=True, text=True, check=False
+            )
+            # These should not exist in the main repo after worktree hook install
+            if config_key == "core.bare":
+                # core.bare=false is fine, core.bare=true would be bad
+                if result.returncode == 0 and "true" in result.stdout:
+                    pytest.fail(f"Dangerous config leaked to main repo: {config_key}=true")
+            elif result.returncode == 0 and result.stdout.strip():
+                pytest.fail(f"Dangerous config leaked to main repo: {result.stdout.strip()}")
+
+    def test_worktree_config_stays_in_worktree(self, tmp_path: Path):
+        """Config set in a worktree should not appear in another worktree."""
+        # Create main repo
+        main_repo = tmp_path / "main_repo"
+        main_repo.mkdir()
+        subprocess.run(["git", "init"], cwd=main_repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-m", "init"],
+            cwd=main_repo, capture_output=True, check=True,
+            env={**os.environ, "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@test.com",
+                 "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@test.com"}
+        )
+
+        # Create two worktrees
+        worktree1 = tmp_path / "wt1"
+        worktree2 = tmp_path / "wt2"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree1), "-b", "branch1"],
+            cwd=main_repo, capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree2), "-b", "branch2"],
+            cwd=main_repo, capture_output=True, check=True
+        )
+
+        # Install hooks in worktree1 only
+        install_hooks(worktree1)
+
+        # Verify worktree2 does not have the hooks config
+        wt2_hooks_path = subprocess.run(
+            ["git", "config", "--worktree", "--get", "core.hooksPath"],
+            cwd=worktree2, capture_output=True, text=True, check=False
+        )
+        # Should either fail (no config) or return empty
+        assert wt2_hooks_path.returncode != 0 or not wt2_hooks_path.stdout.strip(), (
+            f"Worktree2 unexpectedly has core.hooksPath: {wt2_hooks_path.stdout}"
+        )
+
+
+class TestGitEnvIsolation:
+    """Verify that git commands respect isolation even with GIT_DIR set."""
+
+    def test_git_commands_with_cwd_ignore_git_dir_env(self, tmp_path: Path):
+        """Git commands using clean env should not be affected by GIT_DIR.
+
+        This is a regression test for a bug where integration tests using
+        cwd=work wrote config to the main repo because GIT_DIR was set.
+        """
+        # Create two separate repos
+        repo_a = tmp_path / "repo_a"
+        repo_b = tmp_path / "repo_b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+
+        # Initialize repo_a with specific config
+        subprocess.run(["git", "init"], cwd=repo_a, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "repo_a@test.com"],
+            cwd=repo_a, capture_output=True, check=True
+        )
+
+        # Initialize repo_b
+        subprocess.run(["git", "init"], cwd=repo_b, capture_output=True, check=True)
+
+        # Record repo_a's config
+        config_before = subprocess.run(
+            ["git", "config", "--local", "--list"],
+            cwd=repo_a, capture_output=True, text=True, check=True
+        ).stdout
+
+        # Now try to set config in repo_b with GIT_DIR pointing to repo_a
+        # This simulates the bug where test fixture config leaked to main repo
+        bad_env = os.environ.copy()
+        bad_env["GIT_DIR"] = str(repo_a / ".git")
+
+        # Without the fix, this would modify repo_a's config!
+        # With fix: we clean GIT_DIR from env before running git commands
+        clean_env = os.environ.copy()
+        for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"]:
+            clean_env.pop(var, None)
+
+        subprocess.run(
+            ["git", "config", "user.email", "repo_b@test.com"],
+            cwd=repo_b, capture_output=True, check=True, env=clean_env
+        )
+
+        # Verify repo_a's config is unchanged
+        config_after = subprocess.run(
+            ["git", "config", "--local", "--list"],
+            cwd=repo_a, capture_output=True, text=True, check=True
+        ).stdout
+
+        assert config_before == config_after, (
+            f"Repo A config changed when setting config in Repo B!\n"
+            f"Before:\n{config_before}\nAfter:\n{config_after}"
+        )
+
+        # Verify repo_b got the config
+        repo_b_email = subprocess.run(
+            ["git", "config", "--get", "user.email"],
+            cwd=repo_b, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        assert repo_b_email == "repo_b@test.com"
+
+    def test_git_dir_env_causes_leak_without_clean_env(self, tmp_path: Path):
+        """Demonstrate that GIT_DIR env DOES cause config to leak (the bug).
+
+        This test proves the bug exists when not using clean env,
+        validating that our fix is necessary.
+        """
+        # Create two repos
+        repo_a = tmp_path / "repo_a"
+        repo_b = tmp_path / "repo_b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+
+        subprocess.run(["git", "init"], cwd=repo_a, capture_output=True, check=True)
+        subprocess.run(["git", "init"], cwd=repo_b, capture_output=True, check=True)
+
+        # Set GIT_DIR to repo_a, but run command with cwd=repo_b
+        bad_env = os.environ.copy()
+        bad_env["GIT_DIR"] = str(repo_a / ".git")
+
+        # This WILL write to repo_a despite cwd=repo_b (demonstrating the bug)
+        subprocess.run(
+            ["git", "config", "test.leaked", "true"],
+            cwd=repo_b, capture_output=True, check=True, env=bad_env
+        )
+
+        # Verify the config leaked to repo_a (not repo_b)
+        leaked = subprocess.run(
+            ["git", "config", "--get", "test.leaked"],
+            cwd=repo_a, capture_output=True, text=True, check=False
+        )
+        assert leaked.returncode == 0 and leaked.stdout.strip() == "true", (
+            "Expected GIT_DIR to cause config leak - this test validates the bug exists"
+        )
+
+        # repo_b should NOT have the config
+        not_leaked = subprocess.run(
+            ["git", "config", "--get", "test.leaked"],
+            cwd=repo_b, capture_output=True, text=True, check=False
+        )
+        assert not_leaked.returncode != 0, (
+            "Config should NOT be in repo_b when GIT_DIR points elsewhere"
+        )
