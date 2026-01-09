@@ -566,7 +566,7 @@ class TmuxManager:
         agents_window.select_layout("tiled")
 
         # Set up and run
-        self._setup_and_run(pane, command, working_dir)
+        self._setup_and_run(pane, command, working_dir, session_id)
         return pane
 
     def _create_window(
@@ -593,7 +593,7 @@ class TmuxManager:
             pass
 
         # Set up and run
-        self._setup_and_run(pane, command, working_dir)
+        self._setup_and_run(pane, command, working_dir, session_id)
         return window
 
     def _setup_and_run(
@@ -601,6 +601,7 @@ class TmuxManager:
         pane: libtmux.Pane,
         command: str,
         working_dir: Path,
+        session_id: str,
     ) -> None:
         """Set up isolated environment and run command in pane."""
         from ...control.isolation import build_isolation_prefix
@@ -614,13 +615,16 @@ class TmuxManager:
         # CRITICAL: cd to working directory first, then set up isolation
         setup_cmd = f'cd "{working_dir}" && export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
-        # Enable logging
+        # Enable pane logging to worktree
+        # Path: .issue-orchestrator/state/logs/{session_id}/pane.log
         try:
-            log_dir = working_dir / ".issue-orchestrator"
-            log_dir.mkdir(exist_ok=True)
-            pane.cmd("pipe-pane", "-o", f"cat >> '{log_dir / 'session.log'}'")
-        except OSError:
-            pass
+            log_dir = working_dir / ".issue-orchestrator" / "state" / "logs" / session_id
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "pane.log"
+            pane.cmd("pipe-pane", "-o", f"cat >> '{log_file}'")
+            logger.debug("[TMUX] Enabled pane logging to %s", log_file)
+        except Exception as e:
+            logger.warning("[TMUX] Failed to enable pane logging: %s", e)
 
         # Send setup and command
         pane.send_keys(setup_cmd)
