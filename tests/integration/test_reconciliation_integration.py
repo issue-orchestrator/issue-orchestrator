@@ -16,7 +16,7 @@ from issue_orchestrator.control.reconciliation import (
 )
 from issue_orchestrator.ports import EventSink, TraceEvent
 from issue_orchestrator.ports.label_set import LabelSet
-from issue_orchestrator.ports.issue_tracker import IssueTracker
+from issue_orchestrator.ports.fresh_issue_reader import FreshIssueReader
 
 
 class MockLabelSet(LabelSet):
@@ -36,14 +36,14 @@ class MockLabelSet(LabelSet):
         return []
 
 
-class MockIssueTracker(IssueTracker):
-    """Mock IssueTracker that returns configurable label state."""
+class MockFreshIssueReader(FreshIssueReader):
+    """Mock FreshIssueReader that returns configurable label state."""
 
     def __init__(self, labels_by_issue: dict[int, list[str]] | None = None):
         self._labels_by_issue = labels_by_issue or {}
         self.get_labels_calls: list[int] = []
 
-    def get_issue_labels(self, issue_number: int) -> list[str]:
+    def read_issue_labels(self, issue_number: int) -> list[str]:
         self.get_labels_calls.append(issue_number)
         return self._labels_by_issue.get(issue_number, [])
 
@@ -53,23 +53,6 @@ class MockIssueTracker(IssueTracker):
     def set_labels(self, issue_number: int, labels: list[str]) -> None:
         self._labels_by_issue[issue_number] = labels
 
-    def list_issues(self, labels=None, state=None):
-        return []
-
-    def get_issue(self, number):
-        return None
-
-    def add_label(self, issue_number, label):
-        current = self._labels_by_issue.get(issue_number, [])
-        if label not in current:
-            current.append(label)
-            self._labels_by_issue[issue_number] = current
-
-    def remove_label(self, issue_number, label):
-        current = self._labels_by_issue.get(issue_number, [])
-        if label in current:
-            current.remove(label)
-            self._labels_by_issue[issue_number] = current
 
 
 class MockEventSink(EventSink):
@@ -138,13 +121,13 @@ class TestReconciliationIntegration:
         self, label_set, session_manager, event_sink
     ):
         """With reconciliation enabled and state matching, sync_labels proceeds."""
-        issue_tracker = MockIssueTracker({123: ["queued"]})
+        fresh_reader = MockFreshIssueReader({123: ["queued"]})
 
         applier = ActionApplier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=issue_tracker,
+            fresh_issue_reader=fresh_reader,
             reconcile=True,
         )
 
@@ -159,7 +142,7 @@ class TestReconciliationIntegration:
 
         assert result.success
         # Verify labels were fetched before mutation
-        assert 123 in issue_tracker.get_labels_calls
+        assert 123 in fresh_reader.get_labels_calls
         # Verify mutations proceeded
         assert (123, "in-progress") in label_set.add_calls
         assert (123, "queued") in label_set.remove_calls
@@ -169,13 +152,13 @@ class TestReconciliationIntegration:
     ):
         """When label to remove isn't present, emit warning but proceed."""
         # Issue doesn't have "queued" label - it was removed externally
-        issue_tracker = MockIssueTracker({123: ["other-label"]})
+        fresh_reader = MockFreshIssueReader({123: ["other-label"]})
 
         applier = ActionApplier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=issue_tracker,
+            fresh_issue_reader=fresh_reader,
             reconcile=True,
         )
 
@@ -202,13 +185,13 @@ class TestReconciliationIntegration:
         self, label_set, session_manager, event_sink
     ):
         """Reconciliation check emits trace event for debugging."""
-        issue_tracker = MockIssueTracker({456: ["queued", "agent:test"]})
+        fresh_reader = MockFreshIssueReader({456: ["queued", "agent:test"]})
 
         applier = ActionApplier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=issue_tracker,
+            fresh_issue_reader=fresh_reader,
             reconcile=True,
         )
 
@@ -229,15 +212,15 @@ class TestReconciliationIntegration:
         assert checked_events[0].data["issue_number"] == 456
         assert set(checked_events[0].data["current_labels"]) == {"queued", "agent:test"}
 
-    def test_reconciliation_without_issue_tracker_proceeds_with_warning(
+    def test_reconciliation_without_fresh_issue_reader_proceeds_with_warning(
         self, label_set, session_manager, event_sink
     ):
-        """If reconcile=True but no issue_tracker, proceed with logged warning."""
+        """If reconcile=True but no fresh_issue_reader, proceed with logged warning."""
         applier = ActionApplier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=None,  # No tracker
+            fresh_issue_reader=None,  # No reader
             reconcile=True,  # But reconciliation requested
         )
 
@@ -270,13 +253,13 @@ class TestReconciliationSimulatedRaceCondition:
         event_sink = MockEventSink()
 
         # Start with issue having "queued" label
-        issue_tracker = MockIssueTracker({100: ["queued", "agent:test"]})
+        fresh_reader = MockFreshIssueReader({100: ["queued", "agent:test"]})
 
         applier = ActionApplier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=issue_tracker,
+            fresh_issue_reader=fresh_reader,
             reconcile=True,
         )
 
@@ -290,7 +273,7 @@ class TestReconciliationSimulatedRaceCondition:
 
         # Simulate external change: someone removes "queued" label before apply
         # This is done by updating the tracker's state before we apply
-        issue_tracker.set_labels(100, ["agent:test", "blocked"])  # "queued" removed, "blocked" added
+        fresh_reader.set_labels(100, ["agent:test", "blocked"])  # "queued" removed, "blocked" added
 
         # Now apply - reconciliation should detect the change
         result = applier.apply(action)
@@ -310,7 +293,7 @@ class TestReconciliationSimulatedRaceCondition:
         label_set = MockLabelSet()
         session_manager = MockSessionManager()
         event_sink = MockEventSink()
-        issue_tracker = MockIssueTracker({
+        fresh_reader = MockFreshIssueReader({
             1: ["queued"],
             2: ["queued"],
             3: ["in-progress"],
@@ -320,7 +303,7 @@ class TestReconciliationSimulatedRaceCondition:
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=issue_tracker,
+            fresh_issue_reader=fresh_reader,
             reconcile=True,
         )
 
@@ -352,7 +335,7 @@ class TestReconciliationSimulatedRaceCondition:
         assert all(r.success for r in results)
 
         # Verify each issue was checked
-        assert issue_tracker.get_labels_calls == [1, 2, 3]
+        assert fresh_reader.get_labels_calls == [1, 2, 3]
 
         # Verify correct labels were synced
         assert (1, "in-progress") in label_set.add_calls
@@ -368,13 +351,13 @@ class TestReconciliationEventTracing:
         label_set = MockLabelSet()
         session_manager = MockSessionManager()
         event_sink = MockEventSink()
-        issue_tracker = MockIssueTracker({42: ["foo"]})
+        fresh_reader = MockFreshIssueReader({42: ["foo"]})
 
         applier = ActionApplier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=issue_tracker,
+            fresh_issue_reader=fresh_reader,
             reconcile=True,
         )
 
@@ -420,13 +403,13 @@ class TestOrchestratorReconciliationCatch:
         event_sink = MockEventSink()
 
         # Issue currently has "blocked" label (would fail ExpectedState check)
-        issue_tracker = MockIssueTracker({42: ["agent:web", "blocked"]})
+        fresh_reader = MockFreshIssueReader({42: ["agent:web", "blocked"]})
 
         applier = ActionApplier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=issue_tracker,
+            fresh_issue_reader=fresh_reader,
             reconcile=True,
         )
 
@@ -448,7 +431,7 @@ class TestOrchestratorReconciliationCatch:
         except ReconciliationRequired as rr:
             paused = True
             # Orchestrator would apply pause label here
-            issue_tracker.add_label(rr.entity_id, get_pause_label())
+            fresh_reader.set_labels(rr.entity_id, fresh_reader._labels_by_issue.get(rr.entity_id, []) + [get_pause_label()])
             # Emit pause event
             event_sink.publish(TraceEvent(
                 EventName.ISSUE_PAUSED_RECONCILE,
@@ -458,7 +441,7 @@ class TestOrchestratorReconciliationCatch:
         assert paused, "ReconciliationRequired should have been raised"
 
         # Verify pause label was applied
-        assert get_pause_label() in issue_tracker._labels_by_issue.get(42, [])
+        assert get_pause_label() in fresh_reader._labels_by_issue.get(42, [])
 
         # Verify pause event was emitted
         pause_events = [
@@ -478,13 +461,13 @@ class TestOrchestratorReconciliationCatch:
         event_sink = MockEventSink()
 
         # Current state differs from expected
-        issue_tracker = MockIssueTracker({99: ["old-label", "stale"]})
+        fresh_reader = MockFreshIssueReader({99: ["old-label", "stale"]})
 
         applier = ActionApplier(
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=issue_tracker,
+            fresh_issue_reader=fresh_reader,
             reconcile=True,
         )
 
@@ -518,7 +501,7 @@ class TestOrchestratorReconciliationCatch:
         label_set = MockLabelSet()
         session_manager = MockSessionManager()
         event_sink = MockEventSink()
-        issue_tracker = MockIssueTracker({
+        fresh_reader = MockFreshIssueReader({
             1: ["ready"],  # This one will fail
             2: ["ready"],
         })
@@ -527,7 +510,7 @@ class TestOrchestratorReconciliationCatch:
             labels=label_set,
             sessions=session_manager,
             events=event_sink,
-            issue_tracker=issue_tracker,
+            fresh_issue_reader=fresh_reader,
             reconcile=True,
         )
 

@@ -86,3 +86,15 @@ def test_blocks_subprocess_in_ports(tmp_path: Path) -> None:
     """Ports layer must never use subprocess."""
     code = "import subprocess\nsubprocess.run(['echo','hi'])\n"
     assert _run(tmp_path, code, "src/issue_orchestrator/ports/x.py") == 2
+
+
+def test_blocks_cached_label_reads_in_control(tmp_path: Path) -> None:
+    """Control layer must use fresh label reads (no get_issue_labels)."""
+    code = (
+        "class X:\n"
+        "    def __init__(self):\n"
+        "        self.issue_tracker = None\n"
+        "    def f(self):\n"
+        "        self.issue_tracker.get_issue_labels(1)\n"
+    )
+    assert _run(tmp_path, code, "src/issue_orchestrator/control/x.py") == 2

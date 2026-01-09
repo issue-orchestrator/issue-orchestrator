@@ -18,6 +18,7 @@ from typing import Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..ports import RepositoryHost, SessionRunner, TerminalObserver
+    from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.issue import Issue
 
 from ..domain import ProcessState
@@ -49,6 +50,7 @@ class SessionObserver:
         events: EventSink | None = None,
         session_runner: Optional["SessionRunner"] = None,
         repository_host: Optional["RepositoryHost"] = None,
+        fresh_issue_reader: Optional["FreshIssueReader"] = None,
         terminal_observer: Optional["TerminalObserver"] = None,
     ) -> None:
         """Initialize the observer with configuration.
@@ -59,6 +61,7 @@ class SessionObserver:
             events: Optional EventSink for emitting trace events
             session_runner: SessionRunner port for terminal operations
             repository_host: RepositoryHost port for GitHub operations
+            fresh_issue_reader: FreshIssueReader port for correctness-critical reads
             terminal_observer: Optional TerminalObserver for process state detection
         """
         self.config = config
@@ -66,6 +69,7 @@ class SessionObserver:
         self.events = events or NullEventSink()
         self._session_runner = session_runner
         self._repository_host = repository_host
+        self._fresh_issue_reader = fresh_issue_reader
         self._terminal_observer = terminal_observer
 
     def _extract_session_number(self, session_name: str) -> int:
@@ -119,9 +123,9 @@ class SessionObserver:
 
     def _get_issue_labels(self, issue_number: int) -> list[str]:
         """Get labels for an issue using the repository host."""
-        if self._repository_host is None:
+        if self._fresh_issue_reader is None:
             return []
-        return self._repository_host.get_issue_labels_fresh(issue_number)
+        return self._fresh_issue_reader.read_issue_labels(issue_number)
 
     def _add_label(self, issue_number: int, label: str) -> None:
         """Add a label to an issue using the repository host."""

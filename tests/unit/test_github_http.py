@@ -165,6 +165,57 @@ def test_list_issues_use_cache_true_sends_etag() -> None:
     assert requests_seen[1]["headers"]["if-none-match"] == "W/cached-etag"
 
 
+def test_get_issue_labels_use_cache_false_bypasses_etag() -> None:
+    """Verify that use_cache=False bypasses ETag caching for label reads."""
+    requests_seen: list[dict] = []
+    payload = [{"name": "bug"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append({
+            "method": request.method,
+            "path": request.url.path,
+            "headers": dict(request.headers),
+        })
+        return httpx.Response(200, json=payload, headers={"ETag": "W/labels-etag"})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    first = client.get_issue_labels(1, use_cache=True)
+    assert first == ["bug"]
+    assert "if-none-match" not in requests_seen[0]["headers"]
+
+    requests_seen.clear()
+    second = client.get_issue_labels(1, use_cache=False)
+    assert second == ["bug"]
+    assert "if-none-match" not in requests_seen[0]["headers"]
+
+
+def test_get_issue_labels_use_cache_true_sends_etag() -> None:
+    """Verify that use_cache=True sends If-None-Match for label reads."""
+    requests_seen: list[dict] = []
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        requests_seen.append({
+            "method": request.method,
+            "path": request.url.path,
+            "headers": dict(request.headers),
+        })
+        if call_count == 1:
+            return httpx.Response(200, json=[{"name": "bug"}], headers={"ETag": "W/labels-etag"})
+        return httpx.Response(304, text="")
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    first = client.get_issue_labels(1, use_cache=True)
+    assert first == ["bug"]
+    second = client.get_issue_labels(1, use_cache=True)
+    assert second == ["bug"]
+    assert "if-none-match" in requests_seen[1]["headers"]
+
+
 def test_invalidate_labels_etag_clears_cache() -> None:
     """Verify that invalidate_labels_etag clears the ETag cache for labels.
 

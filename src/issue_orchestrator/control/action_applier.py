@@ -6,7 +6,7 @@ This is the IO boundary for the orchestrator. It:
 3. Emits trace events for each action
 4. Returns ActionResults
 
-When reconciliation is enabled (reconcile=True with issue_tracker provided):
+When reconciliation is enabled (reconcile=True with fresh_issue_reader provided):
 - Before any label mutation, fetches current labels
 - Verifies current state is as expected
 - Aborts with ReconciliationRequired if mismatch
@@ -19,7 +19,7 @@ Usage:
         events=event_sink,
         repository_host=github_adapter,  # For issue creation, label sync
         worktree_manager=git_worktree_manager,  # For worktree removal
-        issue_tracker=github_adapter,  # Optional, for reconciliation
+        fresh_issue_reader=github_fresh_reader,  # Optional, for reconciliation
         reconcile=True,  # Enable reconciliation
     )
     results = applier.apply_all(actions)
@@ -33,7 +33,7 @@ from typing import Callable, Optional, Sequence
 from ..events import EventName
 from ..ports import EventSink, TraceEvent
 from ..ports.label_set import LabelSet
-from ..ports.issue_tracker import IssueTracker
+from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
 from ..domain.models import Session
@@ -76,7 +76,7 @@ class ActionApplier:
     Each action type has a handler that knows how to execute it.
 
     When reconciliation is enabled (reconcile=True):
-    - Before label mutations, fetches current labels from issue_tracker
+    - Before label mutations, fetches current labels from fresh_issue_reader
     - Verifies state hasn't changed unexpectedly
     - Emits reconciliation events for traceability
     """
@@ -86,7 +86,7 @@ class ActionApplier:
     events: EventSink
     repository_host: Optional[RepositoryHost] = None  # For issue creation, labels
     worktree_manager: Optional[WorktreeManager] = None  # For worktree operations
-    issue_tracker: Optional[IssueTracker] = None
+    fresh_issue_reader: Optional[FreshIssueReader] = None
     reconcile: bool = False  # If True, verify state before mutations
     # Session launcher callback - handles entity lookup + launching
     # Injected by orchestrator, allows ActionApplier to launch sessions without
@@ -212,15 +212,15 @@ class ActionApplier:
             return ActionResult.fail(action, str(e))
 
     def _fetch_current_labels(self, issue_number: int) -> set[str] | None:
-        """Fetch current labels for an issue if issue_tracker is available.
+        """Fetch current labels for an issue if fresh_issue_reader is available.
 
         Returns:
-            Set of label names, or None if issue_tracker not configured
+            Set of label names, or None if fresh_issue_reader not configured
         """
-        if self.issue_tracker is None:
+        if self.fresh_issue_reader is None:
             return None
         try:
-            labels = self.issue_tracker.get_issue_labels_fresh(issue_number)
+            labels = self.fresh_issue_reader.read_issue_labels(issue_number)
             return set(labels)
         except Exception as e:
             logger.warning(
@@ -254,7 +254,7 @@ class ActionApplier:
         # Fetch current state
         current_labels = self._fetch_current_labels(issue_number)
         if current_labels is None:
-            # Can't verify - fail closed (require issue_tracker for reconciliation)
+            # Can't verify - fail closed (require fresh_issue_reader for reconciliation)
             logger.warning(
                 "Reconciliation required but cannot fetch labels for #%d - failing closed",
                 issue_number

@@ -19,7 +19,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ..infra.config import Config
-from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner
+from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner, IssueTracker
 from ..control.orchestrator_deps import OrchestratorDeps
 from ..execution import (
     create_plugin_manager,
@@ -210,6 +210,10 @@ def build_orchestrator(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
 
+    # Create FreshIssueReader (cache-bypassing reads)
+    from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
+    fresh_issue_reader = GitHubFreshIssueReader(repo=config.repo, config=config) if github else None
+
     # Create ActionApplier (IO boundary)
     action_applier = ActionApplier(
         labels=github,
@@ -217,7 +221,7 @@ def build_orchestrator(
         events=events,
         repository_host=github,
         worktree_manager=worktree_manager,
-        issue_tracker=github,
+        fresh_issue_reader=fresh_issue_reader,
         reconcile=True,
     ) if github else None
 
@@ -308,12 +312,15 @@ def build_orchestrator(
         raise ValueError("CompletionProcessor is required")
     if session_controller_instance is None:
         raise ValueError("SessionController is required")
+    if fresh_issue_reader is None:
+        raise ValueError("FreshIssueReader is required")
 
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(
         events=events,
         runner=runner,
         repository_host=github,
+        fresh_issue_reader=fresh_issue_reader,
         event_hub=event_hub,
         planner=planner,
         session_manager=session_manager,
@@ -414,6 +421,17 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
 
+    class _TestFreshIssueReader:
+        """Fallback FreshIssueReader for tests without network dependencies."""
+
+        def __init__(self, issue_tracker: IssueTracker) -> None:
+            self._issue_tracker = issue_tracker
+
+        def read_issue_labels(self, issue_number: int) -> list[str]:
+            return self._issue_tracker.get_issue_labels(issue_number)
+
+    fresh_issue_reader = _TestFreshIssueReader(github)
+
     # Create default action applier
     if action_applier is None:
         action_applier = ActionApplier(
@@ -422,7 +440,7 @@ def build_orchestrator_for_testing(
             events=events,
             repository_host=github,
             worktree_manager=worktree_manager,
-            issue_tracker=github,
+            fresh_issue_reader=fresh_issue_reader,
             reconcile=False,  # Disable for testing by default
         )
 
@@ -501,6 +519,7 @@ def build_orchestrator_for_testing(
         events=events,
         runner=runner,
         repository_host=github,
+        fresh_issue_reader=fresh_issue_reader,
         event_hub=event_hub,
         planner=planner,
         session_manager=session_manager,

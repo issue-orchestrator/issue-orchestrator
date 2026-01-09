@@ -17,7 +17,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'repo', 'agents', 'concurrency', 'labels', 'ui_mode', 'web_port',
     'control_api_port', 'config', 'worktree_base',
     'github_token', 'github_token_env', 'github_api_url',
-    'github_http_timeout_seconds', 'github_required_scopes', 'github_allowed_scopes',
+    'github_http_timeout_seconds', 'github_cache_ttl_seconds', 'github_required_scopes', 'github_allowed_scopes',
     'filter_label', 'filter_milestone', 'filter_milestones', 'filter_issue',
     'issue_fetch_limit', 'e2e_pr_labels', 'review', 'cleanup', 'validation',
     'isolation', 'setup_worktree', 'milestone_sort',
@@ -375,6 +375,7 @@ class Config:
             "github_token_env": self.github_token_env,
             "github_api_url": self.github_api_url,
             "github_http_timeout_seconds": self.github_http_timeout_seconds,
+            "github_cache_ttl_seconds": self.github_cache_ttl_seconds,
             "github_required_scopes": list(self.github_required_scopes),
             "github_allowed_scopes": list(self.github_allowed_scopes),
             "repo_root": str(self.repo_root),
@@ -554,6 +555,7 @@ class Config:
         config.github_token_env = data.get("github_token_env")
         config.github_api_url = data.get("github_api_url", "https://api.github.com")
         config.github_http_timeout_seconds = data.get("github_http_timeout_seconds", 20.0)
+        config.github_cache_ttl_seconds = data.get("github_cache_ttl_seconds", 300)
         required_scopes = data.get("github_required_scopes", []) or []
         allowed_scopes = data.get("github_allowed_scopes", []) or []
         if isinstance(required_scopes, str):
