@@ -668,8 +668,14 @@ def create_worktree(
             else:
                 # Create new branch from default branch (main), NOT from HEAD
                 # This ensures agent worktrees don't inherit commits from user's feature branch
-                default_branch = get_default_branch(repo_root)
-                logger.info("Creating new branch from default branch: %s", default_branch)
+                # Unless ORCHESTRATOR_WORKTREE_BASE_BRANCH is set (e.g., for e2e tests)
+                base_branch_override = os.environ.get("ORCHESTRATOR_WORKTREE_BASE_BRANCH")
+                if base_branch_override:
+                    default_branch = base_branch_override
+                    logger.info("Using override base branch: %s (from ORCHESTRATOR_WORKTREE_BASE_BRANCH)", default_branch)
+                else:
+                    default_branch = get_default_branch(repo_root)
+                    logger.info("Creating new branch from default branch: %s", default_branch)
                 cmd = [
                     "git", "-C", str(repo_root), "worktree", "add",
                     str(worktree_path), "-b", branch_name, default_branch
