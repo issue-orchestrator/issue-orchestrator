@@ -530,8 +530,8 @@ class TestTmuxManagerIntegration:
 
         # Result should be the pane (reused empty pane or new split)
         assert result == mock_pane
-        # Verify pane title was set
-        mock_pane.cmd.assert_any_call("select-pane", "-T", "#42-Fix-the-bug")
+        # Verify pane title was set (uses title for display, not session_id)
+        mock_pane.cmd.assert_any_call("select-pane", "-T", "Fix the bug")
 
         # Verify PATH setup and command were sent
         assert mock_pane.send_keys.call_count == 2

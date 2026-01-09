@@ -26,6 +26,62 @@ class TestTerminalAdapterExecution:
     exercising the adapter-specific code (tmux).
     """
 
+    async def _verify_pane_identification(self, issue_number: int, tmux_session: str) -> None:
+        """Verify pane can be found by issue number while Claude is running.
+
+        This is the critical test for the @orchestrator-session-id fix.
+        Claude Code modifies the pane title, which used to break pane lookup.
+        Now we use a custom tmux option that persists.
+        """
+        import asyncio
+        from issue_orchestrator.adapters.terminal._tmux import TmuxManager
+
+        # Give Claude a moment to start and potentially modify the title
+        await asyncio.sleep(5)
+
+        # Use the same tmux session as the e2e orchestrator
+        manager = TmuxManager(session_name=tmux_session)
+
+        # This is the critical check - can we find the pane by issue number?
+        pane = manager._find_issue_session(issue_number)
+        if pane is None:
+            # Get diagnostic info
+            issues_found = manager.list_issue_windows()
+            logger.error(
+                "PANE IDENTIFICATION FAILED: Could not find pane for issue #%d. "
+                "Issues found: %s. This indicates the @orchestrator-session-id fix may not be working.",
+                issue_number,
+                issues_found,
+            )
+            raise AssertionError(
+                f"Pane identification failed for issue #{issue_number}. "
+                f"Found issues: {issues_found}. "
+                "Claude Code may have overwritten the pane title and our session ID lookup failed."
+            )
+
+        # Verify we can get the session ID (pane is a Pane in pane mode)
+        import libtmux
+        if not isinstance(pane, libtmux.Pane):
+            logger.warning(
+                "Found window instead of pane for issue #%d - running in window mode?",
+                issue_number,
+            )
+            return  # Window mode doesn't use session ID option
+
+        session_id = manager._get_pane_session_id(pane)
+        if not session_id:
+            logger.warning(
+                "Pane found but session ID is empty for issue #%d. "
+                "This may indicate the pane was created before the fix was deployed.",
+                issue_number,
+            )
+        else:
+            logger.info(
+                "Pane identification SUCCESS: Found pane for issue #%d with session_id='%s'",
+                issue_number,
+                session_id,
+            )
+
     @pytest.mark.asyncio
     @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
     async def test_terminal_adapter_session_launch(
@@ -35,6 +91,7 @@ class TestTerminalAdapterExecution:
         test_issue_factory,
         repo_name: str,
         e2e_ui_mode: str,
+        e2e_tmux_session: str,
     ):
         """Verify session launches correctly in the configured terminal mode.
 
@@ -67,6 +124,12 @@ class TestTerminalAdapterExecution:
             # - tmux: creates window, runs claude command
             await flow.session_started(issue, timeout_s=60)
             logger.info("Session started for issue #%d in %s mode", issue_number, e2e_ui_mode)
+
+            # CRITICAL: Verify pane can be found by issue number while Claude is running
+            # Claude Code modifies the pane title, so this tests that our @orchestrator-session-id
+            # option persists and pane lookup still works
+            if e2e_ui_mode == "tmux":
+                await self._verify_pane_identification(issue_number, e2e_tmux_session)
 
             # In dry-run mode, PR creation is skipped but we still verify the session completes
             if dry_run:
