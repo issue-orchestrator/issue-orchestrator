@@ -367,7 +367,7 @@ class TestCompletionProcessorGitActions:
         result = processor.process(worktree, issue_number=123, issue_title="Test")
 
         assert result.success
-        mock_git_adapter.push.assert_called_once_with(worktree)
+        mock_git_adapter.push.assert_called_once_with(worktree, skip_hooks=False)
 
     def test_push_failure_is_recorded(
         self, processor, mock_git_adapter, worktree_with_completion

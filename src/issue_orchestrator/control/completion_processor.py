@@ -17,6 +17,7 @@ as untrusted input.
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -354,7 +355,9 @@ class CompletionProcessor:
             logger.info("Executing action: %s for issue #%d", action.value, issue_number)
             try:
                 if action == RequestedAction.PUSH_BRANCH:
-                    result = self.git_adapter.push(worktree)
+                    # E2E tests can skip pre-push hooks since test scripts create trivial changes
+                    skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
+                    result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
                     if result.success:
                         actions_taken.append(f"Pushed branch to remote")
                         logger.info("Push succeeded for #%d", issue_number)
