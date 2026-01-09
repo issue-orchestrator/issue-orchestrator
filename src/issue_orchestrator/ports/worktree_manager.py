@@ -19,6 +19,7 @@ class WorktreeInfo:
     """Information about a created worktree."""
     path: Path
     branch_name: str
+    rebase_failed: bool = False  # True if rebase onto main failed (merge conflict)
 
 
 class WorktreeManager(Protocol):

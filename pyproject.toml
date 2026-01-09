@@ -68,6 +68,7 @@ packages = ["src/issue_orchestrator"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"

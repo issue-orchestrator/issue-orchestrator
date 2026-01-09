@@ -90,6 +90,103 @@ def get_default_branch(repo_root: Path) -> str:
     return "main"
 
 
+def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
+    """
+    Update a worktree's branch onto the latest main.
+
+    This is crucial for reruns - branches created from old main need to be
+    rebased onto current main to get the latest code changes.
+
+    The sequence:
+    1. Fetch origin to get latest main
+    2. Rebase current branch onto origin/main
+    3. If conflicts occur, abort rebase and return False
+
+    Args:
+        worktree_path: Path to the worktree to update
+        repo_root: Path to the main repository
+
+    Returns:
+        True if update succeeded, False if rebase failed (conflicts)
+    """
+    try:
+        # Step 1: Fetch origin to get latest main
+        fetch_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "fetch", "origin", "main"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if fetch_result.returncode != 0:
+            logger.warning(
+                "Failed to fetch origin main in worktree %s: %s",
+                worktree_path,
+                fetch_result.stderr.strip(),
+            )
+            # Non-fatal - try to continue with whatever main we have
+
+        # Step 2: Get current branch
+        branch_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if branch_result.returncode != 0:
+            logger.warning("Could not determine current branch in %s", worktree_path)
+            return False
+
+        current_branch = branch_result.stdout.strip()
+        if current_branch in ("main", "master"):
+            # Already on main, just pull
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "pull", "--ff-only"],
+                capture_output=True,
+                check=False,
+            )
+            return True
+
+        # Step 3: Rebase onto origin/main
+        logger.info(
+            "Rebasing branch %s onto origin/main in %s",
+            current_branch,
+            worktree_path,
+        )
+        rebase_result = subprocess.run(
+            ["git", "-C", str(worktree_path), "rebase", "origin/main"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if rebase_result.returncode != 0:
+            # Rebase failed - likely conflicts
+            logger.warning(
+                "Rebase failed for branch %s in %s: %s",
+                current_branch,
+                worktree_path,
+                rebase_result.stderr.strip(),
+            )
+            # Abort the rebase to leave worktree in a clean state
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "rebase", "--abort"],
+                capture_output=True,
+                check=False,
+            )
+            return False
+
+        logger.info(
+            "Successfully rebased branch %s onto origin/main in %s",
+            current_branch,
+            worktree_path,
+        )
+        return True
+
+    except Exception as e:
+        logger.exception("Error updating worktree onto main: %s", e)
+        return False
+
+
 def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
     """
     Symlink .venv from main repo into worktree.
@@ -512,7 +609,7 @@ def create_worktree(
     enforce_hooks: bool = True,
     pre_push_hook: Path | None = None,
     branch_name: str | None = None,
-) -> tuple[Path, str]:
+) -> tuple[Path, str, bool]:
     """
     Create a new git worktree for the given issue.
 
@@ -526,7 +623,8 @@ def create_worktree(
         branch_name: Specific branch to use (for checking out existing branches like PR reviews)
 
     Returns:
-        Tuple of (worktree_path, branch_name)
+        Tuple of (worktree_path, branch_name, rebase_failed) where rebase_failed
+        is True if an existing worktree couldn't be rebased onto main (merge conflict)
 
     Raises:
         WorktreeError: If worktree creation fails
@@ -603,16 +701,13 @@ def create_worktree(
         existing_worktree = find_worktree_for_branch(repo_root, branch_name)
         if existing_worktree and existing_worktree.exists():
             logger.info("Reusing existing worktree for branch=%s path=%s", branch_name, existing_worktree)
-            # Pull latest changes (best effort)
-            subprocess.run(
-                ["git", "-C", str(existing_worktree), "pull", "--rebase"],
-                capture_output=True, check=False
-            )
+            # Rebase onto latest main (critical for reruns with stale branches)
+            rebase_ok = _update_worktree_onto_main(existing_worktree, repo_root)
             # Reinstall hooks if needed
             if enforce_hooks:
                 install_hooks(existing_worktree, pre_push_hook)
-            logger.info("Worktree reuse complete: path=%s branch=%s", existing_worktree, branch_name)
-            return existing_worktree, branch_name
+            logger.info("Worktree reuse complete: path=%s branch=%s rebase_ok=%s", existing_worktree, branch_name, rebase_ok)
+            return existing_worktree, branch_name, not rebase_ok
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
     if worktree_path.exists() and not disable_reuse:
@@ -629,16 +724,13 @@ def create_worktree(
             if branch_result.returncode == 0:
                 existing_branch = branch_result.stdout.strip()
                 logger.info("Existing worktree branch: path=%s branch=%s", worktree_path, existing_branch)
-                # Pull latest changes (best effort)
-                subprocess.run(
-                    ["git", "-C", str(worktree_path), "pull", "--rebase"],
-                    capture_output=True, check=False
-                )
+                # Rebase onto latest main (critical for reruns with stale branches)
+                rebase_ok = _update_worktree_onto_main(worktree_path, repo_root)
                 # Reinstall hooks (ensures latest hook chaining logic is applied)
                 if enforce_hooks:
                     install_hooks(worktree_path, pre_push_hook)
-                logger.info("Worktree reuse complete: path=%s branch=%s", worktree_path, existing_branch)
-                return worktree_path, existing_branch
+                logger.info("Worktree reuse complete: path=%s branch=%s rebase_ok=%s", worktree_path, existing_branch, rebase_ok)
+                return worktree_path, existing_branch, not rebase_ok
         # Invalid worktree directory - remove it
         logger.warning("Removing invalid worktree directory at %s", worktree_path)
         shutil.rmtree(worktree_path, ignore_errors=True)
@@ -716,7 +808,7 @@ def create_worktree(
         install_venv_symlink(worktree_path, repo_root)
 
         logger.info("Worktree created: path=%s branch=%s", worktree_path, branch_name)
-        return worktree_path, branch_name
+        return worktree_path, branch_name, False  # No rebase failure - new worktree
 
     except Exception as e:
         if isinstance(e, WorktreeError):
