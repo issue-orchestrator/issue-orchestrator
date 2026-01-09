@@ -229,23 +229,31 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     custom_hooks_path = hooks_path_result.stdout.strip() if hooks_path_result.returncode == 0 else None
 
     # Always set per-worktree hooksPath so hooks live with the worktree.
+    # IMPORTANT: Use explicit GIT_DIR to prevent config leaking to wrong worktree.
+    # Without this, symlink resolution issues (/tmp vs /private/tmp) can cause
+    # git to write config to the wrong worktree's config file.
+    git_env = {
+        **os.environ,
+        "GIT_DIR": str(gitdir),
+        "GIT_WORK_TREE": str(worktree_path),
+    }
     subprocess.run(
-        ["git", "-C", str(worktree_path), "config", "extensions.worktreeConfig", "true"],
-        capture_output=True, check=False
+        ["git", "config", "extensions.worktreeConfig", "true"],
+        capture_output=True, check=False, env=git_env
     )
     subprocess.run(
-        ["git", "-C", str(worktree_path), "config", "--worktree", "core.hooksPath", str(hooks_dir)],
-        capture_output=True, check=False
+        ["git", "config", "--worktree", "core.hooksPath", str(hooks_dir)],
+        capture_output=True, check=False, env=git_env
     )
     subprocess.run(
-        ["git", "-C", str(worktree_path), "config", "--worktree", "core.worktree", str(worktree_path)],
-        capture_output=True, check=False
+        ["git", "config", "--worktree", "core.worktree", str(worktree_path)],
+        capture_output=True, check=False, env=git_env
     )
     subprocess.run(
-        ["git", "-C", str(worktree_path), "config", "--worktree", "core.bare", "false"],
-        capture_output=True, check=False
+        ["git", "config", "--worktree", "core.bare", "false"],
+        capture_output=True, check=False, env=git_env
     )
-    logger.info("Overriding core.hooksPath to %s for this worktree only", hooks_dir)
+    logger.info("Overriding core.hooksPath to %s for this worktree only (gitdir=%s)", hooks_dir, gitdir)
 
     # Find the project's pre-push hook
     project_hook = None
