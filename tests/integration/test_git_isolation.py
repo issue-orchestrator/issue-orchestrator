@@ -290,3 +290,74 @@ class TestGitEnvIsolation:
         assert not_leaked.returncode != 0, (
             "Config should NOT be in repo_b when GIT_DIR points elsewhere"
         )
+
+
+class TestConftestGitIsolation:
+    """Verify that the conftest isolate_git_env fixture prevents pollution."""
+
+    def test_git_env_vars_stripped_by_conftest(self):
+        """Verify that GIT_DIR etc. are NOT in the environment during tests.
+
+        The conftest.py autouse fixture should strip these vars to prevent
+        test git commands from polluting the main repo.
+        """
+        git_env_vars = [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+        ]
+        for var in git_env_vars:
+            assert var not in os.environ, (
+                f"{var} should be stripped by conftest isolate_git_env fixture"
+            )
+
+    def test_temp_repo_config_does_not_leak_to_main(self, tmp_path: Path):
+        """Verify that git config in temp repo doesn't affect main repo.
+
+        This is a regression test for the bug where tests running
+        `git config user.email test@test.com` polluted the main repo.
+        """
+        # Get the main repo path (parent of tests directory)
+        main_repo = Path(__file__).parent.parent.parent
+
+        # Record main repo config before
+        main_config_before = subprocess.run(
+            ["git", "config", "--local", "--list"],
+            cwd=main_repo, capture_output=True, text=True, check=False
+        ).stdout
+
+        # Create a temp repo and set config (simulating what tests do)
+        temp_repo = tmp_path / "temp_repo"
+        temp_repo.mkdir()
+        subprocess.run(["git", "init"], cwd=temp_repo, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "pollution-test@test.com"],
+            cwd=temp_repo, capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Pollution Test User"],
+            cwd=temp_repo, capture_output=True, check=True
+        )
+
+        # Verify main repo config is unchanged
+        main_config_after = subprocess.run(
+            ["git", "config", "--local", "--list"],
+            cwd=main_repo, capture_output=True, text=True, check=False
+        ).stdout
+
+        assert main_config_before == main_config_after, (
+            f"Main repo config changed after setting config in temp repo!\\n"
+            f"This means GIT_DIR was set and leaked config.\\n"
+            f"Before:\\n{main_config_before}\\nAfter:\\n{main_config_after}"
+        )
+
+        # Double-check: main repo should NOT have test email
+        main_email = subprocess.run(
+            ["git", "config", "--local", "--get", "user.email"],
+            cwd=main_repo, capture_output=True, text=True, check=False
+        ).stdout.strip()
+
+        assert main_email != "pollution-test@test.com", (
+            "Test email leaked to main repo - conftest fixture may not be working"
+        )

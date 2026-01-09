@@ -1,5 +1,6 @@
 """Shared fixtures and configuration for tests."""
 
+import os
 import pytest
 from pathlib import Path
 from typing import Optional
@@ -10,6 +11,35 @@ from issue_orchestrator.infra.hooks.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+
+
+# =============================================================================
+# Git Environment Isolation
+# =============================================================================
+# Prevent tests from accidentally writing git config to the main repo.
+# When GIT_DIR is set, `git config` writes to that repo regardless of cwd.
+
+@pytest.fixture(autouse=True)
+def isolate_git_env(monkeypatch):
+    """Strip git env vars to prevent test git commands from affecting main repo.
+
+    This is critical because:
+    - Tests create temp repos and run `git config user.email test@test.com`
+    - If GIT_DIR is set in the environment, that config goes to the MAIN repo
+    - This causes pollution like user.name="Test User" in the real repo
+
+    This fixture runs for EVERY test (autouse=True) and strips these vars.
+    """
+    git_env_vars = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+    ]
+    for var in git_env_vars:
+        monkeypatch.delenv(var, raising=False)
 
 
 class MockGitHubAdapter:
