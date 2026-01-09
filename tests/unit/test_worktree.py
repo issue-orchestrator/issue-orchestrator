@@ -1304,3 +1304,83 @@ class TestInstallVenvSymlink:
         assert result is True
         assert worktree_venv.is_symlink()
         assert worktree_venv.resolve() == other_venv  # Still points to other_venv
+
+
+class TestUpdateWorktreeOntoMain:
+    """Test the _update_worktree_onto_main function."""
+
+    def test_update_worktree_success(self, tmp_path):
+        """Test successful rebase onto main."""
+        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
+
+        # Create a fake git repo with origin/main
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            # Mock successful fetch
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),  # fetch
+                MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
+                MagicMock(returncode=0, stdout="", stderr=""),  # rebase
+            ]
+
+            result = _update_worktree_onto_main(worktree, repo_root)
+
+            assert result is True
+            # Verify rebase was called
+            assert mock_run.call_count == 3
+            rebase_call = mock_run.call_args_list[2]
+            assert "rebase" in rebase_call[0][0]
+            assert "origin/main" in rebase_call[0][0]
+
+    def test_update_worktree_rebase_conflict(self, tmp_path):
+        """Test rebase failure aborts and returns False."""
+        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),  # fetch
+                MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
+                MagicMock(returncode=1, stdout="", stderr="CONFLICT"),  # rebase fails
+                MagicMock(returncode=0, stdout="", stderr=""),  # rebase --abort
+            ]
+
+            result = _update_worktree_onto_main(worktree, repo_root)
+
+            assert result is False
+            # Verify rebase --abort was called
+            abort_call = mock_run.call_args_list[3]
+            assert "rebase" in abort_call[0][0]
+            assert "--abort" in abort_call[0][0]
+
+    def test_update_worktree_on_main_just_pulls(self, tmp_path):
+        """Test that being on main just does a pull."""
+        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),  # fetch
+                MagicMock(returncode=0, stdout="main\n", stderr=""),  # rev-parse returns main
+                MagicMock(returncode=0, stdout="", stderr=""),  # pull --ff-only
+            ]
+
+            result = _update_worktree_onto_main(worktree, repo_root)
+
+            assert result is True
+            # Verify pull was called instead of rebase
+            pull_call = mock_run.call_args_list[2]
+            assert "pull" in pull_call[0][0]
+            assert "--ff-only" in pull_call[0][0]
