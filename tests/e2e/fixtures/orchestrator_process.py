@@ -103,18 +103,8 @@ class OrchestratorProcess:
                 for label, cfg in self.config.agents.items()
             },
             "validation": {
-                "agent_gate": {
-                    "cmd": self.config.validation.agent_gate.cmd,
-                    "timeout_seconds": self.config.validation.agent_gate.timeout_seconds,
-                },
-                "publish_gate": {
-                    "cmd": self.config.validation.publish_gate.cmd,
-                    "timeout_seconds": self.config.validation.publish_gate.timeout_seconds,
-                },
-            },
-            "validation_policy": {
-                "publish_requires": self.config.validation_policy.publish_requires,
-                "agent_runs": self.config.validation_policy.agent_runs,
+                "cmd": self.config.validation.cmd,
+                "timeout_seconds": self.config.validation.timeout_seconds,
             },
             "review": {
                 "code_review_agent": self.config.code_review_agent,
@@ -251,10 +241,10 @@ class OrchestratorProcess:
         if extra_args:
             cmd.extend(extra_args)
 
-        # Set up environment with fast publish_gate for e2e tests
+        # Set up environment with fast validation for e2e tests
         env = os.environ.copy()
-        env["ORCHESTRATOR_PUBLISH_GATE_CMD"] = "echo 'e2e publish gate validation'"
-        env["ORCHESTRATOR_PUBLISH_GATE_TIMEOUT"] = "30"
+        env["ORCHESTRATOR_VALIDATION_CMD"] = "echo 'e2e validation'"
+        env["ORCHESTRATOR_VALIDATION_TIMEOUT"] = "30"
         env["ORCHESTRATOR_LOG_LEVEL"] = "DEBUG"
         env["ORCHESTRATOR_LOG_FILE"] = str(orchestrator_log_file)
         env["PYTHONUNBUFFERED"] = "1"

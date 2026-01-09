@@ -47,6 +47,9 @@ class MockIssueTracker(IssueTracker):
         self.get_labels_calls.append(issue_number)
         return self._labels_by_issue.get(issue_number, [])
 
+    def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
+        return self.get_issue_labels(issue_number)
+
     def set_labels(self, issue_number: int, labels: list[str]) -> None:
         self._labels_by_issue[issue_number] = labels
 

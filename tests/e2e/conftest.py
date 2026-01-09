@@ -85,6 +85,8 @@ from .fixtures import (
     wait_for_issue_seen,
     wait_for_session_started,
     wait_for_issue_label_snapshot,
+    # Direct GitHub polling (more efficient than full refresh)
+    poll_issue_label,
 )
 
 logger = logging.getLogger(__name__)
@@ -367,7 +369,7 @@ def e2e_session_config(
     e2e_ui_mode: str,
 ) -> Config:
     """Session-scoped config for single orchestrator."""
-    from issue_orchestrator.infra.config import ValidationConfig, ValidationGateConfig
+    from issue_orchestrator.infra.config import ValidationConfig
 
     config = Config()
     config.repo = repo_name
@@ -431,8 +433,8 @@ def e2e_session_config(
     os.environ["E2E_REVIEW_TIMEOUT_S"] = str(review_timeout_from_config(config))
 
     config.validation = ValidationConfig(
-        agent_gate=ValidationGateConfig(cmd="make typecheck", timeout_seconds=120),
-        publish_gate=ValidationGateConfig(cmd="make typecheck", timeout_seconds=120),
+        cmd="make typecheck",
+        timeout_seconds=120,
     )
     if _keep_artifacts():
         config.cleanup.with_triage.close_ai_session_tabs = False
@@ -441,8 +443,11 @@ def e2e_session_config(
         config.cleanup.without_triage.remove_worktrees = False
     os.environ["E2E_CONTROL_API_PORT"] = str(config.control_api_port)
 
-    # Skip actual git push in e2e tests - we verify push is called but don't run hooks
-    os.environ["E2E_DRY_RUN_PUSH"] = "1"
+    # Skip actual git push unless explicitly set to "false" for live tests
+    if os.environ.get("E2E_DRY_RUN_PUSH", "1") != "false":
+        os.environ["E2E_DRY_RUN_PUSH"] = "1"
+    else:
+        print("[E2E] Running with REAL PR creation (E2E_DRY_RUN_PUSH=false)")
 
     return config
 
@@ -649,7 +654,7 @@ def e2e_flow(repo_name: str, orchestrator_watcher, filter_label: str):
 @pytest.fixture
 def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mode: str) -> Config:
     """Create e2e test config with e2e-test agent."""
-    from issue_orchestrator.infra.config import ValidationConfig, ValidationGateConfig
+    from issue_orchestrator.infra.config import ValidationConfig
 
     config = Config()
     config.repo = repo_name
@@ -675,8 +680,8 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
     os.environ["E2E_REVIEW_TIMEOUT_S"] = str(review_timeout_from_config(config))
 
     config.validation = ValidationConfig(
-        agent_gate=ValidationGateConfig(cmd="make typecheck", timeout_seconds=120),
-        publish_gate=ValidationGateConfig(cmd="make typecheck", timeout_seconds=120),
+        cmd="make typecheck",
+        timeout_seconds=120,
     )
     if _keep_artifacts():
         config.cleanup.with_triage.close_ai_session_tabs = False

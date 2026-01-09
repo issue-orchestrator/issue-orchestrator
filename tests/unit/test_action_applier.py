@@ -501,7 +501,7 @@ class TestReconciliation:
     def test_reconciliation_enabled(self, applier, mock_labels):
         """Test that reconciliation checks labels when enabled."""
         applier.reconcile = True
-        applier.issue_tracker.get_issue_labels.return_value = ["ready", "other"]
+        applier.issue_tracker.get_issue_labels_fresh.return_value = ["ready", "other"]
 
         action = SyncLabelsAction(
             issue_number=123,
@@ -512,7 +512,7 @@ class TestReconciliation:
         result = applier.apply(action)
 
         assert result.success
-        applier.issue_tracker.get_issue_labels.assert_called_once_with(123)
+        applier.issue_tracker.get_issue_labels_fresh.assert_called_once_with(123)
 
 
 class TestExpectedStateEnforcement:
@@ -536,7 +536,7 @@ class TestExpectedStateEnforcement:
         from issue_orchestrator.control.reconciliation import ExpectedState
 
         # Current labels satisfy the expected state
-        mock_repository_host.get_issue_labels.return_value = ["agent:web", "in-progress"]
+        mock_repository_host.get_issue_labels_fresh.return_value = ["agent:web", "in-progress"]
 
         action = AddLabelAction(
             issue_number=123,
@@ -558,7 +558,7 @@ class TestExpectedStateEnforcement:
         from issue_orchestrator.control.reconciliation import ExpectedState, ReconciliationRequired
 
         # Current labels don't have required "in-progress"
-        mock_repository_host.get_issue_labels.return_value = ["agent:web"]
+        mock_repository_host.get_issue_labels_fresh.return_value = ["agent:web"]
 
         action = AddLabelAction(
             issue_number=42,
@@ -581,7 +581,7 @@ class TestExpectedStateEnforcement:
         from issue_orchestrator.control.reconciliation import ExpectedState, ReconciliationRequired
 
         # Current labels have forbidden "io:needs-reconcile"
-        mock_repository_host.get_issue_labels.return_value = ["in-progress", "io:needs-reconcile"]
+        mock_repository_host.get_issue_labels_fresh.return_value = ["in-progress", "io:needs-reconcile"]
 
         action = AddLabelAction(
             issue_number=99,
@@ -602,7 +602,7 @@ class TestExpectedStateEnforcement:
     def test_add_label_without_expected_proceeds_normally(self, applier_with_reconcile, mock_labels, mock_repository_host):
         """Test AddLabelAction without ExpectedState doesn't check constraints."""
         # Even if labels would fail constraints, no ExpectedState means no check
-        mock_repository_host.get_issue_labels.return_value = ["blocked"]
+        mock_repository_host.get_issue_labels_fresh.return_value = ["blocked"]
 
         action = AddLabelAction(
             issue_number=123,
@@ -648,7 +648,7 @@ class TestExpectedStateEnforcement:
         from issue_orchestrator.control.reconciliation import ExpectedState, ReconciliationRequired
 
         # Simulate API failure
-        mock_repository_host.get_issue_labels.return_value = None
+        mock_repository_host.get_issue_labels_fresh.return_value = None
 
         action = AddLabelAction(
             issue_number=123,

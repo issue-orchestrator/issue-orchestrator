@@ -121,7 +121,7 @@ class SessionObserver:
         """Get labels for an issue using the repository host."""
         if self._repository_host is None:
             return []
-        return self._repository_host.get_issue_labels(issue_number)
+        return self._repository_host.get_issue_labels_fresh(issue_number)
 
     def _add_label(self, issue_number: int, label: str) -> None:
         """Add a label to an issue using the repository host."""

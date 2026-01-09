@@ -29,7 +29,7 @@ def mock_config():
     config.github_token = "test-token"
     config.github_api_url = "https://api.github.com"
     config.github_http_timeout_seconds = 20.0
-    config.queue_refresh_seconds = 60
+    config.github_cache_ttl_seconds = 60
     config.gh_write_verify_timeout_seconds = 5
     config.gh_write_verify_initial_delay_ms = 100
     config.gh_write_verify_max_delay_ms = 500
@@ -85,14 +85,14 @@ class TestInitialization:
             mock_get_repo.assert_called_once()
 
     def test_init_cache_enabled_when_refresh_seconds_positive(self, mock_config):
-        """Test cache is enabled when queue_refresh_seconds > 0."""
-        mock_config.queue_refresh_seconds = 60
+        """Test cache is enabled when github_cache_ttl_seconds > 0."""
+        mock_config.github_cache_ttl_seconds = 60
         adapter = GitHubAdapter(repo="owner/repo", config=mock_config)
         assert adapter._cache_enabled is True
 
     def test_init_cache_disabled_when_refresh_seconds_zero(self, mock_config):
-        """Test cache is disabled when queue_refresh_seconds = 0."""
-        mock_config.queue_refresh_seconds = 0
+        """Test cache is disabled when github_cache_ttl_seconds = 0."""
+        mock_config.github_cache_ttl_seconds = 0
         adapter = GitHubAdapter(repo="owner/repo", config=mock_config)
         assert adapter._cache_enabled is False
 
@@ -334,7 +334,7 @@ class TestLabelOperations:
         labels = adapter.get_issue_labels(42)
 
         assert labels == ["bug"]
-        mock_http_client.get_issue_labels.assert_called_once_with(42)
+        mock_http_client.get_issue_labels.assert_called_once_with(42, use_cache=True)
 
     def test_get_issue_labels_updates_cache(self, adapter, mock_http_client):
         """Test that fetching labels updates the cache."""
@@ -347,6 +347,16 @@ class TestLabelOperations:
         cached = adapter._cache.get_issue_labels(42)
         assert cached == ["bug", "feature"]
 
+    def test_get_issue_labels_fresh_bypasses_cache(self, adapter, mock_http_client):
+        """Test that fresh label reads bypass adapter/ETag caches."""
+        adapter._cache.set_issue_labels(42, ["stale"])
+        mock_http_client.get_issue_labels.return_value = ["fresh"]
+
+        labels = adapter.get_issue_labels_fresh(42)
+
+        assert labels == ["fresh"]
+        mock_http_client.get_issue_labels.assert_called_once_with(42, use_cache=False)
+        assert adapter._cache.get_issue_labels(42) == ["fresh"]
     def test_get_issue_labels_error_returns_empty_list(self, adapter, mock_http_client):
         """Test get_issue_labels returns empty list on error."""
         mock_http_client.get_issue_labels.side_effect = GitHubHttpError("API error")
@@ -799,7 +809,7 @@ class TestCacheBehavior:
 
     def test_cache_disabled_no_caching(self, mock_config, mock_http_client):
         """Test that cache is bypassed when disabled."""
-        mock_config.queue_refresh_seconds = 0
+        mock_config.github_cache_ttl_seconds = 0
         adapter = GitHubAdapter(repo="owner/repo", config=mock_config)
         adapter._client = mock_http_client
         mock_http_client.get_issue_labels.return_value = ["bug"]

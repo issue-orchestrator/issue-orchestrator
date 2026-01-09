@@ -220,7 +220,7 @@ class ActionApplier:
         if self.issue_tracker is None:
             return None
         try:
-            labels = self.issue_tracker.get_issue_labels(issue_number)
+            labels = self.issue_tracker.get_issue_labels_fresh(issue_number)
             return set(labels)
         except Exception as e:
             logger.warning(
