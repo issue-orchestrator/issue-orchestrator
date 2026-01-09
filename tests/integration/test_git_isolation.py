@@ -3,6 +3,7 @@
 These tests verify that:
 1. Worktree config changes don't leak to other worktrees or the main repo
 2. Test fixture git commands don't affect the main repo even with GIT_DIR set
+3. Worktree's core.worktree config points to the correct path (not stale temp dirs)
 """
 
 import os
