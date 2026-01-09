@@ -122,7 +122,7 @@
         .issue-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
         .issue-header {
             display: grid;
-            grid-template-columns: 70px 100px 1fr 80px 70px 50px;
+            grid-template-columns: 70px 180px 1fr 80px 70px 50px;
             align-items: center;
             padding: 8px 16px;
             background: #161b22;
@@ -135,7 +135,7 @@
         }
         .issue-row {
             display: grid;
-            grid-template-columns: 70px 100px 1fr 80px 70px 50px;
+            grid-template-columns: 70px 180px 1fr 80px 70px 50px;
             align-items: center;
             padding: 12px 16px;
             border-bottom: 1px solid #21262d;
@@ -183,6 +183,74 @@
             color: #ff6b6b;
         }
         .issue-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
+        .status-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+        .status-line { display: flex; align-items: center; gap: 6px; }
+        .flow-stepper { display: flex; flex-wrap: wrap; gap: 4px; }
+        .flow-step {
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 2px 6px;
+            font-size: 11px;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .flow-step.active {
+            background: #1f6feb1a;
+            border-color: #1f6feb;
+            color: #58a6ff;
+            font-weight: 600;
+        }
+        .flow-stepper.blocked .flow-step.active {
+            border-color: #d29922;
+            color: #f0c36c;
+            background: #f0c36c14;
+            box-shadow: 0 0 0 1px #d29922 inset;
+        }
+        .blocked-badge {
+            border: 1px solid #d29922;
+            color: #f0c36c;
+            border-radius: 999px;
+            padding: 1px 6px;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        .excluded-toggle {
+            background: transparent;
+            border: 1px dashed #30363d;
+            color: #8b949e;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .excluded-toggle.active { border-style: solid; color: #58a6ff; }
+        .excluded-panel {
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            padding: 12px;
+            margin-top: 12px;
+            background: #0f141b;
+        }
+        .excluded-row {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 10px 0;
+            border-bottom: 1px solid #21262d;
+        }
+        .excluded-row:last-child { border-bottom: none; }
+        .excluded-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+        .excluded-meta a { color: #58a6ff; text-decoration: none; }
+        .excluded-reason {
+            color: #c9d1d9;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 2px 6px;
+            font-size: 11px;
+        }
         .status-dot {
             width: 8px; height: 8px; border-radius: 50%;
         }
@@ -807,6 +875,9 @@
                 Manage Blocked
             </button>
             {% endif %}
+            <button class="excluded-toggle" id="excludedToggle" onclick="toggleExcluded()" title="Show issues excluded from scheduling">
+                Excluded
+            </button>
             <button class="tab {% if active_tab == 'history' %}active{% endif %}" onclick="switchTab('history')" role="tab" aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}" aria-controls="issueList">
                 History
             </button>
@@ -854,8 +925,24 @@
                  oncontextmenu="showContextMenu(event, this)">
                 <span class="issue-num">#{{ issue.issue_number }}{% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}" aria-label="Has dependencies: {{ issue.dependency_summary }}">⛓</span>{% endif %}<span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">⚠</span><span class="stale-warning-icon" id="stale-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">🔄</span></span>
                 <span class="issue-status status-{{ issue.status }}" title="{{ issue.status_reason if issue.status_reason else '' }}">
-                    <span class="status-dot" aria-hidden="true"></span>
-                    {{ issue.status_label }}
+                    <span class="status-stack">
+                        <span class="status-line">
+                            <span class="status-dot" aria-hidden="true"></span>
+                            {{ issue.status_label }}
+                        </span>
+                        {% if issue.flow_steps %}
+                        <span class="flow-stepper {% if issue.blocked_summary %}blocked{% endif %}">
+                            {% for step in issue.flow_steps %}
+                            <span class="flow-step {% if step.key == issue.flow_stage %}active{% endif %}">
+                                {{ step.label }}
+                            </span>
+                            {% endfor %}
+                            {% if issue.blocked_summary %}
+                            <span class="blocked-badge" title="{{ issue.blocked_summary }}">Blocked</span>
+                            {% endif %}
+                        </span>
+                        {% endif %}
+                    </span>
                 </span>
                 <span class="issue-title" title="{{ issue.title }}">{{ issue.title }}</span>
                 <span class="issue-agent">{{ issue.agent_type }}</span>
@@ -885,6 +972,13 @@
                 {% endif %}
             </div>
             {% endif %}
+        </div>
+
+        <div class="excluded-panel" id="excludedPanel" style="display:none;">
+            <div class="excluded-meta">
+                <span>Excluded issues (not eligible to run)</span>
+            </div>
+            <div id="excludedList"></div>
         </div>
 
         <!-- Create Issue Modal -->
@@ -1316,6 +1410,63 @@
                     }
                 })
                 .catch(err => console.error('[stale] Failed to load stale issues:', err));
+        }
+
+        let excludedLoaded = false;
+
+        function renderFlowStepper(steps, activeKey, blockedSummary) {
+            if (!steps || steps.length === 0) return '';
+            const stepHtml = steps.map(step => {
+                const active = step.key === activeKey ? 'active' : '';
+                return `<span class="flow-step ${active}">${escapeHtml(step.label)}</span>`;
+            }).join('');
+            const blockedBadge = blockedSummary
+                ? `<span class="blocked-badge" title="${escapeHtml(blockedSummary)}">Blocked</span>`
+                : '';
+            const blockedClass = blockedSummary ? 'blocked' : '';
+            return `<span class="flow-stepper ${blockedClass}">${stepHtml}${blockedBadge}</span>`;
+        }
+
+        function renderExcludedList(items) {
+            const list = document.getElementById('excludedList');
+            if (!items || items.length === 0) {
+                list.innerHTML = '<div class="empty-state">No excluded issues found</div>';
+                return;
+            }
+            list.innerHTML = items.map(item => `
+                <div class="excluded-row">
+                    <div class="excluded-meta">
+                        <a href="${item.issue_url}" target="_blank">#${item.issue_number}</a>
+                        <span class="excluded-reason">${escapeHtml(item.excluded_reason || 'not eligible')}</span>
+                    </div>
+                    <div class="issue-title">${escapeHtml(item.title)}</div>
+                    ${renderFlowStepper(item.flow_steps, item.flow_stage, item.blocked_summary)}
+                </div>
+            `).join('');
+        }
+
+        async function toggleExcluded() {
+            const panel = document.getElementById('excludedPanel');
+            const toggle = document.getElementById('excludedToggle');
+            const opening = panel.style.display === 'none';
+            panel.style.display = opening ? 'block' : 'none';
+            toggle.classList.toggle('active', opening);
+
+            if (!opening) return;
+            if (!excludedLoaded) {
+                try {
+                    const res = await fetch('/api/excluded-issues');
+                    const data = await res.json();
+                    const items = data.excluded || [];
+                    renderExcludedList(items);
+                    toggle.textContent = `Excluded (${items.length})`;
+                    excludedLoaded = true;
+                } catch (err) {
+                    console.error('Failed to fetch excluded issues:', err);
+                    document.getElementById('excludedList').innerHTML =
+                        '<div class="empty-state">Failed to load excluded issues</div>';
+                }
+            }
         }
 
         // Server-Sent Events for real-time updates
