@@ -78,6 +78,8 @@ class SSEEventStream:
                                     except json.JSONDecodeError:
                                         buffer = {}
                                         continue
+                                    # The control API sends complete event structure in data:
+                                    # {"event_id": N, "type": "...", "issue_key": "...", "payload": {...}}
                                     self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
                                 buffer = {}
                                 continue

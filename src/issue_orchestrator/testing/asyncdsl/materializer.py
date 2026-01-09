@@ -8,6 +8,9 @@ from collections import deque
 from .models import IssueView, OrchestratorView, PRView
 from .errors import EventGapDetected
 
+# Import EventName for type-safe event matching
+from issue_orchestrator.events.catalog import EventName
+
 def _ensure_int(x: Any) -> int:
     if isinstance(x, bool):
         raise TypeError("event_id must be int, got bool")
@@ -91,12 +94,14 @@ class MaterializedView:
         payload = event.get("payload", {}) or {}
         issue_key = event.get("issue_key")
 
-        if etype in ("orchestrator_idle", "orchestrator_active"):
-            self.orchestrator.idle = (etype == "orchestrator_idle")
+        # Orchestrator idle state - only idle event exists, no explicit "active" event
+        if etype == EventName.ORCHESTRATOR_IDLE.value:
+            self.orchestrator.idle = True
             self._mark_progress()
             return
 
-        if etype in ("tick_complete", "tick_completed"):
+        # Tick completion - canonical dot notation
+        if etype == EventName.TICK_COMPLETED.value:
             self.orchestrator.last_tick_id = payload.get("tick_id", self.orchestrator.last_tick_id)
             if "idle" in payload:
                 self.orchestrator.idle = bool(payload.get("idle"))
@@ -104,7 +109,8 @@ class MaterializedView:
             self._mark_progress()
             return
 
-        if etype in ("issue_view_changed", "issue_labels_changed", "issue_state_changed", "pr_view_changed"):
+        # Issue and PR view updates - use canonical EventName values
+        if etype in (EventName.ISSUE_LABELS_CHANGED.value, EventName.PR_VIEW_CHANGED.value):
             if not issue_key:
                 return
             iv = self.issues.get(issue_key) or IssueView(issue_key=issue_key)
@@ -134,7 +140,7 @@ class MaterializedView:
                     iv.pr.draft = payload.get("draft")
                 if "pr_labels" in payload:
                     iv.pr.labels = set(payload.get("pr_labels") or [])
-                if "labels" in payload and etype == "pr_view_changed":
+                if "labels" in payload and etype == EventName.PR_VIEW_CHANGED.value:
                     iv.pr.labels = set(payload.get("labels") or [])
                 if "added" in payload or "removed" in payload:
                     added = set(payload.get("added") or [])
@@ -144,19 +150,21 @@ class MaterializedView:
             self._mark_progress()
             return
 
-        if etype == "apply_attempted" and issue_key:
+        # Note: "apply_attempted" event doesn't exist - apply_attempts is tracked locally
+        # Keeping this for potential future use
+        if etype == "apply.attempted" and issue_key:
             iv = self.issues.setdefault(issue_key, IssueView(issue_key=issue_key))
             iv.apply_attempts += 1
             self._mark_progress()
             return
 
-        if etype == "reconciliation_required" and issue_key:
+        if etype == EventName.RECONCILIATION_REQUIRED.value and issue_key:
             iv = self.issues.setdefault(issue_key, IssueView(issue_key=issue_key))
             iv.reconcile_required += 1
             self._mark_progress()
             return
 
-        if etype == "queue.changed":
+        if etype == EventName.QUEUE_CHANGED.value:
             # Handle new issues discovered during refresh
             for added in payload.get("added", []):
                 num = added.get("number")

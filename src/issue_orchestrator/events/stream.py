@@ -168,14 +168,11 @@ class EventHub(EventSink):
         )
 
 
-_EVENT_TYPE_MAP = {
-    "tick.completed": "tick_complete",
-    "tick.started": "tick_start",
-}
-
-
 def _map_event_type(name: str) -> str:
-    mapped = _EVENT_TYPE_MAP.get(name)
-    if mapped:
-        return mapped
-    return name.replace(".", "_")
+    """Pass through event type unchanged.
+
+    Event names use dot notation (e.g., 'session.completed') as defined in
+    EventName constants. Clients receive the same names - no transformation.
+    This ensures a common language across server and clients.
+    """
+    return name

@@ -194,6 +194,36 @@ class TestTmuxManager:
         # Second (last) call should be the actual command
         empty_pane.send_keys.assert_called_with("echo test")
 
+    def test_create_issue_window_cds_to_working_dir(self, mock_session, mock_agents_window):
+        """Test that create_issue_window changes to working directory before running.
+
+        This is a critical test: without the `cd` to working_dir, Claude will:
+        - Run on the wrong branch (main repo instead of worktree)
+        - Write completion.json to wrong location
+        - Cause the orchestrator to never detect completion
+        """
+        manager = tmux.TmuxManager()
+        manager._session = mock_session
+
+        mock_session.windows.filter.return_value = [mock_agents_window]
+
+        empty_pane = mock_agents_window.panes[0]
+        _setup_pane_title(empty_pane, "")
+        empty_pane.pane_current_command = "bash"
+
+        working_dir = Path("/test/worktree-123")
+        manager.create_issue_window(42, "claude -p 'do stuff'", working_dir)
+
+        # First send_keys call is the setup command - must include cd
+        assert empty_pane.send_keys.call_count == 2
+        setup_call = empty_pane.send_keys.call_args_list[0]
+        setup_cmd = setup_call[0][0]  # First positional argument
+
+        # CRITICAL: Setup must start with cd to working_dir
+        assert setup_cmd.startswith(f'cd "{working_dir}"'), (
+            f"Setup command must start with 'cd \"{working_dir}\"' but got: {setup_cmd[:100]}"
+        )
+
     def test_create_issue_window_already_exists(self, mock_session, mock_agents_window, mock_pane):
         """Test create_issue_window raises error if pane exists."""
         from issue_orchestrator.adapters.terminal._tmux_retry import PaneAlreadyExistsError

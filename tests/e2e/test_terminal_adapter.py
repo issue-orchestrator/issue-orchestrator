@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.e2e
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(300)  # Longer timeout for real PR creation
 class TestTerminalAdapterExecution:
     """Test terminal adapter execution paths.
 
@@ -33,17 +33,15 @@ class TestTerminalAdapterExecution:
         Claude Code modifies the pane title, which used to break pane lookup.
         Now we use a custom tmux option that persists.
         """
-        import asyncio
         from issue_orchestrator.adapters.terminal._tmux import TmuxManager
-
-        # Give Claude a moment to start and potentially modify the title
-        await asyncio.sleep(5)
 
         # Use the same tmux session as the e2e orchestrator
         manager = TmuxManager(session_name=tmux_session)
 
-        # This is the critical check - can we find the pane by issue number?
-        pane = manager._find_issue_session(issue_number)
+        # Wait for pane to exist (uses adapter's built-in polling)
+        # The pane is created after the in-progress label, so we need to wait
+        pane = manager.wait_for_issue_session(issue_number, timeout_s=30.0)
+
         if pane is None:
             # Get diagnostic info
             issues_found = manager.list_issue_windows()
@@ -112,40 +110,53 @@ class TestTerminalAdapterExecution:
         issue_number = int(issue.stable_id())
         logger.info("Created issue #%d for terminal adapter test", issue_number)
 
-        pr = None
-        dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
-        try:
-            # Wait for issue to be seen by orchestrator
-            await flow.issue_seen(issue, timeout_s=60)
-            logger.info("Issue #%d seen by orchestrator", issue_number)
+        # Wait for issue to be seen by orchestrator
+        await flow.issue_seen(issue, timeout_s=60)
+        logger.info("Issue #%d seen by orchestrator", issue_number)
 
-            # Wait for session to start - this exercises the terminal adapter
-            # The session launch is where terminal-specific code runs:
-            # - tmux: creates window, runs claude command
-            await flow.session_started(issue, timeout_s=60)
-            logger.info("Session started for issue #%d in %s mode", issue_number, e2e_ui_mode)
+        # Wait for session to start - this exercises the terminal adapter
+        # The session launch is where terminal-specific code runs:
+        # - tmux: creates window, runs claude command
+        await flow.session_started(issue, timeout_s=60)
+        logger.info("Session started for issue #%d in %s mode", issue_number, e2e_ui_mode)
 
-            # CRITICAL: Verify pane can be found by issue number while Claude is running
-            # Claude Code modifies the pane title, so this tests that our @orchestrator-session-id
-            # option persists and pane lookup still works
-            if e2e_ui_mode == "tmux":
-                await self._verify_pane_identification(issue_number, e2e_tmux_session)
+        # CRITICAL: Verify pane can be found by issue number while Claude is running
+        # Claude Code modifies the pane title, so this tests that our @orchestrator-session-id
+        # option persists and pane lookup still works
+        if e2e_ui_mode == "tmux":
+            await self._verify_pane_identification(issue_number, e2e_tmux_session)
 
-            # In dry-run mode, PR creation is skipped but we still verify the session completes
-            if dry_run:
-                # In dry-run mode, wait briefly for session processing, then succeed
-                # The session has already started, which exercises the terminal adapter
-                import asyncio
-                await asyncio.sleep(10)  # Give time for completion processing
-                logger.info("Session completed in dry-run mode (no real PR) - terminal adapter test passed")
-            else:
-                pr_number = await flow.pr_created(issue, timeout_s=120)
-                pr = {"number": pr_number}
-                logger.info("PR #%d created - terminal adapter test passed", pr_number)
+        # Wait for session to complete - this verifies the ENTIRE pipeline:
+        # 1. Claude ran in the correct directory (worktree, not main repo)
+        # 2. agent-done wrote completion.json to the worktree
+        # 3. Orchestrator detected and processed completion.json
+        # 4. Orchestrator pushed code and created PR (even if fake in dry-run mode)
+        #
+        # If the cd fix is broken, completion.json goes to wrong place,
+        # orchestrator never finds it, and session.completed never fires.
+        from tests.e2e.fixtures.wait_helpers import wait_for_session_completed
+        completion_event = await wait_for_session_completed(
+            orchestrator_watcher, str(issue_number), timeout_s=120
+        )
+        logger.info(
+            "Session completed for issue #%d - event type: %s",
+            issue_number,
+            completion_event.get("type"),
+        )
 
-        finally:
-            if pr and not dry_run:
-                flow.close_pr(pr["number"])
+        # Verify the session completed with a PR (proves full pipeline worked)
+        payload = completion_event.get("payload", {})
+        pr_url = payload.get("pr_url")
+        assert pr_url, (
+            f"Session completed but no PR URL in event. "
+            f"This means completion.json was found but PR creation failed. "
+            f"Payload: {payload}"
+        )
+        logger.info("PR created: %s - cd fix verified!", pr_url)
+
+        # Verify pr-pending label was added (proves post-completion actions ran)
+        await flow.issue_has_label(issue, "pr-pending", timeout_s=30)
+        logger.info("pr-pending label added - full pipeline verified for issue #%d", issue_number)
 
 
 @pytest.mark.e2e
