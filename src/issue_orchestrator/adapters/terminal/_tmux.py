@@ -615,13 +615,18 @@ class TmuxManager:
         # CRITICAL: cd to working directory first, then set up isolation
         setup_cmd = f'cd "{working_dir}" && export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
-        # Enable pane logging to worktree
-        # Path: .issue-orchestrator/state/logs/{session_id}/pane.log
+        # Enable pane logging with ANSI code stripping
+        # Uses ansifilter if available (brew install ansifilter), otherwise sed
         try:
-            log_dir = working_dir / ".issue-orchestrator" / "state" / "logs" / session_id
+            log_dir = working_dir / ".issue-orchestrator"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_file = log_dir / "pane.log"
-            pane.cmd("pipe-pane", "-o", f"cat >> '{log_file}'")
+            # ansifilter produces cleaner output; sed is good enough fallback
+            filter_cmd = (
+                "if command -v ansifilter >/dev/null 2>&1; then ansifilter; "
+                "else sed -E 's/\\x1b\\[[0-9;]*[a-zA-Z]//g'; fi"
+            )
+            pane.cmd("pipe-pane", "-o", f"exec cat - | {filter_cmd} >> '{log_file}'")
             logger.debug("[TMUX] Enabled pane logging to %s", log_file)
         except Exception as e:
             logger.warning("[TMUX] Failed to enable pane logging: %s", e)

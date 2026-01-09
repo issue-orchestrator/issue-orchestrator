@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ...infra.logging_config import issue_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -631,9 +633,7 @@ def create_worktree(
     """
     repo_root = Path(repo_root).resolve()
     logger.info(
-        "Create worktree requested: repo=%s issue=%s branch=%s base=%s",
-        repo_root,
-        issue_number,
+        issue_log(issue_number, "Create worktree requested: branch=%s base=%s"),
         branch_name or "(auto)",
         worktree_base,
     )
@@ -653,9 +653,7 @@ def create_worktree(
     if branch_name is None:
         branch_name = generate_branch_name(issue_number, issue_title)
     logger.info(
-        "Resolved worktree target: repo=%s issue=%s branch=%s base=%s",
-        repo_root,
-        issue_number,
+        issue_log(issue_number, "Resolved worktree target: branch=%s base=%s"),
         branch_name,
         worktree_base,
     )
@@ -700,13 +698,13 @@ def create_worktree(
     if branch_name and not disable_reuse:
         existing_worktree = find_worktree_for_branch(repo_root, branch_name)
         if existing_worktree and existing_worktree.exists():
-            logger.info("Reusing existing worktree for branch=%s path=%s", branch_name, existing_worktree)
+            logger.info(issue_log(issue_number, "Reusing existing worktree: branch=%s path=%s"), branch_name, existing_worktree)
             # Rebase onto latest main (critical for reruns with stale branches)
             rebase_ok = _update_worktree_onto_main(existing_worktree, repo_root)
             # Reinstall hooks if needed
             if enforce_hooks:
                 install_hooks(existing_worktree, pre_push_hook)
-            logger.info("Worktree reuse complete: path=%s branch=%s rebase_ok=%s", existing_worktree, branch_name, rebase_ok)
+            logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, existing_worktree)
             return existing_worktree, branch_name, not rebase_ok
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
@@ -715,7 +713,7 @@ def create_worktree(
         git_dir = worktree_path / ".git"
         if git_dir.exists():
             # Valid worktree - reuse it by pulling latest changes
-            logger.info("Reusing existing worktree by path: %s", worktree_path)
+            logger.info(issue_log(issue_number, "Reusing existing worktree by path: %s"), worktree_path)
             # Try to get current branch
             branch_result = subprocess.run(
                 ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -723,13 +721,13 @@ def create_worktree(
             )
             if branch_result.returncode == 0:
                 existing_branch = branch_result.stdout.strip()
-                logger.info("Existing worktree branch: path=%s branch=%s", worktree_path, existing_branch)
+                logger.info(issue_log(issue_number, "Existing worktree branch: %s"), existing_branch)
                 # Rebase onto latest main (critical for reruns with stale branches)
                 rebase_ok = _update_worktree_onto_main(worktree_path, repo_root)
                 # Reinstall hooks (ensures latest hook chaining logic is applied)
                 if enforce_hooks:
                     install_hooks(worktree_path, pre_push_hook)
-                logger.info("Worktree reuse complete: path=%s branch=%s rebase_ok=%s", worktree_path, existing_branch, rebase_ok)
+                logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, worktree_path)
                 return worktree_path, existing_branch, not rebase_ok
         # Invalid worktree directory - remove it
         logger.warning("Removing invalid worktree directory at %s", worktree_path)
@@ -781,15 +779,14 @@ def create_worktree(
                     str(worktree_path), "-b", branch_name, default_branch
                 ]
 
-        logger.info("Creating worktree: path=%s branch=%s", worktree_path, branch_name)
+        logger.info(issue_log(issue_number, "Creating worktree: branch=%s path=%s"), branch_name, worktree_path)
         result = subprocess.run(
             cmd, capture_output=True, text=True, check=False
         )
 
         if result.returncode != 0:
             logger.error(
-                "Worktree creation failed: path=%s branch=%s stderr=%s",
-                worktree_path,
+                issue_log(issue_number, "Worktree creation FAILED: branch=%s error=%s"),
                 branch_name,
                 result.stderr.strip(),
             )
@@ -807,7 +804,7 @@ def create_worktree(
         # Symlink .venv so agent has access to dev tools for validation
         install_venv_symlink(worktree_path, repo_root)
 
-        logger.info("Worktree created: path=%s branch=%s", worktree_path, branch_name)
+        logger.info(issue_log(issue_number, "Worktree created: branch=%s path=%s"), branch_name, worktree_path)
         return worktree_path, branch_name, False  # No rebase failure - new worktree
 
     except Exception as e:

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from ..ports.session_runner import DiscoveredSession
 
 from ..infra.config import Config
+from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
 from ..domain.issue_key import GitHubIssueKey
@@ -189,7 +190,7 @@ class SessionLauncher:
             LaunchResult with session if successful
         """
         launch_start = time.time()
-        logger.info("Launching session for issue #%d: %s", issue.number, issue.title)
+        logger.info(issue_log(issue.number, "Session starting: type=code title=%s"), issue.title)
 
         if issue.agent_type is None:
             return LaunchResult(None, False, f"Issue #{issue.number} has no agent type label")
@@ -259,7 +260,7 @@ class SessionLauncher:
         # Create worktree
         repo_root = self.config.repo_root
         step_start = time.time()
-        logger.info("[launch] Creating worktree for issue #%d...", issue.number)
+        logger.info(issue_log(issue.number, "Creating worktree..."))
         worktree_base = self.config.worktree_base
         if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
             base_root = Path(worktree_base) if worktree_base else repo_root.parent
@@ -309,7 +310,10 @@ class SessionLauncher:
             },
         )
         worktree_time = time.time() - step_start
-        logger.info("[launch] Worktree created in %.1fs", worktree_time)
+        logger.info(
+            issue_log(issue.number, "Worktree ready: path=%s branch=%s rebase_status=%s time=%.1fs"),
+            worktree_path, branch_name, "CONFLICT" if worktree_info.rebase_failed else "ok", worktree_time
+        )
 
         # Run setup commands
         if self.config.setup_worktree:
@@ -389,7 +393,7 @@ class SessionLauncher:
 
         if not session_created:
             log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
-            logger.error("[launch] Failed to create session for issue #%d", issue.number)
+            logger.error(issue_log(issue.number, "FAILED: session creation failed"))
             self.repository_host.remove_label(issue.number, self.config.get_label_in_progress())
             return LaunchResult(None, False, "Failed to create terminal session")
 
@@ -408,7 +412,10 @@ class SessionLauncher:
         )
 
         total_time = time.time() - launch_start
-        logger.info("Session launched for issue #%d in %.1fs: %s", issue.number, total_time, issue.title)
+        logger.info(
+            issue_log(issue.number, "Session launched: type=code agent=%s time=%.1fs"),
+            issue.agent_type, total_time
+        )
 
         # Emit trace event
         full_completion_path = (worktree_path / completion_path).resolve()

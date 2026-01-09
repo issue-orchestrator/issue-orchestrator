@@ -122,7 +122,7 @@
         .issue-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
         .issue-header {
             display: grid;
-            grid-template-columns: 70px 180px 1fr 80px 70px 50px;
+            grid-template-columns: 70px 180px 1fr 80px 70px 70px;
             align-items: center;
             padding: 8px 16px;
             background: #161b22;
@@ -135,7 +135,7 @@
         }
         .issue-row {
             display: grid;
-            grid-template-columns: 70px 180px 1fr 80px 70px 50px;
+            grid-template-columns: 70px 180px 1fr 80px 70px 70px;
             align-items: center;
             padding: 12px 16px;
             border-bottom: 1px solid #21262d;
@@ -289,13 +289,19 @@
             color: #f85149;
             background: rgba(248, 81, 73, 0.15);
         }
+        .issue-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+        }
         .issue-action {
             font-size: 12px;
             color: #8b949e;
             display: flex;
             align-items: center;
-            justify-content: flex-end;
             gap: 4px;
+            cursor: pointer;
         }
         .issue-row:hover .issue-action { color: #58a6ff; }
         .issue-action svg { width: 14px; height: 14px; }
@@ -947,16 +953,18 @@
                 <span class="issue-title" title="{{ issue.title }}">{{ issue.title }}</span>
                 <span class="issue-agent">{{ issue.agent_type }}</span>
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
-                {% if issue.has_terminal %}
-                <button class="issue-kill-btn" onclick="killSession({{ issue.issue_number }}, event)" aria-label="Force kill session for issue #{{ issue.issue_number }}" title="Force kill session">
-                    ⏹
-                </button>
-                {% endif %}
-                <span class="issue-action" aria-hidden="true" title="{{ issue.action_hint }}">
-                    {% if issue.action == 'focus' %}
-                    <span>👁</span><span class="action-arrow">→</span>
-                    {% else %}
-                    <span>🔗</span><span class="action-arrow">↗</span>
+                <span class="issue-actions">
+                    <span class="issue-action" title="{{ issue.action_hint }}">
+                        {% if issue.action == 'focus' %}
+                        <span>👁</span><span class="action-arrow">→</span>
+                        {% else %}
+                        <span>🔗</span><span class="action-arrow">↗</span>
+                        {% endif %}
+                    </span>
+                    {% if issue.has_terminal %}
+                    <button class="issue-kill-btn" onclick="killSession({{ issue.issue_number }}, event)" aria-label="Force kill session for issue #{{ issue.issue_number }}" title="Force kill session">
+                        ⏹
+                    </button>
                     {% endif %}
                 </span>
             </div>
