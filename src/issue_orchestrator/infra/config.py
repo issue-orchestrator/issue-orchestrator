@@ -31,6 +31,8 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'gh_rate_limit_startup', 'gh_rate_limit_every_calls', 'gh_rate_limit_warn_fraction',
     'gh_rate_limit_warn_remaining', 'gh_audit_enabled', 'gh_audit_events', 'gh_audit_file',
     'comment_headings', 'dangerous', 'stale_escalation_ticks',
+    'tmuxp',  # Optional path to custom tmuxp config for tmux layout
+    'tmux_bindings',  # List of tmux bind-key commands to apply
 }
 
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
@@ -237,6 +239,18 @@ class Config:
     # Can be "builtin:tmux" or a full class path for custom adapters
     terminal_adapter: Optional[str] = None
 
+    # Custom tmuxp config file for tmux layout (optional)
+    # If specified, loads this tmuxp config instead of the default
+    # Supports mouse mode, double-click zoom, custom layouts
+    tmuxp_config: Optional[Path] = None
+
+    # Tmux key bindings to apply after session creation
+    # These are raw tmux bind-key commands (without the "tmux" prefix)
+    # Default enables double-click to zoom panes
+    tmux_bindings: list[str] = field(default_factory=lambda: [
+        "bind-key -T root DoubleClick1Pane resize-pane -Z -t =",
+    ])
+
     # Session limits
     max_issues_to_start: int = 0  # Max issues to start processing (0 = unlimited)
 
@@ -413,6 +427,8 @@ class Config:
             "gh_audit_file": self.gh_audit_file,
             "ui_mode": self.ui_mode,
             "terminal_adapter": self.terminal_adapter,
+            "tmuxp_config": str(self.tmuxp_config) if self.tmuxp_config else None,
+            "tmux_bindings": self.tmux_bindings,
             "agents": {
                 label: {
                     "prompt_path": str(cfg.prompt_path),
@@ -603,6 +619,20 @@ class Config:
 
         # Terminal adapter (overrides ui_mode if set)
         config.terminal_adapter = data.get("terminal_adapter")
+
+        # Custom tmuxp config for tmux layout
+        if data.get("tmuxp"):
+            config.tmuxp_config = resolve_relative_path(data["tmuxp"], repo_root)
+
+        # Tmux key bindings (default: double-click to zoom)
+        if "tmux_bindings" in data:
+            bindings = data["tmux_bindings"]
+            if bindings is None:
+                config.tmux_bindings = []  # Explicitly disable bindings
+            elif isinstance(bindings, list):
+                config.tmux_bindings = bindings
+            else:
+                config.tmux_bindings = [str(bindings)]
 
         # Session limits
         config.max_issues_to_start = data.get("max_issues_to_start", 0)

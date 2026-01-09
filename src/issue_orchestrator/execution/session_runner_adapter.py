@@ -121,3 +121,12 @@ class PluggySessionRunner:
         """
         logger.info("Calling on_orchestrator_shutdown hook")
         self._pm.hook.on_orchestrator_shutdown()
+
+    def terminal_health_check(self) -> dict | None:
+        """Check health of the terminal backend.
+
+        Returns:
+            Dict with health status, or None if no terminal plugin.
+        """
+        result = self._pm.hook.terminal_health_check()
+        return result

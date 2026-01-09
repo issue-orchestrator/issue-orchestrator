@@ -156,6 +156,15 @@ class SessionRunner(Protocol):
         """
         ...
 
+    def terminal_health_check(self) -> dict[str, object] | None:
+        """Check health of the terminal backend.
+
+        Returns:
+            Dict with health status, or None if not implemented.
+            Expected keys: healthy, server_running, session_exists, error, backend
+        """
+        ...
+
 
 class NullSessionRunner:
     """No-op session runner for testing."""
@@ -201,3 +210,6 @@ class NullSessionRunner:
 
     def on_orchestrator_shutdown(self) -> None:
         pass
+
+    def terminal_health_check(self) -> dict[str, object] | None:
+        return None

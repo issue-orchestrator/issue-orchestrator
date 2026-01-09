@@ -443,30 +443,37 @@ class TestTmuxManagerIntegration:
 
     @pytest.fixture
     def mock_libtmux_server(self):
-        """Mock libtmux.Server and related objects."""
+        """Mock libtmux.Server and related objects for pane-based architecture."""
         with patch("issue_orchestrator.adapters.terminal._tmux.libtmux") as mock_libtmux:
             mock_server = MagicMock()
             mock_session = MagicMock()
-            mock_window = MagicMock()
-            mock_pane = MagicMock()
+            mock_agents_window = MagicMock()
+            mock_agents_window.name = "agents"
+
+            # Create an initial empty pane in agents window
+            empty_pane = MagicMock()
+            empty_pane.pane_title = ""
+            empty_pane.pane_current_command = "bash"
+            mock_agents_window.panes = [empty_pane]
 
             # Setup relationships
             mock_libtmux.Server.return_value = mock_server
-            mock_server.sessions.get.return_value = mock_session
+            mock_session.session_name = "orchestrator"
+            mock_server.sessions.filter.return_value = [mock_session]
             mock_server.new_session.return_value = mock_session
-            mock_session.new_window.return_value = mock_window
-            # Make windows a MagicMock with filter method, not a list
+            mock_session.new_window.return_value = mock_agents_window
+
+            # Make windows a MagicMock with filter method
             mock_windows = MagicMock()
-            mock_windows.filter.return_value = []
+            # By default, return agents window for filter calls
+            mock_windows.filter.return_value = [mock_agents_window]
             mock_session.windows = mock_windows
-            mock_window.active_pane = mock_pane
-            mock_window.name = None
 
             yield {
                 "server": mock_server,
                 "session": mock_session,
-                "window": mock_window,
-                "pane": mock_pane,
+                "agents_window": mock_agents_window,
+                "pane": empty_pane,
                 "windows": mock_windows,
             }
 
@@ -480,7 +487,8 @@ class TestTmuxManagerIntegration:
         """ensure_session creates new session if it doesn't exist."""
         mock_server = mock_libtmux_server["server"]
         mock_session = mock_libtmux_server["session"]
-        mock_server.sessions.get.side_effect = Exception("Session not found")
+        # sessions.filter() returns empty list when session not found
+        mock_server.sessions.filter.return_value = []
 
         result = tmux_manager.ensure_session()
 
@@ -491,12 +499,12 @@ class TestTmuxManagerIntegration:
         )
 
     def test_create_issue_window_success(self, tmux_manager, mock_libtmux_server):
-        """create_issue_window creates window and sends command."""
+        """create_issue_window creates pane and sends command."""
         mock_session = mock_libtmux_server["session"]
-        mock_window = mock_libtmux_server["window"]
+        mock_agents_window = mock_libtmux_server["agents_window"]
         mock_pane = mock_libtmux_server["pane"]
 
-        # Ensure session exists first (this will trigger new_session since get raises)
+        # Ensure session exists first
         tmux_manager._session = mock_session  # Set directly to avoid second call
 
         result = tmux_manager.create_issue_window(
@@ -506,12 +514,10 @@ class TestTmuxManagerIntegration:
             title="Fix the bug",
         )
 
-        assert result == mock_window
-        # Verify window name includes issue number and truncated title
-        mock_session.new_window.assert_called_once()
-        call_kwargs = mock_session.new_window.call_args[1]
-        assert call_kwargs["window_name"] == "#42-Fix-the-bug"
-        assert call_kwargs["start_directory"] == "/tmp/worktree"
+        # Result should be the pane (reused empty pane or new split)
+        assert result == mock_pane
+        # Verify pane title was set
+        mock_pane.cmd.assert_any_call("select-pane", "-T", "#42-Fix-the-bug")
 
         # Verify PATH setup and command were sent
         assert mock_pane.send_keys.call_count == 2
@@ -520,11 +526,14 @@ class TestTmuxManagerIntegration:
         assert mock_pane.send_keys.call_args_list[1][0][0] == "claude --prompt issue.md"
 
     def test_create_issue_window_duplicate_raises(self, tmux_manager, mock_libtmux_server):
-        """create_issue_window raises ValueError if window already exists."""
+        """create_issue_window raises ValueError if pane already exists."""
         mock_session = mock_libtmux_server["session"]
-        mock_windows = mock_libtmux_server["windows"]
-        mock_existing_window = MagicMock()
-        mock_windows.filter.return_value = [mock_existing_window]
+        mock_agents_window = mock_libtmux_server["agents_window"]
+
+        # Set up existing pane with matching title
+        existing_pane = MagicMock()
+        existing_pane.pane_title = "issue-42"
+        mock_agents_window.panes = [existing_pane]
 
         tmux_manager._session = mock_session  # Set directly
 
@@ -537,43 +546,50 @@ class TestTmuxManagerIntegration:
             )
 
     def test_window_exists_by_name(self, tmux_manager, mock_libtmux_server):
-        """window_exists_by_name checks if window exists by name."""
+        """window_exists_by_name checks if pane exists by title."""
         mock_session = mock_libtmux_server["session"]
-        mock_windows = mock_libtmux_server["windows"]
-        mock_window = MagicMock()
-        mock_windows.filter.return_value = [mock_window]
+        mock_agents_window = mock_libtmux_server["agents_window"]
+
+        # Set up pane with matching title
+        mock_pane = MagicMock()
+        mock_pane.pane_title = "review-456"
+        mock_agents_window.panes = [mock_pane]
 
         tmux_manager._session = mock_session  # Set directly
 
         result = tmux_manager.window_exists_by_name("review-456")
 
         assert result is True
-        mock_windows.filter.assert_called_with(window_name="review-456")
 
     def test_kill_window(self, tmux_manager, mock_libtmux_server):
-        """kill_window stops pipe-pane and kills the window."""
+        """kill_window stops pipe-pane and kills the pane."""
         mock_session = mock_libtmux_server["session"]
-        mock_window = MagicMock()
-        mock_pane = MagicMock()
-        mock_window.active_pane = mock_pane
-        mock_window.name = "#42-test"
+        mock_agents_window = mock_libtmux_server["agents_window"]
 
-        # Mock _find_issue_window to return our mock window
-        with patch.object(tmux_manager, "_find_issue_window", return_value=mock_window):
+        # Set up pane with matching title
+        mock_pane = MagicMock()
+        mock_pane.pane_title = "#42-test"
+        mock_agents_window.panes = [mock_pane]
+
+        tmux_manager._session = mock_session  # Set directly
+
+        # Mock _find_issue_pane to return our mock pane
+        with patch.object(tmux_manager, "_find_issue_pane", return_value=mock_pane):
             tmux_manager.kill_window(42)
 
         # Verify pipe-pane was stopped (prevents lingering subprocesses)
-        mock_pane.cmd.assert_called_once_with("pipe-pane")
-        mock_window.kill.assert_called_once()
+        mock_pane.cmd.assert_called_with("pipe-pane")
+        mock_pane.kill.assert_called_once()
 
     def test_send_keys_by_name(self, tmux_manager, mock_libtmux_server):
-        """send_keys_by_name sends keys to window by name."""
+        """send_keys_by_name sends keys to pane by title."""
         mock_session = mock_libtmux_server["session"]
-        mock_windows = mock_libtmux_server["windows"]
-        mock_window = MagicMock()
+        mock_agents_window = mock_libtmux_server["agents_window"]
+
+        # Set up pane with matching title
         mock_pane = MagicMock()
-        mock_window.active_pane = mock_pane
-        mock_windows.filter.return_value = [mock_window]
+        mock_pane.pane_title = "review-456"
+        mock_agents_window.panes = [mock_pane]
 
         tmux_manager._session = mock_session  # Set directly
 
@@ -585,11 +601,12 @@ class TestTmuxManagerIntegration:
     def test_send_keys_by_name_no_enter(self, tmux_manager, mock_libtmux_server):
         """send_keys_by_name can send keys without pressing enter."""
         mock_session = mock_libtmux_server["session"]
-        mock_windows = mock_libtmux_server["windows"]
-        mock_window = MagicMock()
+        mock_agents_window = mock_libtmux_server["agents_window"]
+
+        # Set up pane with matching title
         mock_pane = MagicMock()
-        mock_window.active_pane = mock_pane
-        mock_windows.filter.return_value = [mock_window]
+        mock_pane.pane_title = "review-456"
+        mock_agents_window.panes = [mock_pane]
 
         tmux_manager._session = mock_session  # Set directly
 
@@ -601,12 +618,14 @@ class TestTmuxManagerIntegration:
     def test_list_issue_windows_new_format(self, tmux_manager, mock_libtmux_server):
         """list_issue_windows extracts issue numbers from new format (#N-title)."""
         mock_session = mock_libtmux_server["session"]
-        mock_window1 = MagicMock()
-        mock_window1.name = "#42-fix-bug"
-        mock_window2 = MagicMock()
-        mock_window2.name = "#123-add-feature"
-        # Make windows iterable
-        mock_session.windows = [mock_window1, mock_window2]
+        mock_agents_window = mock_libtmux_server["agents_window"]
+
+        # Set up panes with new format titles
+        pane1 = MagicMock()
+        pane1.pane_title = "#42-fix-bug"
+        pane2 = MagicMock()
+        pane2.pane_title = "#123-add-feature"
+        mock_agents_window.panes = [pane1, pane2]
 
         tmux_manager._session = mock_session  # Set directly
 
@@ -617,12 +636,14 @@ class TestTmuxManagerIntegration:
     def test_list_issue_windows_old_format(self, tmux_manager, mock_libtmux_server):
         """list_issue_windows extracts issue numbers from old format (issue-N)."""
         mock_session = mock_libtmux_server["session"]
-        mock_window1 = MagicMock()
-        mock_window1.name = "issue-42"
-        mock_window2 = MagicMock()
-        mock_window2.name = "issue-123"
-        # Make windows iterable
-        mock_session.windows = [mock_window1, mock_window2]
+        mock_agents_window = mock_libtmux_server["agents_window"]
+
+        # Set up panes with old format titles
+        pane1 = MagicMock()
+        pane1.pane_title = "issue-42"
+        pane2 = MagicMock()
+        pane2.pane_title = "issue-123"
+        mock_agents_window.panes = [pane1, pane2]
 
         tmux_manager._session = mock_session  # Set directly
 
@@ -631,15 +652,17 @@ class TestTmuxManagerIntegration:
         assert result == [42, 123]
 
     def test_list_issue_windows_mixed_formats(self, tmux_manager, mock_libtmux_server):
-        """list_issue_windows handles mixed formats and skips non-issue windows."""
+        """list_issue_windows handles mixed formats and skips non-issue panes."""
         mock_session = mock_libtmux_server["session"]
-        windows = []
-        for name in ["#42-fix", "issue-99", "dashboard", "random"]:
-            w = MagicMock()
-            w.name = name
-            windows.append(w)
-        # Make windows iterable
-        mock_session.windows = windows
+        mock_agents_window = mock_libtmux_server["agents_window"]
+
+        # Set up panes with mixed titles
+        panes = []
+        for title in ["#42-fix", "issue-99", "dashboard", "random"]:
+            p = MagicMock()
+            p.pane_title = title
+            panes.append(p)
+        mock_agents_window.panes = panes
 
         tmux_manager._session = mock_session  # Set directly
 
@@ -649,13 +672,18 @@ class TestTmuxManagerIntegration:
 
     def test_capture_pane_output(self, tmux_manager, mock_libtmux_server):
         """capture_pane_output retrieves output from pane."""
-        mock_window = MagicMock()
-        mock_pane = MagicMock()
-        mock_window.active_pane = mock_pane
-        mock_pane.capture_pane.return_value = ["line1", "line2", "line3"]
+        mock_session = mock_libtmux_server["session"]
+        mock_agents_window = mock_libtmux_server["agents_window"]
 
-        with patch.object(tmux_manager, "get_window", return_value=mock_window):
-            result = tmux_manager.capture_pane_output(42, lines=20)
+        # Set up pane with matching title
+        mock_pane = MagicMock()
+        mock_pane.pane_title = "issue-42"
+        mock_pane.capture_pane.return_value = ["line1", "line2", "line3"]
+        mock_agents_window.panes = [mock_pane]
+
+        tmux_manager._session = mock_session  # Set directly
+
+        result = tmux_manager.capture_pane_output(42, lines=20)
 
         assert result == "line1\nline2\nline3"
         mock_pane.capture_pane.assert_called_once_with(start=-20)

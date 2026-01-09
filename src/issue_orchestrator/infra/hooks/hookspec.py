@@ -172,6 +172,21 @@ class TerminalSpec:
         For tmux: kills the entire session (atomic cleanup of all windows).
         """
 
+    @hookspec(firstresult=True)
+    def terminal_health_check(self) -> dict | None:
+        """Check health of the terminal backend.
+
+        Returns a dict with health status:
+        {
+            "healthy": bool,
+            "server_running": bool,
+            "session_exists": bool,
+            "error": str | None,
+        }
+
+        Returns None if not implemented.
+        """
+
 
 class TraceEventSpec:
     """Hook specification for trace event broadcasting.

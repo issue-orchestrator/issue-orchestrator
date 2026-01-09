@@ -254,6 +254,46 @@ async def snapshot() -> JSONResponse:
         return JSONResponse({"error": "snapshot_failed", "detail": str(exc)}, status_code=500)
 
 
+@control_app.get("/api/health")
+async def health() -> JSONResponse:
+    """Get health status of orchestrator components.
+
+    Returns status of:
+    - orchestrator: running/not initialized
+    - terminal: tmux server and session health
+    """
+    health_data: dict = {
+        "orchestrator": {"status": "not_initialized"},
+        "terminal": {"status": "unknown"},
+    }
+
+    if _orchestrator is None:
+        return JSONResponse(health_data, status_code=503)
+
+    health_data["orchestrator"] = {
+        "status": "running",
+        "paused": _orchestrator.state.paused,
+        "active_sessions": len(_orchestrator.state.active_sessions),
+    }
+
+    # Get terminal health via hook
+    try:
+        terminal_health = _orchestrator.deps.runner.terminal_health_check()
+        if terminal_health:
+            health_data["terminal"] = terminal_health
+        else:
+            health_data["terminal"] = {"status": "no_plugin"}
+    except Exception as e:
+        health_data["terminal"] = {"status": "error", "error": str(e)}
+
+    # Overall health
+    terminal_ok = health_data["terminal"].get("healthy", False)
+    health_data["overall"] = "healthy" if terminal_ok else "degraded"
+
+    status_code = 200 if terminal_ok else 503
+    return JSONResponse(health_data, status_code=status_code)
+
+
 @control_app.post("/api/shutdown")
 async def shutdown() -> JSONResponse:
     """Request graceful shutdown of the orchestrator."""
@@ -262,12 +302,6 @@ async def shutdown() -> JSONResponse:
 
     _orchestrator.request_shutdown()
     return JSONResponse({"status": "shutdown_requested"})
-
-
-@control_app.get("/api/health")
-async def health() -> JSONResponse:
-    """Health check endpoint."""
-    return JSONResponse({"status": "ok"})
 
 
 @control_app.post("/control/shutdown")

@@ -468,16 +468,50 @@ class TestEventsStatsEndpoint:
 class TestHealthEndpoint:
     """Test the GET /api/health endpoint."""
 
-    def test_health_always_returns_ok(self):
-        """Health endpoint returns ok regardless of orchestrator state."""
-        # Health should work even without orchestrator
+    def test_health_returns_degraded_when_orchestrator_not_initialized(self):
+        """Health endpoint returns 503 when orchestrator is not initialized."""
         set_orchestrator(None)
         client = TestClient(control_app)
 
         response = client.get("/api/health")
 
+        assert response.status_code == 503
+        data = response.json()
+        assert data["orchestrator"]["status"] == "not_initialized"
+        assert "terminal" in data
+
+    def test_health_returns_degraded_when_terminal_unhealthy(self, client_with_orchestrator):
+        """Health endpoint returns 503 when terminal health check fails."""
+        client, mock_orchestrator = client_with_orchestrator
+
+        # Mock unhealthy terminal
+        mock_orchestrator.deps.runner.terminal_health_check.return_value = {"healthy": False, "error": "test"}
+
+        response = client.get("/api/health")
+
+        assert response.status_code == 503
+        data = response.json()
+        assert data["orchestrator"]["status"] == "running"
+        assert data["overall"] == "degraded"
+
+    def test_health_returns_healthy_when_terminal_ok(self, client_with_orchestrator):
+        """Health endpoint returns 200 when everything is healthy."""
+        client, mock_orchestrator = client_with_orchestrator
+
+        # Mock healthy terminal
+        mock_orchestrator.deps.runner.terminal_health_check.return_value = {
+            "healthy": True,
+            "server_running": True,
+            "session_exists": True,
+            "backend": "tmux",
+        }
+
+        response = client.get("/api/health")
+
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        data = response.json()
+        assert data["orchestrator"]["status"] == "running"
+        assert data["overall"] == "healthy"
 
 
 # --- Test: GH Audit Report Endpoint ---
