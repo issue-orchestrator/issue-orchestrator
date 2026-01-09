@@ -188,6 +188,40 @@ def check_layer_boundaries(path: Path, tree: ast.AST, rules: dict) -> list[Viola
     return violations
 
 
+def check_attr_call_rules(path: Path, tree: ast.AST, rules: dict) -> list[Violation]:
+    """Check attribute call rules (e.g., disallow get_issue_labels in control)."""
+    violations: list[Violation] = []
+    attr_rules = rules.get("deny_attr_calls", []) or []
+
+    for rule in attr_rules:
+        deny_in = rule.get("deny_in", []) or []
+        deny_attr_names = set(rule.get("deny_attr_names", []) or [])
+        allow = rule.get("allow", []) or []
+        rule_name = rule.get("name", "deny-attr-call")
+
+        p = path.as_posix()
+        in_denied_path = any(p.startswith(prefix.rstrip("/")) for prefix in deny_in)
+        is_allowed_file = any(p == allowed or p.startswith(allowed.rstrip("/") + "/") for allowed in allow)
+
+        if not in_denied_path or is_allowed_file:
+            continue
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr in deny_attr_names:
+                    violations.append(
+                        Violation(
+                            path.as_posix(),
+                            node.lineno,
+                            node.col_offset,
+                            rule_name,
+                            f"{node.func.attr}(...)",
+                        )
+                    )
+
+    return violations
+
+
 def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[Violation]:
     allow_general = is_allowed(path, allow_prefixes)
 
@@ -200,6 +234,7 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
 
     # Check layer boundary rules first
     violations.extend(check_layer_boundaries(path, tree, rules))
+    violations.extend(check_attr_call_rules(path, tree, rules))
 
     deny_imports = set(rules.get("deny_imports", []) or [])
     deny_dynamic_imports = set(rules.get("deny_dynamic_imports", []) or [])

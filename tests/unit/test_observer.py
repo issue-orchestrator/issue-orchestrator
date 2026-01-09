@@ -50,30 +50,39 @@ def mock_repository_host():
     """Create a mock RepositoryHost port."""
     host = MagicMock()
     host.get_prs_for_branch.return_value = []
-    host.get_issue_labels_fresh.return_value = []
     host.add_label.return_value = None
     host.remove_label.return_value = None
     return host
 
 
 @pytest.fixture
-def monitor(mock_config, mock_session_runner, mock_repository_host):
+def mock_fresh_issue_reader():
+    """Create a mock FreshIssueReader port."""
+    reader = MagicMock()
+    reader.read_issue_labels.return_value = []
+    return reader
+
+
+@pytest.fixture
+def monitor(mock_config, mock_session_runner, mock_repository_host, mock_fresh_issue_reader):
     """Create a SessionObserver instance for testing."""
     return SessionObserver(
         mock_config,
         session_runner=mock_session_runner,
         repository_host=mock_repository_host,
+        fresh_issue_reader=mock_fresh_issue_reader,
     )
 
 
 @pytest.fixture
-def monitor_with_machines(mock_config, mock_session_runner, mock_repository_host):
+def monitor_with_machines(mock_config, mock_session_runner, mock_repository_host, mock_fresh_issue_reader):
     """Create a SessionObserver instance with mock session machines for testing."""
     return SessionObserver(
         mock_config,
         session_machines={},
         session_runner=mock_session_runner,
         repository_host=mock_repository_host,
+        fresh_issue_reader=mock_fresh_issue_reader,
     )
 
 
@@ -304,36 +313,51 @@ class TestCheckSession:
         assert status == SessionStatus.COMPLETED
 
     def test_check_session_blocked_label(
-        self, monitor, sample_session, mock_session_runner, mock_repository_host
+        self,
+        monitor,
+        sample_session,
+        mock_session_runner,
+        mock_repository_host,
+        mock_fresh_issue_reader,
     ):
         """Test check_session returns BLOCKED when issue has blocked label."""
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
-        mock_repository_host.get_issue_labels_fresh.return_value = ["blocked"]
+        mock_fresh_issue_reader.read_issue_labels.return_value = ["blocked"]
 
         status = monitor.check_session(sample_session)
 
         assert status == SessionStatus.BLOCKED
 
     def test_check_session_needs_human_label(
-        self, monitor, sample_session, mock_session_runner, mock_repository_host
+        self,
+        monitor,
+        sample_session,
+        mock_session_runner,
+        mock_repository_host,
+        mock_fresh_issue_reader,
     ):
         """Test check_session returns NEEDS_HUMAN when issue has needs-human label."""
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
-        mock_repository_host.get_issue_labels_fresh.return_value = ["needs-human"]
+        mock_fresh_issue_reader.read_issue_labels.return_value = ["needs-human"]
 
         status = monitor.check_session(sample_session)
 
         assert status == SessionStatus.NEEDS_HUMAN
 
     def test_check_session_failed_no_markers(
-        self, monitor, sample_session, mock_session_runner, mock_repository_host
+        self,
+        monitor,
+        sample_session,
+        mock_session_runner,
+        mock_repository_host,
+        mock_fresh_issue_reader,
     ):
         """Test check_session returns FAILED when no success markers."""
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
-        mock_repository_host.get_issue_labels_fresh.return_value = []
+        mock_fresh_issue_reader.read_issue_labels.return_value = []
 
         status = monitor.check_session(sample_session)
 
@@ -1088,12 +1112,17 @@ class TestCheckSessionExceptionHandling:
         assert status == SessionStatus.RUNNING
 
     def test_check_session_handles_label_lookup_exception(
-        self, monitor, sample_session, mock_session_runner, mock_repository_host
+        self,
+        monitor,
+        sample_session,
+        mock_session_runner,
+        mock_repository_host,
+        mock_fresh_issue_reader,
     ):
         """Test check_session falls back to stale labels on exception."""
         mock_session_runner.session_exists_by_name.return_value = False
         mock_repository_host.get_prs_for_branch.return_value = []
-        mock_repository_host.get_issue_labels_fresh.side_effect = Exception("API error")
+        mock_fresh_issue_reader.read_issue_labels.side_effect = Exception("API error")
 
         # Should not raise, should use fallback (empty labels -> FAILED)
         status = monitor.check_session(sample_session)
@@ -1309,7 +1338,12 @@ class TestCheckSessionPRLookupOnExit:
     """Test PR lookup exception handling after session exits."""
 
     def test_check_session_handles_pr_lookup_exception_after_exit(
-        self, monitor, sample_session, mock_session_runner, mock_repository_host
+        self,
+        monitor,
+        sample_session,
+        mock_session_runner,
+        mock_repository_host,
+        mock_fresh_issue_reader,
     ):
         """Test check_session handles exception when looking up PRs for exited session."""
         mock_session_runner.session_exists_by_name.return_value = False
@@ -1319,7 +1353,7 @@ class TestCheckSessionPRLookupOnExit:
         status = monitor.check_session(sample_session)
 
         # PR check failed, so should check labels next
-        mock_repository_host.get_issue_labels_fresh.assert_called()
+        mock_fresh_issue_reader.read_issue_labels.assert_called()
         assert status == SessionStatus.FAILED
 
 

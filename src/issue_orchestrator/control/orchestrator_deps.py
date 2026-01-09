@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         CommandRunner,
         HookVerifier,
     )
+    from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
     from .planner import Planner
@@ -51,6 +52,7 @@ class OrchestratorDeps:
         events: Event sink for publishing trace events
         runner: Session runner for terminal operations
         repository_host: GitHub adapter for issue/PR operations
+        fresh_issue_reader: FreshIssueReader for correctness-critical reads
         event_hub: Event hub for internal event distribution
         planner: Planning engine for action generation
         session_manager: Manages terminal sessions
@@ -75,6 +77,7 @@ class OrchestratorDeps:
 
     # Repository adapter
     repository_host: "RepositoryHost"
+    fresh_issue_reader: "FreshIssueReader"
 
     # Event distribution
     event_hub: "EventHub"

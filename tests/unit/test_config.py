@@ -429,6 +429,11 @@ labels:
         config = Config()
         assert config.queue_refresh_seconds == 600
 
+    def test_github_cache_ttl_seconds_default(self):
+        """Test that github_cache_ttl_seconds defaults to 300."""
+        config = Config()
+        assert config.github_cache_ttl_seconds == 300
+
     def test_github_write_verify_defaults(self):
         """Test that gh write-verify defaults are set."""
         config = Config()
@@ -508,6 +513,22 @@ agents:
         config = Config.load(config_file)
 
         assert config.queue_refresh_seconds == 300
+
+    def test_github_cache_ttl_seconds_from_yaml(self, tmp_path):
+        """Test loading github_cache_ttl_seconds from YAML."""
+        config_content = """
+github_cache_ttl_seconds: 120
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+    worktree_base: /tmp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.github_cache_ttl_seconds == 120
 
     def test_session_output_settings_from_yaml(self, tmp_path):
         """Test loading session output settings from YAML."""

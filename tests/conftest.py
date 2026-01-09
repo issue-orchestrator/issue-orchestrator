@@ -101,10 +101,6 @@ class MockGitHubAdapter:
         """Get labels for an issue."""
         return list(self.labels.get(issue_number, set()))
 
-    def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
-        """Get labels for an issue, bypassing caches (tests treat as same)."""
-        return self.get_issue_labels(issue_number)
-
     # LabelManager methods
     def add_label(self, issue_number: int, label: str) -> None:
         """Add a label to an issue."""
@@ -534,13 +530,16 @@ def build_test_orchestrator_deps(
     hook_verifier.verify = AsyncMock(return_value=MagicMock(success=True, message="ok"))
     hook_verifier.raise_on_failure = MagicMock()
 
+    fresh_reader = MagicMock()
+    fresh_reader.read_issue_labels.return_value = []
+
     _action_applier = action_applier or ActionApplier(
         labels=repo_host,
         sessions=_session_manager,
         events=events,
         repository_host=repo_host,
         worktree_manager=worktree_manager,
-        issue_tracker=repo_host,
+        fresh_issue_reader=fresh_reader,
         reconcile=False,
     )
 
@@ -563,6 +562,7 @@ def build_test_orchestrator_deps(
         events=events,
         runner=runner,
         repository_host=repo_host,
+        fresh_issue_reader=fresh_reader,
         event_hub=event_hub,
         planner=_planner,
         session_manager=_session_manager,

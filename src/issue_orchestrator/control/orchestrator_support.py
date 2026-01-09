@@ -71,6 +71,7 @@ def init_orchestrator_components(orch: "Orchestrator", dep_eval: "DependencyEval
         events=orch.deps.events,
         session_runner=orch.deps.runner,
         repository_host=orch.deps.repository_host,
+        fresh_issue_reader=orch.deps.fresh_issue_reader,
     )
     orch.observer.session_machines = orch.deps.state_machine_manager.session_machines
 
