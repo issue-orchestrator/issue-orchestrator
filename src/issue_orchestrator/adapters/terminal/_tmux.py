@@ -611,7 +611,8 @@ class TmuxManager:
             scrub_env=True,
             isolate_home=False,
         )
-        setup_cmd = f'export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
+        # CRITICAL: cd to working directory first, then set up isolation
+        setup_cmd = f'cd "{working_dir}" && export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
         # Enable logging
         try:
@@ -853,9 +854,8 @@ class TmuxManager:
         if session is None:
             return False
 
-        # Use duck typing for mock compatibility
-        if hasattr(session, "pane_title"):
-            # Pane mode: select agents window, then pane
+        # In pane mode, select agents window first, then the pane
+        if self._is_pane_mode():
             agents_window = self._get_agents_window()
             if agents_window:
                 agents_window.select()
