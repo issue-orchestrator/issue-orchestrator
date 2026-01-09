@@ -5,6 +5,26 @@ Uses a session-per-orchestrator architecture:
 - Each agent session (code, review, rework, triage) gets its own window
 - Atomic cleanup: kill_session() removes ALL windows at once
 - No global state - TmuxManager instances are created via factory
+
+LIBTMUX QUIRKS (documented with tests in tests/integration/test_tmux_live.py):
+==============================================================================
+
+1. pane.pane_title is ALWAYS None:
+   - libtmux does NOT auto-populate the pane_title attribute
+   - You MUST use pane.cmd("display-message", "-p", "#{pane_title}") to get it
+   - This is the root cause of many session lookup/focus/kill bugs
+   - Use self._get_pane_title(pane) helper method, NEVER getattr(pane, "pane_title")
+
+2. server.sessions.filter() returns empty list, not exception:
+   - filter(session_name="nonexistent") returns [] not raises
+   - Contrast with .get() which may raise
+   - Always check len() of filter result
+
+3. Use libtmux API for all tmux operations:
+   - server.new_session() instead of subprocess.run(["tmux", "new-session", ...])
+   - session.new_window() instead of subprocess.run(["tmux", "new-window", ...])
+   - session.kill() instead of subprocess.run(["tmux", "kill-session", ...])
+   - pane.cmd("select-pane", "-T", title) to set pane title
 """
 
 import logging
