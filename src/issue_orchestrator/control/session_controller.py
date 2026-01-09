@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 from ..events import EventName
 from ..domain.models import SessionStatus
+from ..infra.logging_config import issue_log
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
 
@@ -109,10 +110,8 @@ class SessionController:
         # If still running, nothing to decide
         if observation.observation == SessionObservation.RUNNING:
             logger.debug(
-                "Session still running: issue=%s session=%s observation=%s",
-                issue_number,
+                issue_log(issue_number, "Session still running: session=%s"),
                 session_name,
-                observation.observation.value,
             )
             return SessionDecision(
                 status=SessionStatus.RUNNING,
@@ -124,11 +123,9 @@ class SessionController:
         # Each agent writes to its own file (based on completion_path)
         full_path = (worktree_path / completion_path).resolve() if completion_path else (worktree_path / ".issue-orchestrator/completion.json").resolve()
         logger.info(
-            "Session not running: issue=%s session=%s observation=%s worktree=%s completion=%s",
-            issue_number,
+            issue_log(issue_number, "Session not running: session=%s observation=%s checking_completion=%s"),
             session_name,
             observation.observation.value,
-            worktree_path,
             completion_path or ".issue-orchestrator/completion.json",
         )
         self._emit_event(EventName.COMPLETION_LOOKUP, {
@@ -147,13 +144,10 @@ class SessionController:
             except OSError:
                 size = None
         logger.info(
-            "Completion lookup: session=%s issue=%s worktree=%s completion=%s exists=%s size=%s",
-            session_name,
-            issue_number,
-            worktree_path,
-            full_path,
+            issue_log(issue_number, "Completion lookup: exists=%s size=%s path=%s"),
             exists,
             size,
+            full_path,
         )
         record = self.completion_processor.read_completion_record(worktree_path, completion_path)
 
@@ -168,10 +162,6 @@ class SessionController:
                     content = log_path.read_text()
                     lines = content.strip().split("\n")
                     session_log = "\n".join(lines[-50:])
-                    logger.warning(
-                        "Session %s failed. Last output:\n%s",
-                        session_name, session_log
-                    )
                 except Exception as e:
                     logger.debug("Could not read session log: %s", e)
 
@@ -183,11 +173,29 @@ class SessionController:
             })
 
             if observation.observation == SessionObservation.TIMED_OUT:
+                logger.warning(
+                    issue_log(issue_number, "SESSION COMPLETE: status=TIMED_OUT outcome=none reason=no_completion_record session=%s"),
+                    session_name,
+                )
+                if session_log:
+                    logger.warning(
+                        issue_log(issue_number, "LAST OUTPUT:\n%s"),
+                        session_log,
+                    )
                 return SessionDecision(
                     status=SessionStatus.TIMED_OUT,
                     reason="Timed out without completion record",
                 )
             else:
+                logger.error(
+                    issue_log(issue_number, "SESSION COMPLETE: status=FAILED outcome=none reason=no_completion_record session=%s"),
+                    session_name,
+                )
+                if session_log:
+                    logger.error(
+                        issue_log(issue_number, "LAST OUTPUT:\n%s"),
+                        session_log,
+                    )
                 return SessionDecision(
                     status=SessionStatus.FAILED,
                     reason="Terminated without completion record",
@@ -199,8 +207,8 @@ class SessionController:
 
         if recovered:
             logger.info(
-                "Session %s timed out but has completion.json - recovering work",
-                session_name,
+                issue_log(issue_number, "Session timed out but has completion.json - recovering work: outcome=%s"),
+                record.outcome.value,
             )
             self._emit_event(EventName.SESSION_TIMEOUT_RECOVERED, {
                 "issue_number": issue_number,
@@ -248,6 +256,28 @@ class SessionController:
             CompletionOutcome.REVIEW_CHANGES_REQUESTED: SessionStatus.COMPLETED,
         }
         status = outcome_to_status.get(record.outcome, SessionStatus.FAILED)
+
+        # Log the session completion summary
+        pr_url = result.pr_url or "none"
+        if result.success:
+            logger.info(
+                issue_log(issue_number, "SESSION COMPLETE: status=%s outcome=%s pr=%s recovered=%s session=%s"),
+                status.value,
+                record.outcome.value,
+                pr_url,
+                recovered,
+                session_name,
+            )
+        else:
+            logger.error(
+                issue_log(issue_number, "SESSION COMPLETE: status=%s outcome=%s pr=%s recovered=%s errors=%s session=%s"),
+                status.value,
+                record.outcome.value,
+                pr_url,
+                recovered,
+                result.errors,
+                session_name,
+            )
 
         return SessionDecision(
             status=status,

@@ -204,3 +204,24 @@ def log_context(**kwargs: Any) -> dict[str, Any]:
         Dict suitable for logger's extra= parameter
     """
     return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def issue_log(issue_number: int, message: str) -> str:
+    """Prefix message with issue number for easy grepping.
+
+    Usage:
+        logger.info(issue_log(123, "Session starting: type=%s"), task_type)
+
+    This produces: "[issue-123] Session starting: type=code"
+
+    Grep all logs for an issue:
+        grep "\\[issue-123\\]" orchestrator.log
+
+    Args:
+        issue_number: The GitHub issue number
+        message: The log message (can contain format placeholders)
+
+    Returns:
+        Message prefixed with [issue-N]
+    """
+    return f"[issue-{issue_number}] {message}"

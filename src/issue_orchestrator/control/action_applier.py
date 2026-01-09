@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from ..events import EventName
+from ..infra.logging_config import issue_log
 from ..ports import EventSink, TraceEvent
 from ..ports.label_set import LabelSet
 from ..ports.fresh_issue_reader import FreshIssueReader
@@ -166,6 +167,7 @@ class ActionApplier:
 
         try:
             self.labels.add_label(action.issue_number, action.label)
+            logger.info(issue_log(action.issue_number, "Label added: %s"), action.label)
             self._emit_issue_labels_changed(action.issue_number, [action.label], [])
             return ActionResult.ok(
                 action,
@@ -173,6 +175,7 @@ class ActionApplier:
                 label=action.label,
             )
         except Exception as e:
+            logger.error(issue_log(action.issue_number, "Failed to add label %s: %s"), action.label, e)
             return ActionResult.fail(action, str(e))
 
     def _apply_remove_label(self, action: Action) -> ActionResult:
@@ -184,6 +187,7 @@ class ActionApplier:
 
         try:
             self.labels.remove_label(action.issue_number, action.label)
+            logger.info(issue_log(action.issue_number, "Label removed: %s"), action.label)
             self._emit_issue_labels_changed(action.issue_number, [], [action.label])
             return ActionResult.ok(
                 action,
@@ -191,6 +195,7 @@ class ActionApplier:
                 label=action.label,
             )
         except Exception as e:
+            logger.error(issue_log(action.issue_number, "Failed to remove label %s: %s"), action.label, e)
             return ActionResult.fail(action, str(e))
 
     def _apply_add_comment(self, action: Action) -> ActionResult:
@@ -203,12 +208,14 @@ class ActionApplier:
 
         try:
             self.repository_host.add_comment(action.number, action.comment)
+            logger.info(issue_log(action.number, "Comment added (%d chars)"), len(action.comment))
             return ActionResult.ok(
                 action,
                 number=action.number,
                 is_pr=action.is_pr,
             )
         except Exception as e:
+            logger.error(issue_log(action.number, "Failed to add comment: %s"), e)
             return ActionResult.fail(action, str(e))
 
     def _fetch_current_labels(self, issue_number: int) -> set[str] | None:
@@ -224,8 +231,8 @@ class ActionApplier:
             return set(labels)
         except Exception as e:
             logger.warning(
-                "Failed to fetch labels for issue #%d: %s",
-                issue_number, e
+                issue_log(issue_number, "Failed to fetch labels for reconciliation: %s"),
+                e,
             )
             return None
 
@@ -256,8 +263,7 @@ class ActionApplier:
         if current_labels is None:
             # Can't verify - fail closed (require fresh_issue_reader for reconciliation)
             logger.warning(
-                "Reconciliation required but cannot fetch labels for #%d - failing closed",
-                issue_number
+                issue_log(issue_number, "Reconciliation required but cannot fetch labels - failing closed"),
             )
             raise ReconciliationRequired(
                 entity_type="issue",
@@ -296,8 +302,7 @@ class ActionApplier:
         if current is None:
             # Can't verify - proceed with warning
             logger.warning(
-                "Reconciliation enabled but cannot fetch labels for #%d",
-                issue_number
+                issue_log(issue_number, "Reconciliation enabled but cannot fetch labels"),
             )
             return True, "Cannot fetch current labels", set()
 
@@ -305,7 +310,7 @@ class ActionApplier:
         missing_to_remove = set(remove_labels) - current
         if missing_to_remove:
             msg = f"Labels to remove not present: {missing_to_remove}"
-            logger.warning("Reconciliation: %s for issue #%d", msg, issue_number)
+            logger.warning(issue_log(issue_number, "Reconciliation: %s"), msg)
             # This is a warning, not a hard failure - label may have been
             # removed externally which is fine
             self.events.publish(TraceEvent(
@@ -542,7 +547,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 errors.append(f"add comment: {e}")
 
         logger.warning(
-            "PR #%d escalated to %s after %d rework cycles",
+            issue_log(action.issue_number, "PR #%d escalated to %s after %d rework cycles"),
             action.pr_number, action.needs_human_label, action.rework_cycles,
         )
 
@@ -610,7 +615,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         if self.labels and action.code_review_label and action.pr_number:
             try:
                 self.labels.add_label(action.pr_number, action.code_review_label)
-                logger.info("Added '%s' label to PR #%d", action.code_review_label, action.pr_number)
+                logger.info(issue_log(action.issue_number, "Review label '%s' added to PR #%d"), action.code_review_label, action.pr_number)
                 self._emit_pr_view_changed(
                     pr_number=action.pr_number,
                     issue_number=action.issue_number,
@@ -618,7 +623,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     removed=[],
                 )
             except Exception as e:
-                logger.warning("Failed to add review label to PR #%d: %s", action.pr_number, e)
+                logger.warning(issue_log(action.issue_number, "Failed to add review label to PR #%d: %s"), action.pr_number, e)
 
         self.events.publish(TraceEvent(EventName.REVIEW_QUEUED, {
             "pr_number": action.pr_number,
@@ -710,14 +715,13 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 if self.sessions.exists(ref):
                     self.sessions.stop(ref)
                     logger.info(
-                        "[APPLIER] Closed terminal session for #%d",
-                        action.issue_number
+                        issue_log(action.issue_number, "Closed terminal session"),
                     )
             except Exception as e:
                 errors.append(f"close session: {e}")
                 logger.warning(
-                    "[APPLIER] Failed to close session for #%d: %s",
-                    action.issue_number, e
+                    issue_log(action.issue_number, "Failed to close session: %s"),
+                    e,
                 )
 
         # Remove worktree if configured
@@ -726,14 +730,14 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 try:
                     self.worktree_manager.remove(Path(action.worktree_path))
                     logger.info(
-                        "[APPLIER] Removed worktree for #%d",
-                        action.issue_number
+                        issue_log(action.issue_number, "Removed worktree: %s"),
+                        action.worktree_path,
                     )
                 except Exception as e:
                     errors.append(f"remove worktree: {e}")
                     logger.warning(
-                        "[APPLIER] Failed to remove worktree for #%d: %s",
-                        action.issue_number, e
+                        issue_log(action.issue_number, "Failed to remove worktree: %s"),
+                        e,
                     )
             else:
                 errors.append("no worktree_manager configured")

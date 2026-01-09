@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Sequence
 
 from ..infra.config import Config
+from ..infra.logging_config import issue_log
 from ..ports.issue import Issue
 from ..domain.models import (
     Session,
@@ -639,6 +640,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         # Record dependency-blocked items and add cross-milestone labels
         for issue, reason in dependency_blocked:
+            logger.info(issue_log(issue.number, "Skipped: reason=blocked_by_dependency detail=%s"), reason)
             skipped.append(SkippedItem(
                 item_type="issue",
                 number=issue.number,
@@ -678,7 +680,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 number=issue.number,
                 reason="failed this cycle - waiting for cache refresh",
             ))
-            logger.debug("Planner: skipping issue #%d - failed this cycle", issue.number)
+            logger.info(issue_log(issue.number, "Skipped: reason=failed_this_cycle"))
 
         # Pick next batch based on priority
         to_launch = self.scheduler.pick_next_batch(
@@ -689,12 +691,17 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         # Create launch actions
         for issue in to_launch[:capacity]:
+            priority_reason = self._get_priority_reason(issue)
+            logger.info(
+                issue_log(issue.number, "Selected for session: type=code priority=%s slots_available=%d"),
+                priority_reason, capacity
+            )
             actions.append(LaunchSessionAction(
                 session_type="issue",
                 number=issue.number,
                 command="",  # Orchestrator will fill in
                 working_dir="",  # Orchestrator will fill in
-                reason=f"scheduled: priority={self._get_priority_reason(issue)}",
+                reason=f"scheduled: priority={priority_reason}",
             ))
 
         return actions, skipped, len(actions)
@@ -719,6 +726,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         if decision.skip_reason:
             for review in snapshot.pending_reviews:
+                logger.info(
+                    issue_log(review.issue_number, "Skipped review: pr=#%d reason=%s"),
+                    review.pr_number, decision.skip_reason
+                )
                 skipped.append(SkippedItem(
                     item_type="review",
                     number=review.pr_number,
@@ -728,6 +739,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         if decision.should_launch:
             for review in decision.reviews_to_launch[:capacity]:
+                logger.info(
+                    issue_log(review.issue_number, "Selected for session: type=review pr=#%d slots_available=%d"),
+                    review.pr_number, capacity
+                )
                 actions.append(LaunchSessionAction(
                     session_type="review",
                     number=review.pr_number,
@@ -760,6 +775,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             for rework in snapshot.pending_reworks:
                 # Use issue_key's stable_id for identification
                 issue_num = int(rework.issue_key.stable_id())
+                logger.info(
+                    issue_log(issue_num, "Skipped rework: cycle=%d reason=%s"),
+                    rework.rework_cycle, decision.skip_reason
+                )
                 skipped.append(SkippedItem(
                     item_type="rework",
                     number=issue_num,
@@ -773,6 +792,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 # Check for escalation
                 escalation = self.rework_workflow.should_escalate(rework.rework_cycle)
                 if escalation.should_escalate:
+                    logger.info(
+                        issue_log(issue_num, "Escalating to human: cycle=%d max=%d"),
+                        rework.rework_cycle, escalation.max_cycles
+                    )
                     actions.append(EscalateToHumanAction(
                         issue_number=issue_num,
                         pr_number=issue_num,  # PR resolved by adapter at execution time
@@ -785,6 +808,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         expected=build_expected_for_mutation(),
                     ))
                 else:
+                    logger.info(
+                        issue_log(issue_num, "Selected for session: type=rework cycle=%d slots_available=%d"),
+                        rework.rework_cycle, capacity
+                    )
                     actions.append(LaunchSessionAction(
                         session_type="rework",
                         number=issue_num,

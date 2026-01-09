@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 from ..domain import ProcessState
 from ..infra.config import Config
 from ..infra import labels
+from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
 from ..ports import EventSink, TraceEvent, NullEventSink
@@ -191,7 +192,8 @@ class SessionObserver:
                 exit_info = self._terminal_observer.get_exit_info(session.terminal_id)
                 if exit_info:
                     logger.info(
-                        f"[PANE_DEAD] Session #{session.issue.number} process exited: {exit_info}"
+                        issue_log(session.issue.number, "Process exited (pane_dead): %s"),
+                        exit_info,
                     )
             # ProcessState.UNKNOWN means we can't determine - fall back to window check
 
@@ -215,7 +217,8 @@ class SessionObserver:
                 # Check for required terminator fields
                 if all(k in data for k in ["session_id", "timestamp", "outcome", "summary"]):
                     logger.info(
-                        f"Session #{session.issue.number} has valid completion.json - agent work is done"
+                        issue_log(session.issue.number, "Valid completion.json detected: outcome=%s"),
+                        data.get("outcome"),
                     )
                     # Emit event for observability
                     self.events.publish(TraceEvent(
@@ -243,12 +246,12 @@ class SessionObserver:
                 prs = self._get_open_prs_for_branch(session.branch_name)
                 if prs:
                     logger.info(
-                        f"Session {session.terminal_id} has PR but still running - sending /exit"
+                        issue_log(session.issue.number, "Has PR but still running - sending /exit"),
                     )
                     if self._send_exit_to_session_by_name(session.terminal_id):
                         session.exit_sent = True
             except Exception as e:
-                logger.debug(f"Could not check for PRs: {e}")
+                logger.debug(issue_log(session.issue.number, "Could not check for PRs: %s"), e)
 
         # Build observation result
         if timeout_exceeded:
@@ -292,18 +295,14 @@ class SessionObserver:
 
                 if session_age < grace_period:
                     logger.info(
-                        "[GRACE_PERIOD] Session #%d only %.0fs old (< %ds grace) - "
-                        "treating as running despite session detection failure",
-                        session.issue.number,
+                        issue_log(session.issue.number, "GRACE_PERIOD: session only %.0fs old (< %ds grace) - treating as running"),
                         session_age,
                         grace_period,
                     )
                     result = SessionObservationResult.running(runtime_minutes=runtime)
                 elif log_is_progressing:
                     logger.info(
-                        "[LOG_ACTIVE] Session #%d log modified %.0fs ago (< %ds threshold) - "
-                        "treating as running despite session detection failure",
-                        session.issue.number,
+                        issue_log(session.issue.number, "LOG_ACTIVE: log modified %.0fs ago (< %ds threshold) - treating as running"),
                         log_age,
                         log_activity_threshold,
                     )
@@ -322,13 +321,11 @@ class SessionObserver:
                         )
                         if terminal_output:
                             logger.warning(
-                                "[FAILURE] Session #%d terminated without completion. "
-                                "Terminal output:\n%s",
-                                session.issue.number,
+                                issue_log(session.issue.number, "Terminated without completion. Terminal output:\n%s"),
                                 terminal_output[-2000:] if len(terminal_output) > 2000 else terminal_output,
                             )
                     except Exception as e:
-                        logger.debug("Could not capture terminal output: %s", e)
+                        logger.debug(issue_log(session.issue.number, "Could not capture terminal output: %s"), e)
 
         # Emit observation result for debugging (only for non-running sessions)
         if result.observation != SessionObservation.RUNNING:
@@ -439,18 +436,18 @@ class SessionObserver:
         machine = self.session_machines.get(session.terminal_id)
         if machine and machine.check_timeout():
             logger.info(
-                f"[STATE_MACHINE] Session {session.terminal_id} timed out "
-                f"(runtime: {machine._get_runtime_minutes():.1f}m, "
-                f"timeout: {machine.timeout_minutes}m)"
+                issue_log(session.issue.number, "Session timed out (state_machine): runtime=%.1fm timeout=%dm"),
+                machine._get_runtime_minutes(),
+                machine.timeout_minutes,
             )
             return SessionStatus.TIMED_OUT
 
         # Fallback to session-level timeout check (for sessions without state machines)
         if session.is_timed_out:
             logger.info(
-                f"Session for issue #{session.issue.number} has timed out "
-                f"(runtime: {session.runtime_minutes}m, "
-                f"timeout: {session.agent_config.timeout_minutes}m)"
+                issue_log(session.issue.number, "Session timed out: runtime=%sm timeout=%sm"),
+                session.runtime_minutes,
+                session.agent_config.timeout_minutes,
             )
             return SessionStatus.TIMED_OUT
 
@@ -464,23 +461,22 @@ class SessionObserver:
                     prs = self._get_open_prs_for_branch(session.branch_name)
                     if prs:
                         logger.info(
-                            f"Session {session.terminal_id} has PR but still running - sending /exit"
+                            issue_log(session.issue.number, "Has PR but still running - sending /exit"),
                         )
                         if self._send_exit_to_session_by_name(session.terminal_id):
                             session.exit_sent = True
                 except Exception as e:
-                    logger.debug(f"Could not check for PRs: {e}")
+                    logger.debug(issue_log(session.issue.number, "Could not check for PRs: %s"), e)
 
             logger.debug(
-                f"Session for issue #{session.issue.number} still running "
-                f"(session: {session.terminal_id})"
+                issue_log(session.issue.number, "Still running: session=%s"),
+                session.terminal_id,
             )
             return SessionStatus.RUNNING
 
         # Session has exited, determine the outcome
         logger.debug(
-            f"Session for issue #{session.issue.number} has exited, "
-            f"checking completion status"
+            issue_log(session.issue.number, "Session exited, checking completion status"),
         )
 
         # Check if PR exists for the branch
@@ -488,43 +484,45 @@ class SessionObserver:
             prs = self._get_open_prs_for_branch(session.branch_name)
             if prs:
                 logger.info(
-                    f"Found {len(prs)} open PR(s) for branch {session.branch_name}, "
-                    f"marking session as COMPLETED"
+                    issue_log(session.issue.number, "Found %d open PR(s) for branch %s - COMPLETED"),
+                    len(prs),
+                    session.branch_name,
                 )
                 return SessionStatus.COMPLETED
         except Exception as e:
             logger.warning(
-                f"Failed to check for open PRs on branch {session.branch_name}: {e}"
+                issue_log(session.issue.number, "Failed to check for open PRs on branch %s: %s"),
+                session.branch_name,
+                e,
             )
 
         # Fetch fresh labels from GitHub (session.issue.labels is stale from launch time)
         try:
             current_labels = self._get_issue_labels(session.issue.number)
-            logger.debug(f"Fresh labels for #{session.issue.number}: {current_labels}")
+            logger.debug(issue_log(session.issue.number, "Fresh labels: %s"), current_labels)
         except Exception as e:
-            logger.warning(f"Failed to fetch labels for #{session.issue.number}: {e}")
+            logger.warning(issue_log(session.issue.number, "Failed to fetch labels: %s"), e)
             current_labels = session.issue.labels  # Fall back to stale labels
 
         # Check if issue has 'blocked' label
         if self.config.get_label_blocked() in current_labels:
             logger.info(
-                f"Issue #{session.issue.number} has '{self.config.get_label_blocked()}' label, "
-                f"marking session as BLOCKED"
+                issue_log(session.issue.number, "Has '%s' label - BLOCKED"),
+                self.config.get_label_blocked(),
             )
             return SessionStatus.BLOCKED
 
         # Check if issue has 'needs-human' label
         if self.config.get_label_needs_human() in current_labels:
             logger.info(
-                f"Issue #{session.issue.number} has '{self.config.get_label_needs_human()}' label, "
-                f"marking session as NEEDS_HUMAN"
+                issue_log(session.issue.number, "Has '%s' label - NEEDS_HUMAN"),
+                self.config.get_label_needs_human(),
             )
             return SessionStatus.NEEDS_HUMAN
 
         # No success indicators found
         logger.info(
-            f"Session for issue #{session.issue.number} ended without completion markers, "
-            f"marking as FAILED"
+            issue_log(session.issue.number, "Ended without completion markers - FAILED"),
         )
         return SessionStatus.FAILED
 
@@ -545,7 +543,8 @@ class SessionObserver:
                 statuses[session.issue.number] = status
             except Exception as e:
                 logger.error(
-                    f"Error checking session for issue #{session.issue.number}: {e}"
+                    issue_log(session.issue.number, "Error checking session: %s"),
+                    e,
                 )
                 statuses[session.issue.number] = SessionStatus.FAILED
 
@@ -573,12 +572,14 @@ class SessionObserver:
                 try:
                     self._kill_session(issue_number)
                     logger.info(
-                        f"Killed timed-out session {session.terminal_id} "
-                        f"for issue #{issue_number}"
+                        issue_log(issue_number, "Killed timed-out session: terminal=%s"),
+                        session.terminal_id,
                     )
                 except Exception as e:
                     logger.warning(
-                        f"Failed to kill session {session.terminal_id}: {e}"
+                        issue_log(issue_number, "Failed to kill session %s: %s"),
+                        session.terminal_id,
+                        e,
                     )
 
             # Auto-close tab based on config (observer handles terminal cleanup)
@@ -590,17 +591,19 @@ class SessionObserver:
             if should_close:
                 try:
                     self._kill_session(issue_number)
-                    logger.info(f"Closed tab for {status.value} session #{issue_number}")
+                    logger.info(issue_log(issue_number, "Closed tab for %s session"), status.value)
                 except Exception as e:
-                    logger.debug(f"Could not close tab for #{issue_number}: {e}")
+                    logger.debug(issue_log(issue_number, "Could not close tab: %s"), e)
 
             logger.info(
-                f"Observer completed handling for issue #{issue_number} with status {status.value}"
+                issue_log(issue_number, "Observer completed handling: status=%s"),
+                status.value,
             )
 
         except Exception as e:
             logger.error(
-                f"Unexpected error in observer completion handling for issue #{issue_number}: {e}"
+                issue_log(issue_number, "Unexpected error in observer completion handling: %s"),
+                e,
             )
 
     def detect_stale_in_progress(
@@ -628,8 +631,7 @@ class SessionObserver:
             if labels.is_in_progress(issue.labels):
                 if issue.number not in active_issue_numbers:
                     logger.debug(
-                        f"Issue #{issue.number} has stale in-progress: "
-                        f"label present but no active session"
+                        issue_log(issue.number, "Stale in-progress: label present but no active session"),
                     )
                     stale_issues.append(issue)
 
