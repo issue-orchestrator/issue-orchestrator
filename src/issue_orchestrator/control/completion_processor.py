@@ -145,6 +145,7 @@ class CompletionProcessor:
             "needs_rework": "needs-rework",
             "code_review": "code-review",
             "in_progress": "in-progress",
+            "validation_failed": "validation-failed",
         }
         return self.label_config.get(key, defaults.get(key, key))
 
@@ -300,6 +301,22 @@ class CompletionProcessor:
         if self._requires_publish_gate(record):
             gate_passed, gate_reason = self._check_publish_gate(worktree)
             if not gate_passed:
+                # Add validation-failed label so user knows why issue is stuck
+                validation_failed_label = self._get_label("validation_failed")
+                try:
+                    self.label_adapter.add_label(issue_number, validation_failed_label)
+                    logger.info(
+                        "Added '%s' label to issue #%d due to validation failure",
+                        validation_failed_label,
+                        issue_number,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to add validation-failed label to issue #%d: %s",
+                        issue_number,
+                        e,
+                    )
+
                 self._emit(
                     SessionEvent.FAILED,
                     issue_number,
@@ -310,8 +327,8 @@ class CompletionProcessor:
                 )
                 return ProcessingResult(
                     success=False,
-                    message=f"Publish gate failed: {gate_reason}",
-                    errors=[f"Publish gate: {gate_reason}"],
+                    message=f"Validation failed: {gate_reason}",
+                    errors=[f"Validation: {gate_reason}"],
                 )
 
         # Get branch name for PR operations

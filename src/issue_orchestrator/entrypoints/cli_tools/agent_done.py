@@ -339,14 +339,12 @@ def find_worktree_root() -> Path:
     return cwd
 
 
-def load_agent_gate_config(worktree: Path) -> tuple[Optional[str], int]:
-    """Load agent gate configuration from the worktree.
-
-    Uses the shared config lookup to find configuration and extract agent_gate config.
+def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
+    """Load validation configuration from the worktree.
 
     Environment variable overrides (for testing):
-    - ORCHESTRATOR_AGENT_GATE_CMD: Override the validation command
-    - ORCHESTRATOR_AGENT_GATE_TIMEOUT: Override the timeout in seconds
+    - ORCHESTRATOR_VALIDATION_CMD: Override the validation command
+    - ORCHESTRATOR_VALIDATION_TIMEOUT: Override the timeout in seconds
 
     Args:
         worktree: Path to the worktree root
@@ -358,27 +356,25 @@ def load_agent_gate_config(worktree: Path) -> tuple[Optional[str], int]:
     from ...infra.config import load_validation_config
 
     # Check for environment variable override (useful for e2e tests)
-    env_cmd = os.environ.get("ORCHESTRATOR_AGENT_GATE_CMD")
-    env_timeout = os.environ.get("ORCHESTRATOR_AGENT_GATE_TIMEOUT")
+    env_cmd = os.environ.get("ORCHESTRATOR_VALIDATION_CMD")
+    env_timeout = os.environ.get("ORCHESTRATOR_VALIDATION_TIMEOUT")
     if env_cmd:
-        timeout = int(env_timeout) if env_timeout else 120
+        timeout = int(env_timeout) if env_timeout else 300
         return env_cmd, timeout
 
     # Use shared config lookup (checks .issue-orchestrator/config/)
     validation_config = load_validation_config(worktree)
 
-    agent_gate = validation_config["agent_gate"]
-    policy = validation_config["policy"]
-
-    # Only return command if policy enables it
-    if policy["agent_runs"] == "agent_gate" and agent_gate["cmd"]:
-        return agent_gate["cmd"], agent_gate["timeout_seconds"]
+    # Simple: if cmd is set, validation runs
+    cmd = validation_config.get("cmd")
+    if cmd:
+        return cmd, validation_config.get("timeout_seconds", 300)
 
     return None, 0
 
 
-def run_agent_gate(worktree: Path, verbose: bool = False) -> Optional[AgentGateResult]:
-    """Run the agent gate validation if configured.
+def run_validation(worktree: Path, verbose: bool = False) -> Optional[AgentGateResult]:
+    """Run validation if configured.
 
     Args:
         worktree: Path to the worktree root
@@ -387,12 +383,12 @@ def run_agent_gate(worktree: Path, verbose: bool = False) -> Optional[AgentGateR
     Returns:
         AgentGateResult if validation was run, None if not configured
     """
-    cmd, timeout = load_agent_gate_config(worktree)
+    cmd, timeout = load_validation_cmd(worktree)
     if not cmd:
         return None
 
     if verbose:
-        print(f"Running agent gate validation: {cmd}")
+        print(f"Running validation: {cmd}")
 
     from ...execution import LocalCommandRunner, GitWorkingCopy
 
@@ -407,9 +403,9 @@ def run_agent_gate(worktree: Path, verbose: bool = False) -> Optional[AgentGateR
 
     if verbose:
         if result.passed:
-            print(f"✓ Agent gate passed: {result.reason}")
+            print(f"✓ Validation passed: {result.reason}")
         else:
-            print(f"✗ Agent gate failed: {result.reason}")
+            print(f"✗ Validation failed: {result.reason}")
 
     return result
 
@@ -516,12 +512,12 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     # Find worktree root
     worktree_root = find_worktree_root()
 
-    # Run agent gate validation if configured (and not skipped)
+    # Run validation if configured (and not skipped)
     validation_result = None
     if not args.skip_validation:
-        validation_result = run_agent_gate(worktree_root, verbose=args.verbose)
+        validation_result = run_validation(worktree_root, verbose=args.verbose)
         if validation_result and not validation_result.passed:
-            print(f"\n❌ Agent gate validation failed: {validation_result.reason}")
+            print(f"\n❌ Validation failed: {validation_result.reason}")
             print("Cannot complete agent work until validation passes.")
             if validation_result.record_path:
                 print(f"Validation record: {validation_result.record_path}")

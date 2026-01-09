@@ -20,7 +20,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'github_http_timeout_seconds', 'github_required_scopes', 'github_allowed_scopes',
     'filter_label', 'filter_milestone', 'filter_milestones', 'filter_issue',
     'issue_fetch_limit', 'e2e_pr_labels', 'review', 'cleanup', 'validation',
-    'validation_policy', 'isolation', 'setup_worktree', 'milestone_sort',
+    'isolation', 'setup_worktree', 'milestone_sort',
     'milestone_sort_config', 'foundation_milestone',
     'state_file', 'pre_push_hook', 'enforce_hooks', 'queue_refresh_seconds',
     'terminal_adapter', 'max_issues_to_start', 'close_completed_tabs',
@@ -134,24 +134,17 @@ class DangerousConfig:
 
 
 @dataclass
-class ValidationGateConfig:
-    """Configuration for a validation gate (command to run)."""
-    cmd: Optional[str] = None  # Command to run (e.g., "make validate")
-    timeout_seconds: int = 1800  # Default 30 minutes
-
-
-@dataclass
 class ValidationConfig:
-    """Validation gate configuration."""
-    publish_gate: ValidationGateConfig = field(default_factory=ValidationGateConfig)
-    agent_gate: ValidationGateConfig = field(default_factory=ValidationGateConfig)
+    """Validation configuration - single command runs everywhere.
 
+    The same validation command runs:
+    - On agent-done: gives agent immediate feedback to fix issues
+    - On pre-push: cached by SHA, instant pass if already validated
 
-@dataclass
-class ValidationPolicyConfig:
-    """Policy for when validation runs."""
-    publish_requires: Optional[str] = None  # Suite required before publish (None = no gate)
-    agent_runs: Optional[str] = None  # Suite agent runs on completion (optional)
+    This ensures agents can't "pass" a quick check only to fail later.
+    """
+    cmd: Optional[str] = None  # Command to run (e.g., "make validate")
+    timeout_seconds: int = 300  # Default 5 minutes
 
 
 @dataclass
@@ -176,6 +169,7 @@ class Config:
     label_blocked: str = "blocked"
     label_needs_human: str = "needs-human"
     label_needs_rework: str = "needs-rework"  # Applied to PR when reviewer requests changes
+    label_validation_failed: str = "validation-failed"  # Applied when validation fails
     label_prefix: Optional[str] = None  # Optional prefix for all labels (e.g., "bot")
 
     # Paths
@@ -295,9 +289,8 @@ class Config:
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
 
-    # Validation configuration - gates for publish and agent completion
+    # Validation configuration - single command runs on agent-done and pre-push
     validation: ValidationConfig = field(default_factory=ValidationConfig)
-    validation_policy: ValidationPolicyConfig = field(default_factory=ValidationPolicyConfig)
 
     # Isolation configuration - how agents are sandboxed
     isolation: IsolationConfig = field(default_factory=IsolationConfig)
@@ -342,27 +335,13 @@ class Config:
         """Get the needs-rework label with prefix if configured."""
         return self.prefixed_label(self.label_needs_rework)
 
-    def is_publish_gate_enabled(self) -> bool:
-        """Check if publish gate validation is enabled."""
-        return (
-            self.validation_policy.publish_requires is not None
-            and self.validation.publish_gate.cmd is not None
-        )
+    def get_label_validation_failed(self) -> str:
+        """Get the validation-failed label with prefix if configured."""
+        return self.prefixed_label(self.label_validation_failed)
 
-    def is_agent_gate_enabled(self) -> bool:
-        """Check if agent gate validation is enabled."""
-        return (
-            self.validation_policy.agent_runs is not None
-            and self.validation.agent_gate.cmd is not None
-        )
-
-    def get_validation_gate(self, suite: str) -> Optional[ValidationGateConfig]:
-        """Get validation gate config by suite name."""
-        if suite == "publish_gate":
-            return self.validation.publish_gate
-        elif suite == "agent_gate":
-            return self.validation.agent_gate
-        return None
+    def is_validation_enabled(self) -> bool:
+        """Check if validation is enabled (cmd is set)."""
+        return self.validation.cmd is not None
 
     def get_filter_milestones(self) -> list[str]:
         """Return a list of milestone filters (supports legacy single filter)."""
@@ -444,19 +423,13 @@ class Config:
                 "blocked": self.get_label_blocked(),
                 "needs_human": self.get_label_needs_human(),
                 "needs_rework": self.get_label_needs_rework(),
+                "validation_failed": self.get_label_validation_failed(),
                 "prefix": self.label_prefix,
             },
             "validation": {
-                "agent_gate": {
-                    "enabled": self.is_agent_gate_enabled(),
-                    "cmd": self.validation.agent_gate.cmd,
-                    "timeout_seconds": self.validation.agent_gate.timeout_seconds,
-                },
-                "publish_gate": {
-                    "enabled": self.is_publish_gate_enabled(),
-                    "cmd": self.validation.publish_gate.cmd,
-                    "timeout_seconds": self.validation.publish_gate.timeout_seconds,
-                },
+                "enabled": self.is_validation_enabled(),
+                "cmd": self.validation.cmd,
+                "timeout_seconds": self.validation.timeout_seconds,
             },
             "code_review": {
                 "agent": self.code_review_agent,
@@ -568,6 +541,7 @@ class Config:
         config.label_blocked = labels.get("blocked", "blocked")
         config.label_needs_human = labels.get("needs_human", "needs-human")
         config.label_needs_rework = labels.get("needs_rework", "needs-rework")
+        config.label_validation_failed = labels.get("validation_failed", "validation-failed")
         config.label_prefix = labels.get("prefix")
 
         # GitHub settings
@@ -722,28 +696,12 @@ class Config:
                 allow_unsupported_agents=dangerous_data.get("allow_unsupported_agents", False),
             )
 
-        # Parse validation config
+        # Parse validation config - single command runs everywhere
         validation_data = data.get("validation", {})
         if validation_data:
-            publish_gate_data = validation_data.get("publish_gate", {})
-            agent_gate_data = validation_data.get("agent_gate", {})
             config.validation = ValidationConfig(
-                publish_gate=ValidationGateConfig(
-                    cmd=publish_gate_data.get("cmd"),
-                    timeout_seconds=publish_gate_data.get("timeout_seconds", 1800),
-                ),
-                agent_gate=ValidationGateConfig(
-                    cmd=agent_gate_data.get("cmd"),
-                    timeout_seconds=agent_gate_data.get("timeout_seconds", 600),
-                ),
-            )
-
-        # Parse validation policy config
-        validation_policy_data = data.get("validation_policy", {})
-        if validation_policy_data:
-            config.validation_policy = ValidationPolicyConfig(
-                publish_requires=validation_policy_data.get("publish_requires"),
-                agent_runs=validation_policy_data.get("agent_runs"),
+                cmd=validation_data.get("cmd"),
+                timeout_seconds=validation_data.get("timeout_seconds", 300),
             )
 
         # Parse isolation config
@@ -859,28 +817,6 @@ class Config:
             errors.append(
                 f"isolation.mode must be one of {valid_isolation_modes}, got: '{self.isolation.mode}'"
             )
-
-        # Validate validation_policy references valid suites
-        if self.validation_policy.publish_requires:
-            if self.validation_policy.publish_requires not in {"publish_gate", "agent_gate"}:
-                errors.append(
-                    f"validation_policy.publish_requires must be 'publish_gate' or 'agent_gate', "
-                    f"got: '{self.validation_policy.publish_requires}'"
-                )
-            # Check that the referenced gate has a command
-            gate = self.get_validation_gate(self.validation_policy.publish_requires)
-            if gate and not gate.cmd:
-                errors.append(
-                    f"validation_policy.publish_requires='{self.validation_policy.publish_requires}' "
-                    f"but validation.{self.validation_policy.publish_requires}.cmd is not set"
-                )
-
-        if self.validation_policy.agent_runs:
-            if self.validation_policy.agent_runs not in {"publish_gate", "agent_gate"}:
-                errors.append(
-                    f"validation_policy.agent_runs must be 'publish_gate' or 'agent_gate', "
-                    f"got: '{self.validation_policy.agent_runs}'"
-                )
 
         # Validate unknown fields (errors or warnings depending on config_strict)
         unknown_fields = self.validate_unknown_fields()
@@ -1041,43 +977,22 @@ def load_validation_config(
     Returns:
         Dict with validation config:
         {
-            "agent_gate": {"cmd": ..., "timeout_seconds": ...},
-            "publish_gate": {"cmd": ..., "timeout_seconds": ...},
-            "policy": {"publish_requires": ..., "agent_runs": ...},
+            "cmd": "make validate",  # or None if not configured
+            "timeout_seconds": 300,
         }
     """
     config_path = find_config_file(start_path)
     if not config_path:
-        return {
-            "agent_gate": {"cmd": None, "timeout_seconds": 600},
-            "publish_gate": {"cmd": None, "timeout_seconds": 1800},
-            "policy": {"publish_requires": None, "agent_runs": None},
-        }
+        return {"cmd": None, "timeout_seconds": 300}
 
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
 
         validation = config.get("validation", {})
-        policy = config.get("validation_policy", {})
-
         return {
-            "agent_gate": {
-                "cmd": validation.get("agent_gate", {}).get("cmd"),
-                "timeout_seconds": validation.get("agent_gate", {}).get("timeout_seconds", 600),
-            },
-            "publish_gate": {
-                "cmd": validation.get("publish_gate", {}).get("cmd"),
-                "timeout_seconds": validation.get("publish_gate", {}).get("timeout_seconds", 1800),
-            },
-            "policy": {
-                "publish_requires": policy.get("publish_requires"),
-                "agent_runs": policy.get("agent_runs"),
-            },
+            "cmd": validation.get("cmd"),
+            "timeout_seconds": validation.get("timeout_seconds", 300),
         }
     except Exception:
-        return {
-            "agent_gate": {"cmd": None, "timeout_seconds": 600},
-            "publish_gate": {"cmd": None, "timeout_seconds": 1800},
-            "policy": {"publish_requires": None, "agent_runs": None},
-        }
+        return {"cmd": None, "timeout_seconds": 300}
