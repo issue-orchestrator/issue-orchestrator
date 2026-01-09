@@ -512,11 +512,14 @@ class Config:
         # All relative paths in agent configs are resolved relative to repo_root
 
         for label, agent_data in data.get("agents", {}).items():
-            # Resolve prompt path relative to repo_root
-            prompt_path = resolve_relative_path(agent_data["prompt"], repo_root)
+            # Resolve prompt path relative to repo_root (for validation)
+            # Keep original relative path for command templates (agents read from worktree)
+            prompt_relative = agent_data["prompt"]
+            prompt_path = resolve_relative_path(prompt_relative, repo_root)
 
             agent_kwargs = {
                 "prompt_path": prompt_path,
+                "prompt_relative": prompt_relative,
                 "model": agent_data.get("model", "sonnet"),
                 "timeout_minutes": agent_data.get("timeout_minutes", 45),
                 "permission_mode": agent_data.get("permission_mode", "default"),

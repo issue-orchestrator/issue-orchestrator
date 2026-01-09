@@ -304,6 +304,8 @@ class Issue:
 class AgentConfig:
     """Configuration for an agent type."""
     prompt_path: Path
+    # Original relative path from config - used in commands so agents read from worktree
+    prompt_relative: str = ""
     model: str = "sonnet"
     timeout_minutes: int = 45
     # Permission mode for Claude CLI: default, acceptEdits, bypassPermissions, plan, dontAsk
@@ -342,10 +344,12 @@ class AgentConfig:
                           If provided, prepended to prompt so agent knows to complete vs restart.
         """
         # Build format kwargs - pr_number only included if provided (fail-fast if used but missing)
+        # Use relative prompt path so agents read from worktree (not main repo)
+        prompt_for_command = self.prompt_relative if self.prompt_relative else str(self.prompt_path)
         format_kwargs = {
             "issue_number": issue_number,
             "issue_title": issue_title,
-            "prompt": self.prompt_path,
+            "prompt": prompt_for_command,
             "worktree": worktree,
             "model": self.model,
             "permission_mode": self.permission_mode,

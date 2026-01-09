@@ -16,6 +16,14 @@ import pytest
 from issue_orchestrator.adapters.worktree._worktree import install_hooks
 
 
+def _clean_git_env() -> dict[str, str]:
+    """Return environment with git variables cleared to prevent leaking to test repos."""
+    env = os.environ.copy()
+    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"]:
+        env.pop(var, None)
+    return env
+
+
 class TestWorktreeConfigIsolation:
     """Verify that worktree config changes don't leak to other repos."""
 
@@ -251,11 +259,12 @@ class TestGitEnvIsolation:
         repo_a.mkdir()
         repo_b.mkdir()
 
-        subprocess.run(["git", "init"], cwd=repo_a, capture_output=True, check=True)
-        subprocess.run(["git", "init"], cwd=repo_b, capture_output=True, check=True)
+        clean_env = _clean_git_env()
+        subprocess.run(["git", "init"], cwd=repo_a, capture_output=True, check=True, env=clean_env)
+        subprocess.run(["git", "init"], cwd=repo_b, capture_output=True, check=True, env=clean_env)
 
         # Set GIT_DIR to repo_a, but run command with cwd=repo_b
-        bad_env = os.environ.copy()
+        bad_env = dict(clean_env)
         bad_env["GIT_DIR"] = str(repo_a / ".git")
 
         # This WILL write to repo_a despite cwd=repo_b (demonstrating the bug)
@@ -267,7 +276,7 @@ class TestGitEnvIsolation:
         # Verify the config leaked to repo_a (not repo_b)
         leaked = subprocess.run(
             ["git", "config", "--get", "test.leaked"],
-            cwd=repo_a, capture_output=True, text=True, check=False
+            cwd=repo_a, capture_output=True, text=True, check=False, env=clean_env
         )
         assert leaked.returncode == 0 and leaked.stdout.strip() == "true", (
             "Expected GIT_DIR to cause config leak - this test validates the bug exists"
@@ -276,7 +285,7 @@ class TestGitEnvIsolation:
         # repo_b should NOT have the config
         not_leaked = subprocess.run(
             ["git", "config", "--get", "test.leaked"],
-            cwd=repo_b, capture_output=True, text=True, check=False
+            cwd=repo_b, capture_output=True, text=True, check=False, env=clean_env
         )
         assert not_leaked.returncode != 0, (
             "Config should NOT be in repo_b when GIT_DIR points elsewhere"
