@@ -513,20 +513,64 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     worktree_root = find_worktree_root()
 
     # Run validation if configured (and not skipped)
+    # Skip validation for blocked/needs_human - the agent is already reporting a problem
     validation_result = None
-    if not args.skip_validation:
+    statuses_requiring_validation = {
+        AgentStatus.COMPLETED,
+        AgentStatus.APPROVED,
+        AgentStatus.CHANGES_REQUESTED,
+    }
+    should_validate = (
+        not args.skip_validation
+        and status in statuses_requiring_validation
+    )
+
+    if should_validate:
         validation_result = run_validation(worktree_root, verbose=args.verbose)
         if validation_result and not validation_result.passed:
-            print(f"\n❌ Validation failed: {validation_result.reason}")
-            print("Cannot complete agent work until validation passes.")
-            if validation_result.record_path:
-                print(f"Validation record: {validation_result.record_path}")
-            if validation_result.record and validation_result.record.stdout_path:
-                print(f"Stdout: {validation_result.record.stdout_path}")
+            print(f"\n{'='*60}")
+            print("❌ VALIDATION FAILED - agent-done cannot complete")
+            print(f"{'='*60}")
+            print(f"\nReason: {validation_result.reason}")
+
+            # Print actual error output so Claude can see what failed
             if validation_result.record and validation_result.record.stderr_path:
-                print(f"Stderr: {validation_result.record.stderr_path}")
-            print("Fix the issues and run agent-done again.")
+                stderr_path = Path(validation_result.record.stderr_path)
+                if stderr_path.exists():
+                    stderr_content = stderr_path.read_text()
+                    if stderr_content.strip():
+                        print(f"\n--- STDERR (what failed) ---")
+                        # Show last 50 lines to keep it manageable
+                        lines = stderr_content.strip().split('\n')
+                        if len(lines) > 50:
+                            print(f"... ({len(lines) - 50} lines truncated)")
+                            lines = lines[-50:]
+                        print('\n'.join(lines))
+                        print("--- END STDERR ---")
+
+            if validation_result.record and validation_result.record.stdout_path:
+                stdout_path = Path(validation_result.record.stdout_path)
+                if stdout_path.exists():
+                    stdout_content = stdout_path.read_text()
+                    if stdout_content.strip():
+                        print(f"\n--- STDOUT ---")
+                        lines = stdout_content.strip().split('\n')
+                        if len(lines) > 30:
+                            print(f"... ({len(lines) - 30} lines truncated)")
+                            lines = lines[-30:]
+                        print('\n'.join(lines))
+                        print("--- END STDOUT ---")
+
+            print(f"\n{'='*60}")
+            print("TO FIX: Read the errors above, fix them, then run agent-done again.")
+            print("If you CANNOT fix after 2-3 attempts, use:")
+            print('  agent-done blocked --reason "Validation failing: <error>" --attempted "..."')
+            print(f"{'='*60}")
             sys.exit(1)
+    elif status in {AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}:
+        # Log that we're skipping validation for these statuses
+        status_name = status.value if hasattr(status, 'value') else status
+        print(f"Note: Skipping validation for '{status_name}' status (agent is reporting a problem)")
 
     # If validation passed, include the record path in the completion record
     if validation_result and validation_result.passed and validation_result.record_path:
