@@ -87,6 +87,63 @@ def get_templates() -> Environment:
 QUEUE_PAGE_SIZE = 20
 
 
+def _flow_steps_for(stage: str) -> list[dict[str, str]]:
+    if stage == "not_eligible":
+        return [
+            {"key": "not_eligible", "label": "Not Eligible"},
+            {"key": "queued", "label": "Queued"},
+            {"key": "in_progress", "label": "In Progress"},
+            {"key": "review", "label": "Review"},
+            {"key": "done", "label": "Done"},
+        ]
+    if stage == "rework":
+        return [
+            {"key": "queued", "label": "Queued"},
+            {"key": "in_progress", "label": "In Progress"},
+            {"key": "review", "label": "Review"},
+            {"key": "rework", "label": "Rework"},
+            {"key": "done", "label": "Done"},
+        ]
+    if stage == "triage":
+        return [
+            {"key": "queued", "label": "Queued"},
+            {"key": "in_progress", "label": "In Progress"},
+            {"key": "review", "label": "Review"},
+            {"key": "triage", "label": "Triage"},
+            {"key": "done", "label": "Done"},
+        ]
+    return [
+        {"key": "queued", "label": "Queued"},
+        {"key": "in_progress", "label": "In Progress"},
+        {"key": "review", "label": "Review"},
+        {"key": "done", "label": "Done"},
+    ]
+
+
+def _describe_blocking_label(label: str) -> str:
+    if label == "blocked-needs-human":
+        return "needs human"
+    if label == "blocked-failed":
+        return "failed run"
+    if label == "blocked-cross-milestone":
+        return "dependency cross-milestone"
+    if label == "blocked":
+        return "blocked"
+    return label.replace("blocked-", "blocked: ")
+
+
+def _blocked_summary(labels: list[str], dependency_summary: str | None = None) -> str | None:
+    from ..infra import labels as label_module
+
+    reasons: list[str] = []
+    blocking = label_module.get_blocking_labels(labels)
+    if blocking:
+        reasons.append(_describe_blocking_label(blocking[0]))
+    if dependency_summary:
+        reasons.append(dependency_summary)
+    return " • ".join(reasons) if reasons else None
+
+
 @app.get("/favicon.ico")
 async def favicon():
     """Serve the logo as favicon."""
@@ -136,12 +193,21 @@ async def dashboard(
 
     if state and config:
         active_numbers = {s.issue.number for s in state.active_sessions}
+        pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
+            r.issue_number for r in state.discovered_reviews
+        }
+        pending_rework_numbers = {r.issue_number for r in state.pending_reworks} | {
+            r.issue_number for r in state.discovered_reworks
+        }
+        pending_triage_numbers = {r.issue_number for r in state.pending_triage_reviews}
 
         # Always track active sessions to avoid showing them in queue on later pages
         seen_issues.update(active_numbers)
 
         # 1. Active sessions (only on page 1 of work tab)
         if queue_page == 1:
+            from ..domain.session_key import TaskKind
+
             for session in state.active_sessions:
                 # Determine if session is over its timeout
                 timeout = session.agent_config.timeout_minutes
@@ -162,6 +228,22 @@ async def dashboard(
                     status_reason = f"Running for {runtime} min"
 
                 seen_issues.add(session.issue.number)
+                if session.key.task == TaskKind.REVIEW:
+                    flow_stage = "review"
+                elif session.key.task == TaskKind.REWORK:
+                    flow_stage = "rework"
+                elif session.key.task == TaskKind.TRIAGE:
+                    flow_stage = "triage"
+                else:
+                    flow_stage = "in_progress"
+
+                blocked_summary = _blocked_summary(
+                    list(session.issue.labels),
+                    state.dependency_problems.get(session.issue.number).summary
+                    if session.issue.number in state.dependency_problems
+                    else None,
+                )
+
                 item = {
                     "issue_number": session.issue.number,
                     "title": session.issue.title,
@@ -180,6 +262,9 @@ async def dashboard(
                     "pr_url": "",  # Active sessions may not have PR yet
                     "has_terminal": True,
                     "worktree_path": str(session.worktree_path) if session.worktree_path else "",
+                    "flow_stage": flow_stage,
+                    "flow_steps": _flow_steps_for(flow_stage),
+                    "blocked_summary": blocked_summary,
                 }
                 work_items.append(item)
 
@@ -210,19 +295,35 @@ async def dashboard(
                 ])
                 dep_summary = dep_info.summary if dep_info else ""
 
-                # Check if issue is blocked (has blocking labels)
-                is_blocked = issue.is_blocked
+                # Check if issue is blocked (has blocking labels or dependency problems)
+                dep_problem = state.dependency_problems.get(issue.number)
+                is_blocked = issue.is_blocked or dep_problem is not None
                 if is_blocked:
                     status = "blocked"
                     status_label = "Blocked"
-                    # Show blocking label in tooltip if no dep summary
-                    from ..infra import labels as label_module
-                    blocking = label_module.get_blocking_labels(list(issue.labels))
-                    status_reason = dep_summary or (blocking[0] if blocking else "blocked")
+                    status_reason = dep_summary or "blocked"
                 else:
                     status = "queue"
                     status_label = "Queue"
                     status_reason = dep_summary
+
+                from ..infra import labels as label_module
+
+                if issue.number in pending_rework_numbers:
+                    flow_stage = "rework"
+                elif issue.number in pending_triage_numbers:
+                    flow_stage = "triage"
+                elif issue.number in pending_review_numbers or label_module.is_pr_pending(issue.labels):
+                    flow_stage = "review"
+                elif label_module.is_in_progress(issue.labels):
+                    flow_stage = "in_progress"
+                else:
+                    flow_stage = "queued"
+
+                blocked_summary = _blocked_summary(
+                    list(issue.labels),
+                    dep_problem.summary if dep_problem else None,
+                )
 
                 item = {
                     "issue_number": issue.number,
@@ -245,6 +346,9 @@ async def dashboard(
                     "has_dependencies": has_deps,
                     "dependencies": deps_json,
                     "dependency_summary": dep_summary,
+                    "flow_stage": flow_stage,
+                    "flow_steps": _flow_steps_for(flow_stage),
+                    "blocked_summary": blocked_summary,
                 }
                 # Blocked issues go to "Needs Attention", others to "Work"
                 if is_blocked:
@@ -265,6 +369,11 @@ async def dashboard(
             action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
             status_reason = getattr(entry, 'status_reason', None) or status_labels.get(entry.status, entry.status)
 
+            if entry.status == "completed":
+                flow_stage = "done"
+            else:
+                flow_stage = "in_progress"
+
             item = {
                 "issue_number": entry.issue_number,
                 "title": entry.title,
@@ -282,6 +391,9 @@ async def dashboard(
                 "pr_url": entry.pr_url or "",
                 "has_terminal": False,
                 "worktree_path": "",
+                "flow_stage": flow_stage,
+                "flow_steps": _flow_steps_for(flow_stage),
+                "blocked_summary": status_reason if entry.status != "completed" else None,
             }
             history.append(item)
 
@@ -372,6 +484,63 @@ async def get_status() -> JSONResponse:
         "queue": state.priority_queue,
         "pending_reviews": pending_reviews,
     })
+
+
+@app.get("/api/excluded-issues")
+async def get_excluded_issues() -> JSONResponse:
+    """Get issues known to the system but excluded from scheduling."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    state = _orchestrator.state
+    config = _orchestrator.config
+
+    displayed_numbers = {
+        s.issue.number for s in state.active_sessions
+    } | {
+        i.number for i in state.cached_queue_issues
+    } | {
+        e.issue_number for e in state.session_history
+    }
+
+    from ..infra.audit import audit_queue, SkipReason
+
+    entries = audit_queue(config, state=state, issue_tracker=_orchestrator.repository_host)
+    excluded: list[dict[str, object]] = []
+
+    def make_issue_url(issue_number: int) -> str:
+        return f"https://github.com/{config.repo}/issues/{issue_number}" if config.repo else ""
+
+    for entry in entries:
+        if entry.status == SkipReason.QUEUED:
+            continue
+        if entry.issue.number in displayed_numbers:
+            continue
+
+        dep_problem = state.dependency_problems.get(entry.issue.number)
+        if dep_problem:
+            reason = f"dependency: {dep_problem.summary}"
+        else:
+            reason = entry.status.value
+            if entry.detail:
+                reason = f"{reason}: {entry.detail}"
+
+        flow_stage = "not_eligible"
+        excluded.append({
+            "issue_number": entry.issue.number,
+            "title": entry.issue.title,
+            "agent_type": (entry.issue.agent_type or "unknown").replace("agent:", ""),
+            "issue_url": make_issue_url(entry.issue.number),
+            "excluded_reason": reason,
+            "flow_stage": flow_stage,
+            "flow_steps": _flow_steps_for(flow_stage),
+            "blocked_summary": _blocked_summary(
+                list(entry.issue.labels),
+                dep_problem.summary if dep_problem else None,
+            ),
+        })
+
+    return JSONResponse({"excluded": excluded})
 
 
 @app.post("/api/pause")
