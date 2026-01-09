@@ -68,22 +68,25 @@ class TestReviewAgentExecution:
         assert pr_url, f"Dev agent completed but no PR created. Event: {completion_event}"
         logger.info("Phase 1 complete: Dev agent created PR: %s", pr_url)
 
+        # Extract PR number from URL (e.g., https://github.com/owner/repo/pull/123 -> 123)
+        pr_number = int(pr_url.rstrip("/").split("/")[-1])
+
         # Verify pr-pending label (dev agent finished)
         await poll_issue_label(repo_name, issue_number, "pr-pending", backoff=(1, 2, 4, 8))
         logger.info("pr-pending label verified on issue #%d", issue_number)
 
         # Phase 2: Wait for review agent to complete
-        logger.info("Phase 2: Waiting for review agent...")
+        logger.info("Phase 2: Waiting for review agent on PR #%d...", pr_number)
 
-        # The review agent should be triggered and add code-reviewed when done
+        # The review agent adds code-reviewed to the PR (not the issue)
         # Use direct polling - more reliable than SSE for cross-agent transitions
         await poll_issue_label(
             repo_name,
-            issue_number,
+            pr_number,  # Poll the PR, not the issue
             "code-reviewed",
             backoff=(2, 4, 8, 16, 32, 64, 64, 64),  # Up to ~4 min with extra retries
         )
-        logger.info("Phase 2 complete: Review agent approved PR for issue #%d", issue_number)
+        logger.info("Phase 2 complete: Review agent approved PR #%d for issue #%d", pr_number, issue_number)
 
         logger.info(
             "SUCCESS: Full pipeline verified for issue #%d - dev agent -> PR -> review agent -> approved",
