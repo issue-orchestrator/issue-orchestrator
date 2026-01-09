@@ -575,3 +575,135 @@ class TestAgentDoneInvocation:
             assert "completed" in result.stdout.lower(), (
                 f"Unexpected help output: {result.stdout}"
             )
+
+    def test_completion_json_written_to_worktree_not_main_repo(self, tmp_path):
+        """CRITICAL: Verify completion.json is written to worktree, not main repo.
+
+        This is the exact bug that caused sessions to silently fail:
+        - Claude ran in the main repo instead of the worktree
+        - completion.json was written to main repo's .issue-orchestrator/
+        - Orchestrator never detected completion (looking in worktree)
+        - Reviews never ran, PRs never created
+
+        The fix is that _setup_and_run must cd to working_dir FIRST.
+        This test verifies that behavior end-to-end.
+
+        KEY: agent-done uses Path.cwd() to determine where to write.
+        Without cd to worktree, cwd is main repo, so completion goes there.
+        With cd to worktree, cwd is worktree, so completion goes there.
+        """
+        import json
+
+        # Simulate the bug scenario: main repo vs worktree
+        main_repo = tmp_path / "main-repo"
+        main_repo.mkdir()
+        (main_repo / ".git").touch()  # Mark as git root
+        (main_repo / ".issue-orchestrator").mkdir()
+
+        worktree = tmp_path / "worktree-issue-123"
+        worktree.mkdir()
+        (worktree / ".git").touch()  # Worktrees have .git file
+        worktree_io_dir = worktree / ".issue-orchestrator"
+        worktree_io_dir.mkdir()
+
+        # Get scripts directory
+        from pathlib import Path
+        repo_root = Path(__file__).parent.parent.parent
+        scripts_dir = repo_root / "src" / "issue_orchestrator" / "scripts"
+
+        # Build environment like orchestrator does
+        # NOTE: We do NOT set ORCHESTRATOR_COMPLETION_PATH - agent-done uses cwd!
+        import os
+        env = dict(os.environ)
+        env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
+        # Clear any existing path to test cwd behavior
+        env.pop("ORCHESTRATOR_COMPLETION_PATH", None)
+
+        # The key test: we cd to worktree, then run agent-done
+        # This simulates what _setup_and_run does with the cd fix
+        cmd = f'cd "{worktree}" && agent-done completed --implementation "test" --problems "none"'
+
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+            # Start in main_repo to simulate the bug scenario
+            cwd=str(main_repo),
+        )
+
+        # Log for debugging
+        print(f"stdout: {result.stdout}")
+        print(f"stderr: {result.stderr}")
+        print(f"return code: {result.returncode}")
+
+        # Check completion.json is in WORKTREE (not main repo)
+        worktree_completion = worktree_io_dir / "completion.json"
+        main_completion = main_repo / ".issue-orchestrator" / "completion.json"
+
+        assert worktree_completion.exists(), (
+            f"completion.json NOT in worktree! "
+            f"Worktree dir: {list(worktree_io_dir.iterdir())}, "
+            f"Main repo dir: {list((main_repo / '.issue-orchestrator').iterdir())}"
+        )
+        assert not main_completion.exists(), (
+            f"completion.json incorrectly written to main repo instead of worktree!"
+        )
+
+        # Verify content
+        completion = json.loads(worktree_completion.read_text())
+        assert completion["outcome"] == "completed"
+
+    def test_completion_json_written_to_wrong_place_without_cd(self, tmp_path):
+        """Verify the BUG: without cd, completion.json goes to wrong place.
+
+        This documents the bug behavior to ensure we don't regress.
+        Without the `cd` fix, agent-done would use cwd (main repo).
+        """
+        import json
+
+        # Same setup as above
+        main_repo = tmp_path / "main-repo"
+        main_repo.mkdir()
+        (main_repo / ".git").touch()
+        (main_repo / ".issue-orchestrator").mkdir()
+
+        worktree = tmp_path / "worktree-issue-123"
+        worktree.mkdir()
+        (worktree / ".git").touch()
+        (worktree / ".issue-orchestrator").mkdir()
+
+        from pathlib import Path
+        repo_root = Path(__file__).parent.parent.parent
+        scripts_dir = repo_root / "src" / "issue_orchestrator" / "scripts"
+
+        import os
+        env = dict(os.environ)
+        env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
+        env.pop("ORCHESTRATOR_COMPLETION_PATH", None)
+
+        # NO cd - simulates the bug
+        cmd = 'agent-done completed --implementation "test" --problems "none"'
+
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+            # cwd is main_repo - this is where agent-done will write
+            cwd=str(main_repo),
+        )
+
+        # Without cd, completion goes to main_repo (the bug!)
+        main_completion = main_repo / ".issue-orchestrator" / "completion.json"
+        worktree_completion = worktree / ".issue-orchestrator" / "completion.json"
+
+        # Document the bug: without cd, it goes to wrong place
+        assert main_completion.exists(), (
+            "BUG TEST: Expected completion.json in main_repo when no cd"
+        )
+        assert not worktree_completion.exists(), (
+            "BUG TEST: Should NOT be in worktree when no cd"
+        )

@@ -7,13 +7,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from issue_orchestrator.entrypoints.cli_tools.prepush_check import (
-    load_publish_gate_config,
+    load_validation_cmd,
     run_prepush_check,
 )
 
 
-class TestLoadPublishGateConfig:
-    """Tests for loading publish gate configuration."""
+class TestLoadValidationCmd:
+    """Tests for loading validation configuration."""
 
     @pytest.fixture
     def temp_worktree(self):
@@ -26,46 +26,32 @@ class TestLoadPublishGateConfig:
 
     def test_returns_none_when_no_config(self, temp_worktree):
         """Test returns None when config file doesn't exist."""
-        cmd, timeout = load_publish_gate_config(temp_worktree)
+        cmd, timeout = load_validation_cmd(temp_worktree)
         assert cmd is None
         assert timeout == 0
 
-    def test_returns_none_when_no_publish_gate(self, temp_worktree):
-        """Test returns None when publish_gate not configured."""
-        config_path = temp_worktree / ".issue-orchestrator" / "config.yaml"
+    def test_returns_none_when_no_cmd(self, temp_worktree):
+        """Test returns None when cmd not configured."""
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
         config_path.write_text("some_key: value\n")
 
-        cmd, timeout = load_publish_gate_config(temp_worktree)
+        cmd, timeout = load_validation_cmd(temp_worktree)
         assert cmd is None
 
-    def test_returns_none_when_policy_not_set(self, temp_worktree):
-        """Test returns None when publish_requires not set."""
-        config_path = temp_worktree / ".issue-orchestrator" / "config.yaml"
-        config_path.write_text("""
-validation:
-  publish_gate:
-    cmd: "pytest"
-    timeout_seconds: 300
-""")
-
-        cmd, timeout = load_publish_gate_config(temp_worktree)
-        assert cmd is None
-
-    def test_returns_cmd_when_fully_configured(self, temp_worktree):
-        """Test returns command when fully configured."""
+    def test_returns_cmd_when_configured(self, temp_worktree):
+        """Test returns command when configured."""
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  publish_gate:
-    cmd: "pytest"
-    timeout_seconds: 300
-validation_policy:
-  publish_requires: publish_gate
+  cmd: "pytest"
+  timeout_seconds: 300
 """)
 
-        cmd, timeout = load_publish_gate_config(temp_worktree)
+        cmd, timeout = load_validation_cmd(temp_worktree)
         assert cmd == "pytest"
         assert timeout == 300
 
@@ -76,15 +62,12 @@ validation_policy:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  publish_gate:
-    cmd: "make test"
-validation_policy:
-  publish_requires: publish_gate
+  cmd: "make test"
 """)
 
-        cmd, timeout = load_publish_gate_config(temp_worktree)
+        cmd, timeout = load_validation_cmd(temp_worktree)
         assert cmd == "make test"
-        assert timeout == 1800  # Default
+        assert timeout == 300  # Default
 
 
 class TestRunPrepushCheck:
@@ -145,11 +128,8 @@ class TestRunPrepushCheck:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  publish_gate:
-    cmd: "echo 'ok'"
-    timeout_seconds: 10
-validation_policy:
-  publish_requires: publish_gate
+  cmd: "echo 'ok'"
+  timeout_seconds: 10
 """)
 
         orig_cwd = os.getcwd()
@@ -170,11 +150,8 @@ validation_policy:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  publish_gate:
-    cmd: "exit 1"
-    timeout_seconds: 10
-validation_policy:
-  publish_requires: publish_gate
+  cmd: "exit 1"
+  timeout_seconds: 10
 """)
 
         orig_cwd = os.getcwd()
@@ -196,11 +173,8 @@ validation_policy:
         config_path = config_dir / "default.yaml"
         config_path.write_text(f"""
 validation:
-  publish_gate:
-    cmd: "touch {marker_file} && echo 'ok'"
-    timeout_seconds: 10
-validation_policy:
-  publish_requires: publish_gate
+  cmd: "touch {marker_file} && echo 'ok'"
+  timeout_seconds: 10
 """)
 
         orig_cwd = os.getcwd()

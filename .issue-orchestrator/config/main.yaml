@@ -49,12 +49,8 @@ review:
   max_rework_cycles: 2
 
 validation:
-  publish_gate:
-    cmd: make validate
-    timeout_seconds: 300
-
-validation_policy:
-  publish_requires: publish_gate
+  cmd: make validate
+  timeout_seconds: 300
 
 github_token_env: GITHUB_TOKEN
 milestone_sort: milestone_number

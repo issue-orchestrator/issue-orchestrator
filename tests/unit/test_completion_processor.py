@@ -596,7 +596,7 @@ class TestCompletionProcessorPublishGate:
 
         # Processing must fail
         assert not result.success
-        assert "publish gate failed" in result.message.lower()
+        assert "validation failed" in result.message.lower()
         # Push must NOT have been called
         mock_git_adapter.push.assert_not_called()
 
@@ -647,3 +647,31 @@ class TestCompletionProcessorPublishGate:
         # Label actions should succeed without gate check
         assert result.success
         mock_label_adapter.add_label.assert_called_once()
+
+    def test_validation_failed_label_added_on_gate_failure(
+        self, processor_with_gate, mock_publish_gate, mock_label_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        """When validation fails, the validation-failed label should be added to the issue."""
+        from issue_orchestrator.control.validation import PublishGateResult
+
+        # Configure gate to fail
+        mock_publish_gate.check.return_value = PublishGateResult(
+            allowed=False,
+            reason="Validation failed: tests failed",
+        )
+
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor_with_gate.process(worktree, issue_number=123, issue_title="Test")
+
+        # Processing must fail
+        assert not result.success
+        assert "validation failed" in result.message.lower()
+
+        # validation-failed label must be added
+        mock_label_adapter.add_label.assert_called_once_with(123, "validation-failed")

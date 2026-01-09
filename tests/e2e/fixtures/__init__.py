@@ -80,7 +80,9 @@ from .gh_audit import (
 from .wait_helpers import (
     wait_for_issue_seen,
     wait_for_session_started,
+    wait_for_session_completed,
     wait_for_issue_label_snapshot,
+    wait_for_file_with_content,
 )
 
 __all__ = [
@@ -156,5 +158,7 @@ __all__ = [
     # wait_helpers
     "wait_for_issue_seen",
     "wait_for_session_started",
+    "wait_for_session_completed",
     "wait_for_issue_label_snapshot",
+    "wait_for_file_with_content",
 ]

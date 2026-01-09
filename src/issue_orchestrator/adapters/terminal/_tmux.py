@@ -566,7 +566,7 @@ class TmuxManager:
         agents_window.select_layout("tiled")
 
         # Set up and run
-        self._setup_and_run(pane, command, working_dir)
+        self._setup_and_run(pane, command, working_dir, session_id)
         return pane
 
     def _create_window(
@@ -593,7 +593,7 @@ class TmuxManager:
             pass
 
         # Set up and run
-        self._setup_and_run(pane, command, working_dir)
+        self._setup_and_run(pane, command, working_dir, session_id)
         return window
 
     def _setup_and_run(
@@ -601,6 +601,7 @@ class TmuxManager:
         pane: libtmux.Pane,
         command: str,
         working_dir: Path,
+        session_id: str,
     ) -> None:
         """Set up isolated environment and run command in pane."""
         from ...control.isolation import build_isolation_prefix
@@ -614,13 +615,16 @@ class TmuxManager:
         # CRITICAL: cd to working directory first, then set up isolation
         setup_cmd = f'cd "{working_dir}" && export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
-        # Enable logging
+        # Enable pane logging to worktree
+        # Path: .issue-orchestrator/state/logs/{session_id}/pane.log
         try:
-            log_dir = working_dir / ".issue-orchestrator"
-            log_dir.mkdir(exist_ok=True)
-            pane.cmd("pipe-pane", "-o", f"cat >> '{log_dir / 'session.log'}'")
-        except OSError:
-            pass
+            log_dir = working_dir / ".issue-orchestrator" / "state" / "logs" / session_id
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "pane.log"
+            pane.cmd("pipe-pane", "-o", f"cat >> '{log_file}'")
+            logger.debug("[TMUX] Enabled pane logging to %s", log_file)
+        except Exception as e:
+            logger.warning("[TMUX] Failed to enable pane logging: %s", e)
 
         # Send setup and command
         pane.send_keys(setup_cmd)
@@ -789,6 +793,51 @@ class TmuxManager:
     def get_window(self, issue_number: int) -> libtmux.Pane | libtmux.Window | None:
         """Get the session for an issue (adaptive)."""
         return self._find_issue_session(issue_number)
+
+    def wait_for_issue_session(
+        self,
+        issue_number: int,
+        timeout_s: float = 30.0,
+        poll_interval_s: float = 1.0,
+    ) -> libtmux.Pane | libtmux.Window | None:
+        """Wait for a session to exist for an issue (adaptive).
+
+        Uses tenacity for robust retry semantics with exponential backoff.
+        Handles timing issues where the session is being created but not yet visible.
+
+        Args:
+            issue_number: The issue number to find.
+            timeout_s: Maximum time to wait in seconds.
+            poll_interval_s: Initial poll interval (grows with jitter).
+
+        Returns:
+            The pane or window if found within timeout, None otherwise.
+        """
+        from tenacity import (
+            retry,
+            retry_if_result,
+            stop_after_delay,
+            wait_exponential_jitter,
+        )
+
+        # Scale max interval to ~1/3 of timeout (e.g., 10s max for 30s timeout)
+        # This ensures we get at least a few retries with reasonable intervals
+        max_interval = min(max(timeout_s / 3, poll_interval_s * 2), 15.0)
+
+        # Retry while result is None (session not found)
+        @retry(
+            retry=retry_if_result(lambda x: x is None),
+            wait=wait_exponential_jitter(initial=poll_interval_s, max=max_interval, jitter=0.5),
+            stop=stop_after_delay(timeout_s),
+            reraise=False,
+        )
+        def _find_with_retry() -> libtmux.Pane | libtmux.Window | None:
+            return self._find_issue_session(issue_number)
+
+        try:
+            return _find_with_retry()
+        except Exception:
+            return None
 
     def kill_window(self, issue_number: int) -> None:
         """Kill the session for an issue (adaptive)."""

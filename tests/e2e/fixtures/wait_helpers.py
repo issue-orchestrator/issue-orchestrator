@@ -1,11 +1,66 @@
 """E2E async wait helper functions."""
 
 import asyncio
+import json
 import time
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from issue_orchestrator.testing.asyncdsl import OrchestratorWatcher
+
+
+async def wait_for_file_with_content(
+    file_path: Path,
+    content_check: str | None = None,
+    timeout_s: float = 60,
+    poll_interval_s: float = 0.5,
+) -> dict[str, Any]:
+    """Wait for a JSON file to exist and be fully written.
+
+    For JSON files, "fully written" means the file can be parsed as valid JSON.
+    This avoids race conditions where the file exists but is only partially written.
+
+    Args:
+        file_path: Path to the JSON file to wait for
+        content_check: Optional string that must appear in the file (e.g., '"outcome": "completed"')
+        timeout_s: Maximum time to wait
+        poll_interval_s: How often to check
+
+    Returns:
+        Parsed JSON content
+
+    Raises:
+        TimeoutError: If file doesn't exist or isn't valid JSON within timeout
+    """
+    deadline = time.monotonic() + timeout_s
+    last_error = None
+
+    while time.monotonic() < deadline:
+        if file_path.exists():
+            try:
+                content = file_path.read_text()
+                # Check for optional content marker
+                if content_check and content_check not in content:
+                    last_error = f"Content check '{content_check}' not found"
+                    await asyncio.sleep(poll_interval_s)
+                    continue
+                # Try to parse as JSON - if this succeeds, file is fully written
+                data = json.loads(content)
+                return data
+            except json.JSONDecodeError as e:
+                # File exists but isn't valid JSON yet - still being written
+                last_error = f"JSON parse error: {e}"
+            except Exception as e:
+                last_error = f"Read error: {e}"
+
+        await asyncio.sleep(poll_interval_s)
+
+    raise TimeoutError(
+        f"Timed out waiting for valid JSON file at {file_path}.\n"
+        f"File exists: {file_path.exists()}\n"
+        f"Last error: {last_error}"
+    )
 
 
 async def wait_for_issue_seen(
@@ -64,3 +119,74 @@ async def wait_for_issue_label_snapshot(
             pass
         watcher._notify.clear()
     raise TimeoutError(f"Timed out waiting for label {label} on {issue_key}")
+
+
+async def wait_for_session_completed(
+    watcher: "OrchestratorWatcher",
+    issue_key: str,
+    timeout_s: float,
+) -> dict:
+    """Wait for a session.completed or session.processing_completed event.
+
+    This verifies that:
+    1. agent-done wrote completion.json
+    2. The orchestrator FOUND it (in the worktree, not main repo)
+    3. The orchestrator PROCESSED it
+
+    Returns the completion event payload for further verification.
+
+    Raises TimeoutError if no completion event is received.
+    """
+    import logging
+    from issue_orchestrator.events.catalog import EventName
+
+    logger = logging.getLogger(__name__)
+
+    deadline = time.monotonic() + timeout_s
+    # Events that indicate session completion was processed
+    # Use EventName constants for type-safe event matching
+    completion_events = {
+        EventName.SESSION_COMPLETED.value,
+        EventName.SESSION_PROCESSING_COMPLETED.value,
+        EventName.SESSION_FAILED.value,
+    }
+
+    while time.monotonic() < deadline:
+        # Check all global events for session completion
+        for event in watcher.view.global_events:
+            etype = event.get("type", "")
+            payload = event.get("payload", {}) or {}
+
+            # Match session events by issue_number in payload
+            if etype in completion_events:
+                event_issue = str(payload.get("issue_number", ""))
+                if event_issue == issue_key:
+                    logger.info("Found completion event: type=%s issue=%s", etype, event_issue)
+                    return event
+
+        try:
+            await asyncio.wait_for(watcher._notify.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+        watcher._notify.clear()
+
+    # Build diagnostic info
+    all_event_types = [e.get("type") for e in watcher.view.global_events]
+    session_events = [
+        {"type": e.get("type"), "payload": e.get("payload", {})}
+        for e in watcher.view.global_events
+        if e.get("type", "").startswith("session.")
+    ]
+    issue_view = watcher.view.issues.get(issue_key)
+    labels = list(issue_view.labels) if issue_view else []
+
+    raise TimeoutError(
+        f"Timed out waiting for session.completed event on issue {issue_key}.\n"
+        f"This means either:\n"
+        f"  1. agent-done was never called\n"
+        f"  2. completion.json was written to wrong location (cd fix broken?)\n"
+        f"  3. orchestrator failed to process completion\n"
+        f"Labels: {labels}\n"
+        f"All event types seen: {set(all_event_types)}\n"
+        f"Session events: {session_events}"
+    )

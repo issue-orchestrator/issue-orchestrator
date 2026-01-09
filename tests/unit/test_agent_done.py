@@ -909,17 +909,14 @@ class TestAgentGateIntegration:
         subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
 
-        # Create config with passing agent gate
+        # Create config with passing validation
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  agent_gate:
-    cmd: "echo 'ok'"
-    timeout_seconds: 10
-validation_policy:
-  agent_runs: agent_gate
+  cmd: "echo 'ok'"
+  timeout_seconds: 10
 """)
 
         original_cwd = Path.cwd()
@@ -936,12 +933,12 @@ validation_policy:
                     main()
 
             captured = capsys.readouterr()
-            assert "Validation: passed" in captured.out
+            assert "Validation passed" in captured.out
         finally:
             os.chdir(original_cwd)
 
-    def test_agent_gate_failure_exits_with_error(self, tmp_path, capsys):
-        """Test that agent gate failure exits with error and does not write record."""
+    def test_validation_failure_exits_with_error(self, tmp_path, capsys):
+        """Test that validation failure exits with error and does not write record."""
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -954,17 +951,14 @@ validation_policy:
         subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
 
-        # Create config with failing agent gate
+        # Create config with failing validation
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  agent_gate:
-    cmd: "exit 1"
-    timeout_seconds: 10
-validation_policy:
-  agent_runs: agent_gate
+  cmd: "exit 1"
+  timeout_seconds: 10
 """)
 
         original_cwd = Path.cwd()
@@ -985,14 +979,14 @@ validation_policy:
 
             captured = capsys.readouterr()
             # Should print error about failure
-            assert "Agent gate validation failed" in captured.out
+            assert "Validation failed" in captured.out
             # Should NOT write completion record (exited before that)
             assert "Completion record written to" not in captured.out
         finally:
             os.chdir(original_cwd)
 
-    def test_agent_gate_skipped_with_flag(self, tmp_path, capsys):
-        """Test that agent gate validation can be skipped with --skip-validation."""
+    def test_validation_skipped_with_flag(self, tmp_path, capsys):
+        """Test that validation can be skipped with --skip-validation."""
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -1005,17 +999,14 @@ validation_policy:
         subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
 
-        # Create config with agent gate that would fail
+        # Create config with validation that would fail
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  agent_gate:
-    cmd: "exit 1"
-    timeout_seconds: 10
-validation_policy:
-  agent_runs: agent_gate
+  cmd: "exit 1"
+  timeout_seconds: 10
 """)
 
         original_cwd = Path.cwd()
@@ -1033,10 +1024,10 @@ validation_policy:
 
             captured = capsys.readouterr()
             # Should NOT print validation failure (skipped)
-            assert "Agent gate validation failed" not in captured.out
+            assert "Validation failed" not in captured.out
             # Should still write completion record
             assert "Completion record written to" in captured.out
             # Should not show validation status
-            assert "Validation:" not in captured.out
+            assert "Running validation" not in captured.out
         finally:
             os.chdir(original_cwd)
