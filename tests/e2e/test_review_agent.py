@@ -4,9 +4,20 @@ Tests the full flow: dev agent -> PR created -> review agent -> approved.
 
 Run with:
     make test-real-claude-review
+
+NOTE: These tests require real PR creation (not dry-run mode) because the
+review agent needs an actual PR to review.
 """
 
 import logging
+import os
+
+# Enable real PR creation BEFORE any pytest fixtures run.
+# Review agent tests require actual PRs to exist on GitHub because:
+# 1. The review agent needs to fetch and review real PR content
+# 2. Labels are added to the real PR, not a fake one
+# 3. Dry-run mode creates fake PR numbers (90000-99999) that don't exist
+os.environ["E2E_DRY_RUN_PUSH"] = "false"
 
 import pytest
 
