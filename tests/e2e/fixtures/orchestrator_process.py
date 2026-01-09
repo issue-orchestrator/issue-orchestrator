@@ -259,6 +259,8 @@ class OrchestratorProcess:
         env["ORCHESTRATOR_DISABLE_WORKTREE_REUSE"] = os.environ.get("E2E_DISABLE_WORKTREE_REUSE", "1")
         # Ensure worktrees are created from main (which has all our test fixes)
         env["ORCHESTRATOR_WORKTREE_BASE_BRANCH"] = "main"
+        # Skip pre-push hooks in e2e tests - test scripts create trivial changes that don't need validation
+        env["E2E_SKIP_PUSH_HOOKS"] = "1"
         # Explicitly pass dry-run mode for e2e tests (skips git push and PR creation)
         if os.environ.get("E2E_DRY_RUN_PUSH"):
             env["E2E_DRY_RUN_PUSH"] = os.environ["E2E_DRY_RUN_PUSH"]
