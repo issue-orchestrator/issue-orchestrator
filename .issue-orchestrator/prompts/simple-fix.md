@@ -121,6 +121,37 @@ agent-done needs_human \
 
 ---
 
+## CRITICAL: Observe agent-done Results
+
+`agent-done` runs validation automatically (type checks, linting, ALL tests).
+
+**This is different from just running your new tests!** Even if the tests you wrote pass, agent-done can still fail because:
+- Pre-existing tests broke
+- Type errors in your changes
+- Lint errors
+- Import errors
+
+**You MUST check if agent-done itself succeeded or failed.**
+
+### If agent-done fails validation:
+
+1. **Read the error message** - it tells you what failed
+2. **Try to fix the issue** - fix tests, lint errors, type errors
+3. **Run agent-done again** after fixing
+
+### If you CANNOT fix the validation failures after 2-3 attempts:
+
+```bash
+agent-done blocked \
+  --reason "Validation failing: [specific error]" \
+  --attempted "Tried: [what you attempted to fix it]"
+```
+
+**DO NOT** keep looping forever trying to fix unfixable issues.
+**DO NOT** exit without calling agent-done (either `completed` or `blocked`).
+
+---
+
 ## What Happens After `agent-done`
 
 1. Orchestrator commits your changes locally
