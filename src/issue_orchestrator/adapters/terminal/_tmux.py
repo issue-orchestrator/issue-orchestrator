@@ -515,12 +515,9 @@ class TmuxManager:
         """
         session = self.ensure_session()
 
-        # Build session identifier
-        if title:
-            short_title = title[:20].replace(" ", "-").replace(":", "")
-            session_id = f"#{issue_number}-{short_title}"
-        else:
-            session_id = f"issue-{issue_number}"
+        # Build session identifier - MUST match what session_launcher uses for terminal_id
+        # The title is only used for display, not for the session ID
+        session_id = f"issue-{issue_number}"
 
         # Check if session already exists (works for both modes)
         if self._find_session_by_id(session_id) is not None:
@@ -528,9 +525,9 @@ class TmuxManager:
 
         # Adaptive: use pane mode if agents window exists, otherwise window mode
         if self._is_pane_mode():
-            return self._create_pane(session, session_id, command, working_dir)
+            return self._create_pane(session, session_id, command, working_dir, title)
         else:
-            return self._create_window(session, session_id, command, working_dir)
+            return self._create_window(session, session_id, command, working_dir, title)
 
     def _create_pane(
         self,
@@ -538,6 +535,7 @@ class TmuxManager:
         session_id: str,
         command: str,
         working_dir: Path,
+        title: str | None = None,
     ) -> libtmux.Pane:
         """Create a pane in the agents window (pane mode)."""
         agents_window = self._get_agents_window()
@@ -551,7 +549,9 @@ class TmuxManager:
             pane = panes[-1].split(direction=PaneDirection.Right)
 
         # Set pane title for display (may be overwritten by Claude Code)
-        pane.cmd("select-pane", "-T", session_id)
+        # Use title if provided, otherwise fall back to session_id
+        display_title = title[:30] if title else session_id
+        pane.cmd("select-pane", "-T", display_title)
 
         # Set session ID option for reliable identification (not affected by Claude)
         self._set_pane_session_id(pane, session_id)
@@ -575,9 +575,12 @@ class TmuxManager:
         session_id: str,
         command: str,
         working_dir: Path,
+        title: str | None = None,
     ) -> libtmux.Window:
         """Create a separate window (window mode)."""
-        window = session.new_window(window_name=session_id)
+        # Use title for display if provided, otherwise use session_id
+        window_name = title[:30] if title else session_id
+        window = session.new_window(window_name=window_name)
         pane = window.active_pane
         if pane is None:
             # Shouldn't happen, but handle gracefully

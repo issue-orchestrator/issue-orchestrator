@@ -410,9 +410,9 @@ class TestPaneIdentificationWithClaudeCode:
         found = manager._find_issue_session(999)
         assert found is not None, "Should find issue 999 initially"
 
-        # Get the session_id that was set
+        # Get the session_id that was set (now always uses issue-{number} format)
         session_id = manager._get_pane_session_id(pane)
-        assert session_id.startswith("#999-"), f"Session ID should start with #999-, got {session_id}"
+        assert session_id == "issue-999", f"Session ID should be 'issue-999', got {session_id}"
 
         # SIMULATE: Claude Code changes the pane title (like it does in production)
         # This is what breaks lookup when relying on pane_title
@@ -456,9 +456,9 @@ class TestPaneIdentificationWithClaudeCode:
             title="Persistence Test",
         )
 
-        # Record the session ID
+        # Record the session ID (now always uses issue-{number} format)
         original_session_id = manager._get_pane_session_id(pane)
-        assert original_session_id.startswith("#888-"), f"Got: {original_session_id}"
+        assert original_session_id == "issue-888", f"Got: {original_session_id}"
 
         # Change title multiple times (simulating Claude Code updates)
         for title in ["✳ First task", "✳ Second task", "Something else entirely"]:

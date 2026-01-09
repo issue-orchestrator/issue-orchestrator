@@ -26,7 +26,7 @@ class TestTerminalAdapterExecution:
     exercising the adapter-specific code (tmux).
     """
 
-    async def _verify_pane_identification(self, issue_number: int) -> None:
+    async def _verify_pane_identification(self, issue_number: int, tmux_session: str) -> None:
         """Verify pane can be found by issue number while Claude is running.
 
         This is the critical test for the @orchestrator-session-id fix.
@@ -39,7 +39,8 @@ class TestTerminalAdapterExecution:
         # Give Claude a moment to start and potentially modify the title
         await asyncio.sleep(5)
 
-        manager = TmuxManager()
+        # Use the same tmux session as the e2e orchestrator
+        manager = TmuxManager(session_name=tmux_session)
 
         # This is the critical check - can we find the pane by issue number?
         pane = manager._find_issue_session(issue_number)
@@ -90,6 +91,7 @@ class TestTerminalAdapterExecution:
         test_issue_factory,
         repo_name: str,
         e2e_ui_mode: str,
+        e2e_tmux_session: str,
     ):
         """Verify session launches correctly in the configured terminal mode.
 
@@ -127,7 +129,7 @@ class TestTerminalAdapterExecution:
             # Claude Code modifies the pane title, so this tests that our @orchestrator-session-id
             # option persists and pane lookup still works
             if e2e_ui_mode == "tmux":
-                await self._verify_pane_identification(issue_number)
+                await self._verify_pane_identification(issue_number, e2e_tmux_session)
 
             # In dry-run mode, PR creation is skipped but we still verify the session completes
             if dry_run:
