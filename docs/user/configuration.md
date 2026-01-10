@@ -85,12 +85,12 @@ concurrency:
 #### Filtering
 
 ```yaml
-filter_label: null              # (default) Only process issues with this label
-filter_milestone: null          # (default) Only process issues in this milestone (single)
+filter_label: null              # (default) Single label filter (not a list)
+filter_milestone: null          # (default) Single milestone filter
 filter_milestones: []           # (default) Process issues in any of these milestones (list)
 filter_issue: null              # (default) Only process this specific issue number
 issue_fetch_limit: 100          # (default) Max issues to fetch per API call
-max_issues_to_start: 0          # (default) Max issues to start (0 = unlimited)
+max_issues_to_start: 0          # (default) Stop after starting this many issues (0 = unlimited)
 ```
 
 `filter_milestones` accepts a list or comma-separated string:
