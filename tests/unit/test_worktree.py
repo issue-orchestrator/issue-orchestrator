@@ -1387,61 +1387,15 @@ class TestUpdateWorktreeOntoMain:
 
 
 # =============================================================================
-# Control Worktree Model Tests (control/worktree.py)
+# Worktree Preparation Tests (control/worktree.py)
 # =============================================================================
 
-from issue_orchestrator.control.worktree import (
-    Worktree as WorktreeDomain,
-    WorktreeState,
-    WorktreeStatus,
-)
+from issue_orchestrator.control.worktree import Worktree, WorktreePreparationError
 import json
 
 
-class TestWorktreeStateEnum:
-    """Tests for WorktreeState enum."""
-
-    def test_states_exist(self):
-        """Verify all expected states exist."""
-        assert WorktreeState.CLEAN.value == "clean"
-        assert WorktreeState.HAS_UNCOMMITTED.value == "uncommitted"
-        assert WorktreeState.HAS_STALE_COMPLETION.value == "stale"
-        assert WorktreeState.REBASE_CONFLICT.value == "conflict"
-        assert WorktreeState.MISSING.value == "missing"
-
-
-class TestWorktreeStatusDataclass:
-    """Tests for WorktreeStatus dataclass."""
-
-    def test_status_has_expected_fields(self, tmp_path):
-        """Status dataclass has expected fields."""
-        status = WorktreeStatus(
-            state=WorktreeState.CLEAN,
-            path=tmp_path,
-            branch="test-branch",
-        )
-        assert status.state == WorktreeState.CLEAN
-        assert status.path == tmp_path
-        assert status.branch == "test-branch"
-        assert status.uncommitted_files == []
-        assert status.stale_completion_paths == []
-
-    def test_status_with_stale_completion_info(self, tmp_path):
-        """Status captures stale completion details."""
-        status = WorktreeStatus(
-            state=WorktreeState.HAS_STALE_COMPLETION,
-            path=tmp_path,
-            branch="test-branch",
-            stale_completion_paths=[tmp_path / ".issue-orchestrator/completion.json"],
-            stale_completion_session_ids=["old-session"],
-        )
-        assert status.state == WorktreeState.HAS_STALE_COMPLETION
-        assert len(status.stale_completion_paths) == 1
-        assert "old-session" in status.stale_completion_session_ids
-
-
 @pytest.fixture
-def domain_worktree_dir(tmp_path: Path) -> Path:
+def worktree_dir(tmp_path: Path) -> Path:
     """Create a temporary worktree directory with orchestrator dir."""
     worktree = tmp_path / "worktree"
     worktree.mkdir()
@@ -1451,64 +1405,17 @@ def domain_worktree_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def domain_worktree(domain_worktree_dir: Path) -> WorktreeDomain:
-    """Create a Worktree domain instance for testing."""
-    return WorktreeDomain(domain_worktree_dir, "123-test-branch", issue_number=123)
+def worktree(worktree_dir: Path) -> Worktree:
+    """Create a Worktree instance for testing."""
+    return Worktree(worktree_dir, issue_number=123)
 
 
-class TestWorktreeDomainGetStatus:
-    """Tests for Worktree.get_status()."""
-
-    def test_missing_worktree(self, tmp_path: Path):
-        """Returns MISSING for non-existent path."""
-        worktree = WorktreeDomain(tmp_path / "nonexistent", "branch", 123)
-        status = worktree.get_status()
-        assert status.state == WorktreeState.MISSING
-
-    def test_clean_worktree(self, domain_worktree: WorktreeDomain):
-        """Returns CLEAN for empty worktree with no artifacts."""
-        with patch.object(domain_worktree, "_get_uncommitted_files", return_value=[]):
-            with patch.object(domain_worktree, "_has_rebase_conflict", return_value=False):
-                status = domain_worktree.get_status()
-                assert status.state == WorktreeState.CLEAN
-
-    def test_has_stale_completion(self, domain_worktree: WorktreeDomain, domain_worktree_dir: Path):
-        """Returns HAS_STALE_COMPLETION when old completion.json exists."""
-        completion = domain_worktree_dir / ".issue-orchestrator" / "completion.json"
-        completion.write_text(json.dumps({
-            "session_id": "old-session-id",
-            "timestamp": "2026-01-01T00:00:00",
-            "outcome": "completed",
-            "summary": "Old session",
-        }))
-
-        status = domain_worktree.get_status(expected_session_id="new-session-id")
-        assert status.state == WorktreeState.HAS_STALE_COMPLETION
-        assert len(status.stale_completion_paths) == 1
-        assert "old-session-id" in status.stale_completion_session_ids
-
-    def test_current_completion_not_stale(self, domain_worktree: WorktreeDomain, domain_worktree_dir: Path):
-        """Completion with matching session_id is not considered stale."""
-        completion = domain_worktree_dir / ".issue-orchestrator" / "completion.json"
-        completion.write_text(json.dumps({
-            "session_id": "current-session",
-            "timestamp": "2026-01-01T00:00:00",
-            "outcome": "completed",
-            "summary": "Current session",
-        }))
-
-        with patch.object(domain_worktree, "_get_uncommitted_files", return_value=[]):
-            with patch.object(domain_worktree, "_has_rebase_conflict", return_value=False):
-                status = domain_worktree.get_status(expected_session_id="current-session")
-                assert status.state == WorktreeState.CLEAN
-
-
-class TestWorktreeDomainPrepareForSession:
+class TestWorktreePrepareForSession:
     """Tests for Worktree.prepare_for_session()."""
 
-    def test_removes_stale_completion(self, domain_worktree: WorktreeDomain, domain_worktree_dir: Path):
-        """Removes stale completion files during preparation."""
-        completion = domain_worktree_dir / ".issue-orchestrator" / "completion.json"
+    def test_removes_completion_files(self, worktree: Worktree, worktree_dir: Path):
+        """Removes completion.json files."""
+        completion = worktree_dir / ".issue-orchestrator" / "completion.json"
         completion.write_text(json.dumps({
             "session_id": "old-session",
             "timestamp": "2026-01-01T00:00:00",
@@ -1517,30 +1424,21 @@ class TestWorktreeDomainPrepareForSession:
         }))
 
         assert completion.exists()
-
-        with patch.object(domain_worktree, "_get_uncommitted_files", return_value=[]):
-            with patch.object(domain_worktree, "_has_rebase_conflict", return_value=False):
-                status = domain_worktree.prepare_for_session("new-session")
-
+        worktree.prepare_for_session("new-session")
         assert not completion.exists()
-        assert status.state == WorktreeState.CLEAN
 
-    def test_removes_session_identity_files(self, domain_worktree: WorktreeDomain, domain_worktree_dir: Path):
-        """Removes session identity files during preparation."""
-        identity = domain_worktree_dir / ".issue-orchestrator" / "session-identity-issue-123.json"
+    def test_removes_session_identity_files(self, worktree: Worktree, worktree_dir: Path):
+        """Removes session-identity*.json files."""
+        identity = worktree_dir / ".issue-orchestrator" / "session-identity-issue-123.json"
         identity.write_text(json.dumps({"session_name": "old"}))
 
         assert identity.exists()
-
-        with patch.object(domain_worktree, "_get_uncommitted_files", return_value=[]):
-            with patch.object(domain_worktree, "_has_rebase_conflict", return_value=False):
-                domain_worktree.prepare_for_session("new-session")
-
+        worktree.prepare_for_session("new-session")
         assert not identity.exists()
 
-    def test_removes_multiple_agent_completions(self, domain_worktree: WorktreeDomain, domain_worktree_dir: Path):
-        """Removes all agent-specific completion files."""
-        orch_dir = domain_worktree_dir / ".issue-orchestrator"
+    def test_removes_multiple_completion_files(self, worktree: Worktree, worktree_dir: Path):
+        """Removes all completion*.json files."""
+        orch_dir = worktree_dir / ".issue-orchestrator"
 
         files = [
             "completion.json",
@@ -1555,61 +1453,58 @@ class TestWorktreeDomainPrepareForSession:
                 "summary": "Test",
             }))
 
-        with patch.object(domain_worktree, "_get_uncommitted_files", return_value=[]):
-            with patch.object(domain_worktree, "_has_rebase_conflict", return_value=False):
-                domain_worktree.prepare_for_session("new-session")
+        worktree.prepare_for_session("new-session")
 
         for name in files:
             assert not (orch_dir / name).exists()
 
+    def test_no_error_when_orchestrator_dir_missing(self, tmp_path: Path):
+        """No error when .issue-orchestrator dir doesn't exist."""
+        worktree = Worktree(tmp_path, issue_number=123)
+        worktree.prepare_for_session("new-session")  # Should not raise
 
-class TestWorktreeDomainCleanupSessionArtifacts:
-    """Tests for Worktree.cleanup_session_artifacts()."""
-
-    def test_removes_all_completions(self, domain_worktree: WorktreeDomain, domain_worktree_dir: Path):
-        """Removes all completion files."""
-        orch_dir = domain_worktree_dir / ".issue-orchestrator"
+    def test_raises_worktree_preparation_error_on_delete_failure(
+        self, worktree: Worktree, worktree_dir: Path
+    ):
+        """Raises WorktreePreparationError if file cannot be deleted."""
+        orch_dir = worktree_dir / ".issue-orchestrator"
         completion = orch_dir / "completion.json"
-        completion.write_text(json.dumps({
-            "session_id": "current",
-            "timestamp": "2026-01-01T00:00:00",
-            "outcome": "completed",
-            "summary": "Test",
-        }))
+        completion.write_text("{}")
 
-        domain_worktree.cleanup_session_artifacts()
-
-        assert not completion.exists()
-
-    def test_removes_all_session_identities(self, domain_worktree: WorktreeDomain, domain_worktree_dir: Path):
-        """Removes all session identity files."""
-        orch_dir = domain_worktree_dir / ".issue-orchestrator"
-        identity1 = orch_dir / "session-identity-issue-123.json"
-        identity2 = orch_dir / "session-identity-review-456.json"
-        identity1.write_text("{}")
-        identity2.write_text("{}")
-
-        domain_worktree.cleanup_session_artifacts()
-
-        assert not identity1.exists()
-        assert not identity2.exists()
+        # Make directory read-only to prevent deletion
+        orch_dir.chmod(0o555)
+        try:
+            with pytest.raises(WorktreePreparationError) as exc_info:
+                worktree.prepare_for_session("new-session")
+            # Verify exception properties
+            assert exc_info.value.path == worktree_dir
+            assert exc_info.value.issue_number == 123
+            assert "Cannot delete stale files" in str(exc_info.value)
+            # Verify OSError is chained
+            assert exc_info.value.__cause__ is not None
+            assert isinstance(exc_info.value.__cause__, OSError)
+        finally:
+            orch_dir.chmod(0o755)  # Restore for cleanup
 
 
-class TestWorktreeDomainPrivateMethods:
-    """Tests for private helper methods."""
+class TestWorktreePreparationError:
+    """Tests for the WorktreePreparationError exception."""
 
-    def test_find_stale_completions_no_orchestrator_dir(self, tmp_path: Path):
-        """Returns empty when orchestrator dir doesn't exist."""
-        worktree = WorktreeDomain(tmp_path, "branch", 123)
-        paths, session_ids = worktree._find_stale_completions("any-session")
-        assert paths == []
-        assert session_ids == []
+    def test_exception_properties(self, tmp_path: Path):
+        """Test that exception stores path and issue_number."""
+        error = WorktreePreparationError(
+            tmp_path, 456, "Test error message"
+        )
+        assert error.path == tmp_path
+        assert error.issue_number == 456
+        assert str(error) == "Test error message"
 
-    def test_find_stale_completions_invalid_json(self, domain_worktree: WorktreeDomain, domain_worktree_dir: Path):
-        """Treats invalid JSON as stale."""
-        completion = domain_worktree_dir / ".issue-orchestrator" / "completion.json"
-        completion.write_text("not valid json")
+    def test_exception_is_raised_with_oserror_cause(self, tmp_path: Path):
+        """Test exception can be chained with OSError."""
+        original = OSError("Permission denied")
+        error = WorktreePreparationError(
+            tmp_path, 789, "Cannot delete file"
+        )
+        error.__cause__ = original
 
-        paths, session_ids = domain_worktree._find_stale_completions("any-session")
-        assert len(paths) == 1
-        assert "<unreadable>" in session_ids
+        assert error.__cause__ is original

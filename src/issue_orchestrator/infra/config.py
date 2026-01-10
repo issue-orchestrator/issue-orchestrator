@@ -268,7 +268,7 @@ class Config:
     close_failed_tabs: bool = False     # Auto-close tabs for failed sessions (leave open to investigate)
 
     # Enforcement options
-    enforce_hooks: bool = True  # Install pre-push hooks to enforce structured comments
+    enforce_hooks: bool = True  # Install pre-push hooks (runs project validation + orchestrator checks)
     pre_push_hook: Optional[Path] = None  # Custom pre-push hook path (uses bundled if None)
 
     # Worktree setup commands (run after worktree creation, e.g., npm install)
