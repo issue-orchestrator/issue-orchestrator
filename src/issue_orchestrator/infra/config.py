@@ -23,8 +23,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'isolation', 'setup_worktree', 'milestone_sort',
     'milestone_sort_config', 'foundation_milestone',
     'state_file', 'pre_push_hook', 'enforce_hooks', 'queue_refresh_seconds',
-    'terminal_adapter', 'max_issues_to_start', 'close_completed_tabs',
-    'close_failed_tabs', 'session_no_output_seconds', 'session_no_output_tail_lines',
+    'terminal_adapter', 'max_issues_to_start', 'session_no_output_seconds', 'session_no_output_tail_lines',
     'session_no_output_max_bytes', 'session_no_output_repeat_seconds',
     'gh_write_verify_timeout_seconds', 'gh_write_verify_initial_delay_ms',
     'gh_write_verify_max_delay_ms', 'gh_write_verify_backoff', 'gh_write_verify_jitter_ms',
@@ -263,10 +262,6 @@ class Config:
     # Cleanup configuration - when to close AI session tabs and remove worktrees
     cleanup: CleanupConfig = field(default_factory=CleanupConfig)
 
-    # Legacy tab cleanup behavior (deprecated - use cleanup section instead)
-    close_completed_tabs: bool = True   # Auto-close tabs for successful completions (has PR)
-    close_failed_tabs: bool = False     # Auto-close tabs for failed sessions (leave open to investigate)
-
     # Enforcement options
     enforce_hooks: bool = True  # Install pre-push hooks (runs project validation + orchestrator checks)
     pre_push_hook: Optional[Path] = None  # Custom pre-push hook path (uses bundled if None)
@@ -489,9 +484,10 @@ class Config:
             config.repo_root_from_yaml = True
 
         # Parse top-level worktree_base (applies to all agents)
+        # Default: parent directory of repo (worktrees become siblings like {repo}-33)
         worktree_base_raw = data.get("worktree_base")
         if worktree_base_raw is None:
-            config.worktree_base = repo_root / ".issue-orchestrator" / "worktrees"
+            config.worktree_base = repo_root.parent
         else:
             config.worktree_base = resolve_relative_path(worktree_base_raw, repo_root)
 
@@ -624,10 +620,6 @@ class Config:
         config.milestone_sort = data.get("milestone_sort", "due_date")
         config.milestone_sort_config = data.get("milestone_sort_config", {})
         config.foundation_milestone = data.get("foundation_milestone", "M0")
-
-        # Tab cleanup behavior
-        config.close_completed_tabs = data.get("close_completed_tabs", True)
-        config.close_failed_tabs = data.get("close_failed_tabs", False)
 
         # Enforcement options
         config.enforce_hooks = data.get("enforce_hooks", True)
