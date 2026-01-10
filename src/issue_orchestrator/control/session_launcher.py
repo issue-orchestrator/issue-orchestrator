@@ -427,6 +427,10 @@ class SessionLauncher:
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
+        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue.number}'"
+        if self.config.validation.cmd:
+            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
+            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
 
         if self.config.e2e_pr_labels:
             labels_str = ",".join(self.config.e2e_pr_labels)
@@ -641,6 +645,10 @@ class SessionLauncher:
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
+        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{review.issue_number}'"
+        if self.config.validation.cmd:
+            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
+            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
 
         command = f"{env_exports} && {base_command}"
         logger.info(
@@ -856,6 +864,10 @@ class SessionLauncher:
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"
+        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
+        if self.config.validation.cmd:
+            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
+            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
 
         command = f"{env_exports} && {base_command}"
         logger.info(
@@ -1014,6 +1026,8 @@ def handle_session_completion(
     kill_session_fn: Callable[[str], None],
     config: Config,
     pr_url_hint: Optional[str] = None,
+    processing_errors: Optional[list[str]] = None,
+    diagnostic_path: Optional[str] = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
 
@@ -1028,6 +1042,8 @@ def handle_session_completion(
         kill_session_fn: Function to kill terminal session
         config: Configuration
         pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
+        processing_errors: Errors from completion processor (push failed, PR creation failed, etc.)
+        diagnostic_path: Path to detailed failure diagnostic file (in worktree)
     """
     from ..domain.models import DiscoveredReview, DiscoveredFailure
 
@@ -1041,7 +1057,10 @@ def handle_session_completion(
     # Process completion through CompletionHandler (includes policy decisions)
     if status == SessionStatus.COMPLETED:
         state.completed_today.append(session.issue.number)
-    result = completion_handler.process_completion(session, status, pr_url_hint=pr_url_hint)
+    result = completion_handler.process_completion(
+        session, status, pr_url_hint=pr_url_hint,
+        processing_errors=processing_errors, diagnostic_path=diagnostic_path
+    )
 
     # Apply completion actions (from CompletionHandler policy)
     if result.actions:
@@ -1284,13 +1303,22 @@ def process_active_sessions(
             obs, session.worktree_path, session.issue.number,
             session.issue.title, session.terminal_id, session.completion_path
         )
-        # Extract pr_url from completion processor result if available
+        # Extract pr_url, errors, and diagnostic_path from completion processor result
         pr_url_hint = None
-        if decision.processing_result and decision.processing_result.pr_url:
-            pr_url_hint = decision.processing_result.pr_url
+        processing_errors = None
+        diagnostic_path = None
+        if decision.processing_result:
+            if decision.processing_result.pr_url:
+                pr_url_hint = decision.processing_result.pr_url
+            if decision.processing_result.errors:
+                processing_errors = decision.processing_result.errors
+            if decision.processing_result.diagnostic_path:
+                diagnostic_path = decision.processing_result.diagnostic_path
         handle_session_completion(
             session, decision.status, state, completion_handler, action_applier,
-            observer, worktree_manager, kill_session_fn, config, pr_url_hint=pr_url_hint
+            observer, worktree_manager, kill_session_fn, config,
+            pr_url_hint=pr_url_hint, processing_errors=processing_errors,
+            diagnostic_path=diagnostic_path
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:

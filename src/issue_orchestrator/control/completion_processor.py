@@ -19,7 +19,9 @@ import json
 import logging
 import os
 import time
+import traceback
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -82,6 +84,7 @@ class ProcessingResult:
     pr_url: str | None = None
     actions_taken: list[str] | None = None
     errors: list[str] | None = None
+    diagnostic_path: str | None = None  # Path to detailed failure diagnostics
 
 
 class CompletionProcessor:
@@ -278,7 +281,9 @@ class CompletionProcessor:
         label_target = pr_number if pr_number else issue_number
         actions_taken: list[str] = []
         errors: list[str] = []
+        error_details: list[dict[str, Any]] = []  # Full diagnostic info per error
         pr_url: str | None = None
+        branch: str | None = None
 
         # Read the completion record
         record = self.read_completion_record(worktree, completion_path)
@@ -363,6 +368,13 @@ class CompletionProcessor:
                         logger.info("Push succeeded for #%d", issue_number)
                     else:
                         errors.append(f"Push failed: {result.message}")
+                        error_details.append({
+                            "action": action.value,
+                            "error": result.message,
+                            "retryable": result.retryable,
+                            "branch": result.branch,
+                            "remote": result.remote,
+                        })
                         logger.error("Push failed for #%d: %s", issue_number, result.message)
 
                 elif action == RequestedAction.CREATE_PR:
@@ -439,6 +451,12 @@ class CompletionProcessor:
                     e,
                 )
                 errors.append(f"{action.value}: {e}")
+                error_details.append({
+                    "action": action.value,
+                    "error": str(e),
+                    "exception_type": type(e).__name__,
+                    "traceback": traceback.format_exc(),
+                })
             finally:
                 action_duration = time.monotonic() - action_start
                 logger.info(
@@ -470,6 +488,7 @@ class CompletionProcessor:
         )
 
         # Build result message and emit events
+        diagnostic_path: str | None = None
         if success:
             message = f"Processed {record.outcome.value}: {', '.join(actions_taken)}"
             self._emit(
@@ -492,6 +511,19 @@ class CompletionProcessor:
                     "errors": errors,
                 },
             )
+            # Write detailed failure diagnostics to worktree
+            diagnostic_path = self._write_failure_diagnostic(
+                worktree=worktree,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                branch=branch,
+                outcome=record.outcome.value,
+                requested_actions=[a.value for a in record.requested_actions],
+                actions_taken=actions_taken,
+                errors=errors,
+                error_details=error_details,
+                duration_seconds=total_duration,
+            )
 
         # Clean up the completion record after processing to prevent re-processing
         # This is critical because review sessions reuse the same worktree
@@ -507,6 +539,7 @@ class CompletionProcessor:
             message=message,
             pr_url=pr_url,
             actions_taken=actions_taken if actions_taken else None,
+            diagnostic_path=diagnostic_path,
             errors=errors if errors else None,
         )
 
@@ -565,3 +598,71 @@ class CompletionProcessor:
         except Exception as e:
             logger.warning(f"Failed to remove completion record: {e}")
             return False
+
+    def _write_failure_diagnostic(
+        self,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        branch: str | None,
+        outcome: str,
+        requested_actions: list[str],
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+        duration_seconds: float,
+    ) -> str | None:
+        """Write detailed failure diagnostics to a file in the worktree.
+
+        This captures stack traces and detailed error context that would be
+        inappropriate to post publicly on GitHub.
+
+        Args:
+            worktree: Path to the worktree.
+            issue_number: The issue number.
+            issue_title: The issue title.
+            branch: Branch name (if known).
+            outcome: The agent's reported outcome.
+            requested_actions: Actions requested by the agent.
+            actions_taken: Actions that succeeded.
+            errors: Summary error messages.
+            error_details: Full error details including stack traces.
+            duration_seconds: How long processing took.
+
+        Returns:
+            Relative path to the diagnostic file, or None if writing failed.
+        """
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        filename = f"failure-diagnostic-{timestamp}.json"
+        diagnostic_dir = worktree / ".issue-orchestrator"
+        diagnostic_path = diagnostic_dir / filename
+
+        diagnostic = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "issue_number": issue_number,
+            "issue_title": issue_title,
+            "branch": branch,
+            "worktree": str(worktree),
+            "outcome_reported": outcome,
+            "requested_actions": requested_actions,
+            "actions_taken": actions_taken,
+            "errors": errors,
+            "error_details": error_details,
+            "duration_seconds": round(duration_seconds, 2),
+        }
+
+        try:
+            diagnostic_dir.mkdir(parents=True, exist_ok=True)
+            diagnostic_path.write_text(json.dumps(diagnostic, indent=2))
+            logger.info(
+                "[DIAGNOSTIC] Wrote failure diagnostic: issue=%d path=%s",
+                issue_number, diagnostic_path,
+            )
+            # Return relative path for inclusion in GitHub comment
+            return f".issue-orchestrator/{filename}"
+        except Exception as e:
+            logger.warning(
+                "[DIAGNOSTIC] Failed to write failure diagnostic: issue=%d error=%s",
+                issue_number, e,
+            )
+            return None
