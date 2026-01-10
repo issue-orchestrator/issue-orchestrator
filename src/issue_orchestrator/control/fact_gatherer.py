@@ -112,6 +112,19 @@ class FactGatherer:
                                 "state": issue.state,
                             },
                         ))
+
+        # Apply exclusion filter (runs after GitHub API filtering)
+        issue_filter = self.config.get_issue_filter()
+        if not issue_filter.is_empty():
+            before_count = len(all_issues)
+            all_issues = issue_filter.apply(all_issues)
+            if before_count != len(all_issues):
+                logger.debug(
+                    "Excluded %d issues via filter %s",
+                    before_count - len(all_issues),
+                    issue_filter,
+                )
+
         return all_issues
 
     def create_snapshot(

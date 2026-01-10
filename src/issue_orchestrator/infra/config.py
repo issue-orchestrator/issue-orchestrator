@@ -2,9 +2,12 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    from ..domain.issue_filter import IssueLabelFilter
 
 from ..domain.models import AgentConfig, CommentHeadings
 
@@ -18,7 +21,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'control_api_port', 'config', 'worktree_base',
     'github_token', 'github_token_env', 'github_api_url',
     'github_http_timeout_seconds', 'github_cache_ttl_seconds', 'github_required_scopes', 'github_allowed_scopes',
-    'filter_label', 'filter_milestone', 'filter_milestones', 'filter_issue',
+    'filter_label', 'filter_milestone', 'filter_milestones', 'filter_issue', 'exclude_labels',
     'issue_fetch_limit', 'e2e_pr_labels', 'review', 'cleanup', 'validation',
     'isolation', 'setup_worktree', 'milestone_sort',
     'milestone_sort_config', 'foundation_milestone',
@@ -193,6 +196,7 @@ class Config:
     filter_milestone: Optional[str] = None  # Only consider issues in this milestone
     filter_milestones: list[str] = field(default_factory=list)  # Optional list of milestone filters
     filter_issue: Optional[int] = None  # Only process this specific issue number
+    exclude_labels: list[str] = field(default_factory=list)  # Exclude issues with any of these labels
     issue_fetch_limit: int = 100  # Max issues to fetch per API call (gh default is 30)
 
     # E2E test configuration
@@ -350,6 +354,15 @@ class Config:
             return [self.filter_milestone]
         return []
 
+    def get_issue_filter(self) -> "IssueLabelFilter":
+        """Get the issue label filter configured for this config.
+
+        Returns an IssueLabelFilter instance that can filter issues based on
+        exclude_labels configuration.
+        """
+        from ..domain.issue_filter import IssueLabelFilter
+        return IssueLabelFilter.from_config(exclude_labels=self.exclude_labels)
+
     def get_reviewer_for_agent(self, agent_label: str) -> Optional[str]:
         """Get the effective reviewer for an agent.
 
@@ -383,6 +396,7 @@ class Config:
             "filter_milestones": list(self.filter_milestones),
             "foundation_milestone": self.foundation_milestone,
             "filter_issue": self.filter_issue,
+            "exclude_labels": list(self.exclude_labels),
             "e2e_pr_labels": self.e2e_pr_labels,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "session_timeout_minutes": self.session_timeout_minutes,
@@ -573,6 +587,14 @@ class Config:
         config.filter_milestones = [str(m).strip() for m in raw_milestones if str(m).strip()]
         config.issue_fetch_limit = data.get("issue_fetch_limit", 100)
         config.e2e_pr_labels = data.get("e2e_pr_labels", [])
+
+        # Parse exclude_labels (list or comma-separated string)
+        raw_exclude = data.get("exclude_labels") or []
+        if isinstance(raw_exclude, str):
+            raw_exclude = [lbl.strip() for lbl in raw_exclude.split(",") if lbl.strip()]
+        if not isinstance(raw_exclude, list):
+            raise ValueError("exclude_labels must be a list or comma-separated string")
+        config.exclude_labels = [str(lbl).strip() for lbl in raw_exclude if str(lbl).strip()]
 
         # UI mode
         config.ui_mode = data.get("ui_mode", "web")
