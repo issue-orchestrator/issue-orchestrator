@@ -63,7 +63,15 @@ All settings below show their **default values**. Omit any setting to use its de
 
 ```yaml
 # repo: "owner/repo"                              # Omit to auto-detect from git remote
-# worktree_base: "/path/to/worktrees"             # Omit for sibling dir: {repo}-worktrees
+# worktree_base: "/path/to/worktrees"             # Omit for repo's parent dir
+```
+
+Default worktree layout (worktrees as siblings to repo):
+```
+/dev/
+  some-repo/          # Main repo
+  some-repo-33/       # Worktree for issue #33
+  some-repo-45/       # Worktree for issue #45
 ```
 
 #### Concurrency
