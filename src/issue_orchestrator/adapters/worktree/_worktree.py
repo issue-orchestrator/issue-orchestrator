@@ -706,6 +706,8 @@ def create_worktree(
                 install_hooks(existing_worktree, pre_push_hook)
             # Refresh claude settings (ensures latest prompts)
             install_claude_settings(existing_worktree)
+            # Ensure venv symlink exists (for validation tools)
+            install_venv_symlink(existing_worktree, repo_root)
             logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, existing_worktree)
             return existing_worktree, branch_name, not rebase_ok
 
@@ -731,6 +733,8 @@ def create_worktree(
                     install_hooks(worktree_path, pre_push_hook)
                 # Refresh claude settings (ensures latest prompts)
                 install_claude_settings(worktree_path)
+                # Ensure venv symlink exists (for validation tools)
+                install_venv_symlink(worktree_path, repo_root)
                 logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, worktree_path)
                 return worktree_path, existing_branch, not rebase_ok
         # Invalid worktree directory - remove it
