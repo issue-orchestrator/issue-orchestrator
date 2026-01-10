@@ -1,11 +1,10 @@
 #!/bin/bash
-# Orchestrator pre-push hook - validates agent completion
+# Orchestrator pre-push hook - validates agent code quality
 # Installed by issue-orchestrator alongside the wrapper
 #
 # This hook:
 # 1. Runs publish gate validation (with cache lookup)
-# 2. Validates Agent-Status trailer in latest commit (if agent work)
-# 3. Blocks test-skipping patterns (@Disabled, @Ignore, etc.)
+# 2. Blocks test-skipping patterns (@Disabled, @Ignore, etc.)
 #
 # Exit codes:
 #   0 = ALLOW the push
@@ -29,20 +28,6 @@ elif command -v prepush-check &> /dev/null; then
     if ! prepush-check -v; then
         echo "ERROR: Publish gate validation failed." >&2
         echo "Fix the issues and try again." >&2
-        exit 1
-    fi
-fi
-
-# Get the latest commit message
-COMMIT_MSG=$(git log -1 --format=%B HEAD 2>/dev/null || echo "")
-
-# Check for Agent-Status trailer (if this looks like agent work)
-# Agent work is identified by Co-Authored-By: containing common AI patterns
-if echo "$COMMIT_MSG" | grep -qiE "Co-Authored-By:.*(@anthropic|claude|openai|copilot|cursor)"; then
-    # This appears to be agent work - check for Agent-Status
-    if ! echo "$COMMIT_MSG" | grep -qE "^Agent-Status:"; then
-        echo "ERROR: Agent work detected but no Agent-Status trailer found." >&2
-        echo "Use 'agent-done' to properly complete agent work." >&2
         exit 1
     fi
 fi

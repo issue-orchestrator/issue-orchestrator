@@ -597,11 +597,11 @@ class CompletionHandler:
             # Build diagnostic location info
             diagnostic_info = ""
             if diagnostic_path and session.worktree_path:
+                # Show sanitized relative path (worktree folder name + diagnostic path)
+                from pathlib import Path
+                worktree_name = Path(session.worktree_path).name
                 diagnostic_info = (
-                    f"\n**Diagnostic file:**\n"
-                    f"```\n"
-                    f"cat {session.worktree_path}/{diagnostic_path}\n"
-                    f"```\n"
+                    f"\n**Diagnostic file:** `{worktree_name}/{diagnostic_path}`\n"
                 )
 
             actions.append(AddLabelAction(
@@ -619,7 +619,7 @@ class CompletionHandler:
                         f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                         f"- Session: `{session.terminal_id}`\n\n"
                         f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
-                        f"Check the diagnostic file for full stack traces, then remove the label to retry.",
+                        f"Remove the label to retry.",
                 reason="Notify about processing failure",
                 expected=expected,
             ))

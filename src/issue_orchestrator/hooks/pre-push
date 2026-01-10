@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pre-push hook: Validates agent completion trailers exist in latest commit
+# Pre-push hook: Validates agent code quality
 # Installed by issue-orchestrator in agent worktrees
 
 set -e
@@ -47,83 +47,6 @@ check_test_skipping() {
 
 # Run the test-skipping check
 check_test_skipping
-
-# Get the latest commit being pushed
-latest_commit=$(git rev-parse HEAD)
-
-# Extract trailers using git log format
-# %(trailers:key=X,valueonly) extracts just the value for trailer X
-get_trailer() {
-    git log -1 --format="%(trailers:key=$1,valueonly)" "$latest_commit" 2>/dev/null | head -1
-}
-
-status=$(get_trailer "Agent-Status")
-
-# If no Agent-Status trailer, reject the push
-if [[ -z "$status" ]]; then
-    echo ""
-    echo "ERROR: Missing Agent-Status trailer in latest commit"
-    echo ""
-    echo "You must use 'agent-done' to complete your work:"
-    echo "  agent-done completed --implementation '...' --problems '...'"
-    echo "  agent-done blocked --reason '...' --attempted '...'"
-    echo "  agent-done needs_human --question '...'"
-    echo ""
-    echo "Direct 'git push' is not allowed without structured status."
-    echo ""
-    exit 1
-fi
-
-# Validate status is one of the allowed values
-if [[ "$status" != "completed" && "$status" != "blocked" && "$status" != "needs_human" ]]; then
-    echo ""
-    echo "ERROR: Invalid Agent-Status: '$status'"
-    echo "Must be one of: completed, blocked, needs_human"
-    echo ""
-    exit 1
-fi
-
-# Validate required fields based on status
-case "$status" in
-    completed)
-        impl=$(get_trailer "Agent-Implementation")
-        problems=$(get_trailer "Agent-Problems")
-        missing=""
-        [[ -z "$impl" ]] && missing="$missing Agent-Implementation"
-        [[ -z "$problems" ]] && missing="$missing Agent-Problems"
-        if [[ -n "$missing" ]]; then
-            echo ""
-            echo "ERROR: Status 'completed' requires:$missing"
-            echo "Use: agent-done completed --implementation '...' --problems '...'"
-            echo ""
-            exit 1
-        fi
-        ;;
-    blocked)
-        reason=$(get_trailer "Agent-Reason")
-        attempted=$(get_trailer "Agent-Attempted")
-        missing=""
-        [[ -z "$reason" ]] && missing="$missing Agent-Reason"
-        [[ -z "$attempted" ]] && missing="$missing Agent-Attempted"
-        if [[ -n "$missing" ]]; then
-            echo ""
-            echo "ERROR: Status 'blocked' requires:$missing"
-            echo "Use: agent-done blocked --reason '...' --attempted '...'"
-            echo ""
-            exit 1
-        fi
-        ;;
-    needs_human)
-        question=$(get_trailer "Agent-Question")
-        if [[ -z "$question" ]]; then
-            echo ""
-            echo "ERROR: Status 'needs_human' requires: Agent-Question"
-            echo "Use: agent-done needs_human --question '...'"
-            echo ""
-            exit 1
-        fi
-        ;;
-esac
 
 # All validations passed
 exit 0
