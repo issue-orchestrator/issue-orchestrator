@@ -1464,27 +1464,27 @@ class TestWorktreePrepareForSession:
         worktree.prepare_for_session("new-session")  # Should not raise
 
     def test_raises_worktree_preparation_error_on_delete_failure(
-        self, worktree: Worktree, worktree_dir: Path
+        self, worktree: Worktree, worktree_dir: Path, monkeypatch
     ):
         """Raises WorktreePreparationError if file cannot be deleted."""
         orch_dir = worktree_dir / ".issue-orchestrator"
         completion = orch_dir / "completion.json"
         completion.write_text("{}")
 
-        # Make directory read-only to prevent deletion
-        orch_dir.chmod(0o555)
-        try:
-            with pytest.raises(WorktreePreparationError) as exc_info:
-                worktree.prepare_for_session("new-session")
-            # Verify exception properties
-            assert exc_info.value.path == worktree_dir
-            assert exc_info.value.issue_number == 123
-            assert "Cannot delete stale files" in str(exc_info.value)
-            # Verify OSError is chained
-            assert exc_info.value.__cause__ is not None
-            assert isinstance(exc_info.value.__cause__, OSError)
-        finally:
-            orch_dir.chmod(0o755)  # Restore for cleanup
+        def _raise_unlink(_self):
+            raise OSError("Permission denied")
+
+        monkeypatch.setattr(Path, "unlink", _raise_unlink)
+
+        with pytest.raises(WorktreePreparationError) as exc_info:
+            worktree.prepare_for_session("new-session")
+        # Verify exception properties
+        assert exc_info.value.path == worktree_dir
+        assert exc_info.value.issue_number == 123
+        assert "Cannot delete stale files" in str(exc_info.value)
+        # Verify OSError is chained
+        assert exc_info.value.__cause__ is not None
+        assert isinstance(exc_info.value.__cause__, OSError)
 
 
 class TestWorktreePreparationError:
