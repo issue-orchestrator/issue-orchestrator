@@ -1,18 +1,28 @@
 """Unit tests for GitWorkingCopy adapter."""
 
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
+from issue_orchestrator.ports.git import GitError, GitResult
 from issue_orchestrator.ports.working_copy import (
     BranchStatus,
     CommitInfo,
     PushResult,
     RebaseResult,
 )
+
+
+def git_result(stdout: str = "", stderr: str = "", returncode: int = 0) -> GitResult:
+    return GitResult(argv=["git"], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def git_error(*_args, **kwargs) -> GitError:
+    stdout = kwargs.get("stdout", "")
+    stderr = kwargs.get("stderr", "")
+    return GitError(git_result(stdout=stdout, stderr=stderr, returncode=1))
 
 
 @pytest.fixture
@@ -32,49 +42,45 @@ class TestRunGit:
 
     def test_run_git_success(self, git_wc, worktree_path):
         """Test successful git command execution."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="output",
-                stderr="",
-            )
+        with patch.object(git_wc._git, "run") as mock_run:
+            mock_run.return_value = git_result(stdout="output")
 
             result = git_wc._run_git(worktree_path, ["status"])
 
             mock_run.assert_called_once_with(
-                ["git", "-C", str(worktree_path), "status"],
+                worktree_path,
+                ["status"],
                 check=True,
-                capture_output=True,
-                text=True,
+                timeout_s=None,
             )
             assert result.stdout == "output"
 
     def test_run_git_with_check_false(self, git_wc, worktree_path):
         """Test git command with check=False."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=1)
+        with patch.object(git_wc._git, "run") as mock_run:
+            mock_run.return_value = git_result(returncode=1)
 
             git_wc._run_git(worktree_path, ["status"], check=False)
 
             mock_run.assert_called_once_with(
-                ["git", "-C", str(worktree_path), "status"],
+                worktree_path,
+                ["status"],
                 check=False,
-                capture_output=True,
-                text=True,
+                timeout_s=None,
             )
 
-    def test_run_git_with_capture_output_false(self, git_wc, worktree_path):
-        """Test git command with capture_output=False."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
+    def test_run_git_with_timeout(self, git_wc, worktree_path):
+        """Test git command with a timeout override."""
+        with patch.object(git_wc._git, "run") as mock_run:
+            mock_run.return_value = git_result()
 
-            git_wc._run_git(worktree_path, ["status"], capture_output=False)
+            git_wc._run_git(worktree_path, ["status"], timeout_s=5)
 
             mock_run.assert_called_once_with(
-                ["git", "-C", str(worktree_path), "status"],
+                worktree_path,
+                ["status"],
                 check=True,
-                capture_output=False,
-                text=True,
+                timeout_s=5,
             )
 
 
@@ -83,7 +89,7 @@ class TestGetCurrentBranch:
 
     def test_get_current_branch_success(self, git_wc, worktree_path):
         """Test getting current branch successfully."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="feature-branch\n",
@@ -94,14 +100,14 @@ class TestGetCurrentBranch:
 
             assert branch == "feature-branch"
             mock_run.assert_called_once()
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "rev-parse" in args
             assert "--abbrev-ref" in args
             assert "HEAD" in args
 
     def test_get_current_branch_detached_head(self, git_wc, worktree_path):
         """Test getting current branch when in detached HEAD state."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="HEAD\n",
@@ -114,8 +120,8 @@ class TestGetCurrentBranch:
 
     def test_get_current_branch_error(self, git_wc, worktree_path):
         """Test getting current branch when git command fails."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="not a git repository"
             )
 
@@ -129,7 +135,7 @@ class TestGetHeadSha:
 
     def test_get_head_sha_success(self, git_wc, worktree_path):
         """Test getting HEAD SHA successfully."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="abc123def456\n",
@@ -140,14 +146,14 @@ class TestGetHeadSha:
 
             assert sha == "abc123def456"
             mock_run.assert_called_once()
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "rev-parse" in args
             assert "HEAD" in args
 
     def test_get_head_sha_error(self, git_wc, worktree_path):
         """Test getting HEAD SHA when git command fails."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="not a git repository"
             )
 
@@ -161,7 +167,7 @@ class TestGetBranchStatus:
 
     def test_get_branch_status_clean_with_upstream(self, git_wc, worktree_path):
         """Test getting branch status with clean state and upstream."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             # First call: get current branch
             # Second call: git status --porcelain (clean)
             # Third call: git rev-list for ahead/behind counts
@@ -182,11 +188,11 @@ class TestGetBranchStatus:
 
     def test_get_branch_status_dirty_no_upstream(self, git_wc, worktree_path):
         """Test getting branch status with uncommitted changes and no upstream."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
                 MagicMock(returncode=0, stdout=" M file.txt\n", stderr=""),  # dirty
-                subprocess.CalledProcessError(1, "git", stderr="no upstream"),
+                git_error(1, "git", stderr="no upstream"),
             ]
 
             status = git_wc.get_branch_status(worktree_path)
@@ -200,7 +206,7 @@ class TestGetBranchStatus:
 
     def test_get_branch_status_detached_head(self, git_wc, worktree_path):
         """Test getting branch status when in detached HEAD state."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="HEAD\n", stderr="")
 
             status = git_wc.get_branch_status(worktree_path)
@@ -209,10 +215,10 @@ class TestGetBranchStatus:
 
     def test_get_branch_status_error(self, git_wc, worktree_path):
         """Test getting branch status when git command fails."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="main\n", stderr=""),
-                subprocess.CalledProcessError(1, "git", stderr="error"),
+                git_error(1, "git", stderr="error"),
             ]
 
             status = git_wc.get_branch_status(worktree_path)
@@ -225,7 +231,7 @@ class TestHasUncommittedChanges:
 
     def test_has_uncommitted_changes_true(self, git_wc, worktree_path):
         """Test detecting uncommitted changes."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout=" M file.txt\nA  newfile.py\n",
@@ -238,7 +244,7 @@ class TestHasUncommittedChanges:
 
     def test_has_uncommitted_changes_false(self, git_wc, worktree_path):
         """Test clean working directory."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="",
@@ -251,8 +257,8 @@ class TestHasUncommittedChanges:
 
     def test_has_uncommitted_changes_error(self, git_wc, worktree_path):
         """Test error handling - assume dirty on error for safety."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="error"
             )
 
@@ -266,7 +272,7 @@ class TestGetCommitsAheadOfMain:
 
     def test_get_commits_ahead_of_main_success(self, git_wc, worktree_path):
         """Test getting commits ahead of main."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout=(
@@ -290,7 +296,7 @@ class TestGetCommitsAheadOfMain:
 
     def test_get_commits_ahead_of_main_empty(self, git_wc, worktree_path):
         """Test when no commits ahead of main."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="",
@@ -303,8 +309,8 @@ class TestGetCommitsAheadOfMain:
 
     def test_get_commits_ahead_of_main_error(self, git_wc, worktree_path):
         """Test error handling."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="error"
             )
 
@@ -314,7 +320,7 @@ class TestGetCommitsAheadOfMain:
 
     def test_get_commits_ahead_of_main_malformed(self, git_wc, worktree_path):
         """Test handling malformed output."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout=(
@@ -336,32 +342,32 @@ class TestFetch:
 
     def test_fetch_success(self, git_wc, worktree_path):
         """Test successful fetch."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             result = git_wc.fetch(worktree_path)
 
             assert result is True
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "fetch" in args
             assert "origin" in args
 
     def test_fetch_custom_remote(self, git_wc, worktree_path):
         """Test fetch with custom remote."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             result = git_wc.fetch(worktree_path, remote="upstream")
 
             assert result is True
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "fetch" in args
             assert "upstream" in args
 
     def test_fetch_error(self, git_wc, worktree_path):
         """Test fetch failure."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="network error"
             )
 
@@ -375,7 +381,7 @@ class TestListRemoteBranches:
 
     def test_list_remote_branches_success(self, git_wc, worktree_path):
         """Test listing remote branches."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="  origin/main\n  origin/feature-1\n  origin/feature-2\n",
@@ -391,7 +397,7 @@ class TestListRemoteBranches:
 
     def test_list_remote_branches_empty(self, git_wc, worktree_path):
         """Test listing remote branches when none exist."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="",
@@ -404,8 +410,8 @@ class TestListRemoteBranches:
 
     def test_list_remote_branches_error(self, git_wc, worktree_path):
         """Test error handling."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="error"
             )
 
@@ -419,7 +425,7 @@ class TestIsGitRepo:
 
     def test_is_git_repo_true(self, git_wc, worktree_path):
         """Test detecting a git repository."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout=".git\n",
@@ -429,14 +435,14 @@ class TestIsGitRepo:
             result = git_wc.is_git_repo(worktree_path)
 
             assert result is True
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "rev-parse" in args
             assert "--git-dir" in args
 
     def test_is_git_repo_false(self, git_wc, worktree_path):
         """Test detecting non-git directory."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 128, "git", stderr="not a git repository"
             )
 
@@ -450,7 +456,7 @@ class TestGetConfigValue:
 
     def test_get_config_value_success(self, git_wc, worktree_path):
         """Test getting config value."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="user@example.com\n",
@@ -460,14 +466,14 @@ class TestGetConfigValue:
             value = git_wc.get_config_value(worktree_path, "user.email")
 
             assert value == "user@example.com"
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "config" in args
             assert "--get" in args
             assert "user.email" in args
 
     def test_get_config_value_empty(self, git_wc, worktree_path):
         """Test getting empty config value."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="",
@@ -480,8 +486,8 @@ class TestGetConfigValue:
 
     def test_get_config_value_not_found(self, git_wc, worktree_path):
         """Test getting non-existent config value."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="key not found"
             )
 
@@ -495,7 +501,7 @@ class TestGetCommitsAheadCount:
 
     def test_get_commits_ahead_count_success(self, git_wc, worktree_path):
         """Test counting commits ahead."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="5\n",
@@ -505,14 +511,14 @@ class TestGetCommitsAheadCount:
             count = git_wc.get_commits_ahead_count(worktree_path, "feature-branch")
 
             assert count == 5
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "rev-list" in args
             assert "--count" in args
             assert "origin/main..origin/feature-branch" in args
 
     def test_get_commits_ahead_count_zero(self, git_wc, worktree_path):
         """Test when no commits ahead."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="0\n",
@@ -525,7 +531,7 @@ class TestGetCommitsAheadCount:
 
     def test_get_commits_ahead_count_custom_base(self, git_wc, worktree_path):
         """Test with custom base branch."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="3\n",
@@ -537,13 +543,13 @@ class TestGetCommitsAheadCount:
             )
 
             assert count == 3
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "origin/develop..origin/feature-branch" in args
 
     def test_get_commits_ahead_count_error(self, git_wc, worktree_path):
         """Test error handling."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="error"
             )
 
@@ -553,7 +559,7 @@ class TestGetCommitsAheadCount:
 
     def test_get_commits_ahead_count_invalid_output(self, git_wc, worktree_path):
         """Test handling invalid output."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="not a number\n",
@@ -570,7 +576,7 @@ class TestGetLastCommitDate:
 
     def test_get_last_commit_date_success(self, git_wc, worktree_path):
         """Test getting last commit date."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="2 hours ago\n",
@@ -580,7 +586,7 @@ class TestGetLastCommitDate:
             date = git_wc.get_last_commit_date(worktree_path, "feature-branch")
 
             assert date == "2 hours ago"
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "log" in args
             assert "-1" in args
             assert "--format=%cr" in args
@@ -588,7 +594,7 @@ class TestGetLastCommitDate:
 
     def test_get_last_commit_date_empty(self, git_wc, worktree_path):
         """Test when output is empty."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="",
@@ -601,8 +607,8 @@ class TestGetLastCommitDate:
 
     def test_get_last_commit_date_error(self, git_wc, worktree_path):
         """Test error handling."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="error"
             )
 
@@ -616,7 +622,7 @@ class TestRebaseOnBranch:
 
     def test_rebase_success(self, git_wc, worktree_path):
         """Test successful rebase."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             result = git_wc.rebase_on_branch(worktree_path)
@@ -628,25 +634,25 @@ class TestRebaseOnBranch:
 
     def test_rebase_custom_target(self, git_wc, worktree_path):
         """Test rebase with custom target."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             result = git_wc.rebase_on_branch(worktree_path, target="origin/develop")
 
             assert result.success is True
             assert "origin/develop" in result.message
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "rebase" in args
             assert "origin/develop" in args
 
     def test_rebase_with_conflicts(self, git_wc, worktree_path):
         """Test rebase failure with conflicts."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             # First call: rebase fails
             # Second call: git status shows conflicts
             # Third call: rebase --abort succeeds
             mock_run.side_effect = [
-                subprocess.CalledProcessError(
+                git_error(
                     1, "git", stderr="CONFLICT (content): Merge conflict"
                 ),
                 MagicMock(
@@ -666,11 +672,11 @@ class TestRebaseOnBranch:
 
     def test_rebase_abort_fails(self, git_wc, worktree_path):
         """Test rebase failure where abort also fails."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
-                subprocess.CalledProcessError(1, "git", stderr="CONFLICT"),
+                git_error(1, "git", stderr="CONFLICT"),
                 MagicMock(returncode=0, stdout="UU file.py\n", stderr=""),
-                subprocess.CalledProcessError(1, "git", stderr="abort failed"),
+                git_error(1, "git", stderr="abort failed"),
             ]
 
             result = git_wc.rebase_on_branch(worktree_path)
@@ -680,9 +686,9 @@ class TestRebaseOnBranch:
 
     def test_rebase_error_no_conflicts(self, git_wc, worktree_path):
         """Test rebase failure without conflicts."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
-                subprocess.CalledProcessError(1, "git", stderr="fatal: some error"),
+                git_error(1, "git", stderr="fatal: some error"),
                 MagicMock(returncode=0, stdout="", stderr=""),  # No conflicts
             ]
 
@@ -697,7 +703,7 @@ class TestPush:
 
     def test_push_success(self, git_wc, worktree_path):
         """Test successful push."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             # First call: get current branch
             # Second call: push
             mock_run.side_effect = [
@@ -713,7 +719,7 @@ class TestPush:
             assert "Pushed" in result.message
 
             # Check push command
-            push_args = mock_run.call_args_list[1][0][0]
+            push_args = mock_run.call_args_list[1][0][1]
             assert "push" in push_args
             assert "-u" in push_args
             assert "origin" in push_args
@@ -722,7 +728,7 @@ class TestPush:
 
     def test_push_no_branch(self, git_wc, worktree_path):
         """Test push when current branch cannot be determined."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="HEAD\n", stderr="")
 
             result = git_wc.push(worktree_path)
@@ -734,7 +740,7 @@ class TestPush:
 
     def test_push_with_skip_hooks(self, git_wc, worktree_path):
         """Test push with skip_hooks enabled."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
@@ -743,12 +749,12 @@ class TestPush:
             result = git_wc.push(worktree_path, skip_hooks=True)
 
             assert result.success is True
-            push_args = mock_run.call_args_list[1][0][0]
+            push_args = mock_run.call_args_list[1][0][1]
             assert "--no-verify" in push_args
 
     def test_push_without_force_with_lease(self, git_wc, worktree_path):
         """Test push without force-with-lease."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
@@ -757,12 +763,12 @@ class TestPush:
             result = git_wc.push(worktree_path, force_with_lease=False)
 
             assert result.success is True
-            push_args = mock_run.call_args_list[1][0][0]
+            push_args = mock_run.call_args_list[1][0][1]
             assert "--force-with-lease" not in push_args
 
     def test_push_without_set_upstream(self, git_wc, worktree_path):
         """Test push without setting upstream."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
@@ -771,15 +777,15 @@ class TestPush:
             result = git_wc.push(worktree_path, set_upstream=False)
 
             assert result.success is True
-            push_args = mock_run.call_args_list[1][0][0]
+            push_args = mock_run.call_args_list[1][0][1]
             assert "-u" not in push_args
 
     def test_push_non_fast_forward(self, git_wc, worktree_path):
         """Test push failure due to non-fast-forward."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                subprocess.CalledProcessError(
+                git_error(
                     1, "git", stderr="error: failed to push some refs (non-fast-forward)"
                 ),
             ]
@@ -793,10 +799,10 @@ class TestPush:
 
     def test_push_rejected(self, git_wc, worktree_path):
         """Test push failure due to rejected refs."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                subprocess.CalledProcessError(
+                git_error(
                     1, "git", stderr="error: failed to push (rejected)"
                 ),
             ]
@@ -809,10 +815,10 @@ class TestPush:
 
     def test_push_permission_denied(self, git_wc, worktree_path):
         """Test push failure due to permission denied."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                subprocess.CalledProcessError(
+                git_error(
                     1, "git", stderr="Permission denied (publickey)"
                 ),
             ]
@@ -825,10 +831,10 @@ class TestPush:
 
     def test_push_network_error(self, git_wc, worktree_path):
         """Test push failure due to network error (retryable)."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                subprocess.CalledProcessError(
+                git_error(
                     1, "git", stderr="Could not resolve host: github.com"
                 ),
             ]
@@ -840,7 +846,7 @@ class TestPush:
 
     def test_push_custom_remote(self, git_wc, worktree_path):
         """Test push to custom remote."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
@@ -850,7 +856,7 @@ class TestPush:
 
             assert result.success is True
             assert result.remote == "upstream"
-            push_args = mock_run.call_args_list[1][0][0]
+            push_args = mock_run.call_args_list[1][0][1]
             assert "upstream" in push_args
 
 
@@ -862,7 +868,7 @@ class TestGetIssueNumberFromBranch:
         self, mock_extract, git_wc, worktree_path
     ):
         """Test extracting issue number from canonical format."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout="328-add-feature\n", stderr=""
             )
@@ -878,7 +884,7 @@ class TestGetIssueNumberFromBranch:
         self, mock_extract, git_wc, worktree_path
     ):
         """Test fallback to legacy format (issue-123)."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout="issue-123\n", stderr=""
             )
@@ -891,7 +897,7 @@ class TestGetIssueNumberFromBranch:
     @patch("issue_orchestrator.adapters.worktree._worktree.extract_issue_number_from_branch")
     def test_get_issue_number_slash_format(self, mock_extract, git_wc, worktree_path):
         """Test fallback to slash format (feature/456-thing)."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout="feature/456-thing\n", stderr=""
             )
@@ -904,7 +910,7 @@ class TestGetIssueNumberFromBranch:
     @patch("issue_orchestrator.adapters.worktree._worktree.extract_issue_number_from_branch")
     def test_get_issue_number_no_match(self, mock_extract, git_wc, worktree_path):
         """Test when branch name doesn't contain issue number."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout="main\n", stderr=""
             )
@@ -917,7 +923,7 @@ class TestGetIssueNumberFromBranch:
     @patch("issue_orchestrator.adapters.worktree._worktree.extract_issue_number_from_branch")
     def test_get_issue_number_no_branch(self, mock_extract, git_wc, worktree_path):
         """Test when current branch cannot be determined."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="HEAD\n", stderr="")
 
             issue_num = git_wc.get_issue_number_from_branch(worktree_path)
@@ -931,7 +937,7 @@ class TestGetWorktreeRoot:
 
     def test_get_worktree_root_success(self, git_wc, worktree_path):
         """Test getting worktree root."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="/path/to/repo\n",
@@ -941,14 +947,14 @@ class TestGetWorktreeRoot:
             root = git_wc.get_worktree_root(worktree_path)
 
             assert root == Path("/path/to/repo")
-            args = mock_run.call_args[0][0]
+            args = mock_run.call_args[0][1]
             assert "rev-parse" in args
             assert "--show-toplevel" in args
 
     def test_get_worktree_root_error(self, git_wc, worktree_path):
         """Test error handling."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 128, "git", stderr="not a git repository"
             )
 
@@ -962,7 +968,7 @@ class TestCommitAll:
 
     def test_commit_all_success(self, git_wc, worktree_path):
         """Test successful commit."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             # First call: git add -A
             # Second call: git commit
             mock_run.side_effect = [
@@ -975,19 +981,19 @@ class TestCommitAll:
             assert result is True
 
             # Check git add command
-            add_args = mock_run.call_args_list[0][0][0]
+            add_args = mock_run.call_args_list[0][0][1]
             assert "add" in add_args
             assert "-A" in add_args
 
             # Check git commit command
-            commit_args = mock_run.call_args_list[1][0][0]
+            commit_args = mock_run.call_args_list[1][0][1]
             assert "commit" in commit_args
             assert "-m" in commit_args
             assert "Test commit" in commit_args
 
     def test_commit_all_with_allow_empty(self, git_wc, worktree_path):
         """Test commit with allow_empty flag."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
@@ -996,16 +1002,16 @@ class TestCommitAll:
             result = git_wc.commit_all(worktree_path, "Empty commit", allow_empty=True)
 
             assert result is True
-            commit_args = mock_run.call_args_list[1][0][0]
+            commit_args = mock_run.call_args_list[1][0][1]
             assert "--allow-empty" in commit_args
 
     def test_commit_all_nothing_to_commit(self, git_wc, worktree_path):
         """Test when there's nothing to commit."""
-        with patch("subprocess.run") as mock_run:
-            # Create an error with stdout set as an attribute
-            error = subprocess.CalledProcessError(1, "git")
-            error.stdout = "nothing to commit, working tree clean"
-            error.stderr = ""
+        with patch.object(git_wc, "_run_git") as mock_run:
+            # Create an error with stdout set on the result
+            error = git_error(1, "git")
+            error.result.stdout = "nothing to commit, working tree clean"
+            error.result.stderr = ""
 
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),
@@ -1019,8 +1025,8 @@ class TestCommitAll:
 
     def test_commit_all_add_fails(self, git_wc, worktree_path):
         """Test when git add fails."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(
                 1, "git", stderr="error adding files"
             )
 
@@ -1030,10 +1036,10 @@ class TestCommitAll:
 
     def test_commit_all_commit_fails(self, git_wc, worktree_path):
         """Test when git commit fails."""
-        with patch("subprocess.run") as mock_run:
+        with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),
-                subprocess.CalledProcessError(
+                git_error(
                     1, "git", stderr="Author identity unknown"
                 ),
             ]

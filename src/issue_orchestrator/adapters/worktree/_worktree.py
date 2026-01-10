@@ -5,12 +5,26 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 from ...infra.logging_config import issue_log
+from ...execution.command_runner import LocalCommandRunner
+from ...ports.git import GitResult
+from ..git.git_cli import GitCLI
 
 logger = logging.getLogger(__name__)
+
+_git = GitCLI(runner=LocalCommandRunner())
+
+
+def _git_run(
+    repo: Path,
+    argv: list[str],
+    *,
+    check: bool = False,
+    env: dict[str, str] | None = None,
+) -> GitResult:
+    return _git.run(repo=repo, argv=argv, check=check, env=env)
 
 
 # Path to bundled hooks (in issue_orchestrator/hooks/, 3 levels up from this module)
@@ -53,43 +67,9 @@ def get_default_branch(repo_root: Path) -> str:
     Returns:
         The default branch name (e.g., 'main', 'master')
     """
-    # Try to get from remote HEAD (refs/remotes/origin/HEAD -> refs/remotes/origin/main)
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "symbolic-ref", "refs/remotes/origin/HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode == 0:
-        # refs/remotes/origin/main -> main
-        ref = result.stdout.strip()
-        branch = ref.split("/")[-1]
-        logger.debug("Detected default branch from origin/HEAD: %s", branch)
-        return branch
-
-    # Fallback: check if 'main' exists
-    main_check = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "--verify", "main"],
-        capture_output=True,
-        check=False,
-    )
-    if main_check.returncode == 0:
-        logger.debug("Default branch fallback: main")
-        return "main"
-
-    # Fallback: check if 'master' exists
-    master_check = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "--verify", "master"],
-        capture_output=True,
-        check=False,
-    )
-    if master_check.returncode == 0:
-        logger.debug("Default branch fallback: master")
-        return "master"
-
-    # Last resort fallback
-    logger.warning("Could not detect default branch, using 'main'")
-    return "main"
+    branch = _git.default_branch(repo_root)
+    logger.debug("Detected default branch: %s", branch)
+    return branch
 
 
 def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
@@ -113,10 +93,9 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
     """
     try:
         # Step 1: Fetch origin to get latest main
-        fetch_result = subprocess.run(
-            ["git", "-C", str(worktree_path), "fetch", "origin", "main"],
-            capture_output=True,
-            text=True,
+        fetch_result = _git_run(
+            worktree_path,
+            ["fetch", "origin", "main"],
             check=False,
         )
         if fetch_result.returncode != 0:
@@ -128,10 +107,9 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
             # Non-fatal - try to continue with whatever main we have
 
         # Step 2: Get current branch
-        branch_result = subprocess.run(
-            ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
+        branch_result = _git_run(
+            worktree_path,
+            ["rev-parse", "--abbrev-ref", "HEAD"],
             check=False,
         )
         if branch_result.returncode != 0:
@@ -141,9 +119,9 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
         current_branch = branch_result.stdout.strip()
         if current_branch in ("main", "master"):
             # Already on main, just pull
-            subprocess.run(
-                ["git", "-C", str(worktree_path), "pull", "--ff-only"],
-                capture_output=True,
+            _git_run(
+                worktree_path,
+                ["pull", "--ff-only"],
                 check=False,
             )
             return True
@@ -154,10 +132,9 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
             current_branch,
             worktree_path,
         )
-        rebase_result = subprocess.run(
-            ["git", "-C", str(worktree_path), "rebase", "origin/main"],
-            capture_output=True,
-            text=True,
+        rebase_result = _git_run(
+            worktree_path,
+            ["rebase", "origin/main"],
             check=False,
         )
 
@@ -170,9 +147,9 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
                 rebase_result.stderr.strip(),
             )
             # Abort the rebase to leave worktree in a clean state
-            subprocess.run(
-                ["git", "-C", str(worktree_path), "rebase", "--abort"],
-                capture_output=True,
+            _git_run(
+                worktree_path,
+                ["rebase", "--abort"],
                 check=False,
             )
             return False
@@ -321,9 +298,10 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     # IMPORTANT: Read from main repo config, not worktree config
     # (worktree config may have our override from a previous install)
     main_repo_root = gitdir.parent.parent  # /repo/.git from /repo/.git/worktrees/name
-    hooks_path_result = subprocess.run(
-        ["git", "-C", str(main_repo_root), "config", "--local", "--get", "core.hooksPath"],
-        capture_output=True, text=True, check=False
+    hooks_path_result = _git_run(
+        main_repo_root,
+        ["config", "--local", "--get", "core.hooksPath"],
+        check=False,
     )
     custom_hooks_path = hooks_path_result.stdout.strip() if hooks_path_result.returncode == 0 else None
 
@@ -336,21 +314,29 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
         "GIT_DIR": str(gitdir),
         "GIT_WORK_TREE": str(worktree_path),
     }
-    subprocess.run(
-        ["git", "config", "extensions.worktreeConfig", "true"],
-        capture_output=True, check=False, env=git_env
+    _git_run(
+        worktree_path,
+        ["config", "extensions.worktreeConfig", "true"],
+        check=False,
+        env=git_env,
     )
-    subprocess.run(
-        ["git", "config", "--worktree", "core.hooksPath", str(hooks_dir)],
-        capture_output=True, check=False, env=git_env
+    _git_run(
+        worktree_path,
+        ["config", "--worktree", "core.hooksPath", str(hooks_dir)],
+        check=False,
+        env=git_env,
     )
-    subprocess.run(
-        ["git", "config", "--worktree", "core.worktree", str(worktree_path)],
-        capture_output=True, check=False, env=git_env
+    _git_run(
+        worktree_path,
+        ["config", "--worktree", "core.worktree", str(worktree_path)],
+        check=False,
+        env=git_env,
     )
-    subprocess.run(
-        ["git", "config", "--worktree", "core.bare", "false"],
-        capture_output=True, check=False, env=git_env
+    _git_run(
+        worktree_path,
+        ["config", "--worktree", "core.bare", "false"],
+        check=False,
+        env=git_env,
     )
     logger.info("Overriding core.hooksPath to %s for this worktree only (gitdir=%s)", hooks_dir, gitdir)
 
@@ -506,9 +492,10 @@ def find_worktree_for_branch(repo_root: Path, branch_name: str) -> Path | None:
         Path to the worktree if found, None otherwise
     """
     logger.debug("Searching for worktree: repo=%s branch=%s", repo_root, branch_name)
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"],
-        capture_output=True, text=True, check=False
+    result = _git_run(
+        repo_root,
+        ["worktree", "list", "--porcelain"],
+        check=False,
     )
     if result.returncode != 0:
         logger.debug("worktree list failed: repo=%s returncode=%s", repo_root, result.returncode)
@@ -539,7 +526,7 @@ def _detach_worktree_branch(worktree_path: Path, branch_name: str) -> None:
         branch_name,
     )
     env = None
-    cmd = ["git", "-C", str(worktree_path), "checkout", "--detach"]
+    cmd = ["checkout", "--detach"]
     git_file = worktree_path / ".git"
     if git_file.exists():
         content = git_file.read_text().strip()
@@ -548,13 +535,11 @@ def _detach_worktree_branch(worktree_path: Path, branch_name: str) -> None:
             env = os.environ.copy()
             env["GIT_DIR"] = git_dir
             env["GIT_WORK_TREE"] = str(worktree_path)
-            cmd = ["git", "checkout", "--detach"]
             logger.info("Detaching with explicit GIT_DIR for worktree: %s", worktree_path)
 
-    result = subprocess.run(
+    result = _git_run(
+        worktree_path,
         cmd,
-        capture_output=True,
-        text=True,
         check=False,
         env=env,
     )
@@ -588,10 +573,9 @@ def _resolve_repo_root_from_worktree(worktree_path: Path) -> Path | None:
 
 def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None:
     logger.info("Removing existing worktree path for fresh create: %s", worktree_path)
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "worktree", "remove", "--force", str(worktree_path)],
-        capture_output=True,
-        text=True,
+    result = _git_run(
+        repo_root,
+        ["worktree", "remove", "--force", str(worktree_path)],
         check=False,
     )
     if result.returncode != 0:
@@ -667,15 +651,13 @@ def create_worktree(
     disable_reuse = os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
 
     # Prune stale worktrees (handles case where directory was deleted but git still has it registered)
-    prune_result = subprocess.run(
-        ["git", "-C", str(repo_root), "worktree", "prune"],
-        capture_output=True, check=False
+    prune_result = _git_run(
+        repo_root,
+        ["worktree", "prune"],
+        check=False,
     )
     if prune_result.stderr:
-        if isinstance(prune_result.stderr, bytes):
-            prune_stderr = prune_result.stderr.decode("utf-8", errors="replace")
-        else:
-            prune_stderr = str(prune_result.stderr)
+        prune_stderr = str(prune_result.stderr)
     else:
         prune_stderr = ""
     logger.debug(
@@ -719,9 +701,10 @@ def create_worktree(
             # Valid worktree - reuse it by pulling latest changes
             logger.info(issue_log(issue_number, "Reusing existing worktree by path: %s"), worktree_path)
             # Try to get current branch
-            branch_result = subprocess.run(
-                ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, check=False
+            branch_result = _git_run(
+                worktree_path,
+                ["rev-parse", "--abbrev-ref", "HEAD"],
+                check=False,
             )
             if branch_result.returncode == 0:
                 existing_branch = branch_result.stdout.strip()
@@ -743,9 +726,10 @@ def create_worktree(
 
     try:
         # Check if branch already exists
-        branch_check = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--verify", branch_name],
-            capture_output=True, text=True, check=False
+        branch_check = _git_run(
+            repo_root,
+            ["rev-parse", "--verify", branch_name],
+            check=False,
         )
         branch_exists = branch_check.returncode == 0
         logger.debug(
@@ -757,18 +741,17 @@ def create_worktree(
 
         if branch_exists:
             # Use existing branch
-            cmd = ["git", "-C", str(repo_root), "worktree", "add", str(worktree_path), branch_name]
+            cmd = ["worktree", "add", str(worktree_path), branch_name]
         else:
             # Try to fetch remote branch (for review/rework sessions)
-            fetch_result = subprocess.run(
-                ["git", "-C", str(repo_root), "fetch", "origin", branch_name],
-                capture_output=True,
-                text=True,
+            fetch_result = _git_run(
+                repo_root,
+                ["fetch", "origin", branch_name],
                 check=False,
             )
             if fetch_result.returncode == 0:
                 cmd = [
-                    "git", "-C", str(repo_root), "worktree", "add",
+                    "worktree", "add",
                     str(worktree_path), "-b", branch_name, f"origin/{branch_name}"
                 ]
             else:
@@ -783,13 +766,15 @@ def create_worktree(
                     default_branch = get_default_branch(repo_root)
                     logger.info("Creating new branch from default branch: %s", default_branch)
                 cmd = [
-                    "git", "-C", str(repo_root), "worktree", "add",
+                    "worktree", "add",
                     str(worktree_path), "-b", branch_name, default_branch
                 ]
 
         logger.info(issue_log(issue_number, "Creating worktree: branch=%s path=%s"), branch_name, worktree_path)
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False
+        result = _git_run(
+            repo_root,
+            cmd,
+            check=False,
         )
 
         if result.returncode != 0:
@@ -843,9 +828,11 @@ def remove_worktree(worktree_path: Path) -> None:
             raise WorktreeError(f"Unable to resolve repo root for {worktree_path}")
 
         # Remove the worktree
-        cmd = ["git", "-C", str(repo_root), "worktree", "remove", str(worktree_path)]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False
+        cmd = ["worktree", "remove", str(worktree_path)]
+        result = _git_run(
+            repo_root,
+            cmd,
+            check=False,
         )
 
         if result.returncode != 0:
@@ -862,9 +849,11 @@ def remove_worktree(worktree_path: Path) -> None:
         branch_name = _get_worktree_branch(worktree_path)
         if branch_name:
             # Delete the branch
-            cmd = ["git", "-C", str(repo_root), "branch", "-D", branch_name]
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, check=False
+            cmd = ["branch", "-D", branch_name]
+            result = _git_run(
+                repo_root,
+                cmd,
+                check=False,
             )
 
             if result.returncode != 0:
@@ -889,9 +878,11 @@ def list_worktrees(repo_root: Path) -> list[Path]:
         WorktreeError: If listing fails
     """
     try:
-        cmd = ["git", "-C", str(repo_root), "worktree", "list", "--porcelain"]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False
+        cmd = ["worktree", "list", "--porcelain"]
+        result = _git_run(
+            repo_root,
+            cmd,
+            check=False,
         )
 
         if result.returncode != 0:
@@ -956,9 +947,11 @@ def has_uncommitted_changes(worktree_path: Path) -> bool:
         raise WorktreeError(f"Worktree does not exist at {worktree_path}")
 
     try:
-        cmd = ["git", "-C", str(worktree_path), "status", "--porcelain"]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False
+        cmd = ["status", "--porcelain"]
+        result = _git_run(
+            worktree_path,
+            cmd,
+            check=False,
         )
 
         if result.returncode != 0:
@@ -989,9 +982,11 @@ def _get_worktree_branch(worktree_path: Path) -> str | None:
         WorktreeError: If the operation fails
     """
     try:
-        cmd = ["git", "-C", str(worktree_path), "rev-parse", "--abbrev-ref", "HEAD"]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False
+        cmd = ["rev-parse", "--abbrev-ref", "HEAD"]
+        result = _git_run(
+            worktree_path,
+            cmd,
+            check=False,
         )
 
         if result.returncode != 0:

@@ -9,10 +9,12 @@ Part of the execution layer - performs actions, does not make decisions.
 import logging
 import os
 import re
-import subprocess
 import time
 from pathlib import Path
 
+from ..adapters.git.git_cli import GitCLI
+from ..execution.command_runner import LocalCommandRunner
+from ..ports.git import Git, GitError, GitResult
 from ..ports.working_copy import (
     CommitInfo,
     BranchStatus,
@@ -31,13 +33,16 @@ class GitWorkingCopy:
     without making policy decisions.
     """
 
+    def __init__(self, git: Git | None = None) -> None:
+        self._git = git or GitCLI(runner=LocalCommandRunner())
+
     def _run_git(
         self,
         worktree: Path,
         args: list[str],
         check: bool = True,
-        capture_output: bool = True,
-    ) -> subprocess.CompletedProcess:
+        timeout_s: int | None = None,
+    ) -> GitResult:
         """Run a git command in the worktree context.
 
         Args:
@@ -47,15 +52,14 @@ class GitWorkingCopy:
             capture_output: Whether to capture stdout/stderr.
 
         Returns:
-            CompletedProcess with results.
+            GitResult with results.
         """
-        cmd = ["git", "-C", str(worktree)] + args
-        logger.debug("Running: %s", " ".join(cmd))
-        return subprocess.run(
-            cmd,
+        logger.debug("Running: git -C %s %s", worktree, " ".join(args))
+        return self._git.run(
+            worktree,
+            args,
             check=check,
-            capture_output=capture_output,
-            text=True,
+            timeout_s=timeout_s,
         )
 
     def get_current_branch(self, worktree: Path) -> str | None:
@@ -64,7 +68,7 @@ class GitWorkingCopy:
             result = self._run_git(worktree, ["rev-parse", "--abbrev-ref", "HEAD"])
             branch = result.stdout.strip()
             return None if branch == "HEAD" else branch  # HEAD means detached
-        except subprocess.CalledProcessError:
+        except GitError:
             logger.warning("Failed to get current branch in %s", worktree)
             return None
 
@@ -73,7 +77,7 @@ class GitWorkingCopy:
         try:
             result = self._run_git(worktree, ["rev-parse", "HEAD"])
             return result.stdout.strip()
-        except subprocess.CalledProcessError:
+        except GitError:
             logger.warning("Failed to get HEAD SHA in %s", worktree)
             return None
 
@@ -104,7 +108,7 @@ class GitWorkingCopy:
                     ahead = int(parts[0])
                     behind = int(parts[1])
                     has_remote = True
-            except subprocess.CalledProcessError:
+            except GitError:
                 # No upstream tracking
                 has_remote = False
 
@@ -115,7 +119,7 @@ class GitWorkingCopy:
                 has_remote=has_remote,
                 clean=clean,
             )
-        except subprocess.CalledProcessError as e:
+        except GitError as e:
             logger.warning("Failed to get branch status: %s", e)
             return None
 
@@ -124,7 +128,7 @@ class GitWorkingCopy:
         try:
             result = self._run_git(worktree, ["status", "--porcelain"])
             return len(result.stdout.strip()) > 0
-        except subprocess.CalledProcessError:
+        except GitError:
             logger.warning("Failed to check uncommitted changes in %s", worktree)
             return True  # Assume dirty on error (safer)
 
@@ -156,7 +160,7 @@ class GitWorkingCopy:
                         )
                     )
             return commits
-        except subprocess.CalledProcessError:
+        except GitError:
             logger.warning("Failed to get commits ahead of main in %s", worktree)
             return []
 
@@ -165,7 +169,7 @@ class GitWorkingCopy:
         try:
             self._run_git(worktree, ["fetch", remote])
             return True
-        except subprocess.CalledProcessError as e:
+        except GitError as e:
             logger.warning("Fetch failed: %s", e)
             return False
 
@@ -177,7 +181,7 @@ class GitWorkingCopy:
                 ["branch", "-r", "--list", f"{remote}/*"],
             )
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        except subprocess.CalledProcessError as e:
+        except GitError as e:
             logger.warning("Failed to list remote branches in %s: %s", repo_root, e)
             return []
 
@@ -186,7 +190,7 @@ class GitWorkingCopy:
         try:
             self._run_git(repo_root, ["rev-parse", "--git-dir"])
             return True
-        except subprocess.CalledProcessError:
+        except GitError:
             return False
 
     def get_config_value(self, repo_root: Path, key: str) -> str | None:
@@ -195,7 +199,7 @@ class GitWorkingCopy:
             result = self._run_git(repo_root, ["config", "--get", key])
             value = result.stdout.strip()
             return value or None
-        except subprocess.CalledProcessError:
+        except GitError:
             return None
 
     def get_commits_ahead_count(
@@ -211,7 +215,7 @@ class GitWorkingCopy:
                 ["rev-list", "--count", f"{base}..origin/{branch}"],
             )
             return int(result.stdout.strip() or 0)
-        except (subprocess.CalledProcessError, ValueError) as e:
+        except (GitError, ValueError) as e:
             logger.warning("Failed to count commits ahead for %s: %s", branch, e)
             return 0
 
@@ -223,7 +227,7 @@ class GitWorkingCopy:
                 ["log", "-1", "--format=%cr", f"origin/{branch}"],
             )
             return result.stdout.strip() or None
-        except subprocess.CalledProcessError as e:
+        except GitError as e:
             logger.warning("Failed to get last commit date for %s: %s", branch, e)
             return None
 
@@ -232,9 +236,9 @@ class GitWorkingCopy:
     ) -> RebaseResult:
         """Rebase current branch onto target."""
         try:
-            self._run_git(worktree, ["rebase", target])
+            self._run_git(worktree, ["rebase", target], timeout_s=300)
             return RebaseResult(success=True, message=f"Rebased onto {target}")
-        except subprocess.CalledProcessError as e:
+        except GitError as e:
             # Check for conflicts
             try:
                 status = self._run_git(worktree, ["status", "--porcelain"])
@@ -257,9 +261,10 @@ class GitWorkingCopy:
                     aborted=aborted,
                 )
             except Exception:
+                error_msg = e.result.stderr or str(e)
                 return RebaseResult(
                     success=False,
-                    message=f"Rebase failed: {e.stderr if hasattr(e, 'stderr') else str(e)}",
+                    message=f"Rebase failed: {error_msg}",
                 )
 
     def push(
@@ -317,7 +322,7 @@ class GitWorkingCopy:
 
         start = time.monotonic()
         try:
-            _result = self._run_git(worktree, args)
+            _result = self._run_git(worktree, args, timeout_s=300)
             duration = time.monotonic() - start
             logger.info(
                 "Push completed in %.2fs: branch=%s remote=%s skip_hooks=%s",
@@ -332,9 +337,9 @@ class GitWorkingCopy:
                 remote=remote,
                 message=f"Pushed {branch} to {remote}",
             )
-        except subprocess.CalledProcessError as e:
+        except GitError as e:
             duration = time.monotonic() - start
-            error_msg = e.stderr if e.stderr else str(e)
+            error_msg = e.result.stderr if e.result.stderr else str(e)
             logger.warning(
                 "Push failed in %.2fs: branch=%s remote=%s skip_hooks=%s error=%s",
                 duration,
@@ -395,7 +400,7 @@ class GitWorkingCopy:
         try:
             result = self._run_git(worktree, ["rev-parse", "--show-toplevel"])
             return Path(result.stdout.strip())
-        except subprocess.CalledProcessError:
+        except GitError:
             return None
 
     def commit_all(
@@ -422,9 +427,10 @@ class GitWorkingCopy:
 
             self._run_git(worktree, args)
             return True
-        except subprocess.CalledProcessError as e:
+        except GitError as e:
             # "nothing to commit" is not an error
-            if "nothing to commit" in (e.stdout or "") + (e.stderr or ""):
+            output = (e.result.stdout or "") + (e.result.stderr or "")
+            if "nothing to commit" in output:
                 return True
             logger.warning("Commit failed: %s", e)
             return False
