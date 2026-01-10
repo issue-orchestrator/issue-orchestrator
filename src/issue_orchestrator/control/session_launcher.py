@@ -14,6 +14,7 @@ the orchestrator focused on coordination and main loop logic.
 """
 
 import json
+import json
 import logging
 import os
 import time
@@ -109,10 +110,32 @@ def _build_worktree_error_comment(error: WorktreePreparationError) -> str:
         f"The orchestrator could not prepare the worktree for this issue.\n\n"
         f"**Error:** {error}\n\n"
         f"**Worktree path:** `{safe_path}`\n\n"
+        f"**Details:** `.issue-orchestrator/diagnostics/worktree-prep.json` in that worktree\n\n"
         f"This usually means stale files from a previous session could not be deleted. "
         f"Please manually check and clean the worktree, then remove the `blocked-needs-human` label "
         f"to allow the orchestrator to retry."
     )
+
+
+def _write_worktree_diagnostic(error: WorktreePreparationError) -> None:
+    """Write a local diagnostic file with full details (not posted to GitHub)."""
+    diag_dir = error.path / ".issue-orchestrator" / "diagnostics"
+    try:
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        diag_path = diag_dir / "worktree-prep.json"
+        diag_path.write_text(
+            json.dumps(
+                {
+                    "issue_number": error.issue_number,
+                    "worktree_path": str(error.path),
+                    "error": str(error),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    except Exception as exc:
+        logger.warning("Failed to write worktree diagnostics: %s", exc)
 
 
 @dataclass
@@ -303,6 +326,7 @@ class SessionLauncher:
         except WorktreePreparationError as e:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), e)
+            _write_worktree_diagnostic(e)
             # Add blocked-needs-human label and comment
             needs_human_label = self.config.get_label_needs_human()
             self.repository_host.add_label(issue.number, needs_human_label)
@@ -548,6 +572,7 @@ class SessionLauncher:
         except WorktreePreparationError as e:
             log_transition("review", review.pr_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), e)
+            _write_worktree_diagnostic(e)
             # Add blocked-needs-human label and comment to the issue
             needs_human_label = self.config.get_label_needs_human()
             self.repository_host.add_label(review.issue_number, needs_human_label)
@@ -759,6 +784,7 @@ class SessionLauncher:
         except WorktreePreparationError as e:
             log_transition("rework", issue_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue_number, "BLOCKED: worktree preparation failed for rework: %s"), e)
+            _write_worktree_diagnostic(e)
             # Add blocked-needs-human label and comment to the issue
             needs_human_label = self.config.get_label_needs_human()
             self.repository_host.add_label(issue_number, needs_human_label)
