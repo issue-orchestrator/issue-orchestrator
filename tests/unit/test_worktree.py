@@ -1384,3 +1384,127 @@ class TestUpdateWorktreeOntoMain:
             pull_call = mock_run.call_args_list[2]
             assert "pull" in pull_call[0][0]
             assert "--ff-only" in pull_call[0][0]
+
+
+# =============================================================================
+# Worktree Preparation Tests (control/worktree.py)
+# =============================================================================
+
+from issue_orchestrator.control.worktree import Worktree, WorktreePreparationError
+import json
+
+
+@pytest.fixture
+def worktree_dir(tmp_path: Path) -> Path:
+    """Create a temporary worktree directory with orchestrator dir."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    orchestrator_dir = worktree / ".issue-orchestrator"
+    orchestrator_dir.mkdir()
+    return worktree
+
+
+@pytest.fixture
+def worktree(worktree_dir: Path) -> Worktree:
+    """Create a Worktree instance for testing."""
+    return Worktree(worktree_dir, issue_number=123)
+
+
+class TestWorktreePrepareForSession:
+    """Tests for Worktree.prepare_for_session()."""
+
+    def test_removes_completion_files(self, worktree: Worktree, worktree_dir: Path):
+        """Removes completion.json files."""
+        completion = worktree_dir / ".issue-orchestrator" / "completion.json"
+        completion.write_text(json.dumps({
+            "session_id": "old-session",
+            "timestamp": "2026-01-01T00:00:00",
+            "outcome": "completed",
+            "summary": "Old",
+        }))
+
+        assert completion.exists()
+        worktree.prepare_for_session("new-session")
+        assert not completion.exists()
+
+    def test_removes_session_identity_files(self, worktree: Worktree, worktree_dir: Path):
+        """Removes session-identity*.json files."""
+        identity = worktree_dir / ".issue-orchestrator" / "session-identity-issue-123.json"
+        identity.write_text(json.dumps({"session_name": "old"}))
+
+        assert identity.exists()
+        worktree.prepare_for_session("new-session")
+        assert not identity.exists()
+
+    def test_removes_multiple_completion_files(self, worktree: Worktree, worktree_dir: Path):
+        """Removes all completion*.json files."""
+        orch_dir = worktree_dir / ".issue-orchestrator"
+
+        files = [
+            "completion.json",
+            "completion-agent_backend.json",
+            "completion-agent_e2e-test.json",
+        ]
+        for name in files:
+            (orch_dir / name).write_text(json.dumps({
+                "session_id": "old",
+                "timestamp": "2026-01-01T00:00:00",
+                "outcome": "completed",
+                "summary": "Test",
+            }))
+
+        worktree.prepare_for_session("new-session")
+
+        for name in files:
+            assert not (orch_dir / name).exists()
+
+    def test_no_error_when_orchestrator_dir_missing(self, tmp_path: Path):
+        """No error when .issue-orchestrator dir doesn't exist."""
+        worktree = Worktree(tmp_path, issue_number=123)
+        worktree.prepare_for_session("new-session")  # Should not raise
+
+    def test_raises_worktree_preparation_error_on_delete_failure(
+        self, worktree: Worktree, worktree_dir: Path
+    ):
+        """Raises WorktreePreparationError if file cannot be deleted."""
+        orch_dir = worktree_dir / ".issue-orchestrator"
+        completion = orch_dir / "completion.json"
+        completion.write_text("{}")
+
+        # Make directory read-only to prevent deletion
+        orch_dir.chmod(0o555)
+        try:
+            with pytest.raises(WorktreePreparationError) as exc_info:
+                worktree.prepare_for_session("new-session")
+            # Verify exception properties
+            assert exc_info.value.path == worktree_dir
+            assert exc_info.value.issue_number == 123
+            assert "Cannot delete stale files" in str(exc_info.value)
+            # Verify OSError is chained
+            assert exc_info.value.__cause__ is not None
+            assert isinstance(exc_info.value.__cause__, OSError)
+        finally:
+            orch_dir.chmod(0o755)  # Restore for cleanup
+
+
+class TestWorktreePreparationError:
+    """Tests for the WorktreePreparationError exception."""
+
+    def test_exception_properties(self, tmp_path: Path):
+        """Test that exception stores path and issue_number."""
+        error = WorktreePreparationError(
+            tmp_path, 456, "Test error message"
+        )
+        assert error.path == tmp_path
+        assert error.issue_number == 456
+        assert str(error) == "Test error message"
+
+    def test_exception_is_raised_with_oserror_cause(self, tmp_path: Path):
+        """Test exception can be chained with OSError."""
+        original = OSError("Permission denied")
+        error = WorktreePreparationError(
+            tmp_path, 789, "Cannot delete file"
+        )
+        error.__cause__ = original
+
+        assert error.__cause__ is original

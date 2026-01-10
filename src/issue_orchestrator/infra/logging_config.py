@@ -27,12 +27,18 @@ Context fields (via extra=):
 Log file location:
 - {repo_root}/.issue-orchestrator/state/logs/orchestrator.log
 
+Log rotation:
+- Rotates daily at midnight
+- Retention days configurable via config.log_retention_days (default 7)
+- Old logs are named: orchestrator.log.YYYY-MM-DD
+
 repo_root is REQUIRED - it's derived from the config file location.
 One orchestrator = one repo = one log file. No fallback.
 """
 
 import logging
 import os
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +90,7 @@ def setup_logging(
     console_output: bool = False,
     log_file: Path | None = None,
     json_format: bool = False,
+    log_retention_days: int = 7,
 ) -> Path | None:
     """Configure logging for the application.
 
@@ -97,6 +104,7 @@ def setup_logging(
         console_output: If True, also log to stderr
         log_file: Path to log file (overrides repo_root-based path)
         json_format: If True, use JSON format (for structured log aggregation)
+        log_retention_days: Days to keep rotated log files (default 7)
 
     Returns:
         Path to the log file being used, or None if file logging failed
@@ -137,15 +145,27 @@ def setup_logging(
     # Simpler format for stderr
     stderr_format = "[%(process)d] %(name)s: %(message)s"
 
-    # File handler - preferred but can fall back if not writable
+    # File handler with daily rotation - preferred but can fall back if not writable
     file_handler = None
     fallback_used = False
     try:
-        file_handler = logging.FileHandler(log_file, mode="a")
+        file_handler = TimedRotatingFileHandler(
+            str(log_file),  # TimedRotatingFileHandler requires string path
+            when="midnight",
+            interval=1,
+            backupCount=log_retention_days,
+            encoding="utf-8",
+        )
     except OSError:
         fallback_path = Path("/tmp/issue-orchestrator.log")
         try:
-            file_handler = logging.FileHandler(fallback_path, mode="a")
+            file_handler = TimedRotatingFileHandler(
+                str(fallback_path),  # TimedRotatingFileHandler requires string path
+                when="midnight",
+                interval=1,
+                backupCount=log_retention_days,
+                encoding="utf-8",
+            )
             log_file = fallback_path
             fallback_used = True
         except OSError:

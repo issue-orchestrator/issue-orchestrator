@@ -40,6 +40,7 @@ from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
 from ..domain.issue_key import GitHubIssueKey
+from .worktree import Worktree, WorktreePreparationError
 from ..infra.logging_config import log_context
 from ..ports import (
     EventSink,
@@ -98,6 +99,19 @@ def _escape_claude_project_path(path: Path) -> str:
     """Escape a worktree path into Claude Code's project directory name."""
     cleaned = str(path).lstrip("/")
     return "-" + cleaned.replace("/", "-")
+
+
+def _build_worktree_error_comment(error: WorktreePreparationError) -> str:
+    """Build a comment explaining the worktree preparation failure."""
+    return (
+        f"## Worktree Preparation Failed\n\n"
+        f"The orchestrator could not prepare the worktree for this issue.\n\n"
+        f"**Error:** {error}\n\n"
+        f"**Worktree path:** `{error.path}`\n\n"
+        f"This usually means stale files from a previous session could not be deleted. "
+        f"Please manually check and clean the worktree, then remove the `blocked-needs-human` label "
+        f"to allow the orchestrator to retry."
+    )
 
 
 @dataclass
@@ -280,6 +294,28 @@ class SessionLauncher:
         )
         worktree_path = worktree_info.path
         branch_name = worktree_info.branch_name
+
+        # Prepare worktree - clean stale artifacts from previous sessions
+        worktree = Worktree(worktree_path, issue.number)
+        try:
+            worktree.prepare_for_session(session_name)
+        except WorktreePreparationError as e:
+            log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
+            logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), e)
+            # Add blocked-needs-human label and comment
+            needs_human_label = self.config.get_label_needs_human()
+            self.repository_host.add_label(issue.number, needs_human_label)
+            self.repository_host.add_comment(issue.number, _build_worktree_error_comment(e))
+            self.events.publish(TraceEvent(
+                EventName.ISSUE_NEEDS_HUMAN,
+                {
+                    "issue_number": issue.number,
+                    "issue_title": issue.title,
+                    "reason": str(e),
+                },
+            ))
+            return LaunchResult(None, False, f"Worktree preparation failed: {e}")
+
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         logger.info(
             "[launch] Issue session paths: issue=%s worktree=%s branch=%s",
@@ -503,6 +539,28 @@ class SessionLauncher:
             enforce_hooks=False,
         )
         worktree_path = worktree_info.path
+
+        # Prepare worktree - clean stale artifacts from previous sessions
+        worktree = Worktree(worktree_path, review.issue_number)
+        try:
+            worktree.prepare_for_session(session_name)
+        except WorktreePreparationError as e:
+            log_transition("review", review.pr_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
+            logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), e)
+            # Add blocked-needs-human label and comment to the issue
+            needs_human_label = self.config.get_label_needs_human()
+            self.repository_host.add_label(review.issue_number, needs_human_label)
+            self.repository_host.add_comment(review.issue_number, _build_worktree_error_comment(e))
+            self.events.publish(TraceEvent(
+                EventName.ISSUE_NEEDS_HUMAN,
+                {
+                    "issue_number": review.issue_number,
+                    "pr_number": review.pr_number,
+                    "reason": str(e),
+                },
+            ))
+            return LaunchResult(None, False, f"Worktree preparation failed: {e}")
+
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         logger.info(
             "[launch] Review session paths: issue=%s pr=%s worktree=%s branch=%s",
@@ -692,6 +750,28 @@ class SessionLauncher:
             pre_push_hook=self.config.pre_push_hook,
         )
         worktree_path = worktree_info.path
+
+        # Prepare worktree - clean stale artifacts from previous sessions
+        worktree = Worktree(worktree_path, issue_number)
+        try:
+            worktree.prepare_for_session(session_name)
+        except WorktreePreparationError as e:
+            log_transition("rework", issue_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
+            logger.error(issue_log(issue_number, "BLOCKED: worktree preparation failed for rework: %s"), e)
+            # Add blocked-needs-human label and comment to the issue
+            needs_human_label = self.config.get_label_needs_human()
+            self.repository_host.add_label(issue_number, needs_human_label)
+            self.repository_host.add_comment(issue_number, _build_worktree_error_comment(e))
+            self.events.publish(TraceEvent(
+                EventName.ISSUE_NEEDS_HUMAN,
+                {
+                    "issue_number": issue_number,
+                    "pr_number": pr_number,
+                    "reason": str(e),
+                },
+            ))
+            return LaunchResult(None, False, f"Worktree preparation failed: {e}")
+
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         logger.info(
             "[launch] Rework session paths: issue=%s pr=%s worktree=%s branch=%s",

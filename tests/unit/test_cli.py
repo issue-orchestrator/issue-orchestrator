@@ -635,7 +635,7 @@ class TestSetupLogging:
     def test_setup_logging_default(self):
         """Verify logging setup with default settings."""
         with patch('logging.getLogger') as mock_get_logger:
-            with patch('logging.FileHandler') as mock_file_handler:
+            with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler') as mock_file_handler:
                 with patch('logging.info'):
                     mock_logger = Mock()
                     mock_logger.handlers = []
@@ -652,7 +652,7 @@ class TestSetupLogging:
     def test_setup_logging_debug_mode(self):
         """Verify logging setup with debug mode enabled."""
         with patch('logging.getLogger') as mock_get_logger:
-            with patch('logging.FileHandler') as mock_file_handler:
+            with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler') as mock_file_handler:
                 with patch('logging.info'):
                     mock_logger = Mock()
                     mock_logger.handlers = []
@@ -670,7 +670,7 @@ class TestSetupLogging:
     def test_setup_logging_removes_existing_handlers(self):
         """Verify logging removes existing handlers before setup."""
         with patch('logging.getLogger') as mock_get_logger:
-            with patch('logging.FileHandler') as mock_file_handler:
+            with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler') as mock_file_handler:
                 with patch('logging.info'):
                     # Mock existing handlers
                     existing_handler = Mock()

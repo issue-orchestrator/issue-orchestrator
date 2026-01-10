@@ -202,6 +202,9 @@ class Config:
     # Comment headings for structured worker comments
     comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
 
+    # Logging
+    log_retention_days: int = 7  # Days to keep rotated log files
+
     # UI mode: "web" (default, browser dashboard) or "tmux" (terminal dashboard)
     ui_mode: str = "web"
     web_port: int = 8080  # Port for web dashboard
@@ -265,7 +268,7 @@ class Config:
     close_failed_tabs: bool = False     # Auto-close tabs for failed sessions (leave open to investigate)
 
     # Enforcement options
-    enforce_hooks: bool = True  # Install pre-push hooks to enforce structured comments
+    enforce_hooks: bool = True  # Install pre-push hooks (runs project validation + orchestrator checks)
     pre_push_hook: Optional[Path] = None  # Custom pre-push hook path (uses bundled if None)
 
     # Worktree setup commands (run after worktree creation, e.g., npm install)
