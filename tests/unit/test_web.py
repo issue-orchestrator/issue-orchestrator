@@ -1422,6 +1422,14 @@ class TestDependencyProblemsEndpoint:
         assert "error" in response.json()
 
 
+def _get_available_port() -> int:
+    """Get an available port by binding to port 0 and releasing it."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 class TestPortUtilityFunctions:
     """Test port utility functions."""
 
@@ -1429,8 +1437,9 @@ class TestPortUtilityFunctions:
         """Test port check returns False for available port."""
         from issue_orchestrator.entrypoints.web import _is_port_in_use
 
-        # Use a high port number that's likely available
-        result = _is_port_in_use(59999)
+        # Get a dynamically allocated available port
+        port = _get_available_port()
+        result = _is_port_in_use(port)
         assert result is False
 
     def test_is_port_in_use_when_bound(self):
@@ -1438,12 +1447,13 @@ class TestPortUtilityFunctions:
         import socket
         from issue_orchestrator.entrypoints.web import _is_port_in_use
 
-        # Bind a port
+        # Bind to a dynamic port
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("127.0.0.1", 59998))
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
 
         try:
-            result = _is_port_in_use(59998, "127.0.0.1")
+            result = _is_port_in_use(port, "127.0.0.1")
             assert result is True
         finally:
             sock.close()
@@ -1452,30 +1462,34 @@ class TestPortUtilityFunctions:
         """Test killing process on port when no process exists."""
         from issue_orchestrator.entrypoints.web import _kill_process_on_port
 
-        # Use a port with no process
-        result = _kill_process_on_port(59997)
+        # Get a dynamically allocated port (no process using it)
+        port = _get_available_port()
+        result = _kill_process_on_port(port)
         assert result is False
 
     def test_ensure_port_available_when_available(self):
         """Test ensure_port_available succeeds when port is available."""
         from issue_orchestrator.entrypoints.web import ensure_port_available
 
+        # Get a dynamically allocated available port
+        port = _get_available_port()
         # Should not raise
-        ensure_port_available(59996)
+        ensure_port_available(port)
 
     def test_ensure_port_available_when_unavailable(self):
         """Test ensure_port_available raises when port cannot be freed."""
         import socket
         from issue_orchestrator.entrypoints.web import ensure_port_available
 
-        # Bind a port
+        # Bind to a dynamic port
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(("127.0.0.1", 59995))
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
 
         try:
             with patch("issue_orchestrator.entrypoints.web._kill_process_on_port", return_value=False):
                 with pytest.raises(RuntimeError, match="Port .* is already in use"):
-                    ensure_port_available(59995)
+                    ensure_port_available(port)
         finally:
             sock.close()
 
