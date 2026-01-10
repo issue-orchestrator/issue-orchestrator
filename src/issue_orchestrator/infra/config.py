@@ -489,9 +489,10 @@ class Config:
             config.repo_root_from_yaml = True
 
         # Parse top-level worktree_base (applies to all agents)
+        # Default: sibling directory to repo (best practice - worktrees outside main repo)
         worktree_base_raw = data.get("worktree_base")
         if worktree_base_raw is None:
-            config.worktree_base = repo_root / ".issue-orchestrator" / "worktrees"
+            config.worktree_base = repo_root.parent / f"{repo_root.name}-worktrees"
         else:
             config.worktree_base = resolve_relative_path(worktree_base_raw, repo_root)
 
