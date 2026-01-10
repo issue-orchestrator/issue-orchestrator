@@ -704,6 +704,8 @@ def create_worktree(
             # Reinstall hooks if needed
             if enforce_hooks:
                 install_hooks(existing_worktree, pre_push_hook)
+            # Refresh claude settings (ensures latest prompts)
+            install_claude_settings(existing_worktree)
             logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, existing_worktree)
             return existing_worktree, branch_name, not rebase_ok
 
@@ -727,6 +729,8 @@ def create_worktree(
                 # Reinstall hooks (ensures latest hook chaining logic is applied)
                 if enforce_hooks:
                     install_hooks(worktree_path, pre_push_hook)
+                # Refresh claude settings (ensures latest prompts)
+                install_claude_settings(worktree_path)
                 logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, worktree_path)
                 return worktree_path, existing_branch, not rebase_ok
         # Invalid worktree directory - remove it

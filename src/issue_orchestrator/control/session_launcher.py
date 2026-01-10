@@ -40,6 +40,7 @@ from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
 from ..domain.issue_key import GitHubIssueKey
+from .worktree import Worktree, WorktreeState
 from ..infra.logging_config import log_context
 from ..ports import (
     EventSink,
@@ -280,6 +281,17 @@ class SessionLauncher:
         )
         worktree_path = worktree_info.path
         branch_name = worktree_info.branch_name
+
+        # Prepare worktree - clean stale artifacts from previous sessions
+        worktree = Worktree(worktree_path, branch_name, issue.number)
+        worktree_status = worktree.prepare_for_session(session_name)
+        if worktree_status.state not in (WorktreeState.CLEAN, WorktreeState.HAS_UNCOMMITTED):
+            logger.warning(
+                "[launch] Worktree not ready after prep: issue=%s state=%s",
+                issue.number,
+                worktree_status.state.value,
+            )
+
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         logger.info(
             "[launch] Issue session paths: issue=%s worktree=%s branch=%s",
@@ -503,6 +515,17 @@ class SessionLauncher:
             enforce_hooks=False,
         )
         worktree_path = worktree_info.path
+
+        # Prepare worktree - clean stale artifacts from previous sessions
+        worktree = Worktree(worktree_path, review.branch_name, review.issue_number)
+        worktree_status = worktree.prepare_for_session(session_name)
+        if worktree_status.state not in (WorktreeState.CLEAN, WorktreeState.HAS_UNCOMMITTED):
+            logger.warning(
+                "[launch] Worktree not ready after prep: issue=%s state=%s",
+                review.issue_number,
+                worktree_status.state.value,
+            )
+
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         logger.info(
             "[launch] Review session paths: issue=%s pr=%s worktree=%s branch=%s",
@@ -692,6 +715,17 @@ class SessionLauncher:
             pre_push_hook=self.config.pre_push_hook,
         )
         worktree_path = worktree_info.path
+
+        # Prepare worktree - clean stale artifacts from previous sessions
+        worktree = Worktree(worktree_path, branch_name, issue_number)
+        worktree_status = worktree.prepare_for_session(session_name)
+        if worktree_status.state not in (WorktreeState.CLEAN, WorktreeState.HAS_UNCOMMITTED):
+            logger.warning(
+                "[launch] Worktree not ready after prep: issue=%s state=%s",
+                issue_number,
+                worktree_status.state.value,
+            )
+
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         logger.info(
             "[launch] Rework session paths: issue=%s pr=%s worktree=%s branch=%s",

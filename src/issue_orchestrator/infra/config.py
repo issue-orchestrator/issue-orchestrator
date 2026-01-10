@@ -202,6 +202,9 @@ class Config:
     # Comment headings for structured worker comments
     comment_headings: CommentHeadings = field(default_factory=CommentHeadings)
 
+    # Logging
+    log_retention_days: int = 7  # Days to keep rotated log files
+
     # UI mode: "web" (default, browser dashboard) or "tmux" (terminal dashboard)
     ui_mode: str = "web"
     web_port: int = 8080  # Port for web dashboard

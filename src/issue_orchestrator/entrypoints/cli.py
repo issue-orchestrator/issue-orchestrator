@@ -131,6 +131,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             repo_root=config.repo_root,
             level=log_level,
             console_output=no_dashboard,
+            log_retention_days=config.log_retention_days,
         )
 
         if debug and log_file:

@@ -594,7 +594,7 @@ class TestObserveSession:
         completion_dir.mkdir(parents=True)
         completion_file = completion_dir / "completion.json"
         completion_file.write_text(json.dumps({
-            "session_id": "test-session",
+            "session_id": "any-session-id",
             "timestamp": "2024-01-01T00:00:00Z",
             "outcome": "completed",
             "summary": "Work done",
@@ -833,7 +833,7 @@ class TestObserveSession:
         completion_dir.mkdir(parents=True)
         completion_file = completion_dir / "completion.json"
         completion_file.write_text(json.dumps({
-            "session_id": "test-session",
+            "session_id": "any-session-id",
             "timestamp": "2024-01-01T00:00:00Z",
             "outcome": "completed",
             "summary": "Work done",
