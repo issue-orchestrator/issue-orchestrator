@@ -1717,40 +1717,35 @@ def cmd_demo(args: argparse.Namespace) -> int:
 def cmd_trace(args: argparse.Namespace) -> int:
     """Trace log entries for a specific issue."""
     import re
-    import subprocess
 
     issue_number = args.issue_number
 
-    # Find the repo root
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        repo_root = Path(result.stdout.strip())
-    except subprocess.CalledProcessError:
-        repo_root = Path.cwd()
+    # Find the log file by walking up from cwd to find repo root
+    def find_log_file() -> Path | None:
+        # Try walking up from cwd to find .issue-orchestrator
+        current = Path.cwd()
+        for _ in range(10):  # Max 10 levels up
+            candidate = current / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
+            if candidate.exists():
+                return candidate
+            if current.parent == current:
+                break
+            current = current.parent
 
-    # Find the log file
-    log_candidates = [
-        repo_root / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log",
-        Path.cwd() / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log",
-        Path.home() / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log",
-    ]
+        # Fall back to home directory
+        home_log = Path.home() / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
+        if home_log.exists():
+            return home_log
 
-    log_file = None
-    for candidate in log_candidates:
-        if candidate.exists():
-            log_file = candidate
-            break
+        return None
+
+    log_file = find_log_file()
 
     if log_file is None:
         console.print("[red]Error: orchestrator.log not found[/red]")
         console.print("Looked in:")
-        for candidate in log_candidates:
-            console.print(f"  {candidate}")
+        console.print("  .issue-orchestrator/state/logs/orchestrator.log (walking up from cwd)")
+        console.print(f"  {Path.home() / '.issue-orchestrator' / 'state' / 'logs' / 'orchestrator.log'}")
         return 1
 
     # Read the log file

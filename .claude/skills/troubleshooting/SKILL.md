@@ -40,6 +40,9 @@ TraceEvent(name, data) --> PluggyEventSink --> on_trace_event hook
 
 ```bash
 # Trace all log entries for a specific issue (since last startup)
+issue-orchestrator trace 2641
+
+# Alternative: use the shell script (from repo root)
 ./tools/trace-issue 2641
 
 # Check orchestrator log - now in repo root
@@ -72,10 +75,13 @@ issue-orchestrator output <issue_number>
 
 ## Issue-Specific Logging
 
-All log entries for an issue are prefixed with `[issue-N]`. Use the trace script:
+All log entries for an issue are prefixed with `[issue-N]`. Use the trace command:
 
 ```bash
 # Trace issue 2641 from the most recent orchestrator run
+issue-orchestrator trace 2641
+
+# Or use the shell script (from repo root)
 ./tools/trace-issue 2641
 
 # Or manually:
