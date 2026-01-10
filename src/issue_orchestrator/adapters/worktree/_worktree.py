@@ -8,13 +8,12 @@ import shutil
 from pathlib import Path
 
 from ...infra.logging_config import issue_log
-from ...execution.command_runner import LocalCommandRunner
 from ...ports.git import GitResult
-from ..git.git_cli import GitCLI
+from ..git.git_cli import GitCLI, SubprocessCommandRunner
 
 logger = logging.getLogger(__name__)
 
-_git = GitCLI(runner=LocalCommandRunner())
+_git = GitCLI(runner=SubprocessCommandRunner())
 
 
 def _git_run(

@@ -23,8 +23,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from ...adapters.git.git_cli import GitCLI
-from ...execution.command_runner import LocalCommandRunner
+from ...adapters.git.git_cli import GitCLI, SubprocessCommandRunner
 
 logger = logging.getLogger(__name__)
 
@@ -448,7 +447,7 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
         # Create temp git repo setup for testing
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
-            git = GitCLI(runner=LocalCommandRunner(), default_timeout_s=30)
+            git = GitCLI(runner=SubprocessCommandRunner(), default_timeout_s=30)
 
             # Create a bare repo to act as "remote"
             bare_repo = tmppath / "remote.git"

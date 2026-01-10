@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..git.git_cli import GitCLI
-from ...execution.command_runner import LocalCommandRunner
+from ..git.git_cli import GitCLI, SubprocessCommandRunner
 
 
 class GitRepoError(RuntimeError):
@@ -13,7 +12,7 @@ class GitRepoError(RuntimeError):
 
 
 def get_repo_from_git() -> str:
-    git = GitCLI(runner=LocalCommandRunner())
+    git = GitCLI(runner=SubprocessCommandRunner())
     result = git.run(
         repo=Path("."),
         argv=["config", "--get", "remote.origin.url"],

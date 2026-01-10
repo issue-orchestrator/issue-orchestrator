@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,53 @@ GIT_ENV_STRIP = (
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_COMMON_DIR",
 )
+
+
+class SubprocessCommandRunner:
+    """Minimal command runner to avoid importing execution layer from adapters."""
+
+    def run(
+        self,
+        command: str | list[str],
+        *,
+        cwd=None,
+        env: dict[str, str] | None = None,
+        timeout_seconds: int | None = None,
+        shell: bool = False,
+    ) -> "CommandResult":
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(cwd) if cwd else None,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                env=env,
+                shell=shell,
+            )
+            return type(
+                "CommandResult",
+                (),
+                {
+                    "returncode": result.returncode,
+                    "stdout": result.stdout or "",
+                    "stderr": result.stderr or "",
+                    "timed_out": False,
+                },
+            )()
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout.decode() if exc.stdout else "")
+            stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr.decode() if exc.stderr else "")
+            return type(
+                "CommandResult",
+                (),
+                {
+                    "returncode": -1,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "timed_out": True,
+                },
+            )()
 
 
 @dataclass
