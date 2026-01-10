@@ -19,19 +19,14 @@ ISSUE_NUMBER="$1"
 # Find the repo root (if we're in a git repo)
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
 
-# Find the log file - check repo root first, then cwd, then home
+# Find the log file - check repo root first, then cwd
 if [[ -n "$REPO_ROOT" && -f "${REPO_ROOT}/.issue-orchestrator/state/logs/orchestrator.log" ]]; then
     LOG_FILE="${REPO_ROOT}/.issue-orchestrator/state/logs/orchestrator.log"
 elif [[ -f ".issue-orchestrator/state/logs/orchestrator.log" ]]; then
     LOG_FILE=".issue-orchestrator/state/logs/orchestrator.log"
-elif [[ -f "${HOME}/.issue-orchestrator/state/logs/orchestrator.log" ]]; then
-    LOG_FILE="${HOME}/.issue-orchestrator/state/logs/orchestrator.log"
 else
     echo "Error: orchestrator.log not found" >&2
-    echo "Looked in:" >&2
-    [[ -n "$REPO_ROOT" ]] && echo "  ${REPO_ROOT}/.issue-orchestrator/state/logs/orchestrator.log" >&2
-    echo "  .issue-orchestrator/state/logs/orchestrator.log" >&2
-    echo "  ~/.issue-orchestrator/state/logs/orchestrator.log" >&2
+    echo "Run this command from within a repository that has the orchestrator running." >&2
     exit 1
 fi
 

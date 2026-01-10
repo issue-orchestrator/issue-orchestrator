@@ -1722,7 +1722,6 @@ def cmd_trace(args: argparse.Namespace) -> int:
 
     # Find the log file by walking up from cwd to find repo root
     def find_log_file() -> Path | None:
-        # Try walking up from cwd to find .issue-orchestrator
         current = Path.cwd()
         for _ in range(10):  # Max 10 levels up
             candidate = current / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
@@ -1731,21 +1730,13 @@ def cmd_trace(args: argparse.Namespace) -> int:
             if current.parent == current:
                 break
             current = current.parent
-
-        # Fall back to home directory
-        home_log = Path.home() / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
-        if home_log.exists():
-            return home_log
-
         return None
 
     log_file = find_log_file()
 
     if log_file is None:
         console.print("[red]Error: orchestrator.log not found[/red]")
-        console.print("Looked in:")
-        console.print("  .issue-orchestrator/state/logs/orchestrator.log (walking up from cwd)")
-        console.print(f"  {Path.home() / '.issue-orchestrator' / 'state' / 'logs' / 'orchestrator.log'}")
+        console.print("Run this command from within a repository that has the orchestrator running.")
         return 1
 
     # Read the log file
