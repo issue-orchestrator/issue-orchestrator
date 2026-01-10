@@ -268,7 +268,11 @@ class TestFactGathererCleanupFacts:
     def test_cleanup_facts_returns_none_when_no_review_workflow(
         self, fact_gatherer, sample_state, mock_config
     ):
-        """Test returns None when no review workflow configured."""
+        """Test returns CleanupFacts with defaults when no review workflow configured.
+
+        Even without a review workflow, we return CleanupFacts so that
+        immediate cleanups can still be processed.
+        """
         sample_state.pending_cleanups = [
             PendingCleanup(
                 issue=Issue(number=1, title="Test issue", labels=[]),
@@ -284,7 +288,11 @@ class TestFactGathererCleanupFacts:
 
         result = fact_gatherer.gather_cleanup_facts(sample_state)
 
-        assert result is None
+        # Returns CleanupFacts with empty reviewed_pr_numbers (deferred cleanups won't match)
+        # but immediate_cleanups can still be processed
+        assert result is not None
+        assert result.reviewed_pr_numbers == frozenset()  # No review label to check
+        assert len(result.pending_cleanups) == 1
 
     def test_cleanup_facts_with_triage_workflow(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
@@ -352,7 +360,11 @@ class TestFactGathererCleanupFacts:
     def test_cleanup_facts_handles_api_error(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Test handles API error gracefully."""
+        """Test handles API error gracefully.
+
+        On API error, we still return CleanupFacts but with empty reviewed_pr_numbers.
+        This allows immediate cleanups to still work even if deferred cleanup lookup fails.
+        """
         mock_config.triage_review_agent = "agent:triage"
         mock_config.triage_reviewed_label = "triage-reviewed"
 
@@ -371,7 +383,11 @@ class TestFactGathererCleanupFacts:
 
         result = fact_gatherer.gather_cleanup_facts(sample_state)
 
-        assert result is None
+        # Returns CleanupFacts with empty reviewed_pr_numbers on API error
+        # Deferred cleanups won't trigger, but immediate cleanups still work
+        assert result is not None
+        assert result.reviewed_pr_numbers == frozenset()
+        assert len(result.pending_cleanups) == 1
 
 
 class TestFactGathererFetchIssues:

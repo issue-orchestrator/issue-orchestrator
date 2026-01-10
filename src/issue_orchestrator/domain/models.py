@@ -543,6 +543,19 @@ class DiscoveredFailure:
 
 
 @dataclass(frozen=True)
+class ImmediateCleanup:
+    """A session that needs immediate cleanup (no deferred review).
+
+    Created when a session completes/times out and cleanup should happen
+    immediately (not deferred until triage review).
+    """
+    issue_number: int
+    terminal_id: str  # e.g., "issue-123", "review-456"
+    worktree_path: str
+    reason: str  # e.g., "completed", "timed_out"
+
+
+@dataclass(frozen=True)
 class CleanupFacts:
     """Facts about pending cleanups and their review status.
 
@@ -552,6 +565,8 @@ class CleanupFacts:
     reviewed_pr_numbers: frozenset[int]  # PRs that have the cleanup label
     close_tabs: bool = False  # Config: whether to close terminal tabs
     remove_worktrees: bool = False  # Config: whether to remove worktrees
+    # Immediate cleanups (no deferred review) - sessions that completed/timed out
+    immediate_cleanups: tuple["ImmediateCleanup", ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -625,6 +640,8 @@ class OrchestratorState:
     discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage
+    # Immediate cleanups - sessions that need cleanup now (not deferred until review)
+    immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)
     # Stale in-progress tracking: issue_number -> consecutive ticks with stale in-progress
     stale_issue_ticks: dict[int, int] = field(default_factory=dict)
 

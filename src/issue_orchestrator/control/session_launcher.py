@@ -1085,7 +1085,14 @@ def handle_session_completion(
     if result.should_defer_cleanup and result.pending_cleanup:
         state.pending_cleanups.append(result.pending_cleanup)
     else:
-        _immediate_cleanup(session, status, worktree_manager, kill_session_fn, config)
+        # Record immediate cleanup as a fact for the Planner to handle
+        from ..domain.models import ImmediateCleanup
+        state.immediate_cleanups.append(ImmediateCleanup(
+            issue_number=session.issue.number,
+            terminal_id=session.terminal_id,
+            worktree_path=str(session.worktree_path),
+            reason=status.value,
+        ))
 
     if result.should_queue_review and result.pr_url and result.pr_number:
         state.discovered_reviews.append(DiscoveredReview(
@@ -1171,26 +1178,6 @@ def _surface_failure_context(session: Session, status: SessionStatus) -> None:
 
     except Exception as e:
         logger.warning("[FAILURE_CONTEXT] Could not extract failure context for #%d: %s", session.issue.number, e)
-
-
-def _immediate_cleanup(
-    session: Session,
-    status: SessionStatus,
-    worktree_manager: Optional[WorktreeManager],
-    kill_session_fn: Callable[[str], None],
-    config: Config,
-) -> None:
-    """Immediate cleanup helper - moved from Orchestrator per method table."""
-    if status == SessionStatus.COMPLETED and (config.cleanup.without_triage.close_ai_session_tabs or not config.code_review_agent):
-        try:
-            if worktree_manager:
-                worktree_manager.remove(session.worktree_path)
-        except Exception:
-            pass
-    try:
-        kill_session_fn(session.terminal_id)
-    except Exception:
-        pass
 
 
 def orchestrator_launch_review_session(
