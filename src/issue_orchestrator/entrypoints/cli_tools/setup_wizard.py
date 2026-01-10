@@ -129,16 +129,9 @@ def _get_repository_host(repo: str):
 
 def run_git(args: list[str], cwd: Path | None = None) -> tuple[bool, str]:
     """Run git command, return (success, output)."""
-    from ...adapters.git.git_cli import GitCLI, SubprocessCommandRunner
-    from ...ports.git import GitError
+    from ...execution.git_tools import run_git as run_git_impl
 
-    git = GitCLI(runner=SubprocessCommandRunner())
-    repo = cwd or Path.cwd()
-    try:
-        result = git.run(repo, args, timeout_s=10, check=False)
-    except GitError:
-        return False, ""
-    return result.returncode == 0, result.stdout.strip()
+    return run_git_impl(args, cwd)
 
 
 def check_prerequisites() -> dict[str, bool]:

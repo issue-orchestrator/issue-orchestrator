@@ -1449,21 +1449,16 @@ async def setup_prereqs() -> JSONResponse:
     """
     import subprocess
 
-    from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
-    from ..ports.git import GitError
+    from ..execution.git_tools import run_git
 
     checks = {}
 
     # git
-    try:
-        git = GitCLI(runner=SubprocessCommandRunner())
-        result = git.run(Path.cwd(), ["--version"], timeout_s=5, check=False)
-        checks["git"] = {
-            "ok": result.returncode == 0,
-            "version": result.stdout.strip() if result.returncode == 0 else None,
-        }
-    except GitError:
-        checks["git"] = {"ok": False, "version": None}
+    ok, output = run_git(["--version"], timeout_s=5)
+    checks["git"] = {
+        "ok": ok,
+        "version": output if ok else None,
+    }
 
     # GitHub auth
     try:
@@ -1505,8 +1500,7 @@ async def setup_detect(repo_root: str = Query(...)) -> JSONResponse:
 
     Returns detected repo info, existing config, GitHub labels, etc.
     """
-    from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
-    from ..ports.git import GitError
+    from ..execution.git_tools import run_git
 
     path = _validate_repo_root(repo_root)
     if path is None:
@@ -1526,19 +1520,13 @@ async def setup_detect(repo_root: str = Query(...)) -> JSONResponse:
     }
 
     # Detect GitHub repo from git remote
-    try:
-        git = GitCLI(runner=SubprocessCommandRunner())
-        git_result = git.run(path, ["remote", "get-url", "origin"], timeout_s=10, check=False)
-        if git_result.returncode == 0:
-            url = git_result.stdout.strip()
-            if "github.com" in url:
-                if url.startswith("git@"):
-                    parts = url.split(":")[-1]
-                else:
-                    parts = "/".join(url.split("/")[-2:])
-                result["repo"] = parts.removesuffix(".git")
-    except GitError:
-        pass
+    ok, url = run_git(["remote", "get-url", "origin"], cwd=path, timeout_s=10)
+    if ok and "github.com" in url:
+        if url.startswith("git@"):
+            parts = url.split(":")[-1]
+        else:
+            parts = "/".join(url.split("/")[-2:])
+        result["repo"] = parts.removesuffix(".git")
 
     # Find existing config
     from ..infra.config import find_config_file
