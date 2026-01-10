@@ -81,6 +81,7 @@ class CompletionHandler:
         status: SessionStatus,
         pr_url_hint: Optional[str] = None,
         processing_errors: Optional[list[str]] = None,
+        diagnostic_path: Optional[str] = None,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -89,6 +90,7 @@ class CompletionHandler:
             status: The completion status
             pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
             processing_errors: Errors from completion processor (push failed, etc.)
+            diagnostic_path: Path to detailed failure diagnostic file (in worktree)
 
         Returns:
             CompletionResult with history entry and cleanup decision
@@ -131,7 +133,8 @@ class CompletionHandler:
 
         # Generate actions for label/comment changes (policy logic)
         completion_actions = self.generate_completion_actions(
-            session, status, processing_errors=processing_errors
+            session, status, processing_errors=processing_errors,
+            diagnostic_path=diagnostic_path
         )
 
         result = CompletionResult(
@@ -187,6 +190,12 @@ class CompletionHandler:
                 match = re.search(r"/pull/(\d+)", pr_url)
                 if match:
                     pr_number = int(match.group(1))
+                    try:
+                        pr_info = self.repository_host.get_pr(pr_number)
+                        if pr_info:
+                            prs = [pr_info]
+                    except Exception as e:
+                        logger.warning("Failed to fetch PR %s for PR hint: %s", pr_number, e)
                 logger.info(
                     "[PR_HINT] Using PR from completion processor: %s (number=%s)",
                     pr_url,
@@ -515,6 +524,7 @@ class CompletionHandler:
         session: Session,
         status: SessionStatus,
         processing_errors: Optional[list[str]] = None,
+        diagnostic_path: Optional[str] = None,
     ) -> tuple[Action, ...]:
         """Generate label/comment actions for session completion.
 
@@ -525,6 +535,7 @@ class CompletionHandler:
             session: The completed session
             status: The completion status
             processing_errors: Errors from completion processor (push failed, etc.)
+            diagnostic_path: Path to detailed failure diagnostic file (in worktree)
 
         Returns:
             Tuple of actions to apply
@@ -541,10 +552,20 @@ class CompletionHandler:
                 "[COMPLETION] Agent said completed but processing failed: issue=%d errors=%s",
                 issue_number, processing_errors
             )
-            # Format errors for comment (truncate if too long)
-            error_summary = "\n".join(f"- {e[:200]}" for e in processing_errors[:5])
-            if len(processing_errors) > 5:
-                error_summary += f"\n- ... and {len(processing_errors) - 5} more errors"
+            # Brief error hint for comment (not full details - those are in diagnostic file)
+            first_error = processing_errors[0][:100] if processing_errors else "Unknown error"
+            if len(first_error) == 100:
+                first_error += "..."
+
+            # Build diagnostic location info
+            diagnostic_info = ""
+            if diagnostic_path and session.worktree_path:
+                diagnostic_info = (
+                    f"\n**Diagnostic file:**\n"
+                    f"```\n"
+                    f"cat {session.worktree_path}/{diagnostic_path}\n"
+                    f"```\n"
+                )
 
             actions.append(AddLabelAction(
                 issue_number=issue_number,
@@ -556,11 +577,12 @@ class CompletionHandler:
                 number=issue_number,
                 comment=f"❌ **Processing Failed**\n\n"
                         f"The agent completed its work, but the orchestrator could not push or create a PR.\n\n"
-                        f"**Errors:**\n{error_summary}\n\n"
+                        f"**Error:** {first_error}\n"
+                        f"{diagnostic_info}\n"
                         f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                         f"- Session: `{session.terminal_id}`\n\n"
                         f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
-                        f"Investigate the errors above, then remove the label to allow reprocessing.",
+                        f"Check the diagnostic file for full stack traces, then remove the label to retry.",
                 reason="Notify about processing failure",
                 expected=expected,
             ))

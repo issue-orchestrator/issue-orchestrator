@@ -1027,6 +1027,7 @@ def handle_session_completion(
     config: Config,
     pr_url_hint: Optional[str] = None,
     processing_errors: Optional[list[str]] = None,
+    diagnostic_path: Optional[str] = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
 
@@ -1042,6 +1043,7 @@ def handle_session_completion(
         config: Configuration
         pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
         processing_errors: Errors from completion processor (push failed, PR creation failed, etc.)
+        diagnostic_path: Path to detailed failure diagnostic file (in worktree)
     """
     from ..domain.models import DiscoveredReview, DiscoveredFailure
 
@@ -1056,7 +1058,8 @@ def handle_session_completion(
     if status == SessionStatus.COMPLETED:
         state.completed_today.append(session.issue.number)
     result = completion_handler.process_completion(
-        session, status, pr_url_hint=pr_url_hint, processing_errors=processing_errors
+        session, status, pr_url_hint=pr_url_hint,
+        processing_errors=processing_errors, diagnostic_path=diagnostic_path
     )
 
     # Apply completion actions (from CompletionHandler policy)
@@ -1300,18 +1303,22 @@ def process_active_sessions(
             obs, session.worktree_path, session.issue.number,
             session.issue.title, session.terminal_id, session.completion_path
         )
-        # Extract pr_url and errors from completion processor result if available
+        # Extract pr_url, errors, and diagnostic_path from completion processor result
         pr_url_hint = None
         processing_errors = None
+        diagnostic_path = None
         if decision.processing_result:
             if decision.processing_result.pr_url:
                 pr_url_hint = decision.processing_result.pr_url
             if decision.processing_result.errors:
                 processing_errors = decision.processing_result.errors
+            if decision.processing_result.diagnostic_path:
+                diagnostic_path = decision.processing_result.diagnostic_path
         handle_session_completion(
             session, decision.status, state, completion_handler, action_applier,
             observer, worktree_manager, kill_session_fn, config,
-            pr_url_hint=pr_url_hint, processing_errors=processing_errors
+            pr_url_hint=pr_url_hint, processing_errors=processing_errors,
+            diagnostic_path=diagnostic_path
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:
