@@ -39,7 +39,6 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
-from ..domain.issue_key import GitHubIssueKey
 from .worktree import Worktree, WorktreePreparationError
 from ..infra.logging_config import log_context
 from ..ports import (
@@ -239,7 +238,7 @@ class SessionLauncher:
 
         if not self.config.repo:
             return LaunchResult(None, False, "No repo configured")
-        issue_key = GitHubIssueKey(repo=self.config.repo, external_id=str(issue.number))
+        issue_key = issue.key
         session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
 
         # Check for conflicts
@@ -525,7 +524,7 @@ class SessionLauncher:
 
         if not self.config.repo:
             return LaunchResult(None, False, "No repo configured")
-        issue_key = GitHubIssueKey(repo=self.config.repo, external_id=str(review.issue_number))
+        issue_key = review.issue_key
         session_key = SessionKey(issue=issue_key, task=TaskKind.REVIEW)
         log_transition("review", review.pr_number, "QUEUED", "LAUNCHING", "no conflicts")
         logger.info(

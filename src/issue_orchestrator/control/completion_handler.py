@@ -110,7 +110,18 @@ class CompletionHandler:
         # Fetch PR info if completed (or use hint from completion processor)
         pr_url, pr_number, pr_infos = self._fetch_pr_info(session, status, pr_url_hint=pr_url_hint)
         if pr_infos:
-            self._emit_pr_view_changed(pr_infos[0], session.issue.number)
+            self._emit_pr_view_changed(
+                pr_infos[0],
+                issue_key=session.key.issue.stable_id(),
+                issue_number=session.issue.number,
+            )
+        elif pr_url and pr_number is not None:
+            self._emit_pr_view_hint(
+                pr_number,
+                pr_url,
+                issue_key=session.key.issue.stable_id(),
+                issue_number=session.issue.number,
+            )
 
         # Create history entry
         history_entry = self._create_history_entry(
@@ -401,7 +412,11 @@ class CompletionHandler:
         try:
             pr_info = self.repository_host.get_pr(pr_number_review)
             if pr_info:
-                self._emit_pr_view_changed(pr_info, session.issue.number)
+                self._emit_pr_view_changed(
+                    pr_info,
+                    issue_key=session.key.issue.stable_id(),
+                    issue_number=session.issue.number,
+                )
                 labels = pr_info.labels
                 if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
                     # Review was approved
@@ -437,15 +452,37 @@ class CompletionHandler:
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
 
-    def _emit_pr_view_changed(self, pr_info: Any, issue_number: int | None) -> None:
+    def _emit_pr_view_changed(
+        self,
+        pr_info: Any,
+        issue_key: str | None,
+        issue_number: int | None,
+    ) -> None:
         payload = {
             "pr_number": pr_info.number,
             "labels": list(getattr(pr_info, "labels", []) or []),
             "pr_url": getattr(pr_info, "url", None),
         }
+        if issue_key is not None:
+            payload["issue_key"] = issue_key
         if issue_number is not None:
             payload["issue_number"] = issue_number
-            payload["issue_key"] = str(issue_number)
+        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
+
+    def _emit_pr_view_hint(
+        self,
+        pr_number: int,
+        pr_url: str,
+        issue_key: str,
+        issue_number: int,
+    ) -> None:
+        payload = {
+            "pr_number": pr_number,
+            "labels": [],
+            "pr_url": pr_url,
+            "issue_key": issue_key,
+            "issue_number": issue_number,
+        }
         self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
 
     def _determine_cleanup_strategy(
