@@ -427,6 +427,10 @@ class SessionLauncher:
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
+        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue.number}'"
+        if self.config.validation.cmd:
+            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
+            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
 
         if self.config.e2e_pr_labels:
             labels_str = ",".join(self.config.e2e_pr_labels)
@@ -641,6 +645,10 @@ class SessionLauncher:
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
+        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{review.issue_number}'"
+        if self.config.validation.cmd:
+            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
+            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
 
         command = f"{env_exports} && {base_command}"
         logger.info(
@@ -856,6 +864,10 @@ class SessionLauncher:
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"
+        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
+        if self.config.validation.cmd:
+            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
+            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
 
         command = f"{env_exports} && {base_command}"
         logger.info(

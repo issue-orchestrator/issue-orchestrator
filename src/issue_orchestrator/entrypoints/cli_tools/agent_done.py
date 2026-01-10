@@ -17,12 +17,18 @@ the completion record as untrusted input.
 
 import argparse
 import json
+import logging
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn, Optional
 
 import os
+
+from ...infra.logging_config import issue_log
+
+logger = logging.getLogger(__name__)
 
 from ...domain.models import (
     CompletionRecord,
@@ -134,6 +140,21 @@ def get_session_id() -> str:
         return session_id
     # Fallback for standalone usage
     return f"standalone-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+
+def get_issue_number() -> Optional[int]:
+    """Get issue number from environment.
+
+    The orchestrator sets ORCHESTRATOR_ISSUE_NUMBER when launching agents.
+    Returns None if not set (standalone usage).
+    """
+    issue_str = os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
+    if issue_str:
+        try:
+            return int(issue_str)
+        except ValueError:
+            return None
+    return None
 
 
 def validate_fields(status: str, args: argparse.Namespace) -> None:
@@ -496,6 +517,13 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
 
     args = parser.parse_args()
     status = args.status
+    issue_number = get_issue_number()
+
+    # Log start of agent-done
+    if issue_number:
+        logger.info(issue_log(issue_number, "agent-done starting: status=%s"), status)
+    else:
+        logger.info("[agent-done] Starting (standalone): status=%s", status)
 
     # Validate required fields
     validate_fields(status, args)
@@ -566,6 +594,13 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
             print("If you CANNOT fix after 2-3 attempts, use:")
             print('  agent-done blocked --reason "Validation failing: <error>" --attempted "..."')
             print(f"{'='*60}")
+
+            # Log validation failure
+            if issue_number:
+                logger.info(issue_log(issue_number, "agent-done outcome: status=%s validation=FAILED"), status)
+            else:
+                logger.info("[agent-done] Outcome (standalone): status=%s validation=FAILED", status)
+
             sys.exit(1)
     elif status in {AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}:
         # Log that we're skipping validation for these statuses
@@ -590,6 +625,84 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
         print(f"Validation: {validation_status}")
     print("\nThe orchestrator will process this record and perform the necessary actions.")
 
+    # Log successful outcome
+    if issue_number:
+        logger.info(issue_log(issue_number, "agent-done outcome: status=%s validation=%s"),
+                   status, "passed" if validation_result and validation_result.passed else "skipped")
+    else:
+        logger.info("[agent-done] Outcome (standalone): status=%s", status)
+
+
+def write_error_completion(error_msg: str, status: str) -> Optional[Path]:
+    """Write an error completion record when agent-done itself fails.
+
+    This ensures the orchestrator knows something went wrong even if
+    agent-done crashes after the AI agent called it.
+    """
+    try:
+        worktree_root = find_worktree_root()
+        base_path = os.environ.get("ORCHESTRATOR_COMPLETION_PATH", COMPLETION_RECORD_PATH)
+        output_path = worktree_root / base_path
+
+        error_record = {
+            "outcome": status,  # Preserve what the agent intended
+            "agent_done_error": error_msg,
+            "session_id": get_session_id(),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(error_record, indent=2))
+        return output_path
+    except Exception:
+        # If we can't even write the error record, there's nothing more we can do
+        return None
+
+
+def safe_main() -> None:
+    """Wrapper around main() that catches unexpected errors.
+
+    If agent-done crashes after the AI agent called it, we still want to
+    write a completion record so the orchestrator knows what happened.
+    The AI agent did its job - it called agent-done. Infrastructure failure
+    after that is not the AI's fault.
+    """
+    status = "unknown"
+    issue_number = get_issue_number()
+
+    try:
+        # Parse just enough to get status for error reporting
+        if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
+            status = sys.argv[1]
+        main()
+    except SystemExit:
+        # Normal exit (including validation failures) - don't intercept
+        raise
+    except Exception as e:
+        # Unexpected error - write error completion so orchestrator knows
+        error_msg = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+
+        if issue_number:
+            logger.error(issue_log(issue_number, "agent-done crashed: %s"), str(e))
+        else:
+            logger.error("[agent-done] Crashed (standalone): %s", str(e))
+
+        print(f"\n{'='*60}", file=sys.stderr)
+        print("❌ AGENT-DONE INTERNAL ERROR", file=sys.stderr)
+        print(f"{'='*60}", file=sys.stderr)
+        print(f"\nError: {e}", file=sys.stderr)
+        print(f"\n{traceback.format_exc()}", file=sys.stderr)
+
+        # Try to write error completion
+        error_path = write_error_completion(error_msg, status)
+        if error_path:
+            print(f"\nError completion written to: {error_path}", file=sys.stderr)
+            print("The orchestrator will mark this issue as blocked.", file=sys.stderr)
+        else:
+            print("\nCould not write error completion record.", file=sys.stderr)
+
+        sys.exit(1)
+
 
 if __name__ == "__main__":
-    main()
+    safe_main()
