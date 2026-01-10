@@ -276,10 +276,6 @@ cleanup:
     wait_for_code_review: true        # (default) Wait for review before cleanup
     close_ai_session_tabs: true       # (default)
     remove_worktrees: false           # (default)
-
-# Legacy (deprecated - use cleanup section)
-close_completed_tabs: true            # (default)
-close_failed_tabs: false              # (default)
 ```
 
 ---
@@ -316,8 +312,14 @@ tmux_bindings:                    # (default: double-click to zoom)
 
 ```yaml
 milestone_sort: "due_date"        # (default) Options: due_date, number, pattern, name
-milestone_sort_config: {}         # (default) Strategy-specific config
 foundation_milestone: "M0"        # (default) Dependencies must be in same or foundation
+```
+
+Example using pattern strategy to sort milestones like "Sprint-1", "Sprint-2":
+```yaml
+milestone_sort: "pattern"
+milestone_sort_config:
+  pattern: "Sprint-(\\d+)"   # Regex with capture group for number
 ```
 
 ---
@@ -342,9 +344,13 @@ dangerous:
 
 ### Stale Detection
 
+Detects stuck issues that have `in-progress` label but no active session (e.g., agent crashed).
+
 ```yaml
-stale_escalation_ticks: 0         # (default) Escalate after N ticks stale (0 = disabled)
+stale_escalation_ticks: 0         # (default) Emit warning after N consecutive stale ticks (0 = disabled)
 ```
+
+Example: `stale_escalation_ticks: 3` emits `PERSISTENT_STALE_DETECTED` event if an issue stays stale for 3 tick cycles.
 
 ---
 
@@ -359,14 +365,6 @@ comment_headings:
   pr_link: "## Pull Request"                # (default)
   blocked: "## Blocked"                     # (default)
   needs_human: "## Needs Human Input"       # (default)
-```
-
----
-
-### E2E Testing
-
-```yaml
-e2e_pr_labels: []                 # (default) Labels for E2E test PRs
 ```
 
 ---

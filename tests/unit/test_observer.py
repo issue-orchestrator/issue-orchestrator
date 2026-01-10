@@ -28,8 +28,6 @@ def mock_config():
     config.label_blocked = "blocked"
     config.label_needs_human = "needs-human"
     config.ui_mode = "tmux"
-    config.close_completed_tabs = True
-    config.close_failed_tabs = False
     return config
 
 
@@ -474,8 +472,8 @@ class TestHandleCompletion:
     def test_handle_completion_dont_close_completed_tabs(
         self, monitor, sample_session, mock_session_runner
     ):
-        """Test close_completed_tabs=False keeps tab open."""
-        monitor.config.close_completed_tabs = False
+        """Test close_ai_session_tabs=False keeps tab open."""
+        monitor.config.cleanup.without_triage.close_ai_session_tabs = False
 
         monitor.handle_completion(sample_session, SessionStatus.COMPLETED)
 
@@ -483,22 +481,24 @@ class TestHandleCompletion:
         # (it's only called for TIMED_OUT status kill)
         mock_session_runner.kill_session.assert_not_called()
 
-    def test_handle_completion_close_failed_tabs(
+    def test_handle_completion_failed_tabs_always_kept_open(
         self, monitor, sample_session, mock_session_runner
     ):
-        """Test close_failed_tabs config closes tab on failure."""
-        monitor.config.close_failed_tabs = True
+        """Test that failed tabs are always kept open for debugging."""
+        # Even with close_ai_session_tabs=True, failed sessions stay open
+        monitor.config.cleanup.without_triage.close_ai_session_tabs = True
 
         monitor.handle_completion(sample_session, SessionStatus.FAILED)
 
-        mock_session_runner.kill_session.assert_called()
+        # Failed sessions should NOT close - kept open for debugging
+        mock_session_runner.kill_session.assert_not_called()
 
     def test_handle_completion_outer_exception_handler(
         self, monitor, sample_session, mock_session_runner
     ):
         """Test that outer exception handler catches unexpected errors."""
         mock_session_runner.kill_session.side_effect = Exception("Unexpected error")
-        monitor.config.close_completed_tabs = True
+        monitor.config.cleanup.without_triage.close_ai_session_tabs = True
 
         # Should not raise - exception is caught and logged
         monitor.handle_completion(sample_session, SessionStatus.COMPLETED)

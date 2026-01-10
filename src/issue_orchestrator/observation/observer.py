@@ -583,11 +583,13 @@ class SessionObserver:
                     )
 
             # Auto-close tab based on config (observer handles terminal cleanup)
-            should_close = (
-                (status == SessionStatus.COMPLETED and self.config.close_completed_tabs) or
-                (status in (SessionStatus.FAILED, SessionStatus.BLOCKED, SessionStatus.NEEDS_HUMAN, SessionStatus.TIMED_OUT)
-                 and self.config.close_failed_tabs)
+            # Only close completed sessions - keep failed/blocked/needs_human open for debugging
+            close_tabs = (
+                self.config.cleanup.with_triage.close_ai_session_tabs
+                if self.config.triage_review_agent
+                else self.config.cleanup.without_triage.close_ai_session_tabs
             )
+            should_close = status == SessionStatus.COMPLETED and close_tabs
             if should_close:
                 try:
                     self._kill_session(issue_number)
