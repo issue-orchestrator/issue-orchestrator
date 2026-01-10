@@ -39,17 +39,26 @@ TraceEvent(name, data) --> PluggyEventSink --> on_trace_event hook
 ## Quick Diagnostics
 
 ```bash
-# Check orchestrator log (filter out loop spam)
-tail -f ~/.issue-orchestrator.log | grep -v "LOOP.*Iteration"
+# Trace all log entries for a specific issue (since last startup)
+issue-orchestrator trace 2641
+
+# Alternative: use the shell script (from repo root)
+./tools/trace-issue 2641
+
+# Check orchestrator log - now in repo root
+LOG=".issue-orchestrator/state/logs/orchestrator.log"
+
+# Filter out loop spam
+tail -f "$LOG" | grep -v "LOOP.*Iteration"
 
 # See ONLY events
-grep "\[EVENT\]" ~/.issue-orchestrator.log | tail -100
+grep "\[EVENT\]" "$LOG" | tail -100
 
 # See events + key transitions
-grep -E "\[EVENT\]|\[STATE_MACHINE\]|Launched|Queued|review" ~/.issue-orchestrator.log | tail -100
+grep -E "\[EVENT\]|\[STATE_MACHINE\]|Launched|Queued|review" "$LOG" | tail -100
 
 # Check for errors
-grep -i -E "error|exception|traceback" ~/.issue-orchestrator.log | tail -30
+grep -i -E "error|exception|traceback" "$LOG" | tail -30
 
 # Check orchestrator status
 issue-orchestrator status
@@ -62,6 +71,21 @@ curl -s http://localhost:8080/api/status | jq
 
 # View session output
 issue-orchestrator output <issue_number>
+```
+
+## Issue-Specific Logging
+
+All log entries for an issue are prefixed with `[issue-N]`. Use the trace command:
+
+```bash
+# Trace issue 2641 from the most recent orchestrator run
+issue-orchestrator trace 2641
+
+# Or use the shell script (from repo root)
+./tools/trace-issue 2641
+
+# Or manually:
+grep "\[issue-2641\]" .issue-orchestrator/state/logs/orchestrator.log
 ```
 
 ## Completion File Debugging
@@ -89,6 +113,44 @@ tail -100 /tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/session.
 | Labels not applied | Wrong label_target (issue vs PR) | Check completion_processor logs |
 | Sessions cycling/retry loop | `blocked-failed` label not added | See "Session Retry Loop" below |
 | iTerm tabs exit immediately | Sandbox check failing | Check `_iterm2.py` sandbox_check |
+| Push fails with "No such file" | Missing .venv symlink in worktree | See "Worktree Issues" below |
+| Stale completion detected | Old completion.json from previous session | Worktree not prepared properly |
+
+## Worktree Issues
+
+### Missing .venv Symlink
+
+If push fails with errors like:
+```
+.venv/bin/lint-imports: No such file or directory
+.venv/bin/pyright: No such file or directory
+```
+
+The worktree is missing its `.venv` symlink. Check:
+
+```bash
+# Check if symlink exists
+ls -la /path/to/worktree/.venv
+
+# Should show -> /path/to/main/repo/.venv
+# If missing, the worktree reuse code didn't call install_venv_symlink()
+```
+
+Fix: `install_venv_symlink()` is called in `adapters/worktree/_worktree.py` during worktree creation AND reuse.
+
+### Stale Completion Files
+
+If sessions complete immediately with old data, stale `completion.json` from a previous session is being read.
+
+```bash
+# Check completion files in worktree
+ls -la /path/to/worktree/.issue-orchestrator/completion*.json
+
+# View completion content
+cat /path/to/worktree/.issue-orchestrator/completion*.json | jq
+```
+
+Fix: `Worktree.prepare_for_session()` in `control/worktree.py` deletes stale completion files before session launch.
 
 ## Session Retry Loop Debugging
 

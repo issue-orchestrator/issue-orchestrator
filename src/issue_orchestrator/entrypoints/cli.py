@@ -1714,6 +1714,68 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace(args: argparse.Namespace) -> int:
+    """Trace log entries for a specific issue."""
+    import re
+
+    issue_number = args.issue_number
+
+    # Find the log file by walking up from cwd to find repo root
+    def find_log_file() -> Path | None:
+        current = Path.cwd()
+        for _ in range(10):  # Max 10 levels up
+            candidate = current / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
+            if candidate.exists():
+                return candidate
+            if current.parent == current:
+                break
+            current = current.parent
+        return None
+
+    log_file = find_log_file()
+
+    if log_file is None:
+        console.print("[red]Error: orchestrator.log not found[/red]")
+        console.print("Run this command from within a repository that has the orchestrator running.")
+        return 1
+
+    # Read the log file
+    content = log_file.read_text()
+    lines = content.splitlines()
+
+    # Find the last startup marker
+    last_start = 0
+    for i, line in enumerate(lines):
+        if "Starting orchestrator" in line:
+            last_start = i
+
+    if last_start == 0 and lines:
+        console.print("[yellow]Warning: No startup marker found, showing all entries[/yellow]", style="dim")
+
+    # Filter entries for this issue
+    # Matches: [issue-N] or issue=N or issue_number=N or issue #N
+    pattern = re.compile(
+        rf"\[issue-{issue_number}\]|"
+        rf"issue={issue_number}(?![0-9])|"
+        rf"issue_number={issue_number}(?![0-9])|"
+        rf"issue #{issue_number}(?![0-9])"
+    )
+
+    matches = []
+    for line in lines[last_start:]:
+        if pattern.search(line):
+            matches.append(line)
+
+    if not matches:
+        console.print(f"[dim]No log entries found for issue #{issue_number}[/dim]")
+        return 0
+
+    for line in matches:
+        print(line)
+
+    return 0
+
+
 def main() -> int:
     """Main entry point for the CLI."""
     parser: argparse.ArgumentParser = argparse.ArgumentParser(
@@ -2088,6 +2150,17 @@ def main() -> int:
         "demo", help="Demonstrate orchestrator features with mock data"
     )
     demo_parser.set_defaults(func=cmd_demo)
+
+    # trace command
+    trace_parser: argparse.ArgumentParser = subparsers.add_parser(
+        "trace", help="Trace log entries for a specific issue"
+    )
+    trace_parser.add_argument(
+        "issue_number",
+        type=int,
+        help="Issue number to trace"
+    )
+    trace_parser.set_defaults(func=cmd_trace)
 
     args: argparse.Namespace = parser.parse_args()
     return args.func(args)
