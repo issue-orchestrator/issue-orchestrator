@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# trace-issue - Trace orchestrator log entries for a specific issue
+#
+# Usage: trace-issue <issue_number>
+#
+# Finds all log entries for the specified issue from the most recent
+# orchestrator run (since the last startup).
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "Usage: trace-issue <issue_number>" >&2
+    exit 1
+fi
+
+ISSUE_NUMBER="$1"
+
+# Find the repo root (if we're in a git repo)
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+
+# Find the log file - check repo root first, then cwd, then home
+if [[ -n "$REPO_ROOT" && -f "${REPO_ROOT}/.issue-orchestrator/state/logs/orchestrator.log" ]]; then
+    LOG_FILE="${REPO_ROOT}/.issue-orchestrator/state/logs/orchestrator.log"
+elif [[ -f ".issue-orchestrator/state/logs/orchestrator.log" ]]; then
+    LOG_FILE=".issue-orchestrator/state/logs/orchestrator.log"
+elif [[ -f "${HOME}/.issue-orchestrator/state/logs/orchestrator.log" ]]; then
+    LOG_FILE="${HOME}/.issue-orchestrator/state/logs/orchestrator.log"
+else
+    echo "Error: orchestrator.log not found" >&2
+    echo "Looked in:" >&2
+    [[ -n "$REPO_ROOT" ]] && echo "  ${REPO_ROOT}/.issue-orchestrator/state/logs/orchestrator.log" >&2
+    echo "  .issue-orchestrator/state/logs/orchestrator.log" >&2
+    echo "  ~/.issue-orchestrator/state/logs/orchestrator.log" >&2
+    exit 1
+fi
+
+# Find the last startup marker (grep returns 1 if no match, so use || true)
+LAST_START=$(grep -n "Starting orchestrator" "$LOG_FILE" | tail -1 | cut -d: -f1 || true)
+
+if [[ -z "$LAST_START" ]]; then
+    echo "Warning: No startup marker found, showing all entries" >&2
+    LAST_START=1
+fi
+
+# Extract entries for this issue from the last run
+# Matches: [issue-N] or issue=N or issue_number=N or issue #N
+# Note: grep returns 1 if no matches, which is fine - just means no entries for this issue
+tail -n "+${LAST_START}" "$LOG_FILE" | grep -E "\[issue-${ISSUE_NUMBER}\]|issue=${ISSUE_NUMBER}[^0-9]|issue_number=${ISSUE_NUMBER}[^0-9]|issue #${ISSUE_NUMBER}[^0-9]" || true
