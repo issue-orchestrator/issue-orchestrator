@@ -80,6 +80,7 @@ class CompletionHandler:
         session: Session,
         status: SessionStatus,
         pr_url_hint: Optional[str] = None,
+        processing_errors: Optional[list[str]] = None,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -87,6 +88,7 @@ class CompletionHandler:
             session: The completed session
             status: The completion status
             pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
+            processing_errors: Errors from completion processor (push failed, etc.)
 
         Returns:
             CompletionResult with history entry and cleanup decision
@@ -128,7 +130,9 @@ class CompletionHandler:
         should_queue_review = self._should_queue_review(session, status, pr_url, pr_number)
 
         # Generate actions for label/comment changes (policy logic)
-        completion_actions = self.generate_completion_actions(session, status)
+        completion_actions = self.generate_completion_actions(
+            session, status, processing_errors=processing_errors
+        )
 
         result = CompletionResult(
             history_entry=history_entry,
@@ -510,6 +514,7 @@ class CompletionHandler:
         self,
         session: Session,
         status: SessionStatus,
+        processing_errors: Optional[list[str]] = None,
     ) -> tuple[Action, ...]:
         """Generate label/comment actions for session completion.
 
@@ -519,6 +524,7 @@ class CompletionHandler:
         Args:
             session: The completed session
             status: The completion status
+            processing_errors: Errors from completion processor (push failed, etc.)
 
         Returns:
             Tuple of actions to apply
@@ -527,6 +533,44 @@ class CompletionHandler:
         issue_number = session.issue.number
         in_progress_label = self.config.get_label_in_progress()
         expected = build_expected_for_mutation()
+
+        # If agent said "completed" but processing failed (push/PR creation),
+        # treat as blocked-failed. The AI did its job, infrastructure failed.
+        if status == SessionStatus.COMPLETED and processing_errors:
+            logger.info(
+                "[COMPLETION] Agent said completed but processing failed: issue=%d errors=%s",
+                issue_number, processing_errors
+            )
+            # Format errors for comment (truncate if too long)
+            error_summary = "\n".join(f"- {e[:200]}" for e in processing_errors[:5])
+            if len(processing_errors) > 5:
+                error_summary += f"\n- ... and {len(processing_errors) - 5} more errors"
+
+            actions.append(AddLabelAction(
+                issue_number=issue_number,
+                label=labels.BLOCKED_FAILED,
+                reason="Processing failed after agent completion (push/PR creation failed)",
+                expected=expected,
+            ))
+            actions.append(AddCommentAction(
+                number=issue_number,
+                comment=f"❌ **Processing Failed**\n\n"
+                        f"The agent completed its work, but the orchestrator could not push or create a PR.\n\n"
+                        f"**Errors:**\n{error_summary}\n\n"
+                        f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                        f"- Session: `{session.terminal_id}`\n\n"
+                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                        f"Investigate the errors above, then remove the label to allow reprocessing.",
+                reason="Notify about processing failure",
+                expected=expected,
+            ))
+            actions.append(RemoveLabelAction(
+                issue_number=issue_number,
+                label=in_progress_label,
+                reason="Processing failed - releasing claim",
+                expected=expected,
+            ))
+            return tuple(actions)
 
         if status == SessionStatus.TIMED_OUT:
             # POLICY: Timeout → blocked-failed + comment + release claim
