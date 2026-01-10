@@ -1009,9 +1009,7 @@ class TestCommitAll:
         """Test when there's nothing to commit."""
         with patch.object(git_wc, "_run_git") as mock_run:
             # Create an error with stdout set on the result
-            error = git_error(1, "git")
-            error.result.stdout = "nothing to commit, working tree clean"
-            error.result.stderr = ""
+            error = git_error(stdout="nothing to commit, working tree clean", stderr="")
 
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),
