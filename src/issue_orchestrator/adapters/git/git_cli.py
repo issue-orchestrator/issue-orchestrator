@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...ports.command_runner import CommandRunner
+from ...ports.command_runner import CommandRunner, CommandResult
 from ...ports.git import Git, GitError, GitResult
 
 
@@ -26,11 +26,11 @@ class SubprocessCommandRunner:
         self,
         command: str | list[str],
         *,
-        cwd=None,
+        cwd: Path | None = None,
         env: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         shell: bool = False,
-    ) -> "CommandResult":
+    ) -> CommandResult:
         try:
             result = subprocess.run(
                 command,
@@ -41,29 +41,21 @@ class SubprocessCommandRunner:
                 env=env,
                 shell=shell,
             )
-            return type(
-                "CommandResult",
-                (),
-                {
-                    "returncode": result.returncode,
-                    "stdout": result.stdout or "",
-                    "stderr": result.stderr or "",
-                    "timed_out": False,
-                },
-            )()
+            return CommandResult(
+                returncode=result.returncode,
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
+                timed_out=False,
+            )
         except subprocess.TimeoutExpired as exc:
             stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout.decode() if exc.stdout else "")
             stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr.decode() if exc.stderr else "")
-            return type(
-                "CommandResult",
-                (),
-                {
-                    "returncode": -1,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "timed_out": True,
-                },
-            )()
+            return CommandResult(
+                returncode=-1,
+                stdout=stdout,
+                stderr=stderr,
+                timed_out=True,
+            )
 
 
 @dataclass
