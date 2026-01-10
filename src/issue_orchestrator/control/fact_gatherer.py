@@ -217,18 +217,26 @@ class FactGatherer:
         Returns immutable facts for the Planner to decide which cleanups to process.
         Does NOT perform cleanup - that's the Planner's job.
 
+        Handles two types of cleanups:
+        1. Deferred cleanups (pending_cleanups) - waiting for review label
+        2. Immediate cleanups (immediate_cleanups) - ready to execute now
+
         Args:
-            state: Current orchestrator state with pending_cleanups
+            state: Current orchestrator state with pending_cleanups and immediate_cleanups
 
         Returns:
-            CleanupFacts if there are pending cleanups, else None
+            CleanupFacts if there are any cleanups to process, else None
         """
         from ..domain.models import CleanupFacts
 
-        if not state.pending_cleanups:
+        # Check if there's anything to clean up
+        has_pending = bool(state.pending_cleanups)
+        has_immediate = bool(state.immediate_cleanups)
+
+        if not has_pending and not has_immediate:
             return None
 
-        # Determine which label indicates review is complete
+        # Determine cleanup settings based on workflow
         if self.config.triage_review_agent:
             cleanup_label = self.config.triage_reviewed_label
             close_tabs = self.config.cleanup.with_triage.close_ai_session_tabs
@@ -238,19 +246,19 @@ class FactGatherer:
             close_tabs = self.config.cleanup.without_triage.close_ai_session_tabs
             remove_wt = self.config.cleanup.without_triage.remove_worktrees
         else:
-            # No review workflow configured
-            return None
+            # No review workflow - use defaults for immediate cleanups
+            cleanup_label = None
+            close_tabs = self.config.cleanup.without_triage.close_ai_session_tabs
+            remove_wt = self.config.cleanup.without_triage.remove_worktrees
 
-        if not cleanup_label:
-            return None
-
-        # Get all PRs with the cleanup label
-        try:
-            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
-            reviewed_pr_numbers = frozenset(pr.number for pr in reviewed_prs)
-        except Exception as e:
-            logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
-            return None
+        # Get reviewed PRs for deferred cleanups (only if we have pending cleanups)
+        reviewed_pr_numbers: frozenset[int] = frozenset()
+        if has_pending and cleanup_label:
+            try:
+                reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
+                reviewed_pr_numbers = frozenset(pr.number for pr in reviewed_prs)
+            except Exception as e:
+                logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
 
         # Build immutable tuples of pending cleanup info
         pending_tuples = tuple(
@@ -258,9 +266,13 @@ class FactGatherer:
             for c in state.pending_cleanups
         )
 
+        # Build immutable tuple of immediate cleanups
+        immediate_tuples = tuple(state.immediate_cleanups)
+
         return CleanupFacts(
             pending_cleanups=pending_tuples,
             reviewed_pr_numbers=reviewed_pr_numbers,
             close_tabs=close_tabs,
             remove_worktrees=remove_wt,
+            immediate_cleanups=immediate_tuples,
         )

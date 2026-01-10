@@ -551,7 +551,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         return actions
 
     def _plan_cleanups(self, snapshot: OrchestratorSnapshot) -> list[Action]:
-        """Plan cleanup actions for sessions with reviewed PRs.
+        """Plan cleanup actions for completed sessions.
+
+        Handles two types of cleanups:
+        1. Deferred cleanups - wait for review label before cleaning
+        2. Immediate cleanups - clean up right away (no review workflow)
 
         Returns:
             List of CleanupSessionAction for cleanups ready to process
@@ -563,7 +567,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         facts = snapshot.cleanup_facts
 
-        # For each pending cleanup, check if its PR is in the reviewed set
+        # 1. Deferred cleanups - check if PR has been reviewed
         for cleanup in facts.pending_cleanups:
             # cleanup is a tuple of (issue_number, pr_number, terminal_session_name, worktree_path)
             issue_number, pr_number, terminal_session_name, worktree_path = cleanup
@@ -577,8 +581,22 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     remove_worktrees=facts.remove_worktrees,
                     reason=f"PR #{pr_number} has been reviewed",
                 ))
-                logger.info("Planner: cleanup for issue #%d (PR #%d reviewed)",
+                logger.info("Planner: deferred cleanup for issue #%d (PR #%d reviewed)",
                            issue_number, pr_number)
+
+        # 2. Immediate cleanups - ready to execute now
+        for cleanup in facts.immediate_cleanups:
+            actions.append(CleanupSessionAction(
+                issue_number=cleanup.issue_number,
+                pr_number=0,  # No PR for immediate cleanups
+                terminal_session_name=cleanup.terminal_id,
+                worktree_path=cleanup.worktree_path,
+                close_tabs=facts.close_tabs,
+                remove_worktrees=facts.remove_worktrees,
+                reason=f"session {cleanup.reason}",
+            ))
+            logger.info("Planner: immediate cleanup for issue #%d (%s)",
+                       cleanup.issue_number, cleanup.reason)
 
         return actions
 

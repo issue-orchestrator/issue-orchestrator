@@ -381,6 +381,7 @@ def clear_discovered_facts(state: "OrchestratorState") -> None:
     state.discovered_reworks.clear()
     state.discovered_escalations.clear()
     state.discovered_failures.clear()
+    state.immediate_cleanups.clear()
 
 
 def emit_heartbeat_if_needed(

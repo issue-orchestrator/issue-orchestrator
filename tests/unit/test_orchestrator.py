@@ -621,12 +621,12 @@ class TestHandleSessionCompletion:
 
         assert len(orchestrator.state.completed_today) == 0
 
-    def test_handle_completion_removes_worktree_for_completed(
+    def test_handle_completion_records_immediate_cleanup_for_completed(
         self,
         sample_config,
         mock_worktree_manager,
     ):
-        """Test that worktree is removed for completed sessions."""
+        """Test that completed sessions record immediate cleanup for planner."""
         issue = create_issue(1)
         session = create_session(issue, worktree_path="/tmp/worktree")
 
@@ -635,14 +635,19 @@ class TestHandleSessionCompletion:
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
-        mock_worktree_manager.remove.assert_called_once_with(Path("/tmp/worktree"))
+        # Cleanup is now recorded as a fact for the planner, not done immediately
+        assert len(orchestrator.state.immediate_cleanups) == 1
+        cleanup = orchestrator.state.immediate_cleanups[0]
+        assert cleanup.issue_number == 1
+        assert cleanup.terminal_id == session.terminal_id
+        assert cleanup.reason == "completed"
 
-    def test_handle_completion_keeps_worktree_for_blocked(
+    def test_handle_completion_records_immediate_cleanup_for_blocked(
         self,
         sample_config,
         mock_worktree_manager,
     ):
-        """Test that worktree is kept for blocked sessions."""
+        """Test that blocked sessions record immediate cleanup for planner."""
         issue = create_issue(1)
         session = create_session(issue)
 
@@ -651,14 +656,17 @@ class TestHandleSessionCompletion:
 
         orchestrator.handle_session_completion(session, SessionStatus.BLOCKED)
 
-        mock_worktree_manager.remove.assert_not_called()
+        # Cleanup is now recorded as a fact for the planner
+        assert len(orchestrator.state.immediate_cleanups) == 1
+        cleanup = orchestrator.state.immediate_cleanups[0]
+        assert cleanup.reason == "blocked"
 
-    def test_handle_completion_keeps_worktree_for_failed(
+    def test_handle_completion_records_immediate_cleanup_for_failed(
         self,
         sample_config,
         mock_worktree_manager,
     ):
-        """Test that worktree is kept for failed sessions."""
+        """Test that failed sessions record immediate cleanup for planner."""
         issue = create_issue(1)
         session = create_session(issue)
 
@@ -667,14 +675,20 @@ class TestHandleSessionCompletion:
 
         orchestrator.handle_session_completion(session, SessionStatus.FAILED)
 
-        mock_worktree_manager.remove.assert_not_called()
+        # Cleanup is now recorded as a fact for the planner
+        assert len(orchestrator.state.immediate_cleanups) == 1
+        cleanup = orchestrator.state.immediate_cleanups[0]
+        assert cleanup.reason == "failed"
 
-    def test_handle_completion_handles_worktree_removal_error(
+    # Note: Worktree removal error handling is now tested in test_action_applier.py
+    # since cleanup is handled via CleanupSessionAction.
+
+    def test_handle_completion_legacy_worktree_removal_test(
         self,
         sample_config,
         mock_worktree_manager,
     ):
-        """Test that worktree removal errors are handled gracefully."""
+        """Legacy test - worktree removal is now deferred to planner/applier."""
         mock_worktree_manager.remove.side_effect = Exception("Failed to remove worktree")
 
         issue = create_issue(1)
@@ -686,57 +700,9 @@ class TestHandleSessionCompletion:
         # Should not raise exception
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
-    def test_handle_completion_closes_session(
-        self,
-        sample_config,
-        mock_worktree_manager,
-    ):
-        """Test that handle_session_completion closes the terminal session to prevent tab accumulation."""
-        issue = create_issue(1)
-        session = create_session(issue)
-
-        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
-
-        with patch.object(orchestrator, "_kill_session") as mock_kill:
-            orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
-
-            # Verify _kill_session was called with the session name
-            mock_kill.assert_called_once_with(session.terminal_id)
-
-    def test_handle_completion_closes_session_on_failure(
-        self,
-        sample_config,
-        mock_worktree_manager,
-    ):
-        """Test that session is closed even for failed sessions to prevent tab buildup."""
-        issue = create_issue(1)
-        session = create_session(issue)
-
-        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
-
-        with patch.object(orchestrator, "_kill_session") as mock_kill:
-            orchestrator.handle_session_completion(session, SessionStatus.FAILED)
-
-            # Session should still be closed to prevent accumulation
-            mock_kill.assert_called_once_with(session.terminal_id)
-
-    def test_handle_completion_closes_session_gracefully_on_error(
-        self,
-        sample_config,
-        mock_worktree_manager,
-    ):
-        """Test that session close errors are handled gracefully."""
-        issue = create_issue(1)
-        session = create_session(issue)
-
-        orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
-        orchestrator.state.active_sessions.append(session)
-
-        with patch.object(orchestrator, "_kill_session", side_effect=Exception("Failed to close")):
-            # Should not raise exception
-            orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
+    # Note: Session closing is now handled via CleanupSessionAction in the planner/applier cycle.
+    # These tests verify that ImmediateCleanup is recorded; the actual closing is tested in
+    # test_action_applier.py where CleanupSessionAction is executed.
 
 
 class TestRunLoop:
@@ -2634,7 +2600,7 @@ class TestDeferredCleanup:
         mock_repository_host,
         mock_worktree_manager,
     ):
-        """Test that cleanup happens immediately when no review workflow is configured."""
+        """Test that immediate cleanup is recorded when no review workflow is configured."""
         from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
         # No review workflow
@@ -2662,10 +2628,13 @@ class TestDeferredCleanup:
 
         orchestrator.handle_session_completion(session, SessionStatus.COMPLETED)
 
-        # Worktree should be removed immediately
-        mock_worktree_manager.remove.assert_called_once()
+        # Immediate cleanup is recorded as a fact for the planner
+        assert len(orchestrator.state.immediate_cleanups) == 1
+        cleanup = orchestrator.state.immediate_cleanups[0]
+        assert cleanup.issue_number == 1
+        assert cleanup.reason == "completed"
 
-        # No pending cleanups
+        # No pending (deferred) cleanups
         assert len(orchestrator.state.pending_cleanups) == 0
 
     def test_handle_completion_no_defer_for_failed_sessions(
@@ -2674,7 +2643,7 @@ class TestDeferredCleanup:
         mock_repository_host,
         mock_worktree_manager,
     ):
-        """Test that failed sessions are not deferred (left for investigation)."""
+        """Test that failed sessions get immediate cleanup (not deferred)."""
         # Enable triage review
         sample_config.triage_review_agent = "agent:triage"
 
@@ -2686,10 +2655,12 @@ class TestDeferredCleanup:
 
         orchestrator.handle_session_completion(session, SessionStatus.FAILED)
 
-        # No pending cleanups for failed sessions
+        # No pending (deferred) cleanups for failed sessions
         assert len(orchestrator.state.pending_cleanups) == 0
-        # Worktree not removed (left for investigation)
-        mock_worktree_manager.remove.assert_not_called()
+        # Immediate cleanup is recorded
+        assert len(orchestrator.state.immediate_cleanups) == 1
+        cleanup = orchestrator.state.immediate_cleanups[0]
+        assert cleanup.reason == "failed"
 
 
 class TestProcessDeferredCleanups:
