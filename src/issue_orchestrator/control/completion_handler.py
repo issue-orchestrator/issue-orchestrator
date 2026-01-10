@@ -581,6 +581,8 @@ class CompletionHandler:
         issue_number = session.issue.number
         in_progress_label = self.config.get_label_in_progress()
         expected = build_expected_for_mutation()
+        is_issue_session = session.terminal_id.startswith("issue-")
+        session_kind = session.terminal_id.split("-", 1)[0]
 
         # If agent said "completed" but processing failed (push/PR creation),
         # treat as blocked-failed. The AI did its job, infrastructure failed.
@@ -633,56 +635,80 @@ class CompletionHandler:
 
         if status == SessionStatus.TIMED_OUT:
             # POLICY: Timeout → blocked-failed + comment + release claim
-            actions.append(AddLabelAction(
-                issue_number=issue_number,
-                label=labels.BLOCKED_FAILED,
-                reason=f"Session timed out after {session.runtime_minutes} minutes",
-                expected=expected,
-            ))
-            timeout_mins = session.agent_config.timeout_minutes if session.agent_config else "unknown"
-            actions.append(AddCommentAction(
-                number=issue_number,
-                comment=f"⏱️ **Session Timed Out**\n\n"
-                        f"The agent session exceeded the {timeout_mins} minute timeout limit.\n\n"
-                        f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
-                        f"- Session: `{session.terminal_id}`\n\n"
-                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
-                        f"Remove the label to allow reprocessing.",
-                reason="Notify about session timeout",
-                expected=expected,
-            ))
-            actions.append(RemoveLabelAction(
-                issue_number=issue_number,
-                label=in_progress_label,
-                reason="Session timed out - releasing claim",
-                expected=expected,
-            ))
+            if is_issue_session:
+                actions.append(AddLabelAction(
+                    issue_number=issue_number,
+                    label=labels.BLOCKED_FAILED,
+                    reason=f"Session timed out after {session.runtime_minutes} minutes",
+                    expected=expected,
+                ))
+                timeout_mins = session.agent_config.timeout_minutes if session.agent_config else "unknown"
+                actions.append(AddCommentAction(
+                    number=issue_number,
+                    comment=f"⏱️ **Session Timed Out**\n\n"
+                            f"The agent session exceeded the {timeout_mins} minute timeout limit.\n\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n\n"
+                            f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                            f"Remove the label to allow reprocessing.",
+                    reason="Notify about session timeout",
+                    expected=expected,
+                ))
+                actions.append(RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=in_progress_label,
+                    reason="Session timed out - releasing claim",
+                    expected=expected,
+                ))
+            else:
+                actions.append(AddCommentAction(
+                    number=issue_number,
+                    comment=f"⏱️ **{session_kind.capitalize()} Session Timed Out**\n\n"
+                            f"The {session_kind} session exceeded its timeout and did not produce an outcome.\n\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n\n"
+                            f"The PR remains pending; review will be retried automatically.",
+                    reason=f"Notify about {session_kind} session timeout",
+                    expected=expected,
+                ))
 
         elif status == SessionStatus.FAILED:
             # POLICY: Failure → blocked-failed + comment + release claim
-            actions.append(AddLabelAction(
-                issue_number=issue_number,
-                label=labels.BLOCKED_FAILED,
-                reason="Session failed without completing",
-                expected=expected,
-            ))
-            actions.append(AddCommentAction(
-                number=issue_number,
-                comment=f"❌ **Session Failed**\n\n"
-                        f"The agent session ended without creating a PR or status update.\n\n"
-                        f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
-                        f"- Session: `{session.terminal_id}`\n\n"
-                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
-                        f"Remove the label to allow reprocessing.",
-                reason="Notify about session failure",
-                expected=expected,
-            ))
-            actions.append(RemoveLabelAction(
-                issue_number=issue_number,
-                label=in_progress_label,
-                reason="Session failed - releasing claim",
-                expected=expected,
-            ))
+            if is_issue_session:
+                actions.append(AddLabelAction(
+                    issue_number=issue_number,
+                    label=labels.BLOCKED_FAILED,
+                    reason="Session failed without completing",
+                    expected=expected,
+                ))
+                actions.append(AddCommentAction(
+                    number=issue_number,
+                    comment=f"❌ **Session Failed**\n\n"
+                            f"The agent session ended without creating a PR or status update.\n\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n\n"
+                            f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                            f"Remove the label to allow reprocessing.",
+                    reason="Notify about session failure",
+                    expected=expected,
+                ))
+                actions.append(RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=in_progress_label,
+                    reason="Session failed - releasing claim",
+                    expected=expected,
+                ))
+            else:
+                actions.append(AddCommentAction(
+                    number=issue_number,
+                    comment=f"❌ **{session_kind.capitalize()} Session Failed**\n\n"
+                            f"The {session_kind} session ended without producing a review outcome.\n\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n\n"
+                            f"The PR remains pending; review will be retried automatically.",
+                    reason=f"Notify about {session_kind} session failure",
+                    expected=expected,
+                ))
 
         elif status == SessionStatus.COMPLETED:
             # POLICY: Completion → release in-progress (claim maintained via pr-pending)

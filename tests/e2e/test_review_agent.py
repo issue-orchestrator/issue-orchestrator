@@ -57,7 +57,7 @@ class TestReviewAgentExecution:
         """
         logger.info("Testing full pipeline: dev agent -> review agent")
 
-        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, fail_on_blocked_failed=True)
 
         # Create issue - test_issue_factory adds agent:backend label
         issue = test_issue_factory("[E2E] Review agent test - happy path")
@@ -73,7 +73,10 @@ class TestReviewAgentExecution:
         # Wait for session completion with PR
         from tests.e2e.fixtures.wait_helpers import wait_for_session_completed
         completion_event = await wait_for_session_completed(
-            orchestrator_watcher, str(issue_number), timeout_s=180
+            orchestrator_watcher,
+            str(issue_number),
+            timeout_s=180,
+            fail_on_blocked_failed=True,
         )
         pr_url = completion_event.get("payload", {}).get("pr_url")
         assert pr_url, f"Dev agent completed but no PR created. Event: {completion_event}"

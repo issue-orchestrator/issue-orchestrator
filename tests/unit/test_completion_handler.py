@@ -950,6 +950,30 @@ class TestLabelActionGeneration:
         assert remove_label is not None
         assert remove_label.label == config.get_label_in_progress()
 
+    def test_review_failure_adds_comment_only(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Review failure should not mark issue blocked-failed."""
+        issue = make_issue(number=789)
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="review-123",
+            task_kind=TaskKind.REVIEW,
+        )
+        handler = make_handler(config)
+
+        result = handler.process_completion(session, SessionStatus.FAILED)
+
+        actions = result.actions
+        assert any(isinstance(a, AddCommentAction) for a in actions)
+        assert not any(
+            isinstance(a, AddLabelAction) and a.label == labels.BLOCKED_FAILED
+            for a in actions
+        )
+        assert not any(isinstance(a, RemoveLabelAction) for a in actions)
+
     def test_completed_only_removes_in_progress_label(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

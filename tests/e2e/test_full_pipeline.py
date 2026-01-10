@@ -53,7 +53,12 @@ class TestConcurrentPipeline:
         issues = []
         created_prs = []
         start_time = time.time()
-        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
+        flow = E2EFlow(
+            repo=repo_name,
+            watcher=orchestrator_watcher,
+            filter_label=filter_label,
+            fail_on_blocked_failed=True,
+        )
 
         logger.info("=== Testing %d issues concurrently ===", num_issues)
         logger.info("Filter label: %s", filter_label)

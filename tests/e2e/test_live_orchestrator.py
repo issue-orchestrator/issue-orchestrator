@@ -45,7 +45,7 @@ class TestLiveOrchestratorLifecycle:
         4. PR is created
         5. Completion comment is posted
         """
-        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, fail_on_blocked_failed=True)
 
         # Create issue scoped to this test
         issue = test_issue_factory("[E2E] Issue to completion test")
@@ -145,7 +145,7 @@ class TestLabelDetection:
         if dry_run:
             pytest.skip("Blocked label detection not applicable in dry-run mode")
 
-        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, fail_on_blocked_failed=True)
         issue = test_issue_factory("[E2E] Blocked label detection test")
         issue_number = int(issue.stable_id())
 
