@@ -56,6 +56,13 @@ class SubprocessCommandRunner:
                 stderr=stderr,
                 timed_out=True,
             )
+        except FileNotFoundError as exc:
+            return CommandResult(
+                returncode=127,
+                stdout="",
+                stderr=str(exc),
+                timed_out=False,
+            )
 
 
 @dataclass
