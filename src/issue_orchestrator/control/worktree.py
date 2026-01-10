@@ -78,7 +78,7 @@ class Worktree:
             raise WorktreePreparationError(
                 self.path,
                 self.issue_number,
-                f"Cannot delete stale files in worktree {self.path}: {e}",
+                f"Cannot delete stale files in worktree {self.path.name}: {e}",
             ) from e
 
         if removed_completions or removed_identities:
@@ -107,7 +107,11 @@ class Worktree:
             return removed
 
         for file_path in self._orchestrator_dir.glob(pattern):
-            file_path.unlink()  # Raises OSError on failure - don't swallow it
+            try:
+                file_path.unlink()
+            except FileNotFoundError:
+                # Another process may have removed it between glob and unlink.
+                continue
             removed.append(file_path)
 
         return removed

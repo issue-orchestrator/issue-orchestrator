@@ -103,11 +103,12 @@ def _escape_claude_project_path(path: Path) -> str:
 
 def _build_worktree_error_comment(error: WorktreePreparationError) -> str:
     """Build a comment explaining the worktree preparation failure."""
+    safe_path = error.path.name
     return (
         f"## Worktree Preparation Failed\n\n"
         f"The orchestrator could not prepare the worktree for this issue.\n\n"
         f"**Error:** {error}\n\n"
-        f"**Worktree path:** `{error.path}`\n\n"
+        f"**Worktree path:** `{safe_path}`\n\n"
         f"This usually means stale files from a previous session could not be deleted. "
         f"Please manually check and clean the worktree, then remove the `blocked-needs-human` label "
         f"to allow the orchestrator to retry."
