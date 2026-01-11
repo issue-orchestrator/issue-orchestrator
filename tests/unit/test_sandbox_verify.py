@@ -4,8 +4,8 @@ import os
 import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-import subprocess
+from unittest.mock import patch
+from issue_orchestrator.ports.git import GitError, GitResult
 
 from issue_orchestrator.execution.sandbox_verify import (
     VerificationResult,
@@ -28,24 +28,27 @@ class TestVerifyGitPushFails:
 
     def test_passes_when_push_fails(self, temp_worktree):
         """Test passes when git push fails."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=128)
+        with patch("issue_orchestrator.execution.sandbox_verify.GitCLI.run") as mock_run:
+            mock_run.return_value = GitResult(argv=["git"], returncode=128, stdout="", stderr="")
             result = verify_git_push_fails(temp_worktree)
             assert result.passed is True
             assert "fails" in result.message.lower()
 
     def test_fails_when_push_succeeds(self, temp_worktree):
         """Test fails when git push would succeed."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
+        with patch("issue_orchestrator.execution.sandbox_verify.GitCLI.run") as mock_run:
+            mock_run.return_value = GitResult(argv=["git"], returncode=0, stdout="", stderr="")
             result = verify_git_push_fails(temp_worktree)
             assert result.passed is False
             assert "succeeded" in result.message.lower()
 
     def test_warning_on_timeout(self, temp_worktree):
         """Test returns warning on timeout."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=10)
+        with patch("issue_orchestrator.execution.sandbox_verify.GitCLI.run") as mock_run:
+            mock_run.side_effect = GitError(
+                GitResult(argv=["git"], returncode=-1, stdout="", stderr=""),
+                message="git command timed out",
+            )
             result = verify_git_push_fails(temp_worktree)
             assert result.passed is False
             assert result.critical is False  # Warning, not critical
@@ -103,9 +106,9 @@ class TestVerifySandbox:
 
     def test_all_pass_returns_all_passed(self, temp_worktree):
         """Test all_passed is True when all checks pass."""
-        with patch("subprocess.run") as mock_run:
+        with patch("issue_orchestrator.execution.sandbox_verify.GitCLI.run") as mock_run:
             # git push fails (good)
-            mock_run.return_value = MagicMock(returncode=1)
+            mock_run.return_value = GitResult(argv=["git"], returncode=1, stdout="", stderr="")
             with patch.dict(os.environ, {"HOME": str(temp_worktree)}, clear=True):
                 result = verify_sandbox(worktree=temp_worktree)
                 assert result.all_passed is True
@@ -113,9 +116,9 @@ class TestVerifySandbox:
 
     def test_critical_failure_returns_not_passed(self, temp_worktree):
         """Test all_passed is False when critical check fails."""
-        with patch("subprocess.run") as mock_run:
+        with patch("issue_orchestrator.execution.sandbox_verify.GitCLI.run") as mock_run:
             # git push succeeds (bad)
-            mock_run.return_value = MagicMock(returncode=0)
+            mock_run.return_value = GitResult(argv=["git"], returncode=0, stdout="", stderr="")
             with patch.dict(os.environ, {}, clear=True):
                 result = verify_sandbox(worktree=temp_worktree)
                 assert result.all_passed is False
@@ -123,9 +126,9 @@ class TestVerifySandbox:
 
     def test_warning_does_not_fail(self, temp_worktree):
         """Test warnings don't cause all_passed to be False."""
-        with patch("subprocess.run") as mock_run:
+        with patch("issue_orchestrator.execution.sandbox_verify.GitCLI.run") as mock_run:
             # Critical checks pass
-            mock_run.return_value = MagicMock(returncode=1)
+            mock_run.return_value = GitResult(argv=["git"], returncode=1, stdout="", stderr="")
             # But HOME is not isolated (warning)
             with patch.dict(os.environ, {"HOME": "/other/path"}, clear=True):
                 result = verify_sandbox(
@@ -151,8 +154,8 @@ class TestVerifySandbox:
 
     def test_summary_includes_failures(self, temp_worktree):
         """Test summary lists failed checks."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)  # git push succeeds (bad)
+        with patch("issue_orchestrator.execution.sandbox_verify.GitCLI.run") as mock_run:
+            mock_run.return_value = GitResult(argv=["git"], returncode=0, stdout="", stderr="")
             with patch.dict(os.environ, {"GH_TOKEN": "secret"}, clear=True):
                 result = verify_sandbox(
                     worktree=temp_worktree,

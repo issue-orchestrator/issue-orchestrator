@@ -90,6 +90,12 @@ def _check_guardrails_in_worktree(
         env = os.environ.copy()
         env["PATH"] = f"{wrapper_dir}:{env.get('PATH', '')}"
         env.pop("ORCHESTRATOR_GH_AUTH", None)  # Ensure no auth token
+        git = None
+        try:
+            from ..adapters.git.git_cli import GitCLI
+            git = GitCLI(runner=runner)
+        except Exception:
+            git = None
 
         # Helper to run a guardrail test
         def test_blocked(cmd: list[str], name: str, detail_ok: str, detail_fail: str) -> Check:
@@ -111,6 +117,46 @@ def _check_guardrails_in_worktree(
             else:
                 debug_info = f"rc={result.returncode}, stderr={result.stderr[:200] if result.stderr else 'empty'}"
                 return Check(name=name, status="error", detail=f"{detail_fail} [{debug_info}]")
+
+        def test_git_blocked() -> Check:
+            if git is None:
+                return Check(
+                    name="Git Push Guard",
+                    status="error",
+                    detail="GitCLI unavailable",
+                )
+            try:
+                git_result = git.run(
+                    worktree_path,
+                    ["push"],
+                    env=env,
+                    timeout_s=5,
+                    check=False,
+                )
+            except Exception as exc:
+                if "git command timed out" in str(exc):
+                    return Check(
+                        name="Git Push Guard",
+                        status="warning",
+                        detail="Check timed out",
+                    )
+                return Check(
+                    name="Git Push Guard",
+                    status="error",
+                    detail=f"git push failed unexpectedly: {exc}",
+                )
+            if "BLOCKED" in git_result.stderr:
+                return Check(
+                    name="Git Push Guard",
+                    status="ok",
+                    detail="git push correctly blocked",
+                )
+            debug_info = f"rc={git_result.returncode}, stderr={git_result.stderr[:200] if git_result.stderr else 'empty'}"
+            return Check(
+                name="Git Push Guard",
+                status="error",
+                detail=f"git push was NOT blocked - guardrail failed [{debug_info}]",
+            )
 
         # Check 1: gh pr create is blocked
         # Use traceable strings so if guardrail fails, we know the source
@@ -146,12 +192,7 @@ def _check_guardrails_in_worktree(
         ))
 
         # Check 5: git push is blocked
-        checks.append(test_blocked(
-            ["git", "push"],
-            "Git Push Guard",
-            "git push correctly blocked",
-            "git push was NOT blocked - guardrail failed",
-        ))
+        checks.append(test_git_blocked())
 
         # Check 6: agent-done is available
         result = runner.run(
@@ -518,26 +559,31 @@ def run_doctor(
     # (agent worktrees will branch from main, not inherit these changes)
     if runner:
         repo_root = Path.cwd()
-        status_result = runner.run(
-            ["git", "status", "--porcelain"],
-            cwd=repo_root,
-            timeout_seconds=10,
-        )
-        if status_result.returncode == 0:
-            has_uncommitted = bool(status_result.stdout.strip())
-            if has_uncommitted:
-                result.checks.append(Check(
-                    name="Working Directory",
-                    status="warning",
-                    detail="Uncommitted changes (won't affect agent worktrees - they branch from main)",
-                ))
+        try:
+            from ..adapters.git.git_cli import GitCLI
+            git = GitCLI(runner=runner)
+            status_result = git.run(repo_root, ["status", "--porcelain"], timeout_s=10, check=False)
+            if status_result.returncode == 0:
+                has_uncommitted = bool(status_result.stdout.strip())
+                if has_uncommitted:
+                    result.checks.append(Check(
+                        name="Working Directory",
+                        status="warning",
+                        detail="Uncommitted changes (won't affect agent worktrees - they branch from main)",
+                    ))
+                else:
+                    result.checks.append(Check(
+                        name="Working Directory",
+                        status="ok",
+                        detail="Clean",
+                    ))
             else:
                 result.checks.append(Check(
                     name="Working Directory",
-                    status="ok",
-                    detail="Clean",
+                    status="info",
+                    detail="Could not check git status",
                 ))
-        else:
+        except Exception:
             result.checks.append(Check(
                 name="Working Directory",
                 status="info",

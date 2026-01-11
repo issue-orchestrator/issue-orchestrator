@@ -23,6 +23,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from ...adapters.git.git_cli import GitCLI, SubprocessCommandRunner
+
 logger = logging.getLogger(__name__)
 
 # Location of bundled hook templates (3 levels up from infra/hooks/hooks.py)
@@ -445,54 +447,26 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
         # Create temp git repo setup for testing
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
+            git = GitCLI(runner=SubprocessCommandRunner(), default_timeout_s=30)
 
             # Create a bare repo to act as "remote"
             bare_repo = tmppath / "remote.git"
             bare_repo.mkdir()
-            subprocess.run(
-                ["git", "init", "--bare"],
-                cwd=bare_repo,
-                capture_output=True,
-                check=True,
-            )
+            git.run(bare_repo, ["init", "--bare"])
 
             # Create working repo cloned from bare
             work_repo = tmppath / "work"
-            subprocess.run(
-                ["git", "clone", str(bare_repo), str(work_repo)],
-                capture_output=True,
-                check=True,
-            )
+            git.run(tmppath, ["clone", str(bare_repo), str(work_repo)])
 
             # Configure git user for commit
-            subprocess.run(
-                ["git", "config", "user.email", "test@test.com"],
-                cwd=work_repo,
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.name", "Test User"],
-                cwd=work_repo,
-                capture_output=True,
-                check=True,
-            )
+            git.run(work_repo, ["config", "user.email", "test@test.com"])
+            git.run(work_repo, ["config", "user.name", "Test User"])
 
             # Create a commit to push
             test_file = work_repo / "test.txt"
             test_file.write_text("test content\n")
-            subprocess.run(
-                ["git", "add", "test.txt"],
-                cwd=work_repo,
-                capture_output=True,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", "test commit"],
-                cwd=work_repo,
-                capture_output=True,
-                check=True,
-            )
+            git.run(work_repo, ["add", "test.txt"])
+            git.run(work_repo, ["commit", "-m", "test commit"])
 
             # Copy hooks from project_root to work_repo
             src_hooks_dir = project_root / ".claude"

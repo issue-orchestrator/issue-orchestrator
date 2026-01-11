@@ -47,6 +47,7 @@ from issue_orchestrator.ports.repository_host import RepositoryHost
 from issue_orchestrator.ports.issue_resolver import IssueResolver
 from issue_orchestrator.ports.worktree_manager import WorktreeManager, WorktreeInfo
 from issue_orchestrator.ports.command_runner import CommandRunner, CommandResult, NullCommandRunner
+from issue_orchestrator.ports.git import Git, GitResult, GitError
 from issue_orchestrator.ports.hook_verifier import HookVerifier, HookVerificationResult
 from issue_orchestrator.ports.terminal_observer import TerminalObserver, NullTerminalObserver
 
@@ -90,6 +91,9 @@ __all__ = [
     "CommandRunner",
     "CommandResult",
     "NullCommandRunner",
+    "Git",
+    "GitResult",
+    "GitError",
     "HookVerifier",
     "HookVerificationResult",
     # Terminal process observation

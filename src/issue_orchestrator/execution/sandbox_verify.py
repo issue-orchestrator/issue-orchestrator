@@ -11,12 +11,14 @@ the agent cannot perform privileged operations.
 
 import logging
 import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from ..adapters.git.git_cli import GitCLI
 from ..control.isolation import verify_env_scrubbed
+from ..execution.command_runner import LocalCommandRunner
+from ..ports.git import GitError
 
 logger = logging.getLogger(__name__)
 
@@ -57,15 +59,21 @@ def verify_git_push_fails(worktree: Path) -> VerificationResult:
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_ASKPASS"] = "/bin/false"
 
-        result = subprocess.run(
-            ["git", "push", "--dry-run"],
-            cwd=worktree,
-            capture_output=True,
-            text=True,
+        git = GitCLI(runner=LocalCommandRunner())
+        result = git.run(
+            worktree,
+            ["push", "--dry-run"],
             env=env,
-            timeout=10,
+            timeout_s=10,
+            check=False,
         )
 
+        if result.returncode == -1:
+            return VerificationResult(
+                name="git_push_fails",
+                passed=False,
+                message=f"Error checking git push: {result.stderr or 'unknown error'}",
+            )
         if result.returncode != 0:
             return VerificationResult(
                 name="git_push_fails",
@@ -78,18 +86,18 @@ def verify_git_push_fails(worktree: Path) -> VerificationResult:
                 passed=False,
                 message="git push --dry-run succeeded - agent could push directly",
             )
-    except subprocess.TimeoutExpired:
+    except GitError as exc:
+        if "git command timed out" in str(exc):
+            return VerificationResult(
+                name="git_push_fails",
+                passed=False,
+                message="git push --dry-run timed out (may be prompting for credentials)",
+                critical=False,
+            )
         return VerificationResult(
             name="git_push_fails",
             passed=False,
-            message="git push --dry-run timed out (may be prompting for credentials)",
-            critical=False,
-        )
-    except Exception as e:
-        return VerificationResult(
-            name="git_push_fails",
-            passed=False,
-            message=f"Error checking git push: {e}",
+            message=f"Error checking git push: {exc}",
         )
 
 

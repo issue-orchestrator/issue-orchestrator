@@ -129,17 +129,9 @@ def _get_repository_host(repo: str):
 
 def run_git(args: list[str], cwd: Path | None = None) -> tuple[bool, str]:
     """Run git command, return (success, output)."""
-    try:
-        result = subprocess.run(
-            ["git"] + args,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            cwd=cwd,
-        )
-        return result.returncode == 0, result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False, ""
+    from ...execution.git_tools import run_git as run_git_impl
+
+    return run_git_impl(args, cwd)
 
 
 def check_prerequisites() -> dict[str, bool]:
