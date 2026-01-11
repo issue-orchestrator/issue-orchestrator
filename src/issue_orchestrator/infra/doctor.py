@@ -90,12 +90,6 @@ def _check_guardrails_in_worktree(
         env = os.environ.copy()
         env["PATH"] = f"{wrapper_dir}:{env.get('PATH', '')}"
         env.pop("ORCHESTRATOR_GH_AUTH", None)  # Ensure no auth token
-        git = None
-        try:
-            from ..adapters.git.git_cli import GitCLI
-            git = GitCLI(runner=runner)
-        except Exception:
-            git = None
 
         # Helper to run a guardrail test
         def test_blocked(cmd: list[str], name: str, detail_ok: str, detail_fail: str) -> Check:
@@ -118,45 +112,13 @@ def _check_guardrails_in_worktree(
                 debug_info = f"rc={result.returncode}, stderr={result.stderr[:200] if result.stderr else 'empty'}"
                 return Check(name=name, status="error", detail=f"{detail_fail} [{debug_info}]")
 
-        def test_git_blocked() -> Check:
-            if git is None:
-                return Check(
-                    name="Git Push Guard",
-                    status="error",
-                    detail="GitCLI unavailable",
-                )
-            try:
-                git_result = git.run(
-                    worktree_path,
-                    ["push"],
-                    env=env,
-                    timeout_s=5,
-                    check=False,
-                )
-            except Exception as exc:
-                if "git command timed out" in str(exc):
-                    return Check(
-                        name="Git Push Guard",
-                        status="warning",
-                        detail="Check timed out",
-                    )
-                return Check(
-                    name="Git Push Guard",
-                    status="error",
-                    detail=f"git push failed unexpectedly: {exc}",
-                )
-            if "BLOCKED" in git_result.stderr:
-                return Check(
-                    name="Git Push Guard",
-                    status="ok",
-                    detail="git push correctly blocked",
-                )
-            debug_info = f"rc={git_result.returncode}, stderr={git_result.stderr[:200] if git_result.stderr else 'empty'}"
-            return Check(
-                name="Git Push Guard",
-                status="error",
-                detail=f"git push was NOT blocked - guardrail failed [{debug_info}]",
-            )
+        # Check: git push is blocked (uses wrapper script via PATH, not GitCLI)
+        checks.append(test_blocked(
+            ["git", "push"],
+            "Git Push Guard",
+            "git push correctly blocked",
+            "git push was NOT blocked - guardrail failed",
+        ))
 
         # Check 1: gh pr create is blocked
         # Use traceable strings so if guardrail fails, we know the source
@@ -191,8 +153,6 @@ def _check_guardrails_in_worktree(
             "gh issue create was NOT blocked - guardrail failed",
         ))
 
-        # Check 5: git push is blocked
-        checks.append(test_git_blocked())
 
         # Check 6: agent-done is available
         result = runner.run(
