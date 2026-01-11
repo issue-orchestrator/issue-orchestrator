@@ -304,6 +304,103 @@ async def shutdown() -> JSONResponse:
     return JSONResponse({"status": "shutdown_requested"})
 
 
+@control_app.post("/api/preflight-push")
+async def preflight_push(request: Request) -> JSONResponse:
+    """Check if a git push would succeed (dry-run).
+
+    This endpoint allows agent-done to verify a push would work before
+    completing, while the agent is still active and can fix any issues.
+
+    The agent environment has credentials scrubbed, so it cannot do this
+    check itself. The orchestrator has credentials and performs the check.
+
+    JSON body:
+        worktree: str - Path to the worktree
+        branch: str (optional) - Branch name (auto-detected if not provided)
+
+    Returns:
+        would_succeed: bool - Whether push would succeed
+        error: str | null - Error message if push would fail
+        fix_hint: str | null - Suggestion for how to fix the issue
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    worktree_path = body.get("worktree")
+    if not worktree_path:
+        return JSONResponse({"error": "worktree is required"}, status_code=400)
+
+    worktree = Path(worktree_path)
+    if not worktree.exists():
+        return JSONResponse({"error": f"Worktree does not exist: {worktree}"}, status_code=400)
+
+    # Import here to avoid circular imports
+    from ..execution import GitWorkingCopy
+
+    git = GitWorkingCopy()
+
+    # Get current branch if not provided
+    branch = body.get("branch") or git.get_current_branch(worktree)
+    if not branch:
+        return JSONResponse({
+            "would_succeed": False,
+            "error": "Could not determine current branch",
+            "fix_hint": "Ensure you are on a branch, not in detached HEAD state",
+        })
+
+    # Do a dry-run push to check if it would succeed
+    import subprocess
+
+    try:
+        # Use the real git with credentials (not the wrapper)
+        result = subprocess.run(
+            ["git", "push", "--dry-run", "--force-with-lease", "-u", "origin", branch],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if result.returncode == 0:
+            return JSONResponse({
+                "would_succeed": True,
+                "error": None,
+                "fix_hint": None,
+            })
+        else:
+            error_msg = result.stderr.strip()
+            fix_hint = None
+
+            # Provide specific hints based on error type
+            if "stale info" in error_msg or "rejected" in error_msg:
+                fix_hint = "Branch has diverged. Run: git fetch origin && git rebase origin/main"
+            elif "no upstream" in error_msg.lower():
+                fix_hint = "No upstream branch set. This should be handled automatically."
+            elif "permission denied" in error_msg.lower() or "authentication" in error_msg.lower():
+                fix_hint = "Authentication issue - contact orchestrator administrator."
+
+            return JSONResponse({
+                "would_succeed": False,
+                "error": error_msg,
+                "fix_hint": fix_hint,
+            })
+
+    except subprocess.TimeoutExpired:
+        return JSONResponse({
+            "would_succeed": False,
+            "error": "Push check timed out",
+            "fix_hint": "Network or remote issue - retry later",
+        })
+    except Exception as e:
+        return JSONResponse({
+            "would_succeed": False,
+            "error": str(e),
+            "fix_hint": None,
+        })
+
+
 @control_app.post("/control/shutdown")
 async def shutdown_control_center(request: Request) -> JSONResponse:
     """Shutdown the control center server.

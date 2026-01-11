@@ -431,6 +431,62 @@ def run_validation(worktree: Path, verbose: bool = False) -> Optional[AgentGateR
     return result
 
 
+def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[bool, str | None, str | None]:
+    """Check if git push would succeed by calling the orchestrator API.
+
+    The agent environment has git credentials scrubbed, so we can't do this
+    check directly. Instead, we call the orchestrator's API which has credentials.
+
+    Args:
+        worktree: Path to the worktree root
+        verbose: Whether to print status messages
+
+    Returns:
+        Tuple of (would_succeed, error_message, fix_hint)
+    """
+    import urllib.request
+    import urllib.error
+
+    # Get orchestrator port from environment
+    port = os.environ.get("ORCHESTRATOR_API_PORT")
+    if not port:
+        # No port configured - skip preflight check
+        # This happens when running agent-done outside orchestrator context
+        if verbose:
+            print("Note: ORCHESTRATOR_API_PORT not set, skipping push preflight check")
+        return True, None, None
+
+    url = f"http://localhost:{port}/api/preflight-push"
+    payload = json.dumps({"worktree": str(worktree)}).encode("utf-8")
+
+    if verbose:
+        print(f"Checking if push would succeed...")
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            return (
+                result.get("would_succeed", False),
+                result.get("error"),
+                result.get("fix_hint"),
+            )
+    except urllib.error.URLError as e:
+        # Can't reach orchestrator - skip check (maybe running standalone)
+        if verbose:
+            print(f"Note: Could not reach orchestrator API: {e}")
+        return True, None, None
+    except Exception as e:
+        if verbose:
+            print(f"Note: Preflight check failed: {e}")
+        return True, None, None
+
+
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -610,6 +666,29 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     # If validation passed, include the record path in the completion record
     if validation_result and validation_result.passed and validation_result.record_path:
         record.validation_record_path = validation_result.record_path
+
+    # Run preflight push check for statuses that will push
+    # This catches issues like branch divergence while the agent can still fix them
+    statuses_that_push = {AgentStatus.COMPLETED, AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}
+    if status in statuses_that_push:
+        would_succeed, error, fix_hint = run_preflight_push_check(worktree_root, verbose=args.verbose)
+        if not would_succeed:
+            print(f"\n{'='*60}")
+            print("❌ PUSH WOULD FAIL - agent-done cannot complete")
+            print(f"{'='*60}")
+            print(f"\nError: {error}")
+            if fix_hint:
+                print(f"\nTo fix: {fix_hint}")
+            print(f"\n{'='*60}")
+            print("Fix the issue above, then run agent-done again.")
+            print(f"{'='*60}")
+
+            if issue_number:
+                logger.info(issue_log(issue_number, "agent-done outcome: status=%s push_preflight=FAILED"), status)
+            else:
+                logger.info("[agent-done] Outcome (standalone): status=%s push_preflight=FAILED", status)
+
+            sys.exit(1)
 
     # Write marker file first (indicates agent-done was called)
     write_marker_file(status)
