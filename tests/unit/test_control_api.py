@@ -965,3 +965,178 @@ class TestSupervisorRejectsNonlocalRepo:
         )
 
         assert response.status_code == 400
+
+
+# --- Test: Preflight Push Endpoint ---
+
+
+class TestPreflightPushEndpoint:
+    """Tests for POST /api/preflight-push endpoint."""
+
+    @pytest.fixture
+    def client(self):
+        """Create a test client (no orchestrator needed for this endpoint)."""
+        return TestClient(control_app)
+
+    def test_rejects_missing_worktree(self, client: TestClient) -> None:
+        """Return 400 when worktree is not provided."""
+        response = client.post(
+            "/api/preflight-push",
+            json={},
+        )
+
+        assert response.status_code == 400
+        assert "worktree is required" in response.json()["error"]
+
+    def test_rejects_nonexistent_worktree(self, client: TestClient) -> None:
+        """Return 400 when worktree path does not exist."""
+        response = client.post(
+            "/api/preflight-push",
+            json={"worktree": "/nonexistent/path"},
+        )
+
+        assert response.status_code == 400
+        assert "does not exist" in response.json()["error"]
+
+    def test_rejects_invalid_json(self, client: TestClient) -> None:
+        """Return 400 when body is not valid JSON."""
+        response = client.post(
+            "/api/preflight-push",
+            content="not json",
+            headers={"Content-Type": "application/json"},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid JSON" in response.json()["error"]
+
+    def test_returns_success_when_push_would_succeed(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return would_succeed=True when dry-run push succeeds."""
+        # Create a fake worktree directory
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+            # Also mock GitWorkingCopy.get_current_branch
+            with patch(
+                "issue_orchestrator.execution.git_working_copy.GitWorkingCopy.get_current_branch"
+            ) as mock_branch:
+                mock_branch.return_value = "test-branch"
+
+                response = client.post(
+                    "/api/preflight-push",
+                    json={"worktree": str(worktree)},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["would_succeed"] is True
+        assert data["error"] is None
+
+    def test_returns_failure_with_stale_info_error(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return would_succeed=False with fix hint for stale info error."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stderr="error: failed to push (stale info)",
+            )
+
+            with patch(
+                "issue_orchestrator.execution.git_working_copy.GitWorkingCopy.get_current_branch"
+            ) as mock_branch:
+                mock_branch.return_value = "test-branch"
+
+                response = client.post(
+                    "/api/preflight-push",
+                    json={"worktree": str(worktree)},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["would_succeed"] is False
+        assert "stale info" in data["error"]
+        assert "git fetch" in data["fix_hint"]
+
+    def test_returns_failure_with_rejected_error(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return would_succeed=False with fix hint for rejected error."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stderr="! [rejected] branch -> branch (non-fast-forward)",
+            )
+
+            with patch(
+                "issue_orchestrator.execution.git_working_copy.GitWorkingCopy.get_current_branch"
+            ) as mock_branch:
+                mock_branch.return_value = "test-branch"
+
+                response = client.post(
+                    "/api/preflight-push",
+                    json={"worktree": str(worktree)},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["would_succeed"] is False
+        assert "rejected" in data["error"]
+        assert data["fix_hint"] is not None
+
+    def test_handles_no_branch_detected(
+        self, client: TestClient, tmp_path: Path
+    ) -> None:
+        """Return error when current branch cannot be determined."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        with patch(
+            "issue_orchestrator.execution.git_working_copy.GitWorkingCopy.get_current_branch"
+        ) as mock_branch:
+            mock_branch.return_value = None
+
+            response = client.post(
+                "/api/preflight-push",
+                json={"worktree": str(worktree)},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["would_succeed"] is False
+        assert "branch" in data["error"].lower()
+
+    def test_handles_timeout(self, client: TestClient, tmp_path: Path) -> None:
+        """Return error when push check times out."""
+        import subprocess
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=30)
+
+            with patch(
+                "issue_orchestrator.execution.git_working_copy.GitWorkingCopy.get_current_branch"
+            ) as mock_branch:
+                mock_branch.return_value = "test-branch"
+
+                response = client.post(
+                    "/api/preflight-push",
+                    json={"worktree": str(worktree)},
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["would_succeed"] is False
+        assert "timed out" in data["error"].lower()

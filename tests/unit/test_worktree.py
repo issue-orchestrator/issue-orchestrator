@@ -1324,6 +1324,7 @@ class TestUpdateWorktreeOntoMain:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
+                MagicMock(returncode=0, stdout="", stderr=""),  # ls-remote (branch not on remote)
                 MagicMock(returncode=0, stdout="", stderr=""),  # rebase
             ]
 
@@ -1331,8 +1332,8 @@ class TestUpdateWorktreeOntoMain:
 
             assert result is True
             # Verify rebase was called
-            assert mock_run.call_count == 3
-            rebase_call = mock_run.call_args_list[2]
+            assert mock_run.call_count == 4
+            rebase_call = mock_run.call_args_list[3]
             assert "rebase" in rebase_call[0][0]
             assert "origin/main" in rebase_call[0][0]
 
@@ -1349,6 +1350,7 @@ class TestUpdateWorktreeOntoMain:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
+                MagicMock(returncode=0, stdout="", stderr=""),  # ls-remote (branch not on remote)
                 MagicMock(returncode=1, stdout="", stderr="CONFLICT"),  # rebase fails
                 MagicMock(returncode=0, stdout="", stderr=""),  # rebase --abort
             ]
@@ -1357,7 +1359,7 @@ class TestUpdateWorktreeOntoMain:
 
             assert result is False
             # Verify rebase --abort was called
-            abort_call = mock_run.call_args_list[3]
+            abort_call = mock_run.call_args_list[4]
             assert "rebase" in abort_call[0][0]
             assert "--abort" in abort_call[0][0]
 
@@ -1384,6 +1386,65 @@ class TestUpdateWorktreeOntoMain:
             pull_call = mock_run.call_args_list[2]
             assert "pull" in pull_call[0][0]
             assert "--ff-only" in pull_call[0][0]
+
+    def test_skip_rebase_when_branch_exists_on_remote(self, tmp_path):
+        """Test that rebase is skipped if branch already exists on remote.
+
+        When a branch has been pushed before, we should skip rebasing to
+        avoid diverging from the pushed commits. The agent can handle
+        updating from main if needed.
+        """
+        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),  # fetch origin main
+                MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
+                # ls-remote finds the branch on remote
+                MagicMock(returncode=0, stdout="abc123\trefs/heads/feature-branch\n", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),  # fetch origin feature-branch
+            ]
+
+            result = _update_worktree_onto_main(worktree, repo_root)
+
+            assert result is True
+            # Verify rebase was NOT called
+            assert mock_run.call_count == 4
+            call_commands = [call[0][0] for call in mock_run.call_args_list]
+            # Should have: fetch main, rev-parse, ls-remote, fetch branch
+            # Should NOT have: rebase
+            for cmd in call_commands:
+                assert "rebase" not in cmd
+
+    def test_rebase_when_branch_not_on_remote(self, tmp_path):
+        """Test that rebase proceeds when branch doesn't exist on remote."""
+        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),  # fetch origin main
+                MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
+                # ls-remote returns empty - branch not on remote
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),  # rebase
+            ]
+
+            result = _update_worktree_onto_main(worktree, repo_root)
+
+            assert result is True
+            # Verify rebase WAS called
+            rebase_call = mock_run.call_args_list[3]
+            assert "rebase" in rebase_call[0][0]
 
 
 # =============================================================================
