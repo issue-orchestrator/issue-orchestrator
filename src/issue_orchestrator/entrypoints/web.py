@@ -307,6 +307,10 @@ async def dashboard(
 
                 # Check if issue is blocked (has blocking labels or dependency problems)
                 dep_problem = state.dependency_problems.get(issue.number)
+                blocked_summary = _blocked_summary(
+                    list(issue.labels),
+                    dep_problem.summary if dep_problem else None,
+                )
                 is_blocked = issue.is_blocked or dep_problem is not None
                 agent_label = (issue.agent_type or "unknown").replace("agent:", "")
                 if is_blocked:
@@ -332,11 +336,6 @@ async def dashboard(
                     flow_stage = "queued"
                 flow_steps = _flow_steps_for(flow_stage)
                 flow_stage_label = _flow_stage_label(flow_steps, flow_stage)
-
-                blocked_summary = _blocked_summary(
-                    list(issue.labels),
-                    dep_problem.summary if dep_problem else None,
-                )
 
                 item = {
                     "issue_number": issue.number,
