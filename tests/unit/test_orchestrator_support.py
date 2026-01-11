@@ -30,7 +30,12 @@ from issue_orchestrator.control.reconciliation import (
     ExternalSnapshot,
     get_pause_label,
 )
-from issue_orchestrator.control.actions import ActionType, AddLabelAction, LaunchSessionAction
+from issue_orchestrator.control.actions import (
+    ActionResult,
+    ActionType,
+    AddLabelAction,
+    LaunchSessionAction,
+)
 from issue_orchestrator.control.health_gate import HealthGate, HealthDecision
 from issue_orchestrator.domain.models import (
     Issue,
@@ -579,6 +584,21 @@ class TestOrchestratorSupportApplyPlan:
         # Should have emitted APPLY_FAILED
         event_names = [e.name for e in mock_event_sink.events]
         assert EventName.APPLY_FAILED in event_names
+
+    def test_failed_label_action_marks_failed_this_cycle(self, support, sample_orchestrator_state):
+        """Label mutation failures mark the issue failed_this_cycle."""
+        action = AddLabelAction(issue_number=42, label="in-progress")
+        plan = MagicMock()
+        plan.action_count = 1
+        plan.actions = [action]
+
+        support.action_applier.apply = Mock(
+            return_value=ActionResult.fail(action, "boom")
+        )
+
+        support._apply_plan(plan, Mock())
+
+        assert 42 in sample_orchestrator_state.failed_this_cycle
 
 
 # =============================================================================

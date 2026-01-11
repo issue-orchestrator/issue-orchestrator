@@ -109,6 +109,7 @@ class CleanupManager:
         for pending in pending_cleanups:
             if pending.pr_number in reviewed_pr_numbers:
                 logger.info(f"[CLEANUP] PR #{pending.pr_number} has '{cleanup_label}' label - cleaning up")
+                cleanup_succeeded = True
 
                 # Close terminal session if configured
                 close_tabs = (
@@ -122,6 +123,7 @@ class CleanupManager:
                         logger.info(f"[CLEANUP] Closed terminal session for #{pending.issue_number}")
                     except Exception as e:
                         logger.warning(f"[CLEANUP] Failed to close session for #{pending.issue_number}: {e}")
+                        cleanup_succeeded = False
 
                 # Remove worktree if configured
                 remove_wt = (
@@ -135,8 +137,15 @@ class CleanupManager:
                         logger.info(f"[CLEANUP] Removed worktree for #{pending.issue_number}")
                     except Exception as e:
                         logger.warning(f"[CLEANUP] Failed to remove worktree for #{pending.issue_number}: {e}")
+                        cleanup_succeeded = False
 
-                cleanups_to_remove.append(pending)
+                if cleanup_succeeded:
+                    cleanups_to_remove.append(pending)
+                else:
+                    logger.warning(
+                        "[CLEANUP] Cleanup incomplete for #%d - leaving pending for retry",
+                        pending.issue_number,
+                    )
 
         # Remove processed cleanups
         remaining = [c for c in pending_cleanups if c not in cleanups_to_remove]

@@ -191,6 +191,23 @@ class OrchestratorSupport:
         failed_count = 0
 
         from .actions import ActionType
+        failed_actions_mark_issue = {
+            ActionType.ADD_LABEL,
+            ActionType.REMOVE_LABEL,
+            ActionType.SYNC_LABELS,
+            ActionType.ADD_COMMENT,
+        }
+
+        def _resolve_issue_number(action: "Action") -> int | None:
+            issue_number = getattr(action, "issue_number", None)
+            if issue_number is not None:
+                return issue_number
+            number = getattr(action, "number", None)
+            if number is None:
+                return None
+            if getattr(action, "is_pr", False):
+                return None
+            return number
 
         for action in plan.actions:
             if self.state.paused:
@@ -224,6 +241,15 @@ class OrchestratorSupport:
                 else:
                     failed_count += 1
                     logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
+                    if action.action_type in failed_actions_mark_issue:
+                        issue_number = _resolve_issue_number(action)
+                        if issue_number is not None:
+                            self.state.failed_this_cycle.add(issue_number)
+                            logger.info(
+                                "[PLAN] Marked issue #%d failed_this_cycle due to %s failure",
+                                issue_number,
+                                action.action_type.value,
+                            )
                     if action.action_type.value == "create_triage_issue":
                         try:
                             self._cleanup_manager.mark_triage_issue_failure()
