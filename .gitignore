@@ -43,9 +43,14 @@ Thumbs.db
 # Project specific - local state files
 .issue-orchestrator/validation/
 .issue-orchestrator/completion.json
+.issue-orchestrator/completion-*.json
 .issue-orchestrator/state_machines.json
 .issue-orchestrator/lock.json
 .issue-orchestrator/state/
+.issue-orchestrator/session.log
+.issue-orchestrator/pane.log
+.issue-orchestrator/session-identity-*.json
+.issue-orchestrator/failure-diagnostic-*.json
 .agent-done-marker
 
 # Keep .issue-orchestrator/config/ tracked - it's project configuration
