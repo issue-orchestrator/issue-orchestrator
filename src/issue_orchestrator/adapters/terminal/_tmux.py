@@ -626,7 +626,7 @@ class TmuxManager:
                 "if command -v ansifilter >/dev/null 2>&1; then ansifilter; "
                 "else sed -E 's/\\x1b\\[[0-9;]*[a-zA-Z]//g'; fi"
             )
-            pane.cmd("pipe-pane", "-o", f"exec cat - | {filter_cmd} >> '{log_file}'")
+            pane.cmd("pipe-pane", "-o", f"exec cat - | {filter_cmd} > '{log_file}'")
             logger.debug("[TMUX] Enabled pane logging to %s", log_file)
         except Exception as e:
             logger.warning("[TMUX] Failed to enable pane logging: %s", e)
