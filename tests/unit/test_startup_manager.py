@@ -189,6 +189,7 @@ class TestStartupManagerInProgressIssues:
         startup_manager,
         sample_state,
         mock_action_applier,
+        mock_repository_host,
         mock_config,
     ):
         """Test that orphaned in-progress labels are cleared."""
@@ -221,6 +222,7 @@ class TestStartupManagerInProgressIssues:
         startup_manager,
         sample_state,
         mock_action_applier,
+        mock_repository_host,
         mock_config,
     ):
         """Test that issues with open PRs get pr-pending label and in-progress removed (S2 crash recovery)."""
