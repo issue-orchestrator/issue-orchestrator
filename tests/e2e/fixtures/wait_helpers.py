@@ -9,6 +9,13 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from issue_orchestrator.testing.asyncdsl import OrchestratorWatcher
 
+from issue_orchestrator.infra import labels
+
+
+def _raise_if_blocked_failed(issue_view: Any | None, issue_key: str) -> None:
+    if issue_view and labels.BLOCKED_FAILED in issue_view.labels:
+        raise AssertionError(f"Issue {issue_key} hit {labels.BLOCKED_FAILED} while waiting")
+
 
 async def wait_for_file_with_content(
     file_path: Path,
@@ -67,11 +74,15 @@ async def wait_for_issue_seen(
     watcher: "OrchestratorWatcher",
     issue_key: str,
     timeout_s: float,
+    fail_on_blocked_failed: bool = False,
 ) -> None:
     """Wait for an issue to appear via SSE events (queue.changed)."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if issue_key in watcher.view.issues:
+        issue_view = watcher.view.issues.get(issue_key)
+        if fail_on_blocked_failed:
+            _raise_if_blocked_failed(issue_view, issue_key)
+        if issue_view:
             return
         try:
             await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
@@ -85,11 +96,14 @@ async def wait_for_session_started(
     watcher: "OrchestratorWatcher",
     issue_key: str,
     timeout_s: float,
+    fail_on_blocked_failed: bool = False,
 ) -> None:
     """Wait until a session starts (in-progress label or PR created)."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         issue_view = watcher.view.issues.get(issue_key)
+        if fail_on_blocked_failed:
+            _raise_if_blocked_failed(issue_view, issue_key)
         if issue_view:
             if "in-progress" in issue_view.labels or issue_view.pr.number is not None:
                 return
@@ -106,11 +120,14 @@ async def wait_for_issue_label_snapshot(
     issue_key: str,
     label: str,
     timeout_s: float,
+    fail_on_blocked_failed: bool = False,
 ) -> None:
     """Wait for a label to appear on an issue via SSE events."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         issue_view = watcher.view.issues.get(issue_key)
+        if fail_on_blocked_failed:
+            _raise_if_blocked_failed(issue_view, issue_key)
         if issue_view and label in issue_view.labels:
             return
         try:
@@ -125,6 +142,7 @@ async def wait_for_session_completed(
     watcher: "OrchestratorWatcher",
     issue_key: str,
     timeout_s: float,
+    fail_on_blocked_failed: bool = False,
 ) -> dict:
     """Wait for a session.completed or session.processing_completed event.
 
@@ -152,6 +170,9 @@ async def wait_for_session_completed(
     }
 
     while time.monotonic() < deadline:
+        if fail_on_blocked_failed:
+            issue_view = watcher.view.issues.get(issue_key)
+            _raise_if_blocked_failed(issue_view, issue_key)
         # Check all global events for session completion
         for event in watcher.view.global_events:
             etype = event.get("type", "")

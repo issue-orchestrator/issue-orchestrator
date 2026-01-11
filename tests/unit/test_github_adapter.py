@@ -375,6 +375,20 @@ class TestLabelOperations:
         # Verification should be called
         mock_verification_service.verify_condition.assert_called_once()
 
+    def test_add_label_verifies_with_fresh_read(self, adapter, mock_http_client, mock_verification_service):
+        """Test that add_label verification uses a fresh (no-cache) label read."""
+        def _verify_condition(*_args, check=None, **_kwargs):
+            assert check is not None
+            check()
+            return (VerificationResult.SUCCESS, None)
+
+        mock_verification_service.verify_condition.side_effect = _verify_condition
+        mock_http_client.get_issue_labels.return_value = ["bug"]
+
+        adapter.add_label(42, "bug")
+
+        mock_http_client.get_issue_labels.assert_any_call(42, use_cache=False)
+
     def test_add_label_invalidates_cache(self, adapter, mock_http_client, mock_verification_service):
         """Test that adding a label invalidates the cache."""
         # Pre-populate cache

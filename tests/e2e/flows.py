@@ -12,6 +12,7 @@ from typing import Callable, Iterable
 import httpx
 
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
+from issue_orchestrator.infra import labels as issue_labels
 
 logger = logging.getLogger(__name__)
 from issue_orchestrator.testing.asyncdsl import (
@@ -129,22 +130,24 @@ async def wait_for_any_pr_label(
     issue_key: str,
     labels: list[str],
     timeout_s: float,
+    fail_on_blocked_failed: bool = False,
 ) -> None:
-    tasks = [
-        asyncio.create_task(
-            watcher.issue(issue_key).pr_has_label(label, timeout_s=timeout_s)
-        )
-        for label in labels
-    ]
-    done, pending = await asyncio.wait(
-        tasks,
-        timeout=timeout_s,
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for task in pending:
-        task.cancel()
-    if not done:
-        raise TimeoutError(f"Timed out waiting for PR labels {labels} on {issue_key}")
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        issue_view = watcher.view.issues.get(issue_key)
+        if fail_on_blocked_failed and issue_view and issue_labels.BLOCKED_FAILED in issue_view.labels:
+            raise AssertionError(
+                f"Issue {issue_key} hit {issue_labels.BLOCKED_FAILED} while waiting for PR labels"
+            )
+        if issue_view and issue_view.pr and issue_view.pr.labels:
+            if any(label in issue_view.pr.labels for label in labels):
+                return
+        try:
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        watcher._notify.clear()
+    raise TimeoutError(f"Timed out waiting for PR labels {labels} on {issue_key}")
 
 
 async def wait_for_issue_with_label(
@@ -254,6 +257,7 @@ class E2EFlow:
     watcher: OrchestratorWatcher | None
     filter_label: str | None = None
     review_timeout_s: float | None = None
+    fail_on_blocked_failed: bool = False
     _created_issues: list[int] = field(default_factory=list, repr=False)
 
     def _control_api_port(self) -> int | None:
@@ -326,24 +330,51 @@ class E2EFlow:
 
     async def issue_seen(self, issue: IssueKey, timeout_s: float = 120) -> None:
         self._refresh_if_needed()
-        await wait_for_issue_seen(self._watcher(), issue.stable_id(), timeout_s=timeout_s)
+        await wait_for_issue_seen(
+            self._watcher(),
+            issue.stable_id(),
+            timeout_s=timeout_s,
+            fail_on_blocked_failed=self.fail_on_blocked_failed,
+        )
 
     async def session_started(self, issue: IssueKey, timeout_s: float = 120) -> None:
         self._refresh_if_needed()
-        await wait_for_session_started(self._watcher(), issue.stable_id(), timeout_s=timeout_s)
+        await wait_for_session_started(
+            self._watcher(),
+            issue.stable_id(),
+            timeout_s=timeout_s,
+            fail_on_blocked_failed=self.fail_on_blocked_failed,
+        )
 
     async def issue_has_label(self, issue: IssueKey, label: str, timeout_s: float = 60) -> None:
         self._refresh_if_needed()
-        await wait_for_issue_label_snapshot(self._watcher(), issue.stable_id(), label, timeout_s=timeout_s)
+        await wait_for_issue_label_snapshot(
+            self._watcher(),
+            issue.stable_id(),
+            label,
+            timeout_s=timeout_s,
+            fail_on_blocked_failed=self.fail_on_blocked_failed,
+        )
 
     async def pr_created(self, issue: IssueKey, timeout_s: float = 120) -> int:
         self._refresh_if_needed()
         watcher = self._watcher()
-        await watcher.issue(issue.stable_id()).has_pr(timeout_s=timeout_s)
-        issue_view = watcher.view.issues.get(issue.stable_id())
-        if not issue_view or not issue_view.pr.number:
-            raise AssertionError(f"PR should be created for issue {issue.stable_id()}")
-        return issue_view.pr.number
+        deadline = time.monotonic() + timeout_s
+        issue_key = issue.stable_id()
+        while time.monotonic() < deadline:
+            issue_view = watcher.view.issues.get(issue_key)
+            if self.fail_on_blocked_failed and issue_view and issue_labels.BLOCKED_FAILED in issue_view.labels:
+                raise AssertionError(
+                    f"Issue {issue_key} hit {issue_labels.BLOCKED_FAILED} while waiting for PR"
+                )
+            if issue_view and issue_view.pr.number:
+                return issue_view.pr.number
+            try:
+                await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                pass
+            watcher._notify.clear()
+        raise TimeoutError(f"Timed out waiting for PR for issue {issue_key}")
 
     async def pr_has_any_label(
         self,
@@ -352,7 +383,13 @@ class E2EFlow:
         timeout_s: float,
     ) -> None:
         self._refresh_if_needed()
-        await wait_for_any_pr_label(self._watcher(), issue.stable_id(), labels, timeout_s=timeout_s)
+        await wait_for_any_pr_label(
+            self._watcher(),
+            issue.stable_id(),
+            labels,
+            timeout_s=timeout_s,
+            fail_on_blocked_failed=self.fail_on_blocked_failed,
+        )
 
     async def review_outcomes_any_of(
         self,

@@ -1,4 +1,4 @@
-.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -21,6 +21,8 @@ help:
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
 	@echo "  test-real-claude-dev    Test dev agent: Claude execution -> PR created"
 	@echo "  test-real-claude-review Test full pipeline: dev agent -> review agent -> approved"
+	@echo "  test-real-gh-labels     Verify label write paths against real GitHub"
+	@echo "  test-real-gh            Run full real-GitHub suite (dev + review + labels)"
 	@echo "  test-web            Run Playwright web UI tests (headless)"
 	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
 	@echo "  playwright-install  Install Playwright browser binaries"
@@ -91,7 +93,7 @@ test-real-claude-dev:
 	@echo "Testing agent-done invocation from Claude..."
 	$(PYTEST) tests/integration/test_claude_execution.py::TestAgentDoneInvocation -v -s --tb=short -x
 	@echo "Testing real Claude execution in tmux mode..."
-	$(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x
+	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x
 	@echo "✓ Dev agent tests passed!"
 
 test-real-claude-review:
@@ -99,6 +101,14 @@ test-real-claude-review:
 	@echo "Note: This test creates REAL PRs (not dry-run)"
 	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_review_agent.py::TestReviewAgentExecution -v -s --tb=short -x
 	@echo "✓ Review agent tests passed!"
+
+test-real-gh-labels:
+	@echo "Testing label write verification against real GitHub..."
+	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_label_write_verification.py::TestLabelWriteVerification -v -s --tb=short -x
+	@echo "✓ Label write verification passed!"
+
+test-real-gh: test-real-claude-dev test-real-claude-review test-real-gh-labels
+	@echo "✓ Real GitHub suite passed!"
 
 # Run a single e2e test by name. Usage: make test-e2e-one TEST=test_code_review_produces_review_comment
 # E2E tests stop on first failure by default
