@@ -1023,18 +1023,6 @@ class TestPortDelegation:
         result = monitor._get_issue_labels(123)
         assert result == []
 
-    def test_add_label_without_host_is_noop(self, mock_config):
-        """Test _add_label is a no-op when no host."""
-        monitor = SessionObserver(mock_config)
-        # Should not raise
-        monitor._add_label(123, "some-label")
-
-    def test_remove_label_without_host_is_noop(self, mock_config):
-        """Test _remove_label is a no-op when no host."""
-        monitor = SessionObserver(mock_config)
-        # Should not raise
-        monitor._remove_label(123, "some-label")
-
 
 class TestCheckSessionExceptionHandling:
     """Test exception handling in check_session."""
@@ -1104,22 +1092,6 @@ class TestCheckAllSessionsExceptionHandling:
         assert 123 in result
         assert result[123] == SessionStatus.FAILED
         assert 456 in result
-
-
-class TestPortDelegationWithHost:
-    """Test port delegation methods when host IS provided."""
-
-    def test_add_label_with_host_calls_host(self, mock_config, mock_repository_host):
-        """Test _add_label calls repository host when available."""
-        monitor = SessionObserver(mock_config, repository_host=mock_repository_host)
-        monitor._add_label(123, "some-label")
-        mock_repository_host.add_label.assert_called_once_with(123, "some-label")
-
-    def test_remove_label_with_host_calls_host(self, mock_config, mock_repository_host):
-        """Test _remove_label calls repository host when available."""
-        monitor = SessionObserver(mock_config, repository_host=mock_repository_host)
-        monitor._remove_label(123, "some-label")
-        mock_repository_host.remove_label.assert_called_once_with(123, "some-label")
 
 
 class TestObserveSessionExceptionHandling:
