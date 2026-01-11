@@ -197,16 +197,20 @@ class SessionLauncher:
         self._refresh_issue = refresh_issue_fn
         self._dependency_evaluator = dependency_evaluator
 
-    def _apply_actions(self, actions: list[Action]) -> None:
+    def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
+        all_ok = True
         for action in actions:
             result = self._action_applier.apply(action)
             if not result.success:
+                all_ok = False
                 logger.warning(
-                    "[launch] Failed to apply %s: %s",
+                    "[launch] Failed to apply %s (%s): %s",
                     action.action_type.value,
+                    context,
                     result.error,
                 )
+        return all_ok
 
     def _write_session_identity(self, worktree_path: Path, payload: dict[str, object]) -> None:
         """Persist session identity details inside the worktree for later review."""
@@ -355,7 +359,7 @@ class SessionLauncher:
                     comment=_build_worktree_error_comment(e),
                     reason="worktree preparation failed",
                 ),
-            ])
+            ], context="worktree_prepare_issue")
             self.events.publish(TraceEvent(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
@@ -408,13 +412,30 @@ class SessionLauncher:
         # Add in-progress label
         step_start = time.time()
         in_progress_label = self.config.get_label_in_progress()
-        self._apply_actions([
+        label_ok = self._apply_actions([
             AddLabelAction(
                 issue_number=issue.number,
                 label=in_progress_label,
                 reason="session launched",
             ),
-        ])
+        ], context="launch_in_progress_label")
+        if not label_ok:
+            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
+            logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
+            self.events.publish(TraceEvent(
+                EventName.SESSION_START_FAILED,
+                {
+                    "issue_number": issue.number,
+                    "session_name": session_name,
+                    "reason": "in_progress_label_failed",
+                },
+            ))
+            try:
+                self._worktree_manager.remove(worktree_path)
+                logger.info(issue_log(issue.number, "Cleaned up worktree after launch failure: %s"), worktree_path)
+            except Exception as e:
+                logger.warning(issue_log(issue.number, "Failed to remove worktree after launch failure: %s"), e)
+            return LaunchResult(None, False, "Failed to add in-progress label")
         label_time = time.time() - step_start
         logger.info("[launch] Label added in %.1fs", label_time)
 
@@ -488,7 +509,7 @@ class SessionLauncher:
                     label=self.config.get_label_in_progress(),
                     reason="session creation failed",
                 ),
-            ])
+            ], context="launch_session_creation_failed")
             return LaunchResult(None, False, "Failed to create terminal session")
 
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
@@ -619,7 +640,7 @@ class SessionLauncher:
                     comment=_build_worktree_error_comment(e),
                     reason="worktree preparation failed",
                 ),
-            ])
+            ], context="worktree_prepare_review")
             self.events.publish(TraceEvent(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
@@ -846,7 +867,7 @@ class SessionLauncher:
                     comment=_build_worktree_error_comment(e),
                     reason="worktree preparation failed",
                 ),
-            ])
+            ], context="worktree_prepare_rework")
             self.events.publish(TraceEvent(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
@@ -984,7 +1005,7 @@ class SessionLauncher:
                 label=self.config.get_label_needs_rework(),
                 reason="rework started",
             ),
-        ])
+        ], context="rework_remove_needs_rework")
         self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
             "pr_number": pr_number,
             "issue_number": issue_number,
@@ -1063,7 +1084,7 @@ class SessionLauncher:
             label=added_label,
             reason="rework cycle update",
         ))
-        self._apply_actions(actions)
+        self._apply_actions(actions, context="rework_cycle_label")
         self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
             "pr_number": pr_number,
             "issue_number": issue_number,

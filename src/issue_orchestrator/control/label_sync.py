@@ -124,8 +124,8 @@ class LabelSync:
             errors=errors,
         )
 
-        # Emit trace event if anything changed
-        if result.changed:
+        # Emit trace event if anything changed or errors occurred
+        if result.changed or result.errors:
             self.events.publish(
                 TraceEvent(
                     EventName.LABELS_SYNCED,
@@ -134,6 +134,7 @@ class LabelSync:
                         "added": list(added),
                         "removed": list(removed),
                         "success": result.success,
+                        "errors": errors,
                     },
                 )
             )
@@ -253,6 +254,16 @@ class LabelSync:
                     logger.info("[LABEL_SYNC] Added '%s' to orphaned PR #%d", code_review_label, pr.number)
                 except Exception as e:
                     logger.warning("[LABEL_SYNC] Failed to reconcile label on PR #%d: %s", pr.number, e)
+                    self.events.publish(
+                        TraceEvent(
+                            EventName.APPLY_FAILED,
+                            {
+                                "step_type": "label_sync_reconcile",
+                                "pr_number": pr.number,
+                                "error": str(e),
+                            },
+                        )
+                    )
 
         if fixed_count > 0:
             logger.info("Reconciled labels on %d orphaned PR(s)", fixed_count)

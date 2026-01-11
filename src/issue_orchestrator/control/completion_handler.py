@@ -451,6 +451,15 @@ class CompletionHandler:
                         )
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
+            self.events.publish(TraceEvent(
+                EventName.APPLY_FAILED,
+                {
+                    "step_type": "review_outcome_check",
+                    "pr_number": pr_number_review,
+                    "issue_number": session.issue.number,
+                    "error": str(e),
+                },
+            ))
 
     def _emit_pr_view_changed(
         self,

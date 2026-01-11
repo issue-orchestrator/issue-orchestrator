@@ -209,6 +209,22 @@ class TestLabelSync:
         assert event.data["issue_number"] == 123
         assert "in-progress" in event.data["added"]
 
+    def test_sync_emits_event_on_errors_without_changes(self, sync, collecting_sink, mock_labels):
+        """Test that sync emits event when errors occur even without changes."""
+        mock_labels.fail_on.add("will-fail")
+
+        sync.sync(
+            issue_number=123,
+            current=set(),
+            desired=DesiredLabels.add("will-fail"),
+        )
+
+        assert len(collecting_sink.events) == 1
+        event = collecting_sink.events[0]
+        assert event.name == "labels.synced"
+        assert event.data["success"] is False
+        assert "errors" in event.data
+
     def test_sync_no_event_when_no_change(self, sync, collecting_sink):
         """Test that sync doesn't emit event when nothing changes."""
         sync.sync(

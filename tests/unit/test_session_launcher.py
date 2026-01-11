@@ -37,7 +37,7 @@ from issue_orchestrator.control.session_launcher import (
     kill_session,
     get_session_machine,
 )
-from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
+from issue_orchestrator.control.actions import ActionResult, AddLabelAction, RemoveLabelAction
 from issue_orchestrator.domain.models import (
     Issue,
     Session,
@@ -541,6 +541,24 @@ class TestLaunchIssueSession:
         assert result.success is True
         actions = [call.args[0] for call in session_launcher._action_applier.apply.call_args_list]
         assert any(isinstance(a, AddLabelAction) and a.label == "in-progress" for a in actions)
+
+    def test_fails_when_in_progress_label_add_fails(
+        self, session_launcher, sample_issue, mock_worktree_manager
+    ):
+        """Verify launch fails when in-progress label cannot be added."""
+        def apply_action(action):
+            if isinstance(action, AddLabelAction) and action.label == "in-progress":
+                return ActionResult.fail(action, "api error")
+            return ActionResult.ok(action)
+
+        session_launcher._action_applier.apply = MagicMock(side_effect=apply_action)
+
+        result = session_launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is False
+        assert "Failed to add in-progress label" in result.reason
+        assert session_launcher._create_session_calls == []
+        assert len(mock_worktree_manager.remove_calls) == 1
 
     def test_emits_session_started_event(self, session_launcher, sample_issue, mock_events):
         """Verify SESSION_STARTED event is emitted."""
