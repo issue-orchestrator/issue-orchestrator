@@ -30,7 +30,7 @@ from issue_orchestrator.control.reconciliation import (
     ExternalSnapshot,
     get_pause_label,
 )
-from issue_orchestrator.control.actions import ActionType, LaunchSessionAction
+from issue_orchestrator.control.actions import ActionType, AddLabelAction, LaunchSessionAction
 from issue_orchestrator.control.health_gate import HealthGate, HealthDecision
 from issue_orchestrator.domain.models import (
     Issue,
@@ -79,6 +79,14 @@ def mock_repository_host():
     host.remove_label = Mock()
     host.create_issue_key = Mock(side_effect=lambda n: FakeIssueKey(name=str(n)))
     return host
+
+
+@pytest.fixture
+def mock_action_applier():
+    """Create a mock ActionApplier."""
+    applier = MagicMock()
+    applier.apply = Mock()
+    return applier
 
 
 @pytest.fixture
@@ -203,12 +211,12 @@ class TestPauseIssueForReconciliation:
     """Tests for pause_issue_for_reconciliation function."""
 
     def test_adds_pause_label_on_reconciliation_failure(
-        self, mock_event_sink, mock_repository_host, sample_event_context
+        self, mock_event_sink, mock_action_applier, sample_event_context
     ):
         """Reconciliation failure adds pause label to issue."""
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            repository_host=mock_repository_host,
+            action_applier=mock_action_applier,
             event_context=sample_event_context,
             issue_number=42,
             reason="Labels changed externally",
@@ -216,15 +224,19 @@ class TestPauseIssueForReconciliation:
 
         # Should add the pause label
         pause_label = get_pause_label()
-        mock_repository_host.add_label.assert_called_once_with(42, pause_label)
+        mock_action_applier.apply.assert_called_once()
+        action = mock_action_applier.apply.call_args[0][0]
+        assert isinstance(action, AddLabelAction)
+        assert action.issue_number == 42
+        assert action.label == pause_label
 
     def test_emits_issue_paused_event(
-        self, mock_event_sink, mock_repository_host, sample_event_context
+        self, mock_event_sink, mock_action_applier, sample_event_context
     ):
         """Reconciliation pause emits ISSUE_PAUSED_RECONCILE event."""
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            repository_host=mock_repository_host,
+            action_applier=mock_action_applier,
             event_context=sample_event_context,
             issue_number=99,
             reason="State drift detected",
@@ -238,18 +250,18 @@ class TestPauseIssueForReconciliation:
         assert "State drift" in event.data["reason"]
 
     def test_handles_add_label_failure_gracefully(
-        self, mock_event_sink, mock_repository_host, sample_event_context, caplog
+        self, mock_event_sink, mock_action_applier, sample_event_context, caplog
     ):
         """If add_label fails, function logs error but doesn't raise."""
         import logging
         caplog.set_level(logging.ERROR)
 
-        mock_repository_host.add_label.side_effect = Exception("API error")
+        mock_action_applier.apply.side_effect = Exception("API error")
 
         # Should not raise
         pause_issue_for_reconciliation(
             events=mock_event_sink,
-            repository_host=mock_repository_host,
+            action_applier=mock_action_applier,
             event_context=sample_event_context,
             issue_number=42,
             reason="Test failure",
