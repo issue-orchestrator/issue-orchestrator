@@ -199,9 +199,8 @@ class SessionRestorer:
 
         Called when we find a session without a corresponding worktree.
         """
-        try:
-            self.repository_host.remove_label(issue_number, "in-progress")
-            logger.info("Removed in-progress label from orphaned issue #%d", issue_number)
-            print(f"  Cleaned up orphaned issue #{issue_number} (removed in-progress label)")
-        except Exception as e:
-            logger.warning("Failed to cleanup orphaned issue #%d: %s", issue_number, e)
+        logger.info(
+            "Orphaned issue #%d detected - stale labels will be handled by planner cleanup",
+            issue_number,
+        )
+        print(f"  Orphaned issue #{issue_number} (stale label cleanup deferred)")

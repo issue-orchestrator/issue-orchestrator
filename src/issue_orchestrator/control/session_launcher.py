@@ -50,6 +50,8 @@ from ..ports import (
     CommandRunner,
 )
 from ..ports.worktree_manager import WorktreeManager
+from .action_applier import ActionApplier
+from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -153,7 +155,8 @@ class SessionLauncher:
     Dependencies:
     - config: Configuration with agent definitions
     - events: EventSink for trace events
-    - repository_host: For label operations
+    - repository_host: For GitHub reads during launch
+    - action_applier: For applying label/comment mutations
     - session_manager: For terminal session operations
     - get_issue_machine: Callback to get/create issue state machines
     - get_session_machine: Callback to get/create session state machines
@@ -165,6 +168,7 @@ class SessionLauncher:
         config: Config,
         events: EventSink,
         repository_host: RepositoryHost,
+        action_applier: ActionApplier,
         session_manager: SessionManager,
         worktree_manager: WorktreeManager,
         working_copy: WorkingCopy,
@@ -180,6 +184,7 @@ class SessionLauncher:
         self.config = config
         self.events = events
         self.repository_host = repository_host
+        self._action_applier = action_applier
         self.session_manager = session_manager
         self._worktree_manager = worktree_manager
         self._working_copy = working_copy
@@ -191,6 +196,17 @@ class SessionLauncher:
         self._get_review_machine = get_review_machine
         self._refresh_issue = refresh_issue_fn
         self._dependency_evaluator = dependency_evaluator
+
+    def _apply_actions(self, actions: list[Action]) -> None:
+        """Apply mutations through the ActionApplier."""
+        for action in actions:
+            result = self._action_applier.apply(action)
+            if not result.success:
+                logger.warning(
+                    "[launch] Failed to apply %s: %s",
+                    action.action_type.value,
+                    result.error,
+                )
 
     def _write_session_identity(self, worktree_path: Path, payload: dict[str, object]) -> None:
         """Persist session identity details inside the worktree for later review."""
@@ -328,8 +344,18 @@ class SessionLauncher:
             _write_worktree_diagnostic(e)
             # Add blocked-needs-human label and comment
             needs_human_label = self.config.get_label_needs_human()
-            self.repository_host.add_label(issue.number, needs_human_label)
-            self.repository_host.add_comment(issue.number, _build_worktree_error_comment(e))
+            self._apply_actions([
+                AddLabelAction(
+                    issue_number=issue.number,
+                    label=needs_human_label,
+                    reason="worktree preparation failed",
+                ),
+                AddCommentAction(
+                    number=issue.number,
+                    comment=_build_worktree_error_comment(e),
+                    reason="worktree preparation failed",
+                ),
+            ])
             self.events.publish(TraceEvent(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
@@ -382,16 +408,13 @@ class SessionLauncher:
         # Add in-progress label
         step_start = time.time()
         in_progress_label = self.config.get_label_in_progress()
-        self.repository_host.add_label(issue.number, in_progress_label)
-        self.events.publish(TraceEvent(
-            EventName.ISSUE_LABELS_CHANGED,
-            {
-                "issue_number": issue.number,
-                "issue_key": issue.key.stable_id(),
-                "added": [in_progress_label],
-                "removed": [],
-            },
-        ))
+        self._apply_actions([
+            AddLabelAction(
+                issue_number=issue.number,
+                label=in_progress_label,
+                reason="session launched",
+            ),
+        ])
         label_time = time.time() - step_start
         logger.info("[launch] Label added in %.1fs", label_time)
 
@@ -458,7 +481,13 @@ class SessionLauncher:
         if not session_created:
             log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
             logger.error(issue_log(issue.number, "FAILED: session creation failed"))
-            self.repository_host.remove_label(issue.number, self.config.get_label_in_progress())
+            self._apply_actions([
+                RemoveLabelAction(
+                    issue_number=issue.number,
+                    label=self.config.get_label_in_progress(),
+                    reason="session creation failed",
+                ),
+            ])
             return LaunchResult(None, False, "Failed to create terminal session")
 
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
@@ -578,8 +607,18 @@ class SessionLauncher:
             _write_worktree_diagnostic(e)
             # Add blocked-needs-human label and comment to the issue
             needs_human_label = self.config.get_label_needs_human()
-            self.repository_host.add_label(review.issue_number, needs_human_label)
-            self.repository_host.add_comment(review.issue_number, _build_worktree_error_comment(e))
+            self._apply_actions([
+                AddLabelAction(
+                    issue_number=review.issue_number,
+                    label=needs_human_label,
+                    reason="worktree preparation failed",
+                ),
+                AddCommentAction(
+                    number=review.issue_number,
+                    comment=_build_worktree_error_comment(e),
+                    reason="worktree preparation failed",
+                ),
+            ])
             self.events.publish(TraceEvent(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
@@ -794,8 +833,18 @@ class SessionLauncher:
             _write_worktree_diagnostic(e)
             # Add blocked-needs-human label and comment to the issue
             needs_human_label = self.config.get_label_needs_human()
-            self.repository_host.add_label(issue_number, needs_human_label)
-            self.repository_host.add_comment(issue_number, _build_worktree_error_comment(e))
+            self._apply_actions([
+                AddLabelAction(
+                    issue_number=issue_number,
+                    label=needs_human_label,
+                    reason="worktree preparation failed",
+                ),
+                AddCommentAction(
+                    number=issue_number,
+                    comment=_build_worktree_error_comment(e),
+                    reason="worktree preparation failed",
+                ),
+            ])
             self.events.publish(TraceEvent(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
@@ -926,16 +975,19 @@ class SessionLauncher:
         self._update_rework_cycle_label(pr_number, issue_number, rework.rework_cycle)
 
         # Remove needs-rework label
-        try:
-            self.repository_host.remove_label(pr_number, self.config.get_label_needs_rework())
-            self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
-                "pr_number": pr_number,
-                "issue_number": issue_number,
-                "issue_key": str(issue_number),
-                "removed": [self.config.get_label_needs_rework()],
-            }))
-        except Exception:
-            pass
+        self._apply_actions([
+            RemoveLabelAction(
+                issue_number=pr_number,
+                label=self.config.get_label_needs_rework(),
+                reason="rework started",
+            ),
+        ])
+        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
+            "pr_number": pr_number,
+            "issue_number": issue_number,
+            "issue_key": str(issue_number),
+            "removed": [self.config.get_label_needs_rework()],
+        }))
 
         return LaunchResult(session, True)
 
@@ -992,26 +1044,30 @@ class SessionLauncher:
 
     def _update_rework_cycle_label(self, pr_number: int, issue_number: int, cycle: int) -> None:
         """Update the rework cycle label on a PR."""
+        actions: list[Action] = []
         removed: list[str] = []
-        try:
-            for i in range(1, cycle):
-                try:
-                    label = f"rework-cycle-{i}"
-                    self.repository_host.remove_label(pr_number, label)
-                    removed.append(label)
-                except Exception:
-                    pass
-            added_label = f"rework-cycle-{cycle}"
-            self.repository_host.add_label(pr_number, added_label)
-            self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
-                "pr_number": pr_number,
-                "issue_number": issue_number,
-                "issue_key": str(issue_number),
-                "added": [added_label],
-                "removed": removed,
-            }))
-        except Exception as e:
-            logger.warning("Failed to update rework label on PR #%d: %s", pr_number, e)
+        for i in range(1, cycle):
+            label = f"rework-cycle-{i}"
+            removed.append(label)
+            actions.append(RemoveLabelAction(
+                issue_number=pr_number,
+                label=label,
+                reason="rework cycle update",
+            ))
+        added_label = f"rework-cycle-{cycle}"
+        actions.append(AddLabelAction(
+            issue_number=pr_number,
+            label=added_label,
+            reason="rework cycle update",
+        ))
+        self._apply_actions(actions)
+        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
+            "pr_number": pr_number,
+            "issue_number": issue_number,
+            "issue_key": str(issue_number),
+            "added": [added_label],
+            "removed": removed,
+        }))
 
 
 def handle_session_completion(

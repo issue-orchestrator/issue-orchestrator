@@ -28,6 +28,8 @@ from ..domain.models import (
     Session,
     ORCHESTRATOR_PR_MARKER,
 )
+from .actions import AddLabelAction, RemoveLabelAction
+from .action_applier import ActionApplier
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost, HookVerifier
 from ..ports.session_runner import DiscoveredSession
@@ -52,6 +54,7 @@ class StartupManager:
         events: EventSink,
         runner: SessionRunner,
         repository_host: RepositoryHost,
+        action_applier: ActionApplier,
         hook_verifier: HookVerifier,
         issue_branches_fn: Callable[[], dict[int, str]],
         session_exists_fn: Callable[[str], bool],
@@ -76,6 +79,7 @@ class StartupManager:
         self.runner = runner
         self.repository_host = repository_host
         self.hook_verifier = hook_verifier
+        self._action_applier = action_applier
         self._issue_branches = issue_branches_fn
         self._session_exists = session_exists_fn
         self._restore_sessions = restore_sessions_fn
@@ -88,6 +92,13 @@ class StartupManager:
         if self.config.filtering.label:
             result.append(self.config.filtering.label)
         return result
+
+    def _apply_label_actions(self, actions: list[AddLabelAction | RemoveLabelAction]) -> None:
+        """Apply label actions through the ActionApplier."""
+        for action in actions:
+            result = self._action_applier.apply(action)
+            if not result.success:
+                logger.warning("[startup] Label action failed: %s", result.error)
 
     async def run_startup(self, state: OrchestratorState) -> None:
         """Execute the full startup sequence.
@@ -235,8 +246,18 @@ class StartupManager:
                     # Add pr-pending and remove in-progress (crash recovery)
                     if not labels.is_pr_pending(issue.labels):
                         print(f"  #{issue.number}: Has open PR - adding pr-pending label (crash recovery)")
-                        self.repository_host.add_label(issue.number, labels.PR_PENDING)
-                        self.repository_host.remove_label(issue.number, self.config.get_label_in_progress())
+                        self._apply_label_actions([
+                            AddLabelAction(
+                                issue_number=issue.number,
+                                label=labels.PR_PENDING,
+                                reason="startup recovery: missing pr-pending",
+                            ),
+                            RemoveLabelAction(
+                                issue_number=issue.number,
+                                label=self.config.get_label_in_progress(),
+                                reason="startup recovery: remove stale in-progress",
+                            ),
+                        ])
                     else:
                         print(f"  #{issue.number}: Has open PR ({analysis.pr_url or 'unknown'}) - already has pr-pending")
                 elif analysis.has_partial_work:
@@ -244,7 +265,13 @@ class StartupManager:
                     issues_to_resume.append((issue, agent_label))
                 elif analysis.is_orphaned_label:
                     print(f"  #{issue.number}: No session or branch - clearing stale label")
-                    self.repository_host.remove_label(issue.number, self.config.get_label_in_progress())
+                    self._apply_label_actions([
+                        RemoveLabelAction(
+                            issue_number=issue.number,
+                            label=self.config.get_label_in_progress(),
+                            reason="startup recovery: clear stale in-progress",
+                        ),
+                    ])
 
     async def _recover_pending_reviews(self, state: OrchestratorState) -> None:
         """Recover PRs needing code review after crash/restart."""

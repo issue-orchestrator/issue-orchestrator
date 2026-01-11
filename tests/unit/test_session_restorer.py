@@ -28,23 +28,14 @@ class MockRepositoryHost:
 
     Implements only the methods used by SessionRestorer:
     - get_issue: Returns issue by number
-    - remove_label: Tracks calls for orphaned issue cleanup
     """
 
     def __init__(self):
         self.issues: dict[int, Issue] = {}
-        self.remove_label_calls: list[tuple[int, str]] = []
-        self.remove_label_error: Exception | None = None
 
     def get_issue(self, issue_number: int) -> Issue | None:
         """Return issue from test data."""
         return self.issues.get(issue_number)
-
-    def remove_label(self, issue_number: int, label: str) -> None:
-        """Track label removal calls, optionally raising configured error."""
-        self.remove_label_calls.append((issue_number, label))
-        if self.remove_label_error is not None:
-            raise self.remove_label_error
 
 
 class MockWorkingCopy:
@@ -246,7 +237,7 @@ class TestOrphanedSessionHandling:
     """Tests for handling sessions without corresponding worktrees."""
 
     def test_cleans_up_orphaned_session_without_worktree(self, tmp_path, caplog):
-        """Sessions without worktrees are cleaned up (in-progress label removed)."""
+        """Sessions without worktrees are skipped and logged."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         # Note: NO worktree created for issue 123
@@ -267,37 +258,8 @@ class TestOrphanedSessionHandling:
         # Session not restored
         assert len(restored) == 0
 
-        # In-progress label removed from orphaned issue
-        assert (123, "in-progress") in repo_host.remove_label_calls
-
-    def test_handles_remove_label_failure_gracefully(self, tmp_path, caplog):
-        """If removing label from orphaned issue fails, log warning but continue."""
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        # No worktree for issue 123
-
-        agent_config = make_agent_config(tmp_path)
-        config = make_config(agents={"agent:web": agent_config})
-        config.repo_root = repo_root
-
-        repo_host = MockRepositoryHost()
-        repo_host.remove_label_error = Exception("API error")
-        working_copy = MockWorkingCopy()
-
-        restorer = SessionRestorer(config, repo_host, working_copy)
-
-        discovered = [make_discovered_session(123)]
-        with caplog.at_level(logging.WARNING):
-            restored = restorer.restore_sessions(discovered, already_tracked=[])
-
-        # Still no session restored
-        assert len(restored) == 0
-
-        # But we attempted the cleanup
-        assert (123, "in-progress") in repo_host.remove_label_calls
-
         # Warning logged
-        assert "Failed to cleanup orphaned issue" in caplog.text
+        assert "Could not find worktree" in caplog.text
 
 
 class TestErrorRecovery:

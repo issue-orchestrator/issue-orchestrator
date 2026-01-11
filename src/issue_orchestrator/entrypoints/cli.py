@@ -47,11 +47,27 @@ def _get_repository_host(config: "Config") -> "RepositoryHost | None":
     return create_repository_host(repo=repo)
 
 
+def _build_action_applier(config: "Config", adapter: "RepositoryHost"):
+    from ..control.action_applier import ActionApplier
+    from ..control.session_manager import SessionManager
+    from ..ports import NullEventSink, NullSessionRunner
+
+    events = NullEventSink()
+    sessions = SessionManager(runner=NullSessionRunner(), events=events, config=config)
+    return ActionApplier(
+        labels=adapter,
+        sessions=sessions,
+        events=events,
+        repository_host=adapter,
+    )
+
+
 def _run_test_setup(config: "Config") -> bool:
     """Run test teardown and setup. Returns True on success."""
     adapter = _get_repository_host(config)
     if adapter is None:
         return False
+    action_applier = _build_action_applier(config, adapter)
     try:
         repo = _resolve_repo(config)
     except Exception as exc:
@@ -61,10 +77,24 @@ def _run_test_setup(config: "Config") -> bool:
     console.print("[cyan]Test mode: Cleaning up old test issues...[/cyan]")
 
     try:
+        from ..control.actions import AddCommentAction
+
         # Adapter returns list[Issue] with .number attribute
         issues = adapter.list_issues(labels=["test-data"], state="open", limit=100)
         for issue in issues:
-            adapter.add_comment(issue.number, "Closed by test mode startup.")
+            result = action_applier.apply(
+                AddCommentAction(
+                    number=issue.number,
+                    comment="Closed by test mode startup.",
+                    reason="test mode cleanup",
+                )
+            )
+            if not result.success:
+                logger.warning(
+                    "Failed to add test cleanup comment for #%d: %s",
+                    issue.number,
+                    result.error or "unknown error",
+                )
             adapter.update_issue_state(issue.number, "closed")
             console.print(f"  Closed #{issue.number}")
     except Exception as exc:

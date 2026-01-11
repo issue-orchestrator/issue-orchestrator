@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, Mock, AsyncMock, patch
 
 from issue_orchestrator.control.startup_manager import StartupManager
+from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import (
     Issue,
@@ -58,6 +59,14 @@ def mock_repository_host():
 
 
 @pytest.fixture
+def mock_action_applier():
+    """Create a mock ActionApplier."""
+    applier = MagicMock()
+    applier.apply = MagicMock()
+    return applier
+
+
+@pytest.fixture
 def mock_hook_verifier():
     """Create a mock HookVerifier."""
     verifier = MagicMock()
@@ -84,6 +93,7 @@ def startup_manager(
     mock_events,
     mock_runner,
     mock_repository_host,
+    mock_action_applier,
     mock_hook_verifier,
     mock_issue_branches_fn,
 ):
@@ -93,6 +103,7 @@ def startup_manager(
         events=mock_events,
         runner=mock_runner,
         repository_host=mock_repository_host,
+        action_applier=mock_action_applier,
         hook_verifier=mock_hook_verifier,
         issue_branches_fn=mock_issue_branches_fn,
         session_exists_fn=lambda name: False,
@@ -177,6 +188,7 @@ class TestStartupManagerInProgressIssues:
         mock_analyze,
         startup_manager,
         sample_state,
+        mock_action_applier,
         mock_repository_host,
         mock_config,
     ):
@@ -196,7 +208,11 @@ class TestStartupManagerInProgressIssues:
 
         await startup_manager.run_startup(sample_state)
 
-        mock_repository_host.remove_label.assert_called_once_with(1, "in-progress")
+        mock_action_applier.apply.assert_called_once()
+        action = mock_action_applier.apply.call_args.args[0]
+        assert isinstance(action, RemoveLabelAction)
+        assert action.issue_number == 1
+        assert action.label == "in-progress"
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
@@ -205,6 +221,7 @@ class TestStartupManagerInProgressIssues:
         mock_analyze,
         startup_manager,
         sample_state,
+        mock_action_applier,
         mock_repository_host,
         mock_config,
     ):
@@ -224,8 +241,10 @@ class TestStartupManagerInProgressIssues:
         await startup_manager.run_startup(sample_state)
 
         # S2 crash recovery: add pr-pending, remove in-progress
-        mock_repository_host.add_label.assert_called_once_with(1, "pr-pending")
-        mock_repository_host.remove_label.assert_called_once_with(1, "in-progress")
+        assert mock_action_applier.apply.call_count == 2
+        actions = [call.args[0] for call in mock_action_applier.apply.call_args_list]
+        assert any(isinstance(a, AddLabelAction) and a.label == "pr-pending" for a in actions)
+        assert any(isinstance(a, RemoveLabelAction) and a.label == "in-progress" for a in actions)
 
 
 class TestStartupManagerCodeReviewRecovery:
@@ -301,6 +320,7 @@ class TestStartupManagerResumePartialWork:
         startup_manager,
         sample_state,
         mock_repository_host,
+        mock_action_applier,
         mock_config,
         mock_issue_branches_fn,
     ):
@@ -327,4 +347,4 @@ class TestStartupManagerResumePartialWork:
 
         # The session should have been launched (check via callback)
         # Since we mocked the callback, we verify state wasn't modified with label removal
-        mock_repository_host.remove_label.assert_not_called()
+        mock_action_applier.apply.assert_not_called()

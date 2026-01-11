@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 from ..events import EventName, EventContext
 from ..ports import EventSink, TraceEvent, RepositoryHost
+from .actions import AddLabelAction
 from .reconciliation import ReconciliationRequired, get_pause_label
 from ..domain.models import (
     PendingReview, PendingRework, PendingTriageReview,
@@ -347,7 +348,7 @@ class OrchestratorSupport:
 
 def pause_issue_for_reconciliation(
     events: EventSink,
-    repository_host: RepositoryHost,
+    action_applier: "ActionApplier",
     event_context: EventContext,
     issue_number: int,
     reason: str,
@@ -355,7 +356,11 @@ def pause_issue_for_reconciliation(
     """Pause an issue due to reconciliation failure (state drift)."""
     pause_label = get_pause_label()
     try:
-        repository_host.add_label(issue_number, pause_label)
+        action_applier.apply(AddLabelAction(
+            issue_number=issue_number,
+            label=pause_label,
+            reason="reconciliation drift detected",
+        ))
         logger.warning(
             "[RECONCILIATION] Paused issue #%d with label '%s': %s",
             issue_number, pause_label, reason
