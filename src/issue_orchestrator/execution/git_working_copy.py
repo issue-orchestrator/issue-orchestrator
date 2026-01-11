@@ -272,16 +272,14 @@ class GitWorkingCopy:
         self,
         worktree: Path,
         remote: str = "origin",
-        force_with_lease: bool = True,
         set_upstream: bool = True,
         skip_hooks: bool = False,
     ) -> PushResult:
-        """Push current branch to remote.
+        """Push current branch to remote with --force-with-lease.
 
         Args:
             worktree: Path to the worktree.
             remote: Remote name (default: origin).
-            force_with_lease: Use --force-with-lease (default: True).
             set_upstream: Set upstream tracking (default: True).
             skip_hooks: Skip pre-push hooks with --no-verify (default: False).
         """
@@ -310,16 +308,39 @@ class GitWorkingCopy:
                 retryable=False,
             )
 
-        args = ["push"]
+        # Check if remote tracking branch exists (indicates prior push).
+        # If it exists, we must fetch to update tracking refs for --force-with-lease.
+        # If it doesn't exist (first push), skip fetch - it would fail anyway.
+        tracking_check = self._run_git(
+            worktree,
+            ["rev-parse", "--verify", f"{remote}/{branch}"],
+            check=False,
+        )
+        has_remote_tracking = tracking_check.returncode == 0
+
+        if has_remote_tracking:
+            try:
+                self._run_git(
+                    worktree,
+                    ["fetch", remote, branch],
+                    timeout_s=60,
+                )
+            except Exception as e:
+                return PushResult(
+                    success=False,
+                    branch=branch,
+                    remote=remote,
+                    message=f"Failed to update tracking refs before push: {e}",
+                    retryable=True,
+                )
+
+        args = ["push", "--force-with-lease"]
         if skip_hooks:
             args.append("--no-verify")
         if set_upstream:
             args.extend(["-u", remote, branch])
         else:
             args.append(remote)
-
-        if force_with_lease:
-            args.append("--force-with-lease")
 
         start = time.monotonic()
         try:
@@ -400,7 +421,6 @@ class GitWorkingCopy:
         self,
         worktree: Path,
         remote: str = "origin",
-        force_with_lease: bool = True,
     ) -> PreflightResult:
         """Check if a push would succeed (dry-run).
 
@@ -416,9 +436,30 @@ class GitWorkingCopy:
                 fix_hint="Ensure you are on a branch, not in detached HEAD state",
             )
 
-        args = ["push", "--dry-run", "-u", remote, branch]
-        if force_with_lease:
-            args.append("--force-with-lease")
+        # Check if remote tracking branch exists (indicates prior push).
+        # If it exists, we must fetch to update tracking refs for --force-with-lease.
+        tracking_check = self._run_git(
+            worktree,
+            ["rev-parse", "--verify", f"{remote}/{branch}"],
+            check=False,
+        )
+        has_remote_tracking = tracking_check.returncode == 0
+
+        if has_remote_tracking:
+            try:
+                self._run_git(
+                    worktree,
+                    ["fetch", remote, branch],
+                    timeout_s=60,
+                )
+            except Exception as e:
+                return PreflightResult(
+                    would_succeed=False,
+                    error=f"Failed to update tracking refs: {e}",
+                    fix_hint="Network or remote issue - retry later",
+                )
+
+        args = ["push", "--dry-run", "-u", remote, branch, "--force-with-lease"]
 
         try:
             self._run_git(worktree, args, timeout_s=60)

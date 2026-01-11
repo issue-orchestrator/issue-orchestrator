@@ -67,7 +67,6 @@ class GitAdapter(Protocol):
         self,
         worktree: Path,
         remote: str = "origin",
-        force_with_lease: bool = True,
         set_upstream: bool = True,
         skip_hooks: bool = False,
     ) -> PushResult: ...
