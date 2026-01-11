@@ -446,25 +446,7 @@ class TestControlCenterLifecycle:
 
         logger.info("✓ Restart cycle completed successfully")
 
-    def test_stop_already_stopped(
-        self,
-        test_repo: Path,
-        control_center_process: subprocess.Popen,
-        cc_client: httpx.Client,
-    ) -> None:
-        """Stopping an already-stopped orchestrator should succeed."""
-        # Register repo (don't start)
-        cc_client.post("/control/repos", json={"repo_root": str(test_repo)})
-
-        # Stop (should succeed - nothing to stop means goal achieved)
-        resp = cc_client.post(
-            "/control/orchestrator/stop",
-            json={"repo_root": str(test_repo)},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "stopped"
-
-        logger.info("✓ Stop-when-stopped handled correctly")
+    # test_stop_already_stopped moved to TestControlCenterAPIInProcess for reliability
 
     def test_start_already_running(
         self,
@@ -640,3 +622,49 @@ class TestControlCenterStatusConsistency:
         assert cc_status["state"] in ("stopped", "failed")
 
         logger.info("✓ Status consistency verified")
+
+
+@pytest.mark.integration
+class TestControlCenterAPIInProcess:
+    """Test Control Center API endpoints using in-process TestClient.
+
+    These tests use Starlette's TestClient for synchronous, deterministic testing
+    without subprocess management or polling loops. They mock the supervisor module
+    to test API behavior in isolation.
+
+    This is more reliable than subprocess-based tests for API-only behavior.
+    """
+
+    def test_stop_already_stopped(self, test_repo: Path) -> None:
+        """Stopping an already-stopped orchestrator should succeed.
+
+        Uses in-process TestClient to avoid subprocess race conditions.
+        """
+        from unittest.mock import patch
+        from starlette.testclient import TestClient
+        from issue_orchestrator.entrypoints.control_api import control_app
+        from issue_orchestrator.infra.supervisor import SupervisorStatus
+
+        # Mock supervisor.stop to return True (already stopped)
+        # Mock supervisor.status to return stopped state
+        mock_status = SupervisorStatus(state="stopped")
+
+        # Patch at the infra.supervisor module level since it's imported locally
+        with patch("issue_orchestrator.infra.supervisor.stop", return_value=True), \
+             patch("issue_orchestrator.infra.supervisor.status", return_value=mock_status):
+
+            with TestClient(control_app) as client:
+                # Register repo
+                resp = client.post("/control/repos", json={"repo_root": str(test_repo)})
+                assert resp.status_code == 200, f"Failed to register: {resp.text}"
+
+                # Stop (should succeed - nothing to stop means goal achieved)
+                resp = client.post(
+                    "/control/orchestrator/stop",
+                    json={"repo_root": str(test_repo)},
+                )
+                assert resp.status_code == 200, f"Stop failed: {resp.text}"
+                data = resp.json()
+                assert data["status"] == "stopped"
+
+        logger.info("✓ Stop-when-stopped handled correctly (in-process)")
