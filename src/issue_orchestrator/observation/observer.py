@@ -233,7 +233,16 @@ class SessionObserver:
                     if self._send_exit_to_session_by_name(session.terminal_id):
                         session.exit_sent = True
             except Exception as e:
-                logger.debug(issue_log(session.issue.number, "Could not check for PRs: %s"), e)
+                logger.warning(issue_log(session.issue.number, "Could not check for PRs: %s"), e)
+                self.events.publish(TraceEvent(
+                    EventName.APPLY_FAILED,
+                    {
+                        "step_type": "observer_pr_check",
+                        "issue_number": session.issue.number,
+                        "branch": session.branch_name,
+                        "error": str(e),
+                    },
+                ))
 
         # Build observation result
         if timeout_exceeded:

@@ -88,6 +88,8 @@ class Orchestrator:
     _loop_iteration: int = field(default=0, init=False)
     _ui_update_interval: int = field(default=30, init=False)
     _event_context: EventContext = field(default_factory=EventContext, init=False)
+    _loop_error_count: int = field(default=0, init=False)
+    _loop_error_limit: int = field(default=3, init=False)
 
     def __post_init__(self):
         # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
@@ -240,10 +242,34 @@ class Orchestrator:
                 # Run tick in thread pool to avoid blocking the event loop
                 # during long-running operations like git push with hooks
                 should_continue = await asyncio.to_thread(self.tick)
+                self._loop_error_count = 0
                 if not should_continue:
                     break
             except Exception as e:
+                self._loop_error_count += 1
                 logger.exception("[LOOP] Error in iteration %d: %s", self._loop_iteration, e)
+                self.deps.events.publish(TraceEvent(
+                    EventName.APPLY_FAILED,
+                    self._event_context.enrich({
+                        "step_type": "tick",
+                        "iteration": self._loop_iteration,
+                        "error": str(e),
+                        "error_count": self._loop_error_count,
+                    }),
+                ))
+                if self._loop_error_count >= self._loop_error_limit and not self.state.paused:
+                    self.state.paused = True
+                    logger.warning(
+                        "[LOOP] Pausing orchestrator after %d consecutive errors",
+                        self._loop_error_count,
+                    )
+                    self.deps.events.publish(TraceEvent(
+                        EventName.ORCHESTRATOR_PAUSED,
+                        self._event_context.enrich({
+                            "reason": "loop_error_threshold",
+                            "error_count": self._loop_error_count,
+                        }),
+                    ))
             await asyncio.sleep(10)
 
         # Shutdown sequence

@@ -282,7 +282,7 @@ class TestProcessDeferredCleanups:
     def test_handles_kill_session_failure(
         self, cleanup_manager, mock_config, mock_repository_host, caplog
     ):
-        """Session kill failure is logged but doesn't prevent cleanup."""
+        """Session kill failure is logged and cleanup remains pending."""
         mock_config.triage_review_agent = "agent:triage"
         cleanup_manager._kill_session.side_effect = Exception("Session not found")
 
@@ -302,14 +302,14 @@ class TestProcessDeferredCleanups:
         with caplog.at_level(logging.WARNING):
             result = cleanup_manager.process_deferred_cleanups(pending)
 
-        # Cleanup still processed despite session kill failure
-        assert result == []
+        assert result == pending
         assert "Failed to close session" in caplog.text
+        assert "Cleanup incomplete" in caplog.text
 
     def test_handles_worktree_removal_failure(
         self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager, caplog
     ):
-        """Worktree removal failure is logged but cleanup still marked done."""
+        """Worktree removal failure is logged and cleanup remains pending."""
         mock_config.triage_review_agent = "agent:triage"
         mock_worktree_manager.remove.side_effect = Exception("Permission denied")
 
@@ -329,8 +329,9 @@ class TestProcessDeferredCleanups:
         with caplog.at_level(logging.WARNING):
             result = cleanup_manager.process_deferred_cleanups(pending)
 
-        assert result == []
+        assert result == pending
         assert "Failed to remove worktree" in caplog.text
+        assert "Cleanup incomplete" in caplog.text
 
     def test_handles_pr_fetch_failure(
         self, cleanup_manager, mock_config, mock_repository_host, caplog
