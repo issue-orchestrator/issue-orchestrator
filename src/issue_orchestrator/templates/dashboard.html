@@ -122,7 +122,7 @@
         .issue-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
         .issue-header {
             display: grid;
-            grid-template-columns: 70px 180px 1fr 80px 70px 70px;
+            grid-template-columns: 70px 200px 1fr 140px 70px 70px;
             align-items: center;
             padding: 8px 16px;
             background: #161b22;
@@ -135,7 +135,7 @@
         }
         .issue-row {
             display: grid;
-            grid-template-columns: 70px 180px 1fr 80px 70px 70px;
+            grid-template-columns: 70px 200px 1fr 140px 70px 70px;
             align-items: center;
             padding: 12px 16px;
             border-bottom: 1px solid #21262d;
@@ -150,6 +150,8 @@
         .issue-row.slow-row:hover { background: #2a2010; }
 
         .issue-num { font-weight: 600; color: #58a6ff; font-size: 13px; display: flex; align-items: center; gap: 4px; }
+        .issue-num a { color: inherit; text-decoration: none; }
+        .issue-num a:hover { text-decoration: underline; }
         .dep-icon {
             color: #8b949e;
             font-size: 11px;
@@ -182,9 +184,9 @@
         .stale-warning-icon.persistent:hover {
             color: #ff6b6b;
         }
-        .issue-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
-        .status-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
-        .status-line { display: flex; align-items: center; gap: 6px; }
+        .issue-status { display: flex; align-items: center; }
+        .issue-detail { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c9d1d9; }
+        .detail-label { font-weight: 600; }
         .flow-stepper { display: flex; flex-wrap: wrap; gap: 4px; }
         .flow-step {
             border: 1px solid #30363d;
@@ -892,9 +894,9 @@
         <div class="issue-list" id="issueList" role="tabpanel" aria-label="Issue list">
             <div class="issue-header" role="row" aria-hidden="true">
                 <span>Issue</span>
-                <span>Status</span>
+                <span>Phase</span>
                 <span>Title</span>
-                <span>Agent</span>
+                <span>Detail</span>
                 <span>Runtime</span>
                 <span>Action</span>
             </div>
@@ -910,7 +912,7 @@
             <div class="issue-row {% if issue.status == 'active' %}active-row{% elif issue.status == 'slow' %}slow-row{% endif %}"
                  role="button"
                  tabindex="0"
-                 aria-label="Issue #{{ issue.issue_number }}: {{ issue.title }}. Status: {{ issue.status_label }}. {{ issue.action_hint }}"
+                 aria-label="Issue #{{ issue.issue_number }}: {{ issue.title }}. Detail: {{ issue.detail_label }}. {{ issue.action_hint }}"
                  data-status="{{ issue.status }}"
                  data-issue="{{ issue.issue_number }}"
                  data-title="{{ issue.title }}"
@@ -929,29 +931,35 @@
                  onclick="handleClick(this)"
                  onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();handleClick(this);}"
                  oncontextmenu="showContextMenu(event, this)">
-                <span class="issue-num">#{{ issue.issue_number }}{% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}" aria-label="Has dependencies: {{ issue.dependency_summary }}">⛓</span>{% endif %}<span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">⚠</span><span class="stale-warning-icon" id="stale-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">🔄</span></span>
-                <span class="issue-status status-{{ issue.status }}" title="{{ issue.status_reason if issue.status_reason else '' }}">
-                    <span class="status-stack">
-                        <span class="status-line">
-                            <span class="status-dot" aria-hidden="true"></span>
-                            {{ issue.status_label }}
+                <span class="issue-num">
+                    {% if issue.issue_url %}
+                    <a href="{{ issue.issue_url }}" target="_blank" onclick="event.stopPropagation()" aria-label="Open issue #{{ issue.issue_number }} on GitHub">#{{ issue.issue_number }}</a>
+                    {% else %}
+                    #{{ issue.issue_number }}
+                    {% endif %}
+                    {% if issue.has_dependencies %}<span class="dep-icon" title="{{ issue.dependency_summary }}" aria-label="Has dependencies: {{ issue.dependency_summary }}">⛓</span>{% endif %}
+                    <span class="dep-warning-icon" id="dep-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">⚠</span>
+                    <span class="stale-warning-icon" id="stale-warning-{{ issue.issue_number }}" style="display:none;" title="" aria-hidden="true">🔄</span>
+                </span>
+                <span class="issue-status">
+                    {% if issue.flow_steps %}
+                    <span class="flow-stepper {% if issue.blocked_summary %}blocked{% endif %}" aria-label="Workflow: {% for step in issue.flow_steps %}{{ step.label }}{% if not loop.last %}, {% endif %}{% endfor %}. Current: {{ issue.flow_stage_label if issue.flow_stage_label else issue.flow_stage }}.">
+                        {% for step in issue.flow_steps %}
+                        <span class="flow-step {% if step.key == issue.flow_stage %}active{% endif %}">
+                            {{ step.label }}
                         </span>
-                        {% if issue.flow_steps %}
-                        <span class="flow-stepper {% if issue.blocked_summary %}blocked{% endif %}">
-                            {% for step in issue.flow_steps %}
-                            <span class="flow-step {% if step.key == issue.flow_stage %}active{% endif %}">
-                                {{ step.label }}
-                            </span>
-                            {% endfor %}
-                            {% if issue.blocked_summary %}
-                            <span class="blocked-badge" title="{{ issue.blocked_summary }}">Blocked</span>
-                            {% endif %}
-                        </span>
+                        {% endfor %}
+                        {% if issue.blocked_summary %}
+                        <span class="blocked-badge" title="{{ issue.blocked_summary }}">Blocked</span>
                         {% endif %}
                     </span>
+                    {% endif %}
                 </span>
                 <span class="issue-title" title="{{ issue.title }}">{{ issue.title }}</span>
-                <span class="issue-agent">{{ issue.agent_type }}</span>
+                <span class="issue-detail status-{{ issue.status }}" title="{{ issue.detail_reason if issue.detail_reason else '' }}">
+                    <span class="status-dot" aria-hidden="true"></span>
+                    <span class="detail-label">{{ issue.detail_label }}</span>
+                </span>
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
                 <span class="issue-actions">
                     <span class="issue-action" title="{{ issue.action_hint }}">

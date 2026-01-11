@@ -120,6 +120,13 @@ def _flow_steps_for(stage: str) -> list[dict[str, str]]:
     ]
 
 
+def _flow_stage_label(steps: list[dict[str, str]], stage: str) -> str:
+    for step in steps:
+        if step["key"] == stage:
+            return step["label"]
+    return stage.replace("_", " ").title()
+
+
 def _describe_blocking_label(label: str) -> str:
     if label == "blocked-needs-human":
         return "needs human"
@@ -218,13 +225,12 @@ async def dashboard(
                 is_review = tmux_name.startswith("review-")
                 phase = "Reviewing" if is_review else "Coding"
 
+                agent_label = (session.issue.agent_type or "unknown").replace("agent:", "")
                 if runtime >= timeout:
                     status = "slow"
-                    status_label = "Slow"
                     status_reason = f"Over timeout ({runtime} min / {timeout} min)"
                 else:
                     status = "active"
-                    status_label = phase  # Show "Coding" or "Reviewing"
                     status_reason = f"Running for {runtime} min"
 
                 seen_issues.add(session.issue.number)
@@ -236,6 +242,8 @@ async def dashboard(
                     flow_stage = "triage"
                 else:
                     flow_stage = "in_progress"
+                flow_steps = _flow_steps_for(flow_stage)
+                flow_stage_label = _flow_stage_label(flow_steps, flow_stage)
 
                 blocked_summary = _blocked_summary(
                     list(session.issue.labels),
@@ -247,10 +255,11 @@ async def dashboard(
                 item = {
                     "issue_number": session.issue.number,
                     "title": session.issue.title,
-                    "agent_type": (session.issue.agent_type or "unknown").replace("agent:", ""),
+                    "agent_type": agent_label,
                     "status": status,
-                    "status_label": status_label,
                     "status_reason": status_reason,
+                    "detail_label": f"agent: {agent_label}",
+                    "detail_reason": status_reason,
                     "phase": phase,
                     "time": f"{runtime} min",
                     "action": "focus",
@@ -263,7 +272,8 @@ async def dashboard(
                     "has_terminal": True,
                     "worktree_path": str(session.worktree_path) if session.worktree_path else "",
                     "flow_stage": flow_stage,
-                    "flow_steps": _flow_steps_for(flow_stage),
+                    "flow_stage_label": flow_stage_label,
+                    "flow_steps": flow_steps,
                     "blocked_summary": blocked_summary,
                 }
                 work_items.append(item)
@@ -297,15 +307,20 @@ async def dashboard(
 
                 # Check if issue is blocked (has blocking labels or dependency problems)
                 dep_problem = state.dependency_problems.get(issue.number)
+                blocked_summary = _blocked_summary(
+                    list(issue.labels),
+                    dep_problem.summary if dep_problem else None,
+                )
                 is_blocked = issue.is_blocked or dep_problem is not None
+                agent_label = (issue.agent_type or "unknown").replace("agent:", "")
                 if is_blocked:
                     status = "blocked"
-                    status_label = "Blocked"
                     status_reason = dep_summary or "blocked"
+                    detail_label = blocked_summary or "blocked"
                 else:
                     status = "queue"
-                    status_label = "Queue"
                     status_reason = dep_summary
+                    detail_label = f"agent: {agent_label}"
 
                 from ..infra import labels as label_module
 
@@ -319,19 +334,17 @@ async def dashboard(
                     flow_stage = "in_progress"
                 else:
                     flow_stage = "queued"
-
-                blocked_summary = _blocked_summary(
-                    list(issue.labels),
-                    dep_problem.summary if dep_problem else None,
-                )
+                flow_steps = _flow_steps_for(flow_stage)
+                flow_stage_label = _flow_stage_label(flow_steps, flow_stage)
 
                 item = {
                     "issue_number": issue.number,
                     "title": issue.title,
-                    "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
+                    "agent_type": agent_label,
                     "status": status,
-                    "status_label": status_label,
                     "status_reason": status_reason,
+                    "detail_label": detail_label,
+                    "detail_reason": status_reason,
                     "time": "",
                     "action": "open",
                     "action_icon": "↗",
@@ -347,7 +360,8 @@ async def dashboard(
                     "dependencies": deps_json,
                     "dependency_summary": dep_summary,
                     "flow_stage": flow_stage,
-                    "flow_steps": _flow_steps_for(flow_stage),
+                    "flow_stage_label": flow_stage_label,
+                    "flow_steps": flow_steps,
                     "blocked_summary": blocked_summary,
                 }
                 # Blocked issues go to "Needs Attention", others to "Work"
@@ -358,11 +372,11 @@ async def dashboard(
 
         # 3. Session history - all goes to history tab
         status_labels = {
-            "completed": "Done",
+            "completed": "Completed",
             "failed": "Failed",
             "blocked": "Blocked",
-            "needs_human": "Human",
-            "timed_out": "Timeout",
+            "needs_human": "Needs Human",
+            "timed_out": "Timed Out",
         }
         for entry in reversed(state.session_history[-50:]):
             url = entry.pr_url if entry.pr_url else make_issue_url(entry.issue_number)
@@ -373,14 +387,17 @@ async def dashboard(
                 flow_stage = "done"
             else:
                 flow_stage = "in_progress"
+            flow_steps = _flow_steps_for(flow_stage)
+            flow_stage_label = _flow_stage_label(flow_steps, flow_stage)
 
             item = {
                 "issue_number": entry.issue_number,
                 "title": entry.title,
                 "agent_type": entry.agent_type.replace("agent:", ""),
                 "status": entry.status,
-                "status_label": status_labels.get(entry.status, entry.status),
                 "status_reason": status_reason,
+                "detail_label": status_labels.get(entry.status, entry.status),
+                "detail_reason": status_reason,
                 "time": f"{entry.runtime_minutes} min",
                 "action": "open",
                 "action_icon": "↗",
@@ -392,7 +409,8 @@ async def dashboard(
                 "has_terminal": False,
                 "worktree_path": "",
                 "flow_stage": flow_stage,
-                "flow_steps": _flow_steps_for(flow_stage),
+                "flow_stage_label": flow_stage_label,
+                "flow_steps": flow_steps,
                 "blocked_summary": status_reason if entry.status != "completed" else None,
             }
             history.append(item)
