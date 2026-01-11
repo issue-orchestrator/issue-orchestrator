@@ -19,7 +19,9 @@ class WorktreeInfo:
     """Information about a created worktree."""
     path: Path
     branch_name: str
-    rebase_failed: bool = False  # True if rebase onto main failed (merge conflict)
+    rebase_failed: bool = False  # True if rebase onto main failed (work was discarded)
+    uncommitted_discarded: int = 0  # Count of uncommitted changes discarded during reset
+    commits_discarded: int = 0  # Count of commits discarded during reset (rebase failure)
 
 
 class WorktreeManager(Protocol):

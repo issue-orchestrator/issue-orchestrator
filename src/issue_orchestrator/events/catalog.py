@@ -102,6 +102,11 @@ class EventName(str, Enum):
     GH_RATE_LIMIT_WARNING = "gh.rate_limit_warning"
 
     # =========================================================================
+    # Worktree operations
+    # =========================================================================
+    WORKTREE_RESET = "worktree.reset"  # Worktree reset to main, discarding local work
+
+    # =========================================================================
     # Completion lookup (agent-done processing)
     # =========================================================================
     COMPLETION_LOOKUP = "completion.lookup"

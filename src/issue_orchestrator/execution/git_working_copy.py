@@ -335,13 +335,19 @@ class GitWorkingCopy:
                 # First push case - continue without fetched refs
                 logger.debug("Branch %s not on remote yet (first push)", branch)
         except Exception as e:
-            return PushResult(
-                success=False,
-                branch=branch,
-                remote=remote,
-                message=f"Failed to update tracking refs before push: {e}",
-                retryable=True,
-            )
+            # Defensive: also check exception message for first-push case
+            # This handles edge cases where GitError is raised despite check=False
+            error_str = str(e)
+            if "couldn't find remote ref" in error_str:
+                logger.debug("Branch %s not on remote yet (first push, from exception)", branch)
+            else:
+                return PushResult(
+                    success=False,
+                    branch=branch,
+                    remote=remote,
+                    message=f"Failed to update tracking refs before push: {e}",
+                    retryable=True,
+                )
 
         args = ["push", "--force-with-lease"]
         if skip_hooks:
@@ -466,11 +472,15 @@ class GitWorkingCopy:
                     )
                 # First push case - continue
         except Exception as e:
-            return PreflightResult(
-                would_succeed=False,
-                error=f"Failed to update tracking refs: {e}",
-                fix_hint="Network or remote issue - retry later",
-            )
+            # Defensive: also check exception message for first-push case
+            error_str = str(e)
+            if "couldn't find remote ref" not in error_str:
+                return PreflightResult(
+                    would_succeed=False,
+                    error=f"Failed to update tracking refs: {e}",
+                    fix_hint="Network or remote issue - retry later",
+                )
+            # First push case - continue
 
         args = ["push", "--dry-run", "-u", remote, branch, "--force-with-lease"]
 
