@@ -55,5 +55,8 @@ validation:
 github_token_env: GITHUB_TOKEN
 milestone_sort: milestone_number
 
+filtering:
+  exclude_labels: ["test-data"]
+
 config:
   strict: true
