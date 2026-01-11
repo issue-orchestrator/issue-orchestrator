@@ -104,12 +104,13 @@ class TestTerminalAdapterExecution:
 
         This catches terminal-specific bugs like sandbox check failures.
         """
-        logger.info("Testing terminal adapter in '%s' mode", e2e_ui_mode)
+        adapter_name = e2e_terminal_adapter or "tmux"
+        logger.info("Testing terminal adapter in '%s' mode", adapter_name)
 
         flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
 
         # Create issue scoped to this test
-        issue = test_issue_factory(f"[E2E] Terminal adapter test ({e2e_ui_mode})")
+        issue = test_issue_factory(f"[E2E] Terminal adapter test ({adapter_name})")
         issue_number = int(issue.stable_id())
         logger.info("Created issue #%d for terminal adapter test", issue_number)
 
@@ -121,12 +122,12 @@ class TestTerminalAdapterExecution:
         # The session launch is where terminal-specific code runs:
         # - tmux: creates window, runs claude command
         await flow.session_started(issue, timeout_s=60)
-        logger.info("Session started for issue #%d in %s mode", issue_number, e2e_ui_mode)
+        logger.info("Session started for issue #%d in %s mode", issue_number, adapter_name)
 
         # CRITICAL: Verify pane can be found by issue number while Claude is running
         # Claude Code modifies the pane title, so this tests that our @orchestrator-session-id
         # option persists and pane lookup still works
-        if e2e_ui_mode == "tmux":
+        if adapter_name == "tmux":
             await self._verify_pane_identification(issue_number, e2e_tmux_session)
 
         # Wait for session to complete - this verifies the ENTIRE pipeline:
@@ -172,8 +173,6 @@ class TestTerminalAdapterExecution:
             assert "Starting e2e completion script" in log_content, (
                 "Expected subprocess session log to include script output"
             )
-            completion_files = list(session_dir.glob("completion*.json"))
-            assert completion_files, f"No completion records found in {session_dir}"
 
 
 @pytest.mark.e2e

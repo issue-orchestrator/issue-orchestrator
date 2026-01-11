@@ -126,7 +126,7 @@ Live tests that create real GitHub issues:
 pytest tests/e2e/ -v
 
 # Run e2e tests with subprocess terminal backend
-E2E_TERMINAL_ADAPTER=subprocess E2E_UI_MODE=web pytest tests/e2e/test_terminal_adapter.py -v
+E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter.py -v
 
 # Skip e2e tests
 pytest tests/ --ignore=tests/e2e/

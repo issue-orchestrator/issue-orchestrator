@@ -117,8 +117,8 @@ test-real-gh-plus-e2e: test-real-gh test-e2e
 
 test-real-gh-plus-e2e-subprocess:
 	@echo "✓ Running real GitHub + e2e suite with subprocess backend"
-	E2E_TERMINAL_ADAPTER=subprocess E2E_UI_MODE=web $(GMAKE) test-real-gh
-	E2E_TERMINAL_ADAPTER=subprocess E2E_UI_MODE=web $(GMAKE) test-e2e
+	E2E_TERMINAL_ADAPTER=subprocess $(GMAKE) test-real-gh
+	E2E_TERMINAL_ADAPTER=subprocess $(GMAKE) test-e2e
 	@echo "✓ Real GitHub + e2e subprocess suite passed!"
 
 # Run a single e2e test by name. Usage: make test-e2e-one TEST=test_code_review_produces_review_comment

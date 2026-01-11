@@ -786,9 +786,10 @@ class TmuxManager:
         """Send keys to a specific pane to avoid target ambiguity."""
         pane_id = pane.pane_id
         if not pane_id:
-            pane.send_keys(command)
+            pane.send_keys(command, enter=True)
             return
-        self.server.cmd("send-keys", "-t", pane_id, "-l", command, "Enter")
+        self.server.cmd("send-keys", "-t", pane_id, "-l", command)
+        self.server.cmd("send-keys", "-t", pane_id, "Enter")
 
     def _find_session_by_id(self, session_id: str) -> libtmux.Pane | libtmux.Window | None:
         """Find a session (pane or window) by its ID.

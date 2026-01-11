@@ -75,6 +75,7 @@ class OrchestratorProcess:
             "filter_label": self.config.filter_label,
             "github_token_env": self.config.github_token_env,
             "ui_mode": self.config.ui_mode,
+            "terminal_adapter": self.config.terminal_adapter,
             "web_port": self.config.web_port,
             "control_api_port": self.config.control_api_port,
             "queue_refresh_seconds": self.config.queue_refresh_seconds,

@@ -52,7 +52,17 @@ def find_recent_worktrees(limit: int = 3, worktree_base: Path | None = None) -> 
     candidates: list[Path] = []
     tmp_root = worktree_base or Path("/tmp/e2e-worktrees")
     if tmp_root.exists():
-        candidates.extend([p for p in tmp_root.iterdir() if p.is_dir()])
+        for root in tmp_root.iterdir():
+            if not root.is_dir():
+                continue
+            candidates.append(root)
+            # Support per-issue worktree roots (e.g., worktree_base/issue-123/...).
+            try:
+                for child in root.iterdir():
+                    if child.is_dir():
+                        candidates.append(child)
+            except OSError:
+                continue
 
     # pytest tmp worktrees live under /private/var/folders/*/*/T/pytest-of-*/.../worktrees/*
     tmp_parent = Path("/private/var/folders")
@@ -87,6 +97,10 @@ def find_worktree_for_issue(issue_number: int, worktree_base: Path | None = None
         branch = result.stdout.strip()
         if branch.startswith(f"{issue_number}-") or branch == str(issue_number):
             return worktree
+        if branch == "HEAD":
+            session_marker = worktree / ".issue-orchestrator" / f"session-identity-issue-{issue_number}.json"
+            if session_marker.exists():
+                return worktree
     return None
 
 

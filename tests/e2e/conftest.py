@@ -360,9 +360,7 @@ def e2e_ui_mode() -> str:
     """
     if os.environ.get("E2E_UI_MODE"):
         return os.environ.get("E2E_UI_MODE", "tmux")
-    if os.environ.get("E2E_TERMINAL_ADAPTER") == "subprocess":
-        return "web"
-    return os.environ.get("E2E_UI_MODE", "tmux")
+    return "tmux"
 
 
 @pytest.fixture(scope="session")
