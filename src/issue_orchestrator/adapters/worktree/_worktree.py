@@ -221,6 +221,42 @@ def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
         return False
 
 
+def sync_cli_tools(worktree_path: Path, repo_root: Path) -> None:
+    """
+    Sync CLI tools from main repo to worktree.
+
+    This ensures the worktree has the latest orchestrator tools (especially
+    agent-done) regardless of when the worktree was created or what branch
+    it's on. The venv symlink means entry points use main repo's source,
+    but we also copy the source files so the worktree has them available.
+
+    Args:
+        worktree_path: Path to the worktree
+        repo_root: Path to the main repository
+    """
+    src_cli_tools = repo_root / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
+    dst_cli_tools = worktree_path / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
+
+    if not src_cli_tools.exists():
+        logger.debug("No cli_tools in main repo at %s, skipping sync", src_cli_tools)
+        return
+
+    if not dst_cli_tools.parent.exists():
+        logger.debug("Worktree entrypoints dir doesn't exist at %s, skipping sync", dst_cli_tools.parent)
+        return
+
+    # Copy each .py file from source to destination
+    for src_file in src_cli_tools.glob("*.py"):
+        dst_file = dst_cli_tools / src_file.name
+        try:
+            shutil.copy2(src_file, dst_file)
+            logger.debug("Synced cli tool: %s -> %s", src_file.name, dst_file)
+        except OSError as e:
+            logger.warning("Failed to sync cli tool %s: %s", src_file.name, e)
+
+    logger.info("Synced cli_tools from main repo to worktree")
+
+
 def install_claude_settings(worktree_path: Path) -> None:
     """
     Install Claude Code settings to enforce agent-done on exit.
@@ -710,6 +746,8 @@ def create_worktree(
             install_claude_settings(existing_worktree)
             # Ensure venv symlink exists (for validation tools)
             install_venv_symlink(existing_worktree, repo_root)
+            # Sync cli_tools from main repo (ensures latest agent-done)
+            sync_cli_tools(existing_worktree, repo_root)
             logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, existing_worktree)
             return existing_worktree, branch_name, not rebase_ok
 
@@ -738,6 +776,8 @@ def create_worktree(
                 install_claude_settings(worktree_path)
                 # Ensure venv symlink exists (for validation tools)
                 install_venv_symlink(worktree_path, repo_root)
+                # Sync cli_tools from main repo (ensures latest agent-done)
+                sync_cli_tools(worktree_path, repo_root)
                 logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, worktree_path)
                 return worktree_path, existing_branch, not rebase_ok
         # Invalid worktree directory - remove it
@@ -816,6 +856,9 @@ def create_worktree(
 
         # Symlink .venv so agent has access to dev tools for validation
         install_venv_symlink(worktree_path, repo_root)
+
+        # Sync cli_tools from main repo (ensures latest agent-done)
+        sync_cli_tools(worktree_path, repo_root)
 
         logger.info(issue_log(issue_number, "Worktree created: branch=%s path=%s"), branch_name, worktree_path)
         return worktree_path, branch_name, False  # No rebase failure - new worktree
