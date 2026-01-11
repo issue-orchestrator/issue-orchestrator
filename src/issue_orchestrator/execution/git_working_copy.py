@@ -308,31 +308,40 @@ class GitWorkingCopy:
                 retryable=False,
             )
 
-        # Check if remote tracking branch exists (indicates prior push).
-        # If it exists, we must fetch to update tracking refs for --force-with-lease.
-        # If it doesn't exist (first push), skip fetch - it would fail anyway.
-        tracking_check = self._run_git(
-            worktree,
-            ["rev-parse", "--verify", f"{remote}/{branch}"],
-            check=False,
-        )
-        has_remote_tracking = tracking_check.returncode == 0
-
-        if has_remote_tracking:
-            try:
-                self._run_git(
-                    worktree,
-                    ["fetch", remote, branch],
-                    timeout_s=60,
-                )
-            except Exception as e:
-                return PushResult(
-                    success=False,
-                    branch=branch,
-                    remote=remote,
-                    message=f"Failed to update tracking refs before push: {e}",
-                    retryable=True,
-                )
+        # Try to fetch the branch to update tracking refs for --force-with-lease.
+        # If fetch fails with "couldn't find remote ref", it's a first push - continue.
+        # If fetch fails with other error (network, auth), fail early with context.
+        # NOTE: We can't rely on local tracking refs (rev-parse origin/branch) because
+        # stale refs may exist from previous failed sessions.
+        try:
+            fetch_result = self._run_git(
+                worktree,
+                ["fetch", remote, branch],
+                check=False,
+                timeout_s=60,
+            )
+            if fetch_result.returncode != 0:
+                stderr = fetch_result.stderr or ""
+                # "couldn't find remote ref" means branch doesn't exist on remote
+                if "couldn't find remote ref" not in stderr:
+                    # Real error (network, auth, etc.) - fail early
+                    return PushResult(
+                        success=False,
+                        branch=branch,
+                        remote=remote,
+                        message=f"Failed to update tracking refs before push: {stderr}",
+                        retryable=True,
+                    )
+                # First push case - continue without fetched refs
+                logger.debug("Branch %s not on remote yet (first push)", branch)
+        except Exception as e:
+            return PushResult(
+                success=False,
+                branch=branch,
+                remote=remote,
+                message=f"Failed to update tracking refs before push: {e}",
+                retryable=True,
+            )
 
         args = ["push", "--force-with-lease"]
         if skip_hooks:
@@ -436,28 +445,32 @@ class GitWorkingCopy:
                 fix_hint="Ensure you are on a branch, not in detached HEAD state",
             )
 
-        # Check if remote tracking branch exists (indicates prior push).
-        # If it exists, we must fetch to update tracking refs for --force-with-lease.
-        tracking_check = self._run_git(
-            worktree,
-            ["rev-parse", "--verify", f"{remote}/{branch}"],
-            check=False,
-        )
-        has_remote_tracking = tracking_check.returncode == 0
-
-        if has_remote_tracking:
-            try:
-                self._run_git(
-                    worktree,
-                    ["fetch", remote, branch],
-                    timeout_s=60,
-                )
-            except Exception as e:
-                return PreflightResult(
-                    would_succeed=False,
-                    error=f"Failed to update tracking refs: {e}",
-                    fix_hint="Network or remote issue - retry later",
-                )
+        # Try to fetch the branch to update tracking refs for --force-with-lease.
+        # If fetch fails with "couldn't find remote ref", it's a first push - continue.
+        # If fetch fails with other error (network, auth), fail early with context.
+        try:
+            fetch_result = self._run_git(
+                worktree,
+                ["fetch", remote, branch],
+                check=False,
+                timeout_s=60,
+            )
+            if fetch_result.returncode != 0:
+                stderr = fetch_result.stderr or ""
+                if "couldn't find remote ref" not in stderr:
+                    # Real error (network, auth, etc.)
+                    return PreflightResult(
+                        would_succeed=False,
+                        error=f"Failed to update tracking refs: {stderr}",
+                        fix_hint="Network or remote issue - retry later",
+                    )
+                # First push case - continue
+        except Exception as e:
+            return PreflightResult(
+                would_succeed=False,
+                error=f"Failed to update tracking refs: {e}",
+                fix_hint="Network or remote issue - retry later",
+            )
 
         args = ["push", "--dry-run", "-u", remote, branch, "--force-with-lease"]
 

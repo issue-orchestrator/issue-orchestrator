@@ -705,11 +705,10 @@ class TestPush:
     def test_push_success_with_existing_remote(self, git_wc, worktree_path):
         """Test successful push when remote branch exists (subsequent push)."""
         with patch.object(git_wc, "_run_git") as mock_run:
-            # Flow: get_branch, rev-parse (exists), fetch, push
+            # Flow: get_branch, fetch (success), push
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
-                MagicMock(returncode=0, stdout="", stderr=""),  # fetch
+                MagicMock(returncode=0, stdout="", stderr=""),  # fetch succeeds
                 MagicMock(returncode=0, stdout="", stderr=""),  # push
             ]
 
@@ -720,45 +719,61 @@ class TestPush:
             assert result.remote == "origin"
             assert "Pushed" in result.message
 
-            # Check rev-parse for tracking ref
-            revparse_args = mock_run.call_args_list[1][0][1]
-            assert "rev-parse" in revparse_args
-            assert "origin/feature-branch" in revparse_args
-
             # Check fetch command
-            fetch_args = mock_run.call_args_list[2][0][1]
+            fetch_args = mock_run.call_args_list[1][0][1]
             assert "fetch" in fetch_args
 
             # Check push command
-            push_args = mock_run.call_args_list[3][0][1]
+            push_args = mock_run.call_args_list[2][0][1]
             assert "push" in push_args
             assert "--force-with-lease" in push_args
 
     def test_push_first_push_no_remote(self, git_wc, worktree_path):
         """Test first push when remote branch doesn't exist yet."""
         with patch.object(git_wc, "_run_git") as mock_run:
-            # Flow: get_branch, rev-parse (not found), push (no fetch)
+            # Flow: get_branch, fetch (fails with "couldn't find remote ref"), push
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=1, stdout="", stderr=""),  # tracking doesn't exist
+                MagicMock(
+                    returncode=128, stdout="",
+                    stderr="fatal: couldn't find remote ref feature-branch"
+                ),  # first push - branch doesn't exist on remote
                 MagicMock(returncode=0, stdout="", stderr=""),  # push
             ]
 
             result = git_wc.push(worktree_path)
 
             assert result.success is True
-            # Only 3 calls - no fetch needed
             assert mock_run.call_count == 3
             push_args = mock_run.call_args_list[2][0][1]
             assert "push" in push_args
 
-    def test_push_fetch_failure(self, git_wc, worktree_path):
-        """Test push fails early when fetch fails (with tracking ref)."""
+    def test_push_fetch_failure_network(self, git_wc, worktree_path):
+        """Test push fails early when fetch fails with network error."""
+        with patch.object(git_wc, "_run_git") as mock_run:
+            # Fetch returns an error that is NOT "couldn't find remote ref"
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
+                MagicMock(
+                    returncode=1, stdout="",
+                    stderr="fatal: unable to access: Connection refused"
+                ),
+            ]
+
+            result = git_wc.push(worktree_path)
+
+            assert result.success is False
+            assert "Failed to update tracking refs" in result.message
+            assert result.retryable is True
+            # Should NOT have called push
+            assert mock_run.call_count == 2
+
+    def test_push_fetch_failure_exception(self, git_wc, worktree_path):
+        """Test push fails early when fetch throws an exception."""
         with patch.object(git_wc, "_run_git") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
-                Exception("Network timeout"),  # fetch fails
+                Exception("Network timeout"),  # fetch throws
             ]
 
             result = git_wc.push(worktree_path)
@@ -782,9 +797,9 @@ class TestPush:
     def test_push_with_skip_hooks(self, git_wc, worktree_path):
         """Test push with skip_hooks enabled."""
         with patch.object(git_wc, "_run_git") as mock_run:
+            # Flow: get_branch, fetch (success), push
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 MagicMock(returncode=0, stdout="", stderr=""),  # push
             ]
@@ -792,15 +807,15 @@ class TestPush:
             result = git_wc.push(worktree_path, skip_hooks=True)
 
             assert result.success is True
-            push_args = mock_run.call_args_list[3][0][1]
+            push_args = mock_run.call_args_list[2][0][1]
             assert "--no-verify" in push_args
 
     def test_push_without_set_upstream(self, git_wc, worktree_path):
         """Test push without setting upstream."""
         with patch.object(git_wc, "_run_git") as mock_run:
+            # Flow: get_branch, fetch (success), push
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 MagicMock(returncode=0, stdout="", stderr=""),  # push
             ]
@@ -808,15 +823,15 @@ class TestPush:
             result = git_wc.push(worktree_path, set_upstream=False)
 
             assert result.success is True
-            push_args = mock_run.call_args_list[3][0][1]
+            push_args = mock_run.call_args_list[2][0][1]
             assert "-u" not in push_args
 
     def test_push_non_fast_forward(self, git_wc, worktree_path):
         """Test push failure due to non-fast-forward."""
         with patch.object(git_wc, "_run_git") as mock_run:
+            # Flow: get_branch, fetch (success), push (fails)
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 git_error(
                     1, "git", stderr="error: failed to push some refs (non-fast-forward)"
@@ -833,9 +848,9 @@ class TestPush:
     def test_push_rejected(self, git_wc, worktree_path):
         """Test push failure due to rejected refs."""
         with patch.object(git_wc, "_run_git") as mock_run:
+            # Flow: get_branch, fetch (success), push (fails)
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 git_error(
                     1, "git", stderr="error: failed to push (rejected)"
@@ -851,9 +866,9 @@ class TestPush:
     def test_push_permission_denied(self, git_wc, worktree_path):
         """Test push failure due to permission denied."""
         with patch.object(git_wc, "_run_git") as mock_run:
+            # Flow: get_branch, fetch (success), push (fails)
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 git_error(
                     1, "git", stderr="Permission denied (publickey)"
@@ -869,9 +884,9 @@ class TestPush:
     def test_push_network_error(self, git_wc, worktree_path):
         """Test push failure due to network error (retryable)."""
         with patch.object(git_wc, "_run_git") as mock_run:
+            # Flow: get_branch, fetch (success), push (fails)
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 git_error(
                     1, "git", stderr="Could not resolve host: github.com"
@@ -886,9 +901,9 @@ class TestPush:
     def test_push_custom_remote(self, git_wc, worktree_path):
         """Test push to custom remote."""
         with patch.object(git_wc, "_run_git") as mock_run:
+            # Flow: get_branch, fetch (success), push
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 MagicMock(returncode=0, stdout="", stderr=""),  # push
             ]
@@ -897,11 +912,12 @@ class TestPush:
 
             assert result.success is True
             assert result.remote == "upstream"
-            # Check rev-parse uses custom remote
-            revparse_args = mock_run.call_args_list[1][0][1]
-            assert "upstream/feature-branch" in revparse_args
+            # Check fetch uses custom remote
+            fetch_args = mock_run.call_args_list[1][0][1]
+            assert "fetch" in fetch_args
+            assert "upstream" in fetch_args
             # Check push uses custom remote
-            push_args = mock_run.call_args_list[3][0][1]
+            push_args = mock_run.call_args_list[2][0][1]
             assert "upstream" in push_args
 
 
@@ -1101,18 +1117,17 @@ class TestPushPreflight:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
-                # Flow: rev-parse (exists), fetch, push --dry-run
+                # Flow: fetch (success), push --dry-run
                 mock_run.side_effect = [
-                    MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
-                    MagicMock(returncode=0, stdout="", stderr=""),  # fetch
-                    MagicMock(returncode=0, stdout="", stderr=""),  # push
+                    MagicMock(returncode=0, stdout="", stderr=""),  # fetch succeeds
+                    MagicMock(returncode=0, stdout="", stderr=""),  # push --dry-run
                 ]
 
                 result = git_wc.push_preflight(worktree_path)
 
                 assert result.would_succeed is True
                 assert result.error is None
-                assert mock_run.call_count == 3
+                assert mock_run.call_count == 2
 
     def test_push_preflight_success_first_push(self, git_wc, worktree_path):
         """Test successful preflight when no remote tracking (first push)."""
@@ -1120,26 +1135,32 @@ class TestPushPreflight:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
-                # Flow: rev-parse (not found), push --dry-run (no fetch)
+                # Flow: fetch (fails with "couldn't find remote ref"), push --dry-run
                 mock_run.side_effect = [
-                    MagicMock(returncode=1, stdout="", stderr=""),  # no tracking
+                    MagicMock(
+                        returncode=128, stdout="",
+                        stderr="fatal: couldn't find remote ref feature-branch"
+                    ),  # first push
                     MagicMock(returncode=0, stdout="", stderr=""),  # push
                 ]
 
                 result = git_wc.push_preflight(worktree_path)
 
                 assert result.would_succeed is True
-                assert mock_run.call_count == 2  # No fetch
+                assert mock_run.call_count == 2
 
     def test_push_preflight_fetch_failure(self, git_wc, worktree_path):
-        """Test preflight fails early when fetch fails."""
+        """Test preflight fails early when fetch fails with network error."""
         with patch.object(git_wc, "get_current_branch") as mock_branch:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
+                # Fetch fails with an error other than "couldn't find remote ref"
                 mock_run.side_effect = [
-                    MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
-                    Exception("Network timeout"),  # fetch fails
+                    MagicMock(
+                        returncode=1, stdout="",
+                        stderr="fatal: unable to access: Connection refused"
+                    ),
                 ]
 
                 result = git_wc.push_preflight(worktree_path)
@@ -1147,6 +1168,7 @@ class TestPushPreflight:
                 assert result.would_succeed is False
                 assert "Failed to update tracking refs" in result.error
                 assert result.fix_hint is not None
+                assert mock_run.call_count == 1  # No push attempted
 
     def test_push_preflight_no_branch(self, git_wc, worktree_path):
         """Test when current branch cannot be determined."""
@@ -1165,8 +1187,8 @@ class TestPushPreflight:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
+                # Flow: fetch (success), push --dry-run (fails)
                 mock_run.side_effect = [
-                    MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                     MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                     git_error(stderr="stale info detected"),  # push fails
                 ]
@@ -1184,8 +1206,8 @@ class TestPushPreflight:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
+                # Flow: fetch (success), push --dry-run (fails)
                 mock_run.side_effect = [
-                    MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                     MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                     git_error(stderr="! [rejected] non-fast-forward"),  # push
                 ]
@@ -1202,8 +1224,8 @@ class TestPushPreflight:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
+                # Flow: fetch (success), push --dry-run (fails)
                 mock_run.side_effect = [
-                    MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                     MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                     git_error(stderr="Permission denied (publickey)"),  # push
                 ]
@@ -1220,8 +1242,8 @@ class TestPushPreflight:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
+                # Flow: fetch (success), push --dry-run (timeout)
                 mock_run.side_effect = [
-                    MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                     MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                     Exception("command timed out"),  # push
                 ]
@@ -1238,8 +1260,8 @@ class TestPushPreflight:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
+                # Flow: fetch (success), push --dry-run
                 mock_run.side_effect = [
-                    MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
                     MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                     MagicMock(returncode=0, stdout="", stderr=""),  # push
                 ]
@@ -1247,29 +1269,33 @@ class TestPushPreflight:
                 result = git_wc.push_preflight(worktree_path, remote="upstream")
 
                 assert result.would_succeed is True
-                # Check rev-parse uses custom remote
-                revparse_args = mock_run.call_args_list[0][0][1]
-                assert "upstream/feature-branch" in revparse_args
+                # Check fetch uses custom remote
+                fetch_args = mock_run.call_args_list[0][0][1]
+                assert "fetch" in fetch_args
+                assert "upstream" in fetch_args
 
 
 class TestPushFetchFailureStopsProcessing:
     """Test that fetch failures stop processing early."""
 
     def test_push_fetch_failure_prevents_push(self, git_wc, worktree_path):
-        """Verify that when fetch fails, push is never attempted."""
+        """Verify that when fetch fails with network error, push is never attempted."""
         with patch.object(git_wc, "_run_git") as mock_run:
+            # Flow: get_branch, fetch (fails with network error)
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # get_branch
-                MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
-                Exception("Network timeout"),  # fetch fails
+                MagicMock(
+                    returncode=1, stdout="",
+                    stderr="fatal: unable to access: Connection refused"
+                ),  # fetch fails
             ]
 
             result = git_wc.push(worktree_path)
 
             assert result.success is False
             assert "Failed to update tracking refs" in result.message
-            # Only 3 calls - push was never attempted
-            assert mock_run.call_count == 3
+            # Only 2 calls - push was never attempted
+            assert mock_run.call_count == 2
 
     def test_preflight_fetch_failure_prevents_dry_run(self, git_wc, worktree_path):
         """Verify that when fetch fails in preflight, dry-run is never attempted."""
@@ -1277,14 +1303,17 @@ class TestPushFetchFailureStopsProcessing:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
+                # Fetch fails with network error (not "couldn't find remote ref")
                 mock_run.side_effect = [
-                    MagicMock(returncode=0, stdout="abc123\n", stderr=""),  # tracking exists
-                    Exception("Connection refused"),  # fetch fails
+                    MagicMock(
+                        returncode=1, stdout="",
+                        stderr="fatal: unable to access: Connection refused"
+                    ),
                 ]
 
                 result = git_wc.push_preflight(worktree_path)
 
                 assert result.would_succeed is False
                 assert "Failed to update tracking refs" in result.error
-                # Only 2 calls - dry-run push was never attempted
-                assert mock_run.call_count == 2
+                # Only 1 call - dry-run push was never attempted
+                assert mock_run.call_count == 1
