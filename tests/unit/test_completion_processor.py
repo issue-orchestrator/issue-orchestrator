@@ -32,6 +32,7 @@ from issue_orchestrator.control.completion_processor import (
     PushResult,
 )
 from issue_orchestrator.domain.events import EventBus, SessionEvent
+from issue_orchestrator.infra.issue_diagnostics import DiagnosticReference
 
 
 # ==================== Fixtures ====================
@@ -675,3 +676,34 @@ class TestCompletionProcessorPublishGate:
 
         # validation-failed label must be added
         mock_label_adapter.add_label.assert_called_once_with(123, "validation-failed")
+
+
+def test_cleanup_failure_posts_diagnostic_comment(
+    tmp_path,
+    processor,
+    mock_pr_adapter,
+):
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    completion_dir = worktree / ".issue-orchestrator"
+    completion_dir.mkdir()
+
+    record = make_record(CompletionOutcome.COMPLETED, [])
+    record_path = worktree / COMPLETION_RECORD_PATH
+    record_path.write_text(json.dumps(record.to_dict()))
+
+    with patch.object(CompletionProcessor, "cleanup_record", return_value=False):
+        with patch(
+            "issue_orchestrator.control.completion_processor.write_issue_diagnostic"
+        ) as mock_write:
+            mock_write.return_value = DiagnosticReference(
+                worktree_name="worktree",
+                relative_path=".issue-orchestrator/diagnostics/diag.json",
+            )
+
+            processor.process(worktree, 123, "Test issue")
+
+    mock_pr_adapter.add_comment.assert_called_once()
+    comment = mock_pr_adapter.add_comment.call_args[0][1]
+    assert "Diagnostic file" in comment
+    assert "Worktree: `worktree`" in comment

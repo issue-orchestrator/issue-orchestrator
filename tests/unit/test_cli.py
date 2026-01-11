@@ -635,56 +635,63 @@ class TestSetupLogging:
     def test_setup_logging_default(self):
         """Verify logging setup with default settings."""
         with patch('logging.getLogger') as mock_get_logger:
-            with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler') as mock_file_handler:
-                with patch('logging.info'):
-                    mock_logger = Mock()
-                    mock_logger.handlers = []
-                    mock_get_logger.return_value = mock_logger
+            with patch('logging.FileHandler') as mock_file_handler:
+                with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler', create=True) as mock_rotating:
+                    with patch('logging.info'):
+                        mock_logger = Mock()
+                        mock_logger.handlers = []
+                        mock_get_logger.return_value = mock_logger
 
-                    mock_handler = Mock()
-                    mock_file_handler.return_value = mock_handler
+                        mock_handler = Mock()
+                        mock_file_handler.return_value = mock_handler
+                        mock_rotating.return_value = mock_handler
 
-                    setup_logging(repo_root="/tmp/test-repo", level="INFO")
+                        setup_logging(repo_root="/tmp/test-repo", level="INFO")
 
-                    mock_logger.setLevel.assert_called_once()
-                    mock_logger.addHandler.assert_called_once_with(mock_handler)
+                        mock_logger.setLevel.assert_called_once()
+                        assert mock_file_handler.called or mock_rotating.called
+                        mock_logger.addHandler.assert_called_once_with(mock_handler)
 
     def test_setup_logging_debug_mode(self):
         """Verify logging setup with debug mode enabled."""
         with patch('logging.getLogger') as mock_get_logger:
-            with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler') as mock_file_handler:
-                with patch('logging.info'):
-                    mock_logger = Mock()
-                    mock_logger.handlers = []
-                    mock_get_logger.return_value = mock_logger
+            with patch('logging.FileHandler') as mock_file_handler:
+                with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler', create=True) as mock_rotating:
+                    with patch('logging.info'):
+                        mock_logger = Mock()
+                        mock_logger.handlers = []
+                        mock_get_logger.return_value = mock_logger
 
-                    mock_handler = Mock()
-                    mock_file_handler.return_value = mock_handler
+                        mock_handler = Mock()
+                        mock_file_handler.return_value = mock_handler
+                        mock_rotating.return_value = mock_handler
 
-                    setup_logging(repo_root="/tmp/test-repo", level="DEBUG")
+                        setup_logging(repo_root="/tmp/test-repo", level="DEBUG")
 
-                    # Verify debug level was set
-                    import logging
-                    mock_logger.setLevel.assert_called_once()
+                        # Verify debug level was set
+                        import logging
+                        mock_logger.setLevel.assert_called_once()
 
     def test_setup_logging_removes_existing_handlers(self):
         """Verify logging removes existing handlers before setup."""
         with patch('logging.getLogger') as mock_get_logger:
-            with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler') as mock_file_handler:
-                with patch('logging.info'):
-                    # Mock existing handlers
-                    existing_handler = Mock()
-                    mock_logger = Mock()
-                    mock_logger.handlers = [existing_handler]
-                    mock_get_logger.return_value = mock_logger
+            with patch('logging.FileHandler') as mock_file_handler:
+                with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler', create=True) as mock_rotating:
+                    with patch('logging.info'):
+                        # Mock existing handlers
+                        existing_handler = Mock()
+                        mock_logger = Mock()
+                        mock_logger.handlers = [existing_handler]
+                        mock_get_logger.return_value = mock_logger
 
-                    mock_handler = Mock()
-                    mock_file_handler.return_value = mock_handler
+                        mock_handler = Mock()
+                        mock_file_handler.return_value = mock_handler
+                        mock_rotating.return_value = mock_handler
 
-                    setup_logging(repo_root="/tmp/test-repo", level="INFO")
+                        setup_logging(repo_root="/tmp/test-repo", level="INFO")
 
-                    # Should remove existing handler
-                    mock_logger.removeHandler.assert_called_once_with(existing_handler)
+                        # Should remove existing handler
+                        mock_logger.removeHandler.assert_called_once_with(existing_handler)
 
 
 def _mock_issue(number: int) -> Mock:

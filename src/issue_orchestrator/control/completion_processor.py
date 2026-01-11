@@ -31,6 +31,7 @@ from ..domain.models import (
     COMPLETION_RECORD_PATH,
 )
 from ..domain.events import EventBus, SessionEvent
+from ..infra.issue_diagnostics import write_issue_diagnostic
 from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
@@ -529,10 +530,12 @@ class CompletionProcessor:
         # This is critical because review sessions reuse the same worktree
         record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
         existed_before = record_path.exists()
-        self.cleanup_record(worktree, completion_path)
+        cleanup_ok = self.cleanup_record(worktree, completion_path)
         exists_after = record_path.exists()
         logger.warning("CLEANUP: issue=%d path=%s existed_before=%s exists_after=%s",
                       issue_number, record_path, existed_before, exists_after)
+        if existed_before and exists_after and not cleanup_ok:
+            self._report_cleanup_failure(issue_number, worktree, record_path)
 
         return ProcessingResult(
             success=success,
@@ -598,6 +601,45 @@ class CompletionProcessor:
         except Exception as e:
             logger.warning(f"Failed to remove completion record: {e}")
             return False
+
+    def _report_cleanup_failure(
+        self,
+        issue_number: int,
+        worktree: Path,
+        record_path: Path,
+    ) -> None:
+        """Report cleanup failure with a local diagnostic reference."""
+        diagnostic = write_issue_diagnostic(
+            worktree=worktree,
+            issue_number=issue_number,
+            kind="completion-cleanup",
+            summary="Completion record could not be deleted",
+            details={
+                "record_path": str(record_path),
+                "worktree": str(worktree),
+            },
+        )
+
+        if diagnostic:
+            comment = (
+                "WARNING: Cleanup incomplete\n\n"
+                "The completion record could not be deleted after processing. "
+                "This can happen if the file is still open or locked.\n\n"
+                f"- Worktree: `{diagnostic.worktree_name}`\n"
+                f"- Diagnostic file: `{diagnostic.relative_path}`\n\n"
+                "Close any editors or processes using the file, then delete it manually."
+            )
+        else:
+            comment = (
+                "WARNING: Cleanup incomplete\n\n"
+                "The completion record could not be deleted after processing. "
+                "Close any editors or processes using the file, then delete it manually."
+            )
+
+        try:
+            self.pr_adapter.add_comment(issue_number, comment)
+        except Exception as exc:
+            logger.warning("Failed to add cleanup warning comment for #%d: %s", issue_number, exc)
 
     def _write_failure_diagnostic(
         self,
