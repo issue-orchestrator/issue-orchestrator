@@ -43,8 +43,6 @@ allow_git_subprocess_prefixes:
   - src/issue_orchestrator/adapters/worktree/_worktree.py
   - src/issue_orchestrator/infra/hooks/hooks.py
   - src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py
-  # control_api.py uses git for prereq checks (git --version) and setup detection (git remote get-url)
-  - src/issue_orchestrator/entrypoints/control_api.py
 
 deny_imports:
   - subprocess
