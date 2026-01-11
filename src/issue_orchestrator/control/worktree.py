@@ -34,6 +34,7 @@ class Worktree:
     ORCHESTRATOR_DIR = ".issue-orchestrator"
     COMPLETION_PATTERN = "completion*.json"
     SESSION_IDENTITY_PATTERN = "session-identity*.json"
+    PANE_LOG = "pane.log"
 
     def __init__(self, path: Path, issue_number: int):
         """Initialize worktree.
@@ -69,6 +70,7 @@ class Worktree:
         try:
             removed_completions = self._delete_files(self.COMPLETION_PATTERN)
             removed_identities = self._delete_files(self.SESSION_IDENTITY_PATTERN)
+            removed_pane_log = self._delete_pane_log()
         except OSError as e:
             logger.error(
                 "[issue-%d] Failed to clean stale files in worktree: %s",
@@ -81,12 +83,13 @@ class Worktree:
                 f"Cannot delete stale files in worktree {self.path.name}: {e}",
             ) from e
 
-        if removed_completions or removed_identities:
+        if removed_completions or removed_identities or removed_pane_log:
             logger.info(
-                "[issue-%d] Removed %d completion(s) and %d identity file(s)",
+                "[issue-%d] Removed %d completion(s), %d identity file(s), pane.log=%s",
                 self.issue_number,
                 len(removed_completions),
                 len(removed_identities),
+                removed_pane_log,
             )
 
     def _delete_files(self, pattern: str) -> list[Path]:
@@ -115,3 +118,23 @@ class Worktree:
             removed.append(file_path)
 
         return removed
+
+    def _delete_pane_log(self) -> bool:
+        """Delete pane.log if it exists.
+
+        Returns:
+            True if file was deleted, False otherwise.
+
+        Raises:
+            OSError: If file cannot be deleted.
+        """
+        pane_log = self._orchestrator_dir / self.PANE_LOG
+        if not pane_log.exists():
+            return False
+
+        try:
+            pane_log.unlink()
+            return True
+        except FileNotFoundError:
+            # Race condition - file was deleted between exists() and unlink()
+            return False
