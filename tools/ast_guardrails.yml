@@ -48,6 +48,15 @@ deny_attr_calls:
       - src/issue_orchestrator/control/action_applier.py
       - src/issue_orchestrator/control/completion_processor.py
       - src/issue_orchestrator/control/label_sync.py
+  - name: entrypoints_no_direct_label_mutations
+    description: "Entrypoint handlers must apply label/comment mutations via ActionApplier"
+    deny_in:
+      - src/issue_orchestrator/entrypoints/web.py
+      - src/issue_orchestrator/entrypoints/cli.py
+    deny_attr_names:
+      - add_label
+      - remove_label
+      - add_comment
 
 deny_git_subprocess: true
 allow_git_subprocess_prefixes:

@@ -134,6 +134,7 @@ def _describe_blocking_label(label: str) -> str:
 
 def _blocked_summary(labels: list[str], dependency_summary: str | None = None) -> str | None:
     from ..infra import labels as label_module
+    from ..control.actions import RemoveLabelAction
 
     reasons: list[str] = []
     blocking = label_module.get_blocking_labels(labels)
@@ -308,6 +309,7 @@ async def dashboard(
                     status_reason = dep_summary
 
                 from ..infra import labels as label_module
+    from ..control.actions import RemoveLabelAction
 
                 if issue.number in pending_rework_numbers:
                     flow_stage = "rework"
@@ -1069,6 +1071,7 @@ async def get_blocked_issues() -> JSONResponse:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     from ..infra import labels as label_module
+    from ..control.actions import RemoveLabelAction
 
     state = _orchestrator.state
     config = _orchestrator.config
@@ -1175,6 +1178,7 @@ async def unblock_and_retry(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     from ..infra import labels as label_module
+    from ..control.actions import RemoveLabelAction
 
     try:
         body = await request.json()
@@ -1187,6 +1191,7 @@ async def unblock_and_retry(request: Request) -> JSONResponse:
 
     state = _orchestrator.state
     repository_host = _orchestrator.repository_host
+    action_applier = _orchestrator.deps.action_applier
 
     unblocked = []
     failed = []
@@ -1199,11 +1204,21 @@ async def unblock_and_retry(request: Request) -> JSONResponse:
 
             if blocking_labels:
                 for label in blocking_labels:
-                    try:
-                        repository_host.remove_label(issue_number, label)
+                    action = RemoveLabelAction(
+                        issue_number=issue_number,
+                        label=label,
+                        reason="unblock via web",
+                    )
+                    result = action_applier.apply(action)
+                    if result.success:
                         logger.info("[unblock] Removed label '%s' from issue #%d", label, issue_number)
-                    except Exception as e:
-                        logger.warning("[unblock] Failed to remove label '%s' from #%d: %s", label, issue_number, e)
+                    else:
+                        logger.warning(
+                            "[unblock] Failed to remove label '%s' from #%d: %s",
+                            label,
+                            issue_number,
+                            result.error or "unknown error",
+                        )
 
             # Also remove from history so it's eligible for processing
             state.session_history = [
