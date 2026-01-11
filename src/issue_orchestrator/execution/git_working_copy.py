@@ -18,6 +18,7 @@ from ..ports.git import Git, GitError, GitResult
 from ..ports.working_copy import (
     CommitInfo,
     BranchStatus,
+    PreflightResult,
     PushResult,
     RebaseResult,
 )
@@ -394,6 +395,64 @@ class GitWorkingCopy:
                 return int(match.group(1))
 
         return None
+
+    def push_preflight(
+        self,
+        worktree: Path,
+        remote: str = "origin",
+        force_with_lease: bool = True,
+    ) -> PreflightResult:
+        """Check if a push would succeed (dry-run).
+
+        This performs a git push --dry-run to verify the push would work
+        without actually pushing. Useful for catching divergence issues
+        while the agent is still active and can fix them.
+        """
+        branch = self.get_current_branch(worktree)
+        if not branch:
+            return PreflightResult(
+                would_succeed=False,
+                error="Could not determine current branch",
+                fix_hint="Ensure you are on a branch, not in detached HEAD state",
+            )
+
+        args = ["push", "--dry-run", "-u", remote, branch]
+        if force_with_lease:
+            args.append("--force-with-lease")
+
+        try:
+            self._run_git(worktree, args, timeout_s=60)
+            return PreflightResult(would_succeed=True)
+        except GitError as e:
+            error_msg = e.result.stderr if e.result.stderr else str(e)
+            fix_hint = None
+
+            # Provide specific hints based on error type
+            if "stale info" in error_msg or "rejected" in error_msg:
+                fix_hint = "Branch has diverged. Run: git fetch origin && git rebase origin/main"
+            elif "no upstream" in error_msg.lower():
+                fix_hint = "No upstream branch set. This should be handled automatically."
+            elif "permission denied" in error_msg.lower() or "authentication" in error_msg.lower():
+                fix_hint = "Authentication issue - contact orchestrator administrator."
+
+            return PreflightResult(
+                would_succeed=False,
+                error=error_msg,
+                fix_hint=fix_hint,
+            )
+        except Exception as e:
+            # Timeout or other error
+            error_msg = str(e)
+            if "timed out" in error_msg.lower():
+                return PreflightResult(
+                    would_succeed=False,
+                    error="Push check timed out",
+                    fix_hint="Network or remote issue - retry later",
+                )
+            return PreflightResult(
+                would_succeed=False,
+                error=error_msg,
+            )
 
     def get_worktree_root(self, worktree: Path) -> Path | None:
         """Get the root of the worktree (handles being in subdirectory)."""

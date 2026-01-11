@@ -450,6 +450,7 @@ class SessionLauncher:
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
         env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue.number}'"
+        env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
         if self.config.validation.cmd:
             env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
             env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
@@ -684,6 +685,7 @@ class SessionLauncher:
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
         env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{review.issue_number}'"
+        env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
         if self.config.validation.cmd:
             env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
             env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
@@ -913,6 +915,7 @@ class SessionLauncher:
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"
         env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
+        env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
         if self.config.validation.cmd:
             env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
             env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"

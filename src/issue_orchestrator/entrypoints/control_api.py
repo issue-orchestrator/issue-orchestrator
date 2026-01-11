@@ -304,6 +304,50 @@ async def shutdown() -> JSONResponse:
     return JSONResponse({"status": "shutdown_requested"})
 
 
+@control_app.post("/api/preflight-push")
+async def preflight_push(request: Request) -> JSONResponse:
+    """Check if a git push would succeed (dry-run).
+
+    This endpoint allows agent-done to verify a push would work before
+    completing, while the agent is still active and can fix any issues.
+
+    The agent environment has credentials scrubbed, so it cannot do this
+    check itself. The orchestrator has credentials and performs the check.
+
+    JSON body:
+        worktree: str - Path to the worktree
+
+    Returns:
+        would_succeed: bool - Whether push would succeed
+        error: str | null - Error message if push would fail
+        fix_hint: str | null - Suggestion for how to fix the issue
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    worktree_path = body.get("worktree")
+    if not worktree_path:
+        return JSONResponse({"error": "worktree is required"}, status_code=400)
+
+    worktree = Path(worktree_path)
+    if not worktree.exists():
+        return JSONResponse({"error": f"Worktree does not exist: {worktree}"}, status_code=400)
+
+    # Use the GitWorkingCopy adapter (port implementation)
+    from ..execution import GitWorkingCopy
+
+    git = GitWorkingCopy()
+    result = git.push_preflight(worktree)
+
+    return JSONResponse({
+        "would_succeed": result.would_succeed,
+        "error": result.error,
+        "fix_hint": result.fix_hint,
+    })
+
+
 @control_app.post("/control/shutdown")
 async def shutdown_control_center(request: Request) -> JSONResponse:
     """Shutdown the control center server.

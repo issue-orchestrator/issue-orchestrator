@@ -125,7 +125,28 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
             )
             return True
 
-        # Step 3: Rebase onto origin/main
+        # Step 2.5: Check if branch exists on remote
+        # If it does, skip rebase to avoid diverging from pushed commits.
+        # The agent can handle updating from main if needed.
+        remote_check = _git_run(
+            worktree_path,
+            ["ls-remote", "--heads", "origin", current_branch],
+            check=False,
+        )
+        if remote_check.returncode == 0 and remote_check.stdout.strip():
+            logger.info(
+                "Branch %s exists on remote - skipping rebase to avoid divergence",
+                current_branch,
+            )
+            # Just fetch to update tracking refs
+            _git_run(
+                worktree_path,
+                ["fetch", "origin", current_branch],
+                check=False,
+            )
+            return True
+
+        # Step 3: Rebase onto origin/main (only for unpushed branches)
         logger.info(
             "Rebasing branch %s onto origin/main in %s",
             current_branch,

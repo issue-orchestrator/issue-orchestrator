@@ -10,6 +10,7 @@ from issue_orchestrator.ports.git import GitError, GitResult
 from issue_orchestrator.ports.working_copy import (
     BranchStatus,
     CommitInfo,
+    PreflightResult,
     PushResult,
     RebaseResult,
 )
@@ -1045,3 +1046,123 @@ class TestCommitAll:
             result = git_wc.commit_all(worktree_path, "Test commit")
 
             assert result is False
+
+
+class TestPushPreflight:
+    """Tests for push_preflight method."""
+
+    def test_push_preflight_success(self, git_wc, worktree_path):
+        """Test successful push preflight check."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = "feature-branch"
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+                result = git_wc.push_preflight(worktree_path)
+
+                assert result.would_succeed is True
+                assert result.error is None
+                assert result.fix_hint is None
+                # Verify correct git command
+                args = mock_run.call_args[0][1]
+                assert "push" in args
+                assert "--dry-run" in args
+                assert "--force-with-lease" in args
+                assert "feature-branch" in args
+
+    def test_push_preflight_no_branch(self, git_wc, worktree_path):
+        """Test when current branch cannot be determined."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = None
+
+            result = git_wc.push_preflight(worktree_path)
+
+            assert result.would_succeed is False
+            assert "branch" in result.error.lower()
+            assert result.fix_hint is not None
+
+    def test_push_preflight_stale_info_error(self, git_wc, worktree_path):
+        """Test handling stale info error."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = "feature-branch"
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.side_effect = git_error(stderr="stale info detected")
+
+                result = git_wc.push_preflight(worktree_path)
+
+                assert result.would_succeed is False
+                assert "stale info" in result.error
+                assert result.fix_hint is not None
+                assert "rebase" in result.fix_hint.lower()
+
+    def test_push_preflight_rejected_error(self, git_wc, worktree_path):
+        """Test handling rejected push error."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = "feature-branch"
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.side_effect = git_error(stderr="! [rejected] non-fast-forward")
+
+                result = git_wc.push_preflight(worktree_path)
+
+                assert result.would_succeed is False
+                assert "rejected" in result.error
+                assert result.fix_hint is not None
+
+    def test_push_preflight_permission_denied(self, git_wc, worktree_path):
+        """Test handling permission denied error."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = "feature-branch"
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.side_effect = git_error(stderr="Permission denied (publickey)")
+
+                result = git_wc.push_preflight(worktree_path)
+
+                assert result.would_succeed is False
+                assert "permission denied" in result.error.lower()
+                assert "authentication" in result.fix_hint.lower()
+
+    def test_push_preflight_timeout(self, git_wc, worktree_path):
+        """Test handling timeout error."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = "feature-branch"
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.side_effect = Exception("command timed out")
+
+                result = git_wc.push_preflight(worktree_path)
+
+                assert result.would_succeed is False
+                assert "timed out" in result.error.lower()
+                assert result.fix_hint is not None
+
+    def test_push_preflight_custom_remote(self, git_wc, worktree_path):
+        """Test with custom remote."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = "feature-branch"
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+                result = git_wc.push_preflight(worktree_path, remote="upstream")
+
+                assert result.would_succeed is True
+                args = mock_run.call_args[0][1]
+                assert "upstream" in args
+
+    def test_push_preflight_without_force_with_lease(self, git_wc, worktree_path):
+        """Test without force-with-lease flag."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = "feature-branch"
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+                result = git_wc.push_preflight(worktree_path, force_with_lease=False)
+
+                assert result.would_succeed is True
+                args = mock_run.call_args[0][1]
+                assert "--force-with-lease" not in args
