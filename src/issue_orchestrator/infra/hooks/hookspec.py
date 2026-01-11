@@ -44,6 +44,7 @@ class TerminalSpec:
         command: str,
         working_dir: str,
         title: str | None,
+        session_name: str | None = None,
     ) -> bool | None:
         """Create a new terminal session for an agent.
 
@@ -52,28 +53,31 @@ class TerminalSpec:
             command: Shell command to execute
             working_dir: Working directory path
             title: Optional human-readable title
+            session_name: Optional full session name (e.g., "review-123")
 
         Returns:
             True if created, False if failed, None to defer to next plugin.
         """
 
     @hookspec(firstresult=True)
-    def session_exists(self, session_id: int) -> bool | None:
+    def session_exists(self, session_id: int, session_name: str | None = None) -> bool | None:
         """Check if a session exists and is running.
 
         Args:
             session_id: Numeric ID to check
+            session_name: Optional full session name
 
         Returns:
             True if exists, False if not, None to defer to next plugin.
         """
 
     @hookspec(firstresult=True)
-    def kill_session(self, session_id: int) -> bool | None:
+    def kill_session(self, session_id: int, session_name: str | None = None) -> bool | None:
         """Kill/close a terminal session.
 
         Args:
             session_id: Numeric ID to kill
+            session_name: Optional full session name
 
         Returns:
             True if killed, False if not found, None to defer to next plugin.
@@ -97,24 +101,26 @@ class TerminalSpec:
         """
 
     @hookspec(firstresult=True)
-    def get_session_output(self, session_id: int, lines: int) -> str | None:
+    def get_session_output(self, session_id: int, lines: int, session_name: str | None = None) -> str | None:
         """Get recent output from a session.
 
         Args:
             session_id: Numeric ID
             lines: Number of lines to retrieve
+            session_name: Optional full session name
 
         Returns:
             Terminal output string, or None if not available/supported.
         """
 
     @hookspec(firstresult=True)
-    def send_to_session(self, session_id: int, text: str) -> bool | None:
+    def send_to_session(self, session_id: int, text: str, session_name: str | None = None) -> bool | None:
         """Send text to a running session.
 
         Args:
             session_id: Numeric ID
             text: Text to send (e.g., "/exit")
+            session_name: Optional full session name
 
         Returns:
             True if sent, False if failed, None to defer to next plugin.
@@ -144,11 +150,12 @@ class TerminalSpec:
         """
 
     @hookspec(firstresult=True)
-    def focus_session(self, session_id: int) -> bool | None:
+    def focus_session(self, session_id: int, session_name: str | None = None) -> bool | None:
         """Focus/select a terminal session to bring it to the foreground.
 
         Args:
             session_id: Numeric ID (typically issue number)
+            session_name: Optional full session name
 
         Returns:
             True if focused, False if not found, None to defer to next plugin.

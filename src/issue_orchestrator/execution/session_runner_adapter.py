@@ -41,11 +41,13 @@ class PluggySessionRunner:
         command: str,
         working_dir: str,
         title: str | None = None,
+        session_name: str | None = None,
     ) -> bool:
         """Create a terminal session via pluggy hook."""
         logger.info(
-            "Creating session via terminal hook: id=%s title=%s cwd=%s command=%s",
+            "Creating session via terminal hook: id=%s name=%s title=%s cwd=%s command=%s",
             session_id,
+            session_name,
             title,
             working_dir,
             command,
@@ -55,18 +57,19 @@ class PluggySessionRunner:
             command=command,
             working_dir=working_dir,
             title=title,
+            session_name=session_name,
         )
         logger.info("Create session result: id=%s result=%s", session_id, result)
         return result if result is not None else False
 
-    def session_exists(self, session_id: int) -> bool:
+    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
         """Check if session exists via pluggy hook."""
-        result = self._pm.hook.session_exists(session_id=session_id)
+        result = self._pm.hook.session_exists(session_id=session_id, session_name=session_name)
         return result if result is not None else False
 
-    def kill_session(self, session_id: int) -> None:
+    def kill_session(self, session_id: int, session_name: str | None = None) -> None:
         """Kill session via pluggy hook."""
-        self._pm.hook.kill_session(session_id=session_id)
+        self._pm.hook.kill_session(session_id=session_id, session_name=session_name)
 
     def discover_running_sessions(self) -> list[DiscoveredSession]:
         """Discover running sessions via pluggy hook."""
@@ -78,13 +81,26 @@ class PluggySessionRunner:
         result = self._pm.hook.cleanup_idle_sessions()
         return result if result is not None else 0
 
-    def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
+    def get_session_output(
+        self,
+        session_id: int,
+        lines: int = 50,
+        session_name: str | None = None,
+    ) -> str | None:
         """Get session output via pluggy hook."""
-        return self._pm.hook.get_session_output(session_id=session_id, lines=lines)
+        return self._pm.hook.get_session_output(
+            session_id=session_id,
+            lines=lines,
+            session_name=session_name,
+        )
 
-    def send_to_session(self, session_id: int, text: str) -> bool:
+    def send_to_session(self, session_id: int, text: str, session_name: str | None = None) -> bool:
         """Send text to a session via pluggy hook."""
-        result = self._pm.hook.send_to_session(session_id=session_id, text=text)
+        result = self._pm.hook.send_to_session(
+            session_id=session_id,
+            text=text,
+            session_name=session_name,
+        )
         return result if result is not None else False
 
     def session_exists_by_name(self, session_name: str) -> bool:
@@ -97,9 +113,9 @@ class PluggySessionRunner:
         result = self._pm.hook.send_to_session_by_name(session_name=session_name, text=text)
         return result if result is not None else False
 
-    def focus_session(self, session_id: int) -> bool:
+    def focus_session(self, session_id: int, session_name: str | None = None) -> bool:
         """Focus a terminal session via pluggy hook."""
-        result = self._pm.hook.focus_session(session_id=session_id)
+        result = self._pm.hook.focus_session(session_id=session_id, session_name=session_name)
         return result if result is not None else False
 
     # Lifecycle hooks for terminal backend initialization and cleanup

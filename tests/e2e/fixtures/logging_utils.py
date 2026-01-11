@@ -1,6 +1,7 @@
 """E2E logging utilities for progress tracking and log snapshots."""
 
 from datetime import datetime
+import subprocess
 from pathlib import Path
 
 from libtmux import Server
@@ -67,6 +68,26 @@ def find_recent_worktrees(limit: int = 3, worktree_base: Path | None = None) -> 
 
     candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
     return candidates[:limit]
+
+
+def find_worktree_for_issue(issue_number: int, worktree_base: Path | None = None) -> Path | None:
+    """Find a worktree directory whose branch name matches the issue number."""
+    for worktree in find_recent_worktrees(limit=50, worktree_base=worktree_base):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except Exception:
+            continue
+        if result.returncode != 0:
+            continue
+        branch = result.stdout.strip()
+        if branch.startswith(f"{issue_number}-") or branch == str(issue_number):
+            return worktree
+    return None
 
 
 def claude_project_dir_for(worktree: Path) -> Path:

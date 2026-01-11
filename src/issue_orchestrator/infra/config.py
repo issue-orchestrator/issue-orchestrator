@@ -35,6 +35,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'comment_headings', 'dangerous', 'stale_escalation_ticks',
     'tmuxp',  # Optional path to custom tmuxp config for tmux layout
     'tmux_bindings',  # List of tmux bind-key commands to apply
+    'tmux_session_mode',  # shared (one session) or per_session
 }
 
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
@@ -373,6 +374,9 @@ class Config:
     # Can be "builtin:tmux" or a full class path for custom adapters
     terminal_adapter: Optional[str] = None
 
+    # Tmux session mode: "shared" (single orchestrator session) or "per_session"
+    tmux_session_mode: str = "shared"
+
     # Custom tmuxp config file for tmux layout (optional)
     # If specified, loads this tmuxp config instead of the default
     # Supports mouse mode, double-click zoom, custom layouts
@@ -555,6 +559,7 @@ class Config:
             "gh_audit_file": self.gh_audit_file,
             "ui_mode": self.ui_mode,
             "terminal_adapter": self.terminal_adapter,
+            "tmux_session_mode": self.tmux_session_mode,
             "tmuxp_config": str(self.tmuxp_config) if self.tmuxp_config else None,
             "tmux_bindings": self.tmux_bindings,
             "agents": {
@@ -751,6 +756,8 @@ class Config:
 
         # Terminal adapter (overrides ui_mode if set)
         config.terminal_adapter = data.get("terminal_adapter")
+        if data.get("tmux_session_mode"):
+            config.tmux_session_mode = str(data["tmux_session_mode"])
 
         # Custom tmuxp config for tmux layout
         if data.get("tmuxp"):

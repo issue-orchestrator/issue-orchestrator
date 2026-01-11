@@ -61,14 +61,21 @@ class MockSessionRunner:
     def __init__(self):
         self.sessions: dict[int, dict] = {}
 
-    def create_session(self, session_id: int, command: str, working_dir: str, title: str | None = None) -> bool:
+    def create_session(
+        self,
+        session_id: int,
+        command: str,
+        working_dir: str,
+        title: str | None = None,
+        session_name: str | None = None,
+    ) -> bool:
         self.sessions[session_id] = {"command": command, "working_dir": working_dir}
         return True
 
-    def session_exists(self, session_id: int) -> bool:
+    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
         return session_id in self.sessions
 
-    def kill_session(self, session_id: int) -> None:
+    def kill_session(self, session_id: int, session_name: str | None = None) -> None:
         self.sessions.pop(session_id, None)
 
     def discover_running_sessions(self) -> list[dict]:
@@ -77,7 +84,7 @@ class MockSessionRunner:
     def cleanup_idle_sessions(self) -> int:
         return 0
 
-    def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
+    def get_session_output(self, session_id: int, lines: int = 50, session_name: str | None = None) -> str | None:
         return None
 
     def session_exists_by_name(self, session_name: str) -> bool:

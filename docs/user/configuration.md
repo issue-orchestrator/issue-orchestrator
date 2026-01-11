@@ -308,11 +308,16 @@ setup_worktree:
 ### Terminal and Tmux
 
 ```yaml
-terminal_adapter: null            # (default: auto) Override: "builtin:tmux" or custom
+terminal_adapter: null            # (default: auto) Override: "tmux", "subprocess", or custom class path
 tmuxp: null                       # (default) Custom tmuxp config file path
 tmux_bindings:                    # (default: double-click to zoom)
   - "bind-key -T root DoubleClick1Pane resize-pane -Z -t ="
 ```
+
+Notes:
+- `terminal_adapter: tmux` uses the tmux backend (default).
+- `terminal_adapter: subprocess` runs agent sessions as subprocesses and logs to
+  `.issue-orchestrator/session.log` in each worktree (no tmux required).
 
 ---
 

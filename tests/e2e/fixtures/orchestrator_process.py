@@ -250,8 +250,10 @@ class OrchestratorProcess:
         env["ORCHESTRATOR_LOG_FILE"] = str(orchestrator_log_file)
         env["PYTHONUNBUFFERED"] = "1"
         env["ORCHESTRATOR_LOG_TO_STDERR"] = "1"
+        env["PYTHONPATH"] = f"{self.project_root / 'src'}:{env.get('PYTHONPATH', '')}"
         # Set tmux session name for e2e test isolation
         env["ORCHESTRATOR_TMUX_SESSION"] = self.tmux_session
+        env["ORCHESTRATOR_NO_BROWSER"] = "1"
         if os.environ.get("E2E_CLAUDE_ARGS"):
             env["ORCHESTRATOR_CLAUDE_ARGS"] = os.environ["E2E_CLAUDE_ARGS"]
         if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
