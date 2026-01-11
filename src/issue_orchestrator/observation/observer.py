@@ -122,18 +122,6 @@ class SessionObserver:
             return []
         return self._fresh_issue_reader.read_issue_labels(issue_number)
 
-    def _add_label(self, issue_number: int, label: str) -> None:
-        """Add a label to an issue using the repository host."""
-        if self._repository_host is None:
-            return
-        self._repository_host.add_label(issue_number, label)
-
-    def _remove_label(self, issue_number: int, label: str) -> None:
-        """Remove a label from an issue using the repository host."""
-        if self._repository_host is None:
-            return
-        self._repository_host.remove_label(issue_number, label)
-
     def observe_session(self, session: Session) -> SessionObservationResult:
         """Observe a session and return facts about its state.
 

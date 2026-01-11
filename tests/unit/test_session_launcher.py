@@ -37,6 +37,7 @@ from issue_orchestrator.control.session_launcher import (
     kill_session,
     get_session_machine,
 )
+from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
 from issue_orchestrator.domain.models import (
     Issue,
     Session,
@@ -337,6 +338,7 @@ def session_launcher(
         config=sample_config,
         events=mock_events,
         repository_host=mock_repo_host,
+        action_applier=MagicMock(),
         session_manager=MagicMock(),
         worktree_manager=mock_worktree_manager,
         working_copy=mock_working_copy,
@@ -537,7 +539,8 @@ class TestLaunchIssueSession:
         result = session_launcher.launch_issue_session(sample_issue, active_sessions=[])
 
         assert result.success is True
-        assert (123, "in-progress") in mock_repo_host.add_label_calls
+        actions = [call.args[0] for call in session_launcher._action_applier.apply.call_args_list]
+        assert any(isinstance(a, AddLabelAction) and a.label == "in-progress" for a in actions)
 
     def test_emits_session_started_event(self, session_launcher, sample_issue, mock_events):
         """Verify SESSION_STARTED event is emitted."""
@@ -570,7 +573,8 @@ class TestLaunchIssueSession:
         assert result.success is False
         assert "Failed to create terminal session" in result.reason
         # Verify in-progress label is removed on failure
-        assert (123, "in-progress") in mock_repo_host.remove_label_calls
+        actions = [call.args[0] for call in session_launcher._action_applier.apply.call_args_list]
+        assert any(isinstance(a, RemoveLabelAction) and a.label == "in-progress" for a in actions)
 
     def test_runs_setup_commands(self, session_launcher, sample_issue, mock_command_runner):
         """Verify setup commands are run (line 315)."""
@@ -885,7 +889,8 @@ class TestLaunchReworkSession:
 
         assert result.success is True
         # Should add rework-cycle-2 label
-        assert any(label == "rework-cycle-2" for _, label in mock_repo_host.add_label_calls)
+        actions = [call.args[0] for call in session_launcher._action_applier.apply.call_args_list]
+        assert any(isinstance(a, AddLabelAction) and a.label == "rework-cycle-2" for a in actions)
 
     def test_removes_needs_rework_label(self, session_launcher, mock_repo_host):
         """Verify needs-rework label is removed (lines 754-764)."""
@@ -903,7 +908,8 @@ class TestLaunchReworkSession:
 
         assert result.success is True
         # Should remove needs-rework label
-        assert any(label == "needs-rework" for _, label in mock_repo_host.remove_label_calls)
+        actions = [call.args[0] for call in session_launcher._action_applier.apply.call_args_list]
+        assert any(isinstance(a, RemoveLabelAction) and a.label == "needs-rework" for a in actions)
 
 
 # =============================================================================

@@ -135,7 +135,7 @@ class Orchestrator:
     @cached_property
     def _session_launcher(self) -> SessionLauncher:
         return SessionLauncher(
-            self.config, self.deps.events, self.deps.repository_host, self.deps.session_manager,
+            self.config, self.deps.events, self.deps.repository_host, self.deps.action_applier, self.deps.session_manager,
             self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner,
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
@@ -180,6 +180,7 @@ class Orchestrator:
     def _startup_manager(self) -> StartupManager:
         return StartupManager(
             self.config, self.deps.events, self.deps.runner, self.deps.repository_host,
+            self.deps.action_applier,
             self.deps.hook_verifier,
             lambda: extract_issue_branches(self.deps.working_copy, self.config.repo_root),
             lambda name: self._session_exists(name),
@@ -329,7 +330,7 @@ class Orchestrator:
         )
         return diagnosis.to_dict()
 
-    def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None: pause_issue_for_reconciliation(self.deps.events, self.deps.repository_host, self._event_context, issue_number, reason)
+    def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None: pause_issue_for_reconciliation(self.deps.events, self.deps.action_applier, self._event_context, issue_number, reason)
     def _apply_plan(self, plan: "Plan") -> None: self._plan_applier._apply_plan(plan, self._pause_issue_for_reconciliation)
     def _fetch_all_issues(self, required_stable_ids: set[str] | None = None) -> list[Issue]: return self._github_workflow.fetch_all_issues(self._get_milestone_filter(), required_stable_ids)
     def update_queue_cache(self) -> None: self._plan_applier.update_queue_cache()
