@@ -61,8 +61,8 @@ class SnapshotBuilder:
 
     def _fetch_issues(self) -> list[Any]:
         labels_for_agent: list[str] = []
-        if self.config.filter_label:
-            labels_for_agent.append(self.config.filter_label)
+        if self.config.filtering.label:
+            labels_for_agent.append(self.config.filtering.label)
 
         milestones = self.config.get_filter_milestones()
         if not milestones:
@@ -77,7 +77,7 @@ class SnapshotBuilder:
                 issues = self.repository_host.list_issues(
                     labels=labels,
                     milestone=milestone,
-                    limit=self.config.issue_fetch_limit,
+                    limit=self.config.filtering.fetch_limit,
                 )
                 for issue in issues:
                     if issue.number in seen:

@@ -128,7 +128,7 @@ class OrchestratorSupport:
         return self.cleanup_manager
 
     def _get_milestone_filter(self) -> str | None:
-        return self.config.filter_milestone
+        return self.config.filtering.milestone
 
     def _immediate_cleanup(self, session: "Session", status: "SessionStatus") -> None:
         from ..domain.models import SessionStatus
@@ -480,7 +480,7 @@ def run_planning_cycle(
         reason = gh_audit.AuditReason.QUEUE_REFRESH_MANUAL if manual_refresh else gh_audit.AuditReason.QUEUE_REFRESH_SCHEDULED
         scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
         with gh_audit.context(reason=reason, scope=scope):
-            all_issues = github_workflow.fetch_all_issues(config.filter_milestone, required_stable_ids)
+            all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
         last_issue_fetch = time.time()
 
         # Remove discovered inflight IDs
@@ -507,7 +507,7 @@ def run_planning_cycle(
         github_workflow.update_dependency_problems(state, dep_blocked)
         exclude = {e.issue_number for e in state.session_history} | {s.issue.number for s in state.active_sessions}
         filtered = [i for i in all_issues if i.number not in exclude]
-        new_queue = [i for i in filtered if i.number == config.filter_issue] if config.filter_issue else filtered
+        new_queue = [i for i in filtered if i.number == config.filtering.issue] if config.filtering.issue else filtered
 
         # Detect queue changes and emit event
         old_numbers = {i.number for i in state.cached_queue_issues}

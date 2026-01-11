@@ -980,8 +980,8 @@ async def create_test_issues() -> JSONResponse:
         return JSONResponse({"error": "No repo configured"}, status_code=400)
     try:
         urls = _create_test_issues(config.repo, list(config.agents.keys()))
-        # Set filter_label so orchestrator picks them up
-        config.filter_label = "test-data"
+        # Set filtering.label so orchestrator picks them up
+        config.filtering.label = "test-data"
         return JSONResponse({"created": urls})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -1250,10 +1250,12 @@ async def get_debug() -> JSONResponse:
     startup_options = {
         "ui_mode": config.ui_mode,
         "web_port": config.web_port,
-        "test_mode": config.filter_label == "test-data",  # Inferred from filter
-        "filter_label": config.filter_label,
-        "filter_milestone": config.filter_milestone,
-        "filter_milestones": config.get_filter_milestones(),
+        "test_mode": config.filtering.label == "test-data",  # Inferred from filter
+        "filtering": {
+            "label": config.filtering.label,
+            "milestone": config.filtering.milestone,
+            "milestones": config.filtering.get_milestones(),
+        },
         "max_sessions": config.max_concurrent_sessions,
     }
 

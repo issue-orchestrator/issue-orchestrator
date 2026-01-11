@@ -31,8 +31,8 @@ def create_mock_orchestrator():
     config.queue_refresh_seconds = 600
     config.ui_mode = "web"
     config.web_port = 8080
-    config.filter_label = None
-    config.filter_milestone = None
+    config.filtering.label = None
+    config.filtering.milestone = None
     config.config_path = Path("/tmp/config.yaml")
     config.repo_root = Path("/tmp/repo")
     config.worktree_base = Path("/tmp/worktrees")  # Top-level worktree_base
@@ -807,7 +807,7 @@ class TestTestDataEndpoints:
             assert response.status_code == 200
             data = response.json()
             assert len(data["created"]) == 2
-            assert mock_orch.config.filter_label == "test-data"
+            assert mock_orch.config.filtering.label == "test-data"
 
     def test_create_test_issues_no_repo(self):
         """Test creating test issues without repo configured."""

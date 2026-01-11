@@ -73,13 +73,13 @@ def fetch_all_issues(
 
     for agent_label in config.agents.keys():
         labels = [agent_label]
-        if config.filter_label:
-            labels.append(config.filter_label)
+        if config.filtering.label:
+            labels.append(config.filtering.label)
         for milestone in milestones:
             fetched = issue_tracker.list_issues(
                 labels=labels,
                 milestone=milestone,
-                limit=config.issue_fetch_limit,
+                limit=config.filtering.fetch_limit,
             )
             all_issues.extend(fetched)
 

@@ -171,7 +171,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             "gh_audit=%s gh_audit_events=%s gh_audit_file=%s",
             config.repo,
             config.config_path,
-            config.filter_label,
+            config.filtering.label,
             config.ui_mode,
             config.web_port,
             config.control_api_port,
@@ -230,28 +230,28 @@ def cmd_start(args: argparse.Namespace) -> int:
             console.print("[red]Error: repo must be set in config for test mode[/red]")
             return 1
         _run_test_setup(config)
-        config.filter_label = "test-data"
-        console.print("[cyan]Test mode: filter_label set to 'test-data'[/cyan]")
+        config.filtering.label = "test-data"
+        console.print("[cyan]Test mode: filtering.label set to 'test-data'[/cyan]")
 
     # Handle milestone override
     if hasattr(args, "milestones") and args.milestones:
         milestones = [m.strip() for m in args.milestones.split(",") if m.strip()]
-        config.filter_milestones = milestones
-        config.filter_milestone = None
+        config.filtering.milestones = milestones
+        config.filtering.milestone = None
         console.print(f"[cyan]Filtering by milestones: {', '.join(milestones)}[/cyan]")
     elif hasattr(args, 'milestone') and args.milestone:
-        config.filter_milestone = args.milestone
-        config.filter_milestones = []
+        config.filtering.milestone = args.milestone
+        config.filtering.milestones = []
         console.print(f"[cyan]Filtering by milestone: {args.milestone}[/cyan]")
 
     # Handle label override
     if hasattr(args, 'label') and args.label:
-        config.filter_label = args.label
+        config.filtering.label = args.label
         console.print(f"[cyan]Filtering by label: {args.label}[/cyan]")
 
     # Handle single issue filter
     if hasattr(args, 'issue') and args.issue:
-        config.filter_issue = args.issue
+        config.filtering.issue = args.issue
         console.print(f"[cyan]Processing only issue #{args.issue}[/cyan]")
 
     # Handle ui_mode override
@@ -273,9 +273,9 @@ def cmd_start(args: argparse.Namespace) -> int:
 
     # Handle max_issues override
     if hasattr(args, 'max_issues') and args.max_issues is not None:
-        config.max_issues_to_start = args.max_issues
-        if config.max_issues_to_start > 0:
-            console.print(f"[dim]Max issues to start: {config.max_issues_to_start}[/dim]")
+        config.filtering.max_to_start = args.max_issues
+        if config.filtering.max_to_start > 0:
+            console.print(f"[dim]Max issues to start: {config.filtering.max_to_start}[/dim]")
 
     # Handle review workflow overrides
     if hasattr(args, 'review_label') and args.review_label is not None:
@@ -310,14 +310,14 @@ def cmd_start(args: argparse.Namespace) -> int:
 
         for agent_label in config.agents.keys():
             labels = [agent_label]
-            if config.filter_label:
-                labels.append(config.filter_label)
+            if config.filtering.label:
+                labels.append(config.filtering.label)
             for milestone in milestones:
                 if github:
                     issues = github.list_issues(
                         labels=labels,
                         milestone=milestone,
-                        limit=config.issue_fetch_limit,
+                        limit=config.filtering.fetch_limit,
                     )
                     all_issues.extend(issues)
 
@@ -584,12 +584,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         console.print(f"  Repo: {config.repo or '(auto-detect)'}")
         console.print(f"  Max sessions: {config.max_concurrent_sessions}")
         console.print(f"  Agents: {', '.join(config.agents.keys())}")
-        if config.filter_label:
-            console.print(f"  Filter label: {config.filter_label}")
-        if config.filter_milestones:
-            console.print(f"  Filter milestones: {', '.join(config.filter_milestones)}")
-        elif config.filter_milestone:
-            console.print(f"  Filter milestone: {config.filter_milestone}")
+        if config.filtering.label:
+            console.print(f"  Filter label: {config.filtering.label}")
+        if config.filtering.milestones:
+            console.print(f"  Filter milestones: {', '.join(config.filtering.milestones)}")
+        elif config.filtering.milestone:
+            console.print(f"  Filter milestone: {config.filtering.milestone}")
 
         console.print(f"\n[bold]Active Sessions ({len(our_sessions)}):[/bold]")
         if our_sessions:

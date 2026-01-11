@@ -83,10 +83,10 @@ class StartupManager:
         self._update_queue_cache = update_queue_cache_fn
 
     def _build_labels(self, *labels: str) -> list[str]:
-        """Build labels list, including filter_label if configured."""
+        """Build labels list, including filtering.label if configured."""
         result = list(labels)
-        if self.config.filter_label:
-            result.append(self.config.filter_label)
+        if self.config.filtering.label:
+            result.append(self.config.filtering.label)
         return result
 
     async def run_startup(self, state: OrchestratorState) -> None:
@@ -161,9 +161,11 @@ class StartupManager:
         logger.info("Startup complete in %.1fs", elapsed)
 
         self.events.publish(TraceEvent(EventName.ORCHESTRATOR_READY, {
-            "filter_label": self.config.filter_label,
-            "filter_milestone": self.config.filter_milestone,
-            "filter_milestones": self.config.get_filter_milestones(),
+            "filtering": {
+                "label": self.config.filtering.label,
+                "milestone": self.config.filtering.milestone,
+                "milestones": self.config.filtering.get_milestones(),
+            },
             "agents": list(self.config.agents.keys()),
             "max_concurrent": self.config.max_concurrent_sessions,
             "startup_seconds": round(elapsed, 1),
@@ -203,7 +205,7 @@ class StartupManager:
                     issues.extend(self.repository_host.list_issues(
                         labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
                         milestone=milestone,
-                        limit=self.config.issue_fetch_limit,
+                        limit=self.config.filtering.fetch_limit,
                     ))
 
             elapsed = time.time() - api_start

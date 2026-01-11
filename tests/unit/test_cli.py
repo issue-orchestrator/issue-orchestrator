@@ -137,9 +137,9 @@ class TestCmdStart:
                                         mock_config.agents = {'agent:test': Mock()}
                                         mock_config.max_concurrent_sessions = 2
                                         mock_config.repo = 'test/repo'
-                                        mock_config.filter_label = None
-                                        mock_config.filter_milestone = None
-                                        mock_config.filter_milestones = []
+                                        mock_config.filtering.label = None
+                                        mock_config.filtering.milestone = None
+                                        mock_config.filtering.milestones = []
                                         mock_config.get_filter_milestones.return_value = []
                                         mock_config.repo_root = Path("/tmp")
                                         mock_config.worktree_base = Path("/tmp/worktrees")
@@ -185,9 +185,9 @@ class TestCmdStatus:
                 mock_config.repo = 'test/repo'
                 mock_config.max_concurrent_sessions = 3
                 mock_config.agents = {'agent:web': Mock(), 'agent:mobile': Mock()}
-                mock_config.filter_label = None
-                mock_config.filter_milestone = None
-                mock_config.filter_milestones = []
+                mock_config.filtering.label = None
+                mock_config.filtering.milestone = None
+                mock_config.filtering.milestones = []
                 mock_find.return_value = mock_config
 
                 args = argparse.Namespace()
@@ -203,9 +203,9 @@ class TestCmdStatus:
                 mock_config.repo = 'test/repo'
                 mock_config.max_concurrent_sessions = 3
                 mock_config.agents = {'agent:web': Mock()}
-                mock_config.filter_label = None
-                mock_config.filter_milestone = None
-                mock_config.filter_milestones = []
+                mock_config.filtering.label = None
+                mock_config.filtering.milestone = None
+                mock_config.filtering.milestones = []
                 mock_find.return_value = mock_config
                 mock_list.return_value = ['issue-123', 'issue-456']
 
@@ -799,8 +799,8 @@ class TestCmdStartAdvanced:
 
                             # Verify test setup was called
                             mock_test_setup.assert_called_once_with(mock_config)
-                            # Verify filter_label was set
-                            assert mock_config.filter_label == 'test-data'
+                            # Verify filtering.label was set
+                            assert mock_config.filtering.label == 'test-data'
 
     def test_cmd_start_milestone_override(self):
         """Verify milestone argument overrides config."""
@@ -812,7 +812,7 @@ class TestCmdStartAdvanced:
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
-                        mock_config.filter_milestone = None
+                        mock_config.filtering.milestone = None
                         mock_config.validate.return_value = []  # Pass validation
                         mock_config.repo_root = Path("/tmp")
                         mock_config.worktree_base = Path("/tmp/worktrees")
@@ -832,7 +832,7 @@ class TestCmdStartAdvanced:
 
                         result = cmd_start(args)
 
-                        assert mock_config.filter_milestone == 'v2.0'
+                        assert mock_config.filtering.milestone == 'v2.0'
 
     def test_cmd_start_milestones_override(self):
         """Verify milestones argument overrides config."""
@@ -844,8 +844,8 @@ class TestCmdStartAdvanced:
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
-                        mock_config.filter_milestone = None
-                        mock_config.filter_milestones = []
+                        mock_config.filtering.milestone = None
+                        mock_config.filtering.milestones = []
                         mock_config.validate.return_value = []  # Pass validation
                         mock_config.repo_root = Path("/tmp")
                         mock_config.worktree_base = Path("/tmp/worktrees")
@@ -865,8 +865,8 @@ class TestCmdStartAdvanced:
 
                         cmd_start(args)
 
-                        assert mock_config.filter_milestones == ['M1', 'M2']
-                        assert mock_config.filter_milestone is None
+                        assert mock_config.filtering.milestones == ['M1', 'M2']
+                        assert mock_config.filtering.milestone is None
 
     def test_cmd_start_ui_mode_override(self):
         """Verify ui_mode argument overrides config."""
@@ -942,7 +942,7 @@ class TestCmdStartAdvanced:
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
-                        mock_config.max_issues_to_start = 0
+                        mock_config.filtering.max_to_start = 0
                         mock_config.validate.return_value = []  # Pass validation
                         mock_config.repo_root = Path("/tmp")
                         mock_config.worktree_base = Path("/tmp/worktrees")
@@ -962,7 +962,7 @@ class TestCmdStartAdvanced:
 
                         result = cmd_start(args)
 
-                        assert mock_config.max_issues_to_start == 5
+                        assert mock_config.filtering.max_to_start == 5
 
     def test_cmd_start_web_mode(self):
         """Verify web mode launches web dashboard."""

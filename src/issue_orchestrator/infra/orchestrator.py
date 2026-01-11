@@ -174,7 +174,7 @@ class Orchestrator:
     def _refresh_issue(self, n: int) -> Optional[Issue]: return self._github_workflow.refresh_issue(n)
     def _build_labels(self, *labels: str) -> list[str]: return self._github_workflow.build_labels(*labels)
 
-    def _get_milestone_filter(self) -> str | None: return self.config.filter_milestone
+    def _get_milestone_filter(self) -> str | None: return self.config.filtering.milestone
 
     @cached_property
     def _startup_manager(self) -> StartupManager:

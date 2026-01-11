@@ -22,10 +22,10 @@ def mock_config():
     """Create a mock config for testing."""
     config = Config()
     config.agents = {"agent:web": Mock()}
-    config.filter_label = None
-    config.filter_milestone = None
-    config.filter_milestones = []
-    config.issue_fetch_limit = 100
+    config.filtering.label = None
+    config.filtering.milestone = None
+    config.filtering.milestones = []
+    config.filtering.fetch_limit = 100
     return config
 
 
@@ -198,8 +198,8 @@ class TestIssueFetching:
     """Tests for _fetch_issues behavior."""
 
     def test_fetch_issues_with_filter_label(self, mock_config, mock_repository_host):
-        """When filter_label is set, it's included in the label query."""
-        mock_config.filter_label = "e2e-test"
+        """When filtering.label is set, it's included in the label query."""
+        mock_config.filtering.label = "e2e-test"
         builder = SnapshotBuilder(config=mock_config, repository_host=mock_repository_host)
         issue = make_issue(1)
         mock_repository_host.list_issues.return_value = [issue]
@@ -210,7 +210,7 @@ class TestIssueFetching:
             last_tick_id=None,
         )
 
-        # Should include filter_label in labels list along with agent label
+        # Should include filtering.label in labels list along with agent label
         mock_repository_host.list_issues.assert_called_once_with(
             labels=["e2e-test", "agent:web"],
             milestone=None,
@@ -219,8 +219,8 @@ class TestIssueFetching:
 
     def test_fetch_issues_without_milestones_uses_none(self, mock_config, mock_repository_host):
         """When no milestones configured, uses [None] for single query."""
-        mock_config.filter_milestones = []
-        mock_config.filter_milestone = None
+        mock_config.filtering.milestones = []
+        mock_config.filtering.milestone = None
         builder = SnapshotBuilder(config=mock_config, repository_host=mock_repository_host)
         issue = make_issue(1)
         mock_repository_host.list_issues.return_value = [issue]
@@ -240,7 +240,7 @@ class TestIssueFetching:
 
     def test_fetch_issues_multiple_milestones_dedupes(self, mock_config, mock_repository_host):
         """Fetch across milestones without duplicating issues."""
-        mock_config.filter_milestones = ["M1", "M2"]
+        mock_config.filtering.milestones = ["M1", "M2"]
         builder = SnapshotBuilder(config=mock_config, repository_host=mock_repository_host)
 
         issue_1 = make_issue(1)
@@ -505,8 +505,8 @@ class TestEdgeCases:
         assert snapshot["issues"]["1"]["labels"] == []
 
     def test_filter_label_combined_with_agent_label(self, mock_config, mock_repository_host):
-        """filter_label is combined with agent label in queries."""
-        mock_config.filter_label = "test-data"
+        """filtering.label is combined with agent label in queries."""
+        mock_config.filtering.label = "test-data"
         mock_config.agents = {"agent:dev": Mock()}
         builder = SnapshotBuilder(config=mock_config, repository_host=mock_repository_host)
 

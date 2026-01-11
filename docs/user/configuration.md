@@ -31,10 +31,12 @@ concurrency:
 
 **Only process specific issues:**
 ```yaml
-filter_label: "bot-ready"             # Single label only
-filter_milestone: "M1"                # Single milestone only
-filter_milestones: ["M1", "M2"]       # Multiple milestones (list)
-filter_issue: 123                     # Single issue number only
+filtering:
+  label: "bot-ready"             # Single label only
+  milestone: "M1"                # Single milestone only
+  milestones: ["M1", "M2"]       # Multiple milestones (list)
+  issue: 123                     # Single issue number only
+  exclude_labels: ["test-data"]  # Exclude issues with these labels
 ```
 
 **Enable code review:**
@@ -85,22 +87,24 @@ concurrency:
 #### Filtering
 
 ```yaml
-filter_label: null              # (default) Single label filter (not a list)
-filter_milestone: null          # (default) Single milestone filter
-filter_milestones: []           # (default) Process issues in any of these milestones (list)
-filter_issue: null              # (default) Only process this specific issue number
-exclude_labels: []              # (default) Exclude issues with any of these labels
-issue_fetch_limit: 100          # (default) Max issues to fetch per API call
-max_issues_to_start: 0          # (default) Stop after starting this many issues (0 = unlimited)
+filtering:
+  label: null              # (default) Single label filter (not a list)
+  milestone: null          # (default) Single milestone filter
+  milestones: []           # (default) Process issues in any of these milestones (list)
+  issue: null              # (default) Only process this specific issue number
+  exclude_labels: []       # (default) Exclude issues with any of these labels
+  fetch_limit: 100         # (default) Max issues to fetch per API call
+  max_to_start: 0          # (default) Stop after starting this many issues (0 = unlimited)
 ```
 
-`filter_milestones` and `exclude_labels` accept a list or comma-separated string:
+`milestones` and `exclude_labels` accept a list or comma-separated string:
 ```yaml
-filter_milestones: ["M1", "M2"]     # list format
-filter_milestones: "M1, M2"         # comma-separated string (equivalent)
+filtering:
+  milestones: ["M1", "M2"]     # list format
+  milestones: "M1, M2"         # comma-separated string (equivalent)
 
-exclude_labels: ["test-data", "wip"]  # exclude issues with these labels
-exclude_labels: "test-data, wip"      # comma-separated string (equivalent)
+  exclude_labels: ["test-data", "wip"]  # exclude issues with these labels
+  exclude_labels: "test-data, wip"      # comma-separated string (equivalent)
 ```
 
 ---

@@ -93,6 +93,16 @@ setup_worktree:
   # - "bundle install"               # For Ruby projects
   # - "./scripts/setup.sh"           # Custom setup script
 
+# Issue filtering - control which issues the orchestrator processes
+# filtering:
+#   label: "bot-ready"            # Only process issues with this label
+#   milestone: "v1.0"             # Only process issues in this milestone
+#   milestones: ["M1", "M2"]      # Or multiple milestones (list or comma-separated)
+#   issue: 123                    # Only process this specific issue number
+#   exclude_labels: ["test-data"] # Exclude issues with any of these labels
+#   fetch_limit: 100              # Max issues to fetch per API call
+#   max_to_start: 0               # Stop after starting N issues (0 = unlimited)
+
 # GitHub settings
 # repo: "owner/repo-name"          # Explicit repo (otherwise auto-detected from git remote)
 # github_token_env: "GITHUB_TOKEN" # Override env var name for token (defaults: GITHUB_TOKEN, GH_TOKEN)
@@ -100,8 +110,6 @@ setup_worktree:
 # github_http_timeout_seconds: 20
 # github_required_scopes: []       # Required OAuth scopes (if set, enforced at startup)
 # github_allowed_scopes: []        # Allowed OAuth scopes (if set, token must be subset)
-# filter_label: "test-data"        # Only process issues with this label
-# filter_milestone: "v1.0"         # Only process issues in this milestone
 # session_no_output_seconds: 120   # Emit session_no_output after this many seconds idle
 # session_no_output_tail_lines: 50 # Max tail lines to include in session_no_output
 # session_no_output_max_bytes: 10000  # Max bytes of tail content
