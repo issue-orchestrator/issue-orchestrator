@@ -34,7 +34,7 @@
         .status-running { background: #238636; color: #fff; }
         .status-paused { background: #9e6a03; color: #fff; }
         .status-starting { background: #1f6feb; color: #fff; }
-        .controls { display: flex; gap: 8px; align-items: center; }
+        .controls { display: flex; gap: 8px; align-items: center; position: relative; }
         .create-issue-btn {
             padding: 6px 12px;
             font-size: 12px;
@@ -704,8 +704,9 @@
         .settings-menu {
             display: none;
             position: absolute;
-            right: 24px;
-            top: 60px;
+            right: 0;
+            top: 100%;
+            margin-top: 4px;
             background: #21262d;
             border: 1px solid #30363d;
             border-radius: 6px;
@@ -867,6 +868,51 @@
             <div class="controls">
                 <button class="create-issue-btn" onclick="openCreateIssueModal()">+ Create Issue</button>
                 <button class="settings-btn" onclick="toggleSettingsMenu(event)" aria-label="Open menu" aria-haspopup="true">☰</button>
+                <!-- Actions Menu -->
+                <div class="settings-menu" id="settingsMenu" role="menu" aria-label="Actions menu">
+                    <button class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()" role="menuitem">
+                        {% if paused %}
+                        <span aria-hidden="true">▶</span> Resume
+                        {% else %}
+                        <span aria-hidden="true">⏸</span> Pause
+                        {% endif %}
+                    </button>
+                    <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem">
+                        <span aria-hidden="true">🔄</span> Refresh from GitHub
+                    </button>
+                    <div class="settings-divider" role="separator"></div>
+                    <button class="settings-menu-item" onclick="shutdown()" role="menuitem">
+                        <span aria-hidden="true">⏻</span> Shutdown
+                    </button>
+                    <div class="settings-divider" role="separator"></div>
+                    <button class="settings-menu-item" onclick="showInfo()" role="menuitem">
+                        <span aria-hidden="true">ℹ</span> About / Version
+                    </button>
+                    <button class="settings-menu-item" onclick="showConfig()" role="menuitem">
+                        <span aria-hidden="true">📄</span> View Config
+                    </button>
+                    <div class="settings-divider" role="separator"></div>
+                    <button class="settings-menu-item" onclick="createTestIssues()" role="menuitem">
+                        <span aria-hidden="true">🧪</span> Create Test Issues
+                    </button>
+                    <button class="settings-menu-item" onclick="cleanupTestIssues()" role="menuitem">
+                        <span aria-hidden="true">🧹</span> Cleanup Test Issues
+                    </button>
+                    <div class="settings-divider" role="separator"></div>
+                    <button class="settings-menu-item" onclick="clearHistory()" role="menuitem">
+                        <span aria-hidden="true">🗑</span> Clear History
+                    </button>
+                    <div class="settings-divider" role="separator"></div>
+                    <button class="settings-menu-item" onclick="showDoctor()" role="menuitem">
+                        <span aria-hidden="true">🩺</span> Run Doctor
+                    </button>
+                    <button class="settings-menu-item" onclick="showDebug()" role="menuitem">
+                        <span aria-hidden="true">🔧</span> Debug Info
+                    </button>
+                    <button class="settings-menu-item" onclick="openRepo()" role="menuitem">
+                        <span aria-hidden="true">↗</span> Open Repo on GitHub
+                    </button>
+                </div>
             </div>
         </header>
 
@@ -1108,52 +1154,6 @@
         <div class="context-menu-item" id="menuDismiss" role="menuitem" tabindex="0" style="display:none;">
             <span aria-hidden="true">✕</span> Dismiss
         </div>
-    </div>
-
-    <!-- Actions Menu -->
-    <div class="settings-menu" id="settingsMenu" role="menu" aria-label="Actions menu">
-        <button class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()" role="menuitem">
-            {% if paused %}
-            <span aria-hidden="true">▶</span> Resume
-            {% else %}
-            <span aria-hidden="true">⏸</span> Pause
-            {% endif %}
-        </button>
-        <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem">
-            <span aria-hidden="true">🔄</span> Refresh from GitHub
-        </button>
-        <div class="settings-divider" role="separator"></div>
-        <button class="settings-menu-item" onclick="shutdown()" role="menuitem">
-            <span aria-hidden="true">⏻</span> Shutdown
-        </button>
-        <div class="settings-divider" role="separator"></div>
-        <button class="settings-menu-item" onclick="showInfo()" role="menuitem">
-            <span aria-hidden="true">ℹ</span> About / Version
-        </button>
-        <button class="settings-menu-item" onclick="showConfig()" role="menuitem">
-            <span aria-hidden="true">📄</span> View Config
-        </button>
-        <div class="settings-divider" role="separator"></div>
-        <button class="settings-menu-item" onclick="createTestIssues()" role="menuitem">
-            <span aria-hidden="true">🧪</span> Create Test Issues
-        </button>
-        <button class="settings-menu-item" onclick="cleanupTestIssues()" role="menuitem">
-            <span aria-hidden="true">🧹</span> Cleanup Test Issues
-        </button>
-        <div class="settings-divider" role="separator"></div>
-        <button class="settings-menu-item" onclick="clearHistory()" role="menuitem">
-            <span aria-hidden="true">🗑</span> Clear History
-        </button>
-        <div class="settings-divider" role="separator"></div>
-        <button class="settings-menu-item" onclick="showDoctor()" role="menuitem">
-            <span aria-hidden="true">🩺</span> Run Doctor
-        </button>
-        <button class="settings-menu-item" onclick="showDebug()" role="menuitem">
-            <span aria-hidden="true">🔧</span> Debug Info
-        </button>
-        <button class="settings-menu-item" onclick="openRepo()" role="menuitem">
-            <span aria-hidden="true">↗</span> Open Repo on GitHub
-        </button>
     </div>
 
     <!-- Modal -->
