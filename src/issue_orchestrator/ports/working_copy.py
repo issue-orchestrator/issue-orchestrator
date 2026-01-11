@@ -52,6 +52,14 @@ class PushResult:
 
 
 @dataclass
+class PreflightResult:
+    """Result of a push preflight check (dry-run)."""
+    would_succeed: bool
+    error: str | None = None
+    fix_hint: str | None = None
+
+
+@dataclass
 class RebaseResult:
     """Result of a git rebase operation."""
     success: bool
@@ -234,5 +242,27 @@ class WorkingCopy(Protocol):
 
         Returns:
             The issue number, or None if branch doesn't match pattern.
+        """
+        ...
+
+    def push_preflight(
+        self,
+        worktree: Path,
+        remote: str = "origin",
+        force_with_lease: bool = True,
+    ) -> PreflightResult:
+        """Check if a push would succeed (dry-run).
+
+        This performs a git push --dry-run to verify the push would work
+        without actually pushing. Useful for catching divergence issues
+        while the agent is still active and can fix them.
+
+        Args:
+            worktree: Path to the worktree directory.
+            remote: Remote to check against.
+            force_with_lease: Whether the eventual push will use --force-with-lease.
+
+        Returns:
+            PreflightResult indicating whether push would succeed.
         """
         ...

@@ -316,7 +316,6 @@ async def preflight_push(request: Request) -> JSONResponse:
 
     JSON body:
         worktree: str - Path to the worktree
-        branch: str (optional) - Branch name (auto-detected if not provided)
 
     Returns:
         would_succeed: bool - Whether push would succeed
@@ -336,69 +335,17 @@ async def preflight_push(request: Request) -> JSONResponse:
     if not worktree.exists():
         return JSONResponse({"error": f"Worktree does not exist: {worktree}"}, status_code=400)
 
-    # Import here to avoid circular imports
+    # Use the GitWorkingCopy adapter (port implementation)
     from ..execution import GitWorkingCopy
 
     git = GitWorkingCopy()
+    result = git.push_preflight(worktree)
 
-    # Get current branch if not provided
-    branch = body.get("branch") or git.get_current_branch(worktree)
-    if not branch:
-        return JSONResponse({
-            "would_succeed": False,
-            "error": "Could not determine current branch",
-            "fix_hint": "Ensure you are on a branch, not in detached HEAD state",
-        })
-
-    # Do a dry-run push to check if it would succeed
-    import subprocess
-
-    try:
-        # Use the real git with credentials (not the wrapper)
-        result = subprocess.run(
-            ["git", "push", "--dry-run", "--force-with-lease", "-u", "origin", branch],
-            cwd=worktree,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        if result.returncode == 0:
-            return JSONResponse({
-                "would_succeed": True,
-                "error": None,
-                "fix_hint": None,
-            })
-        else:
-            error_msg = result.stderr.strip()
-            fix_hint = None
-
-            # Provide specific hints based on error type
-            if "stale info" in error_msg or "rejected" in error_msg:
-                fix_hint = "Branch has diverged. Run: git fetch origin && git rebase origin/main"
-            elif "no upstream" in error_msg.lower():
-                fix_hint = "No upstream branch set. This should be handled automatically."
-            elif "permission denied" in error_msg.lower() or "authentication" in error_msg.lower():
-                fix_hint = "Authentication issue - contact orchestrator administrator."
-
-            return JSONResponse({
-                "would_succeed": False,
-                "error": error_msg,
-                "fix_hint": fix_hint,
-            })
-
-    except subprocess.TimeoutExpired:
-        return JSONResponse({
-            "would_succeed": False,
-            "error": "Push check timed out",
-            "fix_hint": "Network or remote issue - retry later",
-        })
-    except Exception as e:
-        return JSONResponse({
-            "would_succeed": False,
-            "error": str(e),
-            "fix_hint": None,
-        })
+    return JSONResponse({
+        "would_succeed": result.would_succeed,
+        "error": result.error,
+        "fix_hint": result.fix_hint,
+    })
 
 
 @control_app.post("/control/shutdown")
