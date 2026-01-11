@@ -440,3 +440,44 @@ class TestFactGathererFetchIssues:
             limit=50,
             required_stable_ids=None,
         )
+
+    def test_fetch_issues_applies_exclude_labels_filter(
+        self, mock_config, mock_repository_host
+    ):
+        """Test that exclude_labels filters out matching issues."""
+        mock_config.agents = {"agent:web": Mock()}
+        mock_config.filter_milestones = []
+        mock_config.filter_milestone = None
+        mock_config.issue_fetch_limit = 50
+        mock_config.exclude_labels = ["test-data"]  # Exclude issues with this label
+
+        issue_1 = Issue(number=1, title="Issue 1", labels=["agent:web"])
+        issue_2 = Issue(number=2, title="Issue 2", labels=["agent:web", "test-data"])  # Should be excluded
+        issue_3 = Issue(number=3, title="Issue 3", labels=["agent:web", "bug"])
+        mock_repository_host.list_issues.return_value = [issue_1, issue_2, issue_3]
+
+        gatherer = FactGatherer(config=mock_config, repository_host=mock_repository_host)
+        results = gatherer.fetch_issues(labels_for_agent=["test-label"])
+
+        # Issue 2 should be excluded because it has 'test-data' label
+        assert [issue.number for issue in results] == [1, 3]
+
+    def test_fetch_issues_exclude_labels_empty_passes_all(
+        self, mock_config, mock_repository_host
+    ):
+        """Test that empty exclude_labels passes all issues through."""
+        mock_config.agents = {"agent:web": Mock()}
+        mock_config.filter_milestones = []
+        mock_config.filter_milestone = None
+        mock_config.issue_fetch_limit = 50
+        mock_config.exclude_labels = []  # No exclusions
+
+        issue_1 = Issue(number=1, title="Issue 1", labels=["agent:web"])
+        issue_2 = Issue(number=2, title="Issue 2", labels=["agent:web", "test-data"])
+        mock_repository_host.list_issues.return_value = [issue_1, issue_2]
+
+        gatherer = FactGatherer(config=mock_config, repository_host=mock_repository_host)
+        results = gatherer.fetch_issues(labels_for_agent=["test-label"])
+
+        # All issues should pass through
+        assert [issue.number for issue in results] == [1, 2]

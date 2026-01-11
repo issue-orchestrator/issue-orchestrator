@@ -84,6 +84,12 @@ class SnapshotBuilder:
                         continue
                     seen.add(issue.number)
                     all_issues.append(issue)
+
+        # Apply exclusion filter (runs after GitHub API filtering)
+        issue_filter = self.config.get_issue_filter()
+        if not issue_filter.is_empty():
+            all_issues = issue_filter.apply(all_issues)
+
         return all_issues
 
     def _get_pr_view(self, issue_number: int) -> dict[str, Any]:
