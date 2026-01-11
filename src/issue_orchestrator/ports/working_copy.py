@@ -216,15 +216,15 @@ class WorkingCopy(Protocol):
         self,
         worktree: Path,
         remote: str = "origin",
-        force_with_lease: bool = True,
         set_upstream: bool = True,
     ) -> PushResult:
-        """Push current branch to remote.
+        """Push current branch to remote with --force-with-lease.
+
+        Always uses --force-with-lease for safety after rebase.
 
         Args:
             worktree: Path to the worktree directory.
             remote: Remote to push to.
-            force_with_lease: Use --force-with-lease for safety after rebase.
             set_upstream: Use -u to set upstream tracking.
 
         Returns:
@@ -249,7 +249,6 @@ class WorkingCopy(Protocol):
         self,
         worktree: Path,
         remote: str = "origin",
-        force_with_lease: bool = True,
     ) -> PreflightResult:
         """Check if a push would succeed (dry-run).
 
@@ -260,7 +259,6 @@ class WorkingCopy(Protocol):
         Args:
             worktree: Path to the worktree directory.
             remote: Remote to check against.
-            force_with_lease: Whether the eventual push will use --force-with-lease.
 
         Returns:
             PreflightResult indicating whether push would succeed.
