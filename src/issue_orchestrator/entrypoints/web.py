@@ -134,7 +134,6 @@ def _describe_blocking_label(label: str) -> str:
 
 def _blocked_summary(labels: list[str], dependency_summary: str | None = None) -> str | None:
     from ..infra import labels as label_module
-    from ..control.actions import RemoveLabelAction
 
     reasons: list[str] = []
     blocking = label_module.get_blocking_labels(labels)
@@ -309,7 +308,6 @@ async def dashboard(
                     status_reason = dep_summary
 
                 from ..infra import labels as label_module
-    from ..control.actions import RemoveLabelAction
 
                 if issue.number in pending_rework_numbers:
                     flow_stage = "rework"
@@ -1071,7 +1069,6 @@ async def get_blocked_issues() -> JSONResponse:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     from ..infra import labels as label_module
-    from ..control.actions import RemoveLabelAction
 
     state = _orchestrator.state
     config = _orchestrator.config
