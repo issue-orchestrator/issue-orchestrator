@@ -27,7 +27,7 @@ def mock_config():
     config = Config()
     config.repo = "owner/repo"
     config.max_concurrent_sessions = 3
-    config.max_issues_to_start = 5
+    config.filtering.max_to_start = 5
     config.triage_review_agent = None
     config.triage_review_threshold = 0
     config.triage_review_label = None
@@ -142,7 +142,7 @@ class TestFactGathererCreateSnapshot:
         self, fact_gatherer, sample_state, sample_issues, mock_config
     ):
         """Test snapshot includes max_issues_to_start from config."""
-        mock_config.max_issues_to_start = 10
+        mock_config.filtering.max_to_start = 10
 
         snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
 
@@ -151,8 +151,8 @@ class TestFactGathererCreateSnapshot:
     def test_create_snapshot_max_issues_zero_becomes_none(
         self, fact_gatherer, sample_state, sample_issues, mock_config
     ):
-        """Test max_issues_to_start=0 becomes None (unlimited)."""
-        mock_config.max_issues_to_start = 0
+        """Test filtering.max_to_start=0 becomes None (unlimited)."""
+        mock_config.filtering.max_to_start = 0
 
         snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
 
@@ -382,9 +382,9 @@ class TestFactGathererFetchIssues:
     ):
         """Fetch across multiple milestones, deduping overlapping issues."""
         mock_config.agents = {"agent:web": Mock()}
-        mock_config.filter_milestones = ["M1", "M2"]
-        mock_config.filter_milestone = None
-        mock_config.issue_fetch_limit = 100
+        mock_config.filtering.milestones = ["M1", "M2"]
+        mock_config.filtering.milestone = None
+        mock_config.filtering.fetch_limit = 100
 
         issue_1 = Issue(number=1, title="Issue 1", labels=["agent:web"])
         issue_2 = Issue(number=2, title="Issue 2", labels=["agent:web"])
@@ -407,9 +407,9 @@ class TestFactGathererFetchIssues:
     ):
         """Use explicit milestone when config has no filter."""
         mock_config.agents = {"agent:web": Mock()}
-        mock_config.filter_milestones = []
-        mock_config.filter_milestone = None
-        mock_config.issue_fetch_limit = 50
+        mock_config.filtering.milestones = []
+        mock_config.filtering.milestone = None
+        mock_config.filtering.fetch_limit = 50
 
         issue_1 = Issue(number=1, title="Issue 1", labels=["agent:web"])
         mock_repository_host.list_issues.return_value = [issue_1]
@@ -430,10 +430,10 @@ class TestFactGathererFetchIssues:
     ):
         """Test that exclude_labels filters out matching issues."""
         mock_config.agents = {"agent:web": Mock()}
-        mock_config.filter_milestones = []
-        mock_config.filter_milestone = None
-        mock_config.issue_fetch_limit = 50
-        mock_config.exclude_labels = ["test-data"]  # Exclude issues with this label
+        mock_config.filtering.milestones = []
+        mock_config.filtering.milestone = None
+        mock_config.filtering.fetch_limit = 50
+        mock_config.filtering.exclude_labels = ["test-data"]  # Exclude issues with this label
 
         issue_1 = Issue(number=1, title="Issue 1", labels=["agent:web"])
         issue_2 = Issue(number=2, title="Issue 2", labels=["agent:web", "test-data"])  # Should be excluded
@@ -451,10 +451,10 @@ class TestFactGathererFetchIssues:
     ):
         """Test that empty exclude_labels passes all issues through."""
         mock_config.agents = {"agent:web": Mock()}
-        mock_config.filter_milestones = []
-        mock_config.filter_milestone = None
-        mock_config.issue_fetch_limit = 50
-        mock_config.exclude_labels = []  # No exclusions
+        mock_config.filtering.milestones = []
+        mock_config.filtering.milestone = None
+        mock_config.filtering.fetch_limit = 50
+        mock_config.filtering.exclude_labels = []  # No exclusions
 
         issue_1 = Issue(number=1, title="Issue 1", labels=["agent:web"])
         issue_2 = Issue(number=2, title="Issue 2", labels=["agent:web", "test-data"])

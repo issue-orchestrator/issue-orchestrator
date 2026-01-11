@@ -9,7 +9,9 @@
 repo: BruceBGordon/issue-orchestrator
 worktree_base: "/tmp/e2e-worktrees"
 
-filter_label: test-data
+filtering:
+  label: test-data
+
 # control_api_port: dynamically assigned
 e2e_pr_labels: ["test-data"]
 

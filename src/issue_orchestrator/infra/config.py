@@ -21,12 +21,12 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'control_api_port', 'config', 'worktree_base',
     'github_token', 'github_token_env', 'github_api_url',
     'github_http_timeout_seconds', 'github_cache_ttl_seconds', 'github_required_scopes', 'github_allowed_scopes',
-    'filter_label', 'filter_milestone', 'filter_milestones', 'filter_issue', 'exclude_labels',
-    'issue_fetch_limit', 'e2e_pr_labels', 'review', 'cleanup', 'validation',
+    'filtering',  # Issue filtering options (label, milestone, exclude_labels, etc.)
+    'e2e_pr_labels', 'review', 'cleanup', 'validation',
     'isolation', 'setup_worktree', 'milestone_sort',
     'milestone_sort_config', 'foundation_milestone',
     'state_file', 'pre_push_hook', 'enforce_hooks', 'queue_refresh_seconds',
-    'terminal_adapter', 'max_issues_to_start', 'session_no_output_seconds', 'session_no_output_tail_lines',
+    'terminal_adapter', 'session_no_output_seconds', 'session_no_output_tail_lines',
     'session_no_output_max_bytes', 'session_no_output_repeat_seconds',
     'gh_write_verify_timeout_seconds', 'gh_write_verify_initial_delay_ms',
     'gh_write_verify_max_delay_ms', 'gh_write_verify_backoff', 'gh_write_verify_jitter_ms',
@@ -156,6 +156,58 @@ class IsolationConfig:
 
 
 @dataclass
+class FilteringConfig:
+    """Issue filtering configuration.
+
+    Controls which issues the orchestrator will process.
+    """
+    label: Optional[str] = None  # Only process issues with this label
+    milestone: Optional[str] = None  # Only process issues in this milestone
+    milestones: list[str] = field(default_factory=list)  # Process issues in any of these milestones
+    issue: Optional[int] = None  # Only process this specific issue number
+    exclude_labels: list[str] = field(default_factory=list)  # Exclude issues with any of these labels
+    fetch_limit: int = 100  # Max issues to fetch per API call
+    max_to_start: int = 0  # Stop after starting this many issues (0 = unlimited)
+
+    def get_milestones(self) -> list[str]:
+        """Return list of milestone filters (supports both single and list)."""
+        if self.milestones:
+            return list(self.milestones)
+        if self.milestone:
+            return [self.milestone]
+        return []
+
+
+def _parse_filtering_config(data: dict) -> FilteringConfig:
+    """Parse filtering section from YAML data."""
+    # Parse milestones (list or comma-separated string)
+    raw_milestones = data.get("milestones") or []
+    if isinstance(raw_milestones, str):
+        raw_milestones = [m.strip() for m in raw_milestones.split(",") if m.strip()]
+    if not isinstance(raw_milestones, list):
+        raise ValueError("filtering.milestones must be a list or comma-separated string")
+    milestones = [str(m).strip() for m in raw_milestones if str(m).strip()]
+
+    # Parse exclude_labels (list or comma-separated string)
+    raw_exclude = data.get("exclude_labels") or []
+    if isinstance(raw_exclude, str):
+        raw_exclude = [lbl.strip() for lbl in raw_exclude.split(",") if lbl.strip()]
+    if not isinstance(raw_exclude, list):
+        raise ValueError("filtering.exclude_labels must be a list or comma-separated string")
+    exclude_labels = [str(lbl).strip() for lbl in raw_exclude if str(lbl).strip()]
+
+    return FilteringConfig(
+        label=data.get("label"),
+        milestone=data.get("milestone"),
+        milestones=milestones,
+        issue=data.get("issue"),
+        exclude_labels=exclude_labels,
+        fetch_limit=data.get("fetch_limit", 100),
+        max_to_start=data.get("max_to_start", 0),
+    )
+
+
+@dataclass
 class Config:
     """Orchestrator configuration."""
 
@@ -192,12 +244,9 @@ class Config:
     github_cache_ttl_seconds: int = 300  # Cache TTL for GitHub adapter responses
     github_required_scopes: list[str] = field(default_factory=list)
     github_allowed_scopes: list[str] = field(default_factory=list)
-    filter_label: Optional[str] = None  # Only consider issues with this label (e.g., "test-data")
-    filter_milestone: Optional[str] = None  # Only consider issues in this milestone
-    filter_milestones: list[str] = field(default_factory=list)  # Optional list of milestone filters
-    filter_issue: Optional[int] = None  # Only process this specific issue number
-    exclude_labels: list[str] = field(default_factory=list)  # Exclude issues with any of these labels
-    issue_fetch_limit: int = 100  # Max issues to fetch per API call (gh default is 30)
+
+    # Issue filtering
+    filtering: FilteringConfig = field(default_factory=FilteringConfig)
 
     # E2E test configuration
     e2e_pr_labels: list[str] = field(default_factory=list)  # Labels to apply to PRs created during e2e tests
@@ -251,9 +300,6 @@ class Config:
     tmux_bindings: list[str] = field(default_factory=lambda: [
         "bind-key -T root DoubleClick1Pane resize-pane -Z -t =",
     ])
-
-    # Session limits
-    max_issues_to_start: int = 0  # Max issues to start processing (0 = unlimited)
 
     # Milestone sorting strategy - built-in: "due_date", "number", "pattern", "name"
     # Or provide a custom class path like "mymodule.MyStrategy"
@@ -347,12 +393,8 @@ class Config:
         return self.validation.cmd is not None
 
     def get_filter_milestones(self) -> list[str]:
-        """Return a list of milestone filters (supports legacy single filter)."""
-        if self.filter_milestones:
-            return list(self.filter_milestones)
-        if self.filter_milestone:
-            return [self.filter_milestone]
-        return []
+        """Return a list of milestone filters."""
+        return self.filtering.get_milestones()
 
     def get_issue_filter(self) -> "IssueLabelFilter":
         """Get the issue label filter configured for this config.
@@ -361,7 +403,7 @@ class Config:
         exclude_labels configuration.
         """
         from ..domain.issue_filter import IssueLabelFilter
-        return IssueLabelFilter.from_config(exclude_labels=self.exclude_labels)
+        return IssueLabelFilter.from_config(exclude_labels=self.filtering.exclude_labels)
 
     def get_reviewer_for_agent(self, agent_label: str) -> Optional[str]:
         """Get the effective reviewer for an agent.
@@ -391,16 +433,19 @@ class Config:
             "github_allowed_scopes": list(self.github_allowed_scopes),
             "repo_root": str(self.repo_root),
             "config_path": str(self.config_path) if self.config_path else None,
-            "filter_label": self.filter_label,
-            "filter_milestone": self.filter_milestone,
-            "filter_milestones": list(self.filter_milestones),
+            "filtering": {
+                "label": self.filtering.label,
+                "milestone": self.filtering.milestone,
+                "milestones": list(self.filtering.milestones),
+                "issue": self.filtering.issue,
+                "exclude_labels": list(self.filtering.exclude_labels),
+                "fetch_limit": self.filtering.fetch_limit,
+                "max_to_start": self.filtering.max_to_start,
+            },
             "foundation_milestone": self.foundation_milestone,
-            "filter_issue": self.filter_issue,
-            "exclude_labels": list(self.exclude_labels),
             "e2e_pr_labels": self.e2e_pr_labels,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "session_timeout_minutes": self.session_timeout_minutes,
-            "max_issues_to_start": self.max_issues_to_start,
             "queue_refresh_seconds": self.queue_refresh_seconds,
             "session_no_output_seconds": self.session_no_output_seconds,
             "session_no_output_tail_lines": self.session_no_output_tail_lines,
@@ -577,24 +622,11 @@ class Config:
             allowed_scopes = [s.strip() for s in allowed_scopes.split(",") if s.strip()]
         config.github_required_scopes = list(required_scopes)
         config.github_allowed_scopes = list(allowed_scopes)
-        config.filter_label = data.get("filter_label")
-        config.filter_milestone = data.get("filter_milestone")
-        raw_milestones = data.get("filter_milestones") or []
-        if isinstance(raw_milestones, str):
-            raw_milestones = [m.strip() for m in raw_milestones.split(",") if m.strip()]
-        if not isinstance(raw_milestones, list):
-            raise ValueError("filter_milestones must be a list or comma-separated string")
-        config.filter_milestones = [str(m).strip() for m in raw_milestones if str(m).strip()]
-        config.issue_fetch_limit = data.get("issue_fetch_limit", 100)
         config.e2e_pr_labels = data.get("e2e_pr_labels", [])
 
-        # Parse exclude_labels (list or comma-separated string)
-        raw_exclude = data.get("exclude_labels") or []
-        if isinstance(raw_exclude, str):
-            raw_exclude = [lbl.strip() for lbl in raw_exclude.split(",") if lbl.strip()]
-        if not isinstance(raw_exclude, list):
-            raise ValueError("exclude_labels must be a list or comma-separated string")
-        config.exclude_labels = [str(lbl).strip() for lbl in raw_exclude if str(lbl).strip()]
+        # Parse filtering section
+        filtering_data = data.get("filtering", {})
+        config.filtering = _parse_filtering_config(filtering_data)
 
         # UI mode
         config.ui_mode = data.get("ui_mode", "web")
@@ -634,9 +666,6 @@ class Config:
                 config.tmux_bindings = bindings
             else:
                 config.tmux_bindings = [str(bindings)]
-
-        # Session limits
-        config.max_issues_to_start = data.get("max_issues_to_start", 0)
 
         # Milestone sorting strategy
         config.milestone_sort = data.get("milestone_sort", "due_date")

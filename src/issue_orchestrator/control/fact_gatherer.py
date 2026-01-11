@@ -83,7 +83,7 @@ class FactGatherer:
                 issues = self.repository_host.list_issues(
                     labels=labels,
                     milestone=milestone_name,
-                    limit=self.config.issue_fetch_limit,
+                    limit=self.config.filtering.fetch_limit,
                     required_stable_ids=still_needed,
                 )
                 for issue in issues:
@@ -154,7 +154,7 @@ class FactGatherer:
             paused=state.paused,
             priority_queue=tuple(state.priority_queue),
             issues_started_count=state.issues_started_count,
-            max_issues_to_start=self.config.max_issues_to_start if self.config.max_issues_to_start > 0 else None,
+            max_issues_to_start=self.config.filtering.max_to_start if self.config.filtering.max_to_start > 0 else None,
             discovered_reviews=tuple(state.discovered_reviews),
             discovered_reworks=tuple(state.discovered_reworks),
             discovered_escalations=tuple(state.discovered_escalations),

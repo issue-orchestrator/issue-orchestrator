@@ -210,8 +210,8 @@ class TestBuildLabels:
     """Test the _build_labels helper method."""
 
     def test_build_labels_without_filter_label(self, sample_config):
-        """Test building labels when no filter_label is configured."""
-        sample_config.filter_label = None
+        """Test building labels when no filtering.label is configured."""
+        sample_config.filtering.label = None
         orchestrator = create_test_orchestrator(sample_config)
 
         labels = orchestrator._build_labels("agent:web", "in-progress")
@@ -219,8 +219,8 @@ class TestBuildLabels:
         assert labels == ["agent:web", "in-progress"]
 
     def test_build_labels_with_filter_label(self, sample_config):
-        """Test building labels when filter_label is configured."""
-        sample_config.filter_label = "test-data"
+        """Test building labels when filtering.label is configured."""
+        sample_config.filtering.label = "test-data"
         orchestrator = create_test_orchestrator(sample_config)
 
         labels = orchestrator._build_labels("agent:web", "in-progress")
@@ -229,7 +229,7 @@ class TestBuildLabels:
 
     def test_build_labels_empty_input(self, sample_config):
         """Test building labels with no input labels."""
-        sample_config.filter_label = "test-data"
+        sample_config.filtering.label = "test-data"
         orchestrator = create_test_orchestrator(sample_config)
 
         labels = orchestrator._build_labels()
@@ -238,7 +238,7 @@ class TestBuildLabels:
 
     def test_build_labels_single_label(self, sample_config):
         """Test building labels with a single input label."""
-        sample_config.filter_label = None
+        sample_config.filtering.label = None
         orchestrator = create_test_orchestrator(sample_config)
 
         labels = orchestrator._build_labels("agent:mobile")
@@ -251,7 +251,7 @@ class TestGetMilestoneFilter:
 
     def test_get_milestone_filter_when_configured(self, sample_config):
         """Test getting milestone filter when configured."""
-        sample_config.filter_milestone = "M6"
+        sample_config.filtering.milestone = "M6"
         orchestrator = create_test_orchestrator(sample_config)
 
         milestone = orchestrator._get_milestone_filter()
@@ -260,7 +260,7 @@ class TestGetMilestoneFilter:
 
     def test_get_milestone_filter_when_not_configured(self, sample_config):
         """Test getting milestone filter when not configured."""
-        sample_config.filter_milestone = None
+        sample_config.filtering.milestone = None
         orchestrator = create_test_orchestrator(sample_config)
 
         milestone = orchestrator._get_milestone_filter()
@@ -1066,8 +1066,8 @@ class TestMaxIssuesToStart:
         sample_config,
         mock_repository_host,
     ):
-        """Test that run_loop stops launching when max_issues_to_start is reached."""
-        sample_config.max_issues_to_start = 2
+        """Test that run_loop stops launching when filtering.max_to_start is reached."""
+        sample_config.filtering.max_to_start = 2
         sample_config.max_concurrent_sessions = 5  # Plenty of capacity
 
         issue1 = create_issue(1, labels=["agent:web"])
@@ -1106,8 +1106,8 @@ class TestMaxIssuesToStart:
         sample_config,
         mock_repository_host,
     ):
-        """Test that max_issues_to_start=0 means unlimited."""
-        sample_config.max_issues_to_start = 0  # Unlimited
+        """Test that filtering.max_to_start=0 means unlimited."""
+        sample_config.filtering.max_to_start = 0  # Unlimited
         sample_config.max_concurrent_sessions = 5
 
         issue1 = create_issue(1, labels=["agent:web"])
@@ -1145,7 +1145,7 @@ class TestMaxIssuesToStart:
         mock_repository_host,
     ):
         """Test that no new issues are launched if limit was already reached."""
-        sample_config.max_issues_to_start = 2
+        sample_config.filtering.max_to_start = 2
         sample_config.max_concurrent_sessions = 5
 
         issue1 = create_issue(1, labels=["agent:web"])
@@ -1196,7 +1196,7 @@ class TestMaxIssuesToStart:
         mock_repository_host,
     ):
         """Test that limit is checked before each launch in a batch."""
-        sample_config.max_issues_to_start = 1
+        sample_config.filtering.max_to_start = 1
         sample_config.max_concurrent_sessions = 5
 
         issue1 = create_issue(1, labels=["agent:web"])
@@ -1230,19 +1230,19 @@ class TestMaxIssuesToStart:
     ):
         """Test that failed claims don't increment issues_started_count.
 
-        The planner generates actions upfront based on max_issues_to_start limit.
+        The planner generates actions upfront based on filtering.max_to_start limit.
         When a launch fails (already claimed), the count doesn't increment, but
         the planner has already decided how many actions to generate for this tick.
 
         In a single tick:
-        - Planner generates 2 actions (max_issues_to_start=2, count=0)
+        - Planner generates 2 actions (filtering.max_to_start=2, count=0)
         - Action 1 fails (already claimed) -> count stays 0
         - Action 2 succeeds -> count becomes 1
 
         On subsequent ticks, the planner would generate more actions because
-        count (1) < max_issues_to_start (2).
+        count (1) < filtering.max_to_start (2).
         """
-        sample_config.max_issues_to_start = 2
+        sample_config.filtering.max_to_start = 2
         sample_config.max_concurrent_sessions = 5
 
         issue1 = create_issue(1, labels=["agent:web"])

@@ -8,7 +8,9 @@
 repo: BruceBGordon/issue-orchestrator
 worktree_base: "/tmp/e2e-worktrees"
 
-filter_label: test-data
+filtering:
+  label: test-data
+
 queue_refresh_seconds: 600
 gh_audit_enabled: true
 gh_audit_events: true

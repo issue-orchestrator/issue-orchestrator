@@ -53,7 +53,7 @@ class GitHubWorkflow:
             required_stable_ids: Optional set of stable IDs that must be discovered.
                 If provided and missing after cached fetch, retry without cache.
         """
-        base_labels = [self.config.filter_label] if self.config.filter_label else []
+        base_labels = [self.config.filtering.label] if self.config.filtering.label else []
         return self.fact_gatherer.fetch_issues(
             base_labels, milestone_filter, required_stable_ids=required_stable_ids
         )
@@ -148,11 +148,11 @@ class GitHubWorkflow:
 
     def build_labels(self, *labels: str) -> list[str]:
         """Build a label list including the filter label if configured."""
-        return list(labels) + ([self.config.filter_label] if self.config.filter_label else [])
+        return list(labels) + ([self.config.filtering.label] if self.config.filtering.label else [])
 
     def get_milestone_filter(self) -> str | None:
         """Get the configured milestone filter."""
-        return self.config.filter_milestone
+        return self.config.filtering.milestone
 
     def process_deferred_cleanups(
         self,

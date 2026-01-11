@@ -308,9 +308,10 @@ agents:
         )
 
     def test_config_with_filter_milestone(self, tmp_path):
-        """Test config with filter_milestone specified."""
+        """Test config with filtering.milestone specified."""
         config_content = """
-filter_milestone: "v1.0"
+filtering:
+  milestone: "v1.0"
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
@@ -320,15 +321,16 @@ agents:
 
         config = Config.load(config_file)
 
-        assert config.filter_milestone == "v1.0"
+        assert config.filtering.milestone == "v1.0"
         assert config.get_filter_milestones() == ["v1.0"]
 
     def test_config_with_filter_milestones(self, tmp_path):
-        """Test config with filter_milestones specified."""
+        """Test config with filtering.milestones specified."""
         config_content = """
-filter_milestones:
-  - "M1"
-  - "M2"
+filtering:
+  milestones:
+    - "M1"
+    - "M2"
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
@@ -338,14 +340,14 @@ agents:
 
         config = Config.load(config_file)
 
-        assert config.filter_milestones == ["M1", "M2"]
+        assert config.filtering.milestones == ["M1", "M2"]
         assert config.get_filter_milestones() == ["M1", "M2"]
 
     def test_config_filter_milestone_default(self):
-        """Test default filter_milestone is None."""
+        """Test default filtering.milestone is None."""
         config = Config()
-        assert config.filter_milestone is None
-        assert config.filter_milestones == []
+        assert config.filtering.milestone is None
+        assert config.filtering.milestones == []
         assert config.get_filter_milestones() == []
 
     def test_label_prefix_not_configured(self):
@@ -450,9 +452,9 @@ labels:
         assert config.gh_write_verify_jitter_ms == 0
 
     def test_max_issues_to_start_default(self):
-        """Test that max_issues_to_start defaults to 0 (unlimited)."""
+        """Test that filtering.max_to_start defaults to 0 (unlimited)."""
         config = Config()
-        assert config.max_issues_to_start == 0
+        assert config.filtering.max_to_start == 0
 
     def test_yaml_overrides_apply_to_nested_keys(self, tmp_path):
         """Test CLI overrides apply to nested YAML settings."""
@@ -471,14 +473,14 @@ review:
                 "labels.in_progress=claimed",
                 "review.code_review_agent=agent:code-review",
                 "queue_refresh_seconds=120",
-                "filter_milestones=[\"M1\", \"M2\"]",
+                "filtering.milestones=[\"M1\", \"M2\"]",
             ],
         )
 
         assert config.get_label_in_progress() == "claimed"
         assert config.code_review_agent == "agent:code-review"
         assert config.queue_refresh_seconds == 120
-        assert config.filter_milestones == ["M1", "M2"]
+        assert config.filtering.milestones == ["M1", "M2"]
 
     def test_github_scopes_parse_from_strings(self, tmp_path):
         config_content = """
@@ -563,9 +565,10 @@ agents:
         assert config.gh_write_verify_jitter_ms == 50
 
     def test_max_issues_to_start_from_yaml(self, tmp_path):
-        """Test loading max_issues_to_start from YAML."""
+        """Test loading filtering.max_to_start from YAML."""
         config_content = """
-max_issues_to_start: 5
+filtering:
+  max_to_start: 5
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
@@ -576,7 +579,7 @@ agents:
 
         config = Config.load(config_file)
 
-        assert config.max_issues_to_start == 5
+        assert config.filtering.max_to_start == 5
 
     def test_queue_refresh_seconds_zero_disables_auto_refresh(self, tmp_path):
         """Test that queue_refresh_seconds=0 means manual refresh only."""
@@ -595,10 +598,11 @@ agents:
         assert config.queue_refresh_seconds == 0
 
     def test_both_new_settings_from_yaml(self, tmp_path):
-        """Test loading both queue_refresh_seconds and max_issues_to_start from YAML."""
+        """Test loading both queue_refresh_seconds and filtering.max_to_start from YAML."""
         config_content = """
 queue_refresh_seconds: 120
-max_issues_to_start: 10
+filtering:
+  max_to_start: 10
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
@@ -610,7 +614,7 @@ agents:
         config = Config.load(config_file)
 
         assert config.queue_refresh_seconds == 120
-        assert config.max_issues_to_start == 10
+        assert config.filtering.max_to_start == 10
 
     def test_review_workflow_defaults(self):
         """Test that review workflow options default to disabled."""
