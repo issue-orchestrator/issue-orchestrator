@@ -5,11 +5,25 @@ import logging
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ..git.git_cli import GitCLI, SubprocessCommandRunner
+
+
+@dataclass
+class ResetInfo:
+    """Information about work discarded during worktree reset.
+
+    This is returned by _update_worktree_onto_main and propagated
+    to WorktreeInfo for event emission.
+    """
+    success: bool
+    uncommitted_discarded: int = 0  # Count of uncommitted changes discarded
+    commits_discarded: int = 0  # Count of commits discarded (on rebase failure)
+
 
 logger = logging.getLogger(__name__)
 
@@ -71,25 +85,32 @@ def get_default_branch(repo_root: Path) -> str:
     return branch
 
 
-def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
+def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInfo:
     """
     Update a worktree's branch onto the latest main.
 
     This is crucial for reruns - branches created from old main need to be
     rebased onto current main to get the latest code changes.
 
+    Strategy: Success > preserving agent work. If rebase fails for any reason
+    (conflicts, stale branch, etc.), discard all local work and reset to main.
+    This ensures agents always work with the latest code.
+
     The sequence:
     1. Fetch origin to get latest main
-    2. Rebase current branch onto origin/main
-    3. If conflicts occur, abort rebase and return False
+    2. Discard any uncommitted changes
+    3. Try to rebase current branch onto origin/main
+    4. If rebase fails, hard reset to origin/main (discards all local commits)
 
     Args:
         worktree_path: Path to the worktree to update
         repo_root: Path to the main repository
 
     Returns:
-        True if update succeeded, False if rebase failed (conflicts)
+        ResetInfo with success status and counts of discarded work
     """
+    uncommitted_discarded = 0
+    commits_discarded = 0
     try:
         # Step 1: Fetch origin to get latest main
         fetch_result = _git_run(
@@ -113,7 +134,7 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
         )
         if branch_result.returncode != 0:
             logger.warning("Could not determine current branch in %s", worktree_path)
-            return False
+            return ResetInfo(success=False)
 
         current_branch = branch_result.stdout.strip()
         if current_branch in ("main", "master"):
@@ -123,30 +144,35 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
                 ["pull", "--ff-only"],
                 check=False,
             )
-            return True
+            return ResetInfo(success=True)
 
-        # Step 2.5: Check if branch exists on remote
-        # If it does, skip rebase to avoid diverging from pushed commits.
-        # The agent can handle updating from main if needed.
-        remote_check = _git_run(
+        # Step 3: Discard any uncommitted changes
+        # We prioritize success over preserving uncommitted work
+        status_result = _git_run(
             worktree_path,
-            ["ls-remote", "--heads", "origin", current_branch],
+            ["status", "--porcelain"],
             check=False,
         )
-        if remote_check.returncode == 0 and remote_check.stdout.strip():
-            logger.info(
-                "Branch %s exists on remote - skipping rebase to avoid divergence",
+        if status_result.returncode == 0 and status_result.stdout.strip():
+            uncommitted_discarded = len(status_result.stdout.strip().split("\n"))
+            logger.warning(
+                "[WORKTREE_RESET] Discarding %d uncommitted changes in %s (branch: %s)",
+                uncommitted_discarded,
+                worktree_path,
                 current_branch,
             )
-            # Just fetch to update tracking refs
-            _git_run(
-                worktree_path,
-                ["fetch", "origin", current_branch],
-                check=False,
-            )
-            return True
+        _git_run(
+            worktree_path,
+            ["reset", "--hard", "HEAD"],
+            check=False,
+        )
+        _git_run(
+            worktree_path,
+            ["clean", "-fd"],
+            check=False,
+        )
 
-        # Step 3: Rebase onto origin/main (only for unpushed branches)
+        # Step 4: Try to rebase onto origin/main
         logger.info(
             "Rebasing branch %s onto origin/main in %s",
             current_branch,
@@ -159,31 +185,57 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> bool:
         )
 
         if rebase_result.returncode != 0:
-            # Rebase failed - likely conflicts
-            logger.warning(
-                "Rebase failed for branch %s in %s: %s",
-                current_branch,
-                worktree_path,
-                rebase_result.stderr.strip(),
-            )
-            # Abort the rebase to leave worktree in a clean state
+            # Rebase failed - discard everything and reset to main
+            # Abort the rebase first
             _git_run(
                 worktree_path,
                 ["rebase", "--abort"],
                 check=False,
             )
-            return False
+
+            # Count how many commits we're discarding
+            commits_result = _git_run(
+                worktree_path,
+                ["rev-list", "--count", "origin/main..HEAD"],
+                check=False,
+            )
+            if commits_result.returncode == 0 and commits_result.stdout.strip():
+                try:
+                    commits_discarded = int(commits_result.stdout.strip())
+                except ValueError:
+                    pass
+
+            logger.warning(
+                "[WORKTREE_RESET] Rebase failed, discarding %d commits and resetting to main "
+                "(branch: %s, path: %s, error: %s)",
+                commits_discarded,
+                current_branch,
+                worktree_path,
+                rebase_result.stderr.strip(),
+            )
+
+            # Hard reset to origin/main - discards all local commits
+            _git_run(
+                worktree_path,
+                ["reset", "--hard", "origin/main"],
+                check=False,
+            )
+            return ResetInfo(
+                success=True,
+                uncommitted_discarded=uncommitted_discarded,
+                commits_discarded=commits_discarded,
+            )
 
         logger.info(
             "Successfully rebased branch %s onto origin/main in %s",
             current_branch,
             worktree_path,
         )
-        return True
+        return ResetInfo(success=True, uncommitted_discarded=uncommitted_discarded)
 
     except Exception as e:
         logger.exception("Error updating worktree onto main: %s", e)
-        return False
+        return ResetInfo(success=False)
 
 
 def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
@@ -651,7 +703,7 @@ def create_worktree(
     enforce_hooks: bool = True,
     pre_push_hook: Path | None = None,
     branch_name: str | None = None,
-) -> tuple[Path, str, bool]:
+) -> tuple[Path, str, bool, int, int]:
     """
     Create a new git worktree for the given issue.
 
@@ -665,8 +717,10 @@ def create_worktree(
         branch_name: Specific branch to use (for checking out existing branches like PR reviews)
 
     Returns:
-        Tuple of (worktree_path, branch_name, rebase_failed) where rebase_failed
-        is True if an existing worktree couldn't be rebased onto main (merge conflict)
+        Tuple of (worktree_path, branch_name, rebase_failed, uncommitted_discarded, commits_discarded)
+        where rebase_failed is True if rebase failed and work was discarded to reset to main.
+        uncommitted_discarded: count of uncommitted changes that were discarded
+        commits_discarded: count of commits that were discarded (on rebase failure)
 
     Raises:
         WorktreeError: If worktree creation fails
@@ -738,7 +792,7 @@ def create_worktree(
         if existing_worktree and existing_worktree.exists():
             logger.info(issue_log(issue_number, "Reusing existing worktree: branch=%s path=%s"), branch_name, existing_worktree)
             # Rebase onto latest main (critical for reruns with stale branches)
-            rebase_ok = _update_worktree_onto_main(existing_worktree, repo_root)
+            reset_info = _update_worktree_onto_main(existing_worktree, repo_root)
             # Reinstall hooks if needed
             if enforce_hooks:
                 install_hooks(existing_worktree, pre_push_hook)
@@ -748,8 +802,8 @@ def create_worktree(
             install_venv_symlink(existing_worktree, repo_root)
             # Sync cli_tools from main repo (ensures latest agent-done)
             sync_cli_tools(existing_worktree, repo_root)
-            logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, existing_worktree)
-            return existing_worktree, branch_name, not rebase_ok
+            logger.info(issue_log(issue_number, "Worktree reuse complete: success=%s path=%s"), reset_info.success, existing_worktree)
+            return existing_worktree, branch_name, not reset_info.success, reset_info.uncommitted_discarded, reset_info.commits_discarded
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
     if worktree_path.exists() and not disable_reuse:
@@ -768,7 +822,7 @@ def create_worktree(
                 existing_branch = branch_result.stdout.strip()
                 logger.info(issue_log(issue_number, "Existing worktree branch: %s"), existing_branch)
                 # Rebase onto latest main (critical for reruns with stale branches)
-                rebase_ok = _update_worktree_onto_main(worktree_path, repo_root)
+                reset_info = _update_worktree_onto_main(worktree_path, repo_root)
                 # Reinstall hooks (ensures latest hook chaining logic is applied)
                 if enforce_hooks:
                     install_hooks(worktree_path, pre_push_hook)
@@ -778,8 +832,8 @@ def create_worktree(
                 install_venv_symlink(worktree_path, repo_root)
                 # Sync cli_tools from main repo (ensures latest agent-done)
                 sync_cli_tools(worktree_path, repo_root)
-                logger.info(issue_log(issue_number, "Worktree reuse complete: rebase_ok=%s path=%s"), rebase_ok, worktree_path)
-                return worktree_path, existing_branch, not rebase_ok
+                logger.info(issue_log(issue_number, "Worktree reuse complete: success=%s path=%s"), reset_info.success, worktree_path)
+                return worktree_path, existing_branch, not reset_info.success, reset_info.uncommitted_discarded, reset_info.commits_discarded
         # Invalid worktree directory - remove it
         logger.warning("Removing invalid worktree directory at %s", worktree_path)
         shutil.rmtree(worktree_path, ignore_errors=True)
@@ -861,7 +915,7 @@ def create_worktree(
         sync_cli_tools(worktree_path, repo_root)
 
         logger.info(issue_log(issue_number, "Worktree created: branch=%s path=%s"), branch_name, worktree_path)
-        return worktree_path, branch_name, False  # No rebase failure - new worktree
+        return worktree_path, branch_name, False, 0, 0  # No rebase failure - new worktree
 
     except Exception as e:
         if isinstance(e, WorktreeError):

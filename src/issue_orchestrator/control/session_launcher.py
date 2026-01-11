@@ -338,6 +338,18 @@ class SessionLauncher:
         worktree_path = worktree_info.path
         branch_name = worktree_info.branch_name
 
+        # Emit event if work was discarded during worktree reset
+        if worktree_info.uncommitted_discarded > 0 or worktree_info.commits_discarded > 0:
+            self.events.publish(TraceEvent(
+                EventName.WORKTREE_RESET,
+                {
+                    "issue_number": issue.number,
+                    "branch_name": branch_name,
+                    "uncommitted_discarded": worktree_info.uncommitted_discarded,
+                    "commits_discarded": worktree_info.commits_discarded,
+                },
+            ))
+
         # Prepare worktree - clean stale artifacts from previous sessions
         worktree = Worktree(worktree_path, issue.number)
         try:
@@ -619,6 +631,19 @@ class SessionLauncher:
         )
         worktree_path = worktree_info.path
 
+        # Emit event if work was discarded during worktree reset
+        if worktree_info.uncommitted_discarded > 0 or worktree_info.commits_discarded > 0:
+            self.events.publish(TraceEvent(
+                EventName.WORKTREE_RESET,
+                {
+                    "issue_number": review.issue_number,
+                    "pr_number": review.pr_number,
+                    "branch_name": worktree_info.branch_name,
+                    "uncommitted_discarded": worktree_info.uncommitted_discarded,
+                    "commits_discarded": worktree_info.commits_discarded,
+                },
+            ))
+
         # Prepare worktree - clean stale artifacts from previous sessions
         worktree = Worktree(worktree_path, review.issue_number)
         try:
@@ -845,6 +870,19 @@ class SessionLauncher:
             pre_push_hook=self.config.pre_push_hook,
         )
         worktree_path = worktree_info.path
+
+        # Emit event if work was discarded during worktree reset
+        if worktree_info.uncommitted_discarded > 0 or worktree_info.commits_discarded > 0:
+            self.events.publish(TraceEvent(
+                EventName.WORKTREE_RESET,
+                {
+                    "issue_number": issue_number,
+                    "pr_number": pr_number,
+                    "branch_name": worktree_info.branch_name,
+                    "uncommitted_discarded": worktree_info.uncommitted_discarded,
+                    "commits_discarded": worktree_info.commits_discarded,
+                },
+            ))
 
         # Prepare worktree - clean stale artifacts from previous sessions
         worktree = Worktree(worktree_path, issue_number)

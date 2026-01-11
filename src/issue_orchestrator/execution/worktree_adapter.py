@@ -30,7 +30,7 @@ class GitWorktreeManager:
         branch_name: str | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue."""
-        path, branch, rebase_failed = create_worktree(
+        path, branch, rebase_failed, uncommitted_discarded, commits_discarded = create_worktree(
             repo_root=repo_root,
             issue_number=issue_number,
             issue_title=issue_title,
@@ -39,7 +39,13 @@ class GitWorktreeManager:
             pre_push_hook=pre_push_hook,
             branch_name=branch_name,
         )
-        return WorktreeInfo(path=path, branch_name=branch, rebase_failed=rebase_failed)
+        return WorktreeInfo(
+            path=path,
+            branch_name=branch,
+            rebase_failed=rebase_failed,
+            uncommitted_discarded=uncommitted_discarded,
+            commits_discarded=commits_discarded,
+        )
 
     def remove(self, worktree_path: Path) -> None:
         """Remove a git worktree."""
