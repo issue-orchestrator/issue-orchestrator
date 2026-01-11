@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
+from ...ports.worktree_policy import WorktreePolicy
 from ..git.git_cli import GitCLI, SubprocessCommandRunner
 
 
@@ -703,9 +704,13 @@ def create_worktree(
     enforce_hooks: bool = True,
     pre_push_hook: Path | None = None,
     branch_name: str | None = None,
+    policy: WorktreePolicy | None = None,
 ) -> tuple[Path, str, bool, int, int]:
     """
     Create a new git worktree for the given issue.
+
+    Uses a "validate or delete" policy: if an existing worktree cannot be
+    prepared for a clean session, it is deleted and a fresh one is created.
 
     Args:
         repo_root: Path to the main git repository
@@ -715,6 +720,7 @@ def create_worktree(
         enforce_hooks: Whether to install pre-push hooks
         pre_push_hook: Custom pre-push hook path
         branch_name: Specific branch to use (for checking out existing branches like PR reviews)
+        policy: Worktree setup policy (defaults to ValidateOrDeletePolicy)
 
     Returns:
         Tuple of (worktree_path, branch_name, rebase_failed, uncommitted_discarded, commits_discarded)
@@ -725,6 +731,10 @@ def create_worktree(
     Raises:
         WorktreeError: If worktree creation fails
     """
+    # Get default policy if none provided
+    if policy is None:
+        from .worktree_policy import default_policy
+        policy = default_policy
     repo_root = Path(repo_root).resolve()
     logger.info(
         issue_log(issue_number, "Create worktree requested: branch=%s base=%s"),
@@ -791,52 +801,98 @@ def create_worktree(
         existing_worktree = find_worktree_for_branch(repo_root, branch_name)
         if existing_worktree and existing_worktree.exists():
             logger.info(issue_log(issue_number, "Reusing existing worktree: branch=%s path=%s"), branch_name, existing_worktree)
-            # Rebase onto latest main (critical for reruns with stale branches)
-            reset_info = _update_worktree_onto_main(existing_worktree, repo_root)
-            # Reinstall hooks if needed
-            if enforce_hooks:
-                install_hooks(existing_worktree, pre_push_hook)
-            # Refresh claude settings (ensures latest prompts)
-            install_claude_settings(existing_worktree)
-            # Ensure venv symlink exists (for validation tools)
-            install_venv_symlink(existing_worktree, repo_root)
-            # Sync cli_tools from main repo (ensures latest agent-done)
-            sync_cli_tools(existing_worktree, repo_root)
-            logger.info(issue_log(issue_number, "Worktree reuse complete: success=%s path=%s"), reset_info.success, existing_worktree)
-            return existing_worktree, branch_name, not reset_info.success, reset_info.uncommitted_discarded, reset_info.commits_discarded
+
+            # Policy: validate worktree can be reused
+            validation = policy.validate_for_reuse(existing_worktree, branch_name, repo_root)
+            if not validation.can_reuse:
+                logger.warning(
+                    issue_log(issue_number, "Worktree failed validation, deleting: %s"),
+                    validation.reason,
+                )
+                policy.delete_worktree(existing_worktree, repo_root)
+                # Fall through to fresh creation
+            else:
+                # Rebase onto latest main (critical for reruns with stale branches)
+                reset_info = _update_worktree_onto_main(existing_worktree, repo_root)
+
+                # Policy: sync remote refs to prevent stale-info push failures
+                sync_result = policy.sync_remote_refs(existing_worktree, branch_name)
+                if not sync_result.success:
+                    logger.warning(
+                        issue_log(issue_number, "Failed to sync remote refs, deleting worktree: %s"),
+                        sync_result.reason,
+                    )
+                    policy.delete_worktree(existing_worktree, repo_root)
+                    # Fall through to fresh creation
+                elif not reset_info.success:
+                    logger.warning(
+                        issue_log(issue_number, "Reset to main failed, deleting worktree"),
+                    )
+                    policy.delete_worktree(existing_worktree, repo_root)
+                    # Fall through to fresh creation
+                else:
+                    # Success - install hooks and return
+                    if enforce_hooks:
+                        install_hooks(existing_worktree, pre_push_hook)
+                    install_claude_settings(existing_worktree)
+                    install_venv_symlink(existing_worktree, repo_root)
+                    sync_cli_tools(existing_worktree, repo_root)
+                    logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), existing_worktree)
+                    return existing_worktree, branch_name, False, reset_info.uncommitted_discarded, reset_info.commits_discarded
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
     if worktree_path.exists() and not disable_reuse:
-        # Verify it's a valid git worktree
-        git_dir = worktree_path / ".git"
-        if git_dir.exists():
-            # Valid worktree - reuse it by pulling latest changes
-            logger.info(issue_log(issue_number, "Reusing existing worktree by path: %s"), worktree_path)
-            # Try to get current branch
+        logger.info(issue_log(issue_number, "Reusing existing worktree by path: %s"), worktree_path)
+
+        # Policy: validate worktree can be reused (no expected branch - we use whatever is there)
+        validation = policy.validate_for_reuse(worktree_path, None, repo_root)
+        if not validation.can_reuse:
+            logger.warning(
+                issue_log(issue_number, "Worktree failed validation, deleting: %s"),
+                validation.reason,
+            )
+            policy.delete_worktree(worktree_path, repo_root)
+            # Fall through to fresh creation
+        else:
+            # Get current branch for sync and return value
             branch_result = _git_run(
                 worktree_path,
                 ["rev-parse", "--abbrev-ref", "HEAD"],
                 check=False,
             )
-            if branch_result.returncode == 0:
+            if branch_result.returncode != 0:
+                logger.warning(issue_log(issue_number, "Could not get branch, deleting worktree"))
+                policy.delete_worktree(worktree_path, repo_root)
+                # Fall through to fresh creation
+            else:
                 existing_branch = branch_result.stdout.strip()
                 logger.info(issue_log(issue_number, "Existing worktree branch: %s"), existing_branch)
+
                 # Rebase onto latest main (critical for reruns with stale branches)
                 reset_info = _update_worktree_onto_main(worktree_path, repo_root)
-                # Reinstall hooks (ensures latest hook chaining logic is applied)
-                if enforce_hooks:
-                    install_hooks(worktree_path, pre_push_hook)
-                # Refresh claude settings (ensures latest prompts)
-                install_claude_settings(worktree_path)
-                # Ensure venv symlink exists (for validation tools)
-                install_venv_symlink(worktree_path, repo_root)
-                # Sync cli_tools from main repo (ensures latest agent-done)
-                sync_cli_tools(worktree_path, repo_root)
-                logger.info(issue_log(issue_number, "Worktree reuse complete: success=%s path=%s"), reset_info.success, worktree_path)
-                return worktree_path, existing_branch, not reset_info.success, reset_info.uncommitted_discarded, reset_info.commits_discarded
-        # Invalid worktree directory - remove it
-        logger.warning("Removing invalid worktree directory at %s", worktree_path)
-        shutil.rmtree(worktree_path, ignore_errors=True)
+
+                # Policy: sync remote refs to prevent stale-info push failures
+                sync_result = policy.sync_remote_refs(worktree_path, existing_branch)
+                if not sync_result.success:
+                    logger.warning(
+                        issue_log(issue_number, "Failed to sync remote refs, deleting worktree: %s"),
+                        sync_result.reason,
+                    )
+                    policy.delete_worktree(worktree_path, repo_root)
+                    # Fall through to fresh creation
+                elif not reset_info.success:
+                    logger.warning(issue_log(issue_number, "Reset to main failed, deleting worktree"))
+                    policy.delete_worktree(worktree_path, repo_root)
+                    # Fall through to fresh creation
+                else:
+                    # Success - install hooks and return
+                    if enforce_hooks:
+                        install_hooks(worktree_path, pre_push_hook)
+                    install_claude_settings(worktree_path)
+                    install_venv_symlink(worktree_path, repo_root)
+                    sync_cli_tools(worktree_path, repo_root)
+                    logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), worktree_path)
+                    return worktree_path, existing_branch, False, reset_info.uncommitted_discarded, reset_info.commits_discarded
 
     try:
         # Check if branch already exists
