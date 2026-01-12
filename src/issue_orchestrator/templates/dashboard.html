@@ -1094,6 +1094,20 @@
             {% endif %}
             </span>
 
+            <span class="e2e-next-run" id="e2eNextRun" style="{% if e2e_status.running %}display: none;{% endif %}">
+            {% if e2e_status.next_run %}
+                {% if e2e_status.next_run.next_run_reason == 'interval' %}
+                Next: {{ e2e_status.next_run.next_run_at }}
+                {% elif e2e_status.next_run.next_run_reason == 'main_unchanged' %}
+                Next: waiting for main change
+                {% elif e2e_status.next_run.next_run_reason == 'ready' %}
+                Next: ready
+                {% elif e2e_status.next_run.next_run_reason == 'auto_disabled' %}
+                Auto: off
+                {% endif %}
+            {% endif %}
+            </span>
+
             {% if e2e_status.failed_tests %}
             <span class="e2e-failures" id="e2eFailures" onclick="showE2EFailures()" title="View test details">
                 <span id="e2eFailCount">{{ e2e_status.failed_tests|length }}</span> failing
@@ -2811,16 +2825,32 @@
                 const currentTestName = document.getElementById('e2eCurrentTestName');
                 const badge = document.getElementById('e2eBadge');
                 const lastRun = document.getElementById('e2eLastRun');
+                const nextRun = document.getElementById('e2eNextRun');
                 const startBtn = document.getElementById('e2eStartBtn');
                 const stopBtn = document.getElementById('e2eStopBtn');
                 const failures = document.getElementById('e2eFailures');
                 const failCount = document.getElementById('e2eFailCount');
+
+                function formatNextRun(nextInfo) {
+                    if (!nextInfo) return '';
+                    const reason = nextInfo.next_run_reason;
+                    if (reason === 'interval' && nextInfo.next_run_at) {
+                        const when = new Date(nextInfo.next_run_at);
+                        return `Next: ${when.toLocaleString()}`;
+                    }
+                    if (reason === 'main_unchanged') return 'Next: waiting for main change';
+                    if (reason === 'ready') return 'Next: ready';
+                    if (reason === 'auto_disabled') return 'Auto: off';
+                    if (reason === 'running') return '';
+                    return '';
+                }
 
                 if (data.running && data.progress) {
                     // Show progress UI
                     progress.style.display = 'flex';
                     currentTest.style.display = 'block';
                     lastRun.style.display = 'none';
+                    nextRun.style.display = 'none';
                     startBtn.style.display = 'none';
                     stopBtn.style.display = 'inline-block';
                     badge.innerHTML = '<span class="running">Running</span>';
@@ -2857,6 +2887,7 @@
                     progress.style.display = 'none';
                     currentTest.style.display = 'none';
                     lastRun.style.display = 'inline';
+                    nextRun.style.display = 'inline';
                     startBtn.style.display = 'inline-block';
                     stopBtn.style.display = 'none';
 
@@ -2864,6 +2895,9 @@
                     if (data.last_run) {
                         const status = data.last_run.status;
                         badge.innerHTML = `<span class="${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span>`;
+                    }
+                    if (nextRun) {
+                        nextRun.textContent = formatNextRun(data.next_run);
                     }
 
                     // Refresh page to get full updated state

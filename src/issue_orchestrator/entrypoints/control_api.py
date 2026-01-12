@@ -2069,7 +2069,7 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
     Returns:
         {running: bool, pid: int | null, last_run: {...} | null, signal_score: {...}}
     """
-    from ..infra.e2e_runner import get_e2e_runner_manager
+    from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
     from ..infra.e2e_db import E2EDB
     from ..infra.config import Config
 
@@ -2081,6 +2081,7 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
         )
 
     # Get orchestrator_id from config
+    config = None
     try:
         config = Config.find_and_load(validated_root)
         orchestrator_id = config.repo or str(validated_root)
@@ -2096,21 +2097,26 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
     # Get DB status
     db_path = validated_root / ".issue-orchestrator" / "e2e.db"
     last_run = None
+    next_run = None
+    run_obj = None
     signal_score = None
     progress = None
 
     if db_path.exists():
         try:
             db = E2EDB(db_path)
-            run = db.latest_run(orchestrator_id)
-            if run:
-                last_run = run.to_dict()
+            run_obj = db.latest_run(orchestrator_id)
+            if run_obj:
+                last_run = run_obj.to_dict()
                 # Get progress for running tests
-                if run.status == "running":
-                    progress = db.get_progress(run.id)
+                if run_obj.status == "running":
+                    progress = db.get_progress(run_obj.id)
             signal_score = db.compute_signal_score(orchestrator_id)
         except Exception as e:
             logger.warning("Failed to read E2E DB: %s", e)
+
+    if e2e_enabled and config:
+        next_run = get_next_run_info(config, validated_root, run_obj)
 
     return JSONResponse({
         "enabled": e2e_enabled,
@@ -2120,6 +2126,7 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
         "last_run": last_run,
         "signal_score": signal_score,
         "progress": progress,
+        "next_run": next_run,
     })
 
 

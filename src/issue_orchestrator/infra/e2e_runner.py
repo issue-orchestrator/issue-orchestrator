@@ -4,6 +4,7 @@ Provides start/stop/status operations for E2E test workers.
 """
 
 import json
+from datetime import datetime, timezone, timedelta
 import logging
 import os
 import signal
@@ -518,8 +519,57 @@ def maybe_trigger_e2e(
         return False
 
 
+def get_next_run_info(
+    config: "Config",
+    repo_root: Path,
+    last_run: "E2ERun | None",
+) -> dict:
+    """Compute the next scheduled E2E run time and reason for display."""
+    if not config.e2e.enabled or config.e2e.auto_run_interval_minutes <= 0:
+        return {
+            "next_run_at": None,
+            "next_run_reason": "auto_disabled",
+        }
+
+    if last_run and last_run.status == "running":
+        return {
+            "next_run_at": None,
+            "next_run_reason": "running",
+        }
+
+    now = datetime.now(timezone.utc)
+    next_run_at = None
+
+    if last_run and last_run.finished_at:
+        finished = datetime.fromisoformat(last_run.finished_at.replace("Z", "+00:00"))
+        next_run_at = finished + timedelta(minutes=config.e2e.auto_run_interval_minutes)
+        if now < next_run_at:
+            return {
+                "next_run_at": next_run_at.isoformat(),
+                "next_run_reason": "interval",
+            }
+
+        current_head = _get_main_head(repo_root)
+        if current_head and last_run.commit_sha and last_run.commit_sha == current_head:
+            return {
+                "next_run_at": None,
+                "next_run_reason": "main_unchanged",
+            }
+
+        return {
+            "next_run_at": now.isoformat(),
+            "next_run_reason": "ready",
+        }
+
+    return {
+        "next_run_at": now.isoformat(),
+        "next_run_reason": "ready",
+    }
+
+
 # Import for type hints (at module level to avoid circular imports)
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .config import Config
+    from .e2e_db import E2ERun
