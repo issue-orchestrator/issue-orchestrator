@@ -340,7 +340,7 @@ class TestPluggySessionRunner:
 
         assert result == "foo\nbar\nbaz"
         mock_plugin_manager.hook.get_session_output.assert_called_once_with(
-            session_id=42, lines=50
+            session_id=42, lines=50, session_name=None
         )
 
     def test_get_session_output_none(self, session_runner, mock_plugin_manager):
@@ -358,7 +358,7 @@ class TestPluggySessionRunner:
         session_runner.get_session_output(session_id=42)
 
         mock_plugin_manager.hook.get_session_output.assert_called_once_with(
-            session_id=42, lines=50
+            session_id=42, lines=50, session_name=None
         )
 
     def test_send_to_session_success(self, session_runner, mock_plugin_manager):
@@ -369,7 +369,7 @@ class TestPluggySessionRunner:
 
         assert result is True
         mock_plugin_manager.hook.send_to_session.assert_called_once_with(
-            session_id=42, text="/exit"
+            session_id=42, text="/exit", session_name=None
         )
 
     def test_send_to_session_failure(self, session_runner, mock_plugin_manager):
