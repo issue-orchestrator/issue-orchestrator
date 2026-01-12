@@ -56,7 +56,7 @@ github_token_env: GITHUB_TOKEN
 milestone_sort: milestone_number
 
 filtering:
-  exclude_labels: ["io-e2e-test-data"]
+  exclude_labels: ["io-e2e-test-data", "test-data"]
 
 config:
   strict: true
