@@ -305,6 +305,10 @@ async def dashboard(
                     else None,
                 )
 
+                terminal_hint = "Click to focus terminal session"
+                if config and config.terminal_adapter == "subprocess":
+                    terminal_hint = "Click to view agent UI log"
+
                 item = {
                     "issue_number": session.issue.number,
                     "title": session.issue.title,
@@ -317,7 +321,7 @@ async def dashboard(
                     "time": f"{runtime} min",
                     "action": "focus",
                     "action_icon": "→",
-                    "action_hint": "Click to focus terminal session",
+                    "action_hint": terminal_hint,
                     "url": "",
                     # Quick links
                     "issue_url": make_issue_url(session.issue.number),
