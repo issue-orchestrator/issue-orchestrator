@@ -61,5 +61,13 @@ filtering:
 triage:
   inherit_labels: ["io-e2e-test-data", "test-data"]
 
+e2e:
+  enabled: true
+  auto_run_interval_minutes: 240  # 4 hours - only triggers after agent activity
+  pytest_args: ["tests/e2e", "-v", "--tb=short"]
+  allow_retry_once: true
+  quarantine_file: tests/e2e/quarantine.txt
+  survive_restart: true
+
 config:
   strict: true

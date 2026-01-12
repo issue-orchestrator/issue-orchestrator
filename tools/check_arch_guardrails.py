@@ -354,6 +354,8 @@ def main(argv: list[str]) -> int:
         allow_prefixes = [
             "src/issue_orchestrator/execution",
             "src/issue_orchestrator/adapters",
+            "src/issue_orchestrator/entrypoints/e2e_worker.py",  # E2E worker subprocess
+            "src/issue_orchestrator/infra/e2e_runner.py",  # E2E runner spawns workers
         ]
 
     all_v: list[Violation] = []

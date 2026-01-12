@@ -92,6 +92,29 @@ pytest tests/unit/ -v          # 1100+ unit tests
 pytest tests/e2e/ -v           # Live e2e tests (requires gh auth)
 ```
 
+## Async E2E Runner
+
+The orchestrator includes an async E2E test runner that executes tests locally with dashboard visibility:
+
+```yaml
+# Enable in config
+e2e:
+  enabled: true
+  auto_run_interval_minutes: 30  # Auto-trigger after agent sessions
+  pytest_args: ["tests/e2e", "-v"]
+  allow_retry_once: true         # Retry flaky tests
+  quarantine_file: "tests/e2e/quarantine.txt"
+```
+
+**Key files:**
+- `infra/e2e_db.py` - SQLite persistence for runs and results
+- `infra/e2e_runner.py` - Worker manager + auto-trigger logic
+- `entrypoints/e2e_worker.py` - Pytest subprocess with result plugin
+
+**API:** `/control/e2e/start`, `/control/e2e/status`, `/control/e2e/runs`
+
+**Results:** `.issue-orchestrator/e2e.db` (SQLite)
+
 **Check status:**
 ```bash
 issue-orchestrator status

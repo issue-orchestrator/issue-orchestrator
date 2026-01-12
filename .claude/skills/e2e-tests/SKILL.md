@@ -3,134 +3,185 @@ name: e2e-tests
 description: Run end-to-end tests against a target repository. Use when running e2e tests, debugging e2e failures, or setting up e2e test infrastructure.
 ---
 
-# E2E Tests
+# E2E Test Runner
 
-End-to-end tests run the full orchestrator against a real GitHub repository.
+Async E2E test runner that executes tests locally with dashboard visibility and resume support.
 
 ## When to Use
 
-- Running e2e tests after major changes
-- Debugging e2e test failures
-- Setting up e2e test infrastructure
-- Verifying the full pipeline works
+- Running or debugging E2E tests
+- Configuring E2E auto-trigger
+- Investigating E2E failures
+- Managing quarantined tests
+- Understanding E2E progress/status
 
-## Key Concept: Target Repository
+## Configuration
 
-E2E tests run the orchestrator against a "target repository" - this should NOT be the issue-orchestrator repo itself. The target repo is where test issues/PRs are created.
-
-## Prerequisites Check
-
-```bash
-# 1. Check gh authentication
-gh auth status
-
-# 2. Check claude CLI
-which claude
-
-# 3. Check hook verification passes
-issue-orchestrator verify
-```
-
-## Running E2E Tests
-
-### Option 1: Use test configs (recommended)
-
-The test configs in `tests/e2e/configs/` have proper settings:
-
-```bash
-# Run tests that use configs (timeout, rework tests)
-pytest tests/e2e/test_real_scenarios.py::TestSessionTimeoutFailure -v
-pytest tests/e2e/test_real_scenarios.py::TestReworkCyclesAndEscalation -v
-```
-
-### Option 2: Set E2E_TEST_REPO
-
-```bash
-# Point to a dedicated test target repo
-export E2E_TEST_REPO=YourOrg/test-target-repo
-pytest tests/e2e/ -v
-```
-
-### Option 3: Use test-reset command
-
-```bash
-# Reset test environment (teardown + setup)
-export TEST_REPO=YourOrg/test-target-repo
-issue-orchestrator test-reset
-
-# Then run tests
-export E2E_TEST_REPO=YourOrg/test-target-repo
-pytest tests/e2e/ -v
+```yaml
+# .issue-orchestrator/config/*.yaml
+e2e:
+  enabled: true
+  auto_run_interval_minutes: 30    # 0 = manual only
+  pytest_args: ["tests/e2e", "-v"]
+  allow_retry_once: true           # Retry failing tests once
+  quarantine_file: "tests/e2e/quarantine.txt"
+  survive_restart: true            # Let worker continue if orchestrator restarts
 ```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `tests/e2e/conftest.py` | E2E fixtures, `OrchestratorProcess` class |
-| `tests/e2e/configs/rework-test.yaml` | Config for rework cycle tests |
-| `tests/e2e/configs/timeout-test.yaml` | Config for timeout tests |
-| `tests/e2e/test_real_scenarios.py` | Main e2e test scenarios |
-| `scripts/setup_test_issues.py` | Creates test issues |
-| `scripts/teardown_test_issues.py` | Cleans up test issues |
+| `infra/e2e_db.py` | SQLite persistence for runs and results |
+| `infra/e2e_runner.py` | Worker manager, auto-trigger logic |
+| `entrypoints/e2e_worker.py` | Pytest subprocess with result plugin |
+| `entrypoints/control_api.py` | API endpoints at `/control/e2e/*` |
 
-## Test Configs
+## Database Schema
 
-Test configs in `tests/e2e/configs/` include:
+Results stored in `.issue-orchestrator/e2e.db`:
 
-```yaml
-repo: BruceBGordon/issue-orchestrator  # Target repo
-filter_label: test-data                 # Isolates test issues
-dangerous:
-  skip_verification: true               # Skips hook verification
+```sql
+-- Runs table
+e2e_runs: id, status, started_at, finished_at, total_tests, current_test, worker_pid, ...
+
+-- Per-test results
+e2e_test_results: run_id, nodeid, outcome, duration_seconds, longrepr, retry_outcome, is_quarantined
 ```
+
+## Progress Tracking
+
+The runner tracks progress in real-time:
+- `total_tests`: Set after pytest collection phase
+- `current_test`: Updated as each test starts
+- `completed/passed/failed/skipped`: Counted from results table
+
+Dashboard polls `/control/e2e/status` every 2 seconds while running.
+
+## Resume Support
+
+When orchestrator restarts mid-run:
+
+1. **Orphan detection**: `start_run()` checks if existing "running" run has dead `worker_pid`
+2. **Mark interrupted**: Dead runs marked as `status='interrupted'`
+3. **Resume**: `start_or_resume()` finds interrupted runs, gets passed nodeids
+4. **Skip passed**: Passes `--deselect <nodeid>` to pytest for each passed test
+
+**Test structure for resumability:**
+```python
+# Good - each function is a checkpoint
+def test_create_issue(): ...
+def test_create_pr(): ...
+def test_review_cycle(): ...
+
+# Bad - monolithic, no partial progress
+def test_entire_workflow(): ...
+```
+
+## API Endpoints
+
+```bash
+# Start E2E (or resume interrupted)
+curl -X POST http://localhost:8080/control/e2e/start \
+  -H "Content-Type: application/json" \
+  -d '{"repo_root": "'$(pwd)'"}'
+
+# Stop running E2E
+curl -X POST http://localhost:8080/control/e2e/stop \
+  -H "Content-Type: application/json" \
+  -d '{"repo_root": "'$(pwd)'"}'
+
+# Get status with progress
+curl "http://localhost:8080/control/e2e/status?repo_root=$(pwd)" | jq
+
+# List recent runs
+curl "http://localhost:8080/control/e2e/runs?repo_root=$(pwd)" | jq
+
+# Get run details with test results
+curl "http://localhost:8080/control/e2e/run/1?repo_root=$(pwd)" | jq
+```
+
+## Debugging E2E Failures
+
+### Check Status
+```bash
+# Via API
+curl -s "http://localhost:8080/control/e2e/status?repo_root=$(pwd)" | jq
+
+# Check if worker is running
+ps aux | grep e2e_worker
+
+# View database
+sqlite3 .issue-orchestrator/e2e.db "SELECT id, status, total_tests, started_at FROM e2e_runs ORDER BY id DESC LIMIT 5"
+```
+
+### View Logs
+```bash
+# Find latest log
+ls -lt .issue-orchestrator/logs/e2e/ | head -5
+
+# Tail log
+tail -f .issue-orchestrator/logs/e2e/run_*.log
+```
+
+### View Failed Tests
+```bash
+sqlite3 .issue-orchestrator/e2e.db "
+  SELECT nodeid, outcome, longrepr
+  FROM e2e_test_results
+  WHERE run_id = (SELECT MAX(id) FROM e2e_runs)
+    AND outcome = 'failed'
+"
+```
+
+### Check Progress Mid-Run
+```bash
+sqlite3 .issue-orchestrator/e2e.db "
+  SELECT
+    (SELECT COUNT(*) FROM e2e_test_results WHERE run_id = r.id) as completed,
+    r.total_tests,
+    r.current_test
+  FROM e2e_runs r
+  WHERE r.status = 'running'
+"
+```
+
+## Quarantine Management
+
+Quarantine file lists known flaky tests excluded from failure count:
+
+```
+# tests/e2e/quarantine.txt
+# Known flaky tests - excluded from required runs
+tests/e2e/test_slow_network.py::test_timeout_handling
+tests/e2e/test_race_condition.py::test_concurrent_updates
+```
+
+Quarantined tests still run but:
+- Marked with `is_quarantined=1` in results
+- Excluded from `get_failed_tests()`
+- Don't affect pass/fail status
 
 ## Common Issues
 
-### Hook verification fails
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| E2E not auto-triggering | `auto_run_interval_minutes: 0` | Set to positive value |
+| Worker exits immediately | Invalid pytest args | Check `pytest_args` path exists |
+| "AlreadyRunning" error | Previous worker still running | Stop via API or kill process |
+| No progress shown | Old schema without `total_tests` | Delete e2e.db, will recreate |
+| Tests not resuming | Monolithic test structure | Split into discrete test functions |
 
-```
-STARTUP BLOCKED: Hook verification failed
-```
+## Auto-Trigger Logic
 
-**Fix:** Run `issue-orchestrator setup-hooks` or use a test config with `skip_verification: true`
+E2E auto-triggers when ALL conditions met:
+1. `e2e.enabled: true`
+2. `auto_run_interval_minutes > 0`
+3. At least one agent session completed since last check
+4. No E2E currently running
+5. Enough time passed since last E2E run
 
-### FileNotFoundError: issue-orchestrator
-
-The CLI isn't in PATH. The conftest.py should use:
-```python
-venv_bin = Path(sys.executable).parent / "issue-orchestrator"
-```
-
-### Tests pollute main repo
-
-Tests default to running against the main repo. Set `E2E_TEST_REPO` to a dedicated test repo.
-
-## Two Start Functions
-
-In `test_real_scenarios.py`:
-
-1. **`start_orchestrator(repo)`** - Does NOT use config file, requires hook verification
-2. **`start_orchestrator_with_config(config_path)`** - Uses config file with `skip_verification: true`
-
-Most test failures happen because tests use `start_orchestrator()` without the proper config.
-
-## Environment Variables
-
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `E2E_TEST_REPO` | Target repo for e2e tests | Current repo from git |
-| `TEST_REPO` | Target repo for setup/teardown scripts | `BruceBGordon/issue-orchestrator` |
-
-## Quick Diagnostic
-
+Check auto-trigger in logs:
 ```bash
-# Check what repo tests will use
-python -c "from tests.e2e.conftest import get_test_repo; print(get_test_repo())"
-
-# List test issues in target repo
-gh issue list --repo BruceBGordon/issue-orchestrator --label test-data
-
-# Clean up test data
-python scripts/teardown_test_issues.py
+grep "E2E auto-trigger" .issue-orchestrator/state/logs/orchestrator.log
 ```

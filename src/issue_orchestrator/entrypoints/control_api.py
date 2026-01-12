@@ -29,6 +29,15 @@ Multi-repo Registry API endpoints:
 - GET /control/repos - List all registered repos with status
 - POST /control/repos - Add a repo to the registry
 - DELETE /control/repos - Remove a repo from the registry
+
+E2E Test Runner API endpoints:
+- POST /control/e2e/start - Start E2E test run
+- POST /control/e2e/stop - Stop running E2E test
+- GET /control/e2e/status - Get E2E runner status
+- GET /control/e2e/runs - List recent E2E runs
+- GET /control/e2e/run/{run_id} - Get run details with test results
+- GET /control/e2e/logs/{run_id} - Get run logs
+- GET /control/e2e/failed/{run_id} - Get failed tests from a run
 """
 
 import asyncio
@@ -1930,6 +1939,484 @@ Find PRs with `{review_label}` label and audit them for patterns, issues, and qu
 
 `agent-done completed --implementation "Audited N PRs. Summary of findings."`
 """
+
+
+# =============================================================================
+# E2E Test Runner API
+# =============================================================================
+# These endpoints manage async E2E test execution per repository.
+
+
+@control_app.post("/control/e2e/start")
+async def e2e_start(request: Request) -> JSONResponse:
+    """Start an E2E test run for a repository.
+
+    JSON body:
+        repo_root: str - Repository root path
+        pytest_args: list[str] (optional) - Override pytest arguments
+        allow_retry_once: bool (optional) - Retry failed tests once (default: True)
+
+    Returns:
+        {status: "started", pid: int, log_path: str}
+    """
+    from ..infra.e2e_runner import get_e2e_runner_manager, E2EAlreadyRunning
+    from ..infra.config import Config
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = _validate_repo_root(body.get("repo_root"))
+    if repo_root is None:
+        return JSONResponse(
+            {"error": "Invalid or missing repo_root"},
+            status_code=400,
+        )
+
+    # Load config to get e2e settings and orchestrator_id
+    try:
+        config = Config.find_and_load(repo_root)
+    except FileNotFoundError:
+        return JSONResponse(
+            {"error": "Config not found", "detail": "No .issue-orchestrator/config found"},
+            status_code=404,
+        )
+
+    if not config.e2e.enabled:
+        return JSONResponse(
+            {"error": "e2e_disabled", "detail": "E2E runner not enabled in config"},
+            status_code=400,
+        )
+
+    # Use config values or overrides from request
+    pytest_args = body.get("pytest_args") or config.e2e.pytest_args
+    allow_retry = body.get("allow_retry_once", config.e2e.allow_retry_once)
+    orchestrator_id = config.repo or str(repo_root)
+
+    runner = get_e2e_runner_manager()
+
+    try:
+        result = runner.start(
+            repo_root=repo_root,
+            orchestrator_id=orchestrator_id,
+            pytest_args=pytest_args,
+            allow_retry_once=allow_retry,
+            quarantine_file=config.e2e.quarantine_file,
+        )
+        return JSONResponse({
+            "status": "started",
+            "pid": result["pid"],
+            "log_path": result["log_path"],
+        })
+    except E2EAlreadyRunning as e:
+        return JSONResponse(
+            {"error": "already_running", "pid": e.pid},
+            status_code=409,
+        )
+    except Exception as e:
+        logger.exception("Failed to start E2E: %s", e)
+        return JSONResponse(
+            {"error": "start_failed", "detail": str(e)},
+            status_code=500,
+        )
+
+
+@control_app.post("/control/e2e/stop")
+async def e2e_stop(request: Request) -> JSONResponse:
+    """Stop a running E2E test.
+
+    JSON body:
+        repo_root: str - Repository root path
+    """
+    from ..infra.e2e_runner import get_e2e_runner_manager
+    from ..infra.config import Config
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_root = _validate_repo_root(body.get("repo_root"))
+    if repo_root is None:
+        return JSONResponse(
+            {"error": "Invalid or missing repo_root"},
+            status_code=400,
+        )
+
+    # Get orchestrator_id from config
+    try:
+        config = Config.find_and_load(repo_root)
+        orchestrator_id = config.repo or str(repo_root)
+    except FileNotFoundError:
+        orchestrator_id = str(repo_root)
+
+    runner = get_e2e_runner_manager()
+    stopped = runner.stop(orchestrator_id, repo_root)
+
+    return JSONResponse({
+        "status": "stopped" if stopped else "not_running",
+    })
+
+
+@control_app.get("/control/e2e/status")
+async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
+    """Get E2E test runner status.
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        {running: bool, pid: int | null, last_run: {...} | null, signal_score: {...}}
+    """
+    from ..infra.e2e_runner import get_e2e_runner_manager
+    from ..infra.e2e_db import E2EDB
+    from ..infra.config import Config
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    # Get orchestrator_id from config
+    try:
+        config = Config.find_and_load(validated_root)
+        orchestrator_id = config.repo or str(validated_root)
+        e2e_enabled = config.e2e.enabled
+    except FileNotFoundError:
+        orchestrator_id = str(validated_root)
+        e2e_enabled = False
+
+    # Get process status
+    runner = get_e2e_runner_manager()
+    proc_status = runner.status(orchestrator_id)
+
+    # Get DB status
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    last_run = None
+    signal_score = None
+    progress = None
+
+    if db_path.exists():
+        try:
+            db = E2EDB(db_path)
+            run = db.latest_run(orchestrator_id)
+            if run:
+                last_run = run.to_dict()
+                # Get progress for running tests
+                if run.status == "running":
+                    progress = db.get_progress(run.id)
+            signal_score = db.compute_signal_score(orchestrator_id)
+        except Exception as e:
+            logger.warning("Failed to read E2E DB: %s", e)
+
+    return JSONResponse({
+        "enabled": e2e_enabled,
+        "running": proc_status["running"],
+        "pid": proc_status["pid"],
+        "exit_code": proc_status["exit_code"],
+        "last_run": last_run,
+        "signal_score": signal_score,
+        "progress": progress,
+    })
+
+
+@control_app.get("/control/e2e/runs")
+async def e2e_runs(
+    repo_root: str = Query(...),
+    limit: int = Query(20, ge=1, le=100),
+) -> JSONResponse:
+    """List recent E2E runs.
+
+    Query params:
+        repo_root: str - Repository root path
+        limit: int - Max runs to return (default: 20)
+    """
+    from ..infra.e2e_db import E2EDB
+    from ..infra.config import Config
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    # Get orchestrator_id
+    try:
+        config = Config.find_and_load(validated_root)
+        orchestrator_id = config.repo or str(validated_root)
+    except FileNotFoundError:
+        orchestrator_id = str(validated_root)
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse({"runs": []})
+
+    try:
+        db = E2EDB(db_path)
+        runs = db.list_runs(orchestrator_id, limit=limit)
+        return JSONResponse({
+            "runs": [r.to_dict() for r in runs],
+        })
+    except Exception as e:
+        logger.exception("Failed to list E2E runs: %s", e)
+        return JSONResponse(
+            {"error": "db_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+@control_app.get("/control/e2e/run/{run_id}")
+async def e2e_run_details(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get details of a specific E2E run.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+    """
+    from ..infra.e2e_db import E2EDB
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+        details = db.run_details(run_id)
+        if details is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Run {run_id} not found"},
+                status_code=404,
+            )
+        return JSONResponse(details)
+    except Exception as e:
+        logger.exception("Failed to get E2E run details: %s", e)
+        return JSONResponse(
+            {"error": "db_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+@control_app.get("/control/e2e/logs/{run_id}")
+async def e2e_logs(
+    run_id: int,
+    repo_root: str = Query(...),
+    tail: int = Query(500, ge=1, le=10000),
+) -> JSONResponse:
+    """Get logs for a specific E2E run.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+        tail: int - Max lines to return (default: 500)
+    """
+    from ..infra.e2e_db import E2EDB
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+        details = db.run_details(run_id)
+        if details is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Run {run_id} not found"},
+                status_code=404,
+            )
+
+        log_path = details["run"].get("log_path")
+        if not log_path:
+            return JSONResponse(
+                {"error": "no_logs", "detail": "No log file for this run"},
+                status_code=404,
+            )
+
+        log_file = Path(log_path)
+        if not log_file.exists():
+            return JSONResponse(
+                {"error": "log_missing", "detail": f"Log file not found: {log_path}"},
+                status_code=404,
+            )
+
+        # Read last N lines
+        with open(log_file, "r") as f:
+            lines = f.readlines()
+            content = "".join(lines[-tail:])
+
+        return JSONResponse({
+            "log_path": str(log_path),
+            "total_lines": len(lines),
+            "returned_lines": min(tail, len(lines)),
+            "content": content,
+        })
+    except Exception as e:
+        logger.exception("Failed to get E2E logs: %s", e)
+        return JSONResponse(
+            {"error": "read_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+@control_app.get("/control/e2e/failed/{run_id}")
+async def e2e_failed_tests(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get failed tests from a specific run.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+    """
+    from ..infra.e2e_db import E2EDB
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+        failed = db.get_failed_tests(run_id)
+        return JSONResponse({
+            "failed_tests": [t.to_dict() for t in failed],
+        })
+    except Exception as e:
+        logger.exception("Failed to get failed tests: %s", e)
+        return JSONResponse(
+            {"error": "db_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+@control_app.get("/control/e2e/quarantine")
+async def e2e_quarantine_list(repo_root: str = Query(...)) -> JSONResponse:
+    """Get the quarantine list for a repository.
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        {quarantine_file: str, tests: [str], count: int}
+    """
+    from ..infra.e2e_db import load_quarantine_list
+    from ..infra.config import Config
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    # Get quarantine file path from config
+    try:
+        config = Config.find_and_load(validated_root)
+        quarantine_file = config.e2e.quarantine_file
+    except FileNotFoundError:
+        quarantine_file = "tests/e2e/quarantine.txt"
+
+    quarantine_path = validated_root / quarantine_file
+    tests = load_quarantine_list(quarantine_path)
+
+    return JSONResponse({
+        "quarantine_file": quarantine_file,
+        "tests": sorted(tests),
+        "count": len(tests),
+        "exists": quarantine_path.exists(),
+    })
+
+
+@control_app.get("/control/e2e/summary/{run_id}")
+async def e2e_test_summary(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get comprehensive test summary for a run.
+
+    Includes passed, failed, passed-on-retry, quarantined, and skipped tests.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        {
+            passed: [...], failed: [...], passed_on_retry: [...],
+            quarantined: [...], skipped: [...],
+            counts: {total, passed, failed, passed_on_retry, quarantined, skipped}
+        }
+    """
+    from ..infra.e2e_db import E2EDB
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+        summary = db.get_test_summary(run_id)
+        return JSONResponse(summary)
+    except Exception as e:
+        logger.exception("Failed to get test summary: %s", e)
+        return JSONResponse(
+            {"error": "db_error", "detail": str(e)},
+            status_code=500,
+        )
 
 
 class ControlAPIServer:

@@ -640,6 +640,65 @@ def run_doctor(
             detail="Disabled",
         ))
 
+    # === E2E Test Runner ===
+    if config.e2e.enabled:
+        repo_root = Path.cwd()
+        e2e_checks = []
+
+        # Check pytest_args point to valid test directory
+        if config.e2e.pytest_args:
+            test_path = config.e2e.pytest_args[0]  # First arg is typically the path
+            test_dir = repo_root / test_path
+            if test_dir.exists():
+                e2e_checks.append(f"tests: {test_path}")
+            else:
+                result.checks.append(Check(
+                    name="E2E Runner",
+                    status="warning",
+                    detail=f"Test path '{test_path}' not found",
+                ))
+
+        # Check quarantine file
+        quarantine_path = repo_root / config.e2e.quarantine_file
+        if quarantine_path.exists():
+            try:
+                lines = [l.strip() for l in quarantine_path.read_text().splitlines()
+                        if l.strip() and not l.strip().startswith("#")]
+                e2e_checks.append(f"quarantine: {len(lines)} tests")
+            except Exception:
+                e2e_checks.append("quarantine: unreadable")
+        else:
+            e2e_checks.append("quarantine: none")
+
+        # Check DB directory is writable
+        db_dir = repo_root / ".issue-orchestrator"
+        if db_dir.exists() and os.access(db_dir, os.W_OK):
+            e2e_checks.append("db: writable")
+        elif not db_dir.exists():
+            e2e_checks.append("db: will create")
+        else:
+            result.checks.append(Check(
+                name="E2E Runner",
+                status="error",
+                detail=".issue-orchestrator not writable",
+            ))
+
+        # Add summary if no errors
+        if not any(c.name == "E2E Runner" for c in result.checks):
+            auto = f"auto={config.e2e.auto_run_interval_minutes}m" if config.e2e.auto_run_interval_minutes > 0 else "manual"
+            retry = "retry=on" if config.e2e.allow_retry_once else "retry=off"
+            result.checks.append(Check(
+                name="E2E Runner",
+                status="ok",
+                detail=f"Enabled ({auto}, {retry}, {', '.join(e2e_checks)})",
+            ))
+    else:
+        result.checks.append(Check(
+            name="E2E Runner",
+            status="info",
+            detail="Disabled",
+        ))
+
     # === Guardrails (via test worktree) ===
     # Only run if we have a valid config with a repo AND a runner
     if config and config.repo and runner:
