@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 from issue_orchestrator.observation.observer import SessionObserver
+from issue_orchestrator.infra.session_output import session_output_dir
 from issue_orchestrator.domain.models import (
     Session,
     SessionStatus,
@@ -690,7 +691,7 @@ class TestObserveSession:
         mock_session_runner.session_exists_by_name.return_value = False
 
         # Create an active session log (recently modified)
-        log_dir = tmp_path / ".issue-orchestrator"
+        log_dir = session_output_dir(tmp_path, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
         log_file = log_dir / "session.log"
         log_file.write_text("Claude is working...")
@@ -824,7 +825,7 @@ class TestEmitNoOutputIfStale:
         sample_session.worktree_path = worktree
 
         # Create session log
-        log_dir = worktree / ".issue-orchestrator"
+        log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
         log_file = log_dir / "session.log"
         log_file.write_text("Some log content\n")
@@ -866,7 +867,7 @@ class TestEmitNoOutputIfStale:
         worktree.mkdir(parents=True)
         sample_session.worktree_path = worktree
 
-        log_dir = worktree / ".issue-orchestrator"
+        log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
         log_file = log_dir / "session.log"
         log_file.write_text("Initial content\n")
@@ -932,7 +933,7 @@ class TestEmitNoOutputIfStale:
         worktree.mkdir(parents=True)
         sample_session.worktree_path = worktree
 
-        log_dir = worktree / ".issue-orchestrator"
+        log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
         log_file = log_dir / "session.log"
         log_file.write_text("Some content\n")
@@ -1140,7 +1141,7 @@ class TestEmitNoOutputEdgeCases:
         sample_session.worktree_path = worktree
 
         # Create a log file that will exist but fail on stat
-        log_dir = worktree / ".issue-orchestrator"
+        log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
         log_file = log_dir / "session.log"
         log_file.write_text("content")
@@ -1175,7 +1176,7 @@ class TestEmitNoOutputEdgeCases:
         worktree.mkdir(parents=True)
         sample_session.worktree_path = worktree
 
-        log_dir = worktree / ".issue-orchestrator"
+        log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
         log_file = log_dir / "session.log"
         log_file.write_text("content")
@@ -1212,7 +1213,7 @@ class TestEmitNoOutputEdgeCases:
         worktree.mkdir(parents=True)
         sample_session.worktree_path = worktree
 
-        log_dir = worktree / ".issue-orchestrator"
+        log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
         log_file = log_dir / "session.log"
         log_file.write_text("content")

@@ -20,6 +20,7 @@ from typing import Optional
 from ..control.isolation import build_isolation_prefix
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
+from ..infra.session_output import ensure_session_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -216,9 +217,8 @@ class SubprocessPlugin:
     def _session_name(self, session_id: int, session_name: Optional[str]) -> str:
         return session_name or f"issue-{session_id}"
 
-    def _session_log_path(self, working_dir: Path) -> Path:
-        log_dir = working_dir / ".issue-orchestrator"
-        log_dir.mkdir(parents=True, exist_ok=True)
+    def _session_log_path(self, working_dir: Path, session_name: str) -> Path:
+        log_dir = ensure_session_output_dir(working_dir, session_name)
         return log_dir / "session.log"
 
     def _start_process(self, command: str, working_dir: Path, session_name: str) -> subprocess.Popen[str]:
@@ -228,7 +228,7 @@ class SubprocessPlugin:
         isolation_prefix = build_isolation_prefix(working_dir, scrub_env=True, isolate_home=False)
         full_cmd = f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command}'
 
-        log_path = self._session_log_path(working_dir)
+        log_path = self._session_log_path(working_dir, session_name)
         log_file = open(log_path, "a")
         stdin_mode = subprocess.PIPE if self._allow_stdin else subprocess.DEVNULL
 
@@ -296,7 +296,7 @@ class SubprocessPlugin:
             worktree_path=str(worktree.resolve()),
             pid=proc.pid,
             started_at=datetime.now().isoformat(),
-            log_path=str(self._session_log_path(worktree)),
+            log_path=str(self._session_log_path(worktree, name)),
             tab_name=tab_name,
             is_review=is_review,
         )

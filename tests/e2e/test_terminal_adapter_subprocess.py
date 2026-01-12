@@ -90,7 +90,7 @@ class TestTerminalAdapterSubprocess:
 
         worktree = find_worktree_for_issue(issue_number, worktree_base=e2e_worktree_base)
         assert worktree is not None, f"Could not locate worktree for issue #{issue_number}"
-        session_dir = worktree / ".issue-orchestrator"
+        session_dir = worktree / ".issue-orchestrator" / "sessions" / f"issue-{issue_number}"
         assert session_dir.exists(), f"Session dir missing: {session_dir}"
         log_path = session_dir / "session.log"
         assert log_path.exists(), f"Session log missing: {log_path}"

@@ -98,7 +98,7 @@ def find_worktree_for_issue(issue_number: int, worktree_base: Path | None = None
         if branch.startswith(f"{issue_number}-") or branch == str(issue_number):
             return worktree
         if branch == "HEAD":
-            session_marker = worktree / ".issue-orchestrator" / f"session-identity-issue-{issue_number}.json"
+            session_marker = worktree / ".issue-orchestrator" / "sessions" / f"issue-{issue_number}" / "identity.json"
             if session_marker.exists():
                 return worktree
     return None
@@ -177,21 +177,26 @@ def snapshot_logs(reason: str, tmux_session: str = "orchestrator", worktree_base
             # Snapshot recent worktree artifacts
             for worktree in find_recent_worktrees(worktree_base=worktree_base):
                 handle.write(f"[WORKTREE] {worktree}\n")
-                session_dir = worktree / ".issue-orchestrator"
-                if session_dir.exists():
-                    for identity in session_dir.glob("session-identity-*.json"):
-                        handle.write(f"[IDENTITY] {identity}\n")
-                        for line in tail_lines(identity):
-                            handle.write(line + "\n")
-                    for completion in session_dir.glob("completion-*.json"):
-                        handle.write(f"[COMPLETION] {completion}\n")
-                        for line in tail_lines(completion):
-                            handle.write(line + "\n")
-                    session_log = session_dir / "session.log"
-                    if session_log.exists():
-                        handle.write(f"[SESSION_LOG] {session_log}\n")
-                        for line in tail_lines(session_log):
-                            handle.write(line + "\n")
+                session_root = worktree / ".issue-orchestrator" / "sessions"
+                if session_root.exists():
+                    for session_dir in sorted(session_root.iterdir()):
+                        if not session_dir.is_dir():
+                            continue
+                        identity = session_dir / "identity.json"
+                        if identity.exists():
+                            handle.write(f"[IDENTITY] {identity}\n")
+                            for line in tail_lines(identity):
+                                handle.write(line + "\n")
+                        for completion in session_dir.glob("completion*.json"):
+                            handle.write(f"[COMPLETION] {completion}\n")
+                            for line in tail_lines(completion):
+                                handle.write(line + "\n")
+                        for log_name in ("session.log", "pane.log"):
+                            session_log = session_dir / log_name
+                            if session_log.exists():
+                                handle.write(f"[SESSION_LOG] {session_log}\n")
+                                for line in tail_lines(session_log):
+                                    handle.write(line + "\n")
 
                 claude_dir = claude_project_dir_for(worktree)
                 handle.write(f"[CLAUDE] {claude_dir}\n")

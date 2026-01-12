@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from ..events import EventName
 from ..domain.models import SessionStatus
 from ..infra.logging_config import issue_log
+from ..infra.session_output import find_session_log_path
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
 
@@ -155,8 +156,8 @@ class SessionController:
             # No completion record - agent died without calling agent-done
             # Try to capture session log for diagnostics
             session_log = ""
-            log_path = worktree_path / ".issue-orchestrator" / "session.log"
-            if log_path.exists():
+            log_path = find_session_log_path(worktree_path, session_name)
+            if log_path and log_path.exists():
                 try:
                     # Get last 50 lines of session log
                     content = log_path.read_text()

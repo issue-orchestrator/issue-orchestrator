@@ -39,7 +39,7 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     _ensure_worktree_venv(worktree)
 
     monkeypatch.setenv("ORCHESTRATOR_REPO_ROOT", str(repo_root))
-    completion_path = ".issue-orchestrator/completion.json"
+    completion_path = ".issue-orchestrator/sessions/issue-42/completion.json"
     command = (
         "echo 'hello-from-subprocess' && "
         f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}' && "
@@ -58,7 +58,7 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
 
     _wait_for_exit(plugin, "issue-42")
 
-    log_path = worktree / ".issue-orchestrator" / "session.log"
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "session.log"
     assert log_path.exists()
     assert "hello-from-subprocess" in log_path.read_text(errors="ignore")
 
@@ -76,7 +76,7 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
 
     monkeypatch.setenv("ORCHESTRATOR_REPO_ROOT", str(repo_root))
     monkeypatch.setenv("ORCHESTRATOR_SUBPROCESS_ALLOW_STDIN", "1")
-    command = "read -r line; echo \"INPUT:$line\" >> .issue-orchestrator/session.log"
+    command = "read -r line; echo \"INPUT:$line\" >> .issue-orchestrator/sessions/issue-7/session.log"
 
     plugin = SubprocessPlugin()
     created = plugin.create_session(
@@ -94,6 +94,6 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
 
     _wait_for_exit(plugin, "issue-7")
 
-    log_path = worktree / ".issue-orchestrator" / "session.log"
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-7" / "session.log"
     assert log_path.exists()
     assert "INPUT:ping" in log_path.read_text(errors="ignore")

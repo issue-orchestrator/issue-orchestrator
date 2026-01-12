@@ -1,11 +1,14 @@
 """Worktree preparation for sessions.
 
-Cleans stale session artifacts (completion.json, session-identity files)
-before launching a new session in a reused worktree.
+Cleans stale session artifacts before launching a new session in a reused
+worktree.
 """
 
 import logging
+import shutil
 from pathlib import Path
+
+from ..infra.session_output import session_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +37,8 @@ class Worktree:
     ORCHESTRATOR_DIR = ".issue-orchestrator"
     COMPLETION_PATTERN = "completion*.json"
     SESSION_IDENTITY_PATTERN = "session-identity*.json"
-    PANE_LOG = "pane.log"
+    LEGACY_SESSION_LOG = "session.log"
+    LEGACY_PANE_LOG = "pane.log"
 
     def __init__(self, path: Path, issue_number: int):
         """Initialize worktree.
@@ -51,8 +55,9 @@ class Worktree:
         """Prepare worktree for a new session by removing stale artifacts.
 
         Deletes:
-        - completion*.json files (from previous sessions)
-        - session-identity*.json files (from previous sessions)
+        - per-session output directory (logs, completion, identity, notes)
+        - legacy completion*.json/session-identity*.json files
+        - legacy session.log/pane.log files
 
         Args:
             session_id: The session ID that will own this worktree (for logging).
@@ -68,9 +73,10 @@ class Worktree:
         )
 
         try:
+            removed_session_output = self._delete_session_output_dir(session_id)
             removed_completions = self._delete_files(self.COMPLETION_PATTERN)
             removed_identities = self._delete_files(self.SESSION_IDENTITY_PATTERN)
-            removed_pane_log = self._delete_pane_log()
+            removed_logs = self._delete_legacy_logs()
         except OSError as e:
             logger.error(
                 "[issue-%d] Failed to clean stale files in worktree: %s",
@@ -83,13 +89,14 @@ class Worktree:
                 f"Cannot delete stale files in worktree {self.path.name}: {e}",
             ) from e
 
-        if removed_completions or removed_identities or removed_pane_log:
+        if removed_session_output or removed_completions or removed_identities or removed_logs:
             logger.info(
-                "[issue-%d] Removed %d completion(s), %d identity file(s), pane.log=%s",
+                "[issue-%d] Removed session_output=%s, %d completion(s), %d identity file(s), legacy_logs=%s",
                 self.issue_number,
+                removed_session_output,
                 len(removed_completions),
                 len(removed_identities),
-                removed_pane_log,
+                removed_logs,
             )
 
     def _delete_files(self, pattern: str) -> list[Path]:
@@ -119,22 +126,24 @@ class Worktree:
 
         return removed
 
-    def _delete_pane_log(self) -> bool:
-        """Delete pane.log if it exists.
-
-        Returns:
-            True if file was deleted, False otherwise.
-
-        Raises:
-            OSError: If file cannot be deleted.
-        """
-        pane_log = self._orchestrator_dir / self.PANE_LOG
-        if not pane_log.exists():
+    def _delete_session_output_dir(self, session_id: str) -> bool:
+        """Delete per-session output directory if it exists."""
+        output_dir = session_output_dir(self.path, session_id)
+        if not output_dir.exists():
             return False
+        shutil.rmtree(output_dir, ignore_errors=False)
+        return True
 
-        try:
-            pane_log.unlink()
-            return True
-        except FileNotFoundError:
-            # Race condition - file was deleted between exists() and unlink()
-            return False
+    def _delete_legacy_logs(self) -> bool:
+        """Delete legacy log files if they exist."""
+        removed = False
+        for filename in (self.LEGACY_SESSION_LOG, self.LEGACY_PANE_LOG):
+            log_path = self._orchestrator_dir / filename
+            if not log_path.exists():
+                continue
+            try:
+                log_path.unlink()
+                removed = True
+            except FileNotFoundError:
+                continue
+        return removed
