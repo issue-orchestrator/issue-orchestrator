@@ -1489,8 +1489,9 @@ class TestWorktreePrepareForSession:
         assert not completion.exists()
 
     def test_removes_session_identity_files(self, worktree: Worktree, worktree_dir: Path):
-        """Removes session-identity*.json files."""
-        identity = worktree_dir / ".issue-orchestrator" / "session-identity-issue-123.json"
+        """Removes per-session identity files."""
+        identity = worktree_dir / ".issue-orchestrator" / "sessions" / "new-session" / "identity.json"
+        identity.parent.mkdir(parents=True, exist_ok=True)
         identity.write_text(json.dumps({"session_name": "old"}))
 
         assert identity.exists()
@@ -1521,7 +1522,8 @@ class TestWorktreePrepareForSession:
 
     def test_removes_pane_log(self, worktree: Worktree, worktree_dir: Path):
         """Removes pane.log from previous sessions."""
-        pane_log = worktree_dir / ".issue-orchestrator" / "pane.log"
+        pane_log = worktree_dir / ".issue-orchestrator" / "sessions" / "new-session" / "pane.log"
+        pane_log.parent.mkdir(parents=True, exist_ok=True)
         pane_log.write_text("Old session output from Claude Code\n")
 
         assert pane_log.exists()

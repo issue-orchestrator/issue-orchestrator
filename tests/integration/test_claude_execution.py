@@ -455,7 +455,7 @@ class TestClaudeViaAdapterPath:
         content = verify_file.read_text().strip()
         assert "VERIFIED" in content
 
-        log_path = worktree / ".issue-orchestrator" / "session.log"
+        log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-999" / "session.log"
         assert log_path.exists()
 
     def test_claude_via_adapter_path_with_home_isolation_fails(self, tmp_path):

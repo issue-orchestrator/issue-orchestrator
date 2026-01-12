@@ -25,6 +25,7 @@ from ..domain import ProcessState
 from ..infra.config import Config
 from ..infra import labels
 from ..infra.logging_config import issue_log
+from ..infra.session_output import find_session_log_path
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
 from ..ports import EventSink, TraceEvent, NullEventSink
@@ -273,10 +274,10 @@ class SessionObserver:
                 session_age = (datetime.now() - session.started_at).total_seconds()
 
                 # Check log file activity - if log was modified recently, session is active
-                log_path = session.worktree_path / ".issue-orchestrator" / "session.log"
+                log_path = find_session_log_path(session.worktree_path, session.terminal_id)
                 log_is_progressing = False
                 log_age = float("inf")  # Default to "very old" if we can't read
-                if log_path.exists():
+                if log_path and log_path.exists():
                     try:
                         log_mtime = log_path.stat().st_mtime
                         log_age = time.time() - log_mtime
@@ -342,8 +343,8 @@ class SessionObserver:
 
     def _emit_no_output_if_stale(self, session: Session) -> None:
         """Emit a session_no_output event if the session log is idle too long."""
-        log_path = session.worktree_path / ".issue-orchestrator" / "session.log"
-        if not log_path.exists():
+        log_path = find_session_log_path(session.worktree_path, session.terminal_id)
+        if not log_path or not log_path.exists():
             return
 
         try:

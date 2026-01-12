@@ -854,16 +854,18 @@ async def get_session_log(issue_number: int) -> JSONResponse:
 async def get_agent_ui_log(issue_number: int) -> JSONResponse:
     """Get the local agent UI log for an issue.
 
-    This reads .issue-orchestrator/session.log (subprocess backend) or
-    .issue-orchestrator/pane.log (tmux backend) from the worktree.
+    This reads .issue-orchestrator/sessions/<session>/session.log (subprocess backend) or
+    .issue-orchestrator/sessions/<session>/pane.log (tmux backend) from the worktree.
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     worktree_path = None
+    session = None
     for s in _orchestrator.state.active_sessions:
         if s.issue.number == issue_number:
             worktree_path = s.worktree_path
+            session = s
             break
     if not worktree_path:
         for entry in _orchestrator.state.session_history:
@@ -877,15 +879,13 @@ async def get_agent_ui_log(issue_number: int) -> JSONResponse:
             "hint": "Session may have been cleaned up or never started"
         }, status_code=404)
 
-    log_candidates = [
-        worktree_path / ".issue-orchestrator" / "session.log",
-        worktree_path / ".issue-orchestrator" / "pane.log",
-    ]
+    from ..infra.session_output import find_latest_session_log_path, find_session_log_path
+
     log_path = None
-    for candidate in log_candidates:
-        if candidate.exists():
-            log_path = candidate
-            break
+    if session:
+        log_path = find_session_log_path(worktree_path, session.terminal_id)
+    if not log_path:
+        log_path = find_latest_session_log_path(worktree_path)
 
     if not log_path:
         return JSONResponse({

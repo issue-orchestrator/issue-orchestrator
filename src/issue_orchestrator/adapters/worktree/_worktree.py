@@ -705,7 +705,7 @@ def create_worktree(
     pre_push_hook: Path | None = None,
     branch_name: str | None = None,
     policy: WorktreePolicy | None = None,
-) -> tuple[Path, str, bool, int, int]:
+) -> tuple[Path, str, str, str | None, bool, int, int]:
     """
     Create a new git worktree for the given issue.
 
@@ -723,7 +723,8 @@ def create_worktree(
         policy: Worktree setup policy (defaults to ValidateOrDeletePolicy)
 
     Returns:
-        Tuple of (worktree_path, branch_name, rebase_failed, uncommitted_discarded, commits_discarded)
+        Tuple of (worktree_path, branch_name, reuse_status, reuse_reason,
+        rebase_failed, uncommitted_discarded, commits_discarded)
         where rebase_failed is True if rebase failed and work was discarded to reset to main.
         uncommitted_discarded: count of uncommitted changes that were discarded
         commits_discarded: count of commits that were discarded (on rebase failure)
@@ -741,6 +742,9 @@ def create_worktree(
         branch_name or "(auto)",
         worktree_base,
     )
+    reuse_status = "created"
+    reuse_reason = "no_existing_worktree"
+    recreated_reason: str | None = None
 
     if not (repo_root / ".git").exists():
         raise WorktreeError(f"Not a git repository: {repo_root}")
@@ -789,10 +793,14 @@ def create_worktree(
     if disable_reuse:
         logger.info("Worktree reuse disabled (ORCHESTRATOR_DISABLE_WORKTREE_REUSE=1)")
         if worktree_path.exists():
+            reuse_status = "recreated"
+            recreated_reason = "reuse_disabled: existing worktree path removed"
             _remove_existing_worktree_path(repo_root, worktree_path)
         if branch_name:
             existing_worktree = find_worktree_for_branch(repo_root, branch_name)
             if existing_worktree and existing_worktree.exists():
+                reuse_status = "recreated"
+                recreated_reason = "reuse_disabled: existing worktree branch removed"
                 _detach_worktree_branch(existing_worktree, branch_name)
 
     # If a specific branch was requested, check if it's already checked out in another worktree
@@ -809,6 +817,8 @@ def create_worktree(
                     issue_log(issue_number, "Worktree failed validation, deleting: %s"),
                     validation.reason,
                 )
+                reuse_status = "recreated"
+                recreated_reason = f"validation_failed: {validation.reason}"
                 policy.delete_worktree(existing_worktree, repo_root)
                 # Fall through to fresh creation
             else:
@@ -822,12 +832,16 @@ def create_worktree(
                         issue_log(issue_number, "Failed to sync remote refs, deleting worktree: %s"),
                         sync_result.reason,
                     )
+                    reuse_status = "recreated"
+                    recreated_reason = f"sync_failed: {sync_result.reason}"
                     policy.delete_worktree(existing_worktree, repo_root)
                     # Fall through to fresh creation
                 elif not reset_info.success:
                     logger.warning(
                         issue_log(issue_number, "Reset to main failed, deleting worktree"),
                     )
+                    reuse_status = "recreated"
+                    recreated_reason = "reset_failed: rebase onto main failed"
                     policy.delete_worktree(existing_worktree, repo_root)
                     # Fall through to fresh creation
                 else:
@@ -838,7 +852,17 @@ def create_worktree(
                     install_venv_symlink(existing_worktree, repo_root)
                     sync_cli_tools(existing_worktree, repo_root)
                     logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), existing_worktree)
-                    return existing_worktree, branch_name, False, reset_info.uncommitted_discarded, reset_info.commits_discarded
+                    reuse_status = "reused"
+                    reuse_reason = "existing_worktree_by_branch"
+                    return (
+                        existing_worktree,
+                        branch_name,
+                        reuse_status,
+                        reuse_reason,
+                        False,
+                        reset_info.uncommitted_discarded,
+                        reset_info.commits_discarded,
+                    )
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
     if worktree_path.exists() and not disable_reuse:
@@ -851,6 +875,8 @@ def create_worktree(
                 issue_log(issue_number, "Worktree failed validation, deleting: %s"),
                 validation.reason,
             )
+            reuse_status = "recreated"
+            recreated_reason = f"validation_failed: {validation.reason}"
             policy.delete_worktree(worktree_path, repo_root)
             # Fall through to fresh creation
         else:
@@ -862,6 +888,8 @@ def create_worktree(
             )
             if branch_result.returncode != 0:
                 logger.warning(issue_log(issue_number, "Could not get branch, deleting worktree"))
+                reuse_status = "recreated"
+                recreated_reason = "branch_lookup_failed"
                 policy.delete_worktree(worktree_path, repo_root)
                 # Fall through to fresh creation
             else:
@@ -878,10 +906,14 @@ def create_worktree(
                         issue_log(issue_number, "Failed to sync remote refs, deleting worktree: %s"),
                         sync_result.reason,
                     )
+                    reuse_status = "recreated"
+                    recreated_reason = f"sync_failed: {sync_result.reason}"
                     policy.delete_worktree(worktree_path, repo_root)
                     # Fall through to fresh creation
                 elif not reset_info.success:
                     logger.warning(issue_log(issue_number, "Reset to main failed, deleting worktree"))
+                    reuse_status = "recreated"
+                    recreated_reason = "reset_failed: rebase onto main failed"
                     policy.delete_worktree(worktree_path, repo_root)
                     # Fall through to fresh creation
                 else:
@@ -892,7 +924,17 @@ def create_worktree(
                     install_venv_symlink(worktree_path, repo_root)
                     sync_cli_tools(worktree_path, repo_root)
                     logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), worktree_path)
-                    return worktree_path, existing_branch, False, reset_info.uncommitted_discarded, reset_info.commits_discarded
+                    reuse_status = "reused"
+                    reuse_reason = "existing_worktree_by_path"
+                    return (
+                        worktree_path,
+                        existing_branch,
+                        reuse_status,
+                        reuse_reason,
+                        False,
+                        reset_info.uncommitted_discarded,
+                        reset_info.commits_discarded,
+                    )
 
     try:
         # Check if branch already exists
@@ -971,7 +1013,9 @@ def create_worktree(
         sync_cli_tools(worktree_path, repo_root)
 
         logger.info(issue_log(issue_number, "Worktree created: branch=%s path=%s"), branch_name, worktree_path)
-        return worktree_path, branch_name, False, 0, 0  # No rebase failure - new worktree
+        if reuse_status == "recreated" and recreated_reason:
+            reuse_reason = recreated_reason
+        return worktree_path, branch_name, reuse_status, reuse_reason, False, 0, 0  # No rebase failure - new worktree
 
     except Exception as e:
         if isinstance(e, WorktreeError):

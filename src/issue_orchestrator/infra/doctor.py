@@ -72,7 +72,7 @@ def _check_guardrails_in_worktree(
 
     try:
         # Create test worktree
-        worktree_path, _, _, _, _ = create_worktree(
+        worktree_path, _, _, _, _, _, _ = create_worktree(
             repo_root=repo_root,
             issue_number=0,
             issue_title="doctor-guardrail-test",

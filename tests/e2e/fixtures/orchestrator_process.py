@@ -398,7 +398,9 @@ class OrchestratorProcess:
         except OSError:
             return
         for line in result.stdout.splitlines():
-            if "cat >>" not in line or ".issue-orchestrator/session.log" not in line:
+            if "cat >>" not in line:
+                continue
+            if ".issue-orchestrator/sessions/" not in line and ".issue-orchestrator/session.log" not in line:
                 continue
             parts = line.strip().split(None, 1)
             if not parts:

@@ -745,8 +745,8 @@ class TmuxManager:
         # Enable pane logging with ANSI code stripping
         # Uses ansifilter if available (brew install ansifilter), otherwise sed
         try:
-            log_dir = working_dir / ".issue-orchestrator"
-            log_dir.mkdir(parents=True, exist_ok=True)
+            from ...infra.session_output import ensure_session_output_dir
+            log_dir = ensure_session_output_dir(working_dir, session_id)
             log_file = log_dir / "pane.log"
             # ansifilter produces cleaner output; sed is good enough fallback
             filter_cmd = (

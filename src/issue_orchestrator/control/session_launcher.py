@@ -39,6 +39,7 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
+from ..infra.session_output import ensure_session_output_dir, WORKTREE_NOTE_NAME
 from .worktree import Worktree, WorktreePreparationError
 from ..infra.logging_config import log_context
 from ..ports import (
@@ -49,7 +50,7 @@ from ..ports import (
     WorkingCopy,
     CommandRunner,
 )
-from ..ports.worktree_manager import WorktreeManager
+from ..ports.worktree_manager import WorktreeManager, WorktreeInfo
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
@@ -215,10 +216,9 @@ class SessionLauncher:
     def _write_session_identity(self, worktree_path: Path, payload: dict[str, object]) -> None:
         """Persist session identity details inside the worktree for later review."""
         try:
-            log_dir = worktree_path / ".issue-orchestrator"
-            log_dir.mkdir(parents=True, exist_ok=True)
             session_name = str(payload.get("session_name") or "unknown")
-            identity_path = log_dir / f"session-identity-{session_name}.json"
+            log_dir = ensure_session_output_dir(worktree_path, session_name)
+            identity_path = log_dir / "identity.json"
             payload_with_time = {
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 **payload,
@@ -231,6 +231,33 @@ class SessionLauncher:
             )
         except Exception as e:
             logger.warning("Failed to write session identity file: %s", e)
+
+    def _write_worktree_note(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        issue_number: int,
+        branch_name: str,
+        worktree_info: WorktreeInfo,
+    ) -> None:
+        """Write a JSON note about worktree reuse/creation for this session."""
+        try:
+            output_dir = ensure_session_output_dir(worktree_path, session_name)
+            note_path = output_dir / WORKTREE_NOTE_NAME
+            payload = {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "worktree_path": str(worktree_path),
+                "branch_name": branch_name,
+                "reuse_status": worktree_info.reuse_status,
+                "reuse_reason": worktree_info.reuse_reason,
+                "uncommitted_discarded": worktree_info.uncommitted_discarded,
+                "commits_discarded": worktree_info.commits_discarded,
+                "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            note_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        except Exception as e:
+            logger.warning("Failed to write worktree note: %s", e)
 
     def launch_issue_session(
         self,
@@ -382,6 +409,14 @@ class SessionLauncher:
             ))
             return LaunchResult(None, False, f"Worktree preparation failed: {e}")
 
+        self._write_worktree_note(
+            worktree_path,
+            session_name,
+            issue.number,
+            worktree_info.branch_name,
+            worktree_info,
+        )
+
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         logger.info(
             "[launch] Issue session paths: issue=%s worktree=%s branch=%s",
@@ -415,6 +450,14 @@ class SessionLauncher:
         logger.info(
             issue_log(issue.number, "Worktree ready: path=%s branch=%s rebase_status=%s time=%.1fs"),
             worktree_path, branch_name, "CONFLICT" if worktree_info.rebase_failed else "ok", worktree_time
+        )
+
+        self._write_worktree_note(
+            worktree_path,
+            session_name,
+            issue.number,
+            branch_name,
+            worktree_info,
         )
 
         # Run setup commands
@@ -478,7 +521,7 @@ class SessionLauncher:
             worktree=worktree_path,
             existing_work=existing_work,
         )
-        completion_path = get_completion_path(issue.agent_type)
+        completion_path = get_completion_path(issue.agent_type, session_name=session_name)
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
@@ -676,6 +719,14 @@ class SessionLauncher:
             ))
             return LaunchResult(None, False, f"Worktree preparation failed: {e}")
 
+        self._write_worktree_note(
+            worktree_path,
+            session_name,
+            review.issue_number,
+            worktree_info.branch_name,
+            worktree_info,
+        )
+
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         logger.info(
             "[launch] Review session paths: issue=%s pr=%s worktree=%s branch=%s",
@@ -726,7 +777,7 @@ class SessionLauncher:
             pr_number=review.pr_number,
             existing_work=existing_work,
         )
-        completion_path = get_completion_path(agent_label)
+        completion_path = get_completion_path(agent_label, session_name=session_name)
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
@@ -971,7 +1022,7 @@ class SessionLauncher:
             pr_number=pr_number,
             existing_work=existing_work,
         )
-        completion_path = get_completion_path(rework.agent_type)
+        completion_path = get_completion_path(rework.agent_type, session_name=session_name)
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"

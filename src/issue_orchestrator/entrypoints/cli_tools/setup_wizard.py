@@ -511,7 +511,7 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
         prompter.print("\n--- Terminal Backend (web mode) ---")
         prompter.print("Choose how agent sessions are executed:\n")
         prompter.print("  tmux       - Default (stable, interactive)")
-        prompter.print("  subprocess - No tmux dependency; logs to .issue-orchestrator/session.log\n")
+        prompter.print("  subprocess - No tmux dependency; logs to .issue-orchestrator/sessions/<session>/session.log\n")
         terminal_backend = prompter.input("Terminal backend", "tmux")
         if terminal_backend not in ("tmux", "subprocess"):
             prompter.print(f"  Invalid backend '{terminal_backend}', using 'tmux'")
@@ -813,7 +813,7 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
             prompter.print("\n--- Terminal Backend (web mode) ---")
             prompter.print("Choose how agent sessions are executed:\n")
             prompter.print("  tmux       - Default (stable, interactive)")
-            prompter.print("  subprocess - No tmux dependency; logs to .issue-orchestrator/session.log\n")
+            prompter.print("  subprocess - No tmux dependency; logs to .issue-orchestrator/sessions/<session>/session.log\n")
             terminal_backend = prompter.input("Terminal backend", "tmux")
             if terminal_backend not in ("tmux", "subprocess"):
                 prompter.print(f"  Invalid backend '{terminal_backend}', using 'tmux'")

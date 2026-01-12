@@ -30,7 +30,7 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
             break
         time.sleep(0.02)
 
-    log_path = worktree / ".issue-orchestrator" / "session.log"
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "session.log"
     assert log_path.exists()
     assert "hello from subprocess" in log_path.read_text()
 
@@ -43,7 +43,7 @@ def test_subprocess_registry_migrates_legacy_index(tmp_path):
         worktree_path=str(repo_root / "wt"),
         pid=1234,
         started_at="2026-01-01T00:00:00",
-        log_path=str(repo_root / "wt" / ".issue-orchestrator" / "session.log"),
+        log_path=str(repo_root / "wt" / ".issue-orchestrator" / "sessions" / "issue-9" / "session.log"),
         tab_name="Issue 9",
         is_review=False,
     )
