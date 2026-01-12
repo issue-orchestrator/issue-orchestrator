@@ -1,6 +1,7 @@
 """E2E logging utilities for progress tracking and log snapshots."""
 
 from datetime import datetime
+import subprocess
 from pathlib import Path
 
 from libtmux import Server
@@ -51,7 +52,17 @@ def find_recent_worktrees(limit: int = 3, worktree_base: Path | None = None) -> 
     candidates: list[Path] = []
     tmp_root = worktree_base or Path("/tmp/e2e-worktrees")
     if tmp_root.exists():
-        candidates.extend([p for p in tmp_root.iterdir() if p.is_dir()])
+        for root in tmp_root.iterdir():
+            if not root.is_dir():
+                continue
+            candidates.append(root)
+            # Support per-issue worktree roots (e.g., worktree_base/issue-123/...).
+            try:
+                for child in root.iterdir():
+                    if child.is_dir():
+                        candidates.append(child)
+            except OSError:
+                continue
 
     # pytest tmp worktrees live under /private/var/folders/*/*/T/pytest-of-*/.../worktrees/*
     tmp_parent = Path("/private/var/folders")
@@ -67,6 +78,30 @@ def find_recent_worktrees(limit: int = 3, worktree_base: Path | None = None) -> 
 
     candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
     return candidates[:limit]
+
+
+def find_worktree_for_issue(issue_number: int, worktree_base: Path | None = None) -> Path | None:
+    """Find a worktree directory whose branch name matches the issue number."""
+    for worktree in find_recent_worktrees(limit=50, worktree_base=worktree_base):
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except Exception:
+            continue
+        if result.returncode != 0:
+            continue
+        branch = result.stdout.strip()
+        if branch.startswith(f"{issue_number}-") or branch == str(issue_number):
+            return worktree
+        if branch == "HEAD":
+            session_marker = worktree / ".issue-orchestrator" / f"session-identity-issue-{issue_number}.json"
+            if session_marker.exists():
+                return worktree
+    return None
 
 
 def claude_project_dir_for(worktree: Path) -> Path:

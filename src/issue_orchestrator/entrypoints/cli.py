@@ -546,6 +546,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             async def run_with_signals():
                 import signal
                 from .web import trigger_server_shutdown
+                from .control_api import ControlAPIServer
 
                 def handle_signal():
                     if orchestrator._shutdown_requested:
@@ -561,7 +562,21 @@ def cmd_start(args: argparse.Namespace) -> int:
                 loop.add_signal_handler(signal.SIGINT, handle_signal)
                 loop.add_signal_handler(signal.SIGTERM, handle_signal)
 
-                await run_with_web_dashboard(orchestrator, port=port)
+                control_api = None
+                if api_port:
+                    console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
+                    control_api = ControlAPIServer(orchestrator, port=api_port)
+                    try:
+                        await control_api.start()
+                    except OSError as exc:
+                        logging.warning("Control API failed to start on port %s: %s", api_port, exc)
+                        control_api = None
+
+                try:
+                    await run_with_web_dashboard(orchestrator, port=port)
+                finally:
+                    if control_api:
+                        await control_api.stop()
 
             asyncio.run(run_with_signals())
         else:

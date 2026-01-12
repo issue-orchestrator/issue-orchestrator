@@ -16,6 +16,7 @@ Principle: "No Nulls in Orchestrator"
 """
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from ..infra.config import Config
@@ -96,6 +97,10 @@ def build_orchestrator(
     from ..infra.orchestrator import Orchestrator
 
     install_gh_guard()
+
+    # Make tmux session mode visible to terminal plugins.
+    os.environ["ORCHESTRATOR_TMUX_SESSION_MODE"] = config.tmux_session_mode
+    os.environ["ORCHESTRATOR_REPO_ROOT"] = str(config.repo_root)
 
     # Create the pluggy plugin manager (knows about terminal backend)
     pm = create_plugin_manager(

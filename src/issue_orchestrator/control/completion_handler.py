@@ -593,15 +593,22 @@ class CompletionHandler:
         is_issue_session = session.terminal_id.startswith("issue-")
         session_kind = session.terminal_id.split("-", 1)[0]
 
-        # If agent said "completed" but processing failed (push/PR creation),
-        # treat as blocked-failed. The AI did its job, infrastructure failed.
-        if status == SessionStatus.COMPLETED and processing_errors:
+        # If agent said "completed" but critical processing failed (push/PR creation),
+        # treat as blocked-failed. Non-critical failures (like comment timeouts)
+        # should not block the issue.
+        critical_errors = []
+        if processing_errors:
+            critical_errors = [
+                error for error in processing_errors
+                if error.startswith("push_branch") or error.startswith("create_pr")
+            ]
+        if status == SessionStatus.COMPLETED and critical_errors:
             logger.info(
                 "[COMPLETION] Agent said completed but processing failed: issue=%d errors=%s",
-                issue_number, processing_errors
+                issue_number, critical_errors
             )
             # Brief error hint for comment (not full details - those are in diagnostic file)
-            first_error = processing_errors[0][:100] if processing_errors else "Unknown error"
+            first_error = critical_errors[0][:100] if critical_errors else "Unknown error"
             if len(first_error) == 100:
                 first_error += "..."
 
@@ -750,7 +757,7 @@ def launch_rework_by_number(
     launch_rework_session_fn: Callable[["PendingRework"], Optional["Session"]],
 ) -> Optional["Session"]:
     """Launch rework session by number - moved per method table."""
-    r = next((r for r in pending_reworks if int(r.issue_key.stable_id()) == n), None)
+    r = next((r for r in pending_reworks if r.resolve_issue_number() == n), None)
     return launch_rework_session_fn(r) if r else None
 
 

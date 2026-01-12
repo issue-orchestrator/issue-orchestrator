@@ -308,7 +308,9 @@ class SessionObserver:
                 if not completion_path.exists() and self._session_runner:
                     try:
                         terminal_output = self._session_runner.get_session_output(
-                            session.issue.number, lines=100
+                            session.issue.number,
+                            lines=100,
+                            session_name=session.terminal_id,
                         )
                         if terminal_output:
                             logger.warning(

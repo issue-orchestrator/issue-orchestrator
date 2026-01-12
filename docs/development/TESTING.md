@@ -125,6 +125,9 @@ Live tests that create real GitHub issues:
 # Run e2e tests (requires gh auth + write access)
 pytest tests/e2e/ -v
 
+# Run e2e tests with subprocess terminal backend
+E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter.py -v
+
 # Skip e2e tests
 pytest tests/ --ignore=tests/e2e/
 ```

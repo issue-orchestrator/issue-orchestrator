@@ -40,9 +40,11 @@ class MockSessionRunner:
         command: str,
         working_dir: str,
         title: str | None = None,
+        session_name: str | None = None,
     ) -> bool:
         self.create_calls.append({
             "session_id": session_id,
+            "session_name": session_name,
             "command": command,
             "working_dir": working_dir,
             "title": title,
@@ -51,13 +53,14 @@ class MockSessionRunner:
             "command": command,
             "working_dir": working_dir,
             "title": title,
+            "session_name": session_name,
         }
         return True
 
-    def session_exists(self, session_id: int) -> bool:
+    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
         return session_id in self.sessions
 
-    def kill_session(self, session_id: int) -> None:
+    def kill_session(self, session_id: int, session_name: str | None = None) -> None:
         self.kill_calls.append(session_id)
         self.sessions.pop(session_id, None)
 
@@ -70,7 +73,7 @@ class MockSessionRunner:
     def cleanup_idle_sessions(self) -> int:
         return 0
 
-    def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
+    def get_session_output(self, session_id: int, lines: int = 50, session_name: str | None = None) -> str | None:
         if session_id in self.sessions:
             return f"Output for session {session_id}"
         return None

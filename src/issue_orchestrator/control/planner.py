@@ -492,8 +492,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         if not snapshot.discovered_reworks:
             return actions
 
-        # Get already-queued issue numbers (using stable_id for IssueKey comparison)
-        queued_issue_ids = {int(r.issue_key.stable_id()) for r in snapshot.pending_reworks}
+        queued_issue_ids = {
+            r.resolve_issue_number()
+            for r in snapshot.pending_reworks
+            if r.resolve_issue_number() is not None
+        }
 
         for rework in snapshot.discovered_reworks:
             if rework.issue_number not in queued_issue_ids:
@@ -829,8 +832,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         if decision.skip_reason:
             for rework in snapshot.pending_reworks:
-                # Use issue_key's stable_id for identification
-                issue_num = int(rework.issue_key.stable_id())
+                issue_num = rework.resolve_issue_number()
+                if issue_num is None:
+                    logger.warning("Planner: skipping rework with unresolved issue number: %s", rework.issue_key)
+                    continue
                 logger.info(
                     issue_log(issue_num, "Skipped rework: cycle=%d reason=%s"),
                     rework.rework_cycle, decision.skip_reason
@@ -844,7 +849,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         if decision.should_launch:
             for rework in decision.reworks_to_launch[:capacity]:
-                issue_num = int(rework.issue_key.stable_id())
+                issue_num = rework.resolve_issue_number()
+                if issue_num is None:
+                    logger.warning("Planner: skipping rework with unresolved issue number: %s", rework.issue_key)
+                    continue
                 # Check for escalation
                 escalation = self.rework_workflow.should_escalate(rework.rework_cycle)
                 if escalation.should_escalate:

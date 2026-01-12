@@ -20,6 +20,7 @@ from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
     GitHubHttpError,
+    GitHubTransportError,
     resolve_github_token,
 )
 from .repo import get_repo_from_git, GitRepoError
@@ -489,7 +490,7 @@ class GitHubAdapter:
             issue_key=str(issue_number),
             scope=gh_audit.AuditScope.UNKNOWN,
         ):
-            labels = self._client.get_issue_labels(issue_number, use_cache=True)
+            labels = self._get_issue_labels_with_retry(issue_number, use_cache=True)
         self.update_label_cache(issue_number, list(labels))
         return labels
 
@@ -499,9 +500,54 @@ class GitHubAdapter:
             issue_key=str(issue_number),
             scope=gh_audit.AuditScope.UNKNOWN,
         ):
-            labels = self._client.get_issue_labels(issue_number, use_cache=False)
+            labels = self._get_issue_labels_with_retry(issue_number, use_cache=False)
         self.update_label_cache(issue_number, list(labels))
         return labels
+
+    def _get_issue_labels_with_retry(self, issue_number: int, use_cache: bool) -> list[str]:
+        import time
+
+        for attempt in range(1, 4):
+            try:
+                return self._client.get_issue_labels(issue_number, use_cache=use_cache)
+            except GitHubTransportError as e:
+                if attempt >= 3:
+                    raise
+                logger.warning(
+                    "Retrying label fetch for issue %s after error (%s): attempt %d/3",
+                    issue_number,
+                    e,
+                    attempt,
+                )
+                time.sleep(0.5 * attempt)
+        raise GitHubHttpError(f"Failed to fetch labels for issue {issue_number}")
+
+    def _create_pr_with_retry(
+        self,
+        title: str,
+        body: str,
+        head: str,
+        base: str,
+    ) -> dict[str, Any]:
+        import time
+
+        for attempt in range(1, 4):
+            try:
+                output = self._client.create_pr(title=title, body=body, head=head, base=base)
+                if output is None:
+                    raise GitHubHttpError("Failed to parse PR create response")
+                return output
+            except GitHubTransportError as e:
+                if attempt >= 3:
+                    raise
+                logger.warning(
+                    "Retrying PR create for branch %s after error (%s): attempt %d/3",
+                    head,
+                    e,
+                    attempt,
+                )
+                time.sleep(1.0 * attempt)
+        raise GitHubHttpError(f"Failed to create PR for branch {head}")
 
     # LabelManager implementation
 
@@ -516,13 +562,27 @@ class GitHubAdapter:
             GitHubHttpError: If the operation fails.
         """
         try:
-            with gh_audit.context(
-                reason=gh_audit.AuditReason.GH_WRITE,
-                issue_key=str(issue_number),
-                scope=gh_audit.AuditScope.UNKNOWN,
-            ):
-                self._client.add_label(issue_number, label)
-            logger.debug(f"Added label '{label}' to issue {issue_number}")
+            for attempt in range(1, 4):
+                try:
+                    with gh_audit.context(
+                        reason=gh_audit.AuditReason.GH_WRITE,
+                        issue_key=str(issue_number),
+                        scope=gh_audit.AuditScope.UNKNOWN,
+                    ):
+                        self._client.add_label(issue_number, label)
+                    logger.debug(f"Added label '{label}' to issue {issue_number}")
+                    break
+                except GitHubTransportError as exc:
+                    if attempt >= 3:
+                        raise
+                    logger.warning(
+                        "Timeout adding label '%s' to issue %s (attempt %d/3): %s",
+                        label,
+                        issue_number,
+                        attempt,
+                        exc,
+                    )
+                    time.sleep(0.5 * attempt)
             last_labels: list[str] = []
 
             def _check() -> bool:
@@ -536,7 +596,7 @@ class GitHubAdapter:
                 detail_fn=lambda: {"labels": last_labels},
                 issue_number=issue_number,
             )
-        except GitHubHttpError:
+        except (GitHubHttpError, GitHubTransportError):
             logger.error(f"Failed to add label '{label}' to issue {issue_number}")
             raise
         finally:
@@ -554,13 +614,27 @@ class GitHubAdapter:
             GitHubHttpError: If the operation fails.
         """
         try:
-            with gh_audit.context(
-                reason=gh_audit.AuditReason.GH_WRITE,
-                issue_key=str(issue_number),
-                scope=gh_audit.AuditScope.UNKNOWN,
-            ):
-                self._client.remove_label(issue_number, label)
-            logger.debug(f"Removed label '{label}' from issue {issue_number}")
+            for attempt in range(1, 4):
+                try:
+                    with gh_audit.context(
+                        reason=gh_audit.AuditReason.GH_WRITE,
+                        issue_key=str(issue_number),
+                        scope=gh_audit.AuditScope.UNKNOWN,
+                    ):
+                        self._client.remove_label(issue_number, label)
+                    logger.debug(f"Removed label '{label}' from issue {issue_number}")
+                    break
+                except GitHubTransportError as exc:
+                    if attempt >= 3:
+                        raise
+                    logger.warning(
+                        "Timeout removing label '%s' from issue %s (attempt %d/3): %s",
+                        label,
+                        issue_number,
+                        attempt,
+                        exc,
+                    )
+                    time.sleep(0.5 * attempt)
             last_labels: list[str] = []
 
             def _check() -> bool:
@@ -574,7 +648,7 @@ class GitHubAdapter:
                 detail_fn=lambda: {"labels": last_labels},
                 issue_number=issue_number,
             )
-        except GitHubHttpError:
+        except (GitHubHttpError, GitHubTransportError):
             logger.error(f"Failed to remove label '{label}' from issue {issue_number}")
             raise
         finally:
@@ -798,7 +872,7 @@ class GitHubAdapter:
 
         try:
             logger.info("Creating PR via GitHub API: repo=%s head=%s base=%s", self.repo, head, base)
-            output = self._client.create_pr(title=title, body=body, head=head, base=base)
+            output = self._create_pr_with_retry(title=title, body=body, head=head, base=base)
             if isinstance(output, dict):
                 pr_info = self._pr_info_from_api(output)
                 logger.info("Created PR #%s: %s", pr_info.number, pr_info.title)

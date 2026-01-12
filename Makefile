@@ -1,4 +1,4 @@
-.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -23,6 +23,8 @@ help:
 	@echo "  test-real-claude-review Test full pipeline: dev agent -> review agent -> approved"
 	@echo "  test-real-gh-labels     Verify label write paths against real GitHub"
 	@echo "  test-real-gh            Run full real-GitHub suite (dev + review + labels)"
+	@echo "  test-real-gh-plus-e2e   Run real-GitHub suite plus full e2e tests"
+	@echo "  test-real-gh-plus-e2e-subprocess   Same as above but using subprocess backend"
 	@echo "  test-web            Run Playwright web UI tests (headless)"
 	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
 	@echo "  playwright-install  Install Playwright browser binaries"
@@ -109,6 +111,15 @@ test-real-gh-labels:
 
 test-real-gh: test-real-claude-dev test-real-claude-review test-real-gh-labels
 	@echo "✓ Real GitHub suite passed!"
+
+test-real-gh-plus-e2e: test-real-gh test-e2e
+	@echo "✓ Real GitHub + e2e suite passed!"
+
+test-real-gh-plus-e2e-subprocess:
+	@echo "✓ Running real GitHub + e2e suite with subprocess backend"
+	E2E_TERMINAL_ADAPTER=subprocess $(GMAKE) test-real-gh
+	E2E_TERMINAL_ADAPTER=subprocess $(GMAKE) test-e2e
+	@echo "✓ Real GitHub + e2e subprocess suite passed!"
 
 # Run a single e2e test by name. Usage: make test-e2e-one TEST=test_code_review_produces_review_comment
 # E2E tests stop on first failure by default

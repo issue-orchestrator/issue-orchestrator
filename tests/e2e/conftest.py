@@ -358,7 +358,19 @@ def e2e_ui_mode() -> str:
     Configurable via E2E_UI_MODE environment variable.
     Defaults to 'tmux' for CI compatibility.
     """
-    return os.environ.get("E2E_UI_MODE", "tmux")
+    if os.environ.get("E2E_UI_MODE"):
+        return os.environ.get("E2E_UI_MODE", "tmux")
+    return "tmux"
+
+
+@pytest.fixture(scope="session")
+def e2e_terminal_adapter() -> str | None:
+    """Optional terminal adapter override for e2e tests.
+
+    Set E2E_TERMINAL_ADAPTER=subprocess to run with the subprocess backend.
+    """
+    value = os.environ.get("E2E_TERMINAL_ADAPTER")
+    return value if value else None
 
 
 @pytest.fixture(scope="session")
@@ -367,6 +379,7 @@ def e2e_session_config(
     e2e_worktree_base: Path,
     repo_name: str,
     e2e_ui_mode: str,
+    e2e_terminal_adapter: str | None,
 ) -> Config:
     """Session-scoped config for single orchestrator."""
     from issue_orchestrator.infra.config import ValidationConfig
@@ -376,6 +389,8 @@ def e2e_session_config(
     config.repo_root = e2e_project_root
     config.worktree_base = e2e_worktree_base
     config.ui_mode = e2e_ui_mode
+    config.terminal_adapter = e2e_terminal_adapter
+    config.tmux_session_mode = "per_session"
     config.max_concurrent_sessions = 4
     config.filter_label = "io-e2e-test-data"
     config.github_token_env = env_token_name()
@@ -692,6 +707,7 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
     config.repo_root = e2e_project_root
     config.worktree_base = tmp_path / "worktrees"
     config.ui_mode = e2e_ui_mode
+    config.terminal_adapter = os.environ.get("E2E_TERMINAL_ADAPTER")
     config.max_concurrent_sessions = 1
     config.filter_label = "io-e2e-test-data"
     config.github_token_env = env_token_name()

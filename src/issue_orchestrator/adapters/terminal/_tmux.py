@@ -31,6 +31,7 @@ import logging
 import os
 import platform
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -162,6 +163,7 @@ class TmuxManager:
         self._server = server
         self._session_name = session_name
         self._session: Optional[libtmux.Session] = None
+        self._pane_create_lock = threading.Lock()
 
     @property
     def server(self) -> libtmux.Server:
@@ -454,6 +456,9 @@ class TmuxManager:
             True if the pane appears to be an empty placeholder.
         """
         try:
+            # Once a pane has a session ID, never treat it as reusable.
+            if self._get_pane_session_id(pane):
+                return False
             # Check if pane is running just a shell (no command)
             cmd = getattr(pane, "pane_current_command", "")
             if cmd in ("bash", "zsh", "sh", "fish", ""):
@@ -525,7 +530,8 @@ class TmuxManager:
 
         # Adaptive: use pane mode if agents window exists, otherwise window mode
         if self._is_pane_mode():
-            return self._create_pane(session, session_id, command, working_dir, title)
+            with self._pane_create_lock:
+                return self._create_pane(session, session_id, command, working_dir, title)
         else:
             return self._create_window(session, session_id, command, working_dir, title)
 
@@ -542,11 +548,19 @@ class TmuxManager:
         assert agents_window is not None  # Caller verified pane mode
 
         # Create pane: reuse empty placeholder pane or split from last pane
+        try:
+            agents_window.refresh()
+        except Exception:
+            pass
         panes = agents_window.panes
         if len(panes) == 1 and self._is_pane_empty(panes[0]):
             pane = panes[0]
         else:
             pane = panes[-1].split(direction=PaneDirection.Right)
+            try:
+                agents_window.refresh()
+            except Exception:
+                pass
 
         # Set pane title for display (may be overwritten by Claude Code)
         # Use title if provided, otherwise fall back to session_id
@@ -596,6 +610,116 @@ class TmuxManager:
         self._setup_and_run(pane, command, working_dir, session_id)
         return window
 
+    def create_standalone_session(
+        self,
+        session_name: str,
+        command: str,
+        working_dir: Path,
+        title: str | None = None,
+    ) -> bool:
+        """Create a dedicated tmux session and run the command.
+
+        This avoids shared panes/windows and prevents cross-talk between sessions.
+        """
+        if self.tmux_session_exists(session_name):
+            raise PaneAlreadyExistsError(f"Session {session_name} already exists")
+        try:
+            window_name = title[:30] if title else session_name
+            session = self.server.new_session(
+                session_name=session_name,
+                attach=False,
+                start_directory=str(working_dir),
+                window_name=window_name,
+            )
+        except Exception as e:
+            logger.warning("[TMUX] Failed to create session %s: %s", session_name, e)
+            return False
+
+        pane = session.active_pane
+        if pane is None and session.windows:
+            pane = session.windows[0].active_pane
+        if pane is None:
+            logger.warning("[TMUX] New session %s has no active pane", session_name)
+            return False
+
+        # Enable remain-on-exit for exit code capture
+        try:
+            pane.cmd("set-option", "-p", "remain-on-exit", "on")
+        except Exception:
+            pass
+
+        # Set session ID option for reliable identification
+        self._set_pane_session_id(pane, session_name)
+
+        self._setup_and_run(pane, command, working_dir, session_name)
+        return True
+
+    def tmux_session_exists(self, session_name: str) -> bool:
+        """Check if a tmux session exists by name."""
+        try:
+            sessions = self.server.sessions.filter(session_name=session_name)
+            return bool(sessions)
+        except Exception:
+            return False
+
+    def kill_tmux_session(self, session_name: str) -> None:
+        """Kill a tmux session by name."""
+        try:
+            session = self.server.sessions.get(session_name=session_name)
+        except Exception:
+            session = None
+        if session is not None:
+            try:
+                session.kill()
+            except Exception:
+                pass
+
+    def capture_session_output(self, session_name: str, lines: int = 20) -> Optional[str]:
+        """Capture recent output from a standalone session."""
+        try:
+            session = self.server.sessions.get(session_name=session_name)
+        except Exception:
+            return None
+        if session is None:
+            return None
+        window = session.active_window or (session.windows[0] if session.windows else None)
+        if window is None or window.active_pane is None:
+            return None
+        output = window.active_pane.capture_pane(start=-lines)
+        return "\n".join(output) if output else ""
+
+    def send_keys_to_session(self, session_name: str, keys: str, enter: bool = True) -> bool:
+        """Send keys to a standalone session by name."""
+        try:
+            session = self.server.sessions.get(session_name=session_name)
+        except Exception:
+            return False
+        if session is None:
+            return False
+        window = session.active_window or (session.windows[0] if session.windows else None)
+        if window is None or window.active_pane is None:
+            return False
+        if enter:
+            window.active_pane.send_keys(keys)
+        else:
+            window.active_pane.send_keys(keys, enter=False)
+        return True
+
+    def list_tmux_sessions(self) -> list[str]:
+        """List tmux session names."""
+        try:
+            return [sess.get("session_name") for sess in self.server.sessions]
+        except Exception:
+            return []
+
+    def select_tmux_session(self, session_name: str) -> bool:
+        """Focus a tmux session by name."""
+        try:
+            self.server.cmd("switch-client", "-t", session_name)
+            return True
+        except Exception:
+            return False
+
     def _setup_and_run(
         self,
         pane: libtmux.Pane,
@@ -615,29 +739,57 @@ class TmuxManager:
         # CRITICAL: cd to working directory first, then set up isolation
         setup_cmd = f'cd "{working_dir}" && export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
-        # Enable pane logging with ANSI code and non-ASCII stripping
+        # Wait for pane to be ready before sending commands to reduce race risk.
+        self._wait_for_pane_ready(pane, session_id)
+
+        # Enable pane logging with ANSI code stripping
         # Uses ansifilter if available (brew install ansifilter), otherwise sed
-        # Then strips non-ASCII (UTF-8 spinners, box-drawing) with tr
         try:
             log_dir = working_dir / ".issue-orchestrator"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_file = log_dir / "pane.log"
-            # ansifilter strips ANSI codes; tr strips non-ASCII (spinners, box-drawing)
-            # tr keeps: tab(\11), newline(\12), carriage-return(\15), printable ASCII(\40-\176)
-            # LC_ALL=C ensures tr handles any byte sequence without "illegal byte" errors
+            # ansifilter produces cleaner output; sed is good enough fallback
             filter_cmd = (
                 "if command -v ansifilter >/dev/null 2>&1; then ansifilter; "
-                "else sed -E 's/\\x1b\\[[0-9;]*[a-zA-Z]//g'; fi "
-                "| LC_ALL=C tr -cd '\\11\\12\\15\\40-\\176'"
+                "else sed -E 's/\\x1b\\[[0-9;]*[a-zA-Z]//g'; fi"
             )
-            pane.cmd("pipe-pane", "-o", f"exec cat - | {filter_cmd} > '{log_file}'")
+            pane_id = pane.pane_id
+            if pane_id:
+                self.server.cmd("pipe-pane", "-t", pane_id, f"exec cat - | {filter_cmd} > '{log_file}'")
+            else:
+                pane.cmd("pipe-pane", f"exec cat - | {filter_cmd} > '{log_file}'")
             logger.debug("[TMUX] Enabled pane logging to %s", log_file)
         except Exception as e:
             logger.warning("[TMUX] Failed to enable pane logging: %s", e)
 
         # Send setup and command
-        pane.send_keys(setup_cmd)
-        pane.send_keys(command)
+        self._send_keys(pane, setup_cmd)
+        self._send_keys(pane, command)
+
+    def _wait_for_pane_ready(self, pane: libtmux.Pane, session_id: str) -> None:
+        """Wait briefly for a new pane to be ready to receive keys."""
+        pane_id = pane.pane_id
+        if not pane_id:
+            return
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                result = self.server.cmd("display-message", "-p", "-t", pane_id, "#{pane_pid}")
+                if result.stdout and result.stdout[0].strip():
+                    return
+            except Exception:
+                pass
+            time.sleep(0.05)
+        logger.debug("[TMUX] Pane readiness timeout: session=%s pane=%s", session_id, pane_id)
+
+    def _send_keys(self, pane: libtmux.Pane, command: str) -> None:
+        """Send keys to a specific pane to avoid target ambiguity."""
+        pane_id = pane.pane_id
+        if not pane_id:
+            pane.send_keys(command, enter=True)
+            return
+        self.server.cmd("send-keys", "-t", pane_id, "-l", command)
+        self.server.cmd("send-keys", "-t", pane_id, "Enter")
 
     def _find_session_by_id(self, session_id: str) -> libtmux.Pane | libtmux.Window | None:
         """Find a session (pane or window) by its ID.

@@ -163,7 +163,11 @@ class PRScanner:
         results: list[PendingRework] = []
         escalations: list[tuple[int, int, int]] = []
 
-        queued_issue_ids = {int(r.issue_key.stable_id()) for r in already_queued}
+        queued_issue_ids = {
+            r.resolve_issue_number()
+            for r in already_queued
+            if r.resolve_issue_number() is not None
+        }
         active_issue_numbers = set(active_sessions)
 
         for pr in prs:
@@ -198,6 +202,7 @@ class PRScanner:
                 issue_key=issue_key,
                 agent_type=agent_type,
                 rework_cycle=rework_cycle,
+                issue_number=issue_number,
             )
             results.append(rework)
             logger.info("[SCANNER] Found PR #%d for rework (cycle %d)", pr.number, rework_cycle)

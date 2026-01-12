@@ -508,6 +508,16 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     if ui_mode == "web":
         port = prompter.input("Web dashboard port", "8080")
         config["web_port"] = int(port)
+        prompter.print("\n--- Terminal Backend (web mode) ---")
+        prompter.print("Choose how agent sessions are executed:\n")
+        prompter.print("  tmux       - Default (stable, interactive)")
+        prompter.print("  subprocess - No tmux dependency; logs to .issue-orchestrator/session.log\n")
+        terminal_backend = prompter.input("Terminal backend", "tmux")
+        if terminal_backend not in ("tmux", "subprocess"):
+            prompter.print(f"  Invalid backend '{terminal_backend}', using 'tmux'")
+            terminal_backend = "tmux"
+        if terminal_backend == "subprocess":
+            config["terminal_adapter"] = "subprocess"
 
     # Labels - use defaults, can be customized in YAML later
     # Default labels: in-progress, blocked, needs-human
@@ -800,6 +810,16 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
         config["ui_mode"] = ui_mode
         if ui_mode == "web":
             config["web_port"] = int(prompter.input("Web port", "8080"))
+            prompter.print("\n--- Terminal Backend (web mode) ---")
+            prompter.print("Choose how agent sessions are executed:\n")
+            prompter.print("  tmux       - Default (stable, interactive)")
+            prompter.print("  subprocess - No tmux dependency; logs to .issue-orchestrator/session.log\n")
+            terminal_backend = prompter.input("Terminal backend", "tmux")
+            if terminal_backend not in ("tmux", "subprocess"):
+                prompter.print(f"  Invalid backend '{terminal_backend}', using 'tmux'")
+                terminal_backend = "tmux"
+            if terminal_backend == "subprocess":
+                config["terminal_adapter"] = "subprocess"
 
     # Label prefix - only ask if not already configured
     if "labels" not in config or "prefix" not in config.get("labels", {}):

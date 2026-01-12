@@ -437,12 +437,12 @@ class TestWizardNewProject:
             "3",                    # max concurrent sessions
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
-            "M0",                   # foundation milestone
             "../",                  # worktree base
             "web",                  # ui mode
             "8080",                 # web port
+            "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # enable PR review labeling
+            False,                  # disable Stage 1 review
         ])
 
         config = wizard_new_project(prompter)
@@ -482,8 +482,9 @@ class TestWizardNewProject:
             "../",
             "web",
             "8080",
+            "tmux",
             "io",
-            False,
+            False,                  # disable Stage 1 review
         ])
 
         config = wizard_new_project(prompter)
@@ -511,14 +512,13 @@ class TestWizardNewProject:
             "default",              # permission mode
             False,                  # is this a review agent?
             "",                     # finish agents
-            False,                  # don't create labels
             "2",                    # max concurrent
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
             "tmux",                 # ui mode (tmux doesn't need port)
             "io",                   # label prefix
-            False,                  # no review workflow
+            False,                  # disable Stage 1 review
         ])
 
         config = wizard_new_project(prompter)
@@ -560,8 +560,9 @@ class TestWizardNewProject:
             "../",
             "web",
             "9000",                 # custom port
+            "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # no review
+            False,                  # disable Stage 1 review
         ])
 
         config = wizard_new_project(prompter)
@@ -588,15 +589,15 @@ class TestWizardNewProject:
             "my-agent --issue {issue_number} --prompt {prompt}",  # custom command
             False,                  # is this a review agent?
             "",                     # finish agents
-            False,                  # don't create labels
             "3",
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
             "web",
             "8080",
+            "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # no review
+            False,                  # disable Stage 1 review
         ])
 
         config = wizard_new_project(prompter)
@@ -624,13 +625,13 @@ class TestWizardNewProject:
             "default",              # permission mode
             False,                  # is this a review agent?
             "",                     # finish agents
-            False,                  # don't create labels
             "3",
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
             "web",
             "8080",
+            "tmux",                 # terminal backend
             "io",                   # label prefix
             True,                   # enable Stage 1: per-PR code review
             "agent:reviewer",       # code review agent
@@ -673,15 +674,15 @@ class TestWizardNewProject:
             "default",              # permission mode
             False,                  # is this a review agent?
             "",                     # finish
-            False,                  # don't create labels
             "3",
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
             "web",
             "8080",
+            "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # no review
+            False,                  # disable Stage 1 review
         ])
 
         config = wizard_new_project(prompter)
@@ -723,8 +724,9 @@ class TestWizardExistingProject:
             "../",                  # worktree base
             "web",                  # ui mode
             "8080",                 # port
+            "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # no review workflow
+            False,                  # disable Stage 1 review
         ])
 
         config, _ = wizard_existing_project(state, prompter)
@@ -826,10 +828,11 @@ class TestWizardExistingProject:
             # UI mode missing
             "web",
             "8080",
+            "tmux",
             # Label prefix
             "io",                   # label prefix
             # Review
-            False,
+            False,                  # disable Stage 1 review
         ])
 
         config, _ = wizard_existing_project(state, prompter)
@@ -910,8 +913,9 @@ class TestWizardExistingProject:
             "../",                  # worktree base (now top-level config)
             "web",                  # ui mode
             "8080",                 # port (since web mode)
+            "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # no review
+            False,                  # disable Stage 1 review
         ])
 
         config, _ = wizard_existing_project(state, prompter)
@@ -955,8 +959,9 @@ class TestRunWizard:
             "../",
             "web",
             "8080",
+            "tmux",
             "io",                   # label prefix
-            False,                  # no review workflow
+            False,                  # disable Stage 1 review
             # Post-wizard (new flow)
             ".issue-orchestrator.yaml",  # config filename
             True,                   # Apply these changes?
@@ -999,8 +1004,9 @@ class TestRunWizard:
             "../",
             "web",
             "8080",
+            "tmux",
             "io",                   # label prefix
-            False,                  # no review workflow
+            False,                  # disable Stage 1 review
             # Post-wizard (new flow)
             ".issue-orchestrator.yaml",  # config filename
             False,                  # DON'T apply changes (exits here)
@@ -1070,8 +1076,9 @@ class TestRunWizard:
             "../",
             "web",
             "8080",
+            "tmux",
             "io",                   # label prefix
-            False,                  # no review workflow
+            False,                  # disable Stage 1 review
             # Post-wizard (new flow)
             ".issue-orchestrator.yaml",  # config filename
             False,                  # Don't apply - exits here
@@ -1214,8 +1221,9 @@ class TestDryRunMode:
             "../",
             "web",
             "8080",
+            "tmux",
             "io",  # label prefix
-            False,  # no review workflow
+            False,  # disable Stage 1 review
         ])
 
         with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
@@ -1255,8 +1263,9 @@ class TestDryRunMode:
             "../",
             "web",
             "8080",
+            "tmux",
             "io",   # label prefix
-            False,  # no review workflow
+            False,  # disable Stage 1 review
         ])
 
         with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):

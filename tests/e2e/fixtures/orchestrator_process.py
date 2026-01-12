@@ -75,6 +75,7 @@ class OrchestratorProcess:
             "filter_label": self.config.filter_label,
             "github_token_env": self.config.github_token_env,
             "ui_mode": self.config.ui_mode,
+            "terminal_adapter": self.config.terminal_adapter,
             "web_port": self.config.web_port,
             "control_api_port": self.config.control_api_port,
             "queue_refresh_seconds": self.config.queue_refresh_seconds,
@@ -250,8 +251,10 @@ class OrchestratorProcess:
         env["ORCHESTRATOR_LOG_FILE"] = str(orchestrator_log_file)
         env["PYTHONUNBUFFERED"] = "1"
         env["ORCHESTRATOR_LOG_TO_STDERR"] = "1"
+        env["PYTHONPATH"] = f"{self.project_root / 'src'}:{env.get('PYTHONPATH', '')}"
         # Set tmux session name for e2e test isolation
         env["ORCHESTRATOR_TMUX_SESSION"] = self.tmux_session
+        env["ORCHESTRATOR_NO_BROWSER"] = "1"
         if os.environ.get("E2E_CLAUDE_ARGS"):
             env["ORCHESTRATOR_CLAUDE_ARGS"] = os.environ["E2E_CLAUDE_ARGS"]
         if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):

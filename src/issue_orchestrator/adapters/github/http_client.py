@@ -50,6 +50,23 @@ class GitHubHttpError(Exception):
         return self.failure_type == FailureType.ISSUE_LOCAL
 
 
+class GitHubTransportError(Exception):
+    """Raised when a GitHub request fails before an HTTP response."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        method: str | None = None,
+        url: str | None = None,
+        original: Exception | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.method = method
+        self.url = url
+        self.original = original
+
+
 class GitHubAuthError(GitHubHttpError):
     """Raised when GitHub auth cannot be resolved."""
 
@@ -177,13 +194,22 @@ class GitHubHttpClient:
         was_304 = False
         rate_limit_info: dict[str, int] | None = None
         try:
-            response = self._client.request(
-                method,
-                url,
-                params=params,
-                json=json_body,
-                headers=headers or None,
-            )
+            try:
+                response = self._client.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    headers=headers or None,
+                )
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                error = f"transport_error: {exc}"
+                raise GitHubTransportError(
+                    f"GitHub transport error for {method} {url}",
+                    method=method,
+                    url=url,
+                    original=exc,
+                ) from exc
             status_code = response.status_code
             response_text = response.text
             # Extract rate limit headers from every response
@@ -360,10 +386,18 @@ class GitHubHttpClient:
         all_labels: list[dict[str, Any]] = []
         page = 1
         while True:
-            response = self._client.get(
-                f"/repos/{self._config.repo}/labels",
-                params={"per_page": 100, "page": page},
-            )
+            try:
+                response = self._client.get(
+                    f"/repos/{self._config.repo}/labels",
+                    params={"per_page": 100, "page": page},
+                )
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                raise GitHubTransportError(
+                    "GitHub transport error for list_all_labels",
+                    method="GET",
+                    url=f"/repos/{self._config.repo}/labels",
+                    original=exc,
+                ) from exc
             if response.status_code != 200:
                 break
             batch = response.json()

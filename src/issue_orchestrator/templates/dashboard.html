@@ -1329,6 +1329,12 @@
         <div class="context-menu-item" id="menuLog" role="menuitem" tabindex="0">
             <span aria-hidden="true">📋</span> View Session Log
         </div>
+        <div class="context-menu-item" id="menuAgentLog" role="menuitem" tabindex="0">
+            <span aria-hidden="true">🧾</span> View Agent UI Log
+        </div>
+        <div class="context-menu-item" id="menuInput" role="menuitem" tabindex="0">
+            <span aria-hidden="true">💬</span> Send Input to Agent
+        </div>
         <div class="context-menu-item" id="menuPrompt" role="menuitem" tabindex="0">
             <span aria-hidden="true">📝</span> Open Agent Prompt
         </div>
@@ -1409,6 +1415,70 @@
             if (menu) menu.classList.remove('visible');
         }
 
+        let terminalBackend = 'tmux';
+        fetch('/api/info')
+            .then(res => res.json())
+            .then(data => {
+                if (data.terminal_backend) {
+                    terminalBackend = data.terminal_backend;
+                }
+            })
+            .catch(() => {});
+
+        async function openAgentLog(issueNumber) {
+            const res = await fetch(`/api/log/local/${issueNumber}`);
+            const data = await res.json();
+
+            if (data.error) {
+                alert(data.error + (data.hint ? '\n\n' + data.hint : ''));
+                return;
+            }
+
+            let logContent = '';
+            if (data.truncated) {
+                logContent += `<p style="color:#8b949e;margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} lines...</p>`;
+            }
+            logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;white-space:pre-wrap;">';
+            for (const line of data.lines) {
+                logContent += line.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
+            }
+            logContent += '</pre>';
+            logContent += `<p style="color:#8b949e;font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
+
+            document.getElementById('modalTitle').textContent = `Agent UI Log #${issueNumber}`;
+            document.getElementById('modalBody').innerHTML = logContent;
+            document.getElementById('modalOverlay').classList.add('visible');
+        }
+
+        async function sendAgentInput(issueNumber) {
+            const input = document.getElementById('agentInput');
+            if (!input) {
+                showToast('Input field not found', 'error');
+                return;
+            }
+            const text = input.value.trim();
+            if (!text) {
+                showToast('Please enter a message', 'error');
+                return;
+            }
+            try {
+                const res = await fetch(`/api/send/${issueNumber}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text }),
+                });
+                const data = await res.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+                showToast(`Sent input to #${issueNumber}`);
+                closeModal();
+            } catch (err) {
+                showToast(`Failed to send input: ${err.message}`, 'error');
+            }
+        }
+
         // Row click handler
         async function handleClick(row) {
             const action = row.dataset.action;
@@ -1416,6 +1486,14 @@
             const url = row.dataset.url;
 
             if (action === 'focus') {
+                if (terminalBackend === 'subprocess') {
+                    try {
+                        await openAgentLog(issueNumber);
+                    } catch (err) {
+                        showToast('Failed to open agent log', 'error');
+                    }
+                    return;
+                }
                 try {
                     const res = await fetch(`/api/focus/${issueNumber}`, { method: 'POST' });
                     const data = await res.json();
@@ -1843,6 +1921,8 @@
         const menuFocus = document.getElementById('menuFocus');
         const menuFinder = document.getElementById('menuFinder');
         const menuLog = document.getElementById('menuLog');
+        const menuAgentLog = document.getElementById('menuAgentLog');
+        const menuInput = document.getElementById('menuInput');
         const menuPrompt = document.getElementById('menuPrompt');
         const menuKill = document.getElementById('menuKill');
         const menuIssue = document.getElementById('menuIssue');
@@ -1856,7 +1936,7 @@
         let currentRow = null;
 
         // Add keyboard support to all context menu items
-        [menuFocus, menuFinder, menuLog, menuPrompt, menuKill, menuIssue, menuPR, menuRetry, menuDismiss].forEach(addKeyboardSupport);
+        [menuFocus, menuFinder, menuLog, menuAgentLog, menuInput, menuPrompt, menuKill, menuIssue, menuPR, menuRetry, menuDismiss].forEach(addKeyboardSupport);
 
         function showContextMenu(e, row) {
             e.preventDefault();
@@ -1870,7 +1950,7 @@
 
             // Enable/disable menu items based on context
             // Active sessions (action === 'focus') have terminal session and worktree
-            if (action === 'focus') {
+            if (action === 'focus' && terminalBackend !== 'subprocess') {
                 menuFocus.classList.remove('disabled');
                 menuFinder.classList.remove('disabled');
             } else {
@@ -1896,8 +1976,10 @@
             const hasTerminal = row.dataset.hasTerminal === 'true';
             if (hasTerminal) {
                 menuKill.style.display = 'flex';
+                menuInput.classList.remove('disabled');
             } else {
                 menuKill.style.display = 'none';
+                menuInput.classList.add('disabled');
             }
 
             // Show dependencies section if this issue has dependencies
@@ -2012,6 +2094,36 @@
                 document.getElementById('modalTitle').textContent = `Session Log #${issueNumber}`;
                 document.getElementById('modalBody').innerHTML = logContent;
                 document.getElementById('modalOverlay').classList.add('visible');
+            }
+        });
+
+        menuAgentLog.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow) {
+                const issueNumber = currentRow.dataset.issue;
+                await openAgentLog(issueNumber);
+            }
+        });
+
+        menuInput.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            contextMenu.classList.remove('visible');
+            if (currentRow && !menuInput.classList.contains('disabled')) {
+                const issueNumber = currentRow.dataset.issue;
+                openModal(
+                    `Send Input #${issueNumber}`,
+                    `
+                        <div style="display:flex;flex-direction:column;gap:12px;">
+                            <label for="agentInput" class="form-label">Input</label>
+                            <textarea id="agentInput" class="form-textarea" rows="6" placeholder="Type a message or command (e.g., /exit)"></textarea>
+                            <div style="display:flex;justify-content:flex-end;gap:8px;">
+                                <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+                                <button class="btn-primary" onclick="sendAgentInput(${issueNumber})">Send</button>
+                            </div>
+                        </div>
+                    `
+                );
             }
         });
 

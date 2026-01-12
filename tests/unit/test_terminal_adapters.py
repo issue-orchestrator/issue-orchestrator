@@ -234,6 +234,7 @@ class TestPluggySessionRunner:
             command="claude --prompt issue.md",
             working_dir="/tmp/worktree",
             title="Fix the bug",
+            session_name=None,
         )
         assert "Creating session via terminal hook" in caplog.text
         assert "id=42" in caplog.text
@@ -271,7 +272,7 @@ class TestPluggySessionRunner:
         result = session_runner.session_exists(session_id=42)
 
         assert result is True
-        mock_plugin_manager.hook.session_exists.assert_called_once_with(session_id=42)
+        mock_plugin_manager.hook.session_exists.assert_called_once_with(session_id=42, session_name=None)
 
     def test_session_exists_false(self, session_runner, mock_plugin_manager):
         """session_exists returns False when hook returns False."""
@@ -293,7 +294,7 @@ class TestPluggySessionRunner:
         """kill_session delegates to pluggy hook."""
         session_runner.kill_session(session_id=42)
 
-        mock_plugin_manager.hook.kill_session.assert_called_once_with(session_id=42)
+        mock_plugin_manager.hook.kill_session.assert_called_once_with(session_id=42, session_name=None)
 
     def test_discover_running_sessions_with_results(self, session_runner, mock_plugin_manager):
         """discover_running_sessions returns list from hook."""
@@ -339,7 +340,7 @@ class TestPluggySessionRunner:
 
         assert result == "foo\nbar\nbaz"
         mock_plugin_manager.hook.get_session_output.assert_called_once_with(
-            session_id=42, lines=50
+            session_id=42, lines=50, session_name=None
         )
 
     def test_get_session_output_none(self, session_runner, mock_plugin_manager):
@@ -357,7 +358,7 @@ class TestPluggySessionRunner:
         session_runner.get_session_output(session_id=42)
 
         mock_plugin_manager.hook.get_session_output.assert_called_once_with(
-            session_id=42, lines=50
+            session_id=42, lines=50, session_name=None
         )
 
     def test_send_to_session_success(self, session_runner, mock_plugin_manager):
@@ -368,7 +369,7 @@ class TestPluggySessionRunner:
 
         assert result is True
         mock_plugin_manager.hook.send_to_session.assert_called_once_with(
-            session_id=42, text="/exit"
+            session_id=42, text="/exit", session_name=None
         )
 
     def test_send_to_session_failure(self, session_runner, mock_plugin_manager):
@@ -533,11 +534,14 @@ class TestTmuxManagerIntegration:
         # Verify pane title was set (uses title for display, not session_id)
         mock_pane.cmd.assert_any_call("select-pane", "-T", "Fix the bug")
 
-        # Verify PATH setup and command were sent
-        assert mock_pane.send_keys.call_count == 2
-        path_cmd = mock_pane.send_keys.call_args_list[0][0][0]
-        assert "export PATH=" in path_cmd
-        assert mock_pane.send_keys.call_args_list[1][0][0] == "claude --prompt issue.md"
+        # Verify PATH setup and command were sent via tmux server commands.
+        send_key_calls = [
+            call for call in mock_libtmux_server["server"].cmd.call_args_list
+            if call.args and call.args[0] == "send-keys"
+        ]
+        line_calls = [call for call in send_key_calls if "-l" in call.args]
+        assert any("export PATH=" in call.args[-1] for call in line_calls)
+        assert any(call.args[-1] == "claude --prompt issue.md" for call in line_calls)
 
     def test_create_issue_window_duplicate_raises(self, tmux_manager, mock_libtmux_server):
         """create_issue_window raises ValueError if pane already exists."""

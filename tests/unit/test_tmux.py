@@ -175,6 +175,7 @@ class TestTmuxManager:
         """Test create_issue_window successfully creates a pane."""
         manager = tmux.TmuxManager()
         manager._session = mock_session
+        manager._server = MagicMock()
 
         # Mock the agents window lookup
         mock_session.windows.filter.return_value = [mock_agents_window]
@@ -183,16 +184,21 @@ class TestTmuxManager:
         empty_pane = mock_agents_window.panes[0]
         _setup_pane_title(empty_pane, "")
         empty_pane.pane_current_command = "bash"
+        empty_pane.pane_id = "%1"
 
         working_dir = Path("/test/dir")
         pane = manager.create_issue_window(42, "echo test", working_dir)
 
         # Should reuse the empty pane
         assert pane == empty_pane
-        # send_keys is called twice: first to add scripts to PATH, then to run command
-        assert empty_pane.send_keys.call_count == 2
-        # Second (last) call should be the actual command
-        empty_pane.send_keys.assert_called_with("echo test")
+        # Verify PATH setup and command were sent via tmux server commands.
+        send_key_calls = [
+            call for call in manager._server.cmd.call_args_list
+            if call.args and call.args[0] == "send-keys"
+        ]
+        line_calls = [call for call in send_key_calls if "-l" in call.args]
+        assert any("export PATH=" in call.args[-1] for call in line_calls)
+        assert any(call.args[-1] == "echo test" for call in line_calls)
 
     def test_create_issue_window_cds_to_working_dir(self, mock_session, mock_agents_window):
         """Test that create_issue_window changes to working directory before running.
@@ -204,20 +210,24 @@ class TestTmuxManager:
         """
         manager = tmux.TmuxManager()
         manager._session = mock_session
+        manager._server = MagicMock()
 
         mock_session.windows.filter.return_value = [mock_agents_window]
 
         empty_pane = mock_agents_window.panes[0]
         _setup_pane_title(empty_pane, "")
         empty_pane.pane_current_command = "bash"
+        empty_pane.pane_id = "%1"
 
         working_dir = Path("/test/worktree-123")
         manager.create_issue_window(42, "claude -p 'do stuff'", working_dir)
 
-        # First send_keys call is the setup command - must include cd
-        assert empty_pane.send_keys.call_count == 2
-        setup_call = empty_pane.send_keys.call_args_list[0]
-        setup_cmd = setup_call[0][0]  # First positional argument
+        # First line-mode send-keys call is the setup command - must include cd
+        send_key_calls = [
+            call for call in manager._server.cmd.call_args_list
+            if call.args and call.args[0] == "send-keys" and "-l" in call.args
+        ]
+        setup_cmd = send_key_calls[0].args[-1]
 
         # CRITICAL: Setup must start with cd to working_dir
         assert setup_cmd.startswith(f'cd "{working_dir}"'), (

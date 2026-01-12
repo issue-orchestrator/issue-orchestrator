@@ -230,10 +230,12 @@ class MockTerminalPlugin:
         command: str,
         working_dir: str,
         title: str | None,
+        session_name: str | None = None,
     ) -> bool:
         """Track session creation."""
         self.create_session_calls.append({
             "session_id": session_id,
+            "session_name": session_name,
             "command": command,
             "working_dir": working_dir,
             "title": title,
@@ -242,21 +244,22 @@ class MockTerminalPlugin:
             "command": command,
             "working_dir": working_dir,
             "title": title,
+            "session_name": session_name,
         }
         return True
 
     @hookimpl
-    def session_exists(self, session_id: int) -> bool:
+    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
         """Check if session was created."""
-        self.session_exists_calls.append(session_id)
+        self.session_exists_calls.append((session_id, session_name))
         if self.session_exists_override is not None:
             return self.session_exists_override
         return session_id in self.sessions
 
     @hookimpl
-    def kill_session(self, session_id: int) -> bool:
+    def kill_session(self, session_id: int, session_name: str | None = None) -> bool:
         """Remove session."""
-        self.kill_session_calls.append(session_id)
+        self.kill_session_calls.append((session_id, session_name))
         self.sessions.pop(session_id, None)
         return True
 
@@ -296,19 +299,21 @@ class MockPluginManager:
         command: str,
         working_dir: str,
         title: str | None = None,
+        session_name: str | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
             command=command,
             working_dir=working_dir,
             title=title,
+            session_name=session_name,
         )
 
-    def session_exists(self, session_id: int) -> bool:
-        return self._plugin.session_exists(session_id=session_id)
+    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
+        return self._plugin.session_exists(session_id=session_id, session_name=session_name)
 
-    def kill_session(self, session_id: int) -> None:
-        self._plugin.kill_session(session_id=session_id)
+    def kill_session(self, session_id: int, session_name: str | None = None) -> None:
+        self._plugin.kill_session(session_id=session_id, session_name=session_name)
 
     def discover_running_sessions(self) -> list[dict]:
         return self._plugin.discover_running_sessions()
@@ -316,8 +321,8 @@ class MockPluginManager:
     def cleanup_idle_sessions(self) -> int:
         return self._plugin.cleanup_idle_sessions()
 
-    def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
-        return self._plugin.get_session_output(session_id=session_id, lines=lines)
+    def get_session_output(self, session_id: int, lines: int = 50, session_name: str | None = None) -> str | None:
+        return self._plugin.get_session_output(session_id=session_id, lines=lines, session_name=session_name)
 
     def emit(self, event: str, data: dict | None = None) -> None:
         """Emit a trace event (no-op for mock, but tracks calls)."""
@@ -368,19 +373,21 @@ class MockSessionRunner:
         command: str,
         working_dir: str,
         title: str | None = None,
+        session_name: str | None = None,
     ) -> bool:
         return self._plugin.create_session(
             session_id=session_id,
             command=command,
             working_dir=working_dir,
             title=title,
+            session_name=session_name,
         )
 
-    def session_exists(self, session_id: int) -> bool:
-        return self._plugin.session_exists(session_id=session_id)
+    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
+        return self._plugin.session_exists(session_id=session_id, session_name=session_name)
 
-    def kill_session(self, session_id: int) -> None:
-        self._plugin.kill_session(session_id=session_id)
+    def kill_session(self, session_id: int, session_name: str | None = None) -> None:
+        self._plugin.kill_session(session_id=session_id, session_name=session_name)
 
     def discover_running_sessions(self) -> list[dict]:
         return self._plugin.discover_running_sessions()
@@ -388,19 +395,19 @@ class MockSessionRunner:
     def cleanup_idle_sessions(self) -> int:
         return self._plugin.cleanup_idle_sessions()
 
-    def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
-        return self._plugin.get_session_output(session_id=session_id, lines=lines)
+    def get_session_output(self, session_id: int, lines: int = 50, session_name: str | None = None) -> str | None:
+        return self._plugin.get_session_output(session_id=session_id, lines=lines, session_name=session_name)
 
     def session_exists_by_name(self, session_name: str) -> bool:
         return False
 
-    def send_to_session(self, session_id: int, text: str) -> bool:
+    def send_to_session(self, session_id: int, text: str, session_name: str | None = None) -> bool:
         return False
 
     def send_to_session_by_name(self, session_name: str, text: str) -> bool:
         return False
 
-    def focus_session(self, session_id: int) -> bool:
+    def focus_session(self, session_id: int, session_name: str | None = None) -> bool:
         return False
 
     def on_orchestrator_startup(self) -> None:

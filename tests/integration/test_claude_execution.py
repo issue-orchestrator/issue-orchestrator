@@ -412,6 +412,52 @@ class TestClaudeViaAdapterPath:
         content = verify_file.read_text().strip()
         assert "VERIFIED" in content, f"Verification file has wrong content: {content}"
 
+    def test_claude_via_subprocess_backend(self, tmp_path, require_claude, monkeypatch):
+        """Run Claude via the subprocess backend and verify log + file output."""
+        from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
+
+        repo_root = tmp_path / "repo"
+        worktree = repo_root / "worktree"
+        worktree.mkdir(parents=True)
+        (worktree / ".git").mkdir()
+        (worktree / ".issue-orchestrator").mkdir()
+
+        monkeypatch.setenv("ORCHESTRATOR_REPO_ROOT", str(repo_root))
+
+        verify_file = worktree / "claude_subprocess_verified.txt"
+        claude_cmd = (
+            "claude --print --dangerously-skip-permissions "
+            f"\"Create a file at {verify_file} containing exactly VERIFIED. "
+            "Use the Write tool. Reply with DONE.\""
+        )
+
+        plugin = SubprocessPlugin()
+        created = plugin.create_session(
+            session_id=999,
+            command=claude_cmd,
+            working_dir=str(worktree),
+            title="Claude subprocess integration",
+            session_name="issue-999",
+        )
+        assert created is True
+
+        # Wait for session to exit
+        import time
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            if not plugin.session_exists(0, "issue-999"):
+                break
+            time.sleep(0.2)
+        else:
+            raise AssertionError("Claude subprocess session did not exit in time")
+
+        assert verify_file.exists(), "Claude did not create verification file via subprocess backend"
+        content = verify_file.read_text().strip()
+        assert "VERIFIED" in content
+
+        log_path = worktree / ".issue-orchestrator" / "session.log"
+        assert log_path.exists()
+
     def test_claude_via_adapter_path_with_home_isolation_fails(self, tmp_path):
         """Document that HOME isolation breaks Claude auth (the bug we fixed).
 

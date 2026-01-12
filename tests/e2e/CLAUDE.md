@@ -14,6 +14,9 @@ Live tests that create real GitHub issues and run the full orchestrator.
 pytest tests/e2e/ -v                    # Run all e2e tests
 pytest tests/e2e/ -k "test_name" -v     # Specific test
 pytest tests/ --ignore=tests/e2e/       # Skip e2e tests
+
+# Run terminal adapter e2e with subprocess backend
+E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter.py -v
 ```
 
 ## Test Isolation

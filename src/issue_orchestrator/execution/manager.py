@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 # Built-in plugin mapping
 BUILTIN_PLUGINS = {
     "tmux": "issue_orchestrator.execution.terminal_tmux:TmuxPlugin",
+    "subprocess": "issue_orchestrator.execution.terminal_subprocess:SubprocessPlugin",
 }
 
 # UI mode to plugin mapping (backwards compatibility)
@@ -133,6 +134,7 @@ class PluginManager:
         command: str,
         working_dir: str,
         title: str | None = None,
+        session_name: str | None = None,
     ) -> bool:
         """Create a terminal session."""
         result = self._pm.hook.create_session(
@@ -140,17 +142,18 @@ class PluginManager:
             command=command,
             working_dir=working_dir,
             title=title,
+            session_name=session_name,
         )
         return result if result is not None else False
 
-    def session_exists(self, session_id: int) -> bool:
+    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
         """Check if a session exists."""
-        result = self._pm.hook.session_exists(session_id=session_id)
+        result = self._pm.hook.session_exists(session_id=session_id, session_name=session_name)
         return result if result is not None else False
 
-    def kill_session(self, session_id: int) -> None:
+    def kill_session(self, session_id: int, session_name: str | None = None) -> None:
         """Kill a session."""
-        self._pm.hook.kill_session(session_id=session_id)
+        self._pm.hook.kill_session(session_id=session_id, session_name=session_name)
 
     def discover_running_sessions(self) -> list[dict]:
         """Discover running sessions."""
@@ -162,9 +165,13 @@ class PluginManager:
         result = self._pm.hook.cleanup_idle_sessions()
         return result if result is not None else 0
 
-    def get_session_output(self, session_id: int, lines: int = 50) -> str | None:
+    def get_session_output(self, session_id: int, lines: int = 50, session_name: str | None = None) -> str | None:
         """Get session output."""
-        return self._pm.hook.get_session_output(session_id=session_id, lines=lines)
+        return self._pm.hook.get_session_output(
+            session_id=session_id,
+            lines=lines,
+            session_name=session_name,
+        )
 
     def register_plugin(self, plugin: object, name: str | None = None) -> None:
         """Register an additional plugin.

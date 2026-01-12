@@ -1752,7 +1752,7 @@ class TestLaunchReviewSession:
         orchestrator.launch_review_session(review)
 
         # Should check for review-{pr_number} session
-        assert 123 in orchestrator.deps.runner.plugin.session_exists_calls
+        assert (123, "review-123") in orchestrator.deps.runner.plugin.session_exists_calls
 
     def test_launch_review_session_returns_none_without_agent_config(self, sample_config):
         """Test that launch_review_session returns None without code_review_agent configured."""
@@ -3156,4 +3156,3 @@ class TestRefreshRequestPreservation:
         assert orchestrator._refresh_requested is True
         assert 'issue-1' in orchestrator._inflight_stable_ids
         assert 'issue-2' in orchestrator._inflight_stable_ids
-

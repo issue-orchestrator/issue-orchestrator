@@ -177,6 +177,7 @@ class SessionManager:
             command=ctx.command,
             working_dir=str(ctx.working_dir),
             title=ctx.title,
+            session_name=ctx.ref.name,
         )
 
         if success:
@@ -213,7 +214,7 @@ class SessionManager:
         Args:
             ref: Reference to the session to stop
         """
-        self.runner.kill_session(ref.number)
+        self.runner.kill_session(ref.number, session_name=ref.name)
         self.events.publish(
             TraceEvent(
                 EventName.SESSION_STOPPED,
@@ -235,7 +236,7 @@ class SessionManager:
         Returns:
             True if session exists and is running
         """
-        return self.runner.session_exists(ref.number)
+        return self.runner.session_exists(ref.number, session_name=ref.name)
 
     def get_output(self, ref: SessionRef, lines: int = 50) -> Optional[str]:
         """Get recent output from a session.
@@ -247,7 +248,7 @@ class SessionManager:
         Returns:
             Terminal output string, or None if not available
         """
-        return self.runner.get_session_output(ref.number, lines)
+        return self.runner.get_session_output(ref.number, lines, session_name=ref.name)
 
     def discover_running(self) -> list[SessionRef]:
         """Discover sessions that survived an orchestrator restart.

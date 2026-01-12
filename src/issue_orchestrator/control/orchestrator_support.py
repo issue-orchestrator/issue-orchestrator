@@ -343,7 +343,7 @@ class OrchestratorSupport:
                 self.get_review_machine(a.pr_number, a.issue_number)
         elif t == ActionType.QUEUE_REWORK:
             a = cast(QueueReworkAction, action)
-            if not any(int(r.issue_key.stable_id()) == a.issue_number for r in self.state.pending_reworks):
+            if not any(r.resolve_issue_number() == a.issue_number for r in self.state.pending_reworks):
                 agent = next(
                     (r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number),
                     "agent:developer",
@@ -353,6 +353,7 @@ class OrchestratorSupport:
                         self.repository_host.create_issue_key(a.issue_number),
                         agent,
                         a.rework_cycle,
+                        issue_number=a.issue_number,
                     )
                 )
                 log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")

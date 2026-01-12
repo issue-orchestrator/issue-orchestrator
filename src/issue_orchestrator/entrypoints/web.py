@@ -767,25 +767,23 @@ async def get_session_log(issue_number: int) -> JSONResponse:
     """
     from pathlib import Path
 
-    if not _orchestrator:
+    orchestrator = _orchestrator
+    if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    # Find worktree path from active session or history
-    worktree_path = None
+    def _find_worktree_path() -> Path | None:
+        # Check active sessions first
+        for s in orchestrator.state.active_sessions:
+            if s.issue.number == issue_number:
+                return s.worktree_path
 
-    # Check active sessions first
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            worktree_path = s.worktree_path
-            break
-
-    # If not found, check history
-    if not worktree_path:
-        for entry in _orchestrator.state.session_history:
+        # If not found, check history
+        for entry in orchestrator.state.session_history:
             if entry.issue_number == issue_number:
-                # History entries may have worktree_path stored
-                worktree_path = getattr(entry, 'worktree_path', None)
-                break
+                return getattr(entry, "worktree_path", None)
+        return None
+
+    worktree_path = _find_worktree_path()
 
     if not worktree_path:
         return JSONResponse({
@@ -837,6 +835,69 @@ async def get_session_log(issue_number: int) -> JSONResponse:
             "total_lines": total_lines,
             "truncated": truncated,
             "lines": lines
+        })
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
+
+
+@app.get("/api/log/local/{issue_number}")
+async def get_agent_ui_log(issue_number: int) -> JSONResponse:
+    """Get the local agent UI log for an issue.
+
+    This reads .issue-orchestrator/session.log (subprocess backend) or
+    .issue-orchestrator/pane.log (tmux backend) from the worktree.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    worktree_path = None
+    for s in _orchestrator.state.active_sessions:
+        if s.issue.number == issue_number:
+            worktree_path = s.worktree_path
+            break
+    if not worktree_path:
+        for entry in _orchestrator.state.session_history:
+            if entry.issue_number == issue_number:
+                worktree_path = getattr(entry, "worktree_path", None)
+                break
+
+    if not worktree_path:
+        return JSONResponse({
+            "error": f"No worktree path found for issue #{issue_number}",
+            "hint": "Session may have been cleaned up or never started"
+        }, status_code=404)
+
+    log_candidates = [
+        worktree_path / ".issue-orchestrator" / "session.log",
+        worktree_path / ".issue-orchestrator" / "pane.log",
+    ]
+    log_path = None
+    for candidate in log_candidates:
+        if candidate.exists():
+            log_path = candidate
+            break
+
+    if not log_path:
+        return JSONResponse({
+            "error": "No agent UI log found",
+            "hint": "Session may not have started or logging was not enabled",
+        }, status_code=404)
+
+    try:
+        lines = log_path.read_text(errors="ignore").splitlines()
+        total_lines = len(lines)
+        max_lines = 200
+        if total_lines > max_lines:
+            lines = lines[-max_lines:]
+            truncated = True
+        else:
+            truncated = False
+        return JSONResponse({
+            "issue_number": issue_number,
+            "log_path": str(log_path),
+            "total_lines": total_lines,
+            "truncated": truncated,
+            "lines": lines,
         })
     except Exception as e:
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
@@ -915,6 +976,37 @@ async def shutdown(force: bool = False) -> JSONResponse:
     })
 
 
+@app.post("/api/send/{issue_number}")
+async def send_input(issue_number: int, request: Request) -> JSONResponse:
+    """Send input to a running agent session."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON payload"}, status_code=400)
+
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "Text is required"}, status_code=400)
+
+    session = None
+    for s in _orchestrator.state.active_sessions:
+        if s.issue.number == issue_number:
+            session = s
+            break
+
+    if not session:
+        return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
+
+    ok = _orchestrator.session_runner.send_to_session(issue_number, text)
+    if not ok:
+        return JSONResponse({"error": f"Failed to send input to #{issue_number}"}, status_code=500)
+
+    return JSONResponse({"status": "sent", "issue_number": issue_number})
+
+
 @app.get("/api/dependency-problems")
 async def get_dependency_problems() -> JSONResponse:
     """Get current dependency problems for issues.
@@ -985,6 +1077,7 @@ async def get_info() -> JSONResponse:
         "version": "0.1.0",  # TODO: get from package
         "repo": config.repo,
         "ui_mode": config.ui_mode,
+        "terminal_backend": config.terminal_adapter or "tmux",
         "max_sessions": config.max_concurrent_sessions,
         "active_sessions": len(state.active_sessions),
         "completed_today": len(state.completed_today),
@@ -1687,6 +1780,11 @@ async def run_with_web_dashboard(
             await orchestrator.run_loop()
         except asyncio.CancelledError:
             pass
+
+    import os
+
+    if os.environ.get("ORCHESTRATOR_NO_BROWSER") in {"1", "true", "True"}:
+        open_browser = False
 
     # Start orchestrator (startup + loop) in background
     orchestrator_task = asyncio.create_task(run_startup_and_loop())

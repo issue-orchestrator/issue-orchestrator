@@ -83,9 +83,16 @@ class GitHubWorkflow:
         for pr, issue, cycle in escalations:
             state.discovered_escalations.append(DiscoveredEscalation(issue, pr, cycle))
         for r in reworks:
+            issue_number = r.resolve_issue_number()
+            if issue_number is None:
+                logger.warning(
+                    "[SCANNER] Rework issue key missing issue number: %s",
+                    r.issue_key,
+                )
+                continue
             state.discovered_reworks.append(
                 DiscoveredRework(
-                    int(r.issue_key.stable_id()),
+                    issue_number,
                     0,
                     "",
                     r.agent_type,
