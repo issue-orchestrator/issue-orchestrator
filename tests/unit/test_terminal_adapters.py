@@ -294,7 +294,7 @@ class TestPluggySessionRunner:
         """kill_session delegates to pluggy hook."""
         session_runner.kill_session(session_id=42)
 
-        mock_plugin_manager.hook.kill_session.assert_called_once_with(session_id=42)
+        mock_plugin_manager.hook.kill_session.assert_called_once_with(session_id=42, session_name=None)
 
     def test_discover_running_sessions_with_results(self, session_runner, mock_plugin_manager):
         """discover_running_sessions returns list from hook."""
