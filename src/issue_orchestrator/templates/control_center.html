@@ -533,6 +533,15 @@
     </div>
 
     <div id="toast" class="toast"></div>
+    <div id="blockingError" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <div class="modal-title" id="blockingErrorTitle"></div>
+            <div class="modal-body" id="blockingErrorBody"></div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="closeBlockingError()">OK</button>
+            </div>
+        </div>
+    </div>
 
     <script>
         // ==================== Utility Functions ====================
@@ -549,6 +558,20 @@
             toast.classList.toggle('error', isError);
             toast.classList.add('visible');
             setTimeout(() => toast.classList.remove('visible'), 3000);
+        }
+
+        function showBlockingError(title, message) {
+            const modal = document.getElementById('blockingError');
+            const titleEl = document.getElementById('blockingErrorTitle');
+            const bodyEl = document.getElementById('blockingErrorBody');
+            titleEl.textContent = title;
+            bodyEl.textContent = message;
+            modal.style.display = 'flex';
+        }
+
+        function closeBlockingError() {
+            const modal = document.getElementById('blockingError');
+            modal.style.display = 'none';
         }
 
         // ==================== Setup Wizard State ====================
@@ -1422,12 +1445,15 @@
                 if (healthData.status !== 'valid') {
                     const errorCount = healthData.errors?.length || 0;
                     const firstError = healthData.errors?.[0] || 'Unknown error';
-                    showToast(`Cannot start: ${firstError}`, true);
+                    const message = errorCount > 1
+                        ? `${firstError} (+${errorCount - 1} more)`
+                        : firstError;
+                    showBlockingError('Cannot Start Orchestrator', message);
                     loadRepos();
                     return;
                 }
             } catch (err) {
-                showToast('Health check failed', true);
+                showBlockingError('Health Check Failed', 'Unable to run health check before start.');
                 return;
             }
 
@@ -1446,9 +1472,9 @@
                     if (data.error === 'already_running') {
                         showToast('Already running on port ' + data.port);
                     } else if (data.error === 'config_not_found') {
-                        showToast('Config not found: ' + configName, true);
+                        showBlockingError('Start Failed', 'Config not found: ' + configName);
                     } else {
-                        showToast(data.detail || data.error, true);
+                        showBlockingError('Start Failed', data.detail || data.error);
                     }
                 } else if (data.status === 'restarted') {
                     showToast('Restarted on port ' + data.port);
@@ -1460,7 +1486,7 @@
                 ignoreSSEBriefly();
                 loadRepos();
             } catch (err) {
-                showToast('Failed to start orchestrator', true);
+                showBlockingError('Start Failed', 'Failed to start orchestrator.');
             }
         }
 
