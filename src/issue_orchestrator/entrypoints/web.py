@@ -178,7 +178,7 @@ def _get_e2e_status(config) -> dict:
     if not config:
         return {"enabled": False, "running": False}
 
-    from ..infra.e2e_runner import get_e2e_runner_manager
+    from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
     from ..infra.e2e_db import E2EDB
 
     orchestrator_id = config.repo or str(config.repo_root)
@@ -194,19 +194,24 @@ def _get_e2e_status(config) -> dict:
     # Get DB data
     db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
     last_run = None
+    next_run = None
+    run_obj = None
     failed_tests = []
     signal_score = None
 
     if db_path.exists():
         try:
             db = E2EDB(db_path)
-            run = db.latest_run(orchestrator_id)
-            if run:
-                last_run = run.to_dict()
-                failed_tests = [t.to_dict() for t in db.get_failed_tests(run.id)]
+            run_obj = db.latest_run(orchestrator_id)
+            if run_obj:
+                last_run = run_obj.to_dict()
+                failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)]
             signal_score = db.compute_signal_score(orchestrator_id)
         except Exception as e:
             logger.warning("Failed to read E2E DB: %s", e)
+
+    if config:
+        next_run = get_next_run_info(config, config.repo_root, run_obj)
 
     return {
         "enabled": True,
@@ -215,6 +220,7 @@ def _get_e2e_status(config) -> dict:
         "last_run": last_run,
         "failed_tests": failed_tests,
         "signal_score": signal_score,
+        "next_run": next_run,
     }
 
 
