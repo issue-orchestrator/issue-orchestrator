@@ -65,6 +65,44 @@ flowchart LR
   PR --> READY[Mark ready]
   READY --> HUMAN[Human merge]
 ```
+
+## Async E2E Test Runner
+
+Built-in facility for running end-to-end tests asynchronously with full visibility in the web dashboard.
+
+**Highlights:**
+- **Progress tracking** - Watch tests execute in real-time with live progress bar and current test display
+- **Resumable runs** - If interrupted, automatically resumes from where it left off (skipping passed tests)
+- **Retry-once policy** - Flaky tests get one automatic retry before marking as failed
+- **Quarantine support** - Known-flaky tests tracked separately, excluded from failure counts
+- **Signal score** - Track E2E stability over time ("94% pass rate over 30 runs")
+- **Survives restarts** - E2E worker continues running even if orchestrator restarts
+
+**Quick start:**
+```yaml
+# .issue-orchestrator/config/default.yaml
+e2e:
+  enabled: true
+  auto_run_interval_minutes: 30
+  pytest_args: ["tests/e2e", "-v"]
+  allow_retry_once: true
+```
+
+**Dashboard shows:**
+- Live progress: `12/19 tests (63%) - 10✓ 2✗`
+- Current test being executed
+- Signal score with quarantine count
+- Detailed breakdown: passed, failed, passed-on-retry, quarantined
+
+**API endpoints:**
+- `POST /control/e2e/start` - Start E2E run (or cancel and restart if running)
+- `POST /control/e2e/stop` - Cancel running E2E
+- `GET /control/e2e/status` - Get status with progress
+- `GET /control/e2e/summary/{run_id}` - Full test breakdown
+- `GET /control/e2e/quarantine` - View quarantine list
+
+See [E2E Documentation](docs/user/e2e.md) for full configuration reference, API details, database schema, and troubleshooting.
+
 ## Guardrails & Safety Model
 
 Issue-Orchestrator is designed to assist humans, not replace trust boundaries.

@@ -831,6 +831,127 @@
         .skip-link:focus {
             top: 0;
         }
+
+        /* E2E Panel */
+        .e2e-panel {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 10px 16px;
+            margin-bottom: 16px;
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 8px;
+            font-size: 13px;
+        }
+        .e2e-panel.disabled {
+            opacity: 0.5;
+        }
+        .e2e-title {
+            font-weight: 600;
+            color: #8b949e;
+            margin-right: 8px;
+        }
+        .e2e-badge {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .e2e-badge .running { background: #1f6feb; color: #fff; padding: 2px 8px; border-radius: 10px; }
+        .e2e-badge .passed { background: #238636; color: #fff; padding: 2px 8px; border-radius: 10px; }
+        .e2e-badge .failed { background: #f85149; color: #fff; padding: 2px 8px; border-radius: 10px; }
+        .e2e-badge .idle { background: #30363d; color: #8b949e; padding: 2px 8px; border-radius: 10px; }
+        .e2e-badge .interrupted { background: #d29922; color: #fff; padding: 2px 8px; border-radius: 10px; }
+        /* Progress bar */
+        .e2e-progress {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1;
+            max-width: 250px;
+        }
+        .e2e-progress-bar {
+            flex: 1;
+            height: 6px;
+            background: #30363d;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .e2e-progress-fill {
+            height: 100%;
+            background: #1f6feb;
+            transition: width 0.3s ease;
+        }
+        .e2e-progress-fill.has-failures {
+            background: linear-gradient(90deg, #238636, #f85149);
+        }
+        .e2e-progress-text {
+            font-size: 11px;
+            color: #8b949e;
+            white-space: nowrap;
+        }
+        /* Current test */
+        .e2e-current-test {
+            font-size: 11px;
+            color: #8b949e;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .e2e-current-test .label {
+            color: #6e7681;
+        }
+        .e2e-current-test .test-name {
+            font-family: monospace;
+            color: #c9d1d9;
+        }
+        .e2e-signal {
+            color: #8b949e;
+        }
+        .e2e-signal strong {
+            color: #c9d1d9;
+        }
+        .e2e-quarantine-link {
+            color: #d29922;
+            cursor: pointer;
+            text-decoration: underline;
+            text-decoration-style: dotted;
+        }
+        .e2e-quarantine-link:hover {
+            color: #e3b341;
+        }
+        .e2e-last-run {
+            color: #8b949e;
+        }
+        .e2e-last-run .status-passed { color: #3fb950; }
+        .e2e-last-run .status-failed { color: #f85149; }
+        .e2e-last-run .status-interrupted { color: #d29922; }
+        .e2e-actions {
+            margin-left: auto;
+            display: flex;
+            gap: 8px;
+        }
+        .e2e-btn {
+            padding: 4px 10px;
+            font-size: 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            border: 1px solid #30363d;
+            background: #21262d;
+            color: #c9d1d9;
+        }
+        .e2e-btn:hover { background: #30363d; }
+        .e2e-btn.primary { background: #238636; border-color: #238636; color: #fff; }
+        .e2e-btn.primary:hover { background: #2ea043; }
+        .e2e-btn.danger { background: #da3633; border-color: #da3633; color: #fff; }
+        .e2e-btn.danger:hover { background: #f85149; }
+        .e2e-failures {
+            color: #f85149;
+            cursor: pointer;
+        }
+        .e2e-failures:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -915,6 +1036,87 @@
                 </div>
             </div>
         </header>
+
+        <!-- E2E Test Panel -->
+        {% if e2e_status.enabled %}
+        <div class="e2e-panel" id="e2ePanel">
+            <span class="e2e-title">E2E Tests</span>
+
+            <span class="e2e-badge" id="e2eBadge">
+                {% if e2e_status.running %}
+                <span class="running">Running</span>
+                {% elif e2e_status.last_run %}
+                    {% if e2e_status.last_run.status == 'passed' %}
+                    <span class="passed">Passed</span>
+                    {% elif e2e_status.last_run.status == 'failed' %}
+                    <span class="failed">Failed</span>
+                    {% else %}
+                    <span class="idle">{{ e2e_status.last_run.status|title }}</span>
+                    {% endif %}
+                {% else %}
+                <span class="idle">No runs</span>
+                {% endif %}
+            </span>
+
+            <!-- Progress bar (shown when running) -->
+            <div class="e2e-progress" id="e2eProgress" style="{% if not e2e_status.running %}display: none;{% endif %}">
+                <div class="e2e-progress-bar">
+                    <div class="e2e-progress-fill" id="e2eProgressFill" style="width: 0%;"></div>
+                </div>
+                <span class="e2e-progress-text" id="e2eProgressText">Collecting tests...</span>
+            </div>
+
+            <!-- Current test (shown when running) -->
+            <div class="e2e-current-test" id="e2eCurrentTest" style="{% if not e2e_status.running %}display: none;{% endif %}">
+                <span class="label">Running:</span>
+                <span class="test-name" id="e2eCurrentTestName">...</span>
+            </div>
+
+            {% if e2e_status.signal_score and e2e_status.signal_score.pass_rate is not none %}
+            <span class="e2e-signal">
+                Stability: <strong>{{ (e2e_status.signal_score.pass_rate * 100)|round|int }}%</strong>
+                ({{ e2e_status.signal_score.runs_analyzed }} runs)
+                {% if e2e_status.signal_score.quarantined_count > 0 %}
+                · <span class="e2e-quarantine-link" onclick="showQuarantineList()" title="View quarantine list">{{ e2e_status.signal_score.quarantined_count }} quarantined</span>
+                {% endif %}
+            </span>
+            {% endif %}
+
+            <span class="e2e-last-run" id="e2eLastRun" style="{% if e2e_status.running %}display: none;{% endif %}">
+            {% if e2e_status.last_run %}
+                Last: <span class="status-{{ e2e_status.last_run.status }}">{{ e2e_status.last_run.status }}</span>
+                {% if e2e_status.last_run.duration_seconds %}
+                ({{ e2e_status.last_run.duration_seconds|round(1) }}s)
+                {% endif %}
+                {% if e2e_status.last_run.commit_sha %}
+                @ {{ e2e_status.last_run.commit_sha[:7] }}
+                {% endif %}
+            {% endif %}
+            </span>
+
+            {% if e2e_status.failed_tests %}
+            <span class="e2e-failures" id="e2eFailures" onclick="showE2EFailures()" title="View test details">
+                <span id="e2eFailCount">{{ e2e_status.failed_tests|length }}</span> failing
+            </span>
+            {% endif %}
+
+            <div class="e2e-actions" id="e2eActions">
+                {% if e2e_status.running %}
+                <button class="e2e-btn danger" id="e2eStopBtn" onclick="stopE2E()">Stop</button>
+                <button class="e2e-btn primary" id="e2eStartBtn" onclick="startE2E()" style="display: none;">Run E2E</button>
+                {% else %}
+                <button class="e2e-btn danger" id="e2eStopBtn" onclick="stopE2E()" style="display: none;">Stop</button>
+                <button class="e2e-btn primary" id="e2eStartBtn" onclick="startE2E()">Run E2E</button>
+                {% endif %}
+                {% if e2e_status.last_run %}
+                <button class="e2e-btn" onclick="showE2EFailures()">Details</button>
+                {% endif %}
+                {% if e2e_status.last_run and e2e_status.last_run.log_path %}
+                <button class="e2e-btn" onclick="showE2ELogs()">Logs</button>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
 
         <div class="tab-bar" role="tablist" aria-label="Dashboard sections">
             <button class="tab {% if active_tab == 'work' %}active{% endif %}" onclick="switchTab('work')" role="tab" aria-selected="{% if active_tab == 'work' %}true{% else %}false{% endif %}" aria-controls="issueList">
@@ -2464,6 +2666,290 @@
 
         function closeCreateIssueModal() {
             document.getElementById('createIssueModal').classList.remove('visible');
+        }
+
+        // E2E Test Functions
+        const REPO_ROOT = '{{ repo_root }}';
+
+        // E2E Progress Polling
+        let e2ePollingInterval = null;
+
+        function startE2EPolling() {
+            if (e2ePollingInterval) return;
+            e2ePollingInterval = setInterval(updateE2EProgress, 2000);
+            updateE2EProgress(); // Immediate first update
+        }
+
+        function stopE2EPolling() {
+            if (e2ePollingInterval) {
+                clearInterval(e2ePollingInterval);
+                e2ePollingInterval = null;
+            }
+        }
+
+        async function updateE2EProgress() {
+            try {
+                const res = await fetch(`/control/e2e/status?repo_root=${encodeURIComponent(REPO_ROOT)}`);
+                const data = await res.json();
+
+                const progress = document.getElementById('e2eProgress');
+                const progressFill = document.getElementById('e2eProgressFill');
+                const progressText = document.getElementById('e2eProgressText');
+                const currentTest = document.getElementById('e2eCurrentTest');
+                const currentTestName = document.getElementById('e2eCurrentTestName');
+                const badge = document.getElementById('e2eBadge');
+                const lastRun = document.getElementById('e2eLastRun');
+                const startBtn = document.getElementById('e2eStartBtn');
+                const stopBtn = document.getElementById('e2eStopBtn');
+                const failures = document.getElementById('e2eFailures');
+                const failCount = document.getElementById('e2eFailCount');
+
+                if (data.running && data.progress) {
+                    // Show progress UI
+                    progress.style.display = 'flex';
+                    currentTest.style.display = 'block';
+                    lastRun.style.display = 'none';
+                    startBtn.style.display = 'none';
+                    stopBtn.style.display = 'inline-block';
+                    badge.innerHTML = '<span class="running">Running</span>';
+
+                    const p = data.progress;
+                    if (p.total_tests) {
+                        const pct = p.percent || 0;
+                        progressFill.style.width = pct + '%';
+                        if (p.failed > 0) {
+                            progressFill.classList.add('has-failures');
+                        }
+                        progressText.textContent = `${p.completed}/${p.total_tests} (${pct}%) - ${p.passed}✓ ${p.failed}✗`;
+                    } else {
+                        progressText.textContent = 'Collecting tests...';
+                    }
+
+                    if (p.current_test) {
+                        // Show just the test name part (after ::)
+                        const parts = p.current_test.split('::');
+                        currentTestName.textContent = parts[parts.length - 1] || p.current_test;
+                        currentTestName.title = p.current_test;
+                    } else {
+                        currentTestName.textContent = '...';
+                    }
+
+                    // Show failures count during run
+                    if (p.failed > 0) {
+                        failures.style.display = 'inline';
+                        failCount.textContent = p.failed;
+                    }
+                } else if (!data.running) {
+                    // E2E finished - stop polling and update UI
+                    stopE2EPolling();
+                    progress.style.display = 'none';
+                    currentTest.style.display = 'none';
+                    lastRun.style.display = 'inline';
+                    startBtn.style.display = 'inline-block';
+                    stopBtn.style.display = 'none';
+
+                    // Update badge based on last run status
+                    if (data.last_run) {
+                        const status = data.last_run.status;
+                        badge.innerHTML = `<span class="${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span>`;
+                    }
+
+                    // Refresh page to get full updated state
+                    setTimeout(() => location.reload(), 500);
+                }
+            } catch (err) {
+                console.error('E2E progress update failed:', err);
+            }
+        }
+
+        async function startE2E(forceRestart = false) {
+            try {
+                // If forcing restart, stop first then start
+                if (forceRestart) {
+                    const stopRes = await fetch('/control/e2e/stop', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repo_root: REPO_ROOT })
+                    });
+                    if (!stopRes.ok) {
+                        showToast('Failed to stop running E2E', true);
+                        return;
+                    }
+                    // Brief delay to let worker terminate
+                    await new Promise(r => setTimeout(r, 500));
+                }
+
+                const res = await fetch('/control/e2e/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: REPO_ROOT })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    showToast('E2E tests started');
+                    // Start polling instead of reloading
+                    document.getElementById('e2eProgress').style.display = 'flex';
+                    document.getElementById('e2eCurrentTest').style.display = 'block';
+                    document.getElementById('e2eLastRun').style.display = 'none';
+                    document.getElementById('e2eStartBtn').style.display = 'none';
+                    document.getElementById('e2eStopBtn').style.display = 'inline-block';
+                    document.getElementById('e2eBadge').innerHTML = '<span class="running">Running</span>';
+                    startE2EPolling();
+                } else if (data.error === 'already_running') {
+                    // Ask user if they want to cancel and restart
+                    if (confirm('E2E tests are already running.\n\nCancel the current run and start fresh?')) {
+                        startE2E(true);  // Restart with force flag
+                    }
+                } else {
+                    showToast(data.detail || data.error || 'Failed to start E2E', true);
+                }
+            } catch (err) {
+                showToast('Failed to start E2E: ' + err.message, true);
+            }
+        }
+
+        async function stopE2E() {
+            try {
+                const res = await fetch('/control/e2e/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: REPO_ROOT })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    showToast('E2E tests stopped');
+                    stopE2EPolling();
+                    setTimeout(() => location.reload(), 500);
+                } else {
+                    showToast(data.detail || 'Failed to stop E2E', true);
+                }
+            } catch (err) {
+                showToast('Failed to stop E2E: ' + err.message, true);
+            }
+        }
+
+        // Start polling if E2E is already running on page load
+        {% if e2e_status.running %}
+        document.addEventListener('DOMContentLoaded', () => startE2EPolling());
+        {% endif %}
+
+        async function showE2ELogs() {
+            const lastRun = {{ e2e_status.last_run|tojson if e2e_status.last_run else 'null' }};
+            if (!lastRun) return;
+
+            try {
+                const res = await fetch(`/control/e2e/logs/${lastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}&tail=200`);
+                const data = await res.json();
+                if (res.ok) {
+                    const content = data.content || 'No logs available';
+                    // Show in a simple modal/alert for now
+                    alert(`E2E Logs (last ${data.returned_lines} lines):\n\n${content}`);
+                } else {
+                    showToast(data.detail || 'Failed to fetch logs', true);
+                }
+            } catch (err) {
+                showToast('Failed to fetch E2E logs', true);
+            }
+        }
+
+        async function showQuarantineList() {
+            try {
+                const res = await fetch(`/control/e2e/quarantine?repo_root=${encodeURIComponent(REPO_ROOT)}`);
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showToast(data.error || 'Failed to load quarantine list', true);
+                    return;
+                }
+
+                let message = `Quarantine List\n`;
+                message += `${'='.repeat(40)}\n\n`;
+                message += `File: ${data.quarantine_file}\n`;
+                message += `Status: ${data.exists ? 'exists' : 'not found'}\n`;
+                message += `Count: ${data.count} test(s)\n`;
+
+                if (data.tests.length > 0) {
+                    message += `\n${'─'.repeat(40)}\nQuarantined Tests:\n\n`;
+                    for (const test of data.tests) {
+                        message += `• ${test}\n`;
+                    }
+                    message += `\n${'─'.repeat(40)}\n`;
+                    message += `These tests are excluded from failure counts.\n`;
+                    message += `Edit ${data.quarantine_file} to modify.`;
+                } else {
+                    message += `\nNo tests are currently quarantined.`;
+                }
+
+                alert(message);
+            } catch (err) {
+                showToast('Failed to load quarantine list: ' + err.message, true);
+            }
+        }
+
+        async function showE2EFailures() {
+            const lastRun = {{ e2e_status.last_run|tojson if e2e_status.last_run else 'null' }};
+            if (!lastRun) {
+                showToast('No E2E run data available');
+                return;
+            }
+
+            try {
+                const res = await fetch(`/control/e2e/summary/${lastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`);
+                const summary = await res.json();
+
+                if (!res.ok) {
+                    showToast(summary.error || 'Failed to load test summary', true);
+                    return;
+                }
+
+                const counts = summary.counts;
+                let message = `E2E Test Summary (Run #${lastRun.id})\n`;
+                message += `${'='.repeat(40)}\n\n`;
+                message += `Total: ${counts.total} tests\n`;
+                message += `  ✓ Passed: ${counts.passed}\n`;
+                message += `  ✗ Failed: ${counts.failed}\n`;
+
+                if (counts.passed_on_retry > 0) {
+                    message += `  ↻ Passed on Retry: ${counts.passed_on_retry}\n`;
+                }
+                if (counts.quarantined > 0) {
+                    message += `  ⚠ Quarantined: ${counts.quarantined}\n`;
+                }
+                if (counts.skipped > 0) {
+                    message += `  ○ Skipped: ${counts.skipped}\n`;
+                }
+
+                // Show failed tests
+                if (summary.failed.length > 0) {
+                    message += `\n${'─'.repeat(40)}\nFailed Tests:\n`;
+                    for (const f of summary.failed) {
+                        message += `\n• ${f.nodeid}\n`;
+                        if (f.longrepr) {
+                            message += `  ${f.longrepr.substring(0, 150)}...\n`;
+                        }
+                    }
+                }
+
+                // Show passed on retry
+                if (summary.passed_on_retry.length > 0) {
+                    message += `\n${'─'.repeat(40)}\nPassed on Retry (flaky):\n`;
+                    for (const f of summary.passed_on_retry) {
+                        message += `• ${f.nodeid}\n`;
+                    }
+                }
+
+                // Show quarantined
+                if (summary.quarantined.length > 0) {
+                    message += `\n${'─'.repeat(40)}\nQuarantined (excluded from failure count):\n`;
+                    for (const q of summary.quarantined) {
+                        message += `• ${q.nodeid}\n`;
+                    }
+                }
+
+                alert(message);
+            } catch (err) {
+                showToast('Failed to load test summary: ' + err.message, true);
+            }
         }
     </script>
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>

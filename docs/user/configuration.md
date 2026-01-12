@@ -377,6 +377,53 @@ comment_headings:
 
 ---
 
+### E2E Test Runner
+
+Run E2E tests locally and asynchronously per orchestrator, with results persisted to SQLite and visible in the dashboard.
+
+```yaml
+e2e:
+  enabled: false                              # (default) Enable async E2E runner
+  auto_run_interval_minutes: 30               # (default) Min interval between auto runs (0 = manual only)
+  pytest_args: ["tests/e2e", "-v"]            # (default) Arguments to pytest
+  allow_retry_once: true                      # (default) Retry failing tests once (reduces flakiness)
+  quarantine_file: "tests/e2e/quarantine.txt" # (default) Path to quarantine list
+  survive_restart: true                       # (default) Let E2E worker continue if orchestrator restarts
+```
+
+**Features:**
+- **Auto-trigger**: Runs after agent sessions complete, gated by time interval
+- **Retry-once**: Retries failing tests once to reduce false failures
+- **Quarantine**: Known flaky tests in quarantine file are marked but excluded from failure count
+- **Signal score**: Dashboard shows pass rate over last 30 runs
+- **Survive restart**: Worker continues if orchestrator restarts, then resumes from checkpoint
+- **Resumable runs**: When interrupted, runs resume from where they left off (skipping passed tests)
+
+**Test structure for resumability:**
+
+Tests should be structured as discrete functions for best resume behavior:
+
+```python
+# Good - each function is a resumable checkpoint:
+def test_create_issue(): ...
+def test_create_pr(): ...
+def test_review_cycle(): ...
+
+# Bad - monolithic, no partial progress:
+def test_entire_workflow(): ...
+```
+
+**Quarantine file format** (`tests/e2e/quarantine.txt`):
+```
+# Known flaky tests - excluded from required runs
+tests/e2e/test_slow_network.py::test_timeout_handling
+tests/e2e/test_race_condition.py::test_concurrent_updates
+```
+
+**Results stored in**: `.issue-orchestrator/e2e.db` (SQLite)
+
+---
+
 ### Config Validation
 
 ```yaml
