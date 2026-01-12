@@ -272,7 +272,7 @@ class TestPluggySessionRunner:
         result = session_runner.session_exists(session_id=42)
 
         assert result is True
-        mock_plugin_manager.hook.session_exists.assert_called_once_with(session_id=42)
+        mock_plugin_manager.hook.session_exists.assert_called_once_with(session_id=42, session_name=None)
 
     def test_session_exists_false(self, session_runner, mock_plugin_manager):
         """session_exists returns False when hook returns False."""
