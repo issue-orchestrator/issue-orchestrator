@@ -81,8 +81,9 @@ class TestTerminalAdapterExecution:
             )
 
     @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
-    async def test_terminal_adapter_session_launch(
+    @pytest.mark.timeout(180)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=150, system_gh_activity_limit=100)
+    async def test_terminal_adapter_session_starts(
         self,
         e2e_orchestrator,
         orchestrator_watcher,
@@ -91,16 +92,7 @@ class TestTerminalAdapterExecution:
         e2e_ui_mode: str,
         e2e_tmux_session: str,
     ):
-        """Verify session launches correctly in the configured terminal mode.
-
-        This test:
-        1. Creates an issue
-        2. Waits for orchestrator to pick it up
-        3. Verifies session starts (in-progress label added)
-        4. Waits for session completion
-
-        This catches terminal-specific bugs like sandbox check failures.
-        """
+        """Verify session launches correctly in the configured terminal mode."""
         logger.info("Testing terminal adapter in '%s' mode", e2e_ui_mode)
 
         flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
@@ -126,6 +118,28 @@ class TestTerminalAdapterExecution:
         if e2e_ui_mode == "tmux":
             await self._verify_pane_identification(issue_number, e2e_tmux_session)
 
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(300)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
+    async def test_terminal_adapter_completion_pipeline(
+        self,
+        e2e_orchestrator,
+        orchestrator_watcher,
+        test_issue_factory,
+        repo_name: str,
+        e2e_ui_mode: str,
+    ):
+        """Verify completion pipeline for the configured terminal mode."""
+        logger.info("Testing terminal adapter completion in '%s' mode", e2e_ui_mode)
+
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher)
+
+        issue = test_issue_factory(f"[E2E] Terminal adapter completion ({e2e_ui_mode})")
+        issue_number = int(issue.stable_id())
+        logger.info("Created issue #%d for terminal adapter completion test", issue_number)
+
+        await flow.issue_seen(issue, timeout_s=60)
+
         # Wait for session to complete - this verifies the ENTIRE pipeline:
         # 1. Claude ran in the correct directory (worktree, not main repo)
         # 2. agent-done wrote completion.json to the worktree
@@ -144,7 +158,6 @@ class TestTerminalAdapterExecution:
             completion_event.get("type"),
         )
 
-        # Verify the session completed with a PR (proves full pipeline worked)
         payload = completion_event.get("payload", {})
         pr_url = payload.get("pr_url")
         assert pr_url, (
@@ -154,7 +167,6 @@ class TestTerminalAdapterExecution:
         )
         logger.info("PR created: %s - cd fix verified!", pr_url)
 
-        # Verify pr-pending label was added (proves post-completion actions ran)
         await flow.issue_has_label(issue, "pr-pending", timeout_s=30)
         logger.info("pr-pending label added - full pipeline verified for issue #%d", issue_number)
 
