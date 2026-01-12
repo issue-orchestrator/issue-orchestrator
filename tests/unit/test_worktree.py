@@ -1519,6 +1519,15 @@ class TestWorktreePrepareForSession:
         for name in files:
             assert not (orch_dir / name).exists()
 
+    def test_removes_pane_log(self, worktree: Worktree, worktree_dir: Path):
+        """Removes pane.log from previous sessions."""
+        pane_log = worktree_dir / ".issue-orchestrator" / "pane.log"
+        pane_log.write_text("Old session output from Claude Code\n")
+
+        assert pane_log.exists()
+        worktree.prepare_for_session("new-session")
+        assert not pane_log.exists()
+
     def test_no_error_when_orchestrator_dir_missing(self, tmp_path: Path):
         """No error when .issue-orchestrator dir doesn't exist."""
         worktree = Worktree(tmp_path, issue_number=123)

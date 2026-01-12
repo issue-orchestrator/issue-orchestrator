@@ -615,16 +615,20 @@ class TmuxManager:
         # CRITICAL: cd to working directory first, then set up isolation
         setup_cmd = f'cd "{working_dir}" && export PATH="{wrapper_dir}:$PATH" && {isolation_prefix}'
 
-        # Enable pane logging with ANSI code stripping
+        # Enable pane logging with ANSI code and non-ASCII stripping
         # Uses ansifilter if available (brew install ansifilter), otherwise sed
+        # Then strips non-ASCII (UTF-8 spinners, box-drawing) with tr
         try:
             log_dir = working_dir / ".issue-orchestrator"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_file = log_dir / "pane.log"
-            # ansifilter produces cleaner output; sed is good enough fallback
+            # ansifilter strips ANSI codes; tr strips non-ASCII (spinners, box-drawing)
+            # tr keeps: tab(\11), newline(\12), carriage-return(\15), printable ASCII(\40-\176)
+            # LC_ALL=C ensures tr handles any byte sequence without "illegal byte" errors
             filter_cmd = (
                 "if command -v ansifilter >/dev/null 2>&1; then ansifilter; "
-                "else sed -E 's/\\x1b\\[[0-9;]*[a-zA-Z]//g'; fi"
+                "else sed -E 's/\\x1b\\[[0-9;]*[a-zA-Z]//g'; fi "
+                "| LC_ALL=C tr -cd '\\11\\12\\15\\40-\\176'"
             )
             pane.cmd("pipe-pane", "-o", f"exec cat - | {filter_cmd} > '{log_file}'")
             logger.debug("[TMUX] Enabled pane logging to %s", log_file)
