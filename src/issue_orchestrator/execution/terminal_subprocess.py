@@ -211,6 +211,7 @@ class SubprocessPlugin:
         self._registry = _SubprocessRegistry(repo_root)
         self._processes: dict[str, subprocess.Popen[str]] = {}
         self._repo_root = repo_root
+        self._allow_stdin = os.environ.get("ORCHESTRATOR_SUBPROCESS_ALLOW_STDIN", "").lower() in {"1", "true", "yes"}
 
     def _session_name(self, session_id: int, session_name: Optional[str]) -> str:
         return session_name or f"issue-{session_id}"
@@ -229,12 +230,13 @@ class SubprocessPlugin:
 
         log_path = self._session_log_path(working_dir)
         log_file = open(log_path, "a")
+        stdin_mode = subprocess.PIPE if self._allow_stdin else subprocess.DEVNULL
 
         proc = subprocess.Popen(
             ["/bin/bash", "-lc", full_cmd],
             cwd=str(working_dir),
-            # Avoid hanging on tools that wait for stdin; we run in non-interactive mode.
-            stdin=subprocess.DEVNULL,
+            # Default to closed stdin to avoid hanging tools; enable via ORCHESTRATOR_SUBPROCESS_ALLOW_STDIN.
+            stdin=stdin_mode,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             text=True,
@@ -375,6 +377,8 @@ class SubprocessPlugin:
 
     @hookimpl
     def send_to_session(self, session_id: int, text: str, session_name: str | None = None) -> bool | None:
+        if not self._allow_stdin:
+            return False
         name = self._session_name(session_id, session_name)
         proc = self._processes.get(name)
         if not proc or proc.stdin is None:

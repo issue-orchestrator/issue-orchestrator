@@ -75,6 +75,7 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
     _ensure_worktree_venv(worktree)
 
     monkeypatch.setenv("ORCHESTRATOR_REPO_ROOT", str(repo_root))
+    monkeypatch.setenv("ORCHESTRATOR_SUBPROCESS_ALLOW_STDIN", "1")
     command = "read -r line; echo \"INPUT:$line\" >> .issue-orchestrator/session.log"
 
     plugin = SubprocessPlugin()
