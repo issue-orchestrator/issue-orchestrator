@@ -58,5 +58,8 @@ milestone_sort: milestone_number
 filtering:
   exclude_labels: ["io-e2e-test-data", "test-data"]
 
+triage:
+  inherit_labels: ["io-e2e-test-data", "test-data"]
+
 config:
   strict: true
