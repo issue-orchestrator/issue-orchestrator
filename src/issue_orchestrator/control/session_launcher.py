@@ -805,7 +805,9 @@ class SessionLauncher:
 
         issue_key = rework.issue_key
         session_key = SessionKey(issue=issue_key, task=TaskKind.REWORK)
-        issue_number = int(issue_key.stable_id())
+        issue_number = rework.resolve_issue_number()
+        if issue_number is None:
+            return LaunchResult(None, False, f"Unresolved issue number for rework {issue_key}")
 
         # Try to find PR details
         prs = self.repository_host.get_prs_for_issue(issue_number)
@@ -1359,7 +1361,10 @@ def orchestrator_launch_rework_session(
         state.active_sessions.append(result.session)
     elif result.keep_queued:
         # Terminal exists but we can't track it - try to restore/adopt it
-        issue_number = int(rework.issue_key.stable_id())
+        issue_number = rework.resolve_issue_number()
+        if issue_number is None:
+            logger.warning("[ORPHAN] Rework missing issue number: %s", rework.issue_key)
+            return None
         session_name = f"rework-{issue_number}"
         restored = session_restorer.restore_sessions(
             running=[{"issue_number": issue_number, "tab_name": session_name, "is_review": False}],

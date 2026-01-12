@@ -433,7 +433,7 @@ class TestTriageReviewTrigger:
 
 @pytest.mark.e2e
 @pytest.mark.live
-@pytest.mark.timeout(1200)  # 20 minutes
+@pytest.mark.timeout(1800)  # 30 minutes
 class TestReworkCyclesAndEscalation:
     """Test the rework cycle flow and escalation to needs-human.
 
@@ -536,7 +536,7 @@ class TestReworkCyclesAndEscalation:
             logger.info("Waiting for escalation (this may take several minutes)...")
             escalated, rework_labels_seen = await flow.rework_progress(
                 issue_key,
-                timeout_s=600,
+                timeout_s=900,
             )
 
             logger.info("Rework cycle labels seen: %s", sorted(list(rework_labels_seen)))

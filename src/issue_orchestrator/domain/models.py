@@ -595,6 +595,16 @@ class PendingRework:
     issue_key: "IssueKey"     # Store-agnostic identity
     agent_type: str           # Cached to avoid lookup at launch time
     rework_cycle: int = 1     # Which rework iteration this is (1, 2, etc.)
+    issue_number: int | None = None  # Backing store handle for GitHub rework flows
+
+    def resolve_issue_number(self) -> int | None:
+        """Resolve issue number for GitHub workflows, if available."""
+        if self.issue_number is not None:
+            return self.issue_number
+        try:
+            return int(self.issue_key.stable_id())
+        except (TypeError, ValueError):
+            return None
 
 
 @dataclass

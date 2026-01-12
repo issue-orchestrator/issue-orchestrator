@@ -1,14 +1,16 @@
-"""Concurrent session-start E2E tests.
+"""Comprehensive E2E test for the full orchestration pipeline.
 
-This test verifies:
-1. Multiple real GitHub issues are created
-2. The shared orchestrator starts sessions concurrently
+This test verifies the complete system works end-to-end by:
+1. Creating multiple real GitHub issues
+2. Using the shared session orchestrator that processes them concurrently
+3. Verifying labels, sessions, PRs at each stage
 
 Uses the single-orchestrator pattern for efficiency.
 """
 
 import asyncio
 import logging
+import os
 import time
 
 import pytest
@@ -24,15 +26,15 @@ logger = logging.getLogger(__name__)
 
 @pytest.mark.e2e
 @pytest.mark.live
-@pytest.mark.timeout(300)  # 5 min timeout
+@pytest.mark.timeout(900)  # 15 min timeout
 class TestConcurrentPipeline:
-    """Test orchestrator launches multiple sessions concurrently.
+    """Test the orchestrator processing multiple issues concurrently.
 
     Uses the shared session-scoped orchestrator for efficiency.
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=220, system_gh_activity_limit=15)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=400, system_gh_activity_limit=25)
     async def test_concurrent_issue_processing(
         self,
         e2e_orchestrator,
@@ -44,10 +46,12 @@ class TestConcurrentPipeline:
 
         Verifies:
         1. All issues get 'in-progress' label (sessions started)
-        2. Session starts are not serialized across issues
+        2. All issues get PRs created
+        3. Processing happens concurrently (not sequentially)
         """
         num_issues = 3
         issues = []
+        created_prs = []
         start_time = time.time()
         flow = E2EFlow(
             repo=repo_name,
@@ -83,21 +87,49 @@ class TestConcurrentPipeline:
                 for issue in issues
             ])
 
+            # Phase 2: Wait for PRs or skip in dry-run mode
+            dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
+            if dry_run:
+                logger.info("Phase 2: Skipping PR wait (E2E_DRY_RUN_PUSH=1)")
+                # In dry-run mode, wait briefly for completion processing
+                await asyncio.sleep(5)
+            else:
+                logger.info("Phase 2: Waiting for all PRs to be created...")
+                pr_numbers = await asyncio.gather(*[
+                    flow.pr_created(issue)
+                    for issue in issues
+                ])
+                created_prs = [{"number": pr_num} for pr_num in pr_numbers]
+
+                # Phase 3: Wait for code review outcomes so later tests can launch new work
+                logger.info("Phase 3: Waiting for code review outcomes...")
+                await flow.review_outcomes_any_of(
+                    issues=issues,
+                    any_of_labels=["code-reviewed", "needs-rework"],
+                )
+
             # Summary
             total_time = time.time() - start_time
             logger.info("=== Summary ===")
             logger.info("Total time: %.1fs", total_time)
             logger.info("Issues processed: %d", num_issues)
+            if dry_run:
+                logger.info("PRs: skipped (dry-run mode)")
+            else:
+                logger.info("PRs created: %d", len(created_prs))
 
             # Verify concurrency
             if num_issues > 1:
                 avg_time = total_time / num_issues
                 logger.info("Avg time per issue: %.1fs", avg_time)
                 if avg_time < 45:
-                    logger.info("✓ Session starts were concurrent (avg < 45s per issue)")
+                    logger.info("✓ Processing was concurrent (avg < 45s per issue)")
 
         finally:
-            pass
+            # Cleanup: close all PRs (only if we created real ones)
+            if not dry_run:
+                for pr in created_prs:
+                    flow.close_pr(pr["number"])
 
 
 # ---------------------------------------------------------------------------

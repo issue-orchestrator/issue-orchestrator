@@ -19,9 +19,25 @@ if [[ -z "${PR_NUMBER:-}" ]]; then
   exit 0
 fi
 
-PR_TITLE=$(gh pr view "${PR_NUMBER}" --json title --jq .title 2>/dev/null || echo "")
+PR_INFO=$(gh pr view "${PR_NUMBER}" --json title,headRefName,body --jq '"\(.title)\n\(.headRefName)\n\(.body)"' 2>/dev/null || echo "")
 
-if echo "$PR_TITLE" | grep -q "E2E-REWORK"; then
+NEEDS_REWORK=0
+if echo "$PR_INFO" | grep -qi "E2E-REWORK" || echo "$PR_INFO" | grep -qi "e2e-rework"; then
+  NEEDS_REWORK=1
+else
+  ISSUE_NUMBER=$(echo "$PR_INFO" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')
+  if [[ -z "${ISSUE_NUMBER:-}" ]]; then
+    ISSUE_NUMBER=$(echo "$PR_INFO" | grep -oE '^[0-9]+-' | head -n1 | tr -d '-')
+  fi
+  if [[ -n "${ISSUE_NUMBER:-}" ]]; then
+    ISSUE_LABELS=$(gh issue view "${ISSUE_NUMBER}" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+    if echo "$ISSUE_LABELS" | grep -qi "io:e2e:rework_cycles"; then
+      NEEDS_REWORK=1
+    fi
+  fi
+fi
+
+if [[ "$NEEDS_REWORK" -eq 1 ]]; then
   agent-done changes_requested \
     --issues "E2E rework flow: requesting changes for escalation test" \
     --risk low
