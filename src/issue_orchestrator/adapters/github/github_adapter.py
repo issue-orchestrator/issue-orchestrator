@@ -20,6 +20,7 @@ from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
     GitHubHttpError,
+    GitHubTransportError,
     resolve_github_token,
 )
 from .repo import get_repo_from_git, GitRepoError
@@ -505,12 +506,11 @@ class GitHubAdapter:
 
     def _get_issue_labels_with_retry(self, issue_number: int, use_cache: bool) -> list[str]:
         import time
-        import httpx
 
         for attempt in range(1, 4):
             try:
                 return self._client.get_issue_labels(issue_number, use_cache=use_cache)
-            except (OSError, httpx.HTTPError) as e:
+            except GitHubTransportError as e:
                 if attempt >= 3:
                     raise
                 logger.warning(
@@ -530,7 +530,6 @@ class GitHubAdapter:
         base: str,
     ) -> dict[str, Any]:
         import time
-        import httpx
 
         for attempt in range(1, 4):
             try:
@@ -538,7 +537,7 @@ class GitHubAdapter:
                 if output is None:
                     raise GitHubHttpError("Failed to parse PR create response")
                 return output
-            except (OSError, httpx.HTTPError) as e:
+            except GitHubTransportError as e:
                 if attempt >= 3:
                     raise
                 logger.warning(
@@ -562,7 +561,6 @@ class GitHubAdapter:
         Raises:
             GitHubHttpError: If the operation fails.
         """
-        import httpx
         try:
             for attempt in range(1, 4):
                 try:
@@ -574,7 +572,7 @@ class GitHubAdapter:
                         self._client.add_label(issue_number, label)
                     logger.debug(f"Added label '{label}' to issue {issue_number}")
                     break
-                except httpx.TimeoutException as exc:
+                except GitHubTransportError as exc:
                     if attempt >= 3:
                         raise
                     logger.warning(
@@ -598,7 +596,7 @@ class GitHubAdapter:
                 detail_fn=lambda: {"labels": last_labels},
                 issue_number=issue_number,
             )
-        except (GitHubHttpError, httpx.TimeoutException):
+        except (GitHubHttpError, GitHubTransportError):
             logger.error(f"Failed to add label '{label}' to issue {issue_number}")
             raise
         finally:
@@ -615,7 +613,6 @@ class GitHubAdapter:
         Raises:
             GitHubHttpError: If the operation fails.
         """
-        import httpx
         try:
             for attempt in range(1, 4):
                 try:
@@ -627,7 +624,7 @@ class GitHubAdapter:
                         self._client.remove_label(issue_number, label)
                     logger.debug(f"Removed label '{label}' from issue {issue_number}")
                     break
-                except httpx.TimeoutException as exc:
+                except GitHubTransportError as exc:
                     if attempt >= 3:
                         raise
                     logger.warning(
@@ -651,7 +648,7 @@ class GitHubAdapter:
                 detail_fn=lambda: {"labels": last_labels},
                 issue_number=issue_number,
             )
-        except (GitHubHttpError, httpx.TimeoutException):
+        except (GitHubHttpError, GitHubTransportError):
             logger.error(f"Failed to remove label '{label}' from issue {issue_number}")
             raise
         finally:
