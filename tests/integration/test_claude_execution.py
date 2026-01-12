@@ -483,9 +483,11 @@ class TestAgentDoneInvocation:
         repo_root = Path(__file__).parent.parent.parent
         scripts_dir = repo_root / "src" / "issue_orchestrator" / "scripts"
 
-        # Create worktree-like structure
+        # Create worktree-like structure with git repo
+        # (Claude Code may refuse to run commands in non-git directories)
         worktree = tmp_path / "test-worktree"
         worktree.mkdir()
+        subprocess.run(["git", "init"], cwd=worktree, capture_output=True, check=True)
         completion_dir = worktree / ".issue-orchestrator"
         completion_dir.mkdir()
 
