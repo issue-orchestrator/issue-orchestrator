@@ -55,6 +55,8 @@ validation:
 github_token_env: GITHUB_TOKEN
 milestone_sort: milestone_number
 
+terminal_adapter: subprocess
+
 filtering:
   exclude_labels: ["io-e2e-test-data", "test-data"]
 
