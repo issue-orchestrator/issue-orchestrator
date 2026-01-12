@@ -234,6 +234,7 @@ class TestPluggySessionRunner:
             command="claude --prompt issue.md",
             working_dir="/tmp/worktree",
             title="Fix the bug",
+            session_name=None,
         )
         assert "Creating session via terminal hook" in caplog.text
         assert "id=42" in caplog.text
