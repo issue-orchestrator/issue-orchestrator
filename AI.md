@@ -92,11 +92,9 @@ pytest tests/unit/ -v          # 1100+ unit tests
 pytest tests/e2e/ -v           # Live e2e tests (requires gh auth)
 ```
 
-**Check status:**
-```bash
-issue-orchestrator status
-curl -s http://localhost:8080/api/status | jq
-```
+## Async E2E Runner
+
+The orchestrator includes an async E2E test runner. See [docs/user/e2e.md](docs/user/e2e.md) for details.
 
 **Configuration:** `.issue-orchestrator/config/<name>.yaml` - see `examples/config.example.yaml`
 

@@ -64,6 +64,7 @@ from ..control.startup_manager import StartupManager
 from ..ports import TraceEvent, RepositoryHost, SessionRunner
 from ..control.health_gate import HealthDecision
 from ..control.orchestrator_deps import OrchestratorDeps
+from .e2e_runner import maybe_trigger_e2e, get_e2e_runner_manager
 
 
 @dataclass
@@ -197,7 +198,62 @@ class Orchestrator:
 
     def tick(self) -> bool:
         self._loop_iteration, cont = _run_tick_impl(self._loop_iteration, self._event_context, self._inflight_stable_ids, self.state, self.deps.events, self._shutdown_requested, self._process_active_sessions, self._check_health, self._run_planning_cycle, self._emit_heartbeat_if_needed)
+        # Check if we should auto-trigger E2E tests
+        self._maybe_trigger_e2e()
         return cont
+
+    def _maybe_trigger_e2e(self) -> None:
+        """Check and trigger E2E tests if conditions are met.
+
+        Triggers when:
+        1. E2E is enabled with auto_run_interval_minutes > 0
+        2. Interval has passed since last run
+        3. Main branch HEAD has changed since last tested commit
+        """
+        # Use repo directory name as orchestrator_id
+        orchestrator_id = self.config.repo_root.name
+
+        triggered = maybe_trigger_e2e(
+            config=self.config,
+            repo_root=self.config.repo_root,
+            orchestrator_id=orchestrator_id,
+        )
+        if triggered:
+            self.deps.events.publish(TraceEvent(
+                EventName.E2E_AUTO_TRIGGERED,
+                self._event_context.enrich({}),
+            ))
+
+    def _cleanup_e2e_runner(self) -> None:
+        """Clean up E2E runner on orchestrator shutdown.
+
+        Behavior depends on survive_restart config:
+        - True (default): Let worker continue, mark run as 'interrupted' (resumable)
+        - False: Stop worker and mark run as canceled
+        """
+        if not self.config.e2e.enabled:
+            return
+
+        # Use repo directory name as orchestrator_id
+        orchestrator_id = self.config.repo_root.name
+
+        manager = get_e2e_runner_manager()
+        status = manager.status(orchestrator_id)
+
+        if not status["running"]:
+            return
+
+        if self.config.e2e.survive_restart:
+            # Let worker continue - on next startup, orchestrator will detect
+            # the running worker OR (if worker dies) mark as interrupted and resume
+            logger.info(
+                "E2E worker pid=%s continuing (survive_restart=True)",
+                status["pid"],
+            )
+        else:
+            # Stop the worker
+            logger.info("Stopping E2E worker pid=%s on shutdown", status["pid"])
+            manager.stop(orchestrator_id, self.config.repo_root)
 
     def _check_health(self) -> HealthDecision:
         return cast(HealthDecision, _check_health(self.deps.health_gate, len(self.state.active_sessions), self.state.paused))
@@ -290,6 +346,9 @@ class Orchestrator:
                 "iterations": self._loop_iteration,
             }),
         ))
+
+        # Clean up E2E runner if active
+        self._cleanup_e2e_runner()
 
         # Clean up terminal backend (kills tmux session - atomic cleanup of all windows)
         self.deps.runner.on_orchestrator_shutdown()

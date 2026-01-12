@@ -22,7 +22,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'github_token', 'github_token_env', 'github_api_url',
     'github_http_timeout_seconds', 'github_cache_ttl_seconds', 'github_required_scopes', 'github_allowed_scopes',
     'filtering',  # Issue filtering options (label, milestone, exclude_labels, etc.)
-    'e2e_pr_labels', 'review', 'cleanup', 'validation', 'triage',
+    'e2e_pr_labels', 'e2e', 'review', 'cleanup', 'validation', 'triage',
     'isolation', 'setup_worktree', 'milestone_sort',
     'milestone_sort_config', 'foundation_milestone',
     'state_file', 'pre_push_hook', 'enforce_hooks', 'queue_refresh_seconds',
@@ -203,6 +203,37 @@ class TriageConfig:
 
     # Optional explicit priority label
     priority: Optional[str] = None
+
+
+@dataclass
+class E2EConfig:
+    """E2E async test runner settings.
+
+    Controls local async E2E test execution with results persisted to SQLite.
+    """
+    enabled: bool = False  # Whether E2E runner is active
+    auto_run_interval_minutes: int = 30  # Min interval between auto runs (0 = disable auto)
+    pytest_args: list[str] = field(default_factory=lambda: ["tests/e2e", "-v"])
+    allow_retry_once: bool = True  # Retry failing tests once to reduce flakiness
+    quarantine_file: str = "tests/e2e/quarantine.txt"  # Path to quarantine list
+    survive_restart: bool = True  # Let worker finish if orchestrator restarts
+
+
+def _parse_e2e_config(data: dict) -> E2EConfig:
+    """Parse e2e section from YAML data."""
+    pytest_args = data.get("pytest_args") or ["tests/e2e", "-v"]
+    if isinstance(pytest_args, str):
+        # Support space-separated string
+        pytest_args = pytest_args.split()
+
+    return E2EConfig(
+        enabled=data.get("enabled", False),
+        auto_run_interval_minutes=data.get("auto_run_interval_minutes", 30),
+        pytest_args=list(pytest_args),
+        allow_retry_once=data.get("allow_retry_once", True),
+        quarantine_file=data.get("quarantine_file", "tests/e2e/quarantine.txt"),
+        survive_restart=data.get("survive_restart", True),
+    )
 
 
 def _parse_triage_config(data: dict) -> TriageConfig:
@@ -399,6 +430,9 @@ class Config:
 
     # Triage issue configuration - label/milestone inheritance
     triage: TriageConfig = field(default_factory=TriageConfig)
+
+    # E2E async test runner configuration
+    e2e: E2EConfig = field(default_factory=E2EConfig)
 
     # Stale in-progress escalation threshold (0 = disabled)
     # If an issue has stale in-progress for K consecutive ticks, emit escalation event
@@ -835,6 +869,11 @@ class Config:
         triage_data = data.get("triage", {})
         if triage_data:
             config.triage = _parse_triage_config(triage_data)
+
+        # Parse e2e config
+        e2e_data = data.get("e2e", {})
+        if e2e_data:
+            config.e2e = _parse_e2e_config(e2e_data)
 
         return config
 

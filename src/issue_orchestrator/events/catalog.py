@@ -238,6 +238,15 @@ class EventName(str, Enum):
     # =========================================================================
     RESOLVER_DUPLICATE_EXTERNAL_ID = "resolver.duplicate_external_id"
 
+    # =========================================================================
+    # E2E Test Runner
+    # =========================================================================
+    E2E_AUTO_TRIGGERED = "e2e.auto_triggered"
+    E2E_STARTED = "e2e.started"
+    E2E_COMPLETED = "e2e.completed"
+    E2E_FAILED = "e2e.failed"
+    E2E_STOPPED = "e2e.stopped"
+
     def __str__(self) -> str:
         """Return the event name string for use in TraceEvent."""
         return self.value
