@@ -412,7 +412,7 @@ class SessionLauncher:
         self._write_worktree_note(
             worktree_path,
             session_name,
-            review.issue_number,
+            issue.number,
             worktree_info.branch_name,
             worktree_info,
         )
@@ -722,7 +722,7 @@ class SessionLauncher:
         self._write_worktree_note(
             worktree_path,
             session_name,
-            issue_number,
+            review.issue_number,
             worktree_info.branch_name,
             worktree_info,
         )
