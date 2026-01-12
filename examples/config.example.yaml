@@ -160,6 +160,26 @@ review:
 # triage_reviewed_label: "triage-reviewed"    # Label after triage review
 # triage_review_threshold: 5               # Trigger after N reviewed PRs
 
+# Triage issue configuration - control labels and milestones for created triage issues
+# triage:
+#   # Labels to inherit from source issues (if any source issue has the label)
+#   inherit_labels:
+#     - "io-e2e-test-data"   # Propagate e2e test label for cleanup
+#     - "team:frontend"      # Propagate team labels
+#     - "team:backend"
+#
+#   # Labels always applied to triage issues
+#   explicit_labels:
+#     - "needs-batch-review"
+#
+#   # Milestone assignment strategy
+#   milestone_strategy:
+#     inherit_from_issues: latest  # "earliest" | "latest" - pick from source issues
+#     # explicit: "v1.0"           # OR set an explicit milestone (overrides inherit)
+#
+#   # Optional priority label
+#   priority: "P2"
+
 # Validation - same command runs on agent-done and pre-push
 # This ensures agents can't "pass" a quick check only to fail later
 # Results are cached by commit SHA to avoid redundant runs

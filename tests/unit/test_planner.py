@@ -666,6 +666,123 @@ class TestPlanTriageIssueCreation:
         assert "code-reviewed" in body
         assert "triage-reviewed" in body
 
+    def test_triage_issue_inherits_labels_from_source(self):
+        """Planner inherits labels from source issues based on triage config."""
+        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.infra.config import TriageConfig, MilestoneStrategyConfig
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=2,
+        )
+        # Configure label inheritance
+        config.triage = TriageConfig(
+            inherit_labels=["io-e2e-test-data", "team:backend"],
+            explicit_labels=["needs-batch-review"],
+            milestone_strategy=MilestoneStrategyConfig(),
+            priority="P2",
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        # Source labels include one that should be inherited
+        triage_facts = TriageFacts(
+            pr_count=3,
+            threshold=2,
+            existing_triage_issue=None,
+            watch_label="code-reviewed",
+            prs=((1, "PR 1"), (2, "PR 2"), (3, "PR 3")),
+            source_labels=frozenset(["io-e2e-test-data", "other-label"]),
+            source_milestones=(),
+        )
+
+        snapshot = make_snapshot(triage_facts=triage_facts)
+        plan = planner.plan(snapshot)
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 1
+        action = create_actions[0]
+
+        # Should have agent label, explicit labels, inherited labels, and priority
+        assert "agent:triage" in action.labels
+        assert "needs-batch-review" in action.labels
+        assert "io-e2e-test-data" in action.labels  # Inherited (was in source_labels)
+        assert "team:backend" not in action.labels  # Not inherited (not in source_labels)
+        assert "P2" in action.labels  # Priority
+
+    def test_triage_issue_inherits_milestone_latest(self):
+        """Planner picks latest milestone from source issues."""
+        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.infra.config import TriageConfig, MilestoneStrategyConfig
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=2,
+        )
+        config.triage = TriageConfig(
+            milestone_strategy=MilestoneStrategyConfig(inherit_from_issues="latest"),
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        triage_facts = TriageFacts(
+            pr_count=2,
+            threshold=2,
+            existing_triage_issue=None,
+            watch_label="code-reviewed",
+            prs=((1, "PR 1"), (2, "PR 2")),
+            source_labels=frozenset(),
+            source_milestones=((1, "M1"), (3, "M3"), (2, "M2")),  # Unsorted
+        )
+
+        snapshot = make_snapshot(triage_facts=triage_facts)
+        plan = planner.plan(snapshot)
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 1
+        action = create_actions[0]
+
+        # Should pick highest milestone number (3 = M3)
+        assert action.milestone == 3
+
+    def test_triage_issue_inherits_milestone_earliest(self):
+        """Planner picks earliest milestone from source issues."""
+        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.infra.config import TriageConfig, MilestoneStrategyConfig
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=2,
+        )
+        config.triage = TriageConfig(
+            milestone_strategy=MilestoneStrategyConfig(inherit_from_issues="earliest"),
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        triage_facts = TriageFacts(
+            pr_count=2,
+            threshold=2,
+            existing_triage_issue=None,
+            watch_label="code-reviewed",
+            prs=((1, "PR 1"), (2, "PR 2")),
+            source_labels=frozenset(),
+            source_milestones=((3, "M3"), (1, "M1"), (2, "M2")),  # Unsorted
+        )
+
+        snapshot = make_snapshot(triage_facts=triage_facts)
+        plan = planner.plan(snapshot)
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 1
+        action = create_actions[0]
+
+        # Should pick lowest milestone number (1 = M1)
+        assert action.milestone == 1
+
 
 class TestPlanDiscoveredReworks:
     """Tests for Planner's _plan_discovered_reworks method.

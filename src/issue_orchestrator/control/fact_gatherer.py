@@ -18,6 +18,7 @@ Usage:
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
 
@@ -213,12 +214,38 @@ class FactGatherer:
         # Build PR info tuples for body generation
         pr_tuples = tuple((pr.number, pr.title) for pr in prs)
 
+        # Collect all labels from source PRs for label inheritance
+        all_labels: set[str] = set()
+        for pr in prs:
+            all_labels.update(pr.labels)
+
+        # Collect milestones from linked issues
+        # PRs don't have milestones directly - they're on the linked issues
+        # Extract issue numbers from PR bodies/titles and look up milestones
+        source_milestones: list[tuple[int, str]] = []
+        for pr in prs:
+            # Try to extract linked issue number from PR body or title
+            # Common patterns: "Fixes #123", "Closes #123", "#123", "issue-123"
+            matches = re.findall(r'#(\d+)', (pr.body or "") + " " + pr.title)
+            for match in matches:
+                issue_num = int(match)
+                try:
+                    issue = self.repository_host.get_issue(issue_num)
+                    if issue and issue.milestone and issue.milestone_number:
+                        milestone_tuple = (issue.milestone_number, issue.milestone)
+                        if milestone_tuple not in source_milestones:
+                            source_milestones.append(milestone_tuple)
+                except Exception:
+                    pass  # Ignore lookup errors
+
         return TriageFacts(
             pr_count=pr_count,
             threshold=threshold,
             existing_triage_issue=existing_triage_issue,
             watch_label=watch_label,
             prs=pr_tuples,
+            source_labels=frozenset(all_labels),
+            source_milestones=tuple(source_milestones),
         )
 
     def gather_cleanup_facts(

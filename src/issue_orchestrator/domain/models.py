@@ -502,6 +502,10 @@ class TriageFacts:
     existing_triage_issue: Optional[int] = None  # Existing open triage issue number
     watch_label: str = ""  # Label being watched
     prs: tuple[Any, ...] = field(default_factory=tuple)  # PR info for body generation
+    # Labels from source issues/PRs (for label inheritance)
+    source_labels: frozenset[str] = field(default_factory=frozenset)
+    # Milestones from source issues: tuple of (number, title) for milestone inheritance
+    source_milestones: tuple[tuple[int, str], ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

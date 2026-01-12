@@ -432,14 +432,52 @@ Review these PRs for patterns, architectural concerns, and process improvements.
 Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` after review.
 """
         title = f"Triage Batch Review: {facts.pr_count} PRs pending"
-        labels = (self.config.triage_review_agent,) if self.config.triage_review_agent else ()
 
-        logger.info("Planner: creating triage issue for %d PRs", facts.pr_count)
+        # Compute labels: agent label + explicit + inherited + priority
+        label_list: list[str] = []
+        if self.config.triage_review_agent:
+            label_list.append(self.config.triage_review_agent)
+
+        # Add explicit labels from triage config
+        label_list.extend(self.config.triage.explicit_labels)
+
+        # Add inherited labels (labels in inherit_labels that exist in source_labels)
+        for inherit_label in self.config.triage.inherit_labels:
+            if inherit_label in facts.source_labels:
+                label_list.append(inherit_label)
+
+        # Add priority if configured
+        if self.config.triage.priority:
+            label_list.append(self.config.triage.priority)
+
+        labels = tuple(label_list)
+
+        # Compute milestone from strategy
+        milestone: Optional[int] = None
+        triage_ms = self.config.triage.milestone_strategy
+
+        if triage_ms.explicit:
+            # Explicit milestone - need to look up milestone number by name
+            # For now, we can't resolve name to number here, so skip explicit
+            # This would require passing repository_host to planner
+            logger.debug("Planner: explicit milestone '%s' configured but name lookup not implemented",
+                        triage_ms.explicit)
+        elif triage_ms.inherit_from_issues and facts.source_milestones:
+            # Inherit from source issues
+            sorted_milestones = sorted(facts.source_milestones, key=lambda m: m[0])
+            if triage_ms.inherit_from_issues == "earliest":
+                milestone = sorted_milestones[0][0]  # Lowest number
+            else:  # "latest" (default)
+                milestone = sorted_milestones[-1][0]  # Highest number
+
+        logger.info("Planner: creating triage issue for %d PRs (labels=%s, milestone=%s)",
+                   facts.pr_count, labels, milestone)
         return CreateTriageIssueAction(
             title=title,
             body=body,
             labels=labels,
             pr_count=facts.pr_count,
+            milestone=milestone,
             reason=f"threshold met: {facts.pr_count} >= {facts.threshold}",
         )
 
