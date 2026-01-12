@@ -13,7 +13,7 @@ filtering:
   label: test-data
 
 # control_api_port: dynamically assigned
-e2e_pr_labels: ["test-data"]
+e2e_pr_labels: ["io-e2e-test-data"]
 
 agents:
   # Agent that does nothing - will timeout

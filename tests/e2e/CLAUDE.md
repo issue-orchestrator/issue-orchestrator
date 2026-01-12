@@ -18,20 +18,19 @@ pytest tests/ --ignore=tests/e2e/       # Skip e2e tests
 
 ## Test Isolation
 
-Tests use `test-data` label to isolate test issues:
-- `create_test_issues()` creates issues with this label
-- `cleanup_test_issues()` closes all issues with this label
-- Filter with `--filter-label test-data`
+Tests use `io-e2e-test-data` label to isolate test artifacts:
+- Issues and PRs created by e2e tests get this label
+- Cleanup only targets items with this explicit label
+- No branch pattern matching (avoids accidentally deleting legitimate PRs)
 
 ## E2E Reconciliation
 
-Before running tests, the `e2e_reconciliation_at_session_start` fixture cleans up ALL artifacts from previous (possibly crashed) runs:
+Before running tests, the `e2e_reconciliation_at_session_start` fixture cleans up artifacts from previous runs:
 
 1. Local worktrees in `/tmp/e2e-worktrees/`
 2. Stale tmux sessions
-3. Remote branches matching e2e patterns
-4. Open PRs with test labels or e2e branch patterns
-5. Open issues with `test-data` label
+3. PRs and branches with `io-e2e-test-data` label
+4. Issues with `io-e2e-test-data` label
 
 This ensures deterministic test runs regardless of previous state.
 
