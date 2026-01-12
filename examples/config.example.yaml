@@ -127,9 +127,31 @@ setup_worktree:
 # gh_write_verify_backoff: 1.5
 # gh_write_verify_jitter_ms: 0
 
-# E2E test harness settings (used by tests/e2e)
+# E2E async test runner - runs E2E tests locally with dashboard visibility
+# Results stored in .issue-orchestrator/e2e.db (SQLite)
 e2e:
-  cleanup_command_timeout_seconds: 120  # Max wait for gh cleanup commands before timing out
+  enabled: false                              # Enable async E2E runner
+  auto_run_interval_minutes: 30               # Min interval between auto runs (0 = manual only)
+  pytest_args: ["tests/e2e", "-v"]            # Arguments to pytest
+  allow_retry_once: true                      # Retry failing tests once (reduces flakiness)
+  quarantine_file: "tests/e2e/quarantine.txt" # Path to known-flaky test list
+  survive_restart: true                       # Let E2E worker continue if orchestrator restarts
+
+# E2E test structure for resumability:
+# Tests in tests/e2e/ (configured via pytest_args) resume from where they left off
+# if the orchestrator restarts mid-run. Structure tests as discrete functions:
+#
+#   # tests/e2e/test_workflow.py
+#   def test_create_issue(): ...    # Good - each is a resumable checkpoint
+#   def test_create_pr(): ...
+#   def test_review_cycle(): ...
+#
+#   def test_entire_workflow(): ... # Bad - monolithic, no partial progress
+
+# Quarantine file format (tests/e2e/quarantine.txt):
+# # Known flaky tests - excluded from required runs
+# tests/e2e/test_slow_network.py::test_timeout_handling
+# tests/e2e/test_race_condition.py::test_concurrent_updates
 
 # Custom comment headings (for tooling integration)
 comment_headings:

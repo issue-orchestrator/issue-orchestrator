@@ -165,6 +165,59 @@ async def favicon():
     return Response(status_code=204)
 
 
+def _get_e2e_status(config) -> dict:
+    """Get E2E runner status for dashboard display.
+
+    Returns dict with:
+        enabled: bool
+        running: bool
+        last_run: dict | None
+        failed_tests: list
+        signal_score: dict | None
+    """
+    if not config:
+        return {"enabled": False, "running": False}
+
+    from ..infra.e2e_runner import get_e2e_runner_manager
+    from ..infra.e2e_db import E2EDB
+
+    orchestrator_id = config.repo or str(config.repo_root)
+
+    # Check if E2E is enabled
+    if not config.e2e.enabled:
+        return {"enabled": False, "running": False}
+
+    # Get process status
+    runner = get_e2e_runner_manager()
+    proc_status = runner.status(orchestrator_id)
+
+    # Get DB data
+    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
+    last_run = None
+    failed_tests = []
+    signal_score = None
+
+    if db_path.exists():
+        try:
+            db = E2EDB(db_path)
+            run = db.latest_run(orchestrator_id)
+            if run:
+                last_run = run.to_dict()
+                failed_tests = [t.to_dict() for t in db.get_failed_tests(run.id)]
+            signal_score = db.compute_signal_score(orchestrator_id)
+        except Exception as e:
+            logger.warning("Failed to read E2E DB: %s", e)
+
+    return {
+        "enabled": True,
+        "running": proc_status["running"],
+        "pid": proc_status.get("pid"),
+        "last_run": last_run,
+        "failed_tests": failed_tests,
+        "signal_score": signal_score,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
@@ -438,6 +491,9 @@ async def dashboard(
     # Get agents for the create issue form
     agents = config.agents if config else {}
 
+    # Get E2E status
+    e2e_status = _get_e2e_status(config)
+
     html = template.render(
         issues=issues,
         work_items=work_items,
@@ -457,6 +513,7 @@ async def dashboard(
         queue_total=queue_total,
         queue_refresh_seconds=config.queue_refresh_seconds if config else 600,
         agents=agents,
+        e2e_status=e2e_status,
     )
     total_elapsed = time.time() - request_start
     logger.info("[dashboard] Total request time: %.2fs", total_elapsed)

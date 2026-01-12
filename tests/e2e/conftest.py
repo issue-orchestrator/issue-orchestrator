@@ -493,13 +493,40 @@ def e2e_orchestrator(
     proc = OrchestratorProcess(e2e_session_config, e2e_project_root, tmux_session=e2e_tmux_session)
     max_issues = int(os.environ.get("E2E_MAX_ISSUES", "50"))
     proc.start(max_issues=max_issues, extra_args=["--label", filter_label])
-    time.sleep(2)
 
-    if not proc.is_running():
+    # Wait for orchestrator to be ready with retry logic
+    max_retries = 10
+    retry_delay = 1.0
+    for attempt in range(max_retries):
+        if not proc.is_running():
+            # Process died - get logs for diagnostics
+            stdout, stderr = proc.stop()
+            log_contents = ""
+            if proc._orchestrator_log_file and proc._orchestrator_log_file.exists():
+                log_contents = f"\nLog file ({proc._orchestrator_log_file}):\n{proc._orchestrator_log_file.read_text()[-2000:]}"
+            raise RuntimeError(
+                f"Orchestrator process exited unexpectedly.\n"
+                f"stdout: {stdout}\nstderr: {stderr}{log_contents}"
+            )
+
+        if proc._check_api_running():
+            print(f"\n[E2E] Orchestrator API ready (pid={proc.process.pid}, attempt {attempt + 1})")
+            break
+
+        if attempt < max_retries - 1:
+            print(f"  [E2E] Waiting for API to be ready (attempt {attempt + 1}/{max_retries})...")
+            time.sleep(retry_delay)
+    else:
+        # API never became ready
         stdout, stderr = proc.stop()
-        raise RuntimeError(f"Orchestrator failed to start.\nstdout: {stdout}\nstderr: {stderr}")
+        log_contents = ""
+        if proc._orchestrator_log_file and proc._orchestrator_log_file.exists():
+            log_contents = f"\nLog file ({proc._orchestrator_log_file}):\n{proc._orchestrator_log_file.read_text()[-2000:]}"
+        raise RuntimeError(
+            f"Orchestrator API did not become ready after {max_retries} attempts.\n"
+            f"stdout: {stdout}\nstderr: {stderr}{log_contents}"
+        )
 
-    print(f"\n[E2E] Orchestrator running (pid={proc.process.pid})")
     yield proc
     print(f"\n[E2E TEARDOWN] Stopping orchestrator...")
     proc.stop()
