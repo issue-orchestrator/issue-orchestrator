@@ -233,7 +233,8 @@ class SubprocessPlugin:
         proc = subprocess.Popen(
             ["/bin/bash", "-lc", full_cmd],
             cwd=str(working_dir),
-            stdin=subprocess.PIPE,
+            # Avoid hanging on tools that wait for stdin; we run in non-interactive mode.
+            stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             text=True,
