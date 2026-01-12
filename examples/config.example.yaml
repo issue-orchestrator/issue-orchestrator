@@ -99,7 +99,7 @@ setup_worktree:
 #   milestone: "v1.0"             # Only process issues in this milestone
 #   milestones: ["M1", "M2"]      # Or multiple milestones (list or comma-separated)
 #   issue: 123                    # Only process this specific issue number
-#   exclude_labels: ["io-e2e-test-data"] # Exclude issues with any of these labels
+#   exclude_labels: ["io-e2e-test-data", "test-data"] # Exclude e2e test issues
 #   fetch_limit: 100              # Max issues to fetch per API call
 #   max_to_start: 0               # Stop after starting N issues (0 = unlimited)
 
