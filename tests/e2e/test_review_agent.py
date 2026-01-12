@@ -30,47 +30,22 @@ logger = logging.getLogger(__name__)
 @pytest.mark.e2e
 @pytest.mark.timeout(600)  # 10 minutes - dev agent + review agent
 class TestReviewAgentExecution:
-    """Test the full dev + review agent pipeline.
+    """Test the dev + review agent pipeline in smaller checkpoints."""
 
-    This test verifies:
-    1. Dev agent completes and creates a PR
-    2. Review agent is triggered
-    3. Review agent approves (adds code-reviewed label)
-    """
-
-    @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=150)
-    async def test_review_agent_approves_pr(
+    async def _create_issue_and_wait_for_pr(
         self,
-        e2e_orchestrator,
+        flow: E2EFlow,
         orchestrator_watcher,
-        test_issue_factory,
-        repo_name: str,
-        e2e_ui_mode: str,
-    ):
-        """Verify dev agent creates PR and review agent approves it.
-
-        This is the happy path test for the full pipeline:
-        1. Create issue with agent:backend label
-        2. Wait for dev agent to complete with PR
-        3. Wait for review agent to run and approve
-        """
-        logger.info("Testing full pipeline: dev agent -> review agent")
-
-        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, fail_on_blocked_failed=True)
-
-        # Create issue - test_issue_factory adds agent:backend label
-        issue = test_issue_factory("[E2E] Review agent test - happy path")
+        issue_title: str,
+    ) -> tuple[int, int]:
+        issue = flow.create_issue(issue_title, ["agent:e2e-test"])[0]
         issue_number = int(issue.stable_id())
         logger.info("Created issue #%d for review agent test", issue_number)
 
-        # Phase 1: Wait for dev agent to complete
-        logger.info("Phase 1: Waiting for dev agent to complete...")
         await flow.issue_seen(issue, timeout_s=60)
         await flow.session_started(issue, timeout_s=60)
         logger.info("Dev agent session started for issue #%d", issue_number)
 
-        # Wait for session completion with PR
         from tests.e2e.fixtures.wait_helpers import wait_for_session_completed
         completion_event = await wait_for_session_completed(
             orchestrator_watcher,
@@ -80,29 +55,59 @@ class TestReviewAgentExecution:
         )
         pr_url = completion_event.get("payload", {}).get("pr_url")
         assert pr_url, f"Dev agent completed but no PR created. Event: {completion_event}"
-        logger.info("Phase 1 complete: Dev agent created PR: %s", pr_url)
-
-        # Extract PR number from URL (e.g., https://github.com/owner/repo/pull/123 -> 123)
         pr_number = int(pr_url.rstrip("/").split("/")[-1])
+        logger.info("Dev agent created PR: %s", pr_url)
+        return issue_number, pr_number
 
-        # Verify pr-pending label (dev agent finished)
-        await poll_issue_label(repo_name, issue_number, "pr-pending", backoff=(1, 2, 4, 8))
-        logger.info("pr-pending label verified on issue #%d", issue_number)
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(300)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=150)
+    async def test_dev_agent_creates_pr(
+        self,
+        e2e_orchestrator,
+        orchestrator_watcher,
+        e2e_flow,
+        e2e_ui_mode: str,
+    ):
+        """Verify dev agent creates a PR and sets pr-pending."""
+        logger.info("Testing dev agent PR creation")
+        flow = e2e_flow
+        flow.fail_on_blocked_failed = True
 
-        # Phase 2: Wait for review agent to complete
-        logger.info("Phase 2: Waiting for review agent on PR #%d...", pr_number)
+        issue_number, pr_number = await self._create_issue_and_wait_for_pr(
+            flow,
+            orchestrator_watcher,
+            "[E2E] Review agent test - dev PR created",
+        )
 
-        # The review agent adds code-reviewed to the PR (not the issue)
-        # Use direct polling - more reliable than SSE for cross-agent transitions
+        await poll_issue_label(flow.repo, issue_number, "pr-pending", backoff=(1, 2, 4, 8))
+        logger.info("pr-pending label verified on issue #%d (PR #%d)", issue_number, pr_number)
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(360)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=250, system_gh_activity_limit=150)
+    async def test_review_agent_approves_pr(
+        self,
+        e2e_orchestrator,
+        orchestrator_watcher,
+        e2e_flow,
+        e2e_ui_mode: str,
+    ):
+        """Verify review agent applies the approval label to the PR."""
+        logger.info("Testing review agent approval")
+        flow = e2e_flow
+        flow.fail_on_blocked_failed = True
+
+        issue_number, pr_number = await self._create_issue_and_wait_for_pr(
+            flow,
+            orchestrator_watcher,
+            "[E2E] Review agent test - review approval",
+        )
+
         await poll_issue_label(
-            repo_name,
+            flow.repo,
             pr_number,  # Poll the PR, not the issue
             "code-reviewed",
-            backoff=(2, 4, 8, 16, 32, 64, 64, 64),  # Up to ~4 min with extra retries
+            backoff=(2, 4, 8, 16, 32, 64, 64, 64),
         )
-        logger.info("Phase 2 complete: Review agent approved PR #%d for issue #%d", pr_number, issue_number)
-
-        logger.info(
-            "SUCCESS: Full pipeline verified for issue #%d - dev agent -> PR -> review agent -> approved",
-            issue_number,
-        )
+        logger.info("Review agent approved PR #%d for issue #%d", pr_number, issue_number)

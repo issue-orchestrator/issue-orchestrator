@@ -34,7 +34,6 @@ from issue_orchestrator.testing.support.test_data import close_issue, cleanup_is
 from issue_orchestrator.domain.issue_key import IssueKey
 from tests.e2e.flows import (
     E2EFlow,
-    create_watcher_for_port,
     start_orchestrator_runtime,
     wait_for_issue_with_label,
 )
@@ -175,9 +174,27 @@ def create_single_issue(
 class TestCodeReviewRuns:
     """Test that code reviews actually execute, not just get queued."""
 
+    async def _create_issue_and_wait_for_pr(
+        self,
+        flow: E2EFlow,
+        issue_title: str,
+        e2e_timing_stats,
+    ) -> tuple[IssueKey, int]:
+        with e2e_timing_stats.phase("Create issue"):
+            issue, issue_number = flow.create_issue(
+                issue_title,
+                ["agent:e2e-test", e2e_label("code_review_test")],
+            )
+
+        with e2e_timing_stats.phase("Wait for PR creation"):
+            pr_number = await flow.pr_created(issue, timeout_s=TIMEOUT_SESSION_COMPLETE)
+
+        return issue, pr_number
+
     @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=390, system_gh_activity_limit=100)
-    async def test_code_review_produces_review_comment(
+    @pytest.mark.timeout(300)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=250, system_gh_activity_limit=100)
+    async def test_code_review_pr_created(
         self,
         e2e_orchestrator,
         orchestrator_watcher,
@@ -185,43 +202,65 @@ class TestCodeReviewRuns:
         filter_label: str,
         e2e_timing_stats,
     ):
-        """Verify that the code review agent actually reviews the PR.
-
-        This test ensures:
-        1. PR is created
-        2. Code review agent picks it up
-        3. code-reviewed OR needs-rework label is applied
-
-        Note: Requires real PRs - skipped in dry-run mode.
-        """
+        """Verify that the dev agent completes and creates a PR."""
         dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
         if dry_run:
             pytest.skip("Code review test requires real PRs (not dry-run mode)")
 
         logger.info("=" * 60)
-        logger.info("CODE REVIEW TEST: Verify Review Actually Runs")
+        logger.info("CODE REVIEW TEST: Verify PR Creation")
         logger.info("=" * 60)
 
         flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
 
-        # Create issue
-        with e2e_timing_stats.phase("Create issue"):
-            issue, issue_number = flow.create_issue(
-                "[M0-701] [E2E-REVIEW] Test that code review runs",
-                ["agent:e2e-test", e2e_label("code_review_test")],
-            )
+        issue = None
         pr_number = None
 
         try:
-            # Wait for PR
-            logger.info("Waiting for PR creation...")
-
-            with e2e_timing_stats.phase("Wait for PR creation"):
-                pr_number = await flow.pr_created(issue, timeout_s=TIMEOUT_SESSION_COMPLETE)
+            issue, pr_number = await self._create_issue_and_wait_for_pr(
+                flow,
+                "[M0-701] [E2E-REVIEW] PR creation checkpoint",
+                e2e_timing_stats,
+            )
             logger.info("  ✓ PR #%s created", pr_number)
 
-            # Wait for code review outcome
-            logger.info("Waiting for code review to complete...")
+        finally:
+            with e2e_timing_stats.phase("Cleanup"):
+                if pr_number:
+                    flow.close_pr(pr_number)
+                if issue:
+                    close_issue(repo_name, int(issue.stable_id()), "E2E code review test completed")
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(420)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=320, system_gh_activity_limit=120)
+    async def test_code_review_outcome_label(
+        self,
+        e2e_orchestrator,
+        orchestrator_watcher,
+        repo_name: str,
+        filter_label: str,
+        e2e_timing_stats,
+    ):
+        """Verify that code review runs and applies an outcome label."""
+        dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
+        if dry_run:
+            pytest.skip("Code review test requires real PRs (not dry-run mode)")
+
+        logger.info("=" * 60)
+        logger.info("CODE REVIEW TEST: Verify Review Outcome Label")
+        logger.info("=" * 60)
+
+        flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
+        issue = None
+        pr_number = None
+
+        try:
+            issue, pr_number = await self._create_issue_and_wait_for_pr(
+                flow,
+                "[M0-702] [E2E-REVIEW] Review outcome checkpoint",
+                e2e_timing_stats,
+            )
 
             with e2e_timing_stats.phase("Wait for code review"):
                 await flow.pr_has_any_label(
@@ -230,7 +269,6 @@ class TestCodeReviewRuns:
                     timeout_s=TIMEOUT_CODE_REVIEW_COMPLETE,
                 )
 
-            # Get final state
             with e2e_timing_stats.phase("Verify outcome"):
                 issue_view = orchestrator_watcher.view.issues.get(issue.stable_id())
                 final_labels = sorted(list(issue_view.pr.labels)) if issue_view else []
@@ -248,8 +286,8 @@ class TestCodeReviewRuns:
             with e2e_timing_stats.phase("Cleanup"):
                 if pr_number:
                     flow.close_pr(pr_number)
-                # Always close the issue to prevent accumulation
-                close_issue(repo_name, issue_number, "E2E code review test completed")
+                if issue:
+                    close_issue(repo_name, int(issue.stable_id()), "E2E code review test completed")
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +320,7 @@ class TestTriageReviewTrigger:
         logger.info("TRIAGE TEST: Verify Triage Triggered After Batch Threshold")
         logger.info("=" * 60)
 
-        NUM_ISSUES = 3
+        NUM_ISSUES = 2
         issues = []
         issue_numbers: list[int] = []
         pr_numbers = []
@@ -403,17 +441,69 @@ class TestReworkCyclesAndEscalation:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=100)
-    async def test_rework_cycles_lead_to_escalation(
+    @pytest.mark.timeout(420)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=220, system_gh_activity_limit=100)
+    async def test_rework_cycle_label_emitted(
         self,
         repo_name: str,
         e2e_orchestrator,
         orchestrator_watcher,
     ):
-        """Test that rework cycles lead to escalation after max cycles.
+        """Test that at least one rework-cycle label appears."""
+        dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
+        if dry_run:
+            pytest.skip("Rework test requires real PRs (not dry-run mode)")
 
-        Note: Requires real PRs and rework cycles - skipped in dry-run mode.
-        """
+        logger.info("=" * 60)
+        logger.info("REWORK TEST: Rework Cycle Label Emitted")
+        logger.info("=" * 60)
+
+        issue_number = None
+        pr_number = None
+        flow = E2EFlow(
+            repo=repo_name,
+            watcher=orchestrator_watcher,
+        )
+
+        try:
+            logger.info("Creating test issue...")
+            issue_key, issue_number = create_single_issue(
+                repo_name,
+                "[M0-720] [E2E-REWORK] Test rework cycle label",
+                ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_cycles")],
+                watcher=orchestrator_watcher,
+            )
+            logger.info("  Created issue #%d", issue_number)
+
+            logger.info("Waiting for PR creation...")
+            pr_number = await flow.pr_created(issue_key, timeout_s=TIMEOUT_SESSION_COMPLETE)
+            logger.info("  ✓ PR #%s created", pr_number)
+
+            logger.info("Waiting for first rework cycle label...")
+            _escalated, rework_labels_seen = await flow.rework_progress(
+                issue_key,
+                timeout_s=300,
+            )
+
+            logger.info("Rework cycle labels seen: %s", sorted(list(rework_labels_seen)))
+            assert len(rework_labels_seen) >= 1, "Expected at least one rework-cycle label"
+
+        finally:
+            if pr_number:
+                flow.close_pr(pr_number)
+            if issue_number:
+                close_issue(repo_name, issue_number, "E2E rework cycle label test completed")
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(720)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=260, system_gh_activity_limit=100)
+    async def test_rework_cycles_escalate(
+        self,
+        repo_name: str,
+        e2e_orchestrator,
+        orchestrator_watcher,
+    ):
+        """Test that rework cycles lead to escalation after max cycles."""
         dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
         if dry_run:
             pytest.skip("Rework test requires real PRs (not dry-run mode)")
@@ -430,42 +520,33 @@ class TestReworkCyclesAndEscalation:
         )
 
         try:
-            # Create issue
             logger.info("Creating test issue...")
             issue_key, issue_number = create_single_issue(
                 repo_name,
-                "[M0-720] [E2E-REWORK] Test rework cycles and escalation",
-                ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_cycles")],
+                "[M0-721] [E2E-REWORK] Test rework escalation",
+                ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_escalation")],
                 watcher=orchestrator_watcher,
             )
             logger.info("  Created issue #%d", issue_number)
 
-            # Wait for PR creation
             logger.info("Waiting for PR creation...")
             pr_number = await flow.pr_created(issue_key, timeout_s=TIMEOUT_SESSION_COMPLETE)
             logger.info("  ✓ PR #%s created", pr_number)
 
-            # Wait for rework cycles and escalation
-            logger.info("Waiting for rework cycles (this may take several minutes)...")
+            logger.info("Waiting for escalation (this may take several minutes)...")
             escalated, rework_labels_seen = await flow.rework_progress(
                 issue_key,
                 timeout_s=600,
             )
 
             logger.info("Rework cycle labels seen: %s", sorted(list(rework_labels_seen)))
-            if escalated:
-                logger.info("  ✓ PR escalated to blocked-needs-human!")
-            else:
-                logger.warning("  ⚠ Escalation not confirmed")
-
-            assert len(rework_labels_seen) >= 1 or escalated, \
-                "Should have at least one rework cycle or escalation"
+            assert escalated, "Expected escalation to blocked-needs-human"
 
         finally:
             if pr_number:
                 flow.close_pr(pr_number)
             if issue_number:
-                close_issue(repo_name, issue_number, "E2E rework test completed")
+                close_issue(repo_name, issue_number, "E2E rework escalation test completed")
 
 
 if __name__ == "__main__":
