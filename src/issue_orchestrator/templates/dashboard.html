@@ -1181,7 +1181,7 @@
                  oncontextmenu="showContextMenu(event, this)">
                 <span class="issue-num">
                     {% if issue.issue_url %}
-                    <a href="{{ issue.issue_url }}" target="_blank" onclick="event.stopPropagation()" aria-label="Open issue #{{ issue.issue_number }} on GitHub">#{{ issue.issue_number }}</a>
+                    <a href="{{ issue.issue_url }}" target="_blank" onclick="event.stopPropagation()" aria-label="Open issue #{{ issue.issue_number }} on GitHub" title="Open issue #{{ issue.issue_number }} on GitHub">#{{ issue.issue_number }}</a>
                     {% else %}
                     #{{ issue.issue_number }}
                     {% endif %}
