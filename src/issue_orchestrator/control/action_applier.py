@@ -655,13 +655,14 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 title=action.title,
                 body=action.body,
                 labels=list(action.labels),
+                milestone=action.milestone,
             )
 
             issue_number = result.get("number") if result else None
             if issue_number:
                 logger.info(
-                    "[APPLIER] Created triage issue #%d for %d PRs",
-                    issue_number, action.pr_count
+                    "[APPLIER] Created triage issue #%d for %d PRs (milestone=%s)",
+                    issue_number, action.pr_count, action.milestone
                 )
                 self._emit_issue_labels_changed(
                     issue_number,

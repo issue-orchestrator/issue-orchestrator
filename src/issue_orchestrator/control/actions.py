@@ -214,6 +214,7 @@ class CreateTriageIssueAction(Action):
     body: str = ""
     labels: tuple[str, ...] = field(default_factory=tuple)
     pr_count: int = 0
+    milestone: Optional[int] = None  # Milestone number to assign
     action_type: ActionType = field(default=ActionType.CREATE_TRIAGE_ISSUE, init=False)
 
 

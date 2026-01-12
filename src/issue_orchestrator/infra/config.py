@@ -22,7 +22,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'github_token', 'github_token_env', 'github_api_url',
     'github_http_timeout_seconds', 'github_cache_ttl_seconds', 'github_required_scopes', 'github_allowed_scopes',
     'filtering',  # Issue filtering options (label, milestone, exclude_labels, etc.)
-    'e2e_pr_labels', 'review', 'cleanup', 'validation',
+    'e2e_pr_labels', 'review', 'cleanup', 'validation', 'triage',
     'isolation', 'setup_worktree', 'milestone_sort',
     'milestone_sort_config', 'foundation_milestone',
     'state_file', 'pre_push_hook', 'enforce_hooks', 'queue_refresh_seconds',
@@ -176,6 +176,59 @@ class FilteringConfig:
         if self.milestone:
             return [self.milestone]
         return []
+
+
+@dataclass
+class MilestoneStrategyConfig:
+    """Milestone assignment strategy for triage issues."""
+    inherit_from_issues: Optional[str] = "latest"  # "earliest" | "latest" | None
+    explicit: Optional[str] = None  # Explicit milestone name
+
+
+@dataclass
+class TriageConfig:
+    """Triage issue configuration.
+
+    Controls how labels and milestones are assigned to orchestrator-created
+    triage issues.
+    """
+    # Labels to inherit from source issues (if any source issue has the label)
+    inherit_labels: list[str] = field(default_factory=list)
+
+    # Labels always applied to triage issues
+    explicit_labels: list[str] = field(default_factory=list)
+
+    # Milestone assignment strategy
+    milestone_strategy: MilestoneStrategyConfig = field(default_factory=MilestoneStrategyConfig)
+
+    # Optional explicit priority label
+    priority: Optional[str] = None
+
+
+def _parse_triage_config(data: dict) -> TriageConfig:
+    """Parse triage section from YAML data."""
+    # Parse lists (support comma-separated strings)
+    inherit_labels = data.get("inherit_labels") or []
+    if isinstance(inherit_labels, str):
+        inherit_labels = [lbl.strip() for lbl in inherit_labels.split(",") if lbl.strip()]
+
+    explicit_labels = data.get("explicit_labels") or []
+    if isinstance(explicit_labels, str):
+        explicit_labels = [lbl.strip() for lbl in explicit_labels.split(",") if lbl.strip()]
+
+    # Parse milestone_strategy
+    ms_data = data.get("milestone_strategy", {})
+    milestone_strategy = MilestoneStrategyConfig(
+        inherit_from_issues=ms_data.get("inherit_from_issues", "latest"),
+        explicit=ms_data.get("explicit"),
+    )
+
+    return TriageConfig(
+        inherit_labels=list(inherit_labels),
+        explicit_labels=list(explicit_labels),
+        milestone_strategy=milestone_strategy,
+        priority=data.get("priority"),
+    )
 
 
 def _parse_filtering_config(data: dict) -> FilteringConfig:
@@ -343,6 +396,9 @@ class Config:
 
     # Isolation configuration - how agents are sandboxed
     isolation: IsolationConfig = field(default_factory=IsolationConfig)
+
+    # Triage issue configuration - label/milestone inheritance
+    triage: TriageConfig = field(default_factory=TriageConfig)
 
     # Stale in-progress escalation threshold (0 = disabled)
     # If an issue has stale in-progress for K consecutive ticks, emit escalation event
@@ -515,6 +571,15 @@ class Config:
                 "allow_unsupported_agents": self.dangerous.allow_unsupported_agents,
             },
             "stale_escalation_ticks": self.stale_escalation_ticks,
+            "triage": {
+                "inherit_labels": list(self.triage.inherit_labels),
+                "explicit_labels": list(self.triage.explicit_labels),
+                "milestone_strategy": {
+                    "inherit_from_issues": self.triage.milestone_strategy.inherit_from_issues,
+                    "explicit": self.triage.milestone_strategy.explicit,
+                },
+                "priority": self.triage.priority,
+            },
         }
 
     @classmethod
@@ -765,6 +830,11 @@ class Config:
 
         # Stale in-progress escalation threshold (0 = disabled)
         config.stale_escalation_ticks = data.get("stale_escalation_ticks", 0)
+
+        # Parse triage config
+        triage_data = data.get("triage", {})
+        if triage_data:
+            config.triage = _parse_triage_config(triage_data)
 
         return config
 

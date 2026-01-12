@@ -1241,3 +1241,115 @@ agents:
         config = Config.load(config_file)
 
         assert config.e2e_pr_labels == []
+
+
+class TestTriageConfig:
+    """Tests for triage issue configuration."""
+
+    def test_triage_config_defaults(self):
+        """TriageConfig should have sensible defaults."""
+        config = Config()
+
+        assert config.triage.inherit_labels == []
+        assert config.triage.explicit_labels == []
+        assert config.triage.milestone_strategy.inherit_from_issues == "latest"
+        assert config.triage.milestone_strategy.explicit is None
+        assert config.triage.priority is None
+
+    def test_triage_config_from_yaml(self, tmp_path):
+        """Test loading triage config from YAML."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  inherit_labels:
+    - "io-e2e-test-data"
+    - "team:backend"
+  explicit_labels:
+    - "needs-batch-review"
+  milestone_strategy:
+    inherit_from_issues: earliest
+  priority: "P1"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.triage.inherit_labels == ["io-e2e-test-data", "team:backend"]
+        assert config.triage.explicit_labels == ["needs-batch-review"]
+        assert config.triage.milestone_strategy.inherit_from_issues == "earliest"
+        assert config.triage.priority == "P1"
+
+    def test_triage_config_explicit_milestone(self, tmp_path):
+        """Test explicit milestone overrides inherit strategy."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  milestone_strategy:
+    explicit: "v2.0"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.triage.milestone_strategy.explicit == "v2.0"
+        # inherit_from_issues still has default but explicit takes precedence in planner
+        assert config.triage.milestone_strategy.inherit_from_issues == "latest"
+
+    def test_triage_config_comma_separated_labels(self, tmp_path):
+        """Test that comma-separated label strings are parsed."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  inherit_labels: "label1, label2, label3"
+  explicit_labels: "explicit1"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.triage.inherit_labels == ["label1", "label2", "label3"]
+        assert config.triage.explicit_labels == ["explicit1"]
+
+    def test_triage_config_empty_section_uses_defaults(self, tmp_path):
+        """Test that empty triage section uses defaults."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage: {}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.triage.inherit_labels == []
+        assert config.triage.explicit_labels == []
+        assert config.triage.milestone_strategy.inherit_from_issues == "latest"
+        assert config.triage.priority is None
+
+    def test_triage_config_included_in_to_event_dict(self):
+        """triage config should be included in to_event_dict output."""
+        config = Config()
+        config.triage.inherit_labels.append("test-label")
+        config.triage.explicit_labels.append("explicit-label")
+
+        result = config.to_event_dict()
+
+        assert "triage" in result
+        assert result["triage"]["inherit_labels"] == ["test-label"]
+        assert result["triage"]["explicit_labels"] == ["explicit-label"]
+        assert result["triage"]["milestone_strategy"]["inherit_from_issues"] == "latest"
