@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 # Built-in plugin mapping
 BUILTIN_PLUGINS = {
     "tmux": "issue_orchestrator.execution.terminal_tmux:TmuxPlugin",
+    "subprocess": "issue_orchestrator.execution.terminal_subprocess:SubprocessPlugin",
 }
 
 # UI mode to plugin mapping (backwards compatibility)
