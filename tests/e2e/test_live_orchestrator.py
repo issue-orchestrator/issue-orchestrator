@@ -175,6 +175,6 @@ class TestCleanup:
     @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=50)
     def test_cleanup_test_prs(self, repo_name: str):
         """Clean up any test PRs left behind including review-labeled PRs."""
-        labels_to_cleanup = ["test-data", "needs-code-review", "code-reviewed"]
+        labels_to_cleanup = ["io-e2e-test-data", "needs-code-review", "code-reviewed"]
         cleaned = cleanup_test_prs(repo_name, labels_to_cleanup)
         logger.info("✓ Cleaned up %d test PRs", cleaned)

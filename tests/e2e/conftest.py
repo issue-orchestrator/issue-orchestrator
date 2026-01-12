@@ -377,7 +377,7 @@ def e2e_session_config(
     config.worktree_base = e2e_worktree_base
     config.ui_mode = e2e_ui_mode
     config.max_concurrent_sessions = 4
-    config.filter_label = "test-data"
+    config.filter_label = "io-e2e-test-data"
     config.github_token_env = env_token_name()
     config.queue_refresh_seconds = 600
     env_port = os.environ.get("E2E_CONTROL_API_PORT")
@@ -385,7 +385,7 @@ def e2e_session_config(
     # Auto-select web port to avoid conflict with running orchestrator (default 8080)
     env_web_port = os.environ.get("E2E_WEB_PORT")
     config.web_port = int(env_web_port) if env_web_port else find_free_port()
-    config.e2e_pr_labels = ["test-data"]
+    config.e2e_pr_labels = ["io-e2e-test-data"]
     config.code_review_agent = "agent:script-review"
     config.code_review_label = "needs-code-review"
     config.code_reviewed_label = "code-reviewed"
@@ -465,13 +465,13 @@ def e2e_issues(repo_name: str) -> Generator[dict[str, int], None, None]:
         "simple_task": create_issue(
             repo_name,
             "[E2E] Simple task",
-            ["agent:e2e-test", "test-data"],
+            ["agent:e2e-test", "io-e2e-test-data"],
             body="A simple task for basic e2e testing.",
         ),
         "will_block": create_issue(
             repo_name,
             "[E2E] Task that blocks",
-            ["agent:e2e-test", "test-data"],
+            ["agent:e2e-test", "io-e2e-test-data"],
             body="This task should end up blocked.",
         ),
     }
@@ -666,7 +666,7 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
     config.worktree_base = tmp_path / "worktrees"
     config.ui_mode = e2e_ui_mode
     config.max_concurrent_sessions = 1
-    config.filter_label = "test-data"
+    config.filter_label = "io-e2e-test-data"
     config.github_token_env = env_token_name()
 
     config.agents = {
@@ -713,7 +713,7 @@ def single_test_issue(repo_name: str) -> Generator[dict, None, None]:
     issue_number = create_issue(
         repo=repo_name,
         title=title,
-        labels=["agent:e2e-test", "test-data"],
+        labels=["agent:e2e-test", "io-e2e-test-data"],
         body="This is automated test issue 0 for e2e testing.\n\nExpected: Agent completes quickly.",
     )
     issue_data = {

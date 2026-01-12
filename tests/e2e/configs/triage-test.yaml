@@ -16,7 +16,7 @@ gh_audit_enabled: true
 gh_audit_events: true
 gh_audit_file: /tmp/e2e-orchestrator-logs/gh-audit-{pid}.json
 # control_api_port: dynamically assigned
-e2e_pr_labels: ["test-data"]
+e2e_pr_labels: ["io-e2e-test-data"]
 
 agents:
   "agent:e2e-test":

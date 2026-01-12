@@ -435,7 +435,7 @@ class TestReworkCyclesAndEscalation:
             issue_key, issue_number = create_single_issue(
                 repo_name,
                 "[M0-720] [E2E-REWORK] Test rework cycles and escalation",
-                ["agent:script-completes", "test-data", e2e_label("rework_cycles")],
+                ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_cycles")],
                 watcher=orchestrator_watcher,
             )
             logger.info("  Created issue #%d", issue_number)
