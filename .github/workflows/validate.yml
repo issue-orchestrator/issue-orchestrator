@@ -117,12 +117,8 @@ jobs:
             ~/.cache/pip
           key: tooling-worktree-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'pyproject.toml') }}
 
+      - name: Set orchestrator env vars
+        run: python tools/print_orchestrator_env.py --format=github >> $GITHUB_ENV
+
       - name: Run unit tests with orchestrator env vars set
         run: pytest tests/unit -x -q --tb=short
-        env:
-          ORCHESTRATOR_VALIDATION_CMD: make validate
-          ORCHESTRATOR_VALIDATION_TIMEOUT: "300"
-          ORCHESTRATOR_COMPLETION_PATH: .issue-orchestrator/completion.json
-          ORCHESTRATOR_AGENT_LABEL: agent:backend
-          ORCHESTRATOR_ISSUE_NUMBER: "9999"
-          ORCHESTRATOR_API_PORT: "8080"

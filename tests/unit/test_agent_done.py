@@ -34,6 +34,16 @@ from issue_orchestrator.domain.models import (
     CompletionRecord,
     COMPLETION_RECORD_PATH,
 )
+from issue_orchestrator.domain.env_vars import EnvVars
+
+
+def clear_orchestrator_env(monkeypatch) -> None:
+    """Clear all orchestrator env vars to ensure test isolation.
+
+    Uses EnvVars.all_names() as single source of truth for env var names.
+    """
+    for name in EnvVars.all_names():
+        monkeypatch.delenv(name, raising=False)
 
 
 class TestAgentStatus:
@@ -914,21 +924,19 @@ class TestAgentGateIntegration:
         agent-done runs `make validate` instead of config's cmd
             │ No Makefile in tmp_path → CRASH
 
-    The fix: Tests that verify config-based validation must clear these env vars:
+    The fix: Tests must clear orchestrator env vars using clear_orchestrator_env():
 
         def test_validation_xxx(self, tmp_path, monkeypatch):
-            monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
-            monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
+            clear_orchestrator_env(monkeypatch)  # Uses EnvVars.all_names()
             # Now test uses config's validation.cmd as intended
 
-    This ensures test isolation regardless of where pytest runs from.
+    The env var names are defined in domain/env_vars.py (single source of truth).
+    CI also uses this module via tools/print_orchestrator_env.py.
     """
 
     def test_agent_gate_runs_when_configured(self, tmp_path, capsys, monkeypatch):
         """Test that agent gate validation runs when configured."""
-        # Clear orchestrator env vars so test uses config's validation cmd, not env override
-        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
-        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
+        clear_orchestrator_env(monkeypatch)
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -971,9 +979,7 @@ validation:
 
     def test_validation_failure_exits_with_error(self, tmp_path, capsys, monkeypatch):
         """Test that validation failure exits with error and does not write record."""
-        # Clear orchestrator env vars so test uses config's validation cmd, not env override
-        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
-        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
+        clear_orchestrator_env(monkeypatch)
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -1072,9 +1078,7 @@ validation:
 
         This verifies Claude can see what failed without reading separate files.
         """
-        # Clear orchestrator env vars so test uses config's validation cmd, not env override
-        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
-        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
+        clear_orchestrator_env(monkeypatch)
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -1184,18 +1188,22 @@ validation:
         "make: *** No rule to make target 'validate'.  Stop."
 
         This test:
-        1. Sets ORCHESTRATOR_VALIDATION_CMD to "make validate" (simulating worktree env)
+        1. Sets orchestrator env vars (simulating worktree env) using get_test_env_dict()
         2. Creates tmp_path with config using a DIFFERENT validation cmd
-        3. Clears the env vars with monkeypatch
+        3. Clears the env vars with clear_orchestrator_env()
         4. Verifies the config's cmd runs (not "make validate")
+
+        Both get_test_env_dict() and EnvVars.all_names() come from domain/env_vars.py,
+        ensuring CI and tests use the same source of truth for env var names.
         """
+        from issue_orchestrator.domain.env_vars import get_test_env_dict
+
         # Simulate being inside an orchestrator-managed worktree
-        monkeypatch.setenv("ORCHESTRATOR_VALIDATION_CMD", "make validate")
-        monkeypatch.setenv("ORCHESTRATOR_VALIDATION_TIMEOUT", "300")
+        for name, value in get_test_env_dict().items():
+            monkeypatch.setenv(name, value)
 
         # Now clear them - this is what the other tests do to ensure isolation
-        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
-        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
+        clear_orchestrator_env(monkeypatch)
 
         # Create fake git repo
         git_dir = tmp_path / ".git"
