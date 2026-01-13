@@ -454,6 +454,7 @@ class SessionHistoryEntry:
     runtime_minutes: int
     pr_url: Optional[str] = None  # Set if PR was created
     status_reason: Optional[str] = None  # Human-readable explanation of status
+    worktree_path: Optional[Path] = None
 
 
 @dataclass

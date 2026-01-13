@@ -129,12 +129,14 @@ class MockWorktreeManager:
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
+        reuse_push_preflight: bool = True,
     ) -> WorktreeInfo:
         self.create_calls.append({
             "repo_root": repo_root,
             "issue_number": issue_number,
             "issue_title": issue_title,
             "branch_name": branch_name,
+            "reuse_push_preflight": reuse_push_preflight,
         })
         worktree_path = self.tmp_path / f"worktree-{issue_number}"
         worktree_path.mkdir(parents=True, exist_ok=True)

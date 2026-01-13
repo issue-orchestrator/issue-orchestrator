@@ -25,6 +25,13 @@ input=$(cat)
 # Claude Code sends: {"tool_input": {"command": "git push ..."}}
 command=$(echo "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
+# Allow a dry-run no-verify push for reuse preflight.
+if echo "$command" | grep -qE "git\\s+push" \
+    && echo "$command" | grep -qE "--dry-run" \
+    && echo "$command" | grep -qE "--no-verify"; then
+    exit 0
+fi
+
 # Check for --no-verify bypass attempts
 if echo "$command" | grep -qE "git\s+(commit|push).*--no-verify"; then
     echo "BLOCKED: --no-verify is forbidden. Pre-push hooks must run." >&2

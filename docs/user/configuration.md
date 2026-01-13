@@ -295,6 +295,7 @@ cleanup:
 enforce_hooks: true               # (default) Install pre-push hooks
 pre_push_hook: null               # (default: uses bundled hook)
 setup_worktree: []                # (default) Commands after worktree creation
+reuse_push_preflight: true        # (default) Dry-run push before reusing worktrees
 ```
 
 Example setup commands:

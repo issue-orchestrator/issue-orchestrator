@@ -239,6 +239,23 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
         return ResetInfo(success=False)
 
 
+def _push_dry_run_preflight(worktree_path: Path, branch_name: str) -> tuple[bool, str]:
+    """Check if a dry-run push would succeed for a reused worktree."""
+    import time
+
+    cmd = ["push", "--dry-run", "--force-with-lease", "--no-verify", "-u", "origin", branch_name]
+    last_error = ""
+    for attempt in range(1, 4):
+        result = _git_run(worktree_path, cmd, check=False)
+        if result.returncode == 0:
+            return True, ""
+        stderr = (result.stderr or "").strip()
+        last_error = stderr
+        if attempt < 3:
+            time.sleep(0.5 * (2 ** (attempt - 1)))
+    return False, f"push dry-run failed: {last_error}"
+
+
 def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
     """
     Symlink .venv from main repo into worktree.
@@ -704,6 +721,7 @@ def create_worktree(
     enforce_hooks: bool = True,
     pre_push_hook: Path | None = None,
     branch_name: str | None = None,
+    reuse_push_preflight: bool = True,
     policy: WorktreePolicy | None = None,
 ) -> tuple[Path, str, str, str | None, bool, int, int]:
     """
@@ -845,24 +863,40 @@ def create_worktree(
                     policy.delete_worktree(existing_worktree, repo_root)
                     # Fall through to fresh creation
                 else:
-                    # Success - install hooks and return
-                    if enforce_hooks:
-                        install_hooks(existing_worktree, pre_push_hook)
-                    install_claude_settings(existing_worktree)
-                    install_venv_symlink(existing_worktree, repo_root)
-                    sync_cli_tools(existing_worktree, repo_root)
-                    logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), existing_worktree)
-                    reuse_status = "reused"
-                    reuse_reason = "existing_worktree_by_branch"
-                    return (
-                        existing_worktree,
-                        branch_name,
-                        reuse_status,
-                        reuse_reason,
-                        False,
-                        reset_info.uncommitted_discarded,
-                        reset_info.commits_discarded,
-                    )
+                    if reuse_push_preflight:
+                        ok, reason = _push_dry_run_preflight(existing_worktree, branch_name)
+                        if not ok:
+                            logger.warning(
+                                issue_log(issue_number, "Push preflight failed, deleting worktree: %s"),
+                                reason,
+                            )
+                            reuse_status = "recreated"
+                            recreated_reason = f"push_preflight_failed: {reason}"
+                            policy.delete_worktree(existing_worktree, repo_root)
+                            # Fall through to fresh creation
+                        else:
+                            logger.info(
+                                issue_log(issue_number, "Push preflight ok for reused worktree"),
+                            )
+                    if reuse_status != "recreated":
+                        # Success - install hooks and return
+                        if enforce_hooks:
+                            install_hooks(existing_worktree, pre_push_hook)
+                        install_claude_settings(existing_worktree)
+                        install_venv_symlink(existing_worktree, repo_root)
+                        sync_cli_tools(existing_worktree, repo_root)
+                        logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), existing_worktree)
+                        reuse_status = "reused"
+                        reuse_reason = "existing_worktree_by_branch"
+                        return (
+                            existing_worktree,
+                            branch_name,
+                            reuse_status,
+                            reuse_reason,
+                            False,
+                            reset_info.uncommitted_discarded,
+                            reset_info.commits_discarded,
+                        )
 
     # Check if worktree already exists - if so, reuse it (faster than delete/recreate)
     if worktree_path.exists() and not disable_reuse:
@@ -917,24 +951,40 @@ def create_worktree(
                     policy.delete_worktree(worktree_path, repo_root)
                     # Fall through to fresh creation
                 else:
-                    # Success - install hooks and return
-                    if enforce_hooks:
-                        install_hooks(worktree_path, pre_push_hook)
-                    install_claude_settings(worktree_path)
-                    install_venv_symlink(worktree_path, repo_root)
-                    sync_cli_tools(worktree_path, repo_root)
-                    logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), worktree_path)
-                    reuse_status = "reused"
-                    reuse_reason = "existing_worktree_by_path"
-                    return (
-                        worktree_path,
-                        existing_branch,
-                        reuse_status,
-                        reuse_reason,
-                        False,
-                        reset_info.uncommitted_discarded,
-                        reset_info.commits_discarded,
-                    )
+                    if reuse_push_preflight:
+                        ok, reason = _push_dry_run_preflight(worktree_path, existing_branch)
+                        if not ok:
+                            logger.warning(
+                                issue_log(issue_number, "Push preflight failed, deleting worktree: %s"),
+                                reason,
+                            )
+                            reuse_status = "recreated"
+                            recreated_reason = f"push_preflight_failed: {reason}"
+                            policy.delete_worktree(worktree_path, repo_root)
+                            # Fall through to fresh creation
+                        else:
+                            logger.info(
+                                issue_log(issue_number, "Push preflight ok for reused worktree"),
+                            )
+                    if reuse_status != "recreated":
+                        # Success - install hooks and return
+                        if enforce_hooks:
+                            install_hooks(worktree_path, pre_push_hook)
+                        install_claude_settings(worktree_path)
+                        install_venv_symlink(worktree_path, repo_root)
+                        sync_cli_tools(worktree_path, repo_root)
+                        logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), worktree_path)
+                        reuse_status = "reused"
+                        reuse_reason = "existing_worktree_by_path"
+                        return (
+                            worktree_path,
+                            existing_branch,
+                            reuse_status,
+                            reuse_reason,
+                            False,
+                            reset_info.uncommitted_discarded,
+                            reset_info.commits_discarded,
+                        )
 
     try:
         # Check if branch already exists

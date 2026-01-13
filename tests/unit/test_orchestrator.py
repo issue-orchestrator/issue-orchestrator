@@ -42,6 +42,7 @@ class MockWorktreeManager:
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
+        reuse_push_preflight: bool = True,
     ) -> WorktreeInfo:
         """Track create calls and return mock WorktreeInfo."""
         self.create_calls.append({
@@ -52,6 +53,7 @@ class MockWorktreeManager:
             "enforce_hooks": enforce_hooks,
             "pre_push_hook": pre_push_hook,
             "branch_name": branch_name,
+            "reuse_push_preflight": reuse_push_preflight,
         })
         return WorktreeInfo(path=self.worktree_path, branch_name=self.branch_name)
 

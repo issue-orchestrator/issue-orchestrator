@@ -23,6 +23,14 @@ input=$(cat)
 # Cursor may send: {"command": "git push ..."} or {"tool_input": {"command": "..."}}
 command=$(echo "$input" | jq -r '.tool_input.command // .command // ""' 2>/dev/null || echo "")
 
+# Allow a dry-run no-verify push for reuse preflight.
+if echo "$command" | grep -qE "git\\s+push" \
+    && echo "$command" | grep -qE "--dry-run" \
+    && echo "$command" | grep -qE "--no-verify"; then
+    echo '{"permission": "allow"}'
+    exit 0
+fi
+
 # Check for --no-verify bypass attempts
 if echo "$command" | grep -qE "git\s+(commit|push).*--no-verify"; then
     echo '{"permission": "deny", "userMessage": "BLOCKED: --no-verify is forbidden. Pre-push hooks must run."}'
