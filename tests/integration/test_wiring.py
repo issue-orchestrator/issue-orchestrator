@@ -80,7 +80,13 @@ class TestOrchestratorWiring:
         # Verify list_issues was called via the adapter
         assert len(mock_repository_host.list_issues_calls) > 0
 
-    def test_launch_session_creates_worktree_and_window(self, config, patch_plugin_manager, mock_repository_host):
+    def test_launch_session_creates_worktree_and_window(
+        self,
+        config,
+        temp_repo,
+        patch_plugin_manager,
+        mock_repository_host,
+    ):
         """Verify launch_session actually creates worktree and tmux window."""
         from issue_orchestrator.infra.orchestrator import Orchestrator
         from issue_orchestrator.ports.worktree_manager import WorktreeInfo
@@ -90,8 +96,10 @@ class TestOrchestratorWiring:
 
         # Create a mock WorktreeManager
         mock_worktree_manager = MagicMock()
+        worktree_path = temp_repo / "worktrees" / "issue-456"
+        worktree_path.mkdir(parents=True, exist_ok=True)
         mock_worktree_manager.create.return_value = WorktreeInfo(
-            path=Path("/fake/worktree"),
+            path=worktree_path,
             branch_name="456-test-feature",
         )
 
