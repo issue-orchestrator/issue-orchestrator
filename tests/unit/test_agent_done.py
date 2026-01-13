@@ -893,10 +893,42 @@ class TestCompletionRecordSerialization:
 
 
 class TestAgentGateIntegration:
-    """Test agent gate validation integration in the main function."""
+    """Test agent gate validation integration in the main function.
 
-    def test_agent_gate_runs_when_configured(self, tmp_path, capsys):
+    IMPORTANT: Test Isolation for Validation Tests
+    =============================================
+
+    When tests run inside an orchestrator-managed worktree, environment variables
+    like ORCHESTRATOR_VALIDATION_CMD leak into the test's isolated tmp_path:
+
+        Orchestrator (main repo)
+            │ sets ORCHESTRATOR_VALIDATION_CMD=make validate
+            ▼
+        Worktree (agent works here)
+            │ pytest runs, inherits env vars
+            ▼
+        Test (tmp_path)
+            │ creates config with custom validation cmd
+            │ BUT: env var overrides config!
+            ▼
+        agent-done runs `make validate` instead of config's cmd
+            │ No Makefile in tmp_path → CRASH
+
+    The fix: Tests that verify config-based validation must clear these env vars:
+
+        def test_validation_xxx(self, tmp_path, monkeypatch):
+            monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
+            monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
+            # Now test uses config's validation.cmd as intended
+
+    This ensures test isolation regardless of where pytest runs from.
+    """
+
+    def test_agent_gate_runs_when_configured(self, tmp_path, capsys, monkeypatch):
         """Test that agent gate validation runs when configured."""
+        # Clear orchestrator env vars so test uses config's validation cmd, not env override
+        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
+        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -915,7 +947,7 @@ class TestAgentGateIntegration:
         config_path = config_dir / "default.yaml"
         config_path.write_text("""
 validation:
-  cmd: "echo 'ok'"
+  cmd: "true"
   timeout_seconds: 10
 """)
 
@@ -937,8 +969,11 @@ validation:
         finally:
             os.chdir(original_cwd)
 
-    def test_validation_failure_exits_with_error(self, tmp_path, capsys):
+    def test_validation_failure_exits_with_error(self, tmp_path, capsys, monkeypatch):
         """Test that validation failure exits with error and does not write record."""
+        # Clear orchestrator env vars so test uses config's validation cmd, not env override
+        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
+        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -1032,11 +1067,14 @@ validation:
         finally:
             os.chdir(original_cwd)
 
-    def test_validation_failure_shows_stderr_inline(self, tmp_path, capsys):
+    def test_validation_failure_shows_stderr_inline(self, tmp_path, capsys, monkeypatch):
         """Test that validation failure shows the actual error output inline.
 
         This verifies Claude can see what failed without reading separate files.
         """
+        # Clear orchestrator env vars so test uses config's validation cmd, not env override
+        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
+        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()

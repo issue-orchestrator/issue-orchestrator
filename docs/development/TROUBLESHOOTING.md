@@ -97,6 +97,39 @@ Manual cleanup:
 rm -rf /tmp/issue-orchestrator/locks/*
 ```
 
+## Test Failures in Worktree Environment
+
+**Symptom:** Tests pass when run from the main repo, but fail when run from an orchestrator-managed worktree. Error: `make: *** No rule to make target 'validate'.  Stop.`
+
+**Cause:** Environment variable leakage. The orchestrator sets `ORCHESTRATOR_VALIDATION_CMD=make validate` for agent sessions. When pytest runs in that environment, tests that create isolated tmp_path directories still inherit these env vars:
+
+```
+Orchestrator (main repo)
+    │ sets ORCHESTRATOR_VALIDATION_CMD=make validate
+    ▼
+Worktree (agent works here)
+    │ pytest runs, inherits env vars
+    ▼
+Test (tmp_path)
+    │ creates config with custom validation cmd
+    │ BUT: env var overrides config!
+    ▼
+agent-done runs `make validate` instead of config's cmd
+    │ No Makefile in tmp_path → CRASH
+```
+
+**Fix:** Tests that verify config-based validation must clear orchestrator env vars:
+
+```python
+def test_validation_xxx(self, tmp_path, monkeypatch):
+    # Clear orchestrator env vars so test uses config's validation cmd
+    monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
+    monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
+    # ... rest of test
+```
+
+**Related:** See `tests/unit/test_agent_done.py::TestAgentGateIntegration` docstring for full details.
+
 ## Claude Session Logs
 
 Each Claude Code session creates logs useful for debugging:
