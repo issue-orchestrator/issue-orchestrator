@@ -274,6 +274,33 @@ class TestCompletionProcessorPRActions:
         assert call_args.kwargs["title"] == "#123: Add feature"
         assert call_args.kwargs["head"] == "issue-123"
 
+    def test_push_failure_halts_pr_creation(
+        self, processor, mock_git_adapter, mock_pr_adapter, worktree_with_completion
+    ):
+        """Push failure should stop later CREATE_PR actions."""
+        mock_git_adapter.push.return_value = PushResult(
+            success=False,
+            branch="issue-123",
+            remote="origin",
+            message="pre-push hook failed",
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            summary="Implemented feature",
+            implementation="Added the feature",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Add feature")
+
+        assert not result.success
+        assert any("Push failed" in err for err in result.errors)
+        mock_pr_adapter.create_pr.assert_not_called()
+
     def test_create_pr_with_labels_applies_labels_to_pr(
         self, processor, mock_pr_adapter, mock_label_adapter, worktree_with_completion
     ):

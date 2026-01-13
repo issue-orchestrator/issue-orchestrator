@@ -370,6 +370,7 @@ class CompletionProcessor:
         )
 
         # Execute requested actions in order
+        halt_actions = False
         for action in record.requested_actions:
             action_start = time.monotonic()
             logger.info("Executing action: %s for issue #%d", action.value, issue_number)
@@ -391,6 +392,7 @@ class CompletionProcessor:
                             "remote": result.remote,
                         })
                         logger.error("Push failed for #%d: %s", issue_number, result.message)
+                        halt_actions = True
 
                 elif action == RequestedAction.CREATE_PR:
                     if not branch:
@@ -480,6 +482,12 @@ class CompletionProcessor:
                     issue_number,
                     action_duration,
                 )
+            if halt_actions:
+                logger.warning(
+                    "Halting remaining actions for issue #%d due to push failure",
+                    issue_number,
+                )
+                break
 
         # Determine overall success
         success = len(errors) == 0 or (
