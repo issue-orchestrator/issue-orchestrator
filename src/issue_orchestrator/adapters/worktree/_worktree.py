@@ -241,15 +241,19 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
 
 def _push_dry_run_preflight(worktree_path: Path, branch_name: str) -> tuple[bool, str]:
     """Check if a dry-run push would succeed for a reused worktree."""
-    result = _git_run(
-        worktree_path,
-        ["push", "--dry-run", "--force-with-lease", "--no-verify", "-u", "origin", branch_name],
-        check=False,
-    )
-    if result.returncode == 0:
-        return True, ""
-    stderr = (result.stderr or "").strip()
-    return False, f"push dry-run failed: {stderr}"
+    import time
+
+    cmd = ["push", "--dry-run", "--force-with-lease", "--no-verify", "-u", "origin", branch_name]
+    last_error = ""
+    for attempt in range(1, 4):
+        result = _git_run(worktree_path, cmd, check=False)
+        if result.returncode == 0:
+            return True, ""
+        stderr = (result.stderr or "").strip()
+        last_error = stderr
+        if attempt < 3:
+            time.sleep(0.5 * (2 ** (attempt - 1)))
+    return False, f"push dry-run failed: {last_error}"
 
 
 def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
