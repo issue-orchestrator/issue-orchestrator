@@ -1,5 +1,6 @@
 repo: BruceBGordon/issue-orchestrator
 worktree_base: ../
+worktree_branch_on_recreate: delete
 
 agents:
   agent:backend:

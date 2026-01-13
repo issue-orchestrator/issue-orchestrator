@@ -79,6 +79,66 @@ repo: owner/repo
         assert config.max_concurrent_sessions == 4
         assert config.session_timeout_minutes == 60
 
+    def test_worktree_branch_on_recreate_default(self, tmp_path):
+        """Default worktree_branch_on_recreate should be delete."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktree_base: {worktree_base}
+""")
+
+        config = Config.load(config_file)
+
+        assert config.worktree_branch_on_recreate == "delete"
+
+    def test_worktree_branch_on_recreate_configured(self, tmp_path):
+        """Config can set worktree_branch_on_recreate."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktree_base: {worktree_base}
+worktree_branch_on_recreate: create_new_branch
+""")
+
+        config = Config.load(config_file)
+
+        assert config.worktree_branch_on_recreate == "create_new_branch"
+
+    def test_worktree_branch_on_recreate_invalid(self, tmp_path):
+        """Invalid worktree_branch_on_recreate value should fail validation."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktree_base: {worktree_base}
+worktree_branch_on_recreate: nope
+""")
+
+        config = Config.load(config_file)
+
+        errors = config.validate()
+        assert any("worktree_branch_on_recreate" in err for err in errors)
+
         # Check labels
         assert config.label_in_progress == "working"
         assert config.label_blocked == "blocked-on"

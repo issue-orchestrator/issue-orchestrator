@@ -612,6 +612,61 @@ def extract_issue_number_from_branch(branch_name: str) -> int | None:
     return None
 
 
+def _branch_matches_issue(branch_name: str, issue_number: int) -> bool:
+    extracted = extract_issue_number_from_branch(branch_name)
+    return extracted == issue_number
+
+
+def _list_branch_names(repo_root: Path) -> list[str]:
+    result = _git_run(
+        repo_root,
+        ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes/origin"],
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    names: list[str] = []
+    for line in (result.stdout or "").splitlines():
+        name = line.strip()
+        if not name:
+            continue
+        if name.startswith("origin/"):
+            name = name[len("origin/"):]
+        if name == "HEAD":
+            continue
+        names.append(name)
+    return names
+
+
+def _next_branch_name(repo_root: Path, branch_name: str) -> str:
+    base = re.sub(r"-r\d+$", "", branch_name)
+    existing = _list_branch_names(repo_root)
+    pattern = re.compile(rf"^{re.escape(base)}-r(\d+)$")
+    max_suffix = 0
+    for name in existing:
+        match = pattern.match(name)
+        if match:
+            try:
+                max_suffix = max(max_suffix, int(match.group(1)))
+            except ValueError:
+                continue
+    return f"{base}-r{max_suffix + 1}"
+
+
+def _delete_remote_branch(repo_root: Path, branch_name: str) -> bool:
+    result = _git_run(
+        repo_root,
+        ["push", "origin", "--delete", branch_name],
+        check=False,
+    )
+    if result.returncode == 0:
+        return True
+    stderr = (result.stderr or "").lower()
+    if "remote ref does not exist" in stderr or "remote ref not found" in stderr:
+        return True
+    return False
+
+
 def find_worktree_for_branch(repo_root: Path, branch_name: str) -> Path | None:
     """
     Find an existing worktree that has the given branch checked out.
@@ -764,6 +819,7 @@ def create_worktree(
     if reuse_options is None:
         reuse_options = WorktreeReuseOptions()
     reuse_push_preflight = reuse_options.reuse_push_preflight
+    worktree_branch_on_recreate = reuse_options.worktree_branch_on_recreate
     repo_root = Path(repo_root).resolve()
     logger.info(
         issue_log(issue_number, "Create worktree requested: branch=%s base=%s"),
@@ -995,6 +1051,21 @@ def create_worktree(
                             reset_info.uncommitted_discarded,
                             reset_info.commits_discarded,
                         )
+
+    if recreated_reason and branch_name and _branch_matches_issue(branch_name, issue_number):
+        if worktree_branch_on_recreate == "delete":
+            if _delete_remote_branch(repo_root, branch_name):
+                logger.info(issue_log(issue_number, "Deleted remote branch before recreate: %s"), branch_name)
+            else:
+                logger.warning(issue_log(issue_number, "Failed to delete remote branch before recreate: %s"), branch_name)
+        elif worktree_branch_on_recreate == "create_new_branch":
+            new_branch = _next_branch_name(repo_root, branch_name)
+            logger.info(
+                issue_log(issue_number, "Creating new branch for recreated worktree: %s -> %s"),
+                branch_name,
+                new_branch,
+            )
+            branch_name = new_branch
 
     try:
         # Check if branch already exists

@@ -202,6 +202,7 @@ class SessionLauncher:
     def _worktree_reuse_options(self) -> WorktreeReuseOptions:
         return WorktreeReuseOptions(
             reuse_push_preflight=self.config.reuse_push_preflight,
+            worktree_branch_on_recreate=self.config.worktree_branch_on_recreate,
         )
 
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
