@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 from issue_orchestrator.infra.config import (
     Config,
@@ -107,6 +107,7 @@ def make_repository_host(prs: list[Any] | None = None, pr_info: Any | None = Non
     return SimpleNamespace(
         get_prs_for_branch=lambda _branch: prs or [],
         get_pr=lambda _pr_number: pr_info,
+        set_pr_draft=Mock(),
     )
 
 
@@ -504,7 +505,7 @@ class TestReviewMachineTransitions:
             initial_state=ReviewState.IN_REVIEW,
         )
 
-        pr_info = SimpleNamespace(number=42, labels=["code-reviewed"], url="http://pr")
+        pr_info = SimpleNamespace(number=42, labels=["code-reviewed"], url="http://pr", draft=True)
         repository_host = make_repository_host(
             prs=[pr_info],
             pr_info=pr_info,
@@ -518,6 +519,7 @@ class TestReviewMachineTransitions:
         handler.process_completion(session, SessionStatus.COMPLETED)
 
         assert review_machine.get_state() == ReviewState.APPROVED
+        repository_host.set_pr_draft.assert_called_once_with(42, False)
 
     def test_review_session_with_needs_rework_label_requests_changes_and_queues_rework(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path

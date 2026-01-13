@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from issue_orchestrator.control.completion_processor import CompletionProcessor
@@ -127,3 +128,47 @@ def test_orchestrator_tail_scoped_to_run(tmp_path: Path) -> None:
     tail = tail_path.read_text()
     assert "second run message" in tail
     assert "first run message" not in tail
+
+
+def test_session_output_selects_claude_log(tmp_path: Path) -> None:
+    session_name = "issue-2"
+    claude_dir = tmp_path / ".claude" / "projects" / "test"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    run = SessionOutputManager.start_run(
+        worktree_path=tmp_path,
+        session_name=session_name,
+        issue_number=2,
+        agent_label="agent:test",
+        backend="subprocess",
+        claude_log_dir=str(claude_dir),
+    )
+
+    older = claude_dir / "older.jsonl"
+    newer = claude_dir / "newer.jsonl"
+    run_start = datetime.fromisoformat(run.started_at)
+
+    older.write_text(
+        json.dumps({
+            "timestamp": (run_start + timedelta(seconds=120)).isoformat(),
+            "sessionId": "older",
+        })
+        + "\n"
+    )
+    newer.write_text(
+        json.dumps({
+            "timestamp": (run_start + timedelta(seconds=30)).isoformat(),
+            "sessionId": "newer",
+        })
+        + "\n"
+    )
+
+    os.utime(older, (run_start.timestamp() + 300, run_start.timestamp() + 300))
+    os.utime(newer, (run_start.timestamp() + 600, run_start.timestamp() + 600))
+
+    selected = SessionOutputManager.attach_claude_log(tmp_path, session_name)
+    assert selected == newer
+
+    manifest = json.loads((run.run_dir / "manifest.json").read_text())
+    assert manifest["claude_log_path"] == str(newer)
+    assert manifest["claude_session_id"] == "newer"
+    assert (run.run_dir / "claude-session.jsonl").is_symlink()

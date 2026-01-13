@@ -731,21 +731,22 @@ class TestPush:
     def test_push_first_push_no_remote(self, git_wc, worktree_path):
         """Test first push when remote branch doesn't exist yet."""
         with patch.object(git_wc, "_run_git") as mock_run:
-            # Flow: get_branch, fetch (fails with "couldn't find remote ref"), push
+            # Flow: get_branch, fetch (fails with "couldn't find remote ref"), clear ref, push
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
                 MagicMock(
                     returncode=128, stdout="",
                     stderr="fatal: couldn't find remote ref feature-branch"
                 ),  # first push - branch doesn't exist on remote
+                MagicMock(returncode=0, stdout="", stderr=""),  # clear stale ref
                 MagicMock(returncode=0, stdout="", stderr=""),  # push
             ]
 
             result = git_wc.push(worktree_path)
 
             assert result.success is True
-            assert mock_run.call_count == 3
-            push_args = mock_run.call_args_list[2][0][1]
+            assert mock_run.call_count == 4
+            push_args = mock_run.call_args_list[3][0][1]
             assert "push" in push_args
 
     def test_push_fetch_failure_network(self, git_wc, worktree_path):
@@ -1135,19 +1136,20 @@ class TestPushPreflight:
             mock_branch.return_value = "feature-branch"
 
             with patch.object(git_wc, "_run_git") as mock_run:
-                # Flow: fetch (fails with "couldn't find remote ref"), push --dry-run
+                # Flow: fetch (fails with "couldn't find remote ref"), clear ref, push --dry-run
                 mock_run.side_effect = [
                     MagicMock(
                         returncode=128, stdout="",
                         stderr="fatal: couldn't find remote ref feature-branch"
                     ),  # first push
+                    MagicMock(returncode=0, stdout="", stderr=""),  # clear stale ref
                     MagicMock(returncode=0, stdout="", stderr=""),  # push
                 ]
 
                 result = git_wc.push_preflight(worktree_path)
 
                 assert result.would_succeed is True
-                assert mock_run.call_count == 2
+                assert mock_run.call_count == 3
 
     def test_push_preflight_fetch_failure(self, git_wc, worktree_path):
         """Test preflight fails early when fetch fails with network error."""
@@ -1317,3 +1319,49 @@ class TestPushFetchFailureStopsProcessing:
                 assert "Failed to update tracking refs" in result.error
                 # Only 1 call - dry-run push was never attempted
                 assert mock_run.call_count == 1
+
+
+class TestPushClearsStaleRemoteTrackingRef:
+    """Ensure stale remote-tracking refs are cleared for first-push cases."""
+
+    def test_push_clears_stale_remote_ref_on_missing_remote(self, git_wc, worktree_path):
+        """Delete stale remote-tracking ref when remote branch is missing."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = "feature-branch"
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.side_effect = [
+                    MagicMock(returncode=1, stdout="", stderr="fatal: couldn't find remote ref feature-branch"),
+                    MagicMock(returncode=0, stdout="", stderr=""),
+                    MagicMock(returncode=0, stdout="", stderr=""),
+                ]
+
+                result = git_wc.push(worktree_path)
+
+                assert result.success is True
+                assert mock_run.call_args_list[1][0][1] == [
+                    "update-ref",
+                    "-d",
+                    "refs/remotes/origin/feature-branch",
+                ]
+
+    def test_preflight_clears_stale_remote_ref_on_missing_remote(self, git_wc, worktree_path):
+        """Delete stale remote-tracking ref during preflight when remote branch is missing."""
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = "feature-branch"
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.side_effect = [
+                    MagicMock(returncode=1, stdout="", stderr="fatal: couldn't find remote ref feature-branch"),
+                    MagicMock(returncode=0, stdout="", stderr=""),
+                    MagicMock(returncode=0, stdout="", stderr=""),
+                ]
+
+                result = git_wc.push_preflight(worktree_path)
+
+                assert result.would_succeed is True
+                assert mock_run.call_args_list[1][0][1] == [
+                    "update-ref",
+                    "-d",
+                    "refs/remotes/origin/feature-branch",
+                ]

@@ -39,6 +39,16 @@ class ClaudeLogProvider:
         Returns:
             Path to the most recent .jsonl log file, or None if not found.
         """
+        run_dir = self._find_run_dir(worktree_path, session_name)
+        if run_dir:
+            manifest = self._read_manifest(run_dir)
+            if manifest:
+                log_path = manifest.get("claude_log_path")
+                if log_path:
+                    path = Path(log_path)
+                    if path.exists():
+                        return path
+
         escaped = self._escape_path(worktree_path)
         projects_dir = Path.home() / ".claude" / "projects" / escaped
 
@@ -57,6 +67,22 @@ class ClaudeLogProvider:
         log_path = jsonl_files[0]
         logger.debug("[CLAUDE_LOG] Found log: %s", log_path)
         return log_path
+
+    def _find_run_dir(self, worktree_path: Path, session_name: str) -> Path | None:
+        try:
+            from ...infra.session_output import SessionOutputManager
+        except Exception:
+            return None
+        return SessionOutputManager.find_latest_run_dir(worktree_path, session_name=session_name)
+
+    def _read_manifest(self, run_dir: Path) -> dict[str, Any] | None:
+        manifest_path = run_dir / "manifest.json"
+        if not manifest_path.exists():
+            return None
+        try:
+            return json.loads(manifest_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
 
     def get_failure_context(self, log_path: Path, lines: int = 100) -> str | None:
         """Extract failure context from a Claude log file.

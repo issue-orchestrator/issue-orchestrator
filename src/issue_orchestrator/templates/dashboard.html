@@ -185,6 +185,15 @@
             color: #ff6b6b;
         }
         .issue-status { display: flex; align-items: center; }
+        .issue-detail { position: relative; }
+        .issue-detail .detail-link-indicator {
+            position: absolute;
+            right: 6px;
+            bottom: 4px;
+            font-size: 10px;
+            opacity: 0.8;
+            pointer-events: none;
+        }
         .issue-detail { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c9d1d9; }
         .detail-label { font-weight: 600; }
         .flow-stepper { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -196,6 +205,21 @@
             color: #8b949e;
             text-transform: uppercase;
             letter-spacing: 0.3px;
+            cursor: pointer;
+            transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+        }
+        .flow-step:hover {
+            color: #b1bac4;
+            background: #1f6feb0f;
+            border-color: #2b3540;
+        }
+        .flow-step:focus-visible {
+            outline: 2px solid #58a6ff;
+            outline-offset: 2px;
+        }
+        .flow-step:active {
+            background: #161b22;
+            border-color: #3b4a5a;
         }
         .flow-step.active {
             background: #1f6feb1a;
@@ -1217,7 +1241,7 @@
                     {% if issue.flow_steps %}
                     <span class="flow-stepper {% if issue.blocked_summary %}blocked{% endif %}" aria-label="Workflow: {% for step in issue.flow_steps %}{{ step.label }}{% if not loop.last %}, {% endif %}{% endfor %}. Current: {{ issue.flow_stage_label if issue.flow_stage_label else issue.flow_stage }}.">
                         {% for step in issue.flow_steps %}
-                        <span class="flow-step {% if step.key == issue.flow_stage %}active{% endif %}">
+                        <span class="flow-step {% if step.key == issue.flow_stage %}active{% endif %}" tabindex="0">
                             {{ step.label }}
                         </span>
                         {% endfor %}
@@ -1231,6 +1255,7 @@
                 <span class="issue-detail status-{{ issue.status }}" title="{{ issue.detail_reason if issue.detail_reason else '' }}">
                     <span class="status-dot" aria-hidden="true"></span>
                     <span class="detail-label">{{ issue.detail_label }}</span>
+                    <span class="detail-link-indicator" aria-hidden="true">↗</span>
                 </span>
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
                 <span class="issue-actions">
@@ -1600,6 +1625,7 @@
                 ['Run ID', manifest.run_id || '-'],
                 ['Backend', manifest.backend || '-'],
                 ['Agent', manifest.agent_label || '-'],
+                ['Claude Session', manifest.claude_session_id || '-'],
                 ['Worktree', worktree || '-'],
             ];
 
@@ -1615,6 +1641,9 @@
             }
             if (manifest.log_path) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.log_path)}')">Open Session Log</button>`;
+            }
+            if (manifest.claude_log_path) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_path)}')">Open Claude Log</button>`;
             }
             if (manifest.claude_log_dir) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_dir)}')">Open Claude Log Dir</button>`;
@@ -1900,7 +1929,7 @@
             if (!steps || steps.length === 0) return '';
             const stepHtml = steps.map(step => {
                 const active = step.key === activeKey ? 'active' : '';
-                return `<span class="flow-step ${active}">${escapeHtml(step.label)}</span>`;
+                return `<span class="flow-step ${active}" tabindex="0">${escapeHtml(step.label)}</span>`;
             }).join('');
             const blockedBadge = blockedSummary
                 ? `<span class="blocked-badge" title="${escapeHtml(blockedSummary)}">Blocked</span>`

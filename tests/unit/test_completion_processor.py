@@ -12,7 +12,7 @@ Architecture reminder:
 
 import json
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
@@ -273,6 +273,34 @@ class TestCompletionProcessorPRActions:
         call_args = mock_pr_adapter.create_pr.call_args
         assert call_args.kwargs["title"] == "#123: Add feature"
         assert call_args.kwargs["head"] == "issue-123"
+        assert call_args.kwargs["draft"] is True
+
+    def test_push_failure_halts_pr_creation(
+        self, processor, mock_git_adapter, mock_pr_adapter, worktree_with_completion
+    ):
+        """Push failure should stop later CREATE_PR actions."""
+        mock_git_adapter.push.return_value = PushResult(
+            success=False,
+            branch="issue-123",
+            remote="origin",
+            message="pre-push hook failed",
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            summary="Implemented feature",
+            implementation="Added the feature",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Add feature")
+
+        assert not result.success
+        assert any("Push failed" in err for err in result.errors)
+        mock_pr_adapter.create_pr.assert_not_called()
 
     def test_create_pr_with_labels_applies_labels_to_pr(
         self, processor, mock_pr_adapter, mock_label_adapter, worktree_with_completion
@@ -676,6 +704,69 @@ class TestCompletionProcessorPublishGate:
 
         # validation-failed label must be added
         mock_label_adapter.add_label.assert_called_once_with(123, "validation-failed")
+
+    def test_validation_failure_captured_in_session_output(
+        self, processor_with_gate, mock_publish_gate, tmp_path
+    ):
+        """Validation failure output should be written into session output."""
+        from issue_orchestrator.control.validation import PublishGateResult, ValidationRecord, ValidationRecordStore
+        from issue_orchestrator.domain.models import CompletionRecord
+        from issue_orchestrator.infra.session_output import SessionOutputManager
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        record_dir = worktree / ".issue-orchestrator"
+        record_dir.mkdir(parents=True, exist_ok=True)
+
+        completion_record = CompletionRecord(
+            session_id="issue-123",
+            timestamp=datetime.now().isoformat(),
+            outcome=CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
+
+        SessionOutputManager.start_run(worktree, "issue-123", issue_number=123)
+
+        output_dir = worktree / ".issue-orchestrator" / "validation" / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stdout_file = output_dir / "publish-gate-stdout.txt"
+        stderr_file = output_dir / "publish-gate-stderr.txt"
+        stdout_file.write_text("validation stdout")
+        stderr_file.write_text("validation stderr")
+
+        store = ValidationRecordStore(worktree)
+        validation_record = ValidationRecord(
+            schema_version=1,
+            suite="publish_gate",
+            head_sha="abc123",
+            passed=False,
+            exit_code=1,
+            command="make validate",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            ended_at=datetime.now(timezone.utc).isoformat(),
+            timed_out=False,
+            stdout_path=str(stdout_file.relative_to(worktree)),
+            stderr_path=str(stderr_file.relative_to(worktree)),
+        )
+        store.write(validation_record)
+
+        mock_publish_gate.check.return_value = PublishGateResult(
+            allowed=False,
+            reason="Validation failed",
+            record=validation_record,
+        )
+
+        result = processor_with_gate.process(worktree, issue_number=123, issue_title="Test")
+
+        assert not result.success
+        run_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name="issue-123")
+        assert run_dir is not None
+        assert (run_dir / "validation-stdout.log").read_text() == "validation stdout"
+        assert (run_dir / "validation-stderr.log").read_text() == "validation stderr"
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "validation_record_path" in manifest
 
 
 def test_cleanup_failure_posts_diagnostic_comment(

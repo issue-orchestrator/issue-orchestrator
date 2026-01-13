@@ -438,6 +438,12 @@ class CompletionHandler:
                 if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
                     # Review was approved
                     logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: IN_REVIEW -> APPROVED")
+                    if getattr(pr_info, "draft", None) is True:
+                        try:
+                            self.repository_host.set_pr_draft(pr_number_review, False)
+                            logger.info("[STATE_MACHINE] PR #%d marked ready for review", pr_number_review)
+                        except Exception as e:
+                            logger.warning("Failed to mark PR #%d ready for review: %s", pr_number_review, e)
                     if review_machine.can_transition("approve"):
                         review_machine.approve()  # type: ignore[attr-defined]
                     else:
