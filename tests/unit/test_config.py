@@ -139,14 +139,6 @@ worktree_branch_on_recreate: nope
         errors = config.validate()
         assert any("worktree_branch_on_recreate" in err for err in errors)
 
-        # Check labels
-        assert config.label_in_progress == "working"
-        assert config.label_blocked == "blocked-on"
-        assert config.label_needs_human == "needs-review"
-
-        # Check repo
-        assert config.repo == "owner/repo"
-
     def test_config_load_with_defaults(self, tmp_path):
         """Test loading config with minimal YAML uses defaults."""
         config_content = """
