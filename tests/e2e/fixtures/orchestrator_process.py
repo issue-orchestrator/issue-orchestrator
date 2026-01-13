@@ -243,10 +243,10 @@ class OrchestratorProcess:
         if extra_args:
             cmd.extend(extra_args)
 
-        # Set up environment with fast validation for e2e tests
+        # Set up environment for e2e tests
+        # NOTE: Validation config is read from worktree's config file
+        # (no env var override - ensures deterministic behavior)
         env = os.environ.copy()
-        env["ORCHESTRATOR_VALIDATION_CMD"] = "echo 'e2e validation'"
-        env["ORCHESTRATOR_VALIDATION_TIMEOUT"] = "30"
         env["ORCHESTRATOR_LOG_LEVEL"] = "DEBUG"
         env["ORCHESTRATOR_LOG_FILE"] = str(orchestrator_log_file)
         env["PYTHONUNBUFFERED"] = "1"

@@ -34,11 +34,10 @@ def find_worktree_root() -> Path:
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
-    """Load validation configuration from the worktree.
+    """Load validation configuration from the worktree's config file.
 
-    Environment variable overrides (for testing):
-    - ORCHESTRATOR_VALIDATION_CMD: Override the validation command
-    - ORCHESTRATOR_VALIDATION_TIMEOUT: Override the timeout in seconds
+    Reads from .issue-orchestrator/config/ in the worktree.
+    This ensures tests are deterministic - no env var leakage from parent processes.
 
     Args:
         worktree: Path to the worktree root
@@ -46,20 +45,11 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
     Returns:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
-    import os
     from ...infra.config import load_validation_config
 
-    # Check for environment variable override (useful for e2e tests)
-    env_cmd = os.environ.get("ORCHESTRATOR_VALIDATION_CMD")
-    env_timeout = os.environ.get("ORCHESTRATOR_VALIDATION_TIMEOUT")
-    if env_cmd:
-        timeout = int(env_timeout) if env_timeout else 300
-        return env_cmd, timeout
-
-    # Use shared config lookup (checks .issue-orchestrator/config/)
+    # Read validation config from the worktree's config file
     validation_config = load_validation_config(worktree)
 
-    # Simple: if cmd is set, validation runs
     cmd = validation_config.get("cmd")
     if cmd:
         return cmd, validation_config.get("timeout_seconds", 300)
