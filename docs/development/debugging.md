@@ -42,6 +42,15 @@ This is already set in `conftest.py` line 522.
 
 ## Quick Reference: Where to Look
 
+### 0. Start Control Center (dev helper)
+```bash
+scripts/start_control_center.sh
+```
+Optional port override:
+```bash
+CC_PORT=19080 scripts/start_control_center.sh
+```
+
 ### 1. Orchestrator Log
 ```bash
 tail -f ~/.issue-orchestrator.log
