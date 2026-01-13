@@ -560,6 +560,13 @@ async def get_status() -> JSONResponse:
             "branch_name": review.branch_name,
         })
 
+    tick_id = getattr(_orchestrator._event_context, "tick_id", 0)
+    if not isinstance(tick_id, (int, float)):
+        tick_id = None
+    last_tick_time = getattr(_orchestrator, "_last_tick_time", 0.0)
+    if not isinstance(last_tick_time, (int, float)):
+        last_tick_time = None
+
     return JSONResponse({
         "paused": state.paused,
         "shutdown_requested": getattr(_orchestrator, '_shutdown_requested', False),
@@ -568,8 +575,8 @@ async def get_status() -> JSONResponse:
         "completed_today": state.completed_today,
         "queue": state.priority_queue,
         "pending_reviews": pending_reviews,
-        "tick_id": _orchestrator._event_context.tick_id,
-        "last_tick_time": getattr(_orchestrator, "_last_tick_time", 0.0),
+        "tick_id": tick_id,
+        "last_tick_time": last_tick_time,
     })
 
 
