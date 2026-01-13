@@ -1223,7 +1223,6 @@
                  data-has-dependencies="{{ 'true' if issue.has_dependencies else 'false' }}"
                  data-dependencies="{{ issue.dependencies if issue.dependencies else '[]' }}"
                  data-dependency-summary="{{ issue.dependency_summary if issue.dependency_summary else '' }}"
-                 title="{{ issue.action_hint }}"
                  onclick="handleClick(this)"
                  onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();handleClick(this);}"
                  oncontextmenu="showContextMenu(event, this)">
@@ -1491,7 +1490,7 @@
             rows.forEach((row) => {
                 const action = row.dataset.action;
                 const issueAction = row.querySelector('.issue-action');
-                let hint = row.title;
+                let hint = '';
                 if (action === 'focus') {
                     hint = terminalBackend === 'subprocess'
                         ? 'View agent log'
@@ -1499,7 +1498,6 @@
                 } else if (row.dataset.url) {
                     hint = 'Open issue on GitHub';
                 }
-                row.title = hint;
                 if (issueAction) {
                     issueAction.title = hint;
                 }
@@ -1654,11 +1652,8 @@
             if (diagnosticPath) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(diagnosticPath)}')">Open Diagnostic</button>`;
             }
-            if (manifest.validation_record_path) {
-                const validationPath = manifest.validation_record_path.startsWith('/')
-                    ? manifest.validation_record_path
-                    : (worktree ? `${worktree}/${manifest.validation_record_path}` : manifest.validation_record_path);
-                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(validationPath)}')">Open Validation</button>`;
+            if (manifest.validation_record_path && worktree) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(worktree + '/' + manifest.validation_record_path)}')">Open Validation</button>`;
             }
             if (manifest.orchestrator_tail) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_tail)}')">Open Orchestrator Tail</button>`;

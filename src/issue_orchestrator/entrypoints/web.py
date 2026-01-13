@@ -1228,6 +1228,7 @@ async def get_info() -> JSONResponse:
     return JSONResponse({
         "version": "0.1.0",  # TODO: get from package
         "repo": config.repo,
+        "repo_root": str(config.repo_root) if config.repo_root else None,
         "ui_mode": config.ui_mode,
         "terminal_backend": config.terminal_adapter or "tmux",
         "commit_sha": commit_sha,

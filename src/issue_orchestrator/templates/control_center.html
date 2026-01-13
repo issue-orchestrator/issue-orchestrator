@@ -1224,6 +1224,7 @@
                     const isRunning = status.state === 'running';
                     const isFailed = status.state === 'failed';
                     const activeSessionCount = status.active_session_count || 0;
+                    const isOrphaned = status.orphaned === true;
                     // Distinguish between actively draining vs shutdown complete
                     const isShuttingDown = isRunning && status.shutdown_requested && activeSessionCount > 0;
                     const isShutdownComplete = isRunning && status.shutdown_requested && activeSessionCount === 0;
@@ -1244,6 +1245,7 @@
                     if (isShuttingDown) statusLabel = `Stopping... (${activeSessionCount})`;
                     else if (isShutdownComplete) statusLabel = 'Stopped';
                     else if (isPaused) statusLabel = 'Paused';
+                    else if (isOrphaned) statusLabel = 'Running (untracked)';
                     else if (status.state) statusLabel = status.state.charAt(0).toUpperCase() + status.state.slice(1);
                     else statusLabel = 'Unknown';
 
@@ -1286,7 +1288,7 @@
                                 <span class="repo-port">${status.port || '-'}</span>
                                 <div class="repo-actions">
                                     ${isRunning && !isShuttingDown && !isShutdownComplete
-                                        ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}')">Stop</button>
+                                        ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}', ${status.port || 'null'})">Stop</button>
                                            <button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
                                         : isShuttingDown
                                             ? `<button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
@@ -1484,8 +1486,15 @@
             }
 
             // If something is already running but unhealthy, offer restart
-            const status = await getOrchestratorStatus(path);
+            const status = await getOrchestratorStatus(path, configName);
             if (status && status.state === 'running' && status.port) {
+                if (status.orphaned) {
+                    showRestartRecommendation(path, configName, status, {
+                        reason: 'orphaned',
+                        details: status,
+                    });
+                    return;
+                }
                 const health = await probeOrchestratorHealth(status.port);
                 if (health.unhealthy) {
                     showRestartRecommendation(path, configName, status, health);
@@ -1505,7 +1514,12 @@
                 const data = await res.json();
 
                 if (data.error) {
-                    if (data.error === 'already_running') {
+                    if (data.error === 'orphaned_running') {
+                        showRestartRecommendation(path, configName, data, {
+                            reason: 'orphaned',
+                            details: data,
+                        });
+                    } else if (data.error === 'already_running') {
                         showToast('Already running on port ' + data.port);
                     } else if (data.error === 'config_not_found') {
                         showBlockingError('Start Failed', 'Config not found: ' + configName);
@@ -1526,9 +1540,13 @@
             }
         }
 
-        async function getOrchestratorStatus(path) {
+        async function getOrchestratorStatus(path, configName) {
             try {
-                const res = await fetch(`/control/orchestrator/status?repo_root=${encodeURIComponent(path)}`);
+                const params = new URLSearchParams({ repo_root: path });
+                if (configName) {
+                    params.set('config_name', configName);
+                }
+                const res = await fetch(`/control/orchestrator/status?${params.toString()}`);
                 if (!res.ok) return null;
                 return await res.json();
             } catch (err) {
@@ -1540,16 +1558,16 @@
             const baseUrl = `http://127.0.0.1:${port}`;
             const result = { unhealthy: false, reason: '', details: {} };
             try {
-                const healthRes = await fetch(`${baseUrl}/api/health`, { method: 'GET' });
-                const healthData = await healthRes.json();
-                result.details.health = healthData;
-                if (!healthRes.ok) {
+                const infoRes = await fetch(`${baseUrl}/api/info`, { method: 'GET' });
+                const infoData = await infoRes.json();
+                result.details.info = infoData;
+                if (!infoRes.ok) {
                     result.unhealthy = true;
-                    result.reason = 'health_check_failed';
+                    result.reason = 'info_unreachable';
                 }
             } catch (err) {
                 result.unhealthy = true;
-                result.reason = 'health_unreachable';
+                result.reason = 'info_unreachable';
             }
             try {
                 const statusRes = await fetch(`${baseUrl}/api/status`, { method: 'GET' });
@@ -1576,13 +1594,18 @@
             modal.className = 'modal-overlay';
             modal.id = 'restartModal';
             const detail = health.reason || 'unhealthy';
+            const isOrphaned = detail === 'orphaned' || status?.orphaned;
+            const title = isOrphaned ? 'Orchestrator Already Running' : 'Orchestrator Unhealthy';
+            const summary = isOrphaned
+                ? 'An orchestrator is already running but is not tracked by Control Center.'
+                : `The orchestrator appears unhealthy (${escapeHtml(detail)}).`;
             const encodedPath = encodeURIComponent(path);
             const encodedConfig = encodeURIComponent(configName);
             modal.innerHTML = `
                 <div class="modal" style="max-width:520px;">
-                    <div class="modal-title">Orchestrator Unhealthy</div>
+                    <div class="modal-title">${title}</div>
                     <div class="modal-body">
-                        <div style="margin-bottom:8px;">The orchestrator appears unhealthy (${escapeHtml(detail)}).</div>
+                        <div style="margin-bottom:8px;">${summary}</div>
                         <div style="font-size:12px;color:#8b949e;">Recommended: restart to recover.</div>
                         <details style="margin-top:10px;">
                             <summary style="cursor:pointer;">Details</summary>
@@ -1591,29 +1614,37 @@
                     </div>
                     <div class="modal-footer">
                         <button class="btn" onclick="document.getElementById('restartModal').remove()">Cancel</button>
-                        <button class="btn btn-primary" onclick="restartOrchestrator(decodeURIComponent('${encodedPath}'), decodeURIComponent('${encodedConfig}'))">Restart</button>
+                        <button class="btn btn-primary" onclick="restartOrchestrator(decodeURIComponent('${encodedPath}'), decodeURIComponent('${encodedConfig}'), ${isOrphaned ? 'true' : 'false'})">Restart</button>
                     </div>
                 </div>
             `;
             document.body.appendChild(modal);
         }
 
-        async function restartOrchestrator(path, configName) {
+        async function restartOrchestrator(path, configName, forceRestart = false) {
             const modal = document.getElementById('restartModal');
             if (modal) modal.remove();
             showToast('Restarting orchestrator...');
             try {
-                await fetch('/control/orchestrator/stop', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path, force: true })
-                });
-                await new Promise(r => setTimeout(r, 400));
-                await fetch('/control/orchestrator/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path, config_name: configName })
-                });
+                if (forceRestart) {
+                    await fetch('/control/orchestrator/start', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repo_root: path, config_name: configName, force_restart: true })
+                    });
+                } else {
+                    await fetch('/control/orchestrator/stop', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repo_root: path, force: true })
+                    });
+                    await new Promise(r => setTimeout(r, 400));
+                    await fetch('/control/orchestrator/start', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repo_root: path, config_name: configName })
+                    });
+                }
                 ignoreSSEBriefly();
                 loadRepos();
             } catch (err) {
@@ -1665,14 +1696,14 @@
             }
         }
 
-        async function stopRepo(path) {
+        async function stopRepo(path, port = null) {
             showToast('Stopping orchestrator...');
             console.log('[stopRepo] Stopping:', path);
             try {
                 const res = await fetch('/control/orchestrator/stop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path })
+                    body: JSON.stringify({ repo_root: path, port: port })
                 });
                 console.log('[stopRepo] Response status:', res.status);
                 const data = await res.json();

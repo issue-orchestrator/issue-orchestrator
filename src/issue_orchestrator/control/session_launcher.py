@@ -203,6 +203,7 @@ class SessionLauncher:
         return WorktreeReuseOptions(
             reuse_push_preflight=self.config.reuse_push_preflight,
             worktree_branch_on_recreate=self.config.worktree_branch_on_recreate,
+            allow_no_verify_dry_run_preflight=self.config.allow_no_verify_dry_run_preflight,
         )
 
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:

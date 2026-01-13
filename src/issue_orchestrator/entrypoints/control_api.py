@@ -471,6 +471,90 @@ def _validate_repo_root(repo_root: str | None) -> Path | None:
         return None
 
 
+def _get_selected_config(repo_root: Path) -> str:
+    """Return the selected config name for a repo, defaulting to default.yaml."""
+    from ..infra.repo_registry import load_registry
+
+    registry = load_registry()
+    normalized = str(repo_root.resolve())
+    for repo in registry.repos:
+        if repo.path == normalized:
+            return repo.selected_config or "default.yaml"
+    return "default.yaml"
+
+
+def _load_config_port(repo_root: Path, config_name: str) -> int | None:
+    """Load the web port from a repo config."""
+    from ..infra.config import Config, get_config_path
+
+    config_path = get_config_path(repo_root, config_name)
+    if not config_path.exists():
+        return None
+    try:
+        config = Config.load(config_path)
+    except Exception:
+        return None
+    return config.web_port
+
+
+def _detect_orchestrator_by_port(repo_root: Path, config_name: str) -> dict[str, Any] | None:
+    """Detect an orchestrator by probing the configured port.
+
+    Returns info dict with port and metadata if an orchestrator responds
+    and matches repo_root.
+    """
+    import httpx
+    import time
+
+    port = _load_config_port(repo_root, config_name)
+    if not port:
+        return None
+
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        resp = httpx.get(f"{base_url}/api/info", timeout=0.6)
+        if resp.status_code != 200:
+            return None
+        info = resp.json()
+        if info.get("repo_root") != str(repo_root):
+            return None
+    except Exception:
+        return None
+
+    details: dict[str, Any] = {"port": port, "info": info}
+    try:
+        status_resp = httpx.get(f"{base_url}/api/status", timeout=0.6)
+        if status_resp.status_code == 200:
+            status_data = status_resp.json()
+            details["status"] = status_data
+            last_tick = status_data.get("last_tick_time")
+            if isinstance(last_tick, (int, float)) and last_tick > 0:
+                tick_age = time.time() - last_tick
+                details["tick_age_seconds"] = tick_age
+                if tick_age > 120:
+                    details["health"] = "stale"
+                else:
+                    details["health"] = "ok"
+    except Exception:
+        details.setdefault("health", "unknown")
+
+    return details
+
+
+def _confirm_orchestrator_at_port(repo_root: Path, port: int) -> bool:
+    """Confirm the orchestrator at a port belongs to the repo_root."""
+    import httpx
+
+    try:
+        resp = httpx.get(f"http://127.0.0.1:{port}/api/info", timeout=0.6)
+        if resp.status_code != 200:
+            return False
+        info = resp.json()
+        return info.get("repo_root") == str(repo_root)
+    except Exception:
+        return False
+
+
 def _is_shutdown_complete(port: int | None) -> bool:
     """Check if an orchestrator is in shutdown-complete state.
 
@@ -498,6 +582,7 @@ async def control_start(request: Request) -> JSONResponse:
     JSON body:
         repo_root: str - Repository root path
         config_name: str (optional) - Config file name (default: default.yaml)
+        force_restart: bool (optional) - Force restart if an untracked orchestrator is detected
 
     If the orchestrator is in shutdown-complete state (shutdown requested,
     no active sessions), it will be automatically restarted.
@@ -527,8 +612,27 @@ async def control_start(request: Request) -> JSONResponse:
     config_name = body.get("config_name", "default.yaml")
     if not config_name.endswith(".yaml"):
         config_name += ".yaml"
+    force_restart = bool(body.get("force_restart", False))
 
     try:
+        detected = _detect_orchestrator_by_port(repo_root, config_name)
+        if detected and not force_restart:
+            return JSONResponse({
+                "error": "orphaned_running",
+                "status": "running",
+                "port": detected["port"],
+                "repo_root": str(repo_root),
+                "health": detected.get("health", "unknown"),
+                "tick_age_seconds": detected.get("tick_age_seconds"),
+            }, status_code=409)
+        if detected and force_restart:
+            stopped = supervisor.stop_by_port(detected["port"], force=True)
+            if not stopped:
+                return JSONResponse({
+                    "error": "stop_failed",
+                    "detail": "Unable to stop existing orchestrator process.",
+                }, status_code=500)
+
         # Update selected config in registry
         set_selected_config(repo_root, config_name)
 
@@ -593,6 +697,7 @@ async def control_stop(request: Request) -> JSONResponse:
     JSON body:
         repo_root: str - Repository root path
         force: bool (optional) - Force kill (SIGKILL) instead of graceful (SIGTERM)
+        port: int (optional) - Port to stop when no lock exists (untracked process)
     """
     from ..infra import supervisor
 
@@ -614,9 +719,22 @@ async def control_stop(request: Request) -> JSONResponse:
         )
 
     force = body.get("force", False)
+    port_override = body.get("port")
+    if port_override is not None and (not isinstance(port_override, int) or port_override < 1 or port_override > 65535):
+        return JSONResponse({"error": "Invalid port"}, status_code=400)
+
     logger.info("[control_stop] Calling supervisor.stop(%s, force=%s)", repo_root, force)
 
-    stopped = supervisor.stop(repo_root, force=force)
+    status_info = supervisor.status(repo_root)
+    if status_info.state != "running" and port_override:
+        if not _confirm_orchestrator_at_port(repo_root, port_override):
+            return JSONResponse({
+                "error": "port_mismatch",
+                "detail": "No matching orchestrator found on the provided port.",
+            }, status_code=409)
+        stopped = supervisor.stop_by_port(port_override, force=force)
+    else:
+        stopped = supervisor.stop(repo_root, force=force)
     logger.info("[control_stop] supervisor.stop returned: %s", stopped)
 
     if stopped:
@@ -629,11 +747,15 @@ async def control_stop(request: Request) -> JSONResponse:
 
 
 @control_app.get("/control/orchestrator/status")
-async def control_status(repo_root: str = Query(...)) -> JSONResponse:
+async def control_status(
+    repo_root: str = Query(...),
+    config_name: str | None = Query(None),
+) -> JSONResponse:
     """Get the status of the orchestrator for a repository.
 
     Query params:
         repo_root: str - Repository root path
+        config_name: str (optional) - Config name to probe for untracked processes
     """
     from ..infra import supervisor
 
@@ -645,6 +767,25 @@ async def control_status(repo_root: str = Query(...)) -> JSONResponse:
         )
 
     status_info = supervisor.status(path)
+    if status_info.state != "running":
+        selected = config_name or _get_selected_config(path)
+        detected = _detect_orchestrator_by_port(path, selected)
+        if detected:
+            status_data = detected.get("status", {})
+            return JSONResponse({
+                "state": "running",
+                "pid": None,
+                "port": detected["port"],
+                "started_at": None,
+                "recovered": False,
+                "error": None,
+                "orphaned": True,
+                "health": detected.get("health", "unknown"),
+                "tick_age_seconds": detected.get("tick_age_seconds"),
+                "shutdown_requested": status_data.get("shutdown_requested", False),
+                "active_session_count": len(status_data.get("active_sessions", [])),
+            })
+
     return JSONResponse(status_info.to_dict())
 
 
@@ -988,6 +1129,24 @@ def _build_repos_status() -> list[dict[str, Any]]:
             "configs": available_configs,
             "selected_config": repo.selected_config,  # Last used config
         }
+
+        if status_info and status_info.state != "running" and path.exists():
+            detected = _detect_orchestrator_by_port(path, repo.selected_config)
+            if detected:
+                status_data = detected.get("status", {})
+                repo_data["status"] = {
+                    "state": "running",
+                    "pid": None,
+                    "port": detected["port"],
+                    "started_at": None,
+                    "recovered": False,
+                    "error": None,
+                    "orphaned": True,
+                    "health": detected.get("health", "unknown"),
+                    "tick_age_seconds": detected.get("tick_age_seconds"),
+                    "shutdown_requested": status_data.get("shutdown_requested", False),
+                    "active_session_count": len(status_data.get("active_sessions", [])),
+                }
 
         # If running, fetch internal state from the orchestrator
         if status_info and status_info.state == "running" and status_info.port:

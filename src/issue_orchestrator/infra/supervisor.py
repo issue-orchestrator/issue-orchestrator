@@ -203,6 +203,20 @@ def _kill_by_port(port: int, use_sigkill: bool = False) -> bool:
     return False
 
 
+def _is_port_in_use(port: int) -> bool:
+    """Return True if any process is bound to the given port."""
+    try:
+        result = subprocess.run(
+            ["lsof", "-t", f"-i:{port}"],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except FileNotFoundError:
+        logger.debug("lsof not available for port check")
+        return False
+
+
 def _try_graceful_shutdown(port: int, pid: int, timeout: float = 2.0) -> bool:
     """Try to shut down orchestrator via HTTP API.
 
@@ -238,6 +252,39 @@ def _try_graceful_shutdown(port: int, pid: int, timeout: float = 2.0) -> bool:
         logger.debug("HTTP shutdown failed: %s, will use signals", e)
     except Exception as e:
         logger.debug("HTTP shutdown failed: %s, will use signals", e)
+    return False
+
+
+def stop_by_port(port: int, force: bool = False) -> bool:
+    """Stop an orchestrator by port when no lock file is available."""
+    if not port:
+        return False
+
+    if not force:
+        import urllib.request
+
+        try:
+            logger.info("Requesting shutdown on port %d", port)
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/shutdown",
+                method="POST",
+                data=b"",
+            )
+            with urllib.request.urlopen(req, timeout=2.0):
+                pass
+        except Exception as e:
+            logger.debug("HTTP shutdown failed on port %d: %s", port, e)
+
+        import time
+        time.sleep(0.5)
+        if not _is_port_in_use(port):
+            return True
+
+    killed = _kill_by_port(port, use_sigkill=force)
+    if killed:
+        import time
+        time.sleep(0.5)
+        return not _is_port_in_use(port)
     return False
 
 

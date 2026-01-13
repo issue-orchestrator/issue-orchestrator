@@ -296,6 +296,7 @@ enforce_hooks: true               # (default) Install pre-push hooks
 pre_push_hook: null               # (default: uses bundled hook)
 setup_worktree: []                # (default) Commands after worktree creation
 reuse_push_preflight: true        # (default) Dry-run push before reusing worktrees
+allow_no_verify_dry_run_preflight: true  # (default) Allow git push --dry-run --no-verify during reuse preflight
 ```
 
 Example setup commands:

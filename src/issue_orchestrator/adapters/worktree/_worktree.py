@@ -68,6 +68,20 @@ CLAUDE_SETTINGS_FOR_AGENTS = {
     }
 }
 
+ALLOW_NO_VERIFY_DRY_RUN_PATH = Path(".issue-orchestrator") / "allow-no-verify-dry-run"
+
+
+def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:
+    flag_path = worktree_path / ALLOW_NO_VERIFY_DRY_RUN_PATH
+    try:
+        if allow:
+            flag_path.parent.mkdir(parents=True, exist_ok=True)
+            flag_path.write_text("allow\n")
+        elif flag_path.exists():
+            flag_path.unlink()
+    except OSError:
+        logger.debug("Failed to update dry-run allow flag: %s", flag_path)
+
 
 class WorktreeError(Exception):
     """Raised when a worktree operation fails."""
@@ -245,11 +259,19 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
         return ResetInfo(success=False)
 
 
-def _push_dry_run_preflight(worktree_path: Path, branch_name: str) -> tuple[bool, str]:
+def _push_dry_run_preflight(
+    worktree_path: Path,
+    branch_name: str,
+    *,
+    allow_no_verify: bool,
+) -> tuple[bool, str]:
     """Check if a dry-run push would succeed for a reused worktree."""
     import time
 
-    cmd = ["push", "--dry-run", "--force-with-lease", "--no-verify", "-u", "origin", branch_name]
+    cmd = ["push", "--dry-run", "--force-with-lease"]
+    if allow_no_verify:
+        cmd.append("--no-verify")
+    cmd += ["-u", "origin", branch_name]
     last_error = ""
     for attempt in range(1, 4):
         result = _git_run(worktree_path, cmd, check=False)
@@ -820,6 +842,7 @@ def create_worktree(
         reuse_options = WorktreeReuseOptions()
     reuse_push_preflight = reuse_options.reuse_push_preflight
     worktree_branch_on_recreate = reuse_options.worktree_branch_on_recreate
+    allow_no_verify_dry_run_preflight = reuse_options.allow_no_verify_dry_run_preflight
     repo_root = Path(repo_root).resolve()
     logger.info(
         issue_log(issue_number, "Create worktree requested: branch=%s base=%s"),
@@ -930,7 +953,11 @@ def create_worktree(
                     # Fall through to fresh creation
                 else:
                     if reuse_push_preflight:
-                        ok, reason = _push_dry_run_preflight(existing_worktree, branch_name)
+                        ok, reason = _push_dry_run_preflight(
+                            existing_worktree,
+                            branch_name,
+                            allow_no_verify=allow_no_verify_dry_run_preflight,
+                        )
                         if not ok:
                             logger.warning(
                                 issue_log(issue_number, "Push preflight failed, deleting worktree: %s"),
@@ -949,6 +976,7 @@ def create_worktree(
                         if enforce_hooks:
                             install_hooks(existing_worktree, pre_push_hook)
                         install_claude_settings(existing_worktree)
+                        _configure_no_verify_dry_run(existing_worktree, allow_no_verify_dry_run_preflight)
                         install_venv_symlink(existing_worktree, repo_root)
                         sync_cli_tools(existing_worktree, repo_root)
                         logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), existing_worktree)
@@ -1018,7 +1046,11 @@ def create_worktree(
                     # Fall through to fresh creation
                 else:
                     if reuse_push_preflight:
-                        ok, reason = _push_dry_run_preflight(worktree_path, existing_branch)
+                        ok, reason = _push_dry_run_preflight(
+                            worktree_path,
+                            existing_branch,
+                            allow_no_verify=allow_no_verify_dry_run_preflight,
+                        )
                         if not ok:
                             logger.warning(
                                 issue_log(issue_number, "Push preflight failed, deleting worktree: %s"),
@@ -1037,6 +1069,7 @@ def create_worktree(
                         if enforce_hooks:
                             install_hooks(worktree_path, pre_push_hook)
                         install_claude_settings(worktree_path)
+                        _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
                         install_venv_symlink(worktree_path, repo_root)
                         sync_cli_tools(worktree_path, repo_root)
                         logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), worktree_path)
@@ -1136,6 +1169,7 @@ def create_worktree(
 
         # Install Claude Code settings with exit hook to enforce agent-done
         install_claude_settings(worktree_path)
+        _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
 
         # Symlink .venv so agent has access to dev tools for validation
         install_venv_symlink(worktree_path, repo_root)

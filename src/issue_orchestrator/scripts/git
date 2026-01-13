@@ -10,9 +10,50 @@ set -euo pipefail
 
 cmd="${1:-}"
 
+function has_arg() {
+    local needle="$1"
+    shift
+    for arg in "$@"; do
+        if [[ "$arg" == "$needle" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+function allow_dry_run_no_verify() {
+    if ! has_arg "--no-verify" "$@"; then
+        return 1
+    fi
+    if ! has_arg "--dry-run" "$@" && ! has_arg "-n" "$@"; then
+        return 1
+    fi
+    local git_bin=""
+    for git_path in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
+        if [[ -x "$git_path" ]]; then
+            git_bin="$git_path"
+            break
+        fi
+    done
+    if [[ -z "$git_bin" ]]; then
+        git_bin="git"
+    fi
+    local root
+    root="$("$git_bin" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -z "$root" ]]; then
+        return 1
+    fi
+    if [[ -f "$root/.issue-orchestrator/allow-no-verify-dry-run" ]]; then
+        return 0
+    fi
+    return 1
+}
+
 # Block push operations unless authorized
 if [[ "$cmd" == "push" ]]; then
-    if [[ "${ORCHESTRATOR_GH_AUTH:-}" != "agent-done-authorized" ]]; then
+    if allow_dry_run_no_verify "$@"; then
+        : # allowed for preflight
+    elif [[ "${ORCHESTRATOR_GH_AUTH:-}" != "agent-done-authorized" ]]; then
         echo "" >&2
         echo "╔════════════════════════════════════════════════════════════════╗" >&2
         echo "║  ❌ BLOCKED: 'git push' is not allowed                         ║" >&2
