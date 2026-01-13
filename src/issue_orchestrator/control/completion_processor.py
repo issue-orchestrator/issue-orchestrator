@@ -33,7 +33,7 @@ from ..domain.models import (
 from ..domain.events import EventBus, SessionEvent
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..infra.session_output import SessionOutputManager, ensure_session_output_dir
-from .validation import PublishGate
+from .validation import PublishGate, ValidationRecord, ValidationRecordStore
 
 logger = logging.getLogger(__name__)
 
@@ -237,7 +237,10 @@ class CompletionProcessor:
         publish_actions = {RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR}
         return bool(set(record.requested_actions) & publish_actions)
 
-    def _check_publish_gate(self, worktree: Path) -> tuple[bool, str]:
+    def _check_publish_gate(
+        self,
+        worktree: Path,
+    ) -> tuple[bool, str, ValidationRecord | None]:
         """Check if publishing is allowed by the publish gate.
 
         Args:
@@ -248,16 +251,74 @@ class CompletionProcessor:
         """
         if self.publish_gate is None:
             # No gate configured = allowed
-            return True, ""
+            return True, "", None
 
         result = self.publish_gate.check()
         if result.allowed:
             cache_note = " (cached)" if result.cache_hit else ""
             logger.info("Publish gate passed%s: %s", cache_note, result.reason)
-            return True, result.reason
+            return True, result.reason, result.record
         else:
             logger.warning("Publish gate failed: %s", result.reason)
-            return False, result.reason
+            return False, result.reason, result.record
+
+    @staticmethod
+    def _load_validation_record(record_path: Path) -> ValidationRecord | None:
+        try:
+            data = json.loads(record_path.read_text())
+        except OSError:
+            return None
+        except json.JSONDecodeError:
+            return None
+        try:
+            return ValidationRecord.from_dict(data)
+        except TypeError:
+            return None
+
+    def _attach_validation_artifacts(
+        self,
+        worktree: Path,
+        session_name: str,
+        record: ValidationRecord | None = None,
+        record_path: Path | None = None,
+    ) -> None:
+        run_dir = ensure_session_output_dir(worktree, session_name)
+        if record_path is None and record is not None:
+            record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
+        if record_path is not None:
+            SessionOutputManager.update_manifest(
+                run_dir,
+                {"validation_record_path": str(record_path)},
+            )
+            try:
+                (run_dir / "validation-record.path").write_text(str(record_path))
+            except OSError:
+                logger.debug("Failed to write validation pointer for %s", run_dir)
+        if record is None and record_path is not None and record_path.exists():
+            record = self._load_validation_record(record_path)
+        if record is None:
+            return
+        updates: dict[str, str] = {}
+        if record.stdout_path:
+            stdout_src = worktree / record.stdout_path
+            if stdout_src.exists():
+                stdout_dest = run_dir / "validation-stdout.log"
+                try:
+                    stdout_dest.write_text(stdout_src.read_text(errors="ignore"))
+                    updates["validation_stdout"] = str(stdout_dest)
+                except OSError:
+                    logger.debug("Failed to write validation stdout for %s", run_dir)
+        if record.stderr_path:
+            stderr_src = worktree / record.stderr_path
+            if stderr_src.exists():
+                stderr_dest = run_dir / "validation-stderr.log"
+                try:
+                    stderr_dest.write_text(stderr_src.read_text(errors="ignore"))
+                    updates["validation_stderr"] = str(stderr_dest)
+                except OSError:
+                    logger.debug("Failed to write validation stderr for %s", run_dir)
+        if updates:
+            SessionOutputManager.update_manifest(run_dir, updates)
 
     def process(
         self, worktree: Path, issue_number: int, issue_title: str,
@@ -295,19 +356,13 @@ class CompletionProcessor:
                 errors=["Completion record not found or invalid"],
             )
 
-        session_name = SessionOutputManager.session_name_from_path(completion_path)
+        session_name = SessionOutputManager.session_name_from_path(completion_path) or record.session_id
         if record.validation_record_path and session_name:
-            run_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name=session_name)
-            if run_dir:
-                try:
-                    SessionOutputManager.update_manifest(
-                        run_dir,
-                        {"validation_record_path": record.validation_record_path},
-                    )
-                    validation_pointer = run_dir / "validation-record.path"
-                    validation_pointer.write_text(record.validation_record_path)
-                except OSError:
-                    logger.debug("Failed to write validation pointer for %s", run_dir)
+            self._attach_validation_artifacts(
+                worktree,
+                session_name,
+                record_path=Path(record.validation_record_path),
+            )
 
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)
@@ -320,8 +375,16 @@ class CompletionProcessor:
 
         # Check publish gate if actions require it
         if self._requires_publish_gate(record):
-            gate_passed, gate_reason = self._check_publish_gate(worktree)
+            gate_passed, gate_reason, gate_record = self._check_publish_gate(worktree)
             if not gate_passed:
+                if gate_record and session_name:
+                    record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
+                    self._attach_validation_artifacts(
+                        worktree,
+                        session_name,
+                        record=gate_record,
+                        record_path=record_path,
+                    )
                 # Add validation-failed label so user knows why issue is stuck
                 validation_failed_label = self._get_label("validation_failed")
                 try:
