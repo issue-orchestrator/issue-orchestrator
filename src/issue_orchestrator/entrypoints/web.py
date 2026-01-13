@@ -67,6 +67,29 @@ def get_orchestrator():
     return _orchestrator
 
 
+def _collect_worktree_bases(config) -> list[Path]:
+    bases: list[Path] = []
+    if config.worktree_base:
+        bases.append(Path(config.worktree_base))
+    agents = getattr(config, "agents", {}) or {}
+    for agent in agents.values():
+        agent_base = getattr(agent, "worktree_base", None)
+        if agent_base:
+            bases.append(Path(agent_base))
+    bases.append(config.repo_root.parent)
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for base in bases:
+        if not base:
+            continue
+        base = base.resolve()
+        if base in seen:
+            continue
+        seen.add(base)
+        unique.append(base)
+    return unique
+
+
 def trigger_server_shutdown():
     """Trigger uvicorn server shutdown."""
     global _server
@@ -805,10 +828,21 @@ async def get_session_log(issue_number: int) -> JSONResponse:
     worktree_path = _find_worktree_path()
 
     if not worktree_path:
-        return JSONResponse({
-            "error": f"No worktree path found for issue #{issue_number}",
-            "hint": "Session may have been cleaned up or never started"
-        }, status_code=404)
+        from ..infra.session_output import find_run_dir_for_issue
+
+        repo_name = orchestrator.config.repo.split("/")[-1] if orchestrator.config.repo else orchestrator.config.repo_root.name
+        run_dir, worktree_path = find_run_dir_for_issue(
+            _collect_worktree_bases(orchestrator.config),
+            repo_name,
+            issue_number,
+        )
+        if run_dir and worktree_path:
+            worktree_path = Path(worktree_path)
+        else:
+            return JSONResponse({
+                "error": f"No worktree path found for issue #{issue_number}",
+                "hint": "Session may have been cleaned up or never started"
+            }, status_code=404)
 
     # Convert path to Claude's escaped format
     # /path/to/worktree -> -path-to-worktree
@@ -883,12 +917,21 @@ async def get_agent_ui_log(issue_number: int) -> JSONResponse:
                 break
 
     if not worktree_path:
-        return JSONResponse({
-            "error": f"No worktree path found for issue #{issue_number}",
-            "hint": "Session may have been cleaned up or never started"
-        }, status_code=404)
+        from ..infra.session_output import find_run_dir_for_issue, find_latest_session_log_path, find_session_log_path
 
-    from ..infra.session_output import find_latest_session_log_path, find_session_log_path
+        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
+        _, worktree_path = find_run_dir_for_issue(
+            _collect_worktree_bases(_orchestrator.config),
+            repo_name,
+            issue_number,
+        )
+        if not worktree_path:
+            return JSONResponse({
+                "error": f"No worktree path found for issue #{issue_number}",
+                "hint": "Session may have been cleaned up or never started"
+            }, status_code=404)
+    else:
+        from ..infra.session_output import find_latest_session_log_path, find_session_log_path
 
     log_path = None
     if session:
@@ -928,14 +971,6 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    def _fallback_worktree_path() -> Path | None:
-        if not _orchestrator:
-            return None
-        config = _orchestrator.config
-        worktree_base = config.worktree_base or config.repo_root.parent
-        repo_name = config.repo.split("/")[-1] if config.repo else config.repo_root.name
-        return Path(worktree_base) / f"{repo_name}-{issue_number}"
-
     session = None
     worktree_path = None
     for s in _orchestrator.state.active_sessions:
@@ -950,9 +985,36 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
                 break
 
     if not worktree_path:
-        candidate = _fallback_worktree_path()
-        if candidate and candidate.exists():
-            worktree_path = candidate
+        from ..infra.session_output import (
+            SessionOutputManager,
+            SESSION_MANIFEST_NAME,
+            find_run_dir_for_issue,
+        )
+
+        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
+        run_dir, worktree_path = find_run_dir_for_issue(
+            _collect_worktree_bases(_orchestrator.config),
+            repo_name,
+            issue_number,
+        )
+        if run_dir:
+            SessionOutputManager.ensure_claude_log_attached(run_dir)
+            manifest_path = run_dir / SESSION_MANIFEST_NAME
+            if not manifest_path.exists():
+                return JSONResponse({
+                    "run_dir": str(run_dir),
+                    "session_name": session.terminal_id if session else None,
+                    "manifest": None,
+                })
+            try:
+                manifest = json.loads(manifest_path.read_text())
+                return JSONResponse({
+                    "run_dir": str(run_dir),
+                    "session_name": session.terminal_id if session else None,
+                    "manifest": manifest,
+                })
+            except Exception as e:
+                return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
 
     if not worktree_path:
         return JSONResponse({
@@ -970,6 +1032,7 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
             "error": "No session run found",
             "hint": "Session may not have started or output was removed",
         }, status_code=404)
+    SessionOutputManager.ensure_claude_log_attached(run_dir)
 
     manifest_path = run_dir / SESSION_MANIFEST_NAME
     if not manifest_path.exists():

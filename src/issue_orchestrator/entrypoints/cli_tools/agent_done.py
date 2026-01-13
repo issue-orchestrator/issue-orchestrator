@@ -37,6 +37,7 @@ from ...domain.models import (
     COMPLETION_RECORD_PATH,
 )
 from ...control.validation import AgentGate, AgentGateResult
+from ...infra.session_output import SessionOutputManager, ensure_session_output_dir
 
 
 class AgentStatus:
@@ -119,6 +120,53 @@ def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     if match:
         return (True, match.group(1))
     return (False, None)
+
+
+def _record_validation_artifacts(
+    worktree_root: Path,
+    session_id: str | None,
+    validation_result: AgentGateResult,
+) -> None:
+    """Attach validation artifacts to the session output for diagnostics."""
+    if not session_id:
+        return
+    record = validation_result.record
+    record_path = validation_result.record_path
+    if not record_path and not record:
+        return
+
+    run_dir = ensure_session_output_dir(worktree_root, session_id)
+    updates: dict[str, str] = {}
+    if record_path:
+        updates["validation_record_path"] = record_path
+    updates["validation_status"] = "passed" if validation_result.passed else "failed"
+    if not validation_result.passed:
+        updates["validation_reason"] = validation_result.reason
+
+    if updates:
+        SessionOutputManager.update_manifest(run_dir, updates)
+
+    if not record:
+        return
+
+    if record.stdout_path:
+        stdout_src = worktree_root / record.stdout_path
+        if stdout_src.exists():
+            stdout_dest = run_dir / "validation-stdout.log"
+            try:
+                stdout_dest.write_text(stdout_src.read_text(errors="ignore"))
+                SessionOutputManager.update_manifest(run_dir, {"validation_stdout": str(stdout_dest)})
+            except OSError:
+                logger.debug("Failed to write validation stdout for %s", run_dir)
+    if record.stderr_path:
+        stderr_src = worktree_root / record.stderr_path
+        if stderr_src.exists():
+            stderr_dest = run_dir / "validation-stderr.log"
+            try:
+                stderr_dest.write_text(stderr_src.read_text(errors="ignore"))
+                SessionOutputManager.update_manifest(run_dir, {"validation_stderr": str(stderr_dest)})
+            except OSError:
+                logger.debug("Failed to write validation stderr for %s", run_dir)
 
 
 def die(message: str) -> NoReturn:
@@ -602,6 +650,7 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     if should_validate:
         validation_result = run_validation(worktree_root, verbose=args.verbose)
         if validation_result and not validation_result.passed:
+            _record_validation_artifacts(worktree_root, record.session_id, validation_result)
             print(f"\n{'='*60}")
             print("❌ VALIDATION FAILED - agent-done cannot complete")
             print(f"{'='*60}")
@@ -653,8 +702,8 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
         status_name = status.value if hasattr(status, 'value') else status
         print(f"Note: Skipping validation for '{status_name}' status (agent is reporting a problem)")
 
-    # If validation passed, include the record path in the completion record
-    if validation_result and validation_result.passed and validation_result.record_path:
+    # If validation ran, include the record path in the completion record
+    if validation_result and validation_result.record_path:
         record.validation_record_path = validation_result.record_path
 
     # Run preflight push check for statuses that will push

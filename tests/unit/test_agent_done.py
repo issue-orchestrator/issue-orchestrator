@@ -938,7 +938,7 @@ validation:
             os.chdir(original_cwd)
 
     def test_validation_failure_exits_with_error(self, tmp_path, capsys):
-        """Test that validation failure exits with error and does not write record."""
+        """Test that validation failure exits with error and writes diagnostics."""
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -982,6 +982,18 @@ validation:
             assert "Validation failed" in captured.out
             # Should NOT write completion record (exited before that)
             assert "Completion record written to" not in captured.out
+            # Should write validation details to session output
+            manifest_path = (
+                tmp_path
+                / ".issue-orchestrator"
+                / "sessions"
+                / "test-123"
+                / "manifest.json"
+            )
+            assert manifest_path.exists()
+            manifest = json.loads(manifest_path.read_text())
+            assert manifest.get("validation_record_path")
+            assert manifest.get("validation_status") == "failed"
         finally:
             os.chdir(original_cwd)
 

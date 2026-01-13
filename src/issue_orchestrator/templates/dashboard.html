@@ -1654,8 +1654,11 @@
             if (diagnosticPath) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(diagnosticPath)}')">Open Diagnostic</button>`;
             }
-            if (manifest.validation_record_path && worktree) {
-                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(worktree + '/' + manifest.validation_record_path)}')">Open Validation</button>`;
+            if (manifest.validation_record_path) {
+                const validationPath = manifest.validation_record_path.startsWith('/')
+                    ? manifest.validation_record_path
+                    : (worktree ? `${worktree}/${manifest.validation_record_path}` : manifest.validation_record_path);
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(validationPath)}')">Open Validation</button>`;
             }
             if (manifest.orchestrator_tail) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_tail)}')">Open Orchestrator Tail</button>`;

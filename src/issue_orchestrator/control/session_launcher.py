@@ -1313,6 +1313,9 @@ def handle_session_completion(
         session, status, pr_url_hint=pr_url_hint,
         processing_errors=processing_errors, diagnostic_path=diagnostic_path
     )
+    if session.worktree_path:
+        from ..infra.session_output import SessionOutputManager
+        SessionOutputManager.attach_claude_log(session.worktree_path, session.terminal_id)
 
     # Apply completion actions (from CompletionHandler policy)
     if result.actions:
