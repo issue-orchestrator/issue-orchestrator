@@ -36,6 +36,7 @@ from ...domain.models import (
     RequestedAction,
     COMPLETION_RECORD_PATH,
 )
+from ...domain.env_vars import EnvVars
 from ...control.validation import AgentGate, AgentGateResult
 
 
@@ -363,9 +364,11 @@ def find_worktree_root() -> Path:
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
     """Load validation configuration from the worktree.
 
-    Environment variable overrides (for testing):
-    - ORCHESTRATOR_VALIDATION_CMD: Override the validation command
-    - ORCHESTRATOR_VALIDATION_TIMEOUT: Override the timeout in seconds
+    Environment variable overrides (set by orchestrator in worktree sessions):
+    - EnvVars.VALIDATION_CMD: Override the validation command
+    - EnvVars.VALIDATION_TIMEOUT: Override the timeout in seconds
+
+    See domain/env_vars.py for the canonical env var names.
 
     Args:
         worktree: Path to the worktree root
@@ -373,12 +376,12 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
     Returns:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
-    import os
     from ...infra.config import load_validation_config
 
-    # Check for environment variable override (useful for e2e tests)
-    env_cmd = os.environ.get("ORCHESTRATOR_VALIDATION_CMD")
-    env_timeout = os.environ.get("ORCHESTRATOR_VALIDATION_TIMEOUT")
+    # Check for environment variable override (set by orchestrator in worktree sessions)
+    # Uses EnvVars constants from domain/env_vars.py (single source of truth)
+    env_cmd = os.environ.get(EnvVars.VALIDATION_CMD)
+    env_timeout = os.environ.get(EnvVars.VALIDATION_TIMEOUT)
     if env_cmd:
         timeout = int(env_timeout) if env_timeout else 300
         return env_cmd, timeout

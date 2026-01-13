@@ -39,6 +39,7 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
+from ..domain.env_vars import EnvVars
 from ..infra.session_output import ensure_session_output_dir, WORKTREE_NOTE_NAME
 from .worktree import Worktree, WorktreePreparationError
 from ..infra.logging_config import log_context
@@ -523,17 +524,18 @@ class SessionLauncher:
         )
         completion_path = get_completion_path(issue.agent_type, session_name=session_name)
         # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        env_exports += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
-        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue.number}'"
-        env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
+        # Uses EnvVars constants from domain/env_vars.py (single source of truth)
+        env_exports = f"export {EnvVars.COMPLETION_PATH}='{completion_path}'"
+        env_exports += f" {EnvVars.AGENT_LABEL}='{issue.agent_type}'"
+        env_exports += f" {EnvVars.ISSUE_NUMBER}='{issue.number}'"
+        env_exports += f" {EnvVars.API_PORT}='{self.config.web_port}'"
         if self.config.validation.cmd:
-            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
-            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
+            env_exports += f" {EnvVars.VALIDATION_CMD}='{self.config.validation.cmd}'"
+            env_exports += f" {EnvVars.VALIDATION_TIMEOUT}='{self.config.validation.timeout_seconds}'"
 
         if self.config.e2e_pr_labels:
             labels_str = ",".join(self.config.e2e_pr_labels)
-            env_exports += f" E2E_PR_LABELS='{labels_str}'"
+            env_exports += f" {EnvVars.E2E_PR_LABELS}='{labels_str}'"
         command = f"{env_exports} && {base_command}"
         logger.info(
             "[launch] Issue session command: issue=%s session=%s worktree=%s completion=%s command=%s",
@@ -779,13 +781,14 @@ class SessionLauncher:
         )
         completion_path = get_completion_path(agent_label, session_name=session_name)
         # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
-        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{review.issue_number}'"
-        env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
+        # Uses EnvVars constants from domain/env_vars.py (single source of truth)
+        env_exports = f"export {EnvVars.COMPLETION_PATH}='{completion_path}'"
+        env_exports += f" {EnvVars.AGENT_LABEL}='{agent_label}'"
+        env_exports += f" {EnvVars.ISSUE_NUMBER}='{review.issue_number}'"
+        env_exports += f" {EnvVars.API_PORT}='{self.config.web_port}'"
         if self.config.validation.cmd:
-            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
-            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
+            env_exports += f" {EnvVars.VALIDATION_CMD}='{self.config.validation.cmd}'"
+            env_exports += f" {EnvVars.VALIDATION_TIMEOUT}='{self.config.validation.timeout_seconds}'"
 
         command = f"{env_exports} && {base_command}"
         logger.info(
@@ -1024,13 +1027,14 @@ class SessionLauncher:
         )
         completion_path = get_completion_path(rework.agent_type, session_name=session_name)
         # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        env_exports += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"
-        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
-        env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
+        # Uses EnvVars constants from domain/env_vars.py (single source of truth)
+        env_exports = f"export {EnvVars.COMPLETION_PATH}='{completion_path}'"
+        env_exports += f" {EnvVars.AGENT_LABEL}='{rework.agent_type}'"
+        env_exports += f" {EnvVars.ISSUE_NUMBER}='{issue_number}'"
+        env_exports += f" {EnvVars.API_PORT}='{self.config.web_port}'"
         if self.config.validation.cmd:
-            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
-            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
+            env_exports += f" {EnvVars.VALIDATION_CMD}='{self.config.validation.cmd}'"
+            env_exports += f" {EnvVars.VALIDATION_TIMEOUT}='{self.config.validation.timeout_seconds}'"
 
         command = f"{env_exports} && {base_command}"
         logger.info(

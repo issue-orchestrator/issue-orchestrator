@@ -30,6 +30,9 @@ class EnvVars:
     # Optional session env vars
     SESSION_ID = "ORCHESTRATOR_SESSION_ID"
 
+    # E2E test labels (set for issue sessions)
+    E2E_PR_LABELS = "E2E_PR_LABELS"
+
     @classmethod
     def all_names(cls) -> list[str]:
         """Return all env var names (for clearing in tests)."""
@@ -41,6 +44,7 @@ class EnvVars:
             cls.VALIDATION_CMD,
             cls.VALIDATION_TIMEOUT,
             cls.SESSION_ID,
+            cls.E2E_PR_LABELS,
         ]
 
     @classmethod
