@@ -185,6 +185,15 @@
             color: #ff6b6b;
         }
         .issue-status { display: flex; align-items: center; }
+        .issue-detail { position: relative; }
+        .issue-detail .detail-link-indicator {
+            position: absolute;
+            right: 6px;
+            bottom: 4px;
+            font-size: 10px;
+            opacity: 0.8;
+            pointer-events: none;
+        }
         .issue-detail { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c9d1d9; }
         .detail-label { font-weight: 600; }
         .flow-stepper { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -1231,6 +1240,7 @@
                 <span class="issue-detail status-{{ issue.status }}" title="{{ issue.detail_reason if issue.detail_reason else '' }}">
                     <span class="status-dot" aria-hidden="true"></span>
                     <span class="detail-label">{{ issue.detail_label }}</span>
+                    <span class="detail-link-indicator" aria-hidden="true">↗</span>
                 </span>
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
                 <span class="issue-actions">
