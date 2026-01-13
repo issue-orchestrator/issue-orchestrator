@@ -26,6 +26,12 @@ class WorktreeInfo:
     commits_discarded: int = 0  # Count of commits discarded during reset (rebase failure)
 
 
+@dataclass
+class WorktreeReuseOptions:
+    """Options controlling worktree reuse behavior."""
+    reuse_push_preflight: bool = True
+
+
 class WorktreeManager(Protocol):
     """Protocol for worktree lifecycle management.
 
@@ -42,7 +48,7 @@ class WorktreeManager(Protocol):
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
-        reuse_push_preflight: bool = True,
+        reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue.
 
@@ -54,7 +60,7 @@ class WorktreeManager(Protocol):
             enforce_hooks: Whether to install pre-push hooks
             pre_push_hook: Custom pre-push hook path
             branch_name: Specific branch to checkout (for reviews)
-            reuse_push_preflight: Whether to dry-run push before reusing worktree
+            reuse_options: Options controlling reuse behavior
 
         Returns:
             WorktreeInfo with path and branch name

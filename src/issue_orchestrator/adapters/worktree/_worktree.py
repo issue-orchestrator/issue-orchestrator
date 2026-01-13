@@ -7,11 +7,15 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
 from ..git.git_cli import GitCLI, SubprocessCommandRunner
+
+if TYPE_CHECKING:
+    from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 
 
 @dataclass
@@ -721,7 +725,7 @@ def create_worktree(
     enforce_hooks: bool = True,
     pre_push_hook: Path | None = None,
     branch_name: str | None = None,
-    reuse_push_preflight: bool = True,
+    reuse_options: WorktreeReuseOptions | None = None,
     policy: WorktreePolicy | None = None,
 ) -> tuple[Path, str, str, str | None, bool, int, int]:
     """
@@ -738,6 +742,7 @@ def create_worktree(
         enforce_hooks: Whether to install pre-push hooks
         pre_push_hook: Custom pre-push hook path
         branch_name: Specific branch to use (for checking out existing branches like PR reviews)
+        reuse_options: Options controlling reuse behavior
         policy: Worktree setup policy (defaults to ValidateOrDeletePolicy)
 
     Returns:
@@ -754,6 +759,9 @@ def create_worktree(
     if policy is None:
         from .worktree_policy import default_policy
         policy = default_policy
+    if reuse_options is None:
+        reuse_options = WorktreeReuseOptions()
+    reuse_push_preflight = reuse_options.reuse_push_preflight
     repo_root = Path(repo_root).resolve()
     logger.info(
         issue_log(issue_number, "Create worktree requested: branch=%s base=%s"),

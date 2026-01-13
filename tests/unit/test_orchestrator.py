@@ -20,7 +20,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
-from issue_orchestrator.ports.worktree_manager import WorktreeInfo
+from issue_orchestrator.ports.worktree_manager import WorktreeInfo, WorktreeReuseOptions
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
 
 
@@ -42,7 +42,7 @@ class MockWorktreeManager:
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
-        reuse_push_preflight: bool = True,
+        reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         """Track create calls and return mock WorktreeInfo."""
         self.create_calls.append({
@@ -53,7 +53,7 @@ class MockWorktreeManager:
             "enforce_hooks": enforce_hooks,
             "pre_push_hook": pre_push_hook,
             "branch_name": branch_name,
-            "reuse_push_preflight": reuse_push_preflight,
+            "reuse_options": reuse_options,
         })
         return WorktreeInfo(path=self.worktree_path, branch_name=self.branch_name)
 

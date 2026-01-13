@@ -51,7 +51,7 @@ from ..ports import (
     WorkingCopy,
     CommandRunner,
 )
-from ..ports.worktree_manager import WorktreeManager, WorktreeInfo
+from ..ports.worktree_manager import WorktreeManager, WorktreeInfo, WorktreeReuseOptions
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
@@ -198,6 +198,11 @@ class SessionLauncher:
         self._get_review_machine = get_review_machine
         self._refresh_issue = refresh_issue_fn
         self._dependency_evaluator = dependency_evaluator
+
+    def _worktree_reuse_options(self) -> WorktreeReuseOptions:
+        return WorktreeReuseOptions(
+            reuse_push_preflight=self.config.reuse_push_preflight,
+        )
 
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
@@ -362,7 +367,7 @@ class SessionLauncher:
             worktree_base=worktree_base,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_push_preflight=self.config.reuse_push_preflight,
+            reuse_options=self._worktree_reuse_options(),
         )
         worktree_path = worktree_info.path
         branch_name = worktree_info.branch_name
@@ -697,7 +702,7 @@ class SessionLauncher:
             branch_name=review.branch_name,
             worktree_base=worktree_base,
             enforce_hooks=False,
-            reuse_push_preflight=self.config.reuse_push_preflight,
+            reuse_options=self._worktree_reuse_options(),
         )
         worktree_path = worktree_info.path
 
@@ -972,7 +977,7 @@ class SessionLauncher:
             worktree_base=worktree_base,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_push_preflight=self.config.reuse_push_preflight,
+            reuse_options=self._worktree_reuse_options(),
         )
         worktree_path = worktree_info.path
 

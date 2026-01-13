@@ -5,7 +5,7 @@ Implements the WorktreeManager port using the git worktree implementation.
 
 from pathlib import Path
 
-from ..ports.worktree_manager import WorktreeInfo
+from ..ports.worktree_manager import WorktreeInfo, WorktreeReuseOptions
 from ..adapters.worktree._worktree import (
     create_worktree,
     remove_worktree,
@@ -28,7 +28,7 @@ class GitWorktreeManager:
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
-        reuse_push_preflight: bool = True,
+        reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue."""
         path, branch, reuse_status, reuse_reason, rebase_failed, uncommitted_discarded, commits_discarded = create_worktree(
@@ -39,7 +39,7 @@ class GitWorktreeManager:
             enforce_hooks=enforce_hooks,
             pre_push_hook=pre_push_hook,
             branch_name=branch_name,
-            reuse_push_preflight=reuse_push_preflight,
+            reuse_options=reuse_options,
         )
         return WorktreeInfo(
             path=path,
