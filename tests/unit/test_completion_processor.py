@@ -273,6 +273,7 @@ class TestCompletionProcessorPRActions:
         call_args = mock_pr_adapter.create_pr.call_args
         assert call_args.kwargs["title"] == "#123: Add feature"
         assert call_args.kwargs["head"] == "issue-123"
+        assert call_args.kwargs["draft"] is True
 
     def test_push_failure_halts_pr_creation(
         self, processor, mock_git_adapter, mock_pr_adapter, worktree_with_completion

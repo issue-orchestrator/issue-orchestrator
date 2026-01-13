@@ -55,7 +55,7 @@ class PRAdapter(Protocol):
     """Protocol for PR operations."""
 
     def create_pr(
-        self, title: str, body: str, head: str, base: str = "main"
+        self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None
     ) -> PRInfo: ...
     def add_comment(self, issue_or_pr_number: int, body: str) -> str: ...
 
@@ -475,6 +475,7 @@ class CompletionProcessor:
                         body=pr_body,
                         head=branch,
                         base="main",
+                        draft=True,
                     )
                     pr_url = pr.url
                     actions_taken.append(f"Created PR #{pr.number}")

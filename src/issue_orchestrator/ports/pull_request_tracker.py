@@ -35,6 +35,7 @@ class PRInfo:
     body: str
     state: str  # "open", "closed", "merged"
     labels: list[str]
+    draft: bool | None = None
 
 
 class PullRequestTracker(Protocol):
@@ -135,7 +136,7 @@ class PullRequestTracker(Protocol):
         ...
 
     def create_pr(
-        self, title: str, body: str, head: str, base: str = "main"
+        self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None
     ) -> PRInfo:
         """Create a new pull request.
 
@@ -144,6 +145,7 @@ class PullRequestTracker(Protocol):
             body: The description/body text for the PR.
             head: The head branch name (source branch with changes).
             base: The base branch name (target branch). Defaults to "main".
+            draft: Whether to create the PR as a draft. Defaults to None (provider default).
 
         Returns:
             A PRInfo object representing the newly created PR.
@@ -152,6 +154,15 @@ class PullRequestTracker(Protocol):
             RepositoryError: If there's an error creating the PR.
             BranchNotFoundError: If the head or base branch doesn't exist.
             ValidationError: If the title or body is invalid.
+        """
+        ...
+
+    def set_pr_draft(self, pr_number: int, draft: bool) -> None:
+        """Set draft status on a pull request.
+
+        Args:
+            pr_number: The PR number to update.
+            draft: True to mark as draft, False to mark ready for review.
         """
         ...
 

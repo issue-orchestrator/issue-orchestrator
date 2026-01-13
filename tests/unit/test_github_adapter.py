@@ -721,6 +721,7 @@ class TestPROperations:
             body="PR body",
             head="feature",
             base="main",
+            draft=None,
         )
         # Should verify PR creation
         mock_verification_service.verify_condition.assert_called_once()

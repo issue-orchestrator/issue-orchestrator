@@ -613,13 +613,33 @@ class GitHubHttpClient:
         )
         return _search_items(payload)
 
-    def create_pr(self, title: str, body: str, head: str, base: str = "main") -> dict[str, Any] | None:
+    def create_pr(
+        self,
+        title: str,
+        body: str,
+        head: str,
+        base: str = "main",
+        draft: bool | None = None,
+    ) -> dict[str, Any] | None:
+        body_payload: dict[str, Any] = {"title": title, "body": body, "head": head, "base": base}
+        if draft is not None:
+            body_payload["draft"] = draft
         payload = self._request_json(
             "POST",
             f"/repos/{self._config.repo}/pulls",
-            json_body={"title": title, "body": body, "head": head, "base": base},
+            json_body=body_payload,
             use_cache=False,
             caller="create_pr",
+        )
+        return payload if isinstance(payload, dict) else None
+
+    def set_pr_draft(self, pr_number: int, draft: bool) -> dict[str, Any] | None:
+        payload = self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/pulls/{pr_number}",
+            json_body={"draft": draft},
+            use_cache=False,
+            caller="set_pr_draft",
         )
         return payload if isinstance(payload, dict) else None
 

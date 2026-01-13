@@ -528,12 +528,13 @@ class GitHubAdapter:
         body: str,
         head: str,
         base: str,
+        draft: bool | None = None,
     ) -> dict[str, Any]:
         import time
 
         for attempt in range(1, 4):
             try:
-                output = self._client.create_pr(title=title, body=body, head=head, base=base)
+                output = self._client.create_pr(title=title, body=body, head=head, base=base, draft=draft)
                 if output is None:
                     raise GitHubHttpError("Failed to parse PR create response")
                 return output
@@ -818,7 +819,12 @@ class GitHubAdapter:
             return []
 
     def create_pr(
-        self, title: str, body: str, head: str, base: str = "main"
+        self,
+        title: str,
+        body: str,
+        head: str,
+        base: str = "main",
+        draft: bool | None = None,
     ) -> PRInfo:
         """Create a new pull request, or return existing PR if one exists for the branch.
 
@@ -830,6 +836,7 @@ class GitHubAdapter:
             body: The description/body text for the PR.
             head: The head branch name (source branch with changes).
             base: The base branch name (target branch).
+            draft: Whether to create the PR as a draft.
 
         Returns:
             A PRInfo object representing the created or existing PR.
@@ -857,6 +864,7 @@ class GitHubAdapter:
                 body=body,
                 state="open",
                 labels=[],
+                draft=draft,
             )
             # Cache the dry-run PR so get_prs_for_issue() doesn't hit GitHub API
             self._cache_pr_info(pr_info)
@@ -872,7 +880,7 @@ class GitHubAdapter:
 
         try:
             logger.info("Creating PR via GitHub API: repo=%s head=%s base=%s", self.repo, head, base)
-            output = self._create_pr_with_retry(title=title, body=body, head=head, base=base)
+            output = self._create_pr_with_retry(title=title, body=body, head=head, base=base, draft=draft)
             if isinstance(output, dict):
                 pr_info = self._pr_info_from_api(output)
                 logger.info("Created PR #%s: %s", pr_info.number, pr_info.title)
@@ -896,6 +904,16 @@ class GitHubAdapter:
             raise GitHubHttpError("Failed to parse PR create response")
         except GitHubHttpError as e:
             logger.error("Failed to create PR: title=%s head=%s base=%s error=%s", title, head, base, e)
+            raise
+
+    def set_pr_draft(self, pr_number: int, draft: bool) -> None:
+        try:
+            output = self._client.set_pr_draft(pr_number, draft)
+            if isinstance(output, dict):
+                pr_info = self._pr_info_from_api(output)
+                self._cache_pr_info(pr_info)
+        except GitHubHttpError as e:
+            logger.error("Failed to update PR #%s draft=%s: %s", pr_number, draft, e)
             raise
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
@@ -1120,6 +1138,7 @@ class GitHubAdapter:
             body=pr.get("body", "") or "",
             state=str(pr.get("state", "open")).lower(),
             labels=labels,
+            draft=pr.get("draft"),
         )
 
     def _fetch_pr_info_from_search(self, pr: dict[str, Any]) -> PRInfo | None:
