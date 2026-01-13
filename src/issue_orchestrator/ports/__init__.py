@@ -45,7 +45,7 @@ from issue_orchestrator.ports.event_sink import EventSink, TraceEvent, NullEvent
 from issue_orchestrator.ports.session_runner import SessionRunner, NullSessionRunner
 from issue_orchestrator.ports.repository_host import RepositoryHost
 from issue_orchestrator.ports.issue_resolver import IssueResolver
-from issue_orchestrator.ports.worktree_manager import WorktreeManager, WorktreeInfo
+from issue_orchestrator.ports.worktree_manager import WorktreeManager, WorktreeInfo, WorktreeReuseOptions
 from issue_orchestrator.ports.command_runner import CommandRunner, CommandResult, NullCommandRunner
 from issue_orchestrator.ports.git import Git, GitResult, GitError
 from issue_orchestrator.ports.hook_verifier import HookVerifier, HookVerificationResult
@@ -87,6 +87,7 @@ __all__ = [
     # Worktree lifecycle management
     "WorktreeManager",
     "WorktreeInfo",
+    "WorktreeReuseOptions",
     # Command execution
     "CommandRunner",
     "CommandResult",

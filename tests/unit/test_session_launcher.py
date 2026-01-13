@@ -63,6 +63,7 @@ from issue_orchestrator.ports import (
     TraceEvent,
     CommandResult,
 )
+from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.infra.config import Config
 
@@ -129,14 +130,14 @@ class MockWorktreeManager:
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
-        reuse_push_preflight: bool = True,
+        reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         self.create_calls.append({
             "repo_root": repo_root,
             "issue_number": issue_number,
             "issue_title": issue_title,
             "branch_name": branch_name,
-            "reuse_push_preflight": reuse_push_preflight,
+            "reuse_options": reuse_options,
         })
         worktree_path = self.tmp_path / f"worktree-{issue_number}"
         worktree_path.mkdir(parents=True, exist_ok=True)
