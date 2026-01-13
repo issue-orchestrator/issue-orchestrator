@@ -17,6 +17,7 @@ SESSION_LATEST_NAME = "latest.json"
 SESSION_INDEX_NAME = "index.json"
 SESSION_LATEST_ROOT_NAME = "session-latest.json"
 ORCHESTRATOR_TAIL_NAME = "orchestrator-tail.log"
+CLAUDE_SESSION_PATH_NAME = "claude-session.path"
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,64 @@ class SessionOutputManager:
         manifest = _read_json(manifest_path) or {}
         manifest.update(updates)
         _write_json(manifest_path, manifest)
+
+    @classmethod
+    def attach_claude_log(cls, worktree_path: Path, session_name: str) -> Path | None:
+        run_dir = cls.find_latest_run_dir(worktree_path, session_name=session_name)
+        if not run_dir:
+            return None
+        return cls._attach_claude_log_for_run(run_dir)
+
+    @classmethod
+    def _attach_claude_log_for_run(cls, run_dir: Path) -> Path | None:
+        log_path = cls._select_claude_log_for_run(run_dir)
+        if not log_path:
+            return None
+        updates = {
+            "claude_log_path": str(log_path),
+            "claude_session_id": log_path.stem,
+        }
+        cls.update_manifest(run_dir, updates)
+        try:
+            _write_text(run_dir / CLAUDE_SESSION_PATH_NAME, str(log_path))
+        except OSError:
+            return log_path
+        return log_path
+
+    @classmethod
+    def _select_claude_log_for_run(cls, run_dir: Path) -> Path | None:
+        manifest = _read_json(run_dir / SESSION_MANIFEST_NAME) or {}
+        claude_dir = manifest.get("claude_log_dir")
+        if not claude_dir:
+            return None
+        log_dir = Path(claude_dir)
+        if not log_dir.exists():
+            return None
+        candidates = list(log_dir.glob("*.jsonl"))
+        if not candidates:
+            return None
+
+        started_at = manifest.get("started_at")
+        if started_at:
+            try:
+                started_dt = datetime.fromisoformat(started_at)
+                started_ts = started_dt.timestamp()
+                tolerance_s = 5.0
+                after_start = [
+                    (path, path.stat().st_mtime - started_ts)
+                    for path in candidates
+                    if path.stat().st_mtime - started_ts >= -tolerance_s
+                ]
+                if after_start:
+                    after_start.sort(key=lambda item: item[1])
+                    return after_start[0][0]
+            except ValueError:
+                pass
+            except OSError:
+                pass
+
+        candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        return candidates[0]
 
     @classmethod
     def write_orchestrator_tail(

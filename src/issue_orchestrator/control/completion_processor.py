@@ -363,6 +363,8 @@ class CompletionProcessor:
                 session_name,
                 record_path=Path(record.validation_record_path),
             )
+        if session_name:
+            SessionOutputManager.attach_claude_log(worktree, session_name)
 
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)

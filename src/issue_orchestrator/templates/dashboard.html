@@ -1600,6 +1600,7 @@
                 ['Run ID', manifest.run_id || '-'],
                 ['Backend', manifest.backend || '-'],
                 ['Agent', manifest.agent_label || '-'],
+                ['Claude Session', manifest.claude_session_id || '-'],
                 ['Worktree', worktree || '-'],
             ];
 
@@ -1615,6 +1616,9 @@
             }
             if (manifest.log_path) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.log_path)}')">Open Session Log</button>`;
+            }
+            if (manifest.claude_log_path) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_path)}')">Open Claude Log</button>`;
             }
             if (manifest.claude_log_dir) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_dir)}')">Open Claude Log Dir</button>`;

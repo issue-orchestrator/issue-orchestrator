@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -127,3 +128,33 @@ def test_orchestrator_tail_scoped_to_run(tmp_path: Path) -> None:
     tail = tail_path.read_text()
     assert "second run message" in tail
     assert "first run message" not in tail
+
+
+def test_session_output_selects_claude_log(tmp_path: Path) -> None:
+    session_name = "issue-2"
+    claude_dir = tmp_path / ".claude" / "projects" / "test"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    run = SessionOutputManager.start_run(
+        worktree_path=tmp_path,
+        session_name=session_name,
+        issue_number=2,
+        agent_label="agent:test",
+        backend="subprocess",
+        claude_log_dir=str(claude_dir),
+    )
+
+    older = claude_dir / "older.jsonl"
+    newer = claude_dir / "newer.jsonl"
+    older.write_text("older")
+    newer.write_text("newer")
+
+    run_start = datetime.fromisoformat(run.started_at).timestamp()
+    os.utime(older, (run_start - 30, run_start - 30))
+    os.utime(newer, (run_start + 30, run_start + 30))
+
+    selected = SessionOutputManager.attach_claude_log(tmp_path, session_name)
+    assert selected == newer
+
+    manifest = json.loads((run.run_dir / "manifest.json").read_text())
+    assert manifest["claude_log_path"] == str(newer)
+    assert manifest["claude_session_id"] == "newer"
