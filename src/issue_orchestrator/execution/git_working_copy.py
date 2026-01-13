@@ -63,6 +63,22 @@ class GitWorkingCopy:
             timeout_s=timeout_s,
         )
 
+    def _clear_stale_remote_ref(self, worktree: Path, remote: str, branch: str) -> None:
+        """Clear stale remote-tracking refs when the remote branch is missing."""
+        ref_name = f"refs/remotes/{remote}/{branch}"
+        try:
+            result = self._run_git(worktree, ["update-ref", "-d", ref_name], check=False)
+            if result.returncode == 0:
+                logger.info("Cleared stale remote-tracking ref %s", ref_name)
+            else:
+                logger.warning(
+                    "Failed to clear stale remote-tracking ref %s: %s",
+                    ref_name,
+                    (result.stderr or "").strip(),
+                )
+        except Exception as e:
+            logger.warning("Failed to clear stale remote-tracking ref %s: %s", ref_name, e)
+
     def get_current_branch(self, worktree: Path) -> str | None:
         """Get the current branch name in the worktree."""
         try:
@@ -332,6 +348,7 @@ class GitWorkingCopy:
                         message=f"Failed to update tracking refs before push: {stderr}",
                         retryable=True,
                     )
+                self._clear_stale_remote_ref(worktree, remote, branch)
                 # First push case - continue without fetched refs
                 logger.debug("Branch %s not on remote yet (first push)", branch)
         except Exception as e:
@@ -339,6 +356,7 @@ class GitWorkingCopy:
             # This handles edge cases where GitError is raised despite check=False
             error_str = str(e)
             if "couldn't find remote ref" in error_str:
+                self._clear_stale_remote_ref(worktree, remote, branch)
                 logger.debug("Branch %s not on remote yet (first push, from exception)", branch)
             else:
                 return PushResult(
@@ -470,6 +488,7 @@ class GitWorkingCopy:
                         error=f"Failed to update tracking refs: {stderr}",
                         fix_hint="Network or remote issue - retry later",
                     )
+                self._clear_stale_remote_ref(worktree, remote, branch)
                 # First push case - continue
         except Exception as e:
             # Defensive: also check exception message for first-push case
@@ -480,6 +499,7 @@ class GitWorkingCopy:
                     error=f"Failed to update tracking refs: {e}",
                     fix_hint="Network or remote issue - retry later",
                 )
+            self._clear_stale_remote_ref(worktree, remote, branch)
             # First push case - continue
 
         args = ["push", "--dry-run", "-u", remote, branch, "--force-with-lease"]
