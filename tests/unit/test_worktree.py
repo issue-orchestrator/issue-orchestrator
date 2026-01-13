@@ -1,5 +1,6 @@
 """Unit tests for the worktree module."""
 
+import os
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
@@ -1488,15 +1489,15 @@ class TestWorktreePrepareForSession:
         worktree.prepare_for_session("new-session")
         assert not completion.exists()
 
-    def test_removes_session_identity_files(self, worktree: Worktree, worktree_dir: Path):
-        """Removes per-session identity files."""
+    def test_keeps_session_identity_files(self, worktree: Worktree, worktree_dir: Path):
+        """Keeps per-session identity files for recent runs."""
         identity = worktree_dir / ".issue-orchestrator" / "sessions" / "new-session" / "identity.json"
         identity.parent.mkdir(parents=True, exist_ok=True)
         identity.write_text(json.dumps({"session_name": "old"}))
 
         assert identity.exists()
         worktree.prepare_for_session("new-session")
-        assert not identity.exists()
+        assert identity.exists()
 
     def test_removes_multiple_completion_files(self, worktree: Worktree, worktree_dir: Path):
         """Removes all completion*.json files."""
@@ -1520,20 +1521,44 @@ class TestWorktreePrepareForSession:
         for name in files:
             assert not (orch_dir / name).exists()
 
-    def test_removes_pane_log(self, worktree: Worktree, worktree_dir: Path):
-        """Removes pane.log from previous sessions."""
+    def test_keeps_pane_log(self, worktree: Worktree, worktree_dir: Path):
+        """Keeps pane.log for recent runs."""
         pane_log = worktree_dir / ".issue-orchestrator" / "sessions" / "new-session" / "pane.log"
         pane_log.parent.mkdir(parents=True, exist_ok=True)
         pane_log.write_text("Old session output from Claude Code\n")
 
         assert pane_log.exists()
         worktree.prepare_for_session("new-session")
-        assert not pane_log.exists()
+        assert pane_log.exists()
 
     def test_no_error_when_orchestrator_dir_missing(self, tmp_path: Path):
         """No error when .issue-orchestrator dir doesn't exist."""
         worktree = Worktree(tmp_path, issue_number=123)
         worktree.prepare_for_session("new-session")  # Should not raise
+
+    def test_prunes_old_session_runs(self, tmp_path: Path):
+        """Prunes older session runs beyond retention limit."""
+        sessions_dir = tmp_path / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        run_names = [
+            "20260101-000000Z__issue-1",
+            "20260102-000000Z__issue-1",
+            "20260103-000000Z__issue-1",
+        ]
+        for idx, name in enumerate(run_names):
+            run_dir = sessions_dir / name
+            run_dir.mkdir()
+            (run_dir / "session.log").write_text(f"log {idx}")
+            stamp = 1700000000 + idx
+            os.utime(run_dir, (stamp, stamp))
+
+        worktree = Worktree(tmp_path, issue_number=123, retain_runs=2)
+        worktree.prepare_for_session("issue-1")
+
+        remaining = sorted([p.name for p in sessions_dir.iterdir() if p.is_dir() and not p.is_symlink()])
+        assert "20260101-000000Z__issue-1" not in remaining
+        assert "20260102-000000Z__issue-1" in remaining
+        assert "20260103-000000Z__issue-1" in remaining
 
     def test_raises_worktree_preparation_error_on_delete_failure(
         self, worktree: Worktree, worktree_dir: Path, monkeypatch

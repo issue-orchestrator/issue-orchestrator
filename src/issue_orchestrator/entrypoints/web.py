@@ -568,6 +568,8 @@ async def get_status() -> JSONResponse:
         "completed_today": state.completed_today,
         "queue": state.priority_queue,
         "pending_reviews": pending_reviews,
+        "tick_id": _orchestrator._event_context.tick_id,
+        "last_tick_time": getattr(_orchestrator, "_last_tick_time", 0.0),
     })
 
 
@@ -913,6 +915,61 @@ async def get_agent_ui_log(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
 
 
+@app.get("/api/session/manifest/{issue_number}")
+async def get_session_manifest(issue_number: int) -> JSONResponse:
+    """Get the session manifest for an issue."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    session = None
+    worktree_path = None
+    for s in _orchestrator.state.active_sessions:
+        if s.issue.number == issue_number:
+            session = s
+            worktree_path = s.worktree_path
+            break
+    if not worktree_path:
+        for entry in _orchestrator.state.session_history:
+            if entry.issue_number == issue_number:
+                worktree_path = getattr(entry, "worktree_path", None)
+                break
+
+    if not worktree_path:
+        return JSONResponse({
+            "error": f"No worktree path found for issue #{issue_number}",
+            "hint": "Session may have been cleaned up or never started",
+        }, status_code=404)
+
+    from ..infra.session_output import SessionOutputManager, SESSION_MANIFEST_NAME
+    run_dir = SessionOutputManager.find_latest_run_dir(
+        worktree_path,
+        session_name=session.terminal_id if session else None,
+    )
+    if not run_dir:
+        return JSONResponse({
+            "error": "No session run found",
+            "hint": "Session may not have started or output was removed",
+        }, status_code=404)
+
+    manifest_path = run_dir / SESSION_MANIFEST_NAME
+    if not manifest_path.exists():
+        return JSONResponse({
+            "run_dir": str(run_dir),
+            "session_name": session.terminal_id if session else None,
+            "manifest": None,
+        })
+
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        return JSONResponse({
+            "run_dir": str(run_dir),
+            "session_name": session.terminal_id if session else None,
+            "manifest": manifest,
+        })
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
+
+
 @app.post("/api/prompt/{agent_type}")
 async def open_agent_prompt(agent_type: str) -> JSONResponse:
     """Open the agent's prompt file in the default editor."""
@@ -1082,12 +1139,21 @@ async def get_info() -> JSONResponse:
 
     state = _orchestrator.state
     config = _orchestrator.config
+    from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
+    commit_sha = None
+    try:
+        git = GitCLI(runner=SubprocessCommandRunner())
+        commit_sha = git.head_sha(config.repo_root)
+    except Exception:
+        commit_sha = None
 
     return JSONResponse({
         "version": "0.1.0",  # TODO: get from package
         "repo": config.repo,
         "ui_mode": config.ui_mode,
         "terminal_backend": config.terminal_adapter or "tmux",
+        "commit_sha": commit_sha,
+        "commit_short": commit_sha[:7] if commit_sha else None,
         "max_sessions": config.max_concurrent_sessions,
         "active_sessions": len(state.active_sessions),
         "completed_today": len(state.completed_today),
@@ -1323,7 +1389,7 @@ async def open_file(request: Request) -> JSONResponse:
         str(Path.home() / ".issue-orchestrator"),
         "/tmp/",
     ]
-    if not any(file_path.startswith(prefix) for prefix in safe_prefixes):
+    if "/.issue-orchestrator/" not in file_path and not any(file_path.startswith(prefix) for prefix in safe_prefixes):
         return JSONResponse({"error": "Cannot open files outside safe directories"}, status_code=403)
 
     if not Path(file_path).exists():

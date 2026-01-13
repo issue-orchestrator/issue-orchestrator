@@ -269,6 +269,7 @@ session_no_output_max_bytes: 10000    # (default) Max bytes of tail content
 session_no_output_repeat_seconds: 120 # (default) Min gap between warnings
 session_grace_period_seconds: 120     # (default) Don't terminate young sessions
 session_log_activity_seconds: 120     # (default) Log activity window
+session_output_retention_runs: 7      # (default) Keep last N session output runs per worktree
 ```
 
 ---
@@ -317,7 +318,7 @@ tmux_bindings:                    # (default: double-click to zoom)
 Notes:
 - `terminal_adapter: tmux` uses the tmux backend (default).
 - `terminal_adapter: subprocess` runs agent sessions as subprocesses and logs to
-  `.issue-orchestrator/session.log` in each worktree (no tmux required).
+  `.issue-orchestrator/sessions/<session>/session.log` in each worktree.
 
 ---
 

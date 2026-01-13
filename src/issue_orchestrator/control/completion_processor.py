@@ -32,6 +32,7 @@ from ..domain.models import (
 )
 from ..domain.events import EventBus, SessionEvent
 from ..infra.issue_diagnostics import write_issue_diagnostic
+from ..infra.session_output import SessionOutputManager, ensure_session_output_dir
 from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
@@ -294,6 +295,20 @@ class CompletionProcessor:
                 errors=["Completion record not found or invalid"],
             )
 
+        session_name = SessionOutputManager.session_name_from_path(completion_path)
+        if record.validation_record_path and session_name:
+            run_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name=session_name)
+            if run_dir:
+                try:
+                    SessionOutputManager.update_manifest(
+                        run_dir,
+                        {"validation_record_path": record.validation_record_path},
+                    )
+                    validation_pointer = run_dir / "validation-record.path"
+                    validation_pointer.write_text(record.validation_record_path)
+                except OSError:
+                    logger.debug("Failed to write validation pointer for %s", run_dir)
+
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)
         if not valid:
@@ -514,6 +529,7 @@ class CompletionProcessor:
             # Write detailed failure diagnostics to worktree
             diagnostic_path = self._write_failure_diagnostic(
                 worktree=worktree,
+                session_name=session_name,
                 issue_number=issue_number,
                 issue_title=issue_title,
                 branch=branch,
@@ -643,6 +659,7 @@ class CompletionProcessor:
     def _write_failure_diagnostic(
         self,
         worktree: Path,
+        session_name: str | None,
         issue_number: int,
         issue_title: str,
         branch: str | None,
@@ -675,11 +692,22 @@ class CompletionProcessor:
         """
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         filename = f"failure-diagnostic-{timestamp}.json"
-        diagnostic_dir = worktree / ".issue-orchestrator"
+        if session_name:
+            run_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name=session_name)
+            if run_dir:
+                diagnostic_dir = run_dir
+                diagnostic_rel = f".issue-orchestrator/sessions/{run_dir.name}/{filename}"
+            else:
+                diagnostic_dir = ensure_session_output_dir(worktree, session_name)
+                diagnostic_rel = f".issue-orchestrator/sessions/{session_name}/{filename}"
+        else:
+            diagnostic_dir = worktree / ".issue-orchestrator"
+            diagnostic_rel = f".issue-orchestrator/{filename}"
         diagnostic_path = diagnostic_dir / filename
 
         diagnostic = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_name": session_name,
             "issue_number": issue_number,
             "issue_title": issue_title,
             "branch": branch,
@@ -695,12 +723,19 @@ class CompletionProcessor:
         try:
             diagnostic_dir.mkdir(parents=True, exist_ok=True)
             diagnostic_path.write_text(json.dumps(diagnostic, indent=2))
+            if session_name:
+                run_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name=session_name)
+                if run_dir:
+                    SessionOutputManager.update_manifest(
+                        run_dir,
+                        {"diagnostic_path": diagnostic_rel},
+                    )
             logger.info(
                 "[DIAGNOSTIC] Wrote failure diagnostic: issue=%d path=%s",
                 issue_number, diagnostic_path,
             )
             # Return relative path for inclusion in GitHub comment
-            return f".issue-orchestrator/{filename}"
+            return diagnostic_rel
         except Exception as e:
             logger.warning(
                 "[DIAGNOSTIC] Failed to write failure diagnostic: issue=%d error=%s",

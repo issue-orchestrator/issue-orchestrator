@@ -28,6 +28,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'state_file', 'pre_push_hook', 'enforce_hooks', 'queue_refresh_seconds',
     'terminal_adapter', 'session_no_output_seconds', 'session_no_output_tail_lines',
     'session_no_output_max_bytes', 'session_no_output_repeat_seconds',
+    'session_output_retention_runs',
     'gh_write_verify_timeout_seconds', 'gh_write_verify_initial_delay_ms',
     'gh_write_verify_max_delay_ms', 'gh_write_verify_backoff', 'gh_write_verify_jitter_ms',
     'gh_rate_limit_startup', 'gh_rate_limit_every_calls', 'gh_rate_limit_warn_fraction',
@@ -341,6 +342,7 @@ class Config:
 
     # Logging
     log_retention_days: int = 7  # Days to keep rotated log files
+    session_output_retention_runs: int = 7  # Runs to keep per worktree
 
     # UI mode: "web" (default, browser dashboard) or "tmux" (terminal dashboard)
     ui_mode: str = "web"
@@ -545,6 +547,7 @@ class Config:
             "session_no_output_tail_lines": self.session_no_output_tail_lines,
             "session_no_output_max_bytes": self.session_no_output_max_bytes,
             "session_no_output_repeat_seconds": self.session_no_output_repeat_seconds,
+            "session_output_retention_runs": self.session_output_retention_runs,
             "gh_write_verify_timeout_seconds": self.gh_write_verify_timeout_seconds,
             "gh_write_verify_initial_delay_ms": self.gh_write_verify_initial_delay_ms,
             "gh_write_verify_max_delay_ms": self.gh_write_verify_max_delay_ms,
@@ -741,6 +744,7 @@ class Config:
         config.session_no_output_tail_lines = data.get("session_no_output_tail_lines", 50)
         config.session_no_output_max_bytes = data.get("session_no_output_max_bytes", 10000)
         config.session_no_output_repeat_seconds = data.get("session_no_output_repeat_seconds", 120)
+        config.session_output_retention_runs = data.get("session_output_retention_runs", 7)
         config.gh_write_verify_timeout_seconds = data.get("gh_write_verify_timeout_seconds", 20)
         config.gh_write_verify_initial_delay_ms = data.get("gh_write_verify_initial_delay_ms", 250)
         config.gh_write_verify_max_delay_ms = data.get("gh_write_verify_max_delay_ms", 2000)

@@ -41,3 +41,4 @@ def lock_file(repo_root: Path | str) -> Path:
         Path to .issue-orchestrator/lock.json
     """
     return normalize_repo_root(repo_root) / ".issue-orchestrator" / "lock.json"
+

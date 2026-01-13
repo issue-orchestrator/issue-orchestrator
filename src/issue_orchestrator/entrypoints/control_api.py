@@ -1027,6 +1027,24 @@ async def list_repos_endpoint() -> JSONResponse:
     return JSONResponse({"repos": _build_repos_status()})
 
 
+@control_app.get("/control/info")
+async def control_info() -> JSONResponse:
+    """Get control center build info."""
+    from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
+    repo_root = Path.cwd()
+    commit_sha = None
+    try:
+        git = GitCLI(runner=SubprocessCommandRunner())
+        commit_sha = git.head_sha(repo_root)
+    except Exception:
+        commit_sha = None
+    return JSONResponse({
+        "repo_root": str(repo_root),
+        "commit_sha": commit_sha,
+        "commit_short": commit_sha[:7] if commit_sha else None,
+    })
+
+
 @control_app.get("/control/events")
 async def control_events(request: Request):
     """Server-Sent Events endpoint for Control Center status updates.

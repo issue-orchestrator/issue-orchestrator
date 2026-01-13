@@ -148,6 +148,22 @@ class CompletionHandler:
             diagnostic_path=diagnostic_path
         )
 
+        if status in (
+            SessionStatus.FAILED,
+            SessionStatus.TIMED_OUT,
+            SessionStatus.BLOCKED,
+            SessionStatus.NEEDS_HUMAN,
+        ) or processing_errors:
+            from ..infra.session_output import SessionOutputManager
+            from ..infra.logging_config import get_repo_log_path
+            log_path = get_repo_log_path(self.config.repo_root)
+            SessionOutputManager.write_orchestrator_tail(
+                worktree_path=session.worktree_path,
+                session_name=session.terminal_id,
+                log_path=log_path,
+                issue_number=session.issue.number,
+            )
+
         result = CompletionResult(
             history_entry=history_entry,
             pr_url=pr_url,
