@@ -18,6 +18,7 @@ SESSION_INDEX_NAME = "index.json"
 SESSION_LATEST_ROOT_NAME = "session-latest.json"
 ORCHESTRATOR_TAIL_NAME = "orchestrator-tail.log"
 CLAUDE_SESSION_PATH_NAME = "claude-session.path"
+CLAUDE_SESSION_LOG_NAME = "claude-session.jsonl"
 
 
 @dataclass(frozen=True)
@@ -216,6 +217,7 @@ class SessionOutputManager:
             _write_text(run_dir / CLAUDE_SESSION_PATH_NAME, str(log_path))
         except OSError:
             return log_path
+        cls._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
         return log_path
 
     @classmethod

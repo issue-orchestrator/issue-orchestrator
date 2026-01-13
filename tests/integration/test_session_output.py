@@ -171,3 +171,4 @@ def test_session_output_selects_claude_log(tmp_path: Path) -> None:
     manifest = json.loads((run.run_dir / "manifest.json").read_text())
     assert manifest["claude_log_path"] == str(newer)
     assert manifest["claude_session_id"] == "newer"
+    assert (run.run_dir / "claude-session.jsonl").is_symlink()
