@@ -117,9 +117,10 @@ class TestSyncRemoteRefs:
         with patch(
             "issue_orchestrator.adapters.worktree.worktree_policy._git_run"
         ) as mock_git:
-            mock_git.return_value = MagicMock(
-                returncode=1, stderr="couldn't find remote ref"
-            )
+            mock_git.side_effect = [
+                MagicMock(returncode=1, stderr="couldn't find remote ref"),
+                MagicMock(returncode=1, stderr=""),
+            ]
             result = policy.sync_remote_refs(worktree, "new-branch")
 
         assert result.success is True
@@ -141,6 +142,24 @@ class TestSyncRemoteRefs:
 
         assert result.success is False
         assert "fetch failed" in result.reason
+
+    def test_sync_first_push_fails_with_stale_remote_ref(self, tmp_path):
+        """Test first push fails when a stale remote ref exists locally."""
+        policy = ValidateOrDeletePolicy()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        with patch(
+            "issue_orchestrator.adapters.worktree.worktree_policy._git_run"
+        ) as mock_git:
+            mock_git.side_effect = [
+                MagicMock(returncode=1, stderr="couldn't find remote ref"),
+                MagicMock(returncode=0, stderr=""),
+            ]
+            result = policy.sync_remote_refs(worktree, "stale-branch")
+
+        assert result.success is False
+        assert "stale remote tracking ref" in result.reason
 
 
 class TestDeleteWorktree:

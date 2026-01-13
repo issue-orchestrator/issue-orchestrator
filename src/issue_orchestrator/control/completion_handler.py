@@ -273,6 +273,7 @@ class CompletionHandler:
             runtime_minutes=session.runtime_minutes,
             pr_url=pr_url,
             status_reason=status_reason,
+            worktree_path=session.worktree_path,
         )
 
     def _emit_trace_events(

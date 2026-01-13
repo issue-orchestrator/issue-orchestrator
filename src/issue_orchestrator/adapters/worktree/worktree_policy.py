@@ -109,6 +109,16 @@ class ValidateOrDeletePolicy:
 
         # "couldn't find remote ref" means branch doesn't exist on remote - OK
         if "couldn't find remote ref" in stderr:
+            ref_name = f"refs/remotes/origin/{branch_name}"
+            ref_check = _git_run(
+                worktree_path,
+                ["show-ref", "--verify", "--quiet", ref_name],
+                check=False,
+            )
+            if ref_check.returncode == 0:
+                reason = "stale remote tracking ref exists for missing remote branch"
+                logger.warning("[POLICY] %s: %s", reason, ref_name)
+                return SyncResult(success=False, reason=reason)
             logger.debug(
                 "[POLICY] Branch %s not on remote yet (first push) - OK",
                 branch_name,
