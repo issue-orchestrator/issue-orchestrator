@@ -1173,3 +1173,71 @@ validation:
             assert "Completion record written to" in captured.out
         finally:
             os.chdir(original_cwd)
+
+    def test_env_var_isolation_prevents_leakage(self, tmp_path, capsys, monkeypatch):
+        """Test that clearing env vars prevents orchestrator env from leaking into tests.
+
+        This test validates the fix for environment variable leakage: when pytest runs
+        inside an orchestrator-managed worktree, ORCHESTRATOR_VALIDATION_CMD would
+        override the test's config, causing "make validate" to run instead of the
+        config's cmd. Without proper isolation, tests fail with:
+        "make: *** No rule to make target 'validate'.  Stop."
+
+        This test:
+        1. Sets ORCHESTRATOR_VALIDATION_CMD to "make validate" (simulating worktree env)
+        2. Creates tmp_path with config using a DIFFERENT validation cmd
+        3. Clears the env vars with monkeypatch
+        4. Verifies the config's cmd runs (not "make validate")
+        """
+        # Simulate being inside an orchestrator-managed worktree
+        monkeypatch.setenv("ORCHESTRATOR_VALIDATION_CMD", "make validate")
+        monkeypatch.setenv("ORCHESTRATOR_VALIDATION_TIMEOUT", "300")
+
+        # Now clear them - this is what the other tests do to ensure isolation
+        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_CMD", raising=False)
+        monkeypatch.delenv("ORCHESTRATOR_VALIDATION_TIMEOUT", raising=False)
+
+        # Create fake git repo
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Create config with a specific validation command that we can identify
+        # Note: NO Makefile is created - if env var leaks, "make validate" would fail
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'CONFIG_CMD_EXECUTED' && true"
+  timeout_seconds: 10
+""")
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch('sys.argv', [
+                'agent-done', 'completed',
+                '--implementation', 'Test env isolation',
+                '--problems', 'None',
+                '--verbose'
+            ]):
+                with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                    # This would FAIL if env var leaked (no Makefile, "make validate" fails)
+                    # But succeeds because we cleared the env vars, using config's cmd
+                    main()
+
+            captured = capsys.readouterr()
+            # Verify our config's command ran (not "make validate")
+            assert "CONFIG_CMD_EXECUTED" in captured.out
+            assert "Validation passed" in captured.out
+        finally:
+            os.chdir(original_cwd)
