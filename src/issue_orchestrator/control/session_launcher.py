@@ -362,6 +362,7 @@ class SessionLauncher:
             worktree_base=worktree_base,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
+            reuse_push_preflight=self.config.reuse_push_preflight,
         )
         worktree_path = worktree_info.path
         branch_name = worktree_info.branch_name
@@ -696,6 +697,7 @@ class SessionLauncher:
             branch_name=review.branch_name,
             worktree_base=worktree_base,
             enforce_hooks=False,
+            reuse_push_preflight=self.config.reuse_push_preflight,
         )
         worktree_path = worktree_info.path
 
@@ -970,6 +972,7 @@ class SessionLauncher:
             worktree_base=worktree_base,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
+            reuse_push_preflight=self.config.reuse_push_preflight,
         )
         worktree_path = worktree_info.path
 

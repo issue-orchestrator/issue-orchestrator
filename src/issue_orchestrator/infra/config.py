@@ -408,6 +408,8 @@ class Config:
 
     # Worktree setup commands (run after worktree creation, e.g., npm install)
     setup_worktree: list[str] = field(default_factory=list)
+    # Preflight a dry-run push when reusing worktrees to catch stale refs early.
+    reuse_push_preflight: bool = True
 
     # Code review workflow (optional) - per-PR review after agent creates PR
     review_enabled: bool = False  # Explicit toggle for code review
@@ -786,6 +788,7 @@ class Config:
         config.enforce_hooks = data.get("enforce_hooks", True)
         if data.get("pre_push_hook"):
             config.pre_push_hook = resolve_relative_path(data["pre_push_hook"], repo_root)
+        config.reuse_push_preflight = data.get("reuse_push_preflight", True)
 
         # Worktree setup commands
         config.setup_worktree = data.get("setup_worktree", [])
