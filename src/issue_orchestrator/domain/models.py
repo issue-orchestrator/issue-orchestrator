@@ -25,7 +25,11 @@ COMPLETION_RECORD_PATH = ".issue-orchestrator/completion.json"  # Legacy fallbac
 COMPLETION_DIR = ".issue-orchestrator"
 
 
-def get_completion_path(agent_name: str | None = None, session_name: str | None = None) -> str:
+def get_completion_path(
+    agent_name: str | None = None,
+    session_name: str | None = None,
+    run_dir: str | None = None,
+) -> str:
     """Get the completion file path for an agent.
 
     Args:
@@ -35,6 +39,12 @@ def get_completion_path(agent_name: str | None = None, session_name: str | None 
     Returns:
         Path like ".issue-orchestrator/completion-agent_e2e-test.json"
     """
+    if run_dir:
+        completion_dir = f"{COMPLETION_DIR}/sessions/{run_dir}"
+        if not agent_name:
+            return f"{completion_dir}/completion.json"
+        safe_name = agent_name.replace(":", "_").replace("/", "_").replace(" ", "_")
+        return f"{completion_dir}/completion-{safe_name}.json"
     if session_name:
         completion_dir = f"{COMPLETION_DIR}/sessions/{session_name}"
         if not agent_name:

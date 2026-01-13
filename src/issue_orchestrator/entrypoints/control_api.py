@@ -1027,6 +1027,19 @@ async def list_repos_endpoint() -> JSONResponse:
     return JSONResponse({"repos": _build_repos_status()})
 
 
+@control_app.get("/control/info")
+async def control_info() -> JSONResponse:
+    """Get control center build info."""
+    from ..infra.repo_identity import get_repo_head_sha
+    repo_root = Path.cwd()
+    commit_sha = get_repo_head_sha(repo_root)
+    return JSONResponse({
+        "repo_root": str(repo_root),
+        "commit_sha": commit_sha,
+        "commit_short": commit_sha[:7] if commit_sha else None,
+    })
+
+
 @control_app.get("/control/events")
 async def control_events(request: Request):
     """Server-Sent Events endpoint for Control Center status updates.

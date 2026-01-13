@@ -455,6 +455,7 @@
             </div>
             <div class="header-actions">
                 <button onclick="openSetupWizard()" class="btn btn-primary">+ New Setup</button>
+                <button onclick="showBuildInfo()" class="btn">Build Info</button>
                 <button onclick="shutdownControlCenter()" class="btn btn-danger">Shutdown</button>
             </div>
         </header>
@@ -572,6 +573,31 @@
         function closeBlockingError() {
             const modal = document.getElementById('blockingError');
             modal.style.display = 'none';
+        }
+
+        async function showBuildInfo() {
+            try {
+                const res = await fetch('/control/info');
+                const data = await res.json();
+                const modal = document.createElement('div');
+                modal.className = 'modal-overlay';
+                modal.id = 'buildInfoModal';
+                modal.innerHTML = `
+                    <div class="modal" style="max-width:520px;">
+                        <div class="modal-title">Build Info</div>
+                        <div class="modal-body">
+                            <div class="info-row"><span class="info-label">Repo Root</span><span class="info-value">${escapeHtml(data.repo_root || '-')}</span></div>
+                            <div class="info-row"><span class="info-label">Commit</span><span class="info-value">${escapeHtml(data.commit_short || 'unknown')}</span></div>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn" onclick="document.getElementById('buildInfoModal').remove()">Close</button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            } catch (err) {
+                showBlockingError('Build Info Error', `Failed to load build info: ${err.message}`);
+            }
         }
 
         // ==================== Setup Wizard State ====================
@@ -1457,6 +1483,16 @@
                 return;
             }
 
+            // If something is already running but unhealthy, offer restart
+            const status = await getOrchestratorStatus(path);
+            if (status && status.state === 'running' && status.port) {
+                const health = await probeOrchestratorHealth(status.port);
+                if (health.unhealthy) {
+                    showRestartRecommendation(path, configName, status, health);
+                    return;
+                }
+            }
+
             // Health check passed, proceed with start
             showToast(`Starting orchestrator with ${configName}...`);
 
@@ -1487,6 +1523,101 @@
                 loadRepos();
             } catch (err) {
                 showBlockingError('Start Failed', 'Failed to start orchestrator.');
+            }
+        }
+
+        async function getOrchestratorStatus(path) {
+            try {
+                const res = await fetch(`/control/orchestrator/status?repo_root=${encodeURIComponent(path)}`);
+                if (!res.ok) return null;
+                return await res.json();
+            } catch (err) {
+                return null;
+            }
+        }
+
+        async function probeOrchestratorHealth(port) {
+            const baseUrl = `http://127.0.0.1:${port}`;
+            const result = { unhealthy: false, reason: '', details: {} };
+            try {
+                const healthRes = await fetch(`${baseUrl}/api/health`, { method: 'GET' });
+                const healthData = await healthRes.json();
+                result.details.health = healthData;
+                if (!healthRes.ok) {
+                    result.unhealthy = true;
+                    result.reason = 'health_check_failed';
+                }
+            } catch (err) {
+                result.unhealthy = true;
+                result.reason = 'health_unreachable';
+            }
+            try {
+                const statusRes = await fetch(`${baseUrl}/api/status`, { method: 'GET' });
+                const statusData = await statusRes.json();
+                result.details.status = statusData;
+                const lastTick = statusData.last_tick_time || 0;
+                if (lastTick > 0) {
+                    const ageMs = Date.now() - (lastTick * 1000);
+                    result.details.tick_age_ms = ageMs;
+                    if (ageMs > 120000) {
+                        result.unhealthy = true;
+                        result.reason = result.reason || 'tick_stale';
+                    }
+                }
+            } catch (err) {
+                result.unhealthy = true;
+                result.reason = result.reason || 'status_unreachable';
+            }
+            return result;
+        }
+
+        function showRestartRecommendation(path, configName, status, health) {
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'restartModal';
+            const detail = health.reason || 'unhealthy';
+            const encodedPath = encodeURIComponent(path);
+            const encodedConfig = encodeURIComponent(configName);
+            modal.innerHTML = `
+                <div class="modal" style="max-width:520px;">
+                    <div class="modal-title">Orchestrator Unhealthy</div>
+                    <div class="modal-body">
+                        <div style="margin-bottom:8px;">The orchestrator appears unhealthy (${escapeHtml(detail)}).</div>
+                        <div style="font-size:12px;color:#8b949e;">Recommended: restart to recover.</div>
+                        <details style="margin-top:10px;">
+                            <summary style="cursor:pointer;">Details</summary>
+                            <pre style="font-size:11px;margin-top:6px;white-space:pre-wrap;">${escapeHtml(JSON.stringify(health.details, null, 2))}</pre>
+                        </details>
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn" onclick="document.getElementById('restartModal').remove()">Cancel</button>
+                        <button class="btn btn-primary" onclick="restartOrchestrator(decodeURIComponent('${encodedPath}'), decodeURIComponent('${encodedConfig}'))">Restart</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        async function restartOrchestrator(path, configName) {
+            const modal = document.getElementById('restartModal');
+            if (modal) modal.remove();
+            showToast('Restarting orchestrator...');
+            try {
+                await fetch('/control/orchestrator/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path, force: true })
+                });
+                await new Promise(r => setTimeout(r, 400));
+                await fetch('/control/orchestrator/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path, config_name: configName })
+                });
+                ignoreSSEBriefly();
+                loadRepos();
+            } catch (err) {
+                showBlockingError('Restart Failed', 'Failed to restart orchestrator.');
             }
         }
 

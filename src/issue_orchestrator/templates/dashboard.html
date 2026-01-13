@@ -308,6 +308,21 @@
         .issue-row:hover .issue-action { color: #58a6ff; }
         .issue-action svg { width: 14px; height: 14px; }
         .action-arrow { font-size: 10px; }
+        .issue-diagnose-btn {
+            font-size: 12px;
+            color: #8b949e;
+            cursor: pointer;
+            padding: 2px 4px;
+            border-radius: 4px;
+            background: none;
+            border: none;
+        }
+        .issue-row:hover .issue-diagnose-btn { color: #58a6ff; }
+        .issue-diagnose-btn:hover,
+        .issue-diagnose-btn:focus-visible {
+            color: #58a6ff;
+            background: rgba(88, 166, 255, 0.15);
+        }
 
         /* Empty State */
         .empty-state {
@@ -1009,17 +1024,12 @@
                     <button class="settings-menu-item" onclick="showInfo()" role="menuitem">
                         <span aria-hidden="true">ℹ</span> About / Version
                     </button>
+                    <button class="settings-menu-item" onclick="copyCommitSha()" role="menuitem">
+                        <span aria-hidden="true">🔖</span> Commit: <span id="menuCommitSha">unknown</span>
+                    </button>
                     <button class="settings-menu-item" onclick="showConfig()" role="menuitem">
                         <span aria-hidden="true">📄</span> View Config
                     </button>
-                    <div class="settings-divider" role="separator"></div>
-                    <button class="settings-menu-item" onclick="createTestIssues()" role="menuitem">
-                        <span aria-hidden="true">🧪</span> Create Test Issues
-                    </button>
-                    <button class="settings-menu-item" onclick="cleanupTestIssues()" role="menuitem">
-                        <span aria-hidden="true">🧹</span> Cleanup Test Issues
-                    </button>
-                    <div class="settings-divider" role="separator"></div>
                     <button class="settings-menu-item" onclick="clearHistory()" role="menuitem">
                         <span aria-hidden="true">🗑</span> Clear History
                     </button>
@@ -1231,6 +1241,9 @@
                         <span>🔗</span><span class="action-arrow">↗</span>
                         {% endif %}
                     </span>
+                    <button class="issue-diagnose-btn" onclick="openSessionManifest({{ issue.issue_number }}); event.stopPropagation();" aria-label="Open diagnostics for issue #{{ issue.issue_number }}" title="Diagnostics">
+                        🧾
+                    </button>
                     {% if issue.has_terminal %}
                     <button class="issue-kill-btn" onclick="killSession({{ issue.issue_number }}, event)" aria-label="Force kill session for issue #{{ issue.issue_number }}" title="Force kill session">
                         ⏹
@@ -1430,38 +1443,197 @@
         }
 
         let terminalBackend = 'tmux';
+        let currentCommitSha = null;
         fetch('/api/info')
             .then(res => res.json())
             .then(data => {
                 if (data.terminal_backend) {
                     terminalBackend = data.terminal_backend;
                 }
+                if (data.commit_short) {
+                    currentCommitSha = data.commit_sha;
+                    const commitEl = document.getElementById('menuCommitSha');
+                    if (commitEl) {
+                        commitEl.textContent = data.commit_short;
+                    }
+                }
+                updateActionHints();
             })
             .catch(() => {});
 
-        async function openAgentLog(issueNumber) {
+        function updateActionHints() {
+            const rows = document.querySelectorAll('.issue-row');
+            rows.forEach((row) => {
+                const action = row.dataset.action;
+                const issueAction = row.querySelector('.issue-action');
+                let hint = row.title;
+                if (action === 'focus') {
+                    hint = terminalBackend === 'subprocess'
+                        ? 'View agent log'
+                        : 'Focus terminal session';
+                } else if (row.dataset.url) {
+                    hint = 'Open issue on GitHub';
+                }
+                row.title = hint;
+                if (issueAction) {
+                    issueAction.title = hint;
+                }
+            });
+        }
+
+        function copyCommitSha() {
+            if (!currentCommitSha) {
+                showToast('Commit SHA not available', 'error');
+                return;
+            }
+            navigator.clipboard.writeText(currentCommitSha)
+                .then(() => showToast('Commit SHA copied'))
+                .catch(() => showToast('Failed to copy commit SHA', 'error'));
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            updateActionHints();
+            const nextRun = document.getElementById('e2eNextRun');
+            if (nextRun && nextRun.dataset.nextRunReason) {
+                const nextInfo = {
+                    next_run_at: nextRun.dataset.nextRunAt,
+                    next_run_reason: nextRun.dataset.nextRunReason,
+                };
+                const formatted = formatNextRun(nextInfo);
+                if (formatted) {
+                    nextRun.textContent = formatted;
+                }
+            }
+        });
+
+        let logPoller = null;
+        let logFollow = true;
+        let logIssue = null;
+
+        function isNearBottom(element, threshold = 24) {
+            return element.scrollTop + element.clientHeight >= element.scrollHeight - threshold;
+        }
+
+        async function refreshAgentLog(issueNumber, forceScroll = false) {
             const res = await fetch(`/api/log/local/${issueNumber}`);
             const data = await res.json();
 
             if (data.error) {
-                alert(data.error + (data.hint ? '\n\n' + data.hint : ''));
+                const msg = data.error + (data.hint ? '\n\n' + data.hint : '');
+                document.getElementById('logStatus').textContent = msg;
                 return;
             }
 
-            let logContent = '';
-            if (data.truncated) {
-                logContent += `<p style="color:#8b949e;margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} lines...</p>`;
+            const logPre = document.getElementById('logPre');
+            const logScroll = document.getElementById('logScroll');
+            if (!logPre || !logScroll) {
+                return;
             }
-            logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;white-space:pre-wrap;">';
-            for (const line of data.lines) {
-                logContent += line.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
+
+            const wasNearBottom = isNearBottom(logScroll);
+            const lines = data.lines || [];
+            logPre.textContent = lines.join('\n');
+            document.getElementById('logPath').textContent = data.log_path || '';
+            document.getElementById('logStatus').textContent = data.truncated
+                ? `Showing last ${lines.length} of ${data.total_lines} lines`
+                : `Lines: ${data.total_lines}`;
+
+            if (forceScroll || (logFollow && wasNearBottom)) {
+                logScroll.scrollTop = logScroll.scrollHeight;
             }
-            logContent += '</pre>';
-            logContent += `<p style="color:#8b949e;font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
+        }
+
+        async function openAgentLog(issueNumber) {
+            logIssue = issueNumber;
+            const logContent = `
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b949e;">
+                        <input type="checkbox" id="logFollowToggle" checked>
+                        Follow
+                    </label>
+                    <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="refreshAgentLog(${issueNumber}, true)">Refresh</button>
+                    <span id="logStatus" style="font-size:11px;color:#8b949e;"></span>
+                </div>
+                <div id="logScroll" style="max-height:420px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;">
+                    <pre id="logPre" style="font-size:11px;white-space:pre-wrap;margin:0;"></pre>
+                </div>
+                <div style="color:#8b949e;font-size:11px;margin-top:10px;">Log: <span id="logPath"></span></div>
+            `;
 
             document.getElementById('modalTitle').textContent = `Agent UI Log #${issueNumber}`;
             document.getElementById('modalBody').innerHTML = logContent;
             document.getElementById('modalOverlay').classList.add('visible');
+
+            const toggle = document.getElementById('logFollowToggle');
+            if (toggle) {
+                toggle.addEventListener('change', (e) => {
+                    logFollow = e.target.checked;
+                });
+            }
+
+            await refreshAgentLog(issueNumber, true);
+            if (logPoller) {
+                clearInterval(logPoller);
+            }
+            logPoller = setInterval(() => {
+                refreshAgentLog(issueNumber, false);
+            }, 2000);
+        }
+
+        async function openSessionManifest(issueNumber) {
+            const res = await fetch(`/api/session/manifest/${issueNumber}`);
+            const data = await res.json();
+            if (data.error) {
+                showToast(data.error, 'error');
+                return;
+            }
+
+            const manifest = data.manifest || {};
+            const worktree = manifest.worktree || '';
+            const runDir = manifest.run_dir || data.run_dir || '';
+            const diagnosticRel = manifest.diagnostic_path || '';
+            const diagnosticPath = diagnosticRel && worktree ? `${worktree}/${diagnosticRel}` : '';
+
+            const rows = [
+                ['Session', manifest.session_name || data.session_name || '-'],
+                ['Started', manifest.started_at || '-'],
+                ['Run ID', manifest.run_id || '-'],
+                ['Backend', manifest.backend || '-'],
+                ['Agent', manifest.agent_label || '-'],
+                ['Worktree', worktree || '-'],
+            ];
+
+            let html = '<div class="info-grid">';
+            for (const [label, value] of rows) {
+                html += `<div class="info-row"><span class="info-label">${escapeHtml(label)}</span><span class="info-value">${escapeHtml(String(value))}</span></div>`;
+            }
+            html += '</div>';
+
+            html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">';
+            if (runDir) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(runDir)}')">Open Session Dir</button>`;
+            }
+            if (manifest.log_path) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.log_path)}')">Open Session Log</button>`;
+            }
+            if (manifest.claude_log_dir) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_dir)}')">Open Claude Log Dir</button>`;
+            }
+            if (manifest.orchestrator_log) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_log)}')">Open Orchestrator Log</button>`;
+            }
+            if (diagnosticPath) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(diagnosticPath)}')">Open Diagnostic</button>`;
+            }
+            if (manifest.validation_record_path && worktree) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(worktree + '/' + manifest.validation_record_path)}')">Open Validation</button>`;
+            }
+            if (manifest.orchestrator_tail) {
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_tail)}')">Open Orchestrator Tail</button>`;
+            }
+            html += '</div>';
+
+            openModal(`Session Diagnostics #${issueNumber}`, html);
         }
 
         async function sendAgentInput(issueNumber) {
@@ -2244,6 +2416,10 @@
         function closeModal(e) {
             if (!e || e.target === modalOverlay) {
                 modalOverlay.classList.remove('visible');
+                if (logPoller) {
+                    clearInterval(logPoller);
+                    logPoller = null;
+                }
             }
         }
 
@@ -2526,6 +2702,14 @@
             });
         }
 
+        function openPath(path) {
+            if (!path) {
+                showToast('No path available', 'error');
+                return;
+            }
+            openLogFile(path);
+        }
+
         async function showInfo() {
             settingsMenu.classList.remove('visible');
             const res = await fetch('/api/info');
@@ -2534,6 +2718,7 @@
                 <div class="info-row"><span class="info-label">Version</span><span class="info-value">${data.version || 'dev'}</span></div>
                 <div class="info-row"><span class="info-label">Repository</span><span class="info-value">${data.repo}</span></div>
                 <div class="info-row"><span class="info-label">UI Mode</span><span class="info-value">${data.ui_mode}</span></div>
+                <div class="info-row"><span class="info-label">Commit</span><span class="info-value">${data.commit_short || 'unknown'}</span></div>
                 <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${data.max_sessions || '-'}</span></div>
                 <div class="info-row"><span class="info-label">Active Sessions</span><span class="info-value">${data.active_sessions}</span></div>
                 <div class="info-row"><span class="info-label">Completed Today</span><span class="info-value">${data.completed_today}</span></div>
@@ -2606,30 +2791,29 @@
             window.open('https://github.com/{{ repo }}', '_blank');
         }
 
-        async function createTestIssues() {
-            settingsMenu.classList.remove('visible');
-            if (!confirm('Create 5 test issues with "test-data" label?')) return;
-            const res = await fetch('/api/test/create', { method: 'POST' });
-            const data = await res.json();
-            if (data.created) {
-                openModal('Test Issues Created', `<p>Created ${data.created.length} test issues:</p><ul>${data.created.map(url => `<li><a href="${url}" target="_blank">${url}</a></li>`).join('')}</ul>`);
-                setTimeout(() => location.reload(), 2000);
-            } else {
-                alert(data.error || 'Failed to create test issues');
-            }
+        function formatRelativeMillis(deltaMs) {
+            if (deltaMs <= 0) return 'now';
+            const totalMinutes = Math.round(deltaMs / 60000);
+            const hours = Math.floor(totalMinutes / 60);
+            const minutes = totalMinutes % 60;
+            if (hours > 0 && minutes > 0) return `${hours}h ${minutes}m`;
+            if (hours > 0) return `${hours}h`;
+            return `${minutes}m`;
         }
 
-        async function cleanupTestIssues() {
-            settingsMenu.classList.remove('visible');
-            if (!confirm('Close all issues with "test-data" label?')) return;
-            const res = await fetch('/api/test/cleanup', { method: 'POST' });
-            const data = await res.json();
-            if (data.closed !== undefined) {
-                openModal('Test Issues Cleaned Up', `<p>Closed ${data.closed} test issues.</p>`);
-                setTimeout(() => location.reload(), 2000);
-            } else {
-                alert(data.error || 'Failed to cleanup test issues');
+        function formatNextRun(nextInfo) {
+            if (!nextInfo) return '';
+            const reason = nextInfo.next_run_reason;
+            if (reason === 'interval' && nextInfo.next_run_at) {
+                const when = new Date(nextInfo.next_run_at);
+                const deltaMs = when.getTime() - Date.now();
+                return `Next: ${formatRelativeMillis(deltaMs)} (${when.toLocaleString()})`;
             }
+            if (reason === 'main_unchanged') return 'Next: waiting for main change';
+            if (reason === 'ready') return 'Next: ready';
+            if (reason === 'auto_disabled') return 'Auto: off';
+            if (reason === 'running') return '';
+            return '';
         }
 
         async function clearHistory() {
@@ -2830,20 +3014,6 @@
                 const stopBtn = document.getElementById('e2eStopBtn');
                 const failures = document.getElementById('e2eFailures');
                 const failCount = document.getElementById('e2eFailCount');
-
-                function formatNextRun(nextInfo) {
-                    if (!nextInfo) return '';
-                    const reason = nextInfo.next_run_reason;
-                    if (reason === 'interval' && nextInfo.next_run_at) {
-                        const when = new Date(nextInfo.next_run_at);
-                        return `Next: ${when.toLocaleString()}`;
-                    }
-                    if (reason === 'main_unchanged') return 'Next: waiting for main change';
-                    if (reason === 'ready') return 'Next: ready';
-                    if (reason === 'auto_disabled') return 'Auto: off';
-                    if (reason === 'running') return '';
-                    return '';
-                }
 
                 if (data.running && data.progress) {
                     // Show progress UI

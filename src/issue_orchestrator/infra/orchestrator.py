@@ -91,6 +91,7 @@ class Orchestrator:
     _event_context: EventContext = field(default_factory=EventContext, init=False)
     _loop_error_count: int = field(default=0, init=False)
     _loop_error_limit: int = field(default=3, init=False)
+    _last_tick_time: float = field(default=0.0, init=False)
 
     def __post_init__(self):
         # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
@@ -197,6 +198,7 @@ class Orchestrator:
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config)
 
     def tick(self) -> bool:
+        self._last_tick_time = time.time()
         self._loop_iteration, cont = _run_tick_impl(self._loop_iteration, self._event_context, self._inflight_stable_ids, self.state, self.deps.events, self._shutdown_requested, self._process_active_sessions, self._check_health, self._run_planning_cycle, self._emit_heartbeat_if_needed)
         # Check if we should auto-trigger E2E tests
         self._maybe_trigger_e2e()

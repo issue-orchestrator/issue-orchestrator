@@ -36,10 +36,11 @@ if TYPE_CHECKING:
     from ..ports.session_runner import DiscoveredSession
 
 from ..infra.config import Config
-from ..infra.logging_config import issue_log
+from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
-from ..infra.session_output import ensure_session_output_dir, WORKTREE_NOTE_NAME
+from ..infra.session_output import SessionOutputManager, ensure_session_output_dir, WORKTREE_NOTE_NAME
+from ..infra.logging_config import get_repo_log_path
 from .worktree import Worktree, WorktreePreparationError
 from ..infra.logging_config import log_context
 from ..ports import (
@@ -378,7 +379,11 @@ class SessionLauncher:
             ))
 
         # Prepare worktree - clean stale artifacts from previous sessions
-        worktree = Worktree(worktree_path, issue.number)
+        worktree = Worktree(
+            worktree_path,
+            issue.number,
+            retain_runs=self.config.session_output_retention_runs,
+        )
         try:
             worktree.prepare_for_session(session_name)
         except WorktreePreparationError as e:
@@ -418,6 +423,22 @@ class SessionLauncher:
         )
 
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
+        run = SessionOutputManager.start_run(
+            worktree_path=worktree_path,
+            session_name=session_name,
+            issue_number=issue.number,
+            agent_label=issue.agent_type,
+            backend=self.config.terminal_adapter or "tmux",
+            claude_log_dir=str(claude_project_dir),
+            orchestrator_log=str(get_repo_log_path(self.config.repo_root)),
+        )
+        logger.info(
+            "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
+            run.run_id,
+            session_name,
+            issue.number,
+            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+        )
         logger.info(
             "[launch] Issue session paths: issue=%s worktree=%s branch=%s",
             issue.number,
@@ -522,6 +543,10 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         completion_path = get_completion_path(issue.agent_type, session_name=session_name)
+        SessionOutputManager.update_manifest(
+            run.run_dir,
+            {"completion_path": completion_path},
+        )
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
@@ -688,7 +713,11 @@ class SessionLauncher:
             ))
 
         # Prepare worktree - clean stale artifacts from previous sessions
-        worktree = Worktree(worktree_path, review.issue_number)
+        worktree = Worktree(
+            worktree_path,
+            review.issue_number,
+            retain_runs=self.config.session_output_retention_runs,
+        )
         try:
             worktree.prepare_for_session(session_name)
         except WorktreePreparationError as e:
@@ -728,6 +757,22 @@ class SessionLauncher:
         )
 
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
+        run = SessionOutputManager.start_run(
+            worktree_path=worktree_path,
+            session_name=session_name,
+            issue_number=review.issue_number,
+            agent_label=agent_label,
+            backend=self.config.terminal_adapter or "tmux",
+            claude_log_dir=str(claude_project_dir),
+            orchestrator_log=str(get_repo_log_path(self.config.repo_root)),
+        )
+        logger.info(
+            "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
+            run.run_id,
+            session_name,
+            review.issue_number,
+            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+        )
         logger.info(
             "[launch] Review session paths: issue=%s pr=%s worktree=%s branch=%s",
             review.issue_number,
@@ -778,6 +823,10 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         completion_path = get_completion_path(agent_label, session_name=session_name)
+        SessionOutputManager.update_manifest(
+            run.run_dir,
+            {"completion_path": completion_path},
+        )
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
@@ -938,7 +987,11 @@ class SessionLauncher:
             ))
 
         # Prepare worktree - clean stale artifacts from previous sessions
-        worktree = Worktree(worktree_path, issue_number)
+        worktree = Worktree(
+            worktree_path,
+            issue_number,
+            retain_runs=self.config.session_output_retention_runs,
+        )
         try:
             worktree.prepare_for_session(session_name)
         except WorktreePreparationError as e:
@@ -970,6 +1023,22 @@ class SessionLauncher:
             return LaunchResult(None, False, f"Worktree preparation failed: {e}")
 
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
+        run = SessionOutputManager.start_run(
+            worktree_path=worktree_path,
+            session_name=session_name,
+            issue_number=issue_number,
+            agent_label=rework.agent_type,
+            backend=self.config.terminal_adapter or "tmux",
+            claude_log_dir=str(claude_project_dir),
+            orchestrator_log=str(get_repo_log_path(self.config.repo_root)),
+        )
+        logger.info(
+            "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
+            run.run_id,
+            session_name,
+            issue_number,
+            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+        )
         logger.info(
             "[launch] Rework session paths: issue=%s pr=%s worktree=%s branch=%s",
             issue_number,
@@ -1023,6 +1092,10 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         completion_path = get_completion_path(rework.agent_type, session_name=session_name)
+        SessionOutputManager.update_manifest(
+            run.run_dir,
+            {"completion_path": completion_path},
+        )
         # Export env vars so child processes (like agent-done) can access them
         env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"

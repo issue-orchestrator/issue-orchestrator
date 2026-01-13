@@ -66,7 +66,7 @@ cat /tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/completion.jso
 
 ### 4. Session Logs (Claude CLI output)
 ```bash
-cat /tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/session.log
+cat /tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/sessions/issue-{N}/session.log
 ```
 - Raw terminal output from Claude session
 - Shows what commands were run
