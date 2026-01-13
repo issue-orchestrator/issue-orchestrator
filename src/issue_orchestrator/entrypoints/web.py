@@ -1139,13 +1139,8 @@ async def get_info() -> JSONResponse:
 
     state = _orchestrator.state
     config = _orchestrator.config
-    from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
-    commit_sha = None
-    try:
-        git = GitCLI(runner=SubprocessCommandRunner())
-        commit_sha = git.head_sha(config.repo_root)
-    except Exception:
-        commit_sha = None
+    from ..infra.repo_identity import get_repo_head_sha
+    commit_sha = get_repo_head_sha(config.repo_root)
 
     return JSONResponse({
         "version": "0.1.0",  # TODO: get from package

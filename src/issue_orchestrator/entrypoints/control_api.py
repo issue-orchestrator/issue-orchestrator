@@ -1030,14 +1030,9 @@ async def list_repos_endpoint() -> JSONResponse:
 @control_app.get("/control/info")
 async def control_info() -> JSONResponse:
     """Get control center build info."""
-    from ..adapters.git.git_cli import GitCLI, SubprocessCommandRunner
+    from ..infra.repo_identity import get_repo_head_sha
     repo_root = Path.cwd()
-    commit_sha = None
-    try:
-        git = GitCLI(runner=SubprocessCommandRunner())
-        commit_sha = git.head_sha(repo_root)
-    except Exception:
-        commit_sha = None
+    commit_sha = get_repo_head_sha(repo_root)
     return JSONResponse({
         "repo_root": str(repo_root),
         "commit_sha": commit_sha,
