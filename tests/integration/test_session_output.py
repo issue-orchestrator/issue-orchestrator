@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from issue_orchestrator.control.completion_processor import CompletionProcessor
@@ -145,12 +145,25 @@ def test_session_output_selects_claude_log(tmp_path: Path) -> None:
 
     older = claude_dir / "older.jsonl"
     newer = claude_dir / "newer.jsonl"
-    older.write_text("older")
-    newer.write_text("newer")
+    run_start = datetime.fromisoformat(run.started_at)
 
-    run_start = datetime.fromisoformat(run.started_at).timestamp()
-    os.utime(older, (run_start - 30, run_start - 30))
-    os.utime(newer, (run_start + 30, run_start + 30))
+    older.write_text(
+        json.dumps({
+            "timestamp": (run_start + timedelta(seconds=120)).isoformat(),
+            "sessionId": "older",
+        })
+        + "\n"
+    )
+    newer.write_text(
+        json.dumps({
+            "timestamp": (run_start + timedelta(seconds=30)).isoformat(),
+            "sessionId": "newer",
+        })
+        + "\n"
+    )
+
+    os.utime(older, (run_start.timestamp() + 300, run_start.timestamp() + 300))
+    os.utime(newer, (run_start.timestamp() + 600, run_start.timestamp() + 600))
 
     selected = SessionOutputManager.attach_claude_log(tmp_path, session_name)
     assert selected == newer

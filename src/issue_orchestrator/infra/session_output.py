@@ -202,12 +202,14 @@ class SessionOutputManager:
 
     @classmethod
     def _attach_claude_log_for_run(cls, run_dir: Path) -> Path | None:
-        log_path = cls._select_claude_log_for_run(run_dir)
+        log_path, session_id = cls._select_claude_log_for_run(run_dir)
         if not log_path:
             return None
+        if not session_id:
+            session_id = log_path.stem
         updates = {
             "claude_log_path": str(log_path),
-            "claude_session_id": log_path.stem,
+            "claude_session_id": session_id,
         }
         cls.update_manifest(run_dir, updates)
         try:
@@ -217,39 +219,81 @@ class SessionOutputManager:
         return log_path
 
     @classmethod
-    def _select_claude_log_for_run(cls, run_dir: Path) -> Path | None:
+    def _select_claude_log_for_run(cls, run_dir: Path) -> tuple[Path | None, str | None]:
         manifest = _read_json(run_dir / SESSION_MANIFEST_NAME) or {}
         claude_dir = manifest.get("claude_log_dir")
         if not claude_dir:
-            return None
+            return None, None
         log_dir = Path(claude_dir)
         if not log_dir.exists():
-            return None
+            return None, None
         candidates = list(log_dir.glob("*.jsonl"))
         if not candidates:
-            return None
+            return None, None
 
         started_at = manifest.get("started_at")
+        parsed_candidates: list[tuple[Path, float, str | None]] = []
+        for path in candidates:
+            timestamp, session_id = cls._read_claude_log_metadata(path)
+            score = path.stat().st_mtime
+            if timestamp:
+                score = timestamp.timestamp()
+            parsed_candidates.append((path, score, session_id))
         if started_at:
             try:
                 started_dt = datetime.fromisoformat(started_at)
                 started_ts = started_dt.timestamp()
                 tolerance_s = 5.0
                 after_start = [
-                    (path, path.stat().st_mtime - started_ts)
-                    for path in candidates
-                    if path.stat().st_mtime - started_ts >= -tolerance_s
+                    (path, score - started_ts, session_id)
+                    for path, score, session_id in parsed_candidates
+                    if score - started_ts >= -tolerance_s
                 ]
                 if after_start:
                     after_start.sort(key=lambda item: item[1])
-                    return after_start[0][0]
+                    selected = after_start[0]
+                    return selected[0], selected[2]
             except ValueError:
                 pass
             except OSError:
                 pass
 
         candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-        return candidates[0]
+        return candidates[0], None
+
+    @classmethod
+    def _read_claude_log_metadata(cls, log_path: Path) -> tuple[datetime | None, str | None]:
+        try:
+            with log_path.open("r") as handle:
+                for idx, line in enumerate(handle):
+                    if idx > 50:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    timestamp = payload.get("timestamp")
+                    session_id = payload.get("sessionId") or payload.get("session_id")
+                    if timestamp:
+                        parsed = cls._parse_iso_timestamp(timestamp)
+                        return parsed, session_id
+                    if session_id:
+                        return None, session_id
+        except OSError:
+            return None, None
+        return None, None
+
+    @staticmethod
+    def _parse_iso_timestamp(value: str) -> datetime | None:
+        try:
+            if value.endswith("Z"):
+                value = value.replace("Z", "+00:00")
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
 
     @classmethod
     def write_orchestrator_tail(
