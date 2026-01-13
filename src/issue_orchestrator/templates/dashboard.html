@@ -205,6 +205,24 @@
             color: #8b949e;
             text-transform: uppercase;
             letter-spacing: 0.3px;
+            cursor: pointer;
+            transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+        }
+        .flow-step:hover {
+            color: #c9d1d9;
+            background: #1f6feb12;
+            border-color: #3b4a5a;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+            transform: translateY(-1px);
+        }
+        .flow-step:focus-visible {
+            outline: 2px solid #58a6ff;
+            outline-offset: 2px;
+        }
+        .flow-step:active {
+            transform: translateY(0);
+            background: #0d1117;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.45);
         }
         .flow-step.active {
             background: #1f6feb1a;
@@ -1226,7 +1244,7 @@
                     {% if issue.flow_steps %}
                     <span class="flow-stepper {% if issue.blocked_summary %}blocked{% endif %}" aria-label="Workflow: {% for step in issue.flow_steps %}{{ step.label }}{% if not loop.last %}, {% endif %}{% endfor %}. Current: {{ issue.flow_stage_label if issue.flow_stage_label else issue.flow_stage }}.">
                         {% for step in issue.flow_steps %}
-                        <span class="flow-step {% if step.key == issue.flow_stage %}active{% endif %}">
+                        <span class="flow-step {% if step.key == issue.flow_stage %}active{% endif %}" tabindex="0">
                             {{ step.label }}
                         </span>
                         {% endfor %}
@@ -1914,7 +1932,7 @@
             if (!steps || steps.length === 0) return '';
             const stepHtml = steps.map(step => {
                 const active = step.key === activeKey ? 'active' : '';
-                return `<span class="flow-step ${active}">${escapeHtml(step.label)}</span>`;
+                return `<span class="flow-step ${active}" tabindex="0">${escapeHtml(step.label)}</span>`;
             }).join('');
             const blockedBadge = blockedSummary
                 ? `<span class="blocked-badge" title="${escapeHtml(blockedSummary)}">Blocked</span>`
