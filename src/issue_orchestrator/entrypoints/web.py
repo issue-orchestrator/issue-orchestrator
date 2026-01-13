@@ -928,6 +928,14 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
+    def _fallback_worktree_path() -> Path | None:
+        if not _orchestrator:
+            return None
+        config = _orchestrator.config
+        worktree_base = config.worktree_base or config.repo_root.parent
+        repo_name = config.repo.split("/")[-1] if config.repo else config.repo_root.name
+        return Path(worktree_base) / f"{repo_name}-{issue_number}"
+
     session = None
     worktree_path = None
     for s in _orchestrator.state.active_sessions:
@@ -940,6 +948,11 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
             if entry.issue_number == issue_number:
                 worktree_path = getattr(entry, "worktree_path", None)
                 break
+
+    if not worktree_path:
+        candidate = _fallback_worktree_path()
+        if candidate and candidate.exists():
+            worktree_path = candidate
 
     if not worktree_path:
         return JSONResponse({
