@@ -552,9 +552,9 @@ class SessionLauncher:
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
         env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue.number}'"
         env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
-        if self.config.validation.cmd:
-            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
-            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
+        # NOTE: Validation config is NOT passed via env var.
+        # agent-done reads validation config from the worktree's config file.
+        # This ensures tests are deterministic (no env var leakage).
 
         if self.config.e2e_pr_labels:
             labels_str = ",".join(self.config.e2e_pr_labels)
@@ -832,9 +832,9 @@ class SessionLauncher:
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
         env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{review.issue_number}'"
         env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
-        if self.config.validation.cmd:
-            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
-            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
+        # NOTE: Validation config is NOT passed via env var.
+        # agent-done reads validation config from the worktree's config file.
+        # This ensures tests are deterministic (no env var leakage).
 
         command = f"{env_exports} && {base_command}"
         logger.info(
@@ -1101,9 +1101,9 @@ class SessionLauncher:
         env_exports += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"
         env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
         env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
-        if self.config.validation.cmd:
-            env_exports += f" ORCHESTRATOR_VALIDATION_CMD='{self.config.validation.cmd}'"
-            env_exports += f" ORCHESTRATOR_VALIDATION_TIMEOUT='{self.config.validation.timeout_seconds}'"
+        # NOTE: Validation config is NOT passed via env var.
+        # agent-done reads validation config from the worktree's config file.
+        # This ensures tests are deterministic (no env var leakage).
 
         command = f"{env_exports} && {base_command}"
         logger.info(
