@@ -7,14 +7,14 @@ import logging
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
+from ...ports.worktree_manager import WorktreeReuseOptions
 from ..git.git_cli import GitCLI, SubprocessCommandRunner
-
-from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 
 
 @dataclass
@@ -42,6 +42,12 @@ def _git_run(
     env: dict[str, str] | None = None,
 ) -> GitResult:
     return _git.run(repo=repo, argv=argv, check=check, env=env)
+
+
+def _git_env_no_prompt() -> dict[str, str]:
+    env = _git._clean_env()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
 
 
 # Path to bundled hooks (in issue_orchestrator/hooks/, 3 levels up from this module)
@@ -675,8 +681,9 @@ def _next_branch_name(repo_root: Path, branch_name: str) -> str:
 def _delete_remote_branch(repo_root: Path, branch_name: str) -> bool:
     result = _git_run(
         repo_root,
-        ["push", "origin", "--delete", branch_name],
+        ["push", "--no-verify", "origin", "--delete", branch_name],
         check=False,
+        env=_git_env_no_prompt(),
     )
     if result.returncode == 0:
         return True
@@ -750,6 +757,30 @@ def _detach_worktree_branch(worktree_path: Path, branch_name: str) -> None:
         env=env,
     )
     if result.returncode != 0:
+        lock_match = re.search(r"Unable to create '([^']+index\.lock)'", result.stderr or "")
+        if lock_match:
+            lock_path = Path(lock_match.group(1))
+            if lock_path.exists():
+                age_seconds = time.time() - lock_path.stat().st_mtime
+                if age_seconds < 5:
+                    time.sleep(2)
+                    if lock_path.exists():
+                        age_seconds = time.time() - lock_path.stat().st_mtime
+                if age_seconds > 5:
+                    logger.warning(
+                        "Removing stale git lock before detach: path=%s age=%.1fs",
+                        lock_path,
+                        age_seconds,
+                    )
+                    try:
+                        lock_path.unlink()
+                    except OSError:
+                        pass
+                    else:
+                        retry = _git_run(worktree_path, cmd, check=False, env=env)
+                        if retry.returncode == 0:
+                            return
+                        result = retry
         raise WorktreeError(
             "Failed to detach worktree branch: "
             f"path={worktree_path} branch={branch_name} stderr={result.stderr}"
@@ -1084,7 +1115,12 @@ def create_worktree(
 
     if recreated_reason and branch_name and _branch_matches_issue(branch_name, issue_number):
         if worktree_branch_on_recreate == "delete":
-            if _delete_remote_branch(repo_root, branch_name):
+            if not reuse_options.allow_remote_branch_delete:
+                logger.info(
+                    issue_log(issue_number, "Skipping remote branch delete before recreate: %s"),
+                    branch_name,
+                )
+            elif _delete_remote_branch(repo_root, branch_name):
                 logger.info(issue_log(issue_number, "Deleted remote branch before recreate: %s"), branch_name)
             else:
                 logger.warning(issue_log(issue_number, "Failed to delete remote branch before recreate: %s"), branch_name)

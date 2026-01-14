@@ -199,11 +199,12 @@ class SessionLauncher:
         self._refresh_issue = refresh_issue_fn
         self._dependency_evaluator = dependency_evaluator
 
-    def _worktree_reuse_options(self) -> WorktreeReuseOptions:
+    def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
         return WorktreeReuseOptions(
             reuse_push_preflight=self.config.reuse_push_preflight,
             worktree_branch_on_recreate=self.config.worktree_branch_on_recreate,
             allow_no_verify_dry_run_preflight=self.config.allow_no_verify_dry_run_preflight,
+            allow_remote_branch_delete=allow_remote_branch_delete,
         )
 
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
@@ -704,7 +705,7 @@ class SessionLauncher:
             branch_name=review.branch_name,
             worktree_base=worktree_base,
             enforce_hooks=False,
-            reuse_options=self._worktree_reuse_options(),
+            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
         )
         worktree_path = worktree_info.path
 
@@ -979,7 +980,7 @@ class SessionLauncher:
             worktree_base=worktree_base,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(),
+            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
         )
         worktree_path = worktree_info.path
 

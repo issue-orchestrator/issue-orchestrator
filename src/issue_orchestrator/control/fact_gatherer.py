@@ -195,8 +195,10 @@ class FactGatherer:
         if not watch_label:
             return None
 
-        # Count PRs ready for triage review
-        prs = self.repository_host.get_prs_with_label(watch_label)
+        # Count PRs ready for triage review (include closed to avoid missing fast-closed PRs)
+        prs = self.repository_host.get_prs_with_label(watch_label, state="all")
+        if self.config.filtering.label:
+            prs = [pr for pr in prs if self.config.filtering.label in pr.labels]
         pr_count = len(prs)
         threshold = self.config.triage_review_threshold
 

@@ -179,7 +179,7 @@ class TestCodeReviewRuns:
         flow: E2EFlow,
         issue_title: str,
         e2e_timing_stats,
-    ) -> tuple[IssueKey, int]:
+    ) -> tuple[IssueKey, int, int]:
         with e2e_timing_stats.phase("Create issue"):
             issue, issue_number = flow.create_issue(
                 issue_title,
@@ -189,7 +189,7 @@ class TestCodeReviewRuns:
         with e2e_timing_stats.phase("Wait for PR creation"):
             pr_number = await flow.pr_created(issue, timeout_s=TIMEOUT_SESSION_COMPLETE)
 
-        return issue, pr_number
+        return issue, issue_number, pr_number
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(300)
@@ -214,10 +214,11 @@ class TestCodeReviewRuns:
         flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
 
         issue = None
+        issue_number = None
         pr_number = None
 
         try:
-            issue, pr_number = await self._create_issue_and_wait_for_pr(
+            issue, issue_number, pr_number = await self._create_issue_and_wait_for_pr(
                 flow,
                 "[M0-701] [E2E-REVIEW] PR creation checkpoint",
                 e2e_timing_stats,
@@ -228,8 +229,8 @@ class TestCodeReviewRuns:
             with e2e_timing_stats.phase("Cleanup"):
                 if pr_number:
                     flow.close_pr(pr_number)
-                if issue:
-                    close_issue(repo_name, int(issue.stable_id()), "E2E code review test completed")
+                if issue and issue_number is not None:
+                    close_issue(repo_name, issue_number, "E2E code review test completed")
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(420)
@@ -253,10 +254,11 @@ class TestCodeReviewRuns:
 
         flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, filter_label=filter_label)
         issue = None
+        issue_number = None
         pr_number = None
 
         try:
-            issue, pr_number = await self._create_issue_and_wait_for_pr(
+            issue, issue_number, pr_number = await self._create_issue_and_wait_for_pr(
                 flow,
                 "[M0-702] [E2E-REVIEW] Review outcome checkpoint",
                 e2e_timing_stats,
@@ -286,8 +288,8 @@ class TestCodeReviewRuns:
             with e2e_timing_stats.phase("Cleanup"):
                 if pr_number:
                     flow.close_pr(pr_number)
-                if issue:
-                    close_issue(repo_name, int(issue.stable_id()), "E2E code review test completed")
+                if issue and issue_number is not None:
+                    close_issue(repo_name, issue_number, "E2E code review test completed")
 
 
 # ---------------------------------------------------------------------------

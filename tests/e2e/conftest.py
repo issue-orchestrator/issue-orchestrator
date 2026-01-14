@@ -373,7 +373,7 @@ def e2e_session_config(
     config.max_concurrent_sessions = 4
     config.filtering.label = "io-e2e-test-data"
     config.github_token_env = env_token_name()
-    config.queue_refresh_seconds = 600
+    config.queue_refresh_seconds = 60
     env_port = os.environ.get("E2E_CONTROL_API_PORT")
     config.control_api_port = int(env_port) if env_port else find_free_port()
     # Auto-select web port to avoid conflict with running orchestrator (default 8080)

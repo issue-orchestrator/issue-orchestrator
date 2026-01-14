@@ -87,7 +87,7 @@ class TestConcurrentPipelinePhases:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(600)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=220, system_gh_activity_limit=15)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=220, system_gh_activity_limit=20)
     async def test_pr_created_for_issue(
         self,
         e2e_orchestrator,

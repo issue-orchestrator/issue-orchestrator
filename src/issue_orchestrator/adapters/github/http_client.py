@@ -594,6 +594,25 @@ class GitHubHttpClient:
         return payload if isinstance(payload, list) else []
 
     def get_prs_with_label(self, label: str, state: str = "open") -> list[dict[str, Any]]:
+        if state == "all":
+            items: list[dict[str, Any]] = []
+            seen: set[int] = set()
+            for st in ("open", "closed"):
+                query = f"repo:{self._config.repo} is:pr label:{label} state:{st}"
+                payload = self._request_json(
+                    "GET",
+                    "/search/issues",
+                    params={"q": query, "per_page": 100},
+                    caller="get_prs_with_label",
+                )
+                for item in _search_items(payload):
+                    number = item.get("number")
+                    if isinstance(number, int) and number in seen:
+                        continue
+                    if isinstance(number, int):
+                        seen.add(number)
+                    items.append(item)
+            return items
         query = f"repo:{self._config.repo} is:pr label:{label} state:{state}"
         payload = self._request_json(
             "GET",
