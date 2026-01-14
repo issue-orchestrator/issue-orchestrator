@@ -438,9 +438,7 @@ class TestWizardNewProject:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",                  # worktree base
-            "web",                  # ui mode
             "8080",                 # web port
-            "tmux",                 # terminal backend
             "io",                   # label prefix
             False,                  # disable Stage 1 review
         ])
@@ -480,9 +478,7 @@ class TestWizardNewProject:
             "due_date",
             "M0",
             "../",
-            "web",
-            "8080",
-            "tmux",
+            "8080",                 # web port
             "io",
             False,                  # disable Stage 1 review
         ])
@@ -516,7 +512,7 @@ class TestWizardNewProject:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
-            "tmux",                 # ui mode (tmux doesn't need port)
+            "8080",                 # web port
             "io",                   # label prefix
             False,                  # disable Stage 1 review
         ])
@@ -558,9 +554,7 @@ class TestWizardNewProject:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
-            "web",
             "9000",                 # custom port
-            "tmux",                 # terminal backend
             "io",                   # label prefix
             False,                  # disable Stage 1 review
         ])
@@ -593,9 +587,7 @@ class TestWizardNewProject:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
-            "web",
-            "8080",
-            "tmux",                 # terminal backend
+            "8080",                 # web port
             "io",                   # label prefix
             False,                  # disable Stage 1 review
         ])
@@ -629,9 +621,7 @@ class TestWizardNewProject:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
-            "web",
-            "8080",
-            "tmux",                 # terminal backend
+            "8080",                 # web port
             "io",                   # label prefix
             True,                   # enable Stage 1: per-PR code review
             "agent:reviewer",       # code review agent
@@ -678,9 +668,7 @@ class TestWizardNewProject:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
-            "web",
-            "8080",
-            "tmux",                 # terminal backend
+            "8080",                 # web port
             "io",                   # label prefix
             False,                  # disable Stage 1 review
         ])
@@ -722,9 +710,7 @@ class TestWizardExistingProject:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",                  # worktree base
-            "web",                  # ui mode
-            "8080",                 # port
-            "tmux",                 # terminal backend
+            "8080",                 # web port
             "io",                   # label prefix
             False,                  # disable Stage 1 review
         ])
@@ -825,10 +811,8 @@ class TestWizardExistingProject:
             "M0",                   # foundation milestone
             # Worktree missing
             "../",
-            # UI mode missing
-            "web",
-            "8080",
-            "tmux",
+            # UI mode now defaults to web - only asks for port
+            "8080",                 # web port
             # Label prefix
             "io",                   # label prefix
             # Review
@@ -875,8 +859,8 @@ class TestWizardExistingProject:
             "M0",                   # foundation milestone
             # Worktree
             "../",
-            # UI mode (fresh)
-            "tmux",
+            # UI mode now defaults to web - only asks for port
+            "8080",                 # web port
             # Label prefix
             "io",                   # label prefix
             # Review
@@ -911,9 +895,7 @@ class TestWizardExistingProject:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",                  # worktree base (now top-level config)
-            "web",                  # ui mode
-            "8080",                 # port (since web mode)
-            "tmux",                 # terminal backend
+            "8080",                 # web port
             "io",                   # label prefix
             False,                  # disable Stage 1 review
         ])
@@ -957,9 +939,7 @@ class TestRunWizard:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
-            "web",
-            "8080",
-            "tmux",
+            "8080",                 # web port
             "io",                   # label prefix
             False,                  # disable Stage 1 review
             # Post-wizard (new flow)
@@ -1002,9 +982,7 @@ class TestRunWizard:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
-            "web",
-            "8080",
-            "tmux",
+            "8080",                 # web port
             "io",                   # label prefix
             False,                  # disable Stage 1 review
             # Post-wizard (new flow)
@@ -1074,9 +1052,7 @@ class TestRunWizard:
             "due_date",             # milestone sort strategy
             "M0",                   # foundation milestone
             "../",
-            "web",
-            "8080",
-            "tmux",
+            "8080",                 # web port
             "io",                   # label prefix
             False,                  # disable Stage 1 review
             # Post-wizard (new flow)
@@ -1219,9 +1195,7 @@ class TestDryRunMode:
             "due_date",
             "M0",  # foundation milestone
             "../",
-            "web",
-            "8080",
-            "tmux",
+            "8080",  # web port
             "io",  # label prefix
             False,  # disable Stage 1 review
         ])
@@ -1261,9 +1235,7 @@ class TestDryRunMode:
             "due_date",
             "M0",  # foundation milestone
             "../",
-            "web",
-            "8080",
-            "tmux",
+            "8080",  # web port
             "io",   # label prefix
             False,  # disable Stage 1 review
         ])

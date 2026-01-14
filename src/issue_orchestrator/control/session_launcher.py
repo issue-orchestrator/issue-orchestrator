@@ -436,7 +436,7 @@ class SessionLauncher:
             session_name=session_name,
             issue_number=issue.number,
             agent_label=issue.agent_type,
-            backend=self.config.terminal_adapter or "tmux",
+            backend=self.config.terminal_adapter or "subprocess",
             claude_log_dir=str(claude_project_dir),
             orchestrator_log=str(get_repo_log_path(self.config.repo_root)),
         )
@@ -771,7 +771,7 @@ class SessionLauncher:
             session_name=session_name,
             issue_number=review.issue_number,
             agent_label=agent_label,
-            backend=self.config.terminal_adapter or "tmux",
+            backend=self.config.terminal_adapter or "subprocess",
             claude_log_dir=str(claude_project_dir),
             orchestrator_log=str(get_repo_log_path(self.config.repo_root)),
         )
@@ -1038,7 +1038,7 @@ class SessionLauncher:
             session_name=session_name,
             issue_number=issue_number,
             agent_label=rework.agent_type,
-            backend=self.config.terminal_adapter or "tmux",
+            backend=self.config.terminal_adapter or "subprocess",
             claude_log_dir=str(claude_project_dir),
             orchestrator_log=str(get_repo_log_path(self.config.repo_root)),
         )

@@ -129,49 +129,44 @@ class TestCmdStart:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
                 with patch('issue_orchestrator.execution.providers.create_repository_host') as mock_create_host:
                     with patch('issue_orchestrator.control.scheduler.Scheduler'):
-                        with patch('issue_orchestrator.execution.providers.get_tmux_manager') as mock_get_mgr:
-                            with patch('issue_orchestrator.infra.analysis.analyze_all_issues', return_value=[]):
-                                with patch('issue_orchestrator.execution.git_working_copy.GitWorkingCopy.list_remote_branches', return_value=[]):
-                                    with patch('issue_orchestrator.infra.analysis.analyze_orphan_branches', return_value=[]):
-                                        mock_config = Mock()
-                                        mock_config.agents = {'agent:test': Mock()}
-                                        mock_config.max_concurrent_sessions = 2
-                                        mock_config.repo = 'test/repo'
-                                        mock_config.filtering.label = None
-                                        mock_config.filtering.milestone = None
-                                        mock_config.filtering.milestones = []
-                                        mock_config.get_filter_milestones.return_value = []
-                                        mock_config.repo_root = Path("/tmp")
-                                        mock_config.worktree_base = Path("/tmp/worktrees")
-                                        mock_config.get_label_in_progress.return_value = 'in-progress'
-                                        mock_config.github_api_url = 'https://api.github.com'
-                                        mock_config.github_http_timeout_seconds = 20.0
-                                        mock_config.queue_refresh_seconds = 0
-                                        mock_config.validate.return_value = []  # Pass validation
-                                        mock_find.return_value = mock_config
+                        with patch('issue_orchestrator.infra.analysis.analyze_all_issues', return_value=[]):
+                            with patch('issue_orchestrator.execution.git_working_copy.GitWorkingCopy.list_remote_branches', return_value=[]):
+                                with patch('issue_orchestrator.infra.analysis.analyze_orphan_branches', return_value=[]):
+                                    mock_config = Mock()
+                                    mock_config.agents = {'agent:test': Mock()}
+                                    mock_config.max_concurrent_sessions = 2
+                                    mock_config.repo = 'test/repo'
+                                    mock_config.filtering.label = None
+                                    mock_config.filtering.milestone = None
+                                    mock_config.filtering.milestones = []
+                                    mock_config.get_filter_milestones.return_value = []
+                                    mock_config.repo_root = Path("/tmp")
+                                    mock_config.worktree_base = Path("/tmp/worktrees")
+                                    mock_config.get_label_in_progress.return_value = 'in-progress'
+                                    mock_config.github_api_url = 'https://api.github.com'
+                                    mock_config.github_http_timeout_seconds = 20.0
+                                    mock_config.queue_refresh_seconds = 0
+                                    mock_config.validate.return_value = []  # Pass validation
+                                    mock_find.return_value = mock_config
 
-                                        # Mock repository host
-                                        mock_github = Mock()
-                                        mock_github.list_issues.return_value = []
-                                        mock_create_host.return_value = mock_github
+                                    # Mock repository host
+                                    mock_github = Mock()
+                                    mock_github.list_issues.return_value = []
+                                    mock_create_host.return_value = mock_github
 
-                                        mock_mgr = Mock()
-                                        mock_mgr.window_exists = Mock(return_value=False)
-                                        mock_get_mgr.return_value = mock_mgr
+                                    args = argparse.Namespace(
+                                        test_mode=False,
+                                        milestone=None,
+                                        dry_run=True,
+                                        no_dashboard=False,
+                                        debug=False,
+                                    )
 
-                                        args = argparse.Namespace(
-                                            test_mode=False,
-                                            milestone=None,
-                                            dry_run=True,
-                                            no_dashboard=False,
-                                            debug=False,
-                                        )
+                                    result = cmd_start(args)
 
-                                        result = cmd_start(args)
-
-                                        assert result == 0
-                                        # Orchestrator should NOT be instantiated for dry-run
-                                        mock_build.assert_not_called()
+                                    assert result == 0
+                                    # Orchestrator should NOT be instantiated for dry-run
+                                    mock_build.assert_not_called()
 
 
 class TestCmdStatus:
@@ -180,39 +175,36 @@ class TestCmdStatus:
     def test_cmd_status_shows_config(self):
         """Verify status shows configuration."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.adapters.terminal._tmux.list_sessions', return_value=[]):
-                mock_config = Mock()
-                mock_config.repo = 'test/repo'
-                mock_config.max_concurrent_sessions = 3
-                mock_config.agents = {'agent:web': Mock(), 'agent:mobile': Mock()}
-                mock_config.filtering.label = None
-                mock_config.filtering.milestone = None
-                mock_config.filtering.milestones = []
-                mock_find.return_value = mock_config
+            mock_config = Mock()
+            mock_config.repo = 'test/repo'
+            mock_config.max_concurrent_sessions = 3
+            mock_config.agents = {'agent:web': Mock(), 'agent:mobile': Mock()}
+            mock_config.filtering.label = None
+            mock_config.filtering.milestone = None
+            mock_config.filtering.milestones = []
+            mock_find.return_value = mock_config
 
-                args = argparse.Namespace()
-                result = cmd_status(args)
+            args = argparse.Namespace()
+            result = cmd_status(args)
 
-                assert result == 0
+            assert result == 0
 
     def test_cmd_status_shows_active_sessions(self):
-        """Verify status shows active sessions."""
+        """Verify status shows active sessions (now directs to web dashboard)."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
-            with patch('issue_orchestrator.adapters.terminal._tmux.list_sessions') as mock_list:
-                mock_config = Mock()
-                mock_config.repo = 'test/repo'
-                mock_config.max_concurrent_sessions = 3
-                mock_config.agents = {'agent:web': Mock()}
-                mock_config.filtering.label = None
-                mock_config.filtering.milestone = None
-                mock_config.filtering.milestones = []
-                mock_find.return_value = mock_config
-                mock_list.return_value = ['issue-123', 'issue-456']
+            mock_config = Mock()
+            mock_config.repo = 'test/repo'
+            mock_config.max_concurrent_sessions = 3
+            mock_config.agents = {'agent:web': Mock()}
+            mock_config.filtering.label = None
+            mock_config.filtering.milestone = None
+            mock_config.filtering.milestones = []
+            mock_find.return_value = mock_config
 
-                args = argparse.Namespace()
-                result = cmd_status(args)
+            args = argparse.Namespace()
+            result = cmd_status(args)
 
-                assert result == 0
+            assert result == 0
 
     def test_cmd_status_handles_missing_config(self):
         """Verify status handles missing config gracefully."""
@@ -386,176 +378,43 @@ class TestMain:
 
 
 class TestCmdAttach:
-    """Tests for the attach command."""
+    """Tests for the attach command (deprecated)."""
 
-    def test_cmd_attach_no_session(self):
-        """Verify attach fails when no session exists."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.has_session.return_value = False
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace(issue_number=None)
-            result = cmd_attach(args)
-
-            assert result == 1
-
-    def test_cmd_attach_success(self):
-        """Verify attach succeeds when session exists."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            with patch('issue_orchestrator.adapters.terminal._tmux.attach_session') as mock_attach:
-                mock_mgr = Mock()
-                mock_mgr.has_session.return_value = True
-                mock_get_mgr.return_value = mock_mgr
-
-                args = argparse.Namespace(issue_number=None)
-                result = cmd_attach(args)
-
-                mock_attach.assert_called_once_with("")
-                assert result == 0
-
-    def test_cmd_attach_with_issue_number(self):
-        """Verify attach switches to specific issue window."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            with patch('issue_orchestrator.adapters.terminal._tmux.attach_session') as mock_attach:
-                mock_mgr = Mock()
-                mock_mgr.has_session.return_value = True
-                mock_mgr.select_window.return_value = True
-                mock_get_mgr.return_value = mock_mgr
-
-                args = argparse.Namespace(issue_number=123)
-                result = cmd_attach(args)
-
-                mock_mgr.select_window.assert_called_once_with(123)
-                mock_attach.assert_called_once_with("")
+    def test_cmd_attach_returns_deprecated(self):
+        """Verify attach returns 1 as it's deprecated."""
+        args = argparse.Namespace(issue_number=None)
+        result = cmd_attach(args)
+        assert result == 1
 
 
 class TestCmdSwitch:
-    """Tests for the switch command."""
+    """Tests for the switch command (deprecated)."""
 
-    def test_cmd_switch_no_session(self):
-        """Verify switch fails when no session exists."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.has_session.return_value = False
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace(issue_number=123)
-            result = cmd_switch(args)
-
-            assert result == 1
-
-    def test_cmd_switch_window_not_found(self):
-        """Verify switch fails when window doesn't exist."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.has_session.return_value = True
-            mock_mgr.select_window.return_value = False
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace(issue_number=123)
-            result = cmd_switch(args)
-
-            assert result == 1
-
-    def test_cmd_switch_success(self):
-        """Verify switch succeeds when window exists."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.has_session.return_value = True
-            mock_mgr.select_window.return_value = True
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace(issue_number=123)
-            result = cmd_switch(args)
-
-            mock_mgr.select_window.assert_called_once_with(123)
-            assert result == 0
+    def test_cmd_switch_returns_deprecated(self):
+        """Verify switch returns 1 as it's deprecated."""
+        args = argparse.Namespace(issue_number=123)
+        result = cmd_switch(args)
+        assert result == 1
 
 
 class TestCmdDashboard:
-    """Tests for the dashboard command."""
+    """Tests for the dashboard command (deprecated)."""
 
-    def test_cmd_dashboard_no_session(self):
-        """Verify dashboard fails when no session exists."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.has_session.return_value = False
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace()
-            result = cmd_dashboard(args)
-
-            assert result == 1
-
-    def test_cmd_dashboard_not_found(self):
-        """Verify dashboard fails when window doesn't exist."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.has_session.return_value = True
-            mock_mgr.select_dashboard.return_value = False
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace()
-            result = cmd_dashboard(args)
-
-            assert result == 1
-
-    def test_cmd_dashboard_success(self):
-        """Verify dashboard succeeds when window exists."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.has_session.return_value = True
-            mock_mgr.select_dashboard.return_value = True
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace()
-            result = cmd_dashboard(args)
-
-            mock_mgr.select_dashboard.assert_called_once()
-            assert result == 0
+    def test_cmd_dashboard_returns_deprecated(self):
+        """Verify dashboard returns 1 as it's deprecated."""
+        args = argparse.Namespace()
+        result = cmd_dashboard(args)
+        assert result == 1
 
 
 class TestCmdOutput:
-    """Tests for the output command."""
+    """Tests for the output command (deprecated)."""
 
-    def test_cmd_output_window_not_found(self):
-        """Verify output fails when window doesn't exist."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.capture_pane_output.return_value = None
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace(issue_number=123, lines=20)
-            result = cmd_output(args)
-
-            assert result == 1
-
-    def test_cmd_output_success(self):
-        """Verify output displays pane content successfully."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.capture_pane_output.return_value = "Sample output\nLine 2"
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace(issue_number=123, lines=20)
-            result = cmd_output(args)
-
-            mock_mgr.capture_pane_output.assert_called_once_with(123, lines=20)
-            assert result == 0
-
-    def test_cmd_output_custom_lines(self):
-        """Verify output respects custom line count."""
-        with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_get_mgr:
-            mock_mgr = Mock()
-            mock_mgr.capture_pane_output.return_value = "Output"
-            mock_get_mgr.return_value = mock_mgr
-
-            args = argparse.Namespace(issue_number=456, lines=50)
-            result = cmd_output(args)
-
-            mock_mgr.capture_pane_output.assert_called_once_with(456, lines=50)
-            assert result == 0
+    def test_cmd_output_returns_deprecated(self):
+        """Verify output returns 1 as it's deprecated."""
+        args = argparse.Namespace(issue_number=123, lines=20)
+        result = cmd_output(args)
+        assert result == 1
 
 
 class TestCmdPauseResume:

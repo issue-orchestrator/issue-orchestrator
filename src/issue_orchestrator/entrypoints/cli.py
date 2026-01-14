@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import logging
-import os
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -322,14 +321,13 @@ def cmd_start(args: argparse.Namespace) -> int:
     # Handle dry-run mode
     if hasattr(args, 'dry_run') and args.dry_run:
         from ..control.scheduler import Scheduler
-        from ..execution.providers import get_tmux_manager, create_repository_host
+        from ..execution.providers import create_repository_host
         from ..infra.analysis import analyze_all_issues, extract_issue_branches
         from ..execution.git_working_copy import GitWorkingCopy
 
         console.print("\n[cyan]DRY RUN - showing what would be processed:[/cyan]\n")
 
         scheduler = Scheduler(config)
-        tmux_mgr = get_tmux_manager()
         github = create_repository_host(config.repo) if config.repo else None
         working_copy = GitWorkingCopy()
         all_issues = []
@@ -363,7 +361,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             issues=all_issues,
             repo=config.repo,
             issue_branches=issue_branches,
-            check_session_fn=tmux_mgr.window_exists,
+            check_session_fn=lambda _: False,  # No session check in dry-run
         )
 
         # Sort by priority
@@ -603,10 +601,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                     if control_api:
                         await control_api.stop()
 
-            should_attach = asyncio.run(run_tui_with_control_api())
-            if should_attach:
-                # User pressed 1-9 to attach to a session
-                os.execvp("tmux", ["tmux", "attach-session", "-t", "orchestrator"])
+            asyncio.run(run_tui_with_control_api())
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutting down...[/yellow]")
 
@@ -616,13 +611,7 @@ def cmd_start(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     """Show current status."""
     try:
-        from ..execution.providers import list_tmux_sessions
-
         config = _load_config(args)
-
-        # Get active tmux sessions that look like ours
-        all_sessions = list_tmux_sessions()
-        our_sessions = [s for s in all_sessions if s.startswith("issue-")]
 
         console.print("\n[cyan]Orchestrator Status[/cyan]")
         console.print(f"\n[bold]Config:[/bold]")
@@ -636,14 +625,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         elif config.filtering.milestone:
             console.print(f"  Filter milestone: {config.filtering.milestone}")
 
-        console.print(f"\n[bold]Active Sessions ({len(our_sessions)}):[/bold]")
-        if our_sessions:
-            for session in our_sessions:
-                issue_num = session.replace("issue-", "")
-                console.print(f"  • #{issue_num} ({session})")
-        else:
-            console.print("  (none)")
-
+        console.print("\n[dim]Note: Use the web dashboard to view active sessions[/dim]")
         return 0
     except FileNotFoundError:
         console.print("[yellow]Orchestrator not configured yet[/yellow]")
@@ -651,74 +633,31 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
-    """Attach to the orchestrator tmux session."""
-    from ..execution.providers import attach_tmux_session, get_tmux_manager
-
-    manager = get_tmux_manager()
-    if not manager.has_session():
-        console.print("[red]No orchestrator session running[/red]")
-        return 1
-
-    # If issue number provided, switch to that window first
-    if hasattr(args, 'issue_number') and args.issue_number:
-        if not manager.select_window(args.issue_number):
-            console.print(f"[yellow]Window for issue #{args.issue_number} not found[/yellow]")
-
-    attach_tmux_session("")  # Attaches to orchestrator session
-    return 0  # Never reached if attach succeeds
+    """Attach to session (deprecated - use web dashboard)."""
+    console.print("[yellow]The 'attach' command is no longer available.[/yellow]")
+    console.print("Use the web dashboard to view sessions: issue-orchestrator start")
+    return 1
 
 
 def cmd_switch(args: argparse.Namespace) -> int:
-    """Switch to a specific issue window (when inside tmux)."""
-    from ..execution.providers import get_tmux_manager
-
-    manager = get_tmux_manager()
-    if not manager.has_session():
-        console.print("[red]No orchestrator session running[/red]")
-        return 1
-
-    issue_number: int = args.issue_number
-    if manager.select_window(issue_number):
-        console.print(f"[green]Switched to issue #{issue_number}[/green]")
-        return 0
-    else:
-        console.print(f"[red]No window for issue #{issue_number}[/red]")
-        return 1
+    """Switch to session (deprecated - use web dashboard)."""
+    console.print("[yellow]The 'switch' command is no longer available.[/yellow]")
+    console.print("Use the web dashboard to view sessions: issue-orchestrator start")
+    return 1
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
-    """Switch to the dashboard window (when inside tmux)."""
-    from ..execution.providers import get_tmux_manager
-
-    manager = get_tmux_manager()
-    if not manager.has_session():
-        console.print("[red]No orchestrator session running[/red]")
-        return 1
-
-    if manager.select_dashboard():
-        console.print("[green]Switched to dashboard[/green]")
-        return 0
-    else:
-        console.print("[red]Dashboard window not found[/red]")
-        return 1
+    """Switch to dashboard (deprecated - use web dashboard)."""
+    console.print("[yellow]The 'dashboard' command is no longer available.[/yellow]")
+    console.print("Start the orchestrator to access the web dashboard: issue-orchestrator start")
+    return 1
 
 
 def cmd_output(args: argparse.Namespace) -> int:
     """Show recent output from an issue's session."""
-    from ..execution.providers import get_tmux_manager
-
-    manager = get_tmux_manager()
-    issue_number: int = args.issue_number
-    lines: int = getattr(args, 'lines', 20)
-
-    output = manager.capture_pane_output(issue_number, lines=lines)
-    if output is None:
-        console.print(f"[red]No window for issue #{issue_number}[/red]")
-        return 1
-
-    console.print(f"[cyan]Output from issue #{issue_number}:[/cyan]\n")
-    console.print(output)
-    return 0
+    console.print("[yellow]The 'output' command is no longer available.[/yellow]")
+    console.print("View session logs in .issue-orchestrator/sessions/<session>/session.log")
+    return 1
 
 
 def cmd_pause(args: argparse.Namespace) -> int:
@@ -1147,57 +1086,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
             console.print(f"  [yellow]![/yellow] {agent_name}: no command configured")
             warnings.append(f"Agent '{agent_name}' has no command")
 
-    # 6. Check tmux (if using tmux mode)
-    console.print("\n[bold]6. Tmux[/bold]")
-    tmux_path = shutil.which("tmux")
-    if tmux_path:
-        console.print(f"  [green]✓[/green] tmux found: {tmux_path}")
-        # Check version - require 3.6a+ for pane_dead, pane_dead_status, pane_dead_signal
-        version_str = None
-        from libtmux import Server
-        from libtmux.exc import LibTmuxException
-        try:
-            server = Server()
-            result = server.cmd('display', '-p', '#{version}')
-            if result.stdout:
-                version_str = f"tmux {result.stdout[0]}"
-        except LibTmuxException:
-            pass  # Fall back to no version info
-        if version_str:
-            console.print(f"  [cyan]ℹ[/cyan] Version: {version_str}")
-            # Parse version: "tmux 3.6a" -> "3.6a" or "tmux 3.3" -> "3.3"
-            parts = version_str.split()
-            if len(parts) >= 2:
-                ver = parts[1].lstrip("v")  # Handle "v3.6" format
-                # Check minimum version (3.6a required for reliable pane_dead support)
-                try:
-                    # Extract numeric parts (e.g., "3.6a" -> (3, 6))
-                    import re
-                    match = re.match(r"(\d+)\.(\d+)", ver)
-                    if match:
-                        major, minor = int(match.group(1)), int(match.group(2))
-                        if major < 3 or (major == 3 and minor < 6):
-                            console.print(
-                                f"  [red]✗[/red] tmux 3.6a or later required (found {ver})"
-                            )
-                            console.print(
-                                f"      Older versions lack reliable pane_dead_status support"
-                            )
-                            if config.ui_mode == "tmux":
-                                errors.append(f"tmux 3.6a+ required, found {ver}")
-                            else:
-                                warnings.append(f"tmux 3.6a+ recommended, found {ver}")
-                        else:
-                            console.print(f"  [green]✓[/green] Version {ver} meets minimum (3.6a)")
-                except (ValueError, AttributeError):
-                    pass  # Can't parse version, skip check
-    else:
-        if config.ui_mode == "tmux":
-            console.print(f"  [red]✗[/red] tmux not found (required for ui_mode: tmux)")
-            errors.append("tmux not installed")
-        else:
-            console.print(f"  [yellow]![/yellow] tmux not found (ok if using web/none mode)")
-            warnings.append("tmux not installed")
+    # 6. Terminal backend
+    console.print("\n[bold]6. Terminal Backend[/bold]")
+    backend = config.terminal_adapter or "subprocess"
+    console.print(f"  [green]✓[/green] Using terminal backend: {backend}")
+    console.print(f"  [cyan]ℹ[/cyan] Sessions run as subprocesses with output logged to session.log")
 
     # 7. Verify AI meta-agent hooks
     console.print("\n[bold]7. AI Meta-Agent Hooks[/bold]")
@@ -1891,9 +1784,9 @@ def main() -> int:
     )
     start_parser.add_argument(
         "--ui-mode",
-        choices=["tmux", "web"],
+        choices=["web"],
         default=None,
-        help="UI mode: tmux (terminal dashboard) or web (browser dashboard, default)"
+        help="UI mode: web (browser dashboard, default)"
     )
     start_parser.add_argument(
         "--port",
@@ -1956,9 +1849,9 @@ def main() -> int:
     )
     status_parser.set_defaults(func=cmd_status)
 
-    # attach command
+    # attach command (deprecated)
     attach_parser: argparse.ArgumentParser = subparsers.add_parser(
-        "attach", help="Attach to the orchestrator tmux session"
+        "attach", help="(deprecated) Use web dashboard instead"
     )
     attach_parser.add_argument(
         "issue_number",
@@ -1969,9 +1862,9 @@ def main() -> int:
     )
     attach_parser.set_defaults(func=cmd_attach)
 
-    # switch command
+    # switch command (deprecated)
     switch_parser: argparse.ArgumentParser = subparsers.add_parser(
-        "switch", help="Switch to an issue's window (when inside tmux)"
+        "switch", help="(deprecated) Use web dashboard instead"
     )
     switch_parser.add_argument(
         "issue_number",
@@ -1980,9 +1873,9 @@ def main() -> int:
     )
     switch_parser.set_defaults(func=cmd_switch)
 
-    # dashboard command
+    # dashboard command (deprecated)
     dashboard_parser: argparse.ArgumentParser = subparsers.add_parser(
-        "dashboard", help="Switch to the dashboard window (when inside tmux)"
+        "dashboard", help="(deprecated) Use web dashboard instead"
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
@@ -2039,7 +1932,7 @@ def main() -> int:
     )
     restart_parser.add_argument(
         "--ui-mode",
-        choices=["tmux", "web"],
+        choices=["web"],
         default=None,
         help="UI mode for new orchestrator"
     )

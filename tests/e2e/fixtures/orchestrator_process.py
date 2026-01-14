@@ -13,9 +13,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
-from libtmux import Server
-from libtmux.exc import LibTmuxException
-from libtmux._internal.query_list import ObjectDoesNotExist
 
 from .inflight_tracker import trigger_refresh
 
@@ -48,10 +45,9 @@ def _keep_remote_artifacts() -> bool:
 class OrchestratorProcess:
     """Wrapper for orchestrator subprocess with IPC support."""
 
-    def __init__(self, config: "Config", project_root: Path, tmux_session: str = "orchestrator"):
+    def __init__(self, config: "Config", project_root: Path):
         self.config = config
         self.project_root = project_root
-        self.tmux_session = tmux_session
         self.process: subprocess.Popen | None = None
         self.ipc_socket_path: Path | None = None
         self._output_lines: list[str] = []
@@ -242,8 +238,8 @@ class OrchestratorProcess:
         preferred_bin = self.project_root / ".venv" / "bin" / "issue-orchestrator"
         venv_bin = preferred_bin if preferred_bin.exists() else Path(sys.executable).parent / "issue-orchestrator"
 
-        # Allow UI mode override via env var for interactive debugging
-        ui_mode = os.environ.get("E2E_UI_MODE", "tmux")
+        # UI mode is always web (subprocess backend)
+        ui_mode = "web"
 
         config_path = self._write_e2e_config()
         cmd = [
@@ -253,13 +249,10 @@ class OrchestratorProcess:
             "--ui-mode", ui_mode,
         ]
 
-        # Add dashboard flags based on UI mode
-        if ui_mode == "web":
-            web_port = self.config.web_port
-            cmd.extend(["--port", str(web_port)])
-            print(f"  [E2E] Web UI available at http://localhost:{web_port}", flush=True)
-        else:
-            cmd.append("--no-dashboard")  # Don't start TUI in tests
+        # Add web port
+        web_port = self.config.web_port
+        cmd.extend(["--port", str(web_port)])
+        print(f"  [E2E] Web UI available at http://localhost:{web_port}", flush=True)
 
         if extra_args:
             cmd.extend(extra_args)
@@ -273,8 +266,6 @@ class OrchestratorProcess:
         env["PYTHONUNBUFFERED"] = "1"
         env["ORCHESTRATOR_LOG_TO_STDERR"] = "1"
         env["PYTHONPATH"] = f"{self.project_root / 'src'}:{env.get('PYTHONPATH', '')}"
-        # Set tmux session name for e2e test isolation
-        env["ORCHESTRATOR_TMUX_SESSION"] = self.tmux_session
         env["ORCHESTRATOR_NO_BROWSER"] = "1"
         if os.environ.get("E2E_CLAUDE_ARGS"):
             env["ORCHESTRATOR_CLAUDE_ARGS"] = os.environ["E2E_CLAUDE_ARGS"]
@@ -327,7 +318,6 @@ class OrchestratorProcess:
 
         try:
             stdout, stderr = self.process.communicate(timeout=5)
-            self._cleanup_tmux_sessions()
             self._cleanup_log_tailers()
             self._close_log_file()
             print(f"  [E2E] Orchestrator stopped gracefully", flush=True)
@@ -337,7 +327,6 @@ class OrchestratorProcess:
             self.process.send_signal(signal.SIGTERM)
             try:
                 stdout, stderr = self.process.communicate(timeout=5)
-                self._cleanup_tmux_sessions()
                 self._cleanup_log_tailers()
                 self._close_log_file()
                 print(f"  [E2E] Orchestrator stopped after second SIGTERM", flush=True)
@@ -346,7 +335,6 @@ class OrchestratorProcess:
                 print(f"  [E2E] Force killing orchestrator...", flush=True)
                 self.process.kill()
                 stdout, stderr = self.process.communicate()
-                self._cleanup_tmux_sessions()
                 self._cleanup_log_tailers()
                 self._close_log_file()
                 print(f"  [E2E] Orchestrator killed", flush=True)
@@ -380,30 +368,6 @@ class OrchestratorProcess:
                 self._config_path.unlink()
             except OSError:
                 pass
-
-    def _cleanup_tmux_sessions(self) -> None:
-        """Clean up any tmux windows created by e2e tests."""
-        if _keep_artifacts():
-            return
-        try:
-            server = Server()
-            session = server.sessions.get(session_name=self.tmux_session)
-            if not session:
-                return
-
-            # Iterate through windows and kill e2e test windows
-            for window in list(session.windows):
-                window_name = window.window_name or ""
-                if "E2E-TEST" in window_name or "E2E-" in window_name:
-                    try:
-                        window.kill()
-                    except (LibTmuxException, ObjectDoesNotExist):
-                        pass
-        except (LibTmuxException, ObjectDoesNotExist):
-            # Session doesn't exist or server not running - that's fine
-            pass
-        except Exception:
-            pass
 
     def _cleanup_log_tailers(self) -> None:
         """Stop lingering session.log tail processes from tmux pipe-pane."""
