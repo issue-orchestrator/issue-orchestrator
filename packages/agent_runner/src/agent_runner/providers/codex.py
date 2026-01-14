@@ -42,14 +42,14 @@ class CodexProvider(CLIProvider):
     def build_command(
         self,
         prompt: str,
-        model: str,
+        model: str | None = None,
         **kwargs: str,
     ) -> list[str]:
         """Build a Codex CLI command.
 
         Args:
             prompt: The task to perform
-            model: Model name (e.g., gpt-5-codex)
+            model: Model name (e.g., o3). If None, uses Codex's default.
             **kwargs: Additional options:
                 - approval_mode: "full-auto" (default), "yolo", or "default"
                 - sandbox: Sandbox policy (read-only, workspace-write, danger-full-access)
@@ -69,8 +69,9 @@ class CodexProvider(CLIProvider):
             cmd.append("--full-auto")
         # else: default mode, no flag needed
 
-        # Model
-        cmd.extend(["--model", model])
+        # Model (optional - Codex will use default if not specified)
+        if model:
+            cmd.extend(["--model", model])
 
         # Sandbox policy (only if not using yolo which disables sandbox)
         sandbox = kwargs.get("sandbox")

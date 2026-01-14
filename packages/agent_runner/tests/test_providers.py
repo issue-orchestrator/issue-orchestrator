@@ -246,3 +246,29 @@ class TestCodexProvider:
         )
 
         assert cmd[-1] == "The task to do"
+
+    def test_build_command_model_optional(self) -> None:
+        """Test that model is optional (uses Codex default)."""
+        provider = CodexProvider()
+
+        cmd = provider.build_command(
+            prompt="Task without model",
+        )
+
+        assert "--model" not in cmd
+        assert "Task without model" in cmd
+        assert cmd[-1] == "Task without model"
+
+    def test_build_command_no_model_with_options(self) -> None:
+        """Test command without model but with other options."""
+        provider = CodexProvider()
+
+        cmd = provider.build_command(
+            prompt="Task",
+            approval_mode="yolo",
+            json_output="false",
+        )
+
+        assert "--model" not in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+        assert "--json" not in cmd
