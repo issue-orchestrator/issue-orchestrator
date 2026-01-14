@@ -3,6 +3,7 @@
 This controller makes decisions about session outcomes based on:
 1. Observations (session running, terminated, timed out)
 2. Completion records (completion.json written by agent-done)
+3. Validation gate (optional post-completion validation)
 
 Key principle: completion.json is the source of truth for agent intent.
 The observer reports facts; this controller decides outcomes.
@@ -12,6 +13,8 @@ Example flows:
 - Session terminated + no completion.json -> FAILED
 - Session timed out + completion.json exists -> recover work, process completion
 - Session timed out + no completion.json -> TIMED_OUT
+- Completion processed + validation configured -> run validation gate
+- Validation failed -> VALIDATION_FAILED
 """
 
 import logging
@@ -21,11 +24,12 @@ from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .completion_processor import CompletionProcessor, ProcessingResult
+    from ..ports.command_runner import CommandRunner
 
 from ..events import EventName
 from ..domain.models import SessionStatus
 from ..infra.logging_config import issue_log
-from ..infra.session_output import find_session_log_path
+from ..infra.session_output import find_session_log_path, ensure_session_output_dir
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
 
@@ -55,6 +59,11 @@ class SessionDecision:
     # Reason for the decision
     reason: str = ""
 
+    # Validation gate results (if validation was run)
+    validation_passed: Optional[bool] = None
+    validation_error: Optional[str] = None
+    validation_error_file: Optional[Path] = None
+
 
 class SessionController:
     """Controller that decides session outcomes.
@@ -65,21 +74,32 @@ class SessionController:
     The key insight: a session may time out but still have completed work.
     If completion.json exists with outcome=completed, we should process it
     regardless of whether the session timed out or exited cleanly.
+
+    Optionally runs a validation gate after completion processing.
     """
 
     def __init__(
         self,
         completion_processor: "CompletionProcessor",
         events: EventSink,
+        command_runner: Optional["CommandRunner"] = None,
+        validation_cmd: Optional[str] = None,
+        validation_timeout_seconds: int = 300,
     ):
         """Initialize the controller.
 
         Args:
             completion_processor: For reading/processing completion records
             events: For emitting trace events
+            command_runner: For running validation commands (optional)
+            validation_cmd: Validation command to run after completion (optional)
+            validation_timeout_seconds: Timeout for validation command
         """
         self.completion_processor = completion_processor
         self.events = events
+        self._command_runner = command_runner
+        self._validation_cmd = validation_cmd
+        self._validation_timeout = validation_timeout_seconds
 
     def decide_outcome(
         self,
@@ -258,6 +278,47 @@ class SessionController:
         }
         status = outcome_to_status.get(record.outcome, SessionStatus.FAILED)
 
+        # Run validation gate if configured and outcome is COMPLETED
+        validation_passed: Optional[bool] = None
+        validation_error: Optional[str] = None
+        validation_error_file: Optional[Path] = None
+
+        if (
+            status == SessionStatus.COMPLETED
+            and self._validation_cmd
+            and self._command_runner
+        ):
+            logger.info(
+                issue_log(issue_number, "Running validation gate: cmd=%s timeout=%ds"),
+                self._validation_cmd,
+                self._validation_timeout,
+            )
+            validation_passed, validation_error, validation_error_file = self._run_validation(
+                worktree_path, session_name, issue_number
+            )
+            if not validation_passed:
+                status = SessionStatus.VALIDATION_FAILED
+                logger.warning(
+                    issue_log(issue_number, "Validation gate FAILED: error=%s error_file=%s"),
+                    validation_error[:200] if validation_error else "none",
+                    validation_error_file,
+                )
+                self._emit_event(EventName.SESSION_VALIDATION_FAILED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "validation_cmd": self._validation_cmd,
+                    "error_file": str(validation_error_file) if validation_error_file else None,
+                })
+            else:
+                logger.info(
+                    issue_log(issue_number, "Validation gate PASSED"),
+                )
+                self._emit_event(EventName.SESSION_VALIDATION_PASSED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "validation_cmd": self._validation_cmd,
+                })
+
         # Log the session completion summary
         pr_url = result.pr_url or "none"
         if result.success:
@@ -286,7 +347,96 @@ class SessionController:
             completion_processed=True,
             recovered_from_timeout=recovered,
             reason=f"Processed completion record with outcome: {record.outcome.value}",
+            validation_passed=validation_passed,
+            validation_error=validation_error,
+            validation_error_file=validation_error_file,
         )
+
+    def _run_validation(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        issue_number: int,
+    ) -> tuple[bool, Optional[str], Optional[Path]]:
+        """Run validation command and return result.
+
+        Args:
+            worktree_path: Path to the worktree
+            session_name: Session name for output directory
+            issue_number: Issue number for logging
+
+        Returns:
+            Tuple of (passed, error_message, error_file_path)
+        """
+        if not self._command_runner or not self._validation_cmd:
+            return True, None, None
+
+        logger.info(
+            issue_log(issue_number, "Running validation: %s in %s"),
+            self._validation_cmd,
+            worktree_path,
+        )
+
+        result = self._command_runner.run(
+            self._validation_cmd,
+            cwd=worktree_path,
+            timeout_seconds=self._validation_timeout,
+            shell=True,
+        )
+
+        if result.timed_out:
+            error_msg = f"Validation timed out after {self._validation_timeout} seconds"
+            error_file = self._write_validation_errors(
+                worktree_path, session_name, error_msg, result.stdout
+            )
+            return False, error_msg, error_file
+
+        if result.returncode != 0:
+            error_msg = result.stderr or f"Validation failed with exit code {result.returncode}"
+            error_file = self._write_validation_errors(
+                worktree_path, session_name, error_msg, result.stdout
+            )
+            return False, error_msg, error_file
+
+        return True, None, None
+
+    def _write_validation_errors(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        error: str,
+        output: str,
+    ) -> Path:
+        """Write validation errors to session output directory.
+
+        Args:
+            worktree_path: Path to the worktree
+            session_name: Session name for output directory
+            error: Error message (stderr)
+            output: Command output (stdout)
+
+        Returns:
+            Path to the error file
+        """
+        output_dir = ensure_session_output_dir(worktree_path, session_name)
+        error_file = output_dir / "validation-errors.txt"
+
+        content = f"""=== VALIDATION ERRORS ===
+Command: {self._validation_cmd}
+Timeout: {self._validation_timeout}s
+
+=== STDERR ===
+{error}
+
+=== STDOUT ===
+{output}
+"""
+        error_file.write_text(content)
+        logger.info(
+            "Wrote validation errors to %s",
+            error_file,
+        )
+        return error_file
 
     def _emit_event(self, event_type: EventName, data: dict[str, Any]) -> None:
         """Emit a trace event."""

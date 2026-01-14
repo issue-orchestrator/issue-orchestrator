@@ -98,6 +98,8 @@ class EventName(str, Enum):
     SESSION_BLOCKED = "session.blocked"
     SESSION_RESUMED = "session.resumed"
     SESSION_NO_OUTPUT = "session.no_output"
+    SESSION_VALIDATION_PASSED = "session.validation_passed"
+    SESSION_VALIDATION_FAILED = "session.validation_failed"
     GH_RATE_LIMIT = "gh.rate_limit"
     GH_RATE_LIMIT_WARNING = "gh.rate_limit_warning"
 
