@@ -19,27 +19,21 @@ Full test suites (including e2e) can take minutes. Slow validation means:
 
 **Validation is a single user-defined command. E2e tests excluded by default for speed.**
 
-### Two Validation Gates
+### Single Validation Gate
 
 ```yaml
 validation:
-  # Fast gate - runs on agent-done (seconds)
-  agent_gate:
-    cmd: "make validate-fast"
-    timeout_seconds: 300
-
-  # Full gate - runs before publish (minutes)
-  publish_gate:
-    cmd: "make validate"
-    timeout_seconds: 1800
+  cmd: "make validate-fast"
+  timeout_seconds: 300
 ```
 
-### What Each Gate Runs
+Legacy configs used `validation.agent_gate`/`validation.publish_gate`; those keys are removed in favor of `validation.cmd`.
+
+### What the Single Gate Runs
 
 | Gate | Includes | Excludes | When |
 |------|----------|----------|------|
-| `agent_gate` | Unit tests, linting, type checks | E2e, integration | Every `agent-done` |
-| `publish_gate` | Everything | Nothing | Before PR ready |
+| `validation.cmd` | Unit tests, linting, type checks | E2e, integration | Every `agent-done` and pre-push |
 
 ### Why Single Command (not orchestrator-managed)
 
@@ -54,7 +48,7 @@ When should e2e tests run? Options:
 
 | Option | Pros | Cons |
 |--------|------|------|
-| **In publish_gate** | Catches issues before merge | Slow, blocks PR |
+| **In validation.cmd** | Catches issues before merge | Slow, blocks PR |
 | **Post-merge CI** | Fast PR flow | Issues found late |
 | **Nightly/scheduled** | No PR blocking | Very late feedback |
 | **On-demand** | Explicit control | May be forgotten |
@@ -64,13 +58,12 @@ When should e2e tests run? Options:
 ## Consequences
 
 ### Positive
-- **Fast feedback**: Agent gate completes in seconds
+- **Fast feedback**: Validation command completes in seconds
 - **Flexible**: Projects define their own commands
 - **Cached**: Same SHA = skip validation
 
 ### Negative
-- E2e gaps may slip through agent gate
-- Two gates to maintain
+- E2e gaps may slip through local validation
 - Cache invalidation complexity
 
 ## Related
