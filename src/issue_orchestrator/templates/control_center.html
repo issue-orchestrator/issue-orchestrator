@@ -617,14 +617,14 @@
             detected: null,
             isEditing: false,
             config: {
-                repo: '',
-                agents: {},
-                concurrency: { max_concurrent_sessions: 3 },
-                ui_mode: 'web',
-                web_port: 8080,
-                milestone_sort: 'due_date',
+                repo: { name: '' },
+                worktrees: { base: '../' },
+                execution: { concurrency: { max_concurrent_sessions: 3 } },
+                ui: { mode: 'web', web_port: 8080 },
+                milestones: { sort: 'due_date' },
                 labels: { prefix: 'io' },
                 review: { enabled: false },
+                agents: {},
             },
         };
 
@@ -637,14 +637,14 @@
                 detected: null,
                 isEditing: !!existingConfig,
                 config: existingConfig ? { ...existingConfig } : {
-                    repo: '',
-                    agents: {},
-                    concurrency: { max_concurrent_sessions: 3 },
-                    ui_mode: 'web',
-                    web_port: 8080,
-                    milestone_sort: 'due_date',
+                    repo: { name: '' },
+                    worktrees: { base: '../' },
+                    execution: { concurrency: { max_concurrent_sessions: 3 } },
+                    ui: { mode: 'web', web_port: 8080 },
+                    milestones: { sort: 'due_date' },
                     labels: { prefix: 'io' },
                     review: { enabled: false },
+                    agents: {},
                 },
             };
 
@@ -670,14 +670,14 @@
                 } else {
                     // No config exists, create new with detected info
                     const newConfig = {
-                        repo: data.repo || '',
-                        agents: {},
-                        concurrency: { max_concurrent_sessions: 3 },
-                        ui_mode: 'web',
-                        web_port: 8080,
-                        milestone_sort: 'due_date',
+                        repo: { name: data.repo || '' },
+                        worktrees: { base: '../' },
+                        execution: { concurrency: { max_concurrent_sessions: 3 } },
+                        ui: { mode: 'web', web_port: 8080 },
+                        milestones: { sort: 'due_date' },
                         labels: { prefix: 'io' },
                         review: { enabled: false },
+                        agents: {},
                     };
                     // Pre-populate agents from detected labels
                     if (data.agent_labels) {
@@ -688,10 +688,8 @@
                                 timeout_minutes: 45,
                             };
                         }
-                        // Set worktree_base at top level
-                        newConfig.worktree_base = '../';
                     }
-                    openSetupWizard(repoPath, null);  // Create new
+                    openSetupWizard(repoPath, newConfig);  // Create new
                 }
             } catch (err) {
                 showToast('Failed to load configuration', true);
@@ -721,7 +719,7 @@
                     const res = await fetch(`/control/setup/detect?repo_root=${encodeURIComponent(wizardState.repoRoot)}`);
                     wizardState.detected = await res.json();
                     if (wizardState.detected.repo) {
-                        wizardState.config.repo = wizardState.detected.repo;
+                        wizardState.config.repo = { name: wizardState.detected.repo };
                     }
                     // Pre-populate agents from existing labels
                     if (wizardState.detected.agent_labels) {
@@ -734,9 +732,12 @@
                                 };
                             }
                         }
-                        // Ensure worktree_base is set at top level
-                        if (!wizardState.config.worktree_base) {
-                            wizardState.config.worktree_base = '../';
+                        // Ensure worktrees.base is set
+                        if (!wizardState.config.worktrees) {
+                            wizardState.config.worktrees = {};
+                        }
+                        if (!wizardState.config.worktrees.base) {
+                            wizardState.config.worktrees.base = '../';
                         }
                     }
                 } catch (err) {
@@ -955,9 +956,12 @@
                 model: 'sonnet',
                 timeout_minutes: 45,
             };
-            // Ensure worktree_base is set at top level
-            if (!wizardState.config.worktree_base) {
-                wizardState.config.worktree_base = '../';
+            // Ensure worktrees.base is set
+            if (!wizardState.config.worktrees) {
+                wizardState.config.worktrees = {};
+            }
+            if (!wizardState.config.worktrees.base) {
+                wizardState.config.worktrees.base = '../';
             }
 
             input.value = '';
@@ -980,30 +984,30 @@
             return `
                 <div class="form-group">
                     <label class="form-label">GitHub Repository</label>
-                    <input type="text" class="form-input" value="${escapeHtml(cfg.repo)}"
-                        onchange="wizardState.config.repo = this.value"
+                    <input type="text" class="form-input" value="${escapeHtml(cfg.repo?.name || '')}"
+                        onchange="wizardState.config.repo = {...(wizardState.config.repo||{}), name: this.value}"
                         placeholder="owner/repo">
                     <div class="form-hint">Detected from git remote, or enter manually</div>
                 </div>
                 <div class="agent-row">
                     <div class="form-group">
                         <label class="form-label">Max Concurrent Sessions</label>
-                        <input type="number" class="form-input" value="${cfg.concurrency.max_concurrent_sessions}"
-                            onchange="wizardState.config.concurrency.max_concurrent_sessions = parseInt(this.value)">
+                        <input type="number" class="form-input" value="${cfg.execution?.concurrency?.max_concurrent_sessions || 3}"
+                            onchange="wizardState.config.execution = {...(wizardState.config.execution||{}), concurrency: {...(wizardState.config.execution?.concurrency||{}), max_concurrent_sessions: parseInt(this.value)}}">
                     </div>
                     <div class="form-group">
                         <label class="form-label">UI Mode</label>
-                        <select class="form-select" onchange="wizardState.config.ui_mode = this.value">
-                            <option value="web" ${cfg.ui_mode === 'web' ? 'selected' : ''}>Web Dashboard</option>
-                            <option value="tmux" ${cfg.ui_mode === 'tmux' ? 'selected' : ''}>tmux</option>
+                        <select class="form-select" onchange="wizardState.config.ui = {...(wizardState.config.ui||{}), mode: this.value}">
+                            <option value="web" ${cfg.ui?.mode === 'web' ? 'selected' : ''}>Web Dashboard</option>
+                            <option value="tmux" ${cfg.ui?.mode === 'tmux' ? 'selected' : ''}>tmux</option>
                         </select>
                     </div>
                 </div>
                 <div class="agent-row">
                     <div class="form-group">
                         <label class="form-label">Web Port</label>
-                        <input type="number" class="form-input" value="${cfg.web_port}"
-                            onchange="wizardState.config.web_port = parseInt(this.value)">
+                        <input type="number" class="form-input" value="${cfg.ui?.web_port || 8080}"
+                            onchange="wizardState.config.ui = {...(wizardState.config.ui||{}), web_port: parseInt(this.value)}">
                     </div>
                     <div class="form-group">
                         <label class="form-label">Label Prefix</label>
@@ -1015,10 +1019,10 @@
                 </div>
                 <div class="form-group">
                     <label class="form-label">Milestone Sort Strategy</label>
-                    <select class="form-select" onchange="wizardState.config.milestone_sort = this.value">
-                        <option value="due_date" ${cfg.milestone_sort === 'due_date' ? 'selected' : ''}>By Due Date</option>
-                        <option value="milestone_number" ${cfg.milestone_sort === 'milestone_number' ? 'selected' : ''}>By Number (M1, M2...)</option>
-                        <option value="name" ${cfg.milestone_sort === 'name' ? 'selected' : ''}>Alphabetically</option>
+                    <select class="form-select" onchange="wizardState.config.milestones = {...(wizardState.config.milestones||{}), sort: this.value}">
+                        <option value="due_date" ${cfg.milestones?.sort === 'due_date' ? 'selected' : ''}>By Due Date</option>
+                        <option value="milestone_number" ${cfg.milestones?.sort === 'milestone_number' ? 'selected' : ''}>By Number (M1, M2...)</option>
+                        <option value="name" ${cfg.milestones?.sort === 'name' ? 'selected' : ''}>Alphabetically</option>
                     </select>
                 </div>
             `;

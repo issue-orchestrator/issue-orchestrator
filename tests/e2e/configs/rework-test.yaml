@@ -6,17 +6,22 @@
 # Note: tmux session is set via ORCHESTRATOR_TMUX_SESSION env var for test isolation.
 # Control API port is dynamically assigned if not specified.
 
-repo: BruceBGordon/issue-orchestrator
-worktree_base: "/tmp/e2e-worktrees"
+repo:
+  name: BruceBGordon/issue-orchestrator
+
+worktrees:
+  base: "/tmp/e2e-worktrees"
 
 filtering:
   label: test-data
 
 # control_api_port: dynamically assigned
-e2e_pr_labels: ["io-e2e-test-data"]
+e2e:
+  pr_labels: ["io-e2e-test-data"]
 
 # Don't install pre-push hooks for script agents (they don't have pyright in PATH)
-enforce_hooks: false
+security:
+  enforce_hooks: false
 
 agents:
   # Script that completes immediately (creates file, commits, calls agent-done)
@@ -33,12 +38,14 @@ agents:
     meta_agent: "claude-code"
     timeout_minutes: 1
 
-concurrency:
-  max_concurrent_sessions: 1
-  session_timeout_minutes: 5
+execution:
+  concurrency:
+    max_concurrent_sessions: 1
+    session_timeout_minutes: 5
 
 review:
-  code_review_agent: "agent:script-rejects"
+  enabled: true
+  default: "agent:script-rejects"
   code_review_label: "needs-code-review"
   code_reviewed_label: "code-reviewed"
   max_rework_cycles: 2

@@ -69,7 +69,7 @@ class MockOrchestratorForWeb:
         config.config_path = Path("/tmp/config.yaml")
         config.repo_root = Path("/tmp/repo")
         config.worktree_base = Path("/tmp")
-        config.filter_label = None
+        config.filtering.label = None
         config.filter_milestone = None
         config.agents = {
             "agent:web": AgentConfig(

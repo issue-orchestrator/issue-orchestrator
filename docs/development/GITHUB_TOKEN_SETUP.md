@@ -16,7 +16,9 @@ export GITHUB_TOKEN="ghp_..."
 Optional config:
 
 ```yaml
-github_token_env: GITHUB_TOKEN
+repo:
+  github:
+    token_env: GITHUB_TOKEN
 ```
 
 Notes:
@@ -59,4 +61,3 @@ Notes:
 - The system reads the username from `hosts.yml` and the token from keychain.
 - If `hosts.yml` contains an `oauth_token` or `token` entry, it will use that too,
   but the keychain path is preferred for safety.
-

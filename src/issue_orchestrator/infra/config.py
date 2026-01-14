@@ -17,27 +17,23 @@ DEFAULT_CONFIG_NAME = "default.yaml"
 
 # Valid top-level config fields (for unknown field validation)
 ALLOWED_TOP_LEVEL_FIELDS = {
-    'repo', 'agents', 'concurrency', 'labels', 'ui_mode', 'web_port',
-    'control_api_port', 'config', 'worktree_base',
-    'github_token', 'github_token_env', 'github_api_url',
-    'github_http_timeout_seconds', 'github_cache_ttl_seconds', 'github_required_scopes', 'github_allowed_scopes',
-    'filtering',  # Issue filtering options (label, milestone, exclude_labels, etc.)
-    'e2e_pr_labels', 'e2e', 'review', 'cleanup', 'validation', 'triage',
-    'isolation', 'setup_worktree', 'milestone_sort',
-    'milestone_sort_config', 'foundation_milestone',
-    'state_file', 'pre_push_hook', 'enforce_hooks', 'queue_refresh_seconds',
-    'worktree_branch_on_recreate', 'allow_no_verify_dry_run_preflight',
-    'terminal_adapter', 'session_no_output_seconds', 'session_no_output_tail_lines',
-    'session_no_output_max_bytes', 'session_no_output_repeat_seconds',
-    'session_output_retention_runs',
-    'gh_write_verify_timeout_seconds', 'gh_write_verify_initial_delay_ms',
-    'gh_write_verify_max_delay_ms', 'gh_write_verify_backoff', 'gh_write_verify_jitter_ms',
-    'gh_rate_limit_startup', 'gh_rate_limit_every_calls', 'gh_rate_limit_warn_fraction',
-    'gh_rate_limit_warn_remaining', 'gh_audit_enabled', 'gh_audit_events', 'gh_audit_file',
-    'comment_headings', 'dangerous', 'stale_escalation_ticks',
-    'tmuxp',  # Optional path to custom tmuxp config for tmux layout
-    'tmux_bindings',  # List of tmux bind-key commands to apply
-    'tmux_session_mode',  # shared (one session) or per_session
+    "repo",
+    "agents",
+    "labels",
+    "review",
+    "cleanup",
+    "worktrees",
+    "execution",
+    "validation",
+    "ui",
+    "observability",
+    "security",
+    "filtering",
+    "triage",
+    "e2e",
+    "milestones",
+    "state",
+    "config",
 }
 
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
@@ -526,63 +522,91 @@ class Config:
         (YAML + command line overrides) for debugging.
         """
         return {
-            "repo": self.repo,
-            "github_token_env": self.github_token_env,
-            "github_api_url": self.github_api_url,
-            "github_http_timeout_seconds": self.github_http_timeout_seconds,
-            "github_cache_ttl_seconds": self.github_cache_ttl_seconds,
-            "github_required_scopes": list(self.github_required_scopes),
-            "github_allowed_scopes": list(self.github_allowed_scopes),
-            "repo_root": str(self.repo_root),
-            "config_path": str(self.config_path) if self.config_path else None,
-            "filtering": {
-                "label": self.filtering.label,
-                "milestone": self.filtering.milestone,
-                "milestones": list(self.filtering.milestones),
-                "issue": self.filtering.issue,
-                "exclude_labels": list(self.filtering.exclude_labels),
-                "fetch_limit": self.filtering.fetch_limit,
-                "max_to_start": self.filtering.max_to_start,
+            "repo": {
+                "name": self.repo,
+                "root": str(self.repo_root),
+                "github": {
+                    "token_env": self.github_token_env,
+                    "api_url": self.github_api_url,
+                    "http_timeout_seconds": self.github_http_timeout_seconds,
+                    "cache_ttl_seconds": self.github_cache_ttl_seconds,
+                    "required_scopes": list(self.github_required_scopes),
+                    "allowed_scopes": list(self.github_allowed_scopes),
+                    "write_verify": {
+                        "timeout_seconds": self.gh_write_verify_timeout_seconds,
+                        "initial_delay_ms": self.gh_write_verify_initial_delay_ms,
+                        "max_delay_ms": self.gh_write_verify_max_delay_ms,
+                        "backoff": self.gh_write_verify_backoff,
+                        "jitter_ms": self.gh_write_verify_jitter_ms,
+                    },
+                    "rate_limit": {
+                        "startup": self.gh_rate_limit_startup,
+                        "every_calls": self.gh_rate_limit_every_calls,
+                        "warn_fraction": self.gh_rate_limit_warn_fraction,
+                        "warn_remaining": self.gh_rate_limit_warn_remaining,
+                    },
+                    "audit": {
+                        "enabled": self.gh_audit_enabled,
+                        "events": self.gh_audit_events,
+                        "file": self.gh_audit_file,
+                    },
+                },
             },
-            "foundation_milestone": self.foundation_milestone,
-            "e2e_pr_labels": self.e2e_pr_labels,
-            "max_concurrent_sessions": self.max_concurrent_sessions,
-            "session_timeout_minutes": self.session_timeout_minutes,
-            "queue_refresh_seconds": self.queue_refresh_seconds,
-            "session_no_output_seconds": self.session_no_output_seconds,
-            "session_no_output_tail_lines": self.session_no_output_tail_lines,
-            "session_no_output_max_bytes": self.session_no_output_max_bytes,
-            "session_no_output_repeat_seconds": self.session_no_output_repeat_seconds,
-            "session_output_retention_runs": self.session_output_retention_runs,
-            "gh_write_verify_timeout_seconds": self.gh_write_verify_timeout_seconds,
-            "gh_write_verify_initial_delay_ms": self.gh_write_verify_initial_delay_ms,
-            "gh_write_verify_max_delay_ms": self.gh_write_verify_max_delay_ms,
-            "gh_write_verify_backoff": self.gh_write_verify_backoff,
-            "gh_write_verify_jitter_ms": self.gh_write_verify_jitter_ms,
-            "gh_rate_limit_startup": self.gh_rate_limit_startup,
-            "gh_rate_limit_every_calls": self.gh_rate_limit_every_calls,
-            "gh_rate_limit_warn_fraction": self.gh_rate_limit_warn_fraction,
-            "gh_rate_limit_warn_remaining": self.gh_rate_limit_warn_remaining,
-            "gh_audit_enabled": self.gh_audit_enabled,
-            "gh_audit_events": self.gh_audit_events,
-            "gh_audit_file": self.gh_audit_file,
-            "ui_mode": self.ui_mode,
-            "terminal_adapter": self.terminal_adapter,
-            "tmux_session_mode": self.tmux_session_mode,
-            "tmuxp_config": str(self.tmuxp_config) if self.tmuxp_config else None,
-            "tmux_bindings": self.tmux_bindings,
-            "agents": {
-                label: {
-                    "prompt_path": str(cfg.prompt_path),
-                    "model": cfg.model,
-                    "timeout_minutes": cfg.timeout_minutes,
-                    "meta_agent": cfg.meta_agent,
-                }
-                for label, cfg in self.agents.items()
+            "config": {
+                "path": str(self.config_path) if self.config_path else None,
+                "strict": self.config_strict,
             },
-            "worktree_base": str(self.worktree_base),
-            "worktree_branch_on_recreate": self.worktree_branch_on_recreate,
-            "allow_no_verify_dry_run_preflight": self.allow_no_verify_dry_run_preflight,
+            "state": {
+                "file": str(self.state_file),
+            },
+            "worktrees": {
+                "base": str(self.worktree_base),
+                "setup": list(self.setup_worktree),
+                "reuse_push_preflight": self.reuse_push_preflight,
+                "allow_no_verify_dry_run_preflight": self.allow_no_verify_dry_run_preflight,
+                "worktree_branch_on_recreate": self.worktree_branch_on_recreate,
+            },
+            "execution": {
+                "concurrency": {
+                    "max_concurrent_sessions": self.max_concurrent_sessions,
+                    "session_timeout_minutes": self.session_timeout_minutes,
+                },
+                "terminal_adapter": self.terminal_adapter,
+                "tmux_session_mode": self.tmux_session_mode,
+                "tmuxp": str(self.tmuxp_config) if self.tmuxp_config else None,
+                "tmux_bindings": self.tmux_bindings,
+                "isolation": {
+                    "mode": self.isolation.mode,
+                },
+            },
+            "ui": {
+                "mode": self.ui_mode,
+                "web_port": self.web_port,
+                "control_api_port": self.control_api_port,
+                "queue_refresh_seconds": self.queue_refresh_seconds,
+            },
+            "observability": {
+                "session_no_output_seconds": self.session_no_output_seconds,
+                "session_no_output_tail_lines": self.session_no_output_tail_lines,
+                "session_no_output_max_bytes": self.session_no_output_max_bytes,
+                "session_no_output_repeat_seconds": self.session_no_output_repeat_seconds,
+                "session_output_retention_runs": self.session_output_retention_runs,
+                "stale_escalation_ticks": self.stale_escalation_ticks,
+                "comment_headings": {
+                    "implementation": self.comment_headings.implementation,
+                    "problems": self.comment_headings.problems,
+                    "pr_link": self.comment_headings.pr_link,
+                    "blocked": self.comment_headings.blocked,
+                    "needs_human": self.comment_headings.needs_human,
+                },
+            },
+            "security": {
+                "enforce_hooks": self.enforce_hooks,
+                "pre_push_hook": str(self.pre_push_hook) if self.pre_push_hook else None,
+                "dangerous": {
+                    "allow_unsupported_agents": self.dangerous.allow_unsupported_agents,
+                },
+            },
             "labels": {
                 "in_progress": self.get_label_in_progress(),
                 "blocked": self.get_label_blocked(),
@@ -596,15 +620,19 @@ class Config:
                 "cmd": self.validation.cmd,
                 "timeout_seconds": self.validation.timeout_seconds,
             },
-            "code_review": {
-                "agent": self.code_review_agent,
-                "label": self.code_review_label,
-                "reviewed_label": self.code_reviewed_label,
-            },
-            "triage_review": {
-                "agent": self.triage_review_agent,
-                "threshold": self.triage_review_threshold,
-                "on_failure": self.triage_review_on_failure,
+            "review": {
+                "enabled": self.review_enabled,
+                "default": self.code_review_agent,
+                "code_review_label": self.code_review_label,
+                "code_reviewed_label": self.code_reviewed_label,
+                "triage_review": {
+                    "agent": self.triage_review_agent,
+                    "label": self.triage_review_label,
+                    "reviewed_label": self.triage_reviewed_label,
+                    "threshold": self.triage_review_threshold,
+                    "on_failure": self.triage_review_on_failure,
+                },
+                "max_rework_cycles": self.max_rework_cycles,
             },
             "cleanup": {
                 "with_triage": {
@@ -617,10 +645,20 @@ class Config:
                     "remove_worktrees": self.cleanup.without_triage.remove_worktrees,
                 },
             },
-            "dangerous": {
-                "allow_unsupported_agents": self.dangerous.allow_unsupported_agents,
+            "milestones": {
+                "sort": self.milestone_sort,
+                "sort_config": self.milestone_sort_config,
+                "foundation": self.foundation_milestone,
             },
-            "stale_escalation_ticks": self.stale_escalation_ticks,
+            "filtering": {
+                "label": self.filtering.label,
+                "milestone": self.filtering.milestone,
+                "milestones": list(self.filtering.milestones),
+                "issue": self.filtering.issue,
+                "exclude_labels": list(self.filtering.exclude_labels),
+                "fetch_limit": self.filtering.fetch_limit,
+                "max_to_start": self.filtering.max_to_start,
+            },
             "triage": {
                 "inherit_labels": list(self.triage.inherit_labels),
                 "explicit_labels": list(self.triage.explicit_labels),
@@ -629,6 +667,24 @@ class Config:
                     "explicit": self.triage.milestone_strategy.explicit,
                 },
                 "priority": self.triage.priority,
+            },
+            "e2e": {
+                "pr_labels": self.e2e_pr_labels,
+                "enabled": self.e2e.enabled,
+                "auto_run_interval_minutes": self.e2e.auto_run_interval_minutes,
+                "pytest_args": list(self.e2e.pytest_args),
+                "allow_retry_once": self.e2e.allow_retry_once,
+                "quarantine_file": self.e2e.quarantine_file,
+                "survive_restart": self.e2e.survive_restart,
+            },
+            "agents": {
+                label: {
+                    "prompt_path": str(cfg.prompt_path),
+                    "model": cfg.model,
+                    "timeout_minutes": cfg.timeout_minutes,
+                    "meta_agent": cfg.meta_agent,
+                }
+                for label, cfg in self.agents.items()
             },
         }
 
@@ -647,19 +703,38 @@ class Config:
         config = cls()
         config.config_path = config_path.resolve()
 
+        repo_section = data.get("repo", {})
+        github_section = repo_section.get("github", {})
+        agents_section = data.get("agents", {})
+        labels_section = data.get("labels", {})
+        review_section = data.get("review", {})
+        cleanup_section = data.get("cleanup", {})
+        worktrees_section = data.get("worktrees", {})
+        execution_section = data.get("execution", {})
+        validation_section = data.get("validation", {})
+        ui_section = data.get("ui", {})
+        observability_section = data.get("observability", {})
+        security_section = data.get("security", {})
+        filtering_section = data.get("filtering", {})
+        triage_section = data.get("triage", {})
+        e2e_section = data.get("e2e", {})
+        milestones_section = data.get("milestones", {})
+        state_section = data.get("state", {})
+        config_section = data.get("config", {})
+
         # Determine repo root using centralized helper
         repo_root = repo_root_from_config_path(config_path)
 
         # Default repo_root to detected repo root
         # (can be overridden by YAML settings)
         config.repo_root = repo_root
-        if data.get("repo_root"):
-            config.repo_root = resolve_relative_path(data["repo_root"], repo_root)
+        if repo_section.get("root"):
+            config.repo_root = resolve_relative_path(repo_section["root"], repo_root)
             config.repo_root_from_yaml = True
 
-        # Parse top-level worktree_base (applies to all agents)
+        # Parse worktrees.base (applies to all agents)
         # Default: parent directory of repo (worktrees become siblings like {repo}-33)
-        worktree_base_raw = data.get("worktree_base")
+        worktree_base_raw = worktrees_section.get("base")
         if worktree_base_raw is None:
             config.worktree_base = repo_root.parent
         else:
@@ -670,22 +745,21 @@ class Config:
             config.worktree_base.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             raise ValueError(
-                f"worktree_base '{config.worktree_base}' cannot be created: {e}. "
-                f"Specify an absolute path in your config under worktree_base"
+                f"worktrees.base '{config.worktree_base}' cannot be created: {e}. "
+                "Specify an absolute path in your config under worktrees.base"
             )
-
-        # Parse config section (strict mode, etc.)
-        config_section = data.get("config", {})
         config.config_strict = config_section.get("strict", False)
+        if state_section.get("file"):
+            config.state_file = resolve_relative_path(state_section["file"], repo_root)
 
         # Store raw data for unknown field validation
         config._raw_data = data
-        config._raw_agents = data.get("agents", {})
+        config._raw_agents = agents_section
 
         # Parse agents
         # All relative paths in agent configs are resolved relative to repo_root
 
-        for label, agent_data in data.get("agents", {}).items():
+        for label, agent_data in agents_section.items():
             # Resolve prompt path relative to repo_root (for validation)
             # Keep original relative path for command templates (agents read from worktree)
             prompt_relative = agent_data["prompt"]
@@ -709,12 +783,12 @@ class Config:
             config.agents[label] = AgentConfig(**agent_kwargs)
 
         # Parse concurrency
-        concurrency = data.get("concurrency", {})
+        concurrency = execution_section.get("concurrency", {})
         config.max_concurrent_sessions = concurrency.get("max_concurrent_sessions", 3)
         config.session_timeout_minutes = concurrency.get("session_timeout_minutes", 45)
 
         # Parse labels
-        labels = data.get("labels", {})
+        labels = labels_section
         config.label_in_progress = labels.get("in_progress", "in-progress")
         config.label_blocked = labels.get("blocked", "blocked")
         config.label_needs_human = labels.get("needs_human", "needs-human")
@@ -722,62 +796,72 @@ class Config:
         config.label_validation_failed = labels.get("validation_failed", "validation-failed")
         config.label_prefix = labels.get("prefix")
 
-        # GitHub settings
-        config.repo = data.get("repo")
-        config.github_token = data.get("github_token")
-        config.github_token_env = data.get("github_token_env")
-        config.github_api_url = data.get("github_api_url", "https://api.github.com")
-        config.github_http_timeout_seconds = data.get("github_http_timeout_seconds", 20.0)
-        config.github_cache_ttl_seconds = data.get("github_cache_ttl_seconds", 300)
-        required_scopes = data.get("github_required_scopes", []) or []
-        allowed_scopes = data.get("github_allowed_scopes", []) or []
+        # Repo + GitHub settings
+        config.repo = repo_section.get("name")
+        config.github_token = github_section.get("token")
+        config.github_token_env = github_section.get("token_env")
+        config.github_api_url = github_section.get("api_url", "https://api.github.com")
+        config.github_http_timeout_seconds = github_section.get("http_timeout_seconds", 20.0)
+        config.github_cache_ttl_seconds = github_section.get("cache_ttl_seconds", 300)
+        required_scopes = github_section.get("required_scopes", []) or []
+        allowed_scopes = github_section.get("allowed_scopes", []) or []
         if isinstance(required_scopes, str):
             required_scopes = [s.strip() for s in required_scopes.split(",") if s.strip()]
         if isinstance(allowed_scopes, str):
             allowed_scopes = [s.strip() for s in allowed_scopes.split(",") if s.strip()]
         config.github_required_scopes = list(required_scopes)
         config.github_allowed_scopes = list(allowed_scopes)
-        config.e2e_pr_labels = data.get("e2e_pr_labels", [])
+        config.e2e_pr_labels = e2e_section.get("pr_labels", [])
 
         # Parse filtering section
-        filtering_data = data.get("filtering", {})
+        filtering_data = filtering_section
         config.filtering = _parse_filtering_config(filtering_data)
 
         # UI mode
-        config.ui_mode = data.get("ui_mode", "web")
-        config.web_port = data.get("web_port", 8080)
-        config.control_api_port = data.get("control_api_port", 19080)
-        config.queue_refresh_seconds = data.get("queue_refresh_seconds", 600)
-        config.session_no_output_seconds = data.get("session_no_output_seconds", 120)
-        config.session_no_output_tail_lines = data.get("session_no_output_tail_lines", 50)
-        config.session_no_output_max_bytes = data.get("session_no_output_max_bytes", 10000)
-        config.session_no_output_repeat_seconds = data.get("session_no_output_repeat_seconds", 120)
-        config.session_output_retention_runs = data.get("session_output_retention_runs", 7)
-        config.gh_write_verify_timeout_seconds = data.get("gh_write_verify_timeout_seconds", 20)
-        config.gh_write_verify_initial_delay_ms = data.get("gh_write_verify_initial_delay_ms", 250)
-        config.gh_write_verify_max_delay_ms = data.get("gh_write_verify_max_delay_ms", 2000)
-        config.gh_write_verify_backoff = data.get("gh_write_verify_backoff", 1.5)
-        config.gh_write_verify_jitter_ms = data.get("gh_write_verify_jitter_ms", 0)
-        config.gh_rate_limit_startup = data.get("gh_rate_limit_startup", True)
-        config.gh_rate_limit_every_calls = data.get("gh_rate_limit_every_calls", 500)
-        config.gh_rate_limit_warn_fraction = data.get("gh_rate_limit_warn_fraction", 0.1)
-        config.gh_rate_limit_warn_remaining = data.get("gh_rate_limit_warn_remaining", 100)
-        config.gh_audit_enabled = data.get("gh_audit_enabled", False)
-        config.gh_audit_events = data.get("gh_audit_events", False)
-        config.gh_audit_file = data.get("gh_audit_file")
+        config.ui_mode = ui_section.get("mode", "web")
+        config.web_port = ui_section.get("web_port", 8080)
+        config.control_api_port = ui_section.get("control_api_port", 19080)
+        config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
+
+        # Observability / session reporting
+        config.session_no_output_seconds = observability_section.get("session_no_output_seconds", 120)
+        config.session_no_output_tail_lines = observability_section.get("session_no_output_tail_lines", 50)
+        config.session_no_output_max_bytes = observability_section.get("session_no_output_max_bytes", 10000)
+        config.session_no_output_repeat_seconds = observability_section.get("session_no_output_repeat_seconds", 120)
+        config.session_output_retention_runs = observability_section.get("session_output_retention_runs", 7)
+        config.stale_escalation_ticks = observability_section.get("stale_escalation_ticks", 0)
+
+        # GitHub write verification + rate limits + audit
+        write_verify = github_section.get("write_verify", {})
+        config.gh_write_verify_timeout_seconds = write_verify.get("timeout_seconds", 20)
+        config.gh_write_verify_initial_delay_ms = write_verify.get("initial_delay_ms", 250)
+        config.gh_write_verify_max_delay_ms = write_verify.get("max_delay_ms", 2000)
+        config.gh_write_verify_backoff = write_verify.get("backoff", 1.5)
+        config.gh_write_verify_jitter_ms = write_verify.get("jitter_ms", 0)
+
+        rate_limit = github_section.get("rate_limit", {})
+        config.gh_rate_limit_startup = rate_limit.get("startup", True)
+        config.gh_rate_limit_every_calls = rate_limit.get("every_calls", 500)
+        config.gh_rate_limit_warn_fraction = rate_limit.get("warn_fraction", 0.1)
+        config.gh_rate_limit_warn_remaining = rate_limit.get("warn_remaining", 100)
+
+        audit = github_section.get("audit", {})
+        config.gh_audit_enabled = audit.get("enabled", False)
+        config.gh_audit_events = audit.get("events", False)
+        config.gh_audit_file = audit.get("file")
 
         # Terminal adapter (overrides ui_mode if set)
-        config.terminal_adapter = data.get("terminal_adapter")
-        if data.get("tmux_session_mode"):
-            config.tmux_session_mode = str(data["tmux_session_mode"])
+        config.terminal_adapter = execution_section.get("terminal_adapter")
+        if execution_section.get("tmux_session_mode"):
+            config.tmux_session_mode = str(execution_section["tmux_session_mode"])
 
         # Custom tmuxp config for tmux layout
-        if data.get("tmuxp"):
-            config.tmuxp_config = resolve_relative_path(data["tmuxp"], repo_root)
+        if execution_section.get("tmuxp"):
+            config.tmuxp_config = resolve_relative_path(execution_section["tmuxp"], repo_root)
 
         # Tmux key bindings (default: double-click to zoom)
-        if "tmux_bindings" in data:
-            bindings = data["tmux_bindings"]
+        if "tmux_bindings" in execution_section:
+            bindings = execution_section["tmux_bindings"]
             if bindings is None:
                 config.tmux_bindings = []  # Explicitly disable bindings
             elif isinstance(bindings, list):
@@ -786,58 +870,52 @@ class Config:
                 config.tmux_bindings = [str(bindings)]
 
         # Milestone sorting strategy
-        config.milestone_sort = data.get("milestone_sort", "due_date")
-        config.milestone_sort_config = data.get("milestone_sort_config", {})
-        config.foundation_milestone = data.get("foundation_milestone", "M0")
+        config.milestone_sort = milestones_section.get("sort", "due_date")
+        config.milestone_sort_config = milestones_section.get("sort_config", {})
+        config.foundation_milestone = milestones_section.get("foundation", "M0")
 
         # Enforcement options
-        config.enforce_hooks = data.get("enforce_hooks", True)
-        if data.get("pre_push_hook"):
-            config.pre_push_hook = resolve_relative_path(data["pre_push_hook"], repo_root)
-        config.reuse_push_preflight = data.get("reuse_push_preflight", True)
-        config.allow_no_verify_dry_run_preflight = data.get("allow_no_verify_dry_run_preflight", True)
-        config.worktree_branch_on_recreate = data.get("worktree_branch_on_recreate", "delete")
+        config.enforce_hooks = security_section.get("enforce_hooks", True)
+        if security_section.get("pre_push_hook"):
+            config.pre_push_hook = resolve_relative_path(security_section["pre_push_hook"], repo_root)
 
-        # Worktree setup commands
-        config.setup_worktree = data.get("setup_worktree", [])
+        # Worktree setup + reuse behavior
+        config.setup_worktree = worktrees_section.get("setup", [])
+        config.reuse_push_preflight = worktrees_section.get("reuse_push_preflight", True)
+        config.allow_no_verify_dry_run_preflight = worktrees_section.get(
+            "allow_no_verify_dry_run_preflight",
+            True,
+        )
+        config.worktree_branch_on_recreate = worktrees_section.get(
+            "worktree_branch_on_recreate",
+            "delete",
+        )
 
         # Review workflow
-        review_config = data.get("review", {})
+        review_config = review_section
 
         # Code review (per-PR, immediate)
         # "enabled" explicitly toggles code review on/off
         config.review_enabled = review_config.get("enabled", False)
-        # "default" is the preferred key for the default reviewer, "code_review_agent" is legacy
-        config.code_review_agent = (
-            review_config.get("default") or
-            review_config.get("code_review_agent")
-        )
+        config.code_review_agent = review_config.get("default")
         config.code_review_label = review_config.get("code_review_label", "needs-code-review")
         config.code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
 
-        # Triage review (batch) - supports both triage_* and cto_* keys for backwards compat
-        config.triage_review_agent = review_config.get("triage_review_agent") or review_config.get("cto_review_agent")
-        config.triage_review_label = review_config.get("triage_review_label") or review_config.get("cto_review_label")
-        config.triage_reviewed_label = review_config.get("triage_reviewed_label") or review_config.get("cto_reviewed_label", "triage-reviewed")
-        config.triage_review_threshold = review_config.get("triage_review_threshold") or review_config.get("cto_review_threshold", 0)
-        config.triage_review_on_failure = review_config.get("triage_review_on_failure", review_config.get("cto_review_on_failure", True))
+        # Triage review (batch)
+        config.triage_review_agent = review_config.get("triage_review_agent")
+        config.triage_review_label = review_config.get("triage_review_label")
+        config.triage_reviewed_label = review_config.get("triage_reviewed_label", "triage-reviewed")
+        config.triage_review_threshold = review_config.get("triage_review_threshold", 0)
+        config.triage_review_on_failure = review_config.get("triage_review_on_failure", True)
 
         # Rework cycle limit
         config.max_rework_cycles = review_config.get("max_rework_cycles", 2)
 
-        # Backwards compatibility: map old fields to new
-        if "agent" in review_config and not config.triage_review_agent:
-            config.triage_review_agent = review_config["agent"]
-        if "label" in review_config and not config.code_review_label:
-            config.code_review_label = review_config["label"]
-        if "threshold" in review_config and config.triage_review_threshold == 0:
-            config.triage_review_threshold = review_config["threshold"]
-
-        # Parse cleanup config - supports both triage and cto keys for backwards compat
-        cleanup_data = data.get("cleanup", {})
+        # Parse cleanup config
+        cleanup_data = cleanup_section
         if cleanup_data:
-            with_triage_data = cleanup_data.get("with_triage", {}) or cleanup_data.get("with_cto", {})
-            without_triage_data = cleanup_data.get("without_triage", {}) or cleanup_data.get("without_cto", {})
+            with_triage_data = cleanup_data.get("with_triage", {})
+            without_triage_data = cleanup_data.get("without_triage", {})
 
             config.cleanup = CleanupConfig(
                 with_triage=CleanupWithTriage(
@@ -852,7 +930,7 @@ class Config:
             )
 
         # Parse comment headings
-        headings_data = data.get("comment_headings", {})
+        headings_data = observability_section.get("comment_headings", {})
         if headings_data:
             config.comment_headings = CommentHeadings(
                 implementation=headings_data.get("implementation", "## Implementation"),
@@ -863,14 +941,14 @@ class Config:
             )
 
         # Parse dangerous config
-        dangerous_data = data.get("dangerous", {})
+        dangerous_data = security_section.get("dangerous", {})
         if dangerous_data:
             config.dangerous = DangerousConfig(
                 allow_unsupported_agents=dangerous_data.get("allow_unsupported_agents", False),
             )
 
         # Parse validation config - single command runs everywhere
-        validation_data = data.get("validation", {})
+        validation_data = validation_section
         if validation_data:
             config.validation = ValidationConfig(
                 cmd=validation_data.get("cmd"),
@@ -878,22 +956,19 @@ class Config:
             )
 
         # Parse isolation config
-        isolation_data = data.get("isolation", {})
+        isolation_data = execution_section.get("isolation", {})
         if isolation_data:
             config.isolation = IsolationConfig(
                 mode=isolation_data.get("mode", "standard"),
             )
 
-        # Stale in-progress escalation threshold (0 = disabled)
-        config.stale_escalation_ticks = data.get("stale_escalation_ticks", 0)
-
         # Parse triage config
-        triage_data = data.get("triage", {})
+        triage_data = triage_section
         if triage_data:
             config.triage = _parse_triage_config(triage_data)
 
         # Parse e2e config
-        e2e_data = data.get("e2e", {})
+        e2e_data = e2e_section
         if e2e_data:
             config.e2e = _parse_e2e_config(e2e_data)
 
@@ -938,18 +1013,18 @@ class Config:
         if not self.agents:
             errors.append("No agents configured. Add at least one agent under 'agents:' in config.")
 
-        # Validate worktree_base (now top-level)
+        # Validate worktrees.base
         if not self.worktree_base.is_absolute():
             errors.append(
-                f"worktree_base must be absolute path, got: {self.worktree_base}"
+                f"worktrees.base must be absolute path, got: {self.worktree_base}"
             )
         elif not self.worktree_base.exists():
             errors.append(
-                f"worktree_base does not exist: {self.worktree_base}"
+                f"worktrees.base does not exist: {self.worktree_base}"
             )
         elif not self.worktree_base.is_dir():
             errors.append(
-                f"worktree_base is not a directory: {self.worktree_base}"
+                f"worktrees.base is not a directory: {self.worktree_base}"
             )
         valid_recreate_modes = {"delete", "create_new_branch"}
         if self.worktree_branch_on_recreate not in valid_recreate_modes:
@@ -1035,7 +1110,7 @@ class Config:
         """Check for unknown fields in the raw YAML data.
 
         Returns list of (field_path, level) tuples where:
-        - field_path is like "repo_root" or "agents.agent:web.worktree_base"
+        - field_path is like "repo.root" or "agents.agent:web.some_field"
         - level is "top" or "agent"
         """
         unknown = []

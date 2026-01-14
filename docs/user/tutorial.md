@@ -120,7 +120,8 @@ Create `.issue-orchestrator/config/default.yaml` in your project:
 # .issue-orchestrator/config/default.yaml
 
 # Your GitHub repo (auto-detected if not specified)
-repo: your-username/your-repo
+repo:
+  name: your-username/your-repo
 
 # Agent configurations - the keys match GitHub labels
 agents:
@@ -130,13 +131,15 @@ agents:
     timeout_minutes: 45                     # Max time before timeout
 
 # How many agents to run at once
-concurrency:
-  max_concurrent_sessions: 2
-  session_timeout_minutes: 45
+execution:
+  concurrency:
+    max_concurrent_sessions: 2
+    session_timeout_minutes: 45
 
 # UI mode: "web" (browser), "tmux", or "iterm2"
-ui_mode: "web"
-web_port: 8080
+ui:
+  mode: "web"
+  web_port: 8080
 ```
 
 ### Step 3: Create the Prompt Directory and File

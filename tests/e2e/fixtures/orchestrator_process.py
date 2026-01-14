@@ -69,28 +69,47 @@ class OrchestratorProcess:
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / f"issue-orchestrator.e2e.{os.getpid()}.yaml"
         data = {
-            "repo": self.config.repo,
-            "repo_root": str(self.config.repo_root),
-            "worktree_base": str(self.config.worktree_base),
-            "filter_label": self.config.filter_label,
-            "github_token_env": self.config.github_token_env,
-            "ui_mode": self.config.ui_mode,
-            "terminal_adapter": self.config.terminal_adapter,
-            "web_port": self.config.web_port,
-            "control_api_port": self.config.control_api_port,
-            "queue_refresh_seconds": self.config.queue_refresh_seconds,
-            "e2e_pr_labels": self.config.e2e_pr_labels,
-            "gh_write_verify_timeout_seconds": self.config.gh_write_verify_timeout_seconds,
-            "gh_write_verify_initial_delay_ms": self.config.gh_write_verify_initial_delay_ms,
-            "gh_write_verify_max_delay_ms": self.config.gh_write_verify_max_delay_ms,
-            "gh_write_verify_backoff": self.config.gh_write_verify_backoff,
-            "gh_write_verify_jitter_ms": self.config.gh_write_verify_jitter_ms,
-            "gh_audit_enabled": self.config.gh_audit_enabled,
-            "gh_audit_events": self.config.gh_audit_events,
-            "gh_audit_file": self.config.gh_audit_file,
-            "concurrency": {
-                "max_concurrent_sessions": self.config.max_concurrent_sessions,
-                "session_timeout_minutes": self.config.session_timeout_minutes,
+            "repo": {
+                "name": self.config.repo,
+                "root": str(self.config.repo_root),
+                "github": {
+                    "token_env": self.config.github_token_env,
+                    "write_verify": {
+                        "timeout_seconds": self.config.gh_write_verify_timeout_seconds,
+                        "initial_delay_ms": self.config.gh_write_verify_initial_delay_ms,
+                        "max_delay_ms": self.config.gh_write_verify_max_delay_ms,
+                        "backoff": self.config.gh_write_verify_backoff,
+                        "jitter_ms": self.config.gh_write_verify_jitter_ms,
+                    },
+                    "audit": {
+                        "enabled": self.config.gh_audit_enabled,
+                        "events": self.config.gh_audit_events,
+                        "file": self.config.gh_audit_file,
+                    },
+                },
+            },
+            "worktrees": {
+                "base": str(self.config.worktree_base),
+                "reuse_push_preflight": self.config.reuse_push_preflight,
+            },
+            "execution": {
+                "terminal_adapter": self.config.terminal_adapter,
+                "concurrency": {
+                    "max_concurrent_sessions": self.config.max_concurrent_sessions,
+                    "session_timeout_minutes": self.config.session_timeout_minutes,
+                },
+            },
+            "ui": {
+                "mode": self.config.ui_mode,
+                "web_port": self.config.web_port,
+                "control_api_port": self.config.control_api_port,
+                "queue_refresh_seconds": self.config.queue_refresh_seconds,
+            },
+            "filtering": {
+                "label": self.config.filtering.label,
+            },
+            "e2e": {
+                "pr_labels": self.config.e2e_pr_labels,
             },
             "agents": {
                 label: {
@@ -108,7 +127,7 @@ class OrchestratorProcess:
                 "timeout_seconds": self.config.validation.timeout_seconds,
             },
             "review": {
-                "code_review_agent": self.config.code_review_agent,
+                "default": self.config.code_review_agent,
                 "code_review_label": self.config.code_review_label,
                 "code_reviewed_label": self.config.code_reviewed_label,
                 "max_rework_cycles": self.config.max_rework_cycles,
@@ -129,8 +148,10 @@ class OrchestratorProcess:
                     "remove_worktrees": self.config.cleanup.without_triage.remove_worktrees,
                 },
             },
-            "dangerous": {
-                "allow_unsupported_agents": self.config.dangerous.allow_unsupported_agents,
+            "security": {
+                "dangerous": {
+                    "allow_unsupported_agents": self.config.dangerous.allow_unsupported_agents,
+                },
             },
         }
         config_path.write_text(yaml.safe_dump(data, sort_keys=False))

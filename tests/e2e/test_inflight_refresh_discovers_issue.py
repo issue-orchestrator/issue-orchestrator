@@ -53,7 +53,7 @@ async def test_inflight_refresh_discovers_issue(
     # Get config values
     control_api_port = e2e_session_config.control_api_port
     repo = e2e_session_config.repo
-    filter_label = e2e_session_config.filter_label
+    filter_label = e2e_session_config.filtering.label
     agent_label = list(e2e_session_config.agents.keys())[0] if e2e_session_config.agents else "agent:developer"
 
     # Create watcher

@@ -5,18 +5,25 @@
 # Note: tmux session is set via ORCHESTRATOR_TMUX_SESSION env var for test isolation.
 # Control API port is dynamically assigned if not specified.
 
-repo: BruceBGordon/issue-orchestrator
-worktree_base: "/tmp/e2e-worktrees"
+repo:
+  name: BruceBGordon/issue-orchestrator
+  github:
+    audit:
+      enabled: true
+      events: true
+      file: /tmp/e2e-orchestrator-logs/gh-audit-{pid}.json
+
+worktrees:
+  base: "/tmp/e2e-worktrees"
 
 filtering:
   label: test-data
 
-queue_refresh_seconds: 600
-gh_audit_enabled: true
-gh_audit_events: true
-gh_audit_file: /tmp/e2e-orchestrator-logs/gh-audit-{pid}.json
-# control_api_port: dynamically assigned
-e2e_pr_labels: ["io-e2e-test-data"]
+ui:
+  queue_refresh_seconds: 600
+
+e2e:
+  pr_labels: ["io-e2e-test-data"]
 
 agents:
   "agent:e2e-test":
@@ -41,12 +48,14 @@ agents:
     meta_agent: "claude-code"
     permission_mode: bypassPermissions
 
-concurrency:
-  max_concurrent_sessions: 4
-  session_timeout_minutes: 3
+execution:
+  concurrency:
+    max_concurrent_sessions: 4
+    session_timeout_minutes: 3
 
 review:
-  code_review_agent: "agent:script-review"
+  enabled: true
+  default: "agent:script-review"
   code_review_label: "needs-code-review"
   code_reviewed_label: "code-reviewed"
   triage_review_agent: "agent:triage-investigator"
