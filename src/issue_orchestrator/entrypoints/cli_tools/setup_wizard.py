@@ -4,7 +4,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, cast
 
 import yaml
 
@@ -324,9 +324,10 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     # Repo
     detected_repo = detect_repo()
     if detected_repo:
-        config["repo"] = prompter.input("GitHub repo", detected_repo)
+        repo_name = prompter.input("GitHub repo", detected_repo)
     else:
-        config["repo"] = prompter.input("GitHub repo (owner/name)")
+        repo_name = prompter.input("GitHub repo (owner/name)")
+    config["repo"] = {"name": repo_name}
 
     # Agents
     prompter.print("\n--- Agent Configuration ---")
@@ -425,8 +426,10 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     # Concurrency
     prompter.print("\n--- Concurrency Settings ---")
     max_sessions = prompter.input("Max concurrent agent sessions", "3")
-    config["concurrency"] = {
-        "max_concurrent_sessions": int(max_sessions),
+    config["execution"] = {
+        "concurrency": {
+            "max_concurrent_sessions": int(max_sessions),
+        },
     }
 
     # Issue scheduling explanation and milestone sorting
@@ -448,7 +451,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
         if milestone_sort in valid_strategies:
             break
         prompter.print(f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}")
-    config["milestone_sort"] = milestone_sort
+    milestones_config: dict[str, Any] = {"sort": milestone_sort}
+    config["milestones"] = milestones_config
 
     if milestone_sort == "pattern":
         prompter.print("\n  Enter a regex pattern with one capture group for the number.")
@@ -456,13 +460,14 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
         prompter.print("    M(\\d+)       → matches 'M13' → 13")
         prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
         pattern = prompter.input("  Pattern", r"M(\d+)")
-        config["milestone_sort_config"] = {"pattern": pattern}
+        milestones_config["sort_config"] = {"pattern": pattern}
 
     # Foundation milestone for dependency scope
     prompter.print("\n  Dependencies must be within the same milestone OR in the foundation milestone.")
     prompter.print("  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues.")
     foundation_milestone = prompter.input("Foundation milestone", "M0")
-    config["foundation_milestone"] = foundation_milestone
+    milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
+    milestones_config["foundation"] = foundation_milestone
 
     # Worktree location
     prompter.print("\n--- Worktree Location ---")
@@ -473,7 +478,7 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     worktree_base = prompter.input("Worktree base directory", "../")
 
     # Set at top-level (not per-agent)
-    config["worktree_base"] = worktree_base
+    config["worktrees"] = {"base": worktree_base}
 
     # If subdirectory, offer to add to .gitignore
     if not worktree_base.startswith(".."):
@@ -504,10 +509,11 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     if ui_mode not in ("web", "tmux"):
         prompter.print(f"  Invalid mode '{ui_mode}', using 'web'")
         ui_mode = "web"
-    config["ui_mode"] = ui_mode
+    ui_config: dict[str, Any] = {"mode": ui_mode}
+    config["ui"] = ui_config
     if ui_mode == "web":
         port = prompter.input("Web dashboard port", "8080")
-        config["web_port"] = int(port)
+        ui_config["web_port"] = int(port)
         prompter.print("\n--- Terminal Backend (web mode) ---")
         prompter.print("Choose how agent sessions are executed:\n")
         prompter.print("  tmux       - Default (stable, interactive)")
@@ -517,7 +523,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
             prompter.print(f"  Invalid backend '{terminal_backend}', using 'tmux'")
             terminal_backend = "tmux"
         if terminal_backend == "subprocess":
-            config["terminal_adapter"] = "subprocess"
+            execution_config = cast(dict[str, Any], config.setdefault("execution", {}))
+            execution_config["terminal_adapter"] = "subprocess"
 
     # Labels - use defaults, can be customized in YAML later
     # Default labels: in-progress, blocked, needs-human
@@ -606,8 +613,11 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
         config = {"agents": {}}
 
     # Ensure repo is set
-    if "repo" not in config:
-        config["repo"] = state.repo or prompter.input("GitHub repo (owner/name)")
+    repo_value = state.repo or prompter.input("GitHub repo (owner/name)")
+    if "repo" not in config or not isinstance(config.get("repo"), dict):
+        config["repo"] = {"name": repo_value}
+    elif "name" not in config["repo"]:
+        config["repo"]["name"] = repo_value
 
     # Check for agent labels not in config
     configured_agents = set(config.get("agents", {}).keys())
@@ -715,13 +725,14 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                 prompter.print(f"  ✓ Added {agent_label}")
 
     # Ensure we have concurrency settings
-    if "concurrency" not in config:
+    if "execution" not in config or "concurrency" not in config.get("execution", {}):
         prompter.print("\n--- Concurrency Settings ---")
         max_sessions = prompter.input("Max concurrent sessions", "3")
-        config["concurrency"] = {"max_concurrent_sessions": int(max_sessions)}
+        config.setdefault("execution", {})
+        config["execution"]["concurrency"] = {"max_concurrent_sessions": int(max_sessions)}
 
     # Milestone sorting - only ask if not already configured
-    if "milestone_sort" not in config:
+    if "milestones" not in config or "sort" not in config.get("milestones", {}):
         prompter.print("\n--- Issue Scheduling ---")
         prompter.print("Issues are scheduled using a multi-level sort:\n")
         prompter.print("  1. Dependencies  - Issues with 'blocked by #N' wait for #N to close")
@@ -740,7 +751,8 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
             if milestone_sort in valid_strategies:
                 break
             prompter.print(f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}")
-        config["milestone_sort"] = milestone_sort
+        milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
+        milestones_config["sort"] = milestone_sort
 
         if milestone_sort == "pattern":
             prompter.print("\n  Enter a regex pattern with one capture group for the number.")
@@ -748,55 +760,47 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
             prompter.print("    M(\\d+)       → matches 'M13' → 13")
             prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
             pattern = prompter.input("  Pattern", r"M(\d+)")
-            config["milestone_sort_config"] = {"pattern": pattern}
+            milestones_config["sort_config"] = {"pattern": pattern}
 
     # Foundation milestone for dependency scope - only ask if not already configured
-    if "foundation_milestone" not in config:
+    if "milestones" not in config or "foundation" not in config.get("milestones", {}):
         prompter.print("\n  Dependencies must be within the same milestone OR in the foundation milestone.")
         prompter.print("  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues.")
         foundation_milestone = prompter.input("Foundation milestone", "M0")
-        config["foundation_milestone"] = foundation_milestone
+        milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
+        milestones_config["foundation"] = foundation_milestone
 
-    # Check if config needs worktree_base (now top-level)
-    if "worktree_base" not in config:
-        # Also migrate any per-agent worktree_base to top-level
-        existing_worktree_base = None
-        for _, cfg in config.get("agents", {}).items():
-            if "worktree_base" in cfg:
-                existing_worktree_base = cfg.pop("worktree_base")
+    # Check if config needs worktrees.base
+    if "worktrees" not in config or "base" not in config.get("worktrees", {}):
+        prompter.print("\n--- Worktree Location ---")
+        prompter.print("Each issue gets its own git worktree for isolated work.")
+        prompter.print("Examples:")
+        prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
+        prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
+        worktree_base = prompter.input("Worktree base directory", "../")
+        worktrees_config = cast(dict[str, Any], config.setdefault("worktrees", {}))
+        worktrees_config["base"] = worktree_base
 
-        if existing_worktree_base:
-            config["worktree_base"] = existing_worktree_base
-            prompter.print(f"\n  ✓ Migrated per-agent worktree_base to top-level: {existing_worktree_base}")
-        else:
-            prompter.print("\n--- Worktree Location ---")
-            prompter.print("Each issue gets its own git worktree for isolated work.")
-            prompter.print("Examples:")
-            prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
-            prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
-            worktree_base = prompter.input("Worktree base directory", "../")
-            config["worktree_base"] = worktree_base
+        # If subdirectory, offer to add to .gitignore
+        if not worktree_base.startswith(".."):
+            worktree_dir = worktree_base.lstrip("./")
+            gitignore_path = Path(".gitignore")
+            needs_gitignore = True
 
-            # If subdirectory, offer to add to .gitignore
-            if not worktree_base.startswith(".."):
-                worktree_dir = worktree_base.lstrip("./")
-                gitignore_path = Path(".gitignore")
-                needs_gitignore = True
+            if gitignore_path.exists():
+                gitignore_content = gitignore_path.read_text()
+                if worktree_dir in gitignore_content:
+                    needs_gitignore = False
+                    prompter.print(f"  ✓ {worktree_dir} already in .gitignore")
 
-                if gitignore_path.exists():
-                    gitignore_content = gitignore_path.read_text()
-                    if worktree_dir in gitignore_content:
-                        needs_gitignore = False
-                        prompter.print(f"  ✓ {worktree_dir} already in .gitignore")
-
-                if needs_gitignore:
-                    if prompter.yes_no(f"Add '{worktree_dir}/' to .gitignore?"):
-                        with open(gitignore_path, "a") as f:
-                            f.write(f"\n# Issue orchestrator worktrees\n{worktree_dir}/\n")
-                        prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
+            if needs_gitignore:
+                if prompter.yes_no(f"Add '{worktree_dir}/' to .gitignore?"):
+                    with open(gitignore_path, "a") as f:
+                        f.write(f"\n# Issue orchestrator worktrees\n{worktree_dir}/\n")
+                    prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
 
     # UI mode
-    if "ui_mode" not in config:
+    if "ui" not in config or "mode" not in config.get("ui", {}):
         prompter.print("\n--- UI Mode ---")
         prompter.print("How do you want to monitor agent sessions?\n")
         prompter.print("  web    - Browser dashboard at localhost (recommended)")
@@ -807,9 +811,10 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
         if ui_mode not in ("web", "tmux"):
             prompter.print(f"  Invalid mode '{ui_mode}', using 'web'")
             ui_mode = "web"
-        config["ui_mode"] = ui_mode
+        ui_config = cast(dict[str, Any], config.setdefault("ui", {}))
+        ui_config["mode"] = ui_mode
         if ui_mode == "web":
-            config["web_port"] = int(prompter.input("Web port", "8080"))
+            ui_config["web_port"] = int(prompter.input("Web port", "8080"))
             prompter.print("\n--- Terminal Backend (web mode) ---")
             prompter.print("Choose how agent sessions are executed:\n")
             prompter.print("  tmux       - Default (stable, interactive)")
@@ -819,7 +824,8 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                 prompter.print(f"  Invalid backend '{terminal_backend}', using 'tmux'")
                 terminal_backend = "tmux"
             if terminal_backend == "subprocess":
-                config["terminal_adapter"] = "subprocess"
+                execution_config = cast(dict[str, Any], config.setdefault("execution", {}))
+                execution_config["terminal_adapter"] = "subprocess"
 
     # Label prefix - only ask if not already configured
     if "labels" not in config or "prefix" not in config.get("labels", {}):
@@ -834,8 +840,7 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
             prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
 
     # Two-stage review workflow - ask if not already configured (default enabled)
-    # Check both old and new config keys
-    has_review_config = "code_review_agent" in config or ("review" in config and config["review"].get("enabled"))
+    has_review_config = "review" in config and config["review"].get("enabled")
     if not has_review_config:
         prompter.print("\n--- Review Workflow ---")
         prompter.print("Code review is RECOMMENDED to catch issues before merging:")
@@ -1416,16 +1421,15 @@ def run_wizard(
 
     # Add cleanup config with defaults (don't prompt - users can edit later)
     if "cleanup" not in config:
-        # Check for review config (new and legacy keys)
         review_cfg = config.get("review", {})
-        has_triage = review_cfg.get("triage_review_agent") or config.get("triage_review_agent")
-        has_code_review = review_cfg.get("enabled") or review_cfg.get("default") or config.get("code_review_agent")
+        has_triage = review_cfg.get("triage_review_agent")
+        has_code_review = review_cfg.get("enabled") or review_cfg.get("default")
 
         # Include section based on their review workflow
         if has_triage:
             # Triage workflow - cleanup happens after triage review
             config["cleanup"] = {
-                "with_cto": {
+                "with_triage": {
                     "close_ai_session_tabs": True,
                     "remove_worktrees": False,
                 }
@@ -1433,7 +1437,7 @@ def run_wizard(
         elif has_code_review:
             # Code review only - cleanup after code review
             config["cleanup"] = {
-                "without_cto": {
+                "without_triage": {
                     "wait_for_code_review": True,
                     "close_ai_session_tabs": True,
                     "remove_worktrees": False,
@@ -1442,7 +1446,7 @@ def run_wizard(
         else:
             # No review workflow - cleanup on completion
             config["cleanup"] = {
-                "without_cto": {
+                "without_triage": {
                     "wait_for_code_review": False,
                     "close_ai_session_tabs": True,
                     "remove_worktrees": False,
@@ -1473,13 +1477,13 @@ def run_wizard(
 
     # Collect prompt file writes (removed intermediate confirmations)
 
-    # Get review config - support both old and new structure
+    # Get review config
     review_config = config.get("review", {})
-    code_review_agent = review_config.get("default") or config.get("code_review_agent")
-    code_review_label = review_config.get("code_review_label") or config.get("code_review_label", "needs-code-review")
-    code_reviewed_label = review_config.get("code_reviewed_label") or config.get("code_reviewed_label", "code-reviewed")
-    triage_review_agent = review_config.get("triage_review_agent") or config.get("triage_review_agent")
-    triage_reviewed_label = review_config.get("triage_reviewed_label") or config.get("triage_reviewed_label", "triage-reviewed")
+    code_review_agent = review_config.get("default")
+    code_review_label = review_config.get("code_review_label", "needs-code-review")
+    code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
+    triage_review_agent = review_config.get("triage_review_agent")
+    triage_reviewed_label = review_config.get("triage_reviewed_label", "triage-reviewed")
 
     # Track all prompt files for the next steps summary
     all_prompt_paths: list[Path] = []
@@ -1508,8 +1512,9 @@ def run_wizard(
                 create_starter_prompt(agent_name, prompt_path, file_collector)
 
     # Collect all labels to create on GitHub
-    repo = config.get("repo")
-    if repo:
+    repo_config = config.get("repo") or {}
+    repo_name = repo_config.get("name") if isinstance(repo_config, dict) else repo_config
+    if repo_name:
         # Gather all labels we want to ensure exist
         labels_config = config.get("labels", {})
         label_prefix = labels_config.get("prefix", "")
@@ -1548,7 +1553,7 @@ def run_wizard(
             )
 
         # Check which labels already exist and collect missing ones
-        existing_labels = set(fetch_github_labels(repo))
+        existing_labels = set(fetch_github_labels(repo_name))
         missing_labels = [(name, color, desc) for name, color, desc in all_labels if name not in existing_labels]
 
         for name, color, desc in missing_labels:
@@ -1567,7 +1572,7 @@ def run_wizard(
 
     # Apply all changes
     prompter.print("\nApplying changes...")
-    _apply_changes(file_collector, config.get("repo"), prompter)
+    _apply_changes(file_collector, repo_name, prompter)
 
     # AI provider key setup
     if prompter.yes_no("\nSet up AI provider API keys now?", default=True):

@@ -6,14 +6,18 @@
 # Note: tmux session is set via ORCHESTRATOR_TMUX_SESSION env var for test isolation.
 # Control API port is dynamically assigned if not specified.
 
-repo: BruceBGordon/issue-orchestrator
-worktree_base: "/tmp/e2e-worktrees"
+repo:
+  name: BruceBGordon/issue-orchestrator
+
+worktrees:
+  base: "/tmp/e2e-worktrees"
 
 filtering:
   label: test-data
 
 # control_api_port: dynamically assigned
-e2e_pr_labels: ["io-e2e-test-data"]
+e2e:
+  pr_labels: ["io-e2e-test-data"]
 
 agents:
   # Agent that does nothing - will timeout
@@ -23,11 +27,12 @@ agents:
     timeout_minutes: 1  # Very short - will timeout quickly
     permission_mode: bypassPermissions  # Required for non-interactive e2e tests
 
-concurrency:
-  max_concurrent_sessions: 1
-  session_timeout_minutes: 2  # Fallback timeout
+execution:
+  concurrency:
+    max_concurrent_sessions: 1
+    session_timeout_minutes: 2  # Fallback timeout
 
 # Triage review on failure (to verify it gets triggered)
-triage:
+review:
   triage_review_agent: "agent:triage-investigator"
   triage_review_on_failure: true

@@ -26,9 +26,9 @@ def mock_config(tmp_path):
     config.code_review_agent = None
     config.code_review_label = None
     config.triage_review_agent = None
-    config.filter_label = None
-    config.filter_milestone = None
-    config.issue_fetch_limit = 100
+    config.filtering.label = None
+    config.filtering.milestone = None
+    config.filtering.fetch_limit = 100
     config.dangerous = MagicMock()
     config.dangerous.allow_unsupported_agents = True
     return config

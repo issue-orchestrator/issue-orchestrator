@@ -334,19 +334,19 @@ class TestFindExistingConfig:
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         config_file = config_dir / "default.yaml"
-        config_file.write_text("repo: owner/repo\nagents: {}")
+        config_file.write_text("repo:\n  name: owner/repo\nagents: {}")
 
         path, config = find_existing_config(tmp_path)
 
         assert path == config_file
-        assert config["repo"] == "owner/repo"
+        assert config["repo"]["name"] == "owner/repo"
 
     def test_finds_config_in_hidden_dir(self, tmp_path):
         """Test finding config in .issue-orchestrator/config directory."""
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         config_file = config_dir / "custom.yaml"
-        config_file.write_text("repo: owner/repo")
+        config_file.write_text("repo:\n  name: owner/repo")
 
         path, config = find_existing_config(tmp_path)
 
@@ -365,16 +365,16 @@ class TestFindExistingConfig:
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         default_config = config_dir / "default.yaml"
-        default_config.write_text("repo: default/repo")
+        default_config.write_text("repo:\n  name: default/repo")
 
         # Create another yaml file
         other_config = config_dir / "other.yaml"
-        other_config.write_text("repo: other/repo")
+        other_config.write_text("repo:\n  name: other/repo")
 
         path, config = find_existing_config(tmp_path)
 
         assert path == default_config
-        assert config["repo"] == "default/repo"
+        assert config["repo"]["name"] == "default/repo"
 
 
 class TestScanExistingRepo:
@@ -447,7 +447,7 @@ class TestWizardNewProject:
 
         config = wizard_new_project(prompter)
 
-        assert config["repo"] == "owner/repo"
+        assert config["repo"]["name"] == "owner/repo"
         assert "agent:backend" in config["agents"]
         assert config["agents"]["agent:backend"]["prompt"] == ".prompts/backend.md"
         assert config["agents"]["agent:backend"]["model"] == "sonnet"
@@ -456,8 +456,8 @@ class TestWizardNewProject:
         assert "initial_prompt" in config["agents"]["agent:backend"]
         assert "Work on issue" in config["agents"]["agent:backend"]["initial_prompt"]
         assert "{pr_number}" not in config["agents"]["agent:backend"]["initial_prompt"]
-        assert config["concurrency"]["max_concurrent_sessions"] == 3
-        assert config["ui_mode"] == "web"
+        assert config["execution"]["concurrency"]["max_concurrent_sessions"] == 3
+        assert config["ui"]["mode"] == "web"
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo")
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
@@ -731,9 +731,9 @@ class TestWizardExistingProject:
 
         config, _ = wizard_existing_project(state, prompter)
 
-        assert config["repo"] == "owner/repo"
+        assert config["repo"]["name"] == "owner/repo"
         assert "agent:web" in config["agents"]
-        assert config["concurrency"]["max_concurrent_sessions"] == 3
+        assert config["execution"]["concurrency"]["max_concurrent_sessions"] == 3
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
     def test_preserves_existing_config(self, mock_client_factory):
@@ -745,7 +745,7 @@ class TestWizardExistingProject:
             github_labels=["agent:web", "agent:backend"],
             agent_labels=["agent:web", "agent:backend"],
             existing_config={
-                "repo": "owner/repo",
+                "repo": {"name": "owner/repo"},
                 "agents": {
                     "agent:web": {
                         "prompt": ".prompts/web.md",
@@ -753,8 +753,8 @@ class TestWizardExistingProject:
                         "timeout_minutes": 45,
                     }
                 },
-                "concurrency": {"max_concurrent_sessions": 3},
-                "ui_mode": "tmux",
+                "execution": {"concurrency": {"max_concurrent_sessions": 3}},
+                "ui": {"mode": "tmux"},
             },
             config_path=Path(".issue-orchestrator.yaml"),
             prompt_candidates=[],
@@ -794,7 +794,7 @@ class TestWizardExistingProject:
         assert "agent:backend" in config["agents"]
         assert config["agents"]["agent:backend"]["model"] == "opus"
         # Existing settings preserved
-        assert config["ui_mode"] == "tmux"
+        assert config["ui"]["mode"] == "tmux"
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
     def test_preserves_agent_config_for_label_creation(self, mock_client_factory):
@@ -807,11 +807,11 @@ class TestWizardExistingProject:
             github_labels=[],  # No labels on GitHub
             agent_labels=[],
             existing_config={
-                "repo": "owner/repo",
+                "repo": {"name": "owner/repo"},
                 "agents": {
                     "agent:web": {"prompt": ".prompts/web.md", "model": "sonnet", "timeout_minutes": 45},
                 },
-                "concurrency": {"max_concurrent_sessions": 3},
+                "execution": {"concurrency": {"max_concurrent_sessions": 3}},
             },
             config_path=Path(".issue-orchestrator.yaml"),
             prompt_candidates=[],
@@ -839,7 +839,7 @@ class TestWizardExistingProject:
 
         # Agent config is preserved - labels will be created by run_wizard
         assert "agent:web" in config["agents"]
-        assert config["repo"] == "owner/repo"
+        assert config["repo"]["name"] == "owner/repo"
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host")
     def test_fresh_config_when_declined(self, mock_client_factory):
@@ -851,7 +851,7 @@ class TestWizardExistingProject:
             github_labels=["agent:web"],
             agent_labels=["agent:web"],
             existing_config={
-                "repo": "owner/repo",
+                "repo": {"name": "owner/repo"},
                 "agents": {"agent:old": {"prompt": ".prompts/old.md", "model": "haiku", "timeout_minutes": 30}},
             },
             config_path=Path(".issue-orchestrator.yaml"),
@@ -920,7 +920,7 @@ class TestWizardExistingProject:
 
         config, _ = wizard_existing_project(state, prompter)
 
-        assert config["repo"] == "manual/repo"
+        assert config["repo"]["name"] == "manual/repo"
 
 
 class TestRunWizard:
@@ -1166,7 +1166,7 @@ class TestDryRunMode:
         """Test that dry-run collects config write without creating file."""
         config_path = tmp_path / ".issue-orchestrator.yaml"
         collector = FileCollector()
-        config = {"repo": "owner/repo", "agents": {}}
+        config = {"repo": {"name": "owner/repo"}, "agents": {}}
 
         write_config(config, config_path, file_collector=collector)
 
@@ -1175,7 +1175,7 @@ class TestDryRunMode:
         # But write should be collected
         assert len(collector.writes) == 1
         assert collector.writes[0].path == config_path
-        assert "repo: owner/repo" in collector.writes[0].content
+        assert "name: owner/repo" in collector.writes[0].content
         assert collector.writes[0].action == "create"
 
     def test_write_config_dry_run_overwrite(self, tmp_path):
@@ -1183,7 +1183,7 @@ class TestDryRunMode:
         config_path = tmp_path / ".issue-orchestrator.yaml"
         config_path.write_text("old content")
         collector = FileCollector()
-        config = {"repo": "owner/repo"}
+        config = {"repo": {"name": "owner/repo"}}
 
         write_config(config, config_path, file_collector=collector)
 

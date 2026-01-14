@@ -392,7 +392,7 @@ def e2e_session_config(
     config.terminal_adapter = e2e_terminal_adapter
     config.tmux_session_mode = "per_session"
     config.max_concurrent_sessions = 4
-    config.filter_label = "io-e2e-test-data"
+    config.filtering.label = "io-e2e-test-data"
     config.github_token_env = env_token_name()
     config.queue_refresh_seconds = 600
     env_port = os.environ.get("E2E_CONTROL_API_PORT")
@@ -709,7 +709,7 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
     config.ui_mode = e2e_ui_mode
     config.terminal_adapter = os.environ.get("E2E_TERMINAL_ADAPTER")
     config.max_concurrent_sessions = 1
-    config.filter_label = "io-e2e-test-data"
+    config.filtering.label = "io-e2e-test-data"
     config.github_token_env = env_token_name()
 
     config.agents = {

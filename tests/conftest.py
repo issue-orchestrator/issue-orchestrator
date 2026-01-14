@@ -857,7 +857,8 @@ def mock_github_api():
 def mock_config_yaml(tmp_path):
     """Create a temporary config YAML file."""
     config_content = """
-worktree_base: /path/to/worktrees
+worktrees:
+  base: /path/to/worktrees
 
 agents:
   agent:web:
@@ -869,16 +870,18 @@ agents:
     model: sonnet
     timeout_minutes: 60
 
-concurrency:
-  max_sessions: 3
-  session_timeout_minutes: 45
+execution:
+  concurrency:
+    max_concurrent_sessions: 3
+    session_timeout_minutes: 45
 
 labels:
   in_progress: in-progress
   blocked: blocked
   needs_human: needs-human
 
-repo: owner/repo
+repo:
+  name: owner/repo
 """
     config_file = tmp_path / ".issue-orchestrator.yaml"
     config_file.write_text(config_content)

@@ -61,8 +61,11 @@ class TestOrchestratorDependencyProblems:
         config.get_label_in_progress = MagicMock(return_value="in-progress")
         config.agents = {}
         config.repo_root = Path("/tmp/test")
-        config.filter_label = None
-        config.filter_milestone = None
+        config.filtering = MagicMock()
+        config.filtering.label = None
+        config.filtering.milestone = None
+        config.filtering.milestones = []
+        config.filtering.exclude_labels = []
         config.max_sessions_per_agent = {}
         config.triage_review_label = None
         config.validation_schema_path = None

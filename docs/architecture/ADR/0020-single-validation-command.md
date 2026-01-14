@@ -20,7 +20,6 @@ Full test suites (including e2e) can take minutes. Slow validation means:
 **Validation is a single user-defined command. E2e tests excluded by default for speed.**
 
 ### Single Validation Gate
-
 ```yaml
 validation:
   cmd: "make validate-fast"

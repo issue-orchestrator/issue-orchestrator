@@ -1,210 +1,178 @@
 # Example issue-orchestrator configuration
 # Copy to your repo as .issue-orchestrator/config/default.yaml
 
-# Agent configurations - map issue labels to prompts
+repo:
+  # name: "owner/repo-name"      # Optional override; defaults to git remote
+  # root: "/path/to/repo"        # Optional override; defaults to config location
+  github:
+    # token: "ghp_xxx"            # Optional explicit token (prefer token_env)
+    # token_env: "GITHUB_TOKEN"  # Override env var name for token
+    api_url: "https://api.github.com"
+    http_timeout_seconds: 20
+    cache_ttl_seconds: 300
+    # required_scopes: []        # Required OAuth scopes (if set, enforced at startup)
+    # allowed_scopes: []         # Allowed OAuth scopes (if set, token must be subset)
+    write_verify:
+      timeout_seconds: 20
+      initial_delay_ms: 250
+      max_delay_ms: 2000
+      backoff: 1.5
+      jitter_ms: 0
+    rate_limit:
+      startup: true
+      every_calls: 500
+      warn_fraction: 0.1
+      warn_remaining: 100
+    audit:
+      enabled: false
+      events: false
+      # file: ".issue-orchestrator/gh-audit-{pid}.log"
+
 agents:
   "agent:backend":
     prompt: ".issue-orchestrator/prompts/backend.md"
-    worktree_base: "../"           # Where to create worktrees (relative to repo)
-    model: "sonnet"                # Claude model (sonnet, opus, haiku)
-    timeout_minutes: 45            # Session timeout
+    model: "sonnet"
+    timeout_minutes: 45
     # command: "claude --model {model} '{initial_prompt}'"  # Custom command
-    # repo_root: "/path/to/repo"   # Different repo for this agent
 
   "agent:frontend":
     prompt: ".issue-orchestrator/prompts/frontend.md"
-    worktree_base: "../"
     model: "sonnet"
     timeout_minutes: 45
-    reviewer: "agent:web-reviewer"  # Domain-specific reviewer for frontend PRs
+    reviewer: "agent:web-reviewer"
 
-  # Domain expert agent (no code, skip code review)
   "agent:domain-expert":
     prompt: ".issue-orchestrator/prompts/domain-expert.md"
-    worktree_base: "../"
     model: "sonnet"
     timeout_minutes: 30
-    skip_review: true  # Skip code review for non-code agents
+    skip_review: true
 
-  # Default reviewer agent for Stage 1 (per-PR code review)
   "agent:reviewer":
     prompt: ".issue-orchestrator/prompts/code-review.md"
-    worktree_base: "../"
     model: "sonnet"
     timeout_minutes: 10
 
-  # Domain-specific reviewer for web/frontend PRs
   "agent:web-reviewer":
     prompt: ".issue-orchestrator/prompts/code-review-web.md"
-    worktree_base: "../"
     model: "sonnet"
     timeout_minutes: 10
 
-  # Triage agent for Stage 2 (batch review)
   "agent:triage":
     prompt: ".issue-orchestrator/prompts/triage-review.md"
-    worktree_base: "../"
     model: "sonnet"
     timeout_minutes: 30
 
-# Concurrency settings
-concurrency:
-  max_concurrent_sessions: 3                  # Max parallel agent sessions
-  session_timeout_minutes: 45      # Default timeout for all agents
+worktrees:
+  base: "../"                     # Where to create worktrees (relative to repo)
+  setup:
+    # - "npm install"
+    # - "pip install -e '.[dev]'"
+  reuse_push_preflight: true
 
-# Label names (customize if your repo uses different labels)
+execution:
+  concurrency:
+    max_concurrent_sessions: 3
+    session_timeout_minutes: 45
+  terminal_adapter: null          # Optional: overrides ui.mode
+  tmux_session_mode: "shared"     # shared or per_session
+  # tmuxp: ".issue-orchestrator/tmux.yaml"
+  # tmux_bindings:
+  #   - "bind-key -T root DoubleClick1Pane resize-pane -Z -t ="
+  isolation:
+    mode: "standard"              # standard or hardened
+
 labels:
-  in_progress: "in-progress"       # Applied when work starts
-  blocked: "blocked"               # Applied when agent is blocked
-  needs_human: "needs-human"       # Applied when agent needs input
-  prefix: ""                       # Optional: prefix all labels (e.g., "bot" -> "bot:in-progress")
+  in_progress: "in-progress"
+  blocked: "blocked"
+  needs_human: "needs-human"
+  needs_rework: "needs-rework"
+  validation_failed: "validation-failed"
+  prefix: ""                      # Optional prefix (e.g., "bot")
 
-# Triage advisory labels (create these in your repo):
-# - triage-fix: Issues created by CTO agent recommending fixes
-# Triage creates issues with "blocked" + "triage-fix" labels.
-# Human reviews, then removes "blocked" to approve the fix.
-
-# UI mode: "tmux" (default) or "web" (browser dashboard)
-ui_mode: "tmux"
-web_port: 8080                         # Port for web dashboard (default: 8080)
-
-# Tmux layout configuration (optional)
-# tmuxp: ".issue-orchestrator/tmux.yaml"  # Custom tmuxp config for layout
-
-# Tmux key bindings (applied after session creation)
-# Default: double-click to zoom/unzoom panes
-# tmux_bindings:
-#   - "bind-key -T root DoubleClick1Pane resize-pane -Z -t ="
-# Set to empty list to disable: tmux_bindings: []
-
-# Tab/window cleanup behavior
-close_completed_tabs: true         # Auto-close tabs for successful completions
-close_failed_tabs: false           # Keep failed tabs open for investigation
-
-# Enforcement options
-enforce_hooks: true                # Install pre-push hooks to enforce agent-done usage
-# pre_push_hook: "./custom-hook.sh"  # Custom pre-push hook (default: bundled validator)
-
-# Worktree setup commands (run after worktree creation)
-# Use this to install dependencies so agents don't have to do it manually
-setup_worktree:
-  # - "npm install"                  # For JavaScript/TypeScript projects
-  # - "pip install -e '.[dev]'"      # For Python projects
-  # - "bundle install"               # For Ruby projects
-  # - "./scripts/setup.sh"           # Custom setup script
-
-# Issue filtering - control which issues the orchestrator processes
-# filtering:
-#   label: "bot-ready"            # Only process issues with this label
-#   milestone: "v1.0"             # Only process issues in this milestone
-#   milestones: ["M1", "M2"]      # Or multiple milestones (list or comma-separated)
-#   issue: 123                    # Only process this specific issue number
-#   exclude_labels: ["io-e2e-test-data", "test-data"] # Exclude e2e test issues
-#   fetch_limit: 100              # Max issues to fetch per API call
-#   max_to_start: 0               # Stop after starting N issues (0 = unlimited)
-
-# GitHub settings
-# repo: "owner/repo-name"          # Explicit repo (otherwise auto-detected from git remote)
-# github_token_env: "GITHUB_TOKEN" # Override env var name for token (defaults: GITHUB_TOKEN, GH_TOKEN)
-# github_api_url: "https://api.github.com"
-# github_http_timeout_seconds: 20
-# github_required_scopes: []       # Required OAuth scopes (if set, enforced at startup)
-# github_allowed_scopes: []        # Allowed OAuth scopes (if set, token must be subset)
-# session_no_output_seconds: 120   # Emit session_no_output after this many seconds idle
-# session_no_output_tail_lines: 50 # Max tail lines to include in session_no_output
-# session_no_output_max_bytes: 10000  # Max bytes of tail content
-# session_no_output_repeat_seconds: 120  # Minimum gap between session_no_output events
-# gh_rate_limit_startup: true      # Log GH rate limits at startup
-# gh_rate_limit_every_calls: 500   # Check GH rate limits every N calls (0 = disabled)
-# gh_rate_limit_warn_fraction: 0.1 # Warn when remaining below fraction of limit
-# gh_rate_limit_warn_remaining: 100 # Warn when remaining below this count
-# gh_audit_enabled: false          # Enable GH audit reporting
-# gh_audit_events: false           # Emit GH audit events to event stream
-# gh_audit_file: null              # Path for GH audit report (supports {pid})
-# gh_write_verify_timeout_seconds: 20
-# gh_write_verify_initial_delay_ms: 250
-# gh_write_verify_max_delay_ms: 2000
-# gh_write_verify_backoff: 1.5
-# gh_write_verify_jitter_ms: 0
-
-# E2E async test runner - runs E2E tests locally with dashboard visibility
-# Results stored in .issue-orchestrator/e2e.db (SQLite)
-e2e:
-  enabled: false                              # Enable async E2E runner
-  auto_run_interval_minutes: 30               # Min interval between auto runs (0 = manual only)
-  pytest_args: ["tests/e2e", "-v"]            # Arguments to pytest
-  allow_retry_once: true                      # Retry failing tests once (reduces flakiness)
-  quarantine_file: "tests/e2e/quarantine.txt" # Path to known-flaky test list
-  survive_restart: true                       # Let E2E worker continue if orchestrator restarts
-
-# E2E test structure for resumability:
-# Tests in tests/e2e/ (configured via pytest_args) resume from where they left off
-# if the orchestrator restarts mid-run. Structure tests as discrete functions:
-#
-#   # tests/e2e/test_workflow.py
-#   def test_create_issue(): ...    # Good - each is a resumable checkpoint
-#   def test_create_pr(): ...
-#   def test_review_cycle(): ...
-#
-#   def test_entire_workflow(): ... # Bad - monolithic, no partial progress
-
-# Quarantine file format (tests/e2e/quarantine.txt):
-# # Known flaky tests - excluded from required runs
-# tests/e2e/test_slow_network.py::test_timeout_handling
-# tests/e2e/test_race_condition.py::test_concurrent_updates
-
-# Custom comment headings (for tooling integration)
-comment_headings:
-  implementation: "## Implementation"
-  problems: "## Problems Encountered"
-  pr_link: "## Pull Request"
-  blocked: "## Blocked"
-  needs_human: "## Needs Human Input"
-
-# Two-stage code review workflow (recommended)
-# Stage 1: Per-PR code review (immediate, after each PR)
 review:
-  enabled: true  # Explicit toggle - if true, default is required
-  default: "agent:reviewer"  # Default reviewer for all agents
-  code_review_label: "needs-code-review"  # Label applied to PRs needing review
-  code_reviewed_label: "code-reviewed"    # Label after review passes
+  enabled: true
+  default: "agent:reviewer"
+  code_review_label: "needs-code-review"
+  code_reviewed_label: "code-reviewed"
+  triage_review_agent: "agent:triage"
+  triage_review_label: "needs-triage-review"
+  triage_reviewed_label: "triage-reviewed"
+  triage_review_threshold: 0
+  triage_review_on_failure: true
+  max_rework_cycles: 2
 
-# Per-agent reviewers:
-# Each agent can specify a custom reviewer via the `reviewer` field.
-# This allows domain-specific reviewers (e.g., agent:web-reviewer for frontend).
-# If not specified, the agent uses review.default.
+cleanup:
+  with_triage:
+    close_ai_session_tabs: true
+    remove_worktrees: false
+  without_triage:
+    wait_for_code_review: true
+    close_ai_session_tabs: true
+    remove_worktrees: false
 
-# Rework iteration (when reviewer requests changes)
-# max_rework_cycles: 2                  # Max rework attempts before escalating to needs-human (default: 2)
-
-# Stage 2: Triage batch review (triggered when N reviewed PRs accumulate)
-# triage_review_agent: "agent:triage"         # Uncomment to enable batch review
-# triage_reviewed_label: "triage-reviewed"    # Label after triage review
-# triage_review_threshold: 5               # Trigger after N reviewed PRs
-
-# Triage issue configuration - control labels and milestones for created triage issues
-# triage:
-#   # Labels to inherit from source issues (if any source issue has the label)
-#   inherit_labels:
-#     - "io-e2e-test-data"   # Propagate e2e test label for cleanup
-#     - "team:frontend"      # Propagate team labels
-#     - "team:backend"
-#
-#   # Labels always applied to triage issues
-#   explicit_labels:
-#     - "needs-batch-review"
-#
-#   # Milestone assignment strategy
-#   milestone_strategy:
-#     inherit_from_issues: latest  # "earliest" | "latest" - pick from source issues
-#     # explicit: "v1.0"           # OR set an explicit milestone (overrides inherit)
-#
-#   # Optional priority label
-#   priority: "P2"
-
-# Validation - same command runs on agent-done and pre-push
-# This ensures agents can't "pass" a quick check only to fail later
-# Results are cached by commit SHA to avoid redundant runs
 validation:
-  cmd: "pyright src/ && pytest tests/unit -x --tb=short"  # Type check + unit tests
-  timeout_seconds: 300  # 5 minutes max
+  cmd: "make validate"
+  timeout_seconds: 300
+
+ui:
+  mode: "web"
+  web_port: 8080
+  control_api_port: 19080
+  queue_refresh_seconds: 600
+
+observability:
+  session_no_output_seconds: 120
+  session_no_output_tail_lines: 50
+  session_no_output_max_bytes: 10000
+  session_no_output_repeat_seconds: 120
+  session_output_retention_runs: 7
+  stale_escalation_ticks: 0
+  comment_headings:
+    implementation: "## Implementation"
+    problems: "## Problems Encountered"
+    pr_link: "## Pull Request"
+    blocked: "## Blocked"
+    needs_human: "## Needs Human Input"
+
+security:
+  enforce_hooks: true
+  # pre_push_hook: "./custom-hook.sh"
+  dangerous:
+    allow_unsupported_agents: false
+
+filtering:
+  # label: "bot-ready"
+  # milestone: "v1.0"
+  # milestones: ["M1", "M2"]
+  # issue: 123
+  # exclude_labels: ["io-e2e-test-data", "test-data"]
+  fetch_limit: 100
+  max_to_start: 0
+
+milestones:
+  sort: "due_date"                # due_date, number, pattern, name
+  sort_config: {}
+  foundation: "M0"
+
+triage:
+  inherit_labels: []
+  explicit_labels: []
+  milestone_strategy:
+    inherit_from_issues: true
+    explicit: null
+  priority: null
+
+e2e:
+  enabled: false
+  auto_run_interval_minutes: 30
+  pytest_args: ["tests/e2e", "-v"]
+  allow_retry_once: true
+  quarantine_file: "tests/e2e/quarantine.txt"
+  survive_restart: true
+  pr_labels: ["io-e2e-test-data"]
+
+state:
+  # file: ".issue-orchestrator/state.json"
+
+config:
+  strict: false

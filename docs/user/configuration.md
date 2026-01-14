@@ -7,36 +7,35 @@ Configuration lives in `.issue-orchestrator/config/default.yaml` (or a named con
 ## TL;DR - Minimal Config to Get Started
 
 ```yaml
-# Required: At least one agent
 agents:
   "agent:dev":
     prompt: ".issue-orchestrator/prompts/dev.md"
     model: "sonnet"
 
-# Optional but recommended: validation command
 validation:
   cmd: "make test"
   timeout_seconds: 300
 ```
 
-That's it. Label an issue with `agent:dev` and start the orchestrator.
+Label an issue with `agent:dev` and start the orchestrator.
 
 ### Quick additions
 
 **Limit concurrency:**
 ```yaml
-concurrency:
-  max_concurrent_sessions: 2      # Max parallel agent sessions
+execution:
+  concurrency:
+    max_concurrent_sessions: 2
 ```
 
 **Only process specific issues:**
 ```yaml
 filtering:
-  label: "bot-ready"             # Single label only
-  milestone: "M1"                # Single milestone only
-  milestones: ["M1", "M2"]       # Multiple milestones (list)
-  issue: 123                     # Single issue number only
-  exclude_labels: ["test-data"]  # Exclude issues with these labels
+  label: "bot-ready"
+  milestone: "M1"
+  milestones: ["M1", "M2"]
+  issue: 123
+  exclude_labels: ["test-data"]
 ```
 
 **Enable code review:**
@@ -53,388 +52,215 @@ agents:
 
 ---
 
-## Reference
+## Reference (defaults shown)
 
-All settings below show their **default values**. Omit any setting to use its default.
-
----
-
-### Top-Level Settings
-
-#### Repository
+### repo
 
 ```yaml
-# repo: "owner/repo"                              # Omit to auto-detect from git remote
-# worktree_base: "/path/to/worktrees"             # Omit for repo's parent dir
+repo:
+  name: null
+  root: null
+  github:
+    token: null
+    token_env: null
+    api_url: "https://api.github.com"
+    http_timeout_seconds: 20
+    cache_ttl_seconds: 300
+    required_scopes: []
+    allowed_scopes: []
+    write_verify:
+      timeout_seconds: 20
+      initial_delay_ms: 250
+      max_delay_ms: 2000
+      backoff: 1.5
+      jitter_ms: 0
+    rate_limit:
+      startup: true
+      every_calls: 500
+      warn_fraction: 0.1
+      warn_remaining: 100
+    audit:
+      enabled: false
+      events: false
+      file: null
 ```
 
-Default worktree layout (worktrees as siblings to repo):
-```
-/dev/
-  some-repo/          # Main repo
-  some-repo-33/       # Worktree for issue #33
-  some-repo-45/       # Worktree for issue #45
-```
+- `repo.name`: override repo if not detected from git remote.
+- `repo.root`: override repo root path.
 
-#### Concurrency
+### worktrees
 
 ```yaml
-concurrency:
-  max_concurrent_sessions: 3    # (default)
-  session_timeout_minutes: 45   # (default)
+worktrees:
+  base: "../"
+  setup: []
+  reuse_push_preflight: true
+  allow_no_verify_dry_run_preflight: true
+  worktree_branch_on_recreate: "delete"
 ```
 
-#### Filtering
+### execution
 
 ```yaml
-filtering:
-  label: null              # (default) Single label filter (not a list)
-  milestone: null          # (default) Single milestone filter
-  milestones: []           # (default) Process issues in any of these milestones (list)
-  issue: null              # (default) Only process this specific issue number
-  exclude_labels: []       # (default) Exclude issues with any of these labels
-  fetch_limit: 100         # (default) Max issues to fetch per API call
-  max_to_start: 0          # (default) Stop after starting this many issues (0 = unlimited)
+execution:
+  concurrency:
+    max_concurrent_sessions: 3
+    session_timeout_minutes: 45
+  terminal_adapter: null
+  tmux_session_mode: "shared"
+  tmuxp: null
+  tmux_bindings:
+    - "bind-key -T root DoubleClick1Pane resize-pane -Z -t ="
+  isolation:
+    mode: "standard"
 ```
 
-`milestones` and `exclude_labels` accept a list or comma-separated string:
-```yaml
-filtering:
-  milestones: ["M1", "M2"]     # list format
-  milestones: "M1, M2"         # comma-separated string (equivalent)
-
-  exclude_labels: ["test-data", "wip"]  # exclude issues with these labels
-  exclude_labels: "test-data, wip"      # comma-separated string (equivalent)
-```
-
----
-
-### Agents
-
-Each agent key must match a GitHub label (e.g., `agent:dev` label triggers the `agent:dev` config).
-
-```yaml
-agents:
-  "agent:dev":
-    prompt: ".issue-orchestrator/prompts/dev.md"  # (required)
-    model: "sonnet"              # (default) Options: haiku, sonnet, opus
-    timeout_minutes: 45          # (default)
-    permission_mode: "default"   # (default)
-    skip_review: false           # (default) Skip code review for this agent's PRs
-    reviewer: null               # (default) Override default reviewer for this agent
-    initial_prompt: null         # (default: see below) Custom first message
-    command: null                # (default: auto) Custom shell command (advanced)
-    ai_system: "claude"          # (default) Options: claude, codex, gemini
-```
-
-#### initial_prompt
-
-Template variables available:
-
-| Variable | Description |
-|----------|-------------|
-| `{issue_number}` | GitHub issue number |
-| `{issue_title}` | Issue title |
-| `{prompt}` | Path to prompt file |
-| `{worktree}` | Path to worktree |
-| `{model}` | Model name |
-| `{permission_mode}` | Permission mode |
-| `{pr_number}` | PR number (review agents only) |
-
-Default for work agents:
-```
-Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report completion.
-```
-
----
-
-### Validation
-
-Single validation command that runs on agent-done and pre-push:
-
-```yaml
-validation:
-  cmd: null                 # (default) Validation command (e.g., "make test")
-  timeout_seconds: 300      # (default) 5 minutes
-```
-
-When `cmd` is set:
-- Runs after agent calls `agent-done` - gives immediate feedback
-- Runs on `git push` - cached by SHA, instant pass if already validated
-
----
-
-### Code Review
-
-```yaml
-review:
-  enabled: false                              # (default)
-  default: null                               # (default) Default reviewer agent label
-  code_review_label: "needs-code-review"      # (default)
-  code_reviewed_label: "code-reviewed"        # (default)
-  max_rework_cycles: 2                        # (default) Before escalating to needs-human
-```
-
-#### Triage Review (Batch)
-
-```yaml
-review:
-  triage_review_agent: null                   # (default) Agent for batch reviews
-  triage_reviewed_label: "triage-reviewed"    # (default)
-  triage_review_threshold: 0                  # (default) Auto-trigger after N PRs (0 = manual)
-  triage_review_on_failure: true              # (default) Trigger triage on session failures
-```
-
----
-
-### Labels
+### labels
 
 ```yaml
 labels:
-  prefix: null                    # (default) Optional prefix for all labels
-  in_progress: "in-progress"      # (default)
-  blocked: "blocked"              # (default)
-  needs_human: "needs-human"      # (default)
-  needs_rework: "needs-rework"    # (default)
-  validation_failed: "validation-failed"  # (default)
+  in_progress: "in-progress"
+  blocked: "blocked"
+  needs_human: "needs-human"
+  needs_rework: "needs-rework"
+  validation_failed: "validation-failed"
+  prefix: null
 ```
 
-With `prefix: "bot"`, labels become `bot:in-progress`, `bot:blocked`, etc.
-
----
-
-### UI and Web Dashboard
+### review
 
 ```yaml
-ui_mode: "web"                    # (default) Options: web, tmux
-web_port: 8080                    # (default)
-control_api_port: 19080           # (default) 0 = disabled
-queue_refresh_seconds: 600        # (default) How often to refresh from GitHub
+review:
+  enabled: false
+  default: null
+  code_review_label: "needs-code-review"
+  code_reviewed_label: "code-reviewed"
+  triage_review_agent: null
+  triage_review_label: null
+  triage_reviewed_label: "triage-reviewed"
+  triage_review_threshold: 0
+  triage_review_on_failure: true
+  max_rework_cycles: 2
 ```
 
----
-
-### GitHub API
-
-```yaml
-github_token_env: null                        # (default: uses GITHUB_TOKEN or gh auth)
-github_api_url: "https://api.github.com"      # (default)
-github_http_timeout_seconds: 20.0             # (default)
-github_cache_ttl_seconds: 300                 # (default)
-github_required_scopes: []                    # (default) Required OAuth scopes (list)
-github_allowed_scopes: []                     # (default) Allowed OAuth scopes (list)
-```
-
-Scope settings accept a list or comma-separated string:
-```yaml
-github_required_scopes: ["repo", "read:org"]  # list format
-github_required_scopes: "repo, read:org"      # comma-separated string (equivalent)
-```
-
-#### Rate Limit Monitoring
-
-```yaml
-gh_rate_limit_startup: true       # (default) Log rate limits at startup
-gh_rate_limit_every_calls: 500    # (default) Check every N calls (0 = disabled)
-gh_rate_limit_warn_fraction: 0.1  # (default) Warn below this fraction remaining
-gh_rate_limit_warn_remaining: 100 # (default) Warn below this count
-```
-
-#### Write Verification
-
-```yaml
-gh_write_verify_timeout_seconds: 20   # (default)
-gh_write_verify_initial_delay_ms: 250 # (default)
-gh_write_verify_max_delay_ms: 2000    # (default)
-gh_write_verify_backoff: 1.5          # (default)
-gh_write_verify_jitter_ms: 0          # (default)
-```
-
-#### Audit
-
-```yaml
-gh_audit_enabled: false           # (default)
-gh_audit_events: false            # (default) Emit audit to event stream
-gh_audit_file: null               # (default) Path for audit file (supports {pid})
-```
-
----
-
-### Session Detection
-
-```yaml
-session_no_output_seconds: 120        # (default) Emit warning after N seconds idle
-session_no_output_tail_lines: 50      # (default) Lines to include in warning
-session_no_output_max_bytes: 10000    # (default) Max bytes of tail content
-session_no_output_repeat_seconds: 120 # (default) Min gap between warnings
-session_grace_period_seconds: 120     # (default) Don't terminate young sessions
-session_log_activity_seconds: 120     # (default) Log activity window
-session_output_retention_runs: 7      # (default) Keep last N session output runs per worktree
-```
-
----
-
-### Cleanup
+### cleanup
 
 ```yaml
 cleanup:
-  with_triage:                        # When triage review is enabled
-    close_ai_session_tabs: true       # (default)
-    remove_worktrees: false           # (default)
-  without_triage:                     # When triage is NOT enabled
-    wait_for_code_review: true        # (default) Wait for review before cleanup
-    close_ai_session_tabs: true       # (default)
-    remove_worktrees: false           # (default)
+  with_triage:
+    close_ai_session_tabs: true
+    remove_worktrees: false
+  without_triage:
+    wait_for_code_review: true
+    close_ai_session_tabs: true
+    remove_worktrees: false
 ```
 
----
-
-### Hooks and Worktree Setup
+### validation
 
 ```yaml
-enforce_hooks: true               # (default) Install pre-push hooks
-pre_push_hook: null               # (default: uses bundled hook)
-setup_worktree: []                # (default) Commands after worktree creation
-reuse_push_preflight: true        # (default) Dry-run push before reusing worktrees
-allow_no_verify_dry_run_preflight: true  # (default) Allow git push --dry-run --no-verify during reuse preflight
+validation:
+  cmd: null
+  timeout_seconds: 300
 ```
 
-Example setup commands:
-```yaml
-setup_worktree:
-  - "npm install"
-  - "pip install -e ."
-```
-
----
-
-### Terminal and Tmux
+### ui
 
 ```yaml
-terminal_adapter: null            # (default: auto) Override: "tmux", "subprocess", or custom class path
-tmuxp: null                       # (default) Custom tmuxp config file path
-tmux_bindings:                    # (default: double-click to zoom)
-  - "bind-key -T root DoubleClick1Pane resize-pane -Z -t ="
+ui:
+  mode: "web"
+  web_port: 8080
+  control_api_port: 19080
+  queue_refresh_seconds: 600
 ```
 
-Notes:
-- `terminal_adapter: tmux` uses the tmux backend (default).
-- `terminal_adapter: subprocess` runs agent sessions as subprocesses and logs to
-  `.issue-orchestrator/sessions/<session>/session.log` in each worktree.
-
----
-
-### Milestone Sorting
+### observability
 
 ```yaml
-milestone_sort: "due_date"        # (default) Options: due_date, number, pattern, name
-foundation_milestone: "M0"        # (default) Dependencies must be in same or foundation
+observability:
+  session_no_output_seconds: 120
+  session_no_output_tail_lines: 50
+  session_no_output_max_bytes: 10000
+  session_no_output_repeat_seconds: 120
+  session_output_retention_runs: 7
+  stale_escalation_ticks: 0
+  comment_headings:
+    implementation: "## Implementation"
+    problems: "## Problems Encountered"
+    pr_link: "## Pull Request"
+    blocked: "## Blocked"
+    needs_human: "## Needs Human Input"
 ```
 
-Example using pattern strategy to sort milestones like "Sprint-1", "Sprint-2":
-```yaml
-milestone_sort: "pattern"
-milestone_sort_config:
-  pattern: "Sprint-(\\d+)"   # Regex with capture group for number
-```
-
----
-
-### Isolation
-
-```yaml
-isolation:
-  mode: "standard"                # (default) Options: standard, hardened
-```
-
----
-
-### Dangerous Options
+### security
 
 ```yaml
-dangerous:
-  allow_unsupported_agents: false # (default) Allow agents without hook support
+security:
+  enforce_hooks: true
+  pre_push_hook: null
+  dangerous:
+    allow_unsupported_agents: false
 ```
 
----
-
-### Stale Detection
-
-Detects stuck issues that have `in-progress` label but no active session (e.g., agent crashed).
+### filtering
 
 ```yaml
-stale_escalation_ticks: 0         # (default) Emit warning after N consecutive stale ticks (0 = disabled)
+filtering:
+  label: null
+  milestone: null
+  milestones: []
+  issue: null
+  exclude_labels: []
+  fetch_limit: 100
+  max_to_start: 0
 ```
 
-Example: `stale_escalation_ticks: 3` emits `PERSISTENT_STALE_DETECTED` event if an issue stays stale for 3 tick cycles.
+`milestones` and `exclude_labels` accept a list or comma-separated string.
 
----
-
-### Comment Headings
-
-Customize headings in agent comments:
+### milestones
 
 ```yaml
-comment_headings:
-  implementation: "## Implementation"       # (default)
-  problems: "## Problems Encountered"       # (default)
-  pr_link: "## Pull Request"                # (default)
-  blocked: "## Blocked"                     # (default)
-  needs_human: "## Needs Human Input"       # (default)
+milestones:
+  sort: "due_date"
+  sort_config: {}
+  foundation: "M0"
 ```
 
----
+### triage
 
-### E2E Test Runner
+```yaml
+triage:
+  inherit_labels: []
+  explicit_labels: []
+  milestone_strategy:
+    inherit_from_issues: true
+    explicit: null
+  priority: null
+```
 
-Run E2E tests locally and asynchronously per orchestrator, with results persisted to SQLite and visible in the dashboard.
+### e2e
 
 ```yaml
 e2e:
-  enabled: false                              # (default) Enable async E2E runner
-  auto_run_interval_minutes: 30               # (default) Min interval between auto runs (0 = manual only)
-  pytest_args: ["tests/e2e", "-v"]            # (default) Arguments to pytest
-  allow_retry_once: true                      # (default) Retry failing tests once (reduces flakiness)
-  quarantine_file: "tests/e2e/quarantine.txt" # (default) Path to quarantine list
-  survive_restart: true                       # (default) Let E2E worker continue if orchestrator restarts
+  enabled: false
+  auto_run_interval_minutes: 30
+  pytest_args: ["tests/e2e", "-v"]
+  allow_retry_once: true
+  quarantine_file: "tests/e2e/quarantine.txt"
+  survive_restart: true
+  pr_labels: []
 ```
 
-**Features:**
-- **Auto-trigger**: Runs after agent sessions complete, gated by time interval
-- **Retry-once**: Retries failing tests once to reduce false failures
-- **Quarantine**: Known flaky tests in quarantine file are marked but excluded from failure count
-- **Signal score**: Dashboard shows pass rate over last 30 runs
-- **Survive restart**: Worker continues if orchestrator restarts, then resumes from checkpoint
-- **Resumable runs**: When interrupted, runs resume from where they left off (skipping passed tests)
+### state
 
-**Test structure for resumability:**
-
-Tests should be structured as discrete functions for best resume behavior:
-
-```python
-# Good - each function is a resumable checkpoint:
-def test_create_issue(): ...
-def test_create_pr(): ...
-def test_review_cycle(): ...
-
-# Bad - monolithic, no partial progress:
-def test_entire_workflow(): ...
+```yaml
+state:
+  file: ".issue-orchestrator/state.json"
 ```
 
-**Quarantine file format** (`tests/e2e/quarantine.txt`):
-```
-# Known flaky tests - excluded from required runs
-tests/e2e/test_slow_network.py::test_timeout_handling
-tests/e2e/test_race_condition.py::test_concurrent_updates
-```
-
-**Results stored in**: `.issue-orchestrator/e2e.db` (SQLite)
-
----
-
-### Config Validation
+### config
 
 ```yaml
 config:
-  strict: false                   # (default) If true, unknown fields cause errors
+  strict: false
 ```

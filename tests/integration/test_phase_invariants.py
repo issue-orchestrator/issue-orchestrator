@@ -195,7 +195,9 @@ class TestPhase7MultiRepoFromControlCenter:
         test_repo = tmp_path / "test-repo"
         test_repo.mkdir()
         (test_repo / ".git").mkdir()  # Discover endpoint only finds git repos
-        (test_repo / ".issue-orchestrator.yaml").write_text("repo: test/repo\n")
+        config_dir = test_repo / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("repo:\n  name: test/repo\n")
 
         response = client.get(
             "/control/repos/discover",
@@ -280,8 +282,10 @@ class TestSetupWizardEndpoints:
         client = TestClient(control_app)
 
         # Create a repo with config
-        (tmp_path / ".issue-orchestrator.yaml").write_text(
-            "repo: test/repo\nagents:\n  agent:dev:\n    prompt: dev.md\n"
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            "repo:\n  name: test/repo\nagents:\n  agent:dev:\n    prompt: dev.md\n"
         )
 
         response = client.post(
@@ -317,7 +321,7 @@ class TestSetupWizardEndpoints:
             json={
                 "repo_root": "/tmp/test",
                 "config": {
-                    "repo": "test/repo",
+                    "repo": {"name": "test/repo"},
                     "agents": {"agent:dev": {"prompt": "dev.md", "model": "sonnet"}},
                 },
             },
@@ -327,7 +331,7 @@ class TestSetupWizardEndpoints:
         data = response.json()
         assert "yaml" in data
         assert "files" in data
-        assert "repo: test/repo" in data["yaml"]
+        assert "name: test/repo" in data["yaml"]
 
     def test_save_endpoint_creates_config(self, tmp_path: Path) -> None:
         """POST /control/setup/save endpoint creates config file."""
@@ -338,7 +342,7 @@ class TestSetupWizardEndpoints:
             json={
                 "repo_root": str(tmp_path),
                 "config": {
-                    "repo": "test/repo",
+                    "repo": {"name": "test/repo"},
                     "agents": {"agent:dev": {"prompt": ".io/dev.md", "model": "sonnet"}},
                 },
                 "create_prompts": True,
@@ -355,14 +359,15 @@ class TestSetupWizardEndpoints:
         config_path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
         assert config_path.exists()
         content = config_path.read_text()
-        assert "repo: test/repo" in content
+        assert "name: test/repo" in content
 
     def test_detect_returns_existing_config(self, tmp_path: Path) -> None:
         """GET /control/setup/detect returns existing_config when present."""
         client = TestClient(control_app)
 
         # Create a config file at new location
-        config_content = """repo: existing/repo
+        config_content = """repo:
+  name: existing/repo
 agents:
   agent:backend:
     prompt: backend.md
@@ -380,7 +385,7 @@ agents:
         assert response.status_code == 200
         data = response.json()
         assert data["existing_config"] is not None
-        assert data["existing_config"]["repo"] == "existing/repo"
+        assert data["existing_config"]["repo"]["name"] == "existing/repo"
         assert "agent:backend" in data["existing_config"]["agents"]
 
     def test_save_endpoint_updates_existing_config(self, tmp_path: Path) -> None:
@@ -390,7 +395,7 @@ agents:
         # Create initial config at new location
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
-        initial_config = "repo: old/repo\nagents:\n  agent:old: {}\n"
+        initial_config = "repo:\n  name: old/repo\nagents:\n  agent:old: {}\n"
         (config_dir / "default.yaml").write_text(initial_config)
 
         # Update with new config
@@ -399,7 +404,7 @@ agents:
             json={
                 "repo_root": str(tmp_path),
                 "config": {
-                    "repo": "new/repo",
+                    "repo": {"name": "new/repo"},
                     "agents": {"agent:new": {"prompt": "new.md", "model": "sonnet"}},
                 },
                 "create_prompts": False,
@@ -413,7 +418,7 @@ agents:
 
         # Config should be updated
         content = (config_dir / "default.yaml").read_text()
-        assert "repo: new/repo" in content
+        assert "name: new/repo" in content
         assert "agent:new" in content
         assert "agent:old" not in content  # Old config replaced
 

@@ -32,28 +32,31 @@ class TestConfig:
 
         # Create config YAML with absolute paths
         config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:web:
     prompt: {prompt_web}
-    worktree_base: {tmp_path}
     model: sonnet
     timeout_minutes: 45
   agent:mobile:
     prompt: {prompt_mobile}
-    worktree_base: {tmp_path}
     model: haiku
     timeout_minutes: 60
 
-concurrency:
-  max_concurrent_sessions: 4
-  session_timeout_minutes: 60
+execution:
+  concurrency:
+    max_concurrent_sessions: 4
+    session_timeout_minutes: 60
 
 labels:
   in_progress: working
   blocked: blocked-on
   needs_human: needs-review
-
-repo: owner/repo
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -91,7 +94,8 @@ agents:
   agent:web:
     prompt: {prompt}
     model: sonnet
-worktree_base: {worktree_base}
+worktrees:
+  base: {worktree_base}
 """)
 
         config = Config.load(config_file)
@@ -110,8 +114,9 @@ agents:
   agent:web:
     prompt: {prompt}
     model: sonnet
-worktree_base: {worktree_base}
-worktree_branch_on_recreate: create_new_branch
+worktrees:
+  base: {worktree_base}
+  worktree_branch_on_recreate: create_new_branch
 """)
 
         config = Config.load(config_file)
@@ -130,8 +135,9 @@ agents:
   agent:web:
     prompt: {prompt}
     model: sonnet
-worktree_base: {worktree_base}
-worktree_branch_on_recreate: nope
+worktrees:
+  base: {worktree_base}
+  worktree_branch_on_recreate: nope
 """)
 
         config = Config.load(config_file)
@@ -151,7 +157,8 @@ agents:
   agent:web:
     prompt: {prompt}
     model: sonnet
-worktree_base: {worktree_base}
+worktrees:
+  base: {worktree_base}
 """)
 
         config = Config.load(config_file)
@@ -170,8 +177,9 @@ agents:
   agent:web:
     prompt: {prompt}
     model: sonnet
-worktree_base: {worktree_base}
-allow_no_verify_dry_run_preflight: false
+worktrees:
+  base: {worktree_base}
+  allow_no_verify_dry_run_preflight: false
 """)
 
         config = Config.load(config_file)
@@ -181,10 +189,12 @@ allow_no_verify_dry_run_preflight: false
     def test_config_load_with_defaults(self, tmp_path):
         """Test loading config with minimal YAML uses defaults."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:simple:
     prompt: /path/to/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -221,8 +231,9 @@ agents:
     def test_config_empty_agents(self, tmp_path):
         """Test loading config with no agents defined."""
         config_content = """
-concurrency:
-  max_concurrent_sessions: 2
+execution:
+  concurrency:
+    max_concurrent_sessions: 2
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -325,7 +336,9 @@ agents:
     def test_config_with_custom_repo(self, tmp_path):
         """Test config with custom repo specified."""
         config_content = """
-repo: owner/private-repo
+repo:
+  name: owner/private-repo
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
@@ -343,7 +356,9 @@ agents:
         prompt_file.write_text("Prompt")
 
         config_content = f"""
-worktree_base: {tmp_path}
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:full:
     prompt: {prompt_file}
@@ -376,16 +391,16 @@ agents:
         prompt3.write_text("Prompt 3")
 
         config_content = f"""
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:web:
     prompt: {prompt1}
-    worktree_base: {tmp_path}
   agent:mobile:
     prompt: {prompt2}
-    worktree_base: {tmp_path}
   agent:backend:
     prompt: {prompt3}
-    worktree_base: {tmp_path}
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -453,10 +468,12 @@ agents:
     def test_label_prefix_configured(self, tmp_path):
         """Test that labels are prefixed when label_prefix is set."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
 labels:
   prefix: bot
@@ -494,10 +511,12 @@ labels:
     def test_label_prefix_with_defaults(self, tmp_path):
         """Test label prefix with default label names."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
 labels:
   prefix: orchestrator
@@ -553,7 +572,7 @@ labels:
 labels:
   in_progress: in-progress
 review:
-  code_review_agent: "agent:reviewer"
+  default: "agent:reviewer"
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -562,8 +581,8 @@ review:
             config_file,
             overrides=[
                 "labels.in_progress=claimed",
-                "review.code_review_agent=agent:code-review",
-                "queue_refresh_seconds=120",
+                "review.default=agent:code-review",
+                "ui.queue_refresh_seconds=120",
                 "filtering.milestones=[\"M1\", \"M2\"]",
             ],
         )
@@ -575,13 +594,18 @@ review:
 
     def test_github_scopes_parse_from_strings(self, tmp_path):
         config_content = """
-repo: owner/repo
-github_required_scopes: "repo, read:org"
-github_allowed_scopes: "repo, read:org, read:user"
+repo:
+  name: owner/repo
+  github:
+    required_scopes: "repo, read:org"
+    allowed_scopes: "repo, read:org, read:user"
+
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -594,11 +618,15 @@ agents:
     def test_queue_refresh_seconds_from_yaml(self, tmp_path):
         """Test loading queue_refresh_seconds from YAML."""
         config_content = """
-queue_refresh_seconds: 300
+ui:
+  queue_refresh_seconds: 300
+
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -610,11 +638,16 @@ agents:
     def test_github_cache_ttl_seconds_from_yaml(self, tmp_path):
         """Test loading github_cache_ttl_seconds from YAML."""
         config_content = """
-github_cache_ttl_seconds: 120
+repo:
+  github:
+    cache_ttl_seconds: 120
+
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -626,19 +659,27 @@ agents:
     def test_session_output_settings_from_yaml(self, tmp_path):
         """Test loading session output settings from YAML."""
         config_content = """
-session_no_output_seconds: 180
-session_no_output_tail_lines: 25
-session_no_output_max_bytes: 5000
-session_no_output_repeat_seconds: 300
-gh_write_verify_timeout_seconds: 30
-gh_write_verify_initial_delay_ms: 300
-gh_write_verify_max_delay_ms: 2500
-gh_write_verify_backoff: 1.8
-gh_write_verify_jitter_ms: 50
+observability:
+  session_no_output_seconds: 180
+  session_no_output_tail_lines: 25
+  session_no_output_max_bytes: 5000
+  session_no_output_repeat_seconds: 300
+
+repo:
+  github:
+    write_verify:
+      timeout_seconds: 30
+      initial_delay_ms: 300
+      max_delay_ms: 2500
+      backoff: 1.8
+      jitter_ms: 50
+
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -660,10 +701,13 @@ agents:
         config_content = """
 filtering:
   max_to_start: 5
+
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -675,11 +719,15 @@ agents:
     def test_queue_refresh_seconds_zero_disables_auto_refresh(self, tmp_path):
         """Test that queue_refresh_seconds=0 means manual refresh only."""
         config_content = """
-queue_refresh_seconds: 0
+ui:
+  queue_refresh_seconds: 0
+
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -691,13 +739,17 @@ agents:
     def test_both_new_settings_from_yaml(self, tmp_path):
         """Test loading both queue_refresh_seconds and filtering.max_to_start from YAML."""
         config_content = """
-queue_refresh_seconds: 120
+ui:
+  queue_refresh_seconds: 120
 filtering:
   max_to_start: 10
+
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -723,13 +775,16 @@ agents:
     def test_review_workflow_from_yaml(self, tmp_path):
         """Test loading review workflow config from YAML."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
 review:
-  code_review_agent: agent:reviewer
+  enabled: true
+  default: agent:reviewer
   code_review_label: needs-code-review
   code_reviewed_label: code-reviewed
   triage_review_agent: agent:triage
@@ -751,13 +806,16 @@ review:
     def test_review_workflow_partial_config(self, tmp_path):
         """Test loading review workflow with partial config (code review only)."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
 review:
-  code_review_agent: agent:reviewer
+  enabled: true
+  default: agent:reviewer
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -785,20 +843,19 @@ review:
         prompt_file.write_text("Prompt content")
 
         config_content = f"""
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:frontend:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
     reviewer: agent:web-reviewer
   agent:backend:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
   agent:web-reviewer:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
   agent:reviewer:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
 
 review:
   enabled: true
@@ -823,20 +880,19 @@ review:
         prompt_file.write_text("Prompt content")
 
         config_content = f"""
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:frontend:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
     reviewer: agent:web-reviewer
   agent:backend:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
   agent:web-reviewer:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
   agent:reviewer:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
 
 review:
   enabled: true
@@ -860,10 +916,12 @@ review:
         prompt_file.write_text("Prompt content")
 
         config_content = f"""
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:frontend:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -880,13 +938,14 @@ agents:
         prompt_file.write_text("Prompt content")
 
         config_content = f"""
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:test:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
   agent:new-reviewer:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
 
 review:
   enabled: true
@@ -906,10 +965,12 @@ review:
         prompt_file.write_text("Prompt content")
 
         config_content = f"""
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:frontend:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
     reviewer: agent:nonexistent-reviewer
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
@@ -926,10 +987,12 @@ agents:
         prompt_file.write_text("Prompt content")
 
         config_content = f"""
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:frontend:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
 
 review:
   enabled: true
@@ -949,10 +1012,12 @@ review:
         prompt_file.write_text("Prompt content")
 
         config_content = f"""
+worktrees:
+  base: {tmp_path}
+
 agents:
   agent:frontend:
     prompt: {prompt_file}
-    worktree_base: {tmp_path}
 
 # No review section - defaults to enabled: false
 """
@@ -985,10 +1050,12 @@ class TestCleanupConfig:
     def test_cleanup_config_from_yaml_with_triage(self, tmp_path):
         """Test loading cleanup config for CTO workflow."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
 cleanup:
   with_triage:
@@ -1009,10 +1076,12 @@ cleanup:
     def test_cleanup_config_from_yaml_without_triage(self, tmp_path):
         """Test loading cleanup config for non-CTO workflow."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
 cleanup:
   without_triage:
@@ -1035,10 +1104,12 @@ cleanup:
     def test_cleanup_config_from_yaml_both_sections(self, tmp_path):
         """Test loading cleanup config with both sections specified."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
 cleanup:
   with_triage:
@@ -1066,10 +1137,12 @@ cleanup:
     def test_cleanup_config_partial_fields_use_defaults(self, tmp_path):
         """Test that unspecified cleanup fields use defaults."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
 cleanup:
   with_triage:
@@ -1088,10 +1161,12 @@ cleanup:
     def test_cleanup_config_empty_section_uses_defaults(self, tmp_path):
         """Test that empty cleanup section uses all defaults."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
 cleanup: {}
 """
@@ -1110,10 +1185,12 @@ cleanup: {}
     def test_cleanup_config_missing_section_uses_defaults(self, tmp_path):
         """Test that missing cleanup section uses all defaults."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1132,10 +1209,12 @@ class TestConfigValidation:
     def test_validate_missing_prompt_file(self, tmp_path):
         """Test validation catches missing prompt files."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /nonexistent/path/prompt.md
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1151,7 +1230,9 @@ agents:
         prompt_file.write_text("# Test prompt")
 
         config_content = f"""
-worktree_base: ./worktrees
+worktrees:
+  base: ./worktrees
+
 agents:
   agent:test:
     prompt: {prompt_file}
@@ -1165,7 +1246,7 @@ agents:
 
         config = Config.load(config_file)
 
-        # Relative path should be resolved to absolute (top-level worktree_base)
+        # Relative path should be resolved to absolute (worktrees.base)
         assert config.worktree_base.is_absolute()
         assert str(config.worktree_base).startswith(str(tmp_path))
 
@@ -1176,7 +1257,9 @@ agents:
         worktree_dir = tmp_path / "new-worktrees"
 
         config_content = f"""
-worktree_base: {worktree_dir}
+worktrees:
+  base: {worktree_dir}
+
 agents:
   agent:test:
     prompt: {prompt_file}
@@ -1192,7 +1275,7 @@ agents:
 
         config = Config.load(config_file)
 
-        # Directory should be created (top-level worktree_base)
+        # Directory should be created (worktrees.base)
         assert worktree_dir.exists()
         assert worktree_dir.is_dir()
         assert config.worktree_base == worktree_dir
@@ -1205,10 +1288,12 @@ agents:
         worktree_dir.mkdir()
 
         config_content = f"""
+worktrees:
+  base: {worktree_dir}
+
 agents:
   agent:test:
     prompt: {prompt_file}
-    worktree_base: {worktree_dir}
 
 review:
   enabled: true
@@ -1230,10 +1315,12 @@ review:
         worktree_dir.mkdir()
 
         config_content = f"""
+worktrees:
+  base: {worktree_dir}
+
 agents:
   agent:test:
     prompt: {prompt_file}
-    worktree_base: {worktree_dir}
     model: haiku
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
@@ -1247,10 +1334,12 @@ agents:
     def test_validate_or_raise_raises_on_errors(self, tmp_path):
         """Test validate_or_raise raises ValueError with all errors."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /nonexistent/prompt.md
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1276,14 +1365,17 @@ class TestE2EPRLabelsConfig:
     def test_e2e_pr_labels_loaded_from_yaml(self, tmp_path):
         """e2e_pr_labels should be loaded correctly from YAML."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
-e2e_pr_labels:
-  - test-data
-  - e2e-test
+e2e:
+  pr_labels:
+    - test-data
+    - e2e-test
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1295,12 +1387,15 @@ e2e_pr_labels:
     def test_e2e_pr_labels_inline_yaml_syntax(self, tmp_path):
         """e2e_pr_labels should work with inline YAML list syntax."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 
-e2e_pr_labels: ["test-data"]
+e2e:
+  pr_labels: ["test-data"]
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1316,15 +1411,17 @@ e2e_pr_labels: ["test-data"]
 
         result = config.to_event_dict()
 
-        assert result["e2e_pr_labels"] == ["test-data", "cleanup"]
+        assert result["e2e"]["pr_labels"] == ["test-data", "cleanup"]
 
     def test_e2e_pr_labels_not_specified_defaults_to_empty(self, tmp_path):
         """e2e_pr_labels should default to empty list when not in YAML."""
         config_content = """
+worktrees:
+  base: /tmp
+
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)

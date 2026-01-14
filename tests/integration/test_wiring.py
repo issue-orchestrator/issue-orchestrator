@@ -206,18 +206,20 @@ class TestCommentHeadingsWiring:
     def test_config_loads_comment_headings(self, tmp_path):
         """Verify comment headings are loaded from YAML."""
         config_content = """
-worktree_base: "../"
+worktrees:
+  base: "../"
 
 agents:
   "agent:test":
     prompt: "test.md"
 
-comment_headings:
-  implementation: "## Done"
-  problems: "## Issues"
-  pr_link: "## PR"
-  blocked: "## Stuck"
-  needs_human: "## Help Needed"
+observability:
+  comment_headings:
+    implementation: "## Done"
+    problems: "## Issues"
+    pr_link: "## PR"
+    blocked: "## Stuck"
+    needs_human: "## Help Needed"
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)

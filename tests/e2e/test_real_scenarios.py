@@ -339,7 +339,7 @@ class TestTriageReviewTrigger:
             run_label = e2e_label(f"triage_run_{run_id}")
             review_label = e2e_label(f"triage_review_{run_id}")
             reviewed_label = e2e_label(f"triage_reviewed_{run_id}")
-            triage_config.filter_label = run_label
+            triage_config.filtering.label = run_label
             triage_config.e2e_pr_labels = [run_label]
             triage_config.code_review_label = review_label
             triage_config.code_reviewed_label = reviewed_label

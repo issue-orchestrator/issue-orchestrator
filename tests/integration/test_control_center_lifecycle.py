@@ -106,18 +106,21 @@ def test_repo(tmp_path: Path, orchestrator_port: int) -> Path:
     # Create minimal config (use relative path from repo root)
     # Use dynamic port to avoid collisions between tests
     config = {
-        "repo": "test/repo",
-        "web_port": orchestrator_port,
-        "filter_label": "test-only",
+        "repo": {"name": "test/repo"},
+        "ui": {"web_port": orchestrator_port},
+        "filtering": {"label": "test-only"},
+        "worktrees": {"base": str(tmp_path / "worktrees")},
         "agents": {
             "agent:developer": {
                 "prompt": "prompts/developer.md",
                 "model": "haiku",
             }
         },
-        "concurrency": {
-            "max_concurrent_sessions": 1,
-            "session_timeout_minutes": 5,
+        "execution": {
+            "concurrency": {
+                "max_concurrent_sessions": 1,
+                "session_timeout_minutes": 5,
+            }
         },
     }
     config_path = config_dir / "test.yaml"

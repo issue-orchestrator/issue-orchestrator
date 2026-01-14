@@ -186,20 +186,18 @@ agents:
     prompt: ".issue-orchestrator/prompts/backend.md"
     model: sonnet
     timeout_minutes: 45
-    worktree_base: "../"
 
   agent:reviewer:
     prompt: ".issue-orchestrator/prompts/reviewer.md"
     model: sonnet
     timeout_minutes: 30
 
+worktrees:
+  base: "../"
+
 validation:
-  agent_gate:
-    cmd: "make validate-fast"
-    timeout_seconds: 300
-  publish_gate:
-    cmd: "make validate"
-    timeout_seconds: 1800
+  cmd: "make validate"
+  timeout_seconds: 1800
 
 review:
   enabled: true

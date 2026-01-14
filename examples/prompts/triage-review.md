@@ -176,7 +176,7 @@ Analyze ALL sessions, not just failures. Successful sessions often reveal fricti
 - Are there patterns across sessions suggesting prompt/process improvements?
 
 Examples of "successful but should be easier":
-- Agent ran `npm install` manually → add to `setup_worktree` in config
+- Agent ran `npm install` manually → add to `worktrees.setup` in config
 - Agent fixed pre-existing test/lint failures → main branch should be clean
 - Agent spent time figuring out project structure → prompt should include it
 - Agent retried a flaky command multiple times → infrastructure issue
@@ -292,7 +292,7 @@ Look for:
 - Missing labels in GitHub repo
 - `agent-done` not in PATH
 - Pre-existing test/lint failures on main branch (agent starts with broken build)
-- Missing `setup_worktree` commands (e.g., npm install, pip install)
+- Missing `worktrees.setup` commands (e.g., npm install, pip install)
 - Timeout too short for complex issues
 
 **Agent failures** (fix in prompts/training):

@@ -1966,10 +1966,12 @@ async def setup_save(request: Request) -> JSONResponse:
                 logger.warning(f"Failed to create prompt {prompt_path}: {e}")
 
     # Create GitHub labels
-    if create_labels and config.get("repo"):
+    repo_config = config.get("repo") or {}
+    repo_name = repo_config.get("name") if isinstance(repo_config, dict) else repo_config
+    if create_labels and repo_name:
         try:
             from ..execution.providers import create_repository_host
-            host = create_repository_host(repo=config["repo"])
+            host = create_repository_host(repo=repo_name)
 
             # Get existing labels
             existing = {l.get("name") for l in host.list_labels() if isinstance(l, dict)}

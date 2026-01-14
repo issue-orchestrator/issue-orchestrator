@@ -1160,7 +1160,8 @@ class TestLoadConfig:
         # Create a test config file
         config_file = tmp_path / "custom-config.yaml"
         config_file.write_text("""
-worktree_base: /tmp
+worktrees:
+  base: /tmp
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
@@ -1266,11 +1267,13 @@ class TestConfigCliArgument:
         # Create a test config file
         config_file = tmp_path / "test-config.yaml"
         config_file.write_text("""
-repo: test/explicit-repo
+repo:
+  name: test/explicit-repo
+worktrees:
+  base: /tmp
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
-    worktree_base: /tmp
 """)
 
         with patch('issue_orchestrator.infra.config.Config.load') as mock_load:

@@ -45,7 +45,7 @@ This document defines the authoritative data sources available to triage agents,
 
 | Source | Access | What It Tells You |
 |--------|--------|-------------------|
-| Worktree path | Check config `worktree_base` + issue number | Local file state, uncommitted changes |
+| Worktree path | Check config `worktrees.base` + issue number | Local file state, uncommitted changes |
 | Git status | `git status` in worktree | Uncommitted work, branch state |
 | Completion file | `cat completion.json` in worktree | Agent's reported outcome |
 
