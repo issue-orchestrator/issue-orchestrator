@@ -385,6 +385,11 @@ class Config:
     # Can be "subprocess" or a full class path for custom adapters
     terminal_adapter: Optional[str] = None
 
+    # Tmux settings (when using tmux terminal adapter)
+    tmux_session_mode: str = "windows"  # "windows" or "sessions"
+    tmuxp_config: Optional[Path] = None  # Custom tmuxp layout config
+    tmux_bindings: list[str] = field(default_factory=lambda: ["DoubleClick1Pane: resize-pane -Z"])
+
     # Milestone sorting strategy - built-in: "due_date", "number", "pattern", "name"
     # Or provide a custom class path like "mymodule.MyStrategy"
     milestone_sort: str = "due_date"

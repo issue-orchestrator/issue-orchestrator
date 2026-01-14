@@ -9,15 +9,12 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
-
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
 from ..git.git_cli import GitCLI, SubprocessCommandRunner
 
-if TYPE_CHECKING:
-    from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
+from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 
 
 @dataclass
