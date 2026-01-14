@@ -19,9 +19,9 @@ classifiers = [
 ]
 
 dependencies = [
+    "agent-runner @ file:packages/agent_runner",  # Provider-agnostic agent execution
     "pyyaml>=6.0",
     "rich>=13.0",      # Nice terminal UI
-    "libtmux>=0.37",   # Pythonic tmux control
     "textual>=0.40",   # TUI framework with keyboard input
     "fastapi>=0.104",  # Web dashboard
     "uvicorn>=0.24",   # ASGI server
@@ -31,7 +31,7 @@ dependencies = [
     "transitions>=0.9",  # Lightweight state machine library
     "httpx>=0.27",     # GitHub HTTP client
     "keyring>=25.0",   # OS keychain for secure token storage
-    "tenacity>=8.0",   # Retry with exponential backoff for tmux operations
+    "tenacity>=8.0",   # Retry with exponential backoff
 ]
 
 [project.optional-dependencies]
@@ -63,12 +63,15 @@ prepush-check = "issue_orchestrator.entrypoints.cli_tools.prepush_check:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/issue_orchestrator"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
+testpaths = ["tests", "packages/agent_runner/tests"]
+pythonpath = ["src", "packages/agent_runner/src"]
 asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
@@ -81,7 +84,7 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["src"]
+include = ["src", "packages/agent_runner/src"]
 pythonVersion = "3.14"
 venvPath = "."
 venv = ".venv"
@@ -187,3 +190,10 @@ ignore_imports = [
   "issue_orchestrator.entrypoints.cli -> httpx",
   "issue_orchestrator.entrypoints.control_api -> httpx",  # Passthrough to orchestrator
 ]
+
+# agent-runner package boundary
+[[tool.importlinter.contracts]]
+name = "agent_runner must not import issue_orchestrator"
+type = "forbidden"
+source_modules = ["agent_runner"]
+forbidden_modules = ["issue_orchestrator"]

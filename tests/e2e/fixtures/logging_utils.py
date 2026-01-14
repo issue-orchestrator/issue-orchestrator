@@ -4,10 +4,6 @@ from datetime import datetime
 import subprocess
 from pathlib import Path
 
-from libtmux import Server
-from libtmux.exc import LibTmuxException
-from libtmux._internal.query_list import ObjectDoesNotExist
-
 from .orchestrator_process import E2E_LOG_DIR
 
 
@@ -110,12 +106,11 @@ def claude_project_dir_for(worktree: Path) -> Path:
     return Path.home() / ".claude" / "projects" / escaped
 
 
-def snapshot_logs(reason: str, tmux_session: str = "orchestrator", worktree_base: Path | None = None) -> None:
+def snapshot_logs(reason: str, worktree_base: Path | None = None) -> None:
     """Persist tail snapshots of the latest logs for aborted/failed sessions.
 
     Args:
         reason: Reason for the snapshot.
-        tmux_session: Name of the tmux session. Defaults to "orchestrator".
         worktree_base: Base directory for worktrees. Defaults to /tmp/e2e-worktrees.
     """
     try:
@@ -137,42 +132,6 @@ def snapshot_logs(reason: str, tmux_session: str = "orchestrator", worktree_base
                 handle.write(f"[ORCH] {latest_orch}\n")
                 for line in tail_lines(latest_orch):
                     handle.write(line + "\n")
-
-            # Tmux context can explain stuck sessions
-            tmux_windows = []
-            try:
-                handle.write("[TMUX] list-windows\n")
-                server = Server()
-                session = server.sessions.get(session_name=tmux_session)
-                if session:
-                    for window in session.windows:
-                        window_info = f"{window.window_index}: {window.window_name}"
-                        handle.write(window_info + "\n")
-                        tmux_windows.append(window)
-                else:
-                    handle.write(f"(tmux session '{tmux_session}' not found)\n")
-            except (LibTmuxException, ObjectDoesNotExist) as e:
-                handle.write(f"(tmux error: {e})\n")
-            except Exception:
-                handle.write("(tmux not available)\n")
-
-            # Capture recent pane output for each window to aid debugging
-            if tmux_windows:
-                for window in tmux_windows:
-                    try:
-                        handle.write(f"[TMUX] capture-pane window={window.window_index}\n")
-                        pane = window.active_pane
-                        if pane:
-                            # Capture last 200 lines from the pane
-                            output = pane.capture_pane(start=-200)
-                            if output:
-                                handle.write("\n".join(output).strip() + "\n")
-                        else:
-                            handle.write("(no active pane)\n")
-                    except LibTmuxException as e:
-                        handle.write(f"(capture-pane failed: {e})\n")
-                    except Exception:
-                        handle.write("(tmux capture-pane not available)\n")
 
             # Snapshot recent worktree artifacts
             for worktree in find_recent_worktrees(worktree_base=worktree_base):

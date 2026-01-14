@@ -60,8 +60,6 @@ from .github_utils import (
 from .cleanup import (
     DEFAULT_E2E_FILTER_LABEL,
     cleanup_local_worktrees,
-    cleanup_tmux_sessions,
-    cleanup_all_e2e_tmux_sessions,
     run_cleanup_step,
     verify_cleanup_items,
     cleanup_remote_branches,
@@ -143,8 +141,6 @@ __all__ = [
     # cleanup
     "DEFAULT_E2E_FILTER_LABEL",
     "cleanup_local_worktrees",
-    "cleanup_tmux_sessions",
-    "cleanup_all_e2e_tmux_sessions",
     "run_cleanup_step",
     "verify_cleanup_items",
     "cleanup_remote_branches",

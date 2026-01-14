@@ -185,19 +185,18 @@ class TestCLIWiring:
             mock_cfg.agents = {"agent:test": MagicMock()}
             mock_cfg.repo_root = Path("/fake")
             mock_cfg.repo = None
+            mock_cfg.filtering = MagicMock()
+            mock_cfg.filtering.label = None
+            mock_cfg.filtering.milestones = []
+            mock_cfg.filtering.milestone = None
+            mock_cfg.max_concurrent_sessions = 3
             mock_config.return_value = mock_cfg
 
-            # Patch tmux at the module level
-            with patch('issue_orchestrator.adapters.terminal._tmux.get_manager') as mock_tmux:
-                mock_mgr = MagicMock()
-                mock_mgr.list_windows.return_value = []
-                mock_tmux.return_value = mock_mgr
+            args = argparse.Namespace()
+            result = cmd_status(args)
 
-                args = argparse.Namespace()
-                result = cmd_status(args)
-
-                # Should complete without error
-                assert result == 0 or result is None
+            # Should complete without error
+            assert result == 0 or result is None
 
 
 class TestCommentHeadingsWiring:
@@ -393,7 +392,6 @@ class TestSmoke:
         from issue_orchestrator.observation import observer
         from issue_orchestrator.infra import orchestrator
         from issue_orchestrator.control import scheduler
-        from issue_orchestrator.adapters.terminal import _tmux as tmux
         from issue_orchestrator.adapters.worktree import _worktree as worktree
         from issue_orchestrator import execution
 

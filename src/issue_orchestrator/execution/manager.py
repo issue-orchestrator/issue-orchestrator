@@ -13,16 +13,14 @@ from ..infra.hooks.hookspec import PROJECT_NAME, TerminalSpec, LifecycleSpec
 
 logger = logging.getLogger(__name__)
 
-# Built-in plugin mapping
+# Built-in plugin mapping (subprocess only - tmux support removed)
 BUILTIN_PLUGINS = {
-    "tmux": "issue_orchestrator.execution.terminal_tmux:TmuxPlugin",
     "subprocess": "issue_orchestrator.execution.terminal_subprocess:SubprocessPlugin",
 }
 
-# UI mode to plugin mapping (backwards compatibility)
+# UI mode to plugin mapping (all modes use subprocess)
 UI_MODE_PLUGINS = {
-    "tmux": "tmux",
-    "web": "tmux",  # Web mode uses tmux for terminals
+    "web": "subprocess",
 }
 
 
@@ -73,8 +71,8 @@ def create_plugin_manager(
     if terminal_plugin:
         plugin_ref = terminal_plugin
     else:
-        # Fall back to UI mode mapping
-        plugin_ref = UI_MODE_PLUGINS.get(ui_mode, "tmux")
+        # Fall back to UI mode mapping (default is subprocess)
+        plugin_ref = UI_MODE_PLUGINS.get(ui_mode, "subprocess")
 
     # Load the terminal plugin
     if plugin_ref in BUILTIN_PLUGINS:

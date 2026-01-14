@@ -149,6 +149,17 @@ class ValidationConfig:
 
 
 @dataclass
+class RetryConfig:
+    """Validation retry configuration.
+
+    When an agent completes but validation fails, the orchestrator can
+    retry with error context injected into the prompt.
+    """
+    max_validation_retries: int = 3  # Max times to retry after validation failure
+    validation_error_file: str = "validation-errors.txt"  # Filename in session output dir
+
+
+@dataclass
 class IsolationConfig:
     """Agent isolation configuration."""
     mode: str = "standard"  # "standard" or "hardened"
@@ -342,7 +353,7 @@ class Config:
     log_retention_days: int = 7  # Days to keep rotated log files
     session_output_retention_runs: int = 7  # Runs to keep per worktree
 
-    # UI mode: "web" (default, browser dashboard) or "tmux" (terminal dashboard)
+    # UI mode: "web" (default, browser dashboard)
     ui_mode: str = "web"
     web_port: int = 8080  # Port for web dashboard
     control_api_port: int = 19080  # Port for control API (always available, 0 = disabled)
@@ -371,23 +382,13 @@ class Config:
     gh_audit_file: Optional[str] = None  # Path for GH audit report (supports {pid})
 
     # Terminal adapter (optional - overrides ui_mode if set)
-    # Can be "builtin:tmux" or a full class path for custom adapters
+    # Can be "subprocess" or a full class path for custom adapters
     terminal_adapter: Optional[str] = None
 
-    # Tmux session mode: "shared" (single orchestrator session) or "per_session"
-    tmux_session_mode: str = "shared"
-
-    # Custom tmuxp config file for tmux layout (optional)
-    # If specified, loads this tmuxp config instead of the default
-    # Supports mouse mode, double-click zoom, custom layouts
-    tmuxp_config: Optional[Path] = None
-
-    # Tmux key bindings to apply after session creation
-    # These are raw tmux bind-key commands (without the "tmux" prefix)
-    # Default enables double-click to zoom panes
-    tmux_bindings: list[str] = field(default_factory=lambda: [
-        "bind-key -T root DoubleClick1Pane resize-pane -Z -t =",
-    ])
+    # Tmux settings (when using tmux terminal adapter)
+    tmux_session_mode: str = "windows"  # "windows" or "sessions"
+    tmuxp_config: Optional[Path] = None  # Custom tmuxp layout config
+    tmux_bindings: list[str] = field(default_factory=lambda: ["DoubleClick1Pane: resize-pane -Z"])
 
     # Milestone sorting strategy - built-in: "due_date", "number", "pattern", "name"
     # Or provide a custom class path like "mymodule.MyStrategy"
@@ -432,6 +433,9 @@ class Config:
 
     # Validation configuration - single command runs on agent-done and pre-push
     validation: ValidationConfig = field(default_factory=ValidationConfig)
+
+    # Retry configuration - validation retry with error injection
+    retry: RetryConfig = field(default_factory=RetryConfig)
 
     # Isolation configuration - how agents are sandboxed
     isolation: IsolationConfig = field(default_factory=IsolationConfig)
@@ -953,6 +957,14 @@ class Config:
             config.validation = ValidationConfig(
                 cmd=validation_data.get("cmd"),
                 timeout_seconds=validation_data.get("timeout_seconds", 300),
+            )
+
+        # Parse retry config - validation retry with error injection
+        retry_data = data.get("retry", {})
+        if retry_data:
+            config.retry = RetryConfig(
+                max_validation_retries=retry_data.get("max_validation_retries", 3),
+                validation_error_file=retry_data.get("validation_error_file", "validation-errors.txt"),
             )
 
         # Parse isolation config

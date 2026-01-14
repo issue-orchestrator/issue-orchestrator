@@ -98,8 +98,7 @@ def build_orchestrator(
 
     install_gh_guard()
 
-    # Make tmux session mode visible to terminal plugins.
-    os.environ["ORCHESTRATOR_TMUX_SESSION_MODE"] = config.tmux_session_mode
+    # Make repo root visible to terminal plugins.
     os.environ["ORCHESTRATOR_REPO_ROOT"] = str(config.repo_root)
 
     # Create the pluggy plugin manager (knows about terminal backend)
@@ -278,10 +277,14 @@ def build_orchestrator(
     ) if github else None
 
     # Create SessionController (decides session outcomes)
+    # Includes optional validation gate for post-completion validation
     from ..control.session_controller import SessionController
     session_controller_instance = SessionController(
         completion_processor=completion_processor,
         events=events,
+        command_runner=command_runner if config.validation and config.validation.cmd else None,
+        validation_cmd=config.validation.cmd if config.validation else None,
+        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
     ) if completion_processor else None
 
     # Build the orchestrator with injected dependencies
@@ -506,11 +509,14 @@ def build_orchestrator_for_testing(
         },
     )
 
-    # Create SessionController for testing
+    # Create SessionController for testing (with optional validation gate)
     from ..control.session_controller import SessionController
     session_controller = SessionController(
         completion_processor=completion_processor,
         events=events,
+        command_runner=command_runner if config.validation and config.validation.cmd else None,
+        validation_cmd=config.validation.cmd if config.validation else None,
+        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
     )
 
     # Create LabelSync for testing

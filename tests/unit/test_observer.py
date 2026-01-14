@@ -1124,8 +1124,7 @@ class TestEmitNoOutputEdgeCases:
         self, mock_config, mock_session_runner, mock_repository_host, sample_session, tmp_path
     ):
         """Test that no event is emitted when stat() raises OSError."""
-        import os
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
 
         mock_events = MagicMock()
 
@@ -1146,9 +1145,13 @@ class TestEmitNoOutputEdgeCases:
         log_file = log_dir / "session.log"
         log_file.write_text("content")
 
-        # Patch stat to raise OSError after exists() returns True
-        original_stat = log_file.stat
-        with patch.object(log_file.__class__, 'stat', side_effect=OSError("Permission denied")):
+        # Create a mock Path object that raises OSError on stat()
+        mock_log_path = MagicMock()
+        mock_log_path.exists.return_value = True
+        mock_log_path.stat.side_effect = OSError("Permission denied")
+
+        # Patch find_session_log_path to return our mock path
+        with patch("issue_orchestrator.observation.observer.find_session_log_path", return_value=mock_log_path):
             monitor._emit_no_output_if_stale(sample_session)
 
         # No events should be emitted

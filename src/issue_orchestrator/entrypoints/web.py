@@ -1230,7 +1230,7 @@ async def get_info() -> JSONResponse:
         "repo": config.repo,
         "repo_root": str(config.repo_root) if config.repo_root else None,
         "ui_mode": config.ui_mode,
-        "terminal_backend": config.terminal_adapter or "tmux",
+        "terminal_backend": config.terminal_adapter or "subprocess",
         "commit_sha": commit_sha,
         "commit_short": commit_sha[:7] if commit_sha else None,
         "max_sessions": config.max_concurrent_sessions,

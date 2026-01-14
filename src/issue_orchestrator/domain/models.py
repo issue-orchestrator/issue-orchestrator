@@ -231,6 +231,7 @@ class SessionStatus(Enum):
     NEEDS_HUMAN = "needs_human"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    VALIDATION_FAILED = "validation_failed"  # Agent completed but validation gate failed
 
 
 class IssueStatus(Enum):

@@ -1043,7 +1043,7 @@ class TestEmitEventHelper:
                 events_received.append((event, data))
 
         # Create plugin manager and register test plugin
-        pm = PluginManager(terminal_plugin="tmux")
+        pm = PluginManager(terminal_plugin="subprocess")
         pm.register_plugin(TestPlugin(), name="test_plugin")
 
         # Emit an event
@@ -1065,7 +1065,7 @@ class TestEmitEventHelper:
             def on_trace_event(self, event: str, data: dict) -> None:
                 events_received.append((event, data))
 
-        pm = PluginManager(terminal_plugin="tmux")
+        pm = PluginManager(terminal_plugin="subprocess")
         pm.register_plugin(TestPlugin(), name="test_plugin")
 
         # Emit without data

@@ -145,7 +145,7 @@ class TestBranchSuffix:
 class TestCreateWorktree:
     """Test the create_worktree function."""
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_success(self, mock_run, tmp_path):
         """Test successful worktree creation."""
         # Setup
@@ -216,7 +216,7 @@ class TestCreateWorktree:
         assert "123-add-user-auth" in worktree_cmd
         assert "main" in worktree_cmd  # Should branch from main
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_default_base(self, mock_run, tmp_path):
         """Test worktree creation with default base directory."""
         # Setup
@@ -234,7 +234,7 @@ class TestCreateWorktree:
         expected_path = tmp_path / "repo-456"
         assert worktree_path == expected_path
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_not_a_git_repo(self, mock_run, tmp_path):
         """Test error when path is not a git repository."""
         # Setup - directory without .git
@@ -249,9 +249,9 @@ class TestCreateWorktree:
         mock_run.assert_not_called()
 
     @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_already_exists(self, mock_run, mock_install_hooks, tmp_path):
-        """Test error when worktree path already exists."""
+        """Test that existing worktree is reused when it passes validation."""
         # Setup
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
@@ -266,19 +266,26 @@ class TestCreateWorktree:
         # Create .git file to make it look like a valid worktree
         (existing_worktree / ".git").write_text("gitdir: /some/path")
 
-        # Mock subprocess calls:
-        # 1. prune call
-        # 2. rev-parse to get current branch
-        # 3. pull --rebase
+        # Mock subprocess calls for worktree reuse validation:
         def mock_subprocess(*args, **kwargs):
             cmd = args[0]
+            # Prune stale worktrees
             if "prune" in cmd:
                 return MagicMock(returncode=0, stderr="")
+            # Get current branch
             if "rev-parse" in cmd and "--abbrev-ref" in cmd:
                 return MagicMock(returncode=0, stdout="existing-branch\n")
+            # Validation: MERGE_HEAD check - return 1 (no merge in progress)
+            if "rev-parse" in cmd and "MERGE_HEAD" in cmd:
+                return MagicMock(returncode=1, stderr="")
+            # Validation: diff --check (no conflicts)
+            if "diff" in cmd and "--check" in cmd:
+                return MagicMock(returncode=0, stdout="")
+            # Pull --rebase to update
             if "pull" in cmd:
                 return MagicMock(returncode=0, stderr="")
-            return MagicMock(returncode=0, stderr="")
+            # Default success for other commands
+            return MagicMock(returncode=0, stderr="", stdout="")
 
         mock_run.side_effect = mock_subprocess
 
@@ -291,7 +298,7 @@ class TestCreateWorktree:
         # Verify hooks were reinstalled on reuse
         mock_install_hooks.assert_called_once_with(existing_worktree, None)
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_git_command_fails(self, mock_run, tmp_path):
         """Test error when git command fails."""
         # Setup
@@ -311,7 +318,7 @@ class TestCreateWorktree:
     @patch("issue_orchestrator.adapters.worktree._worktree.install_venv_symlink")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_detaches_when_branch_in_use(
         self,
         mock_run,
@@ -336,13 +343,21 @@ class TestCreateWorktree:
             "branch refs/heads/123-test\n\n"
         )
 
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stderr=""),  # prune succeeds
-            MagicMock(returncode=0, stdout=worktree_list_output, stderr=""),  # find_worktree_for_branch
-            MagicMock(returncode=0, stderr=""),  # checkout --detach
-            MagicMock(returncode=0, stderr=""),  # branch exists
-            MagicMock(returncode=0, stderr=""),  # worktree add
-        ]
+        # Use a function-based mock that handles various git commands
+        def mock_subprocess(*args, **kwargs):
+            cmd = args[0]
+            if "prune" in cmd:
+                return MagicMock(returncode=0, stderr="")
+            if "worktree" in cmd and "list" in cmd:
+                return MagicMock(returncode=0, stdout=worktree_list_output, stderr="")
+            if "checkout" in cmd and "--detach" in cmd:
+                return MagicMock(returncode=0, stderr="")
+            if "push" in cmd and "--delete" in cmd:
+                return MagicMock(returncode=0, stderr="")
+            # Default success for all other commands (worktree add, branch checks, etc)
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        mock_run.side_effect = mock_subprocess
 
         create_worktree(repo_root, 123, "Test")
 
@@ -352,7 +367,7 @@ class TestCreateWorktree:
             for call_args in mock_run.call_args_list
         )
         assert any(
-            call_args[0][0][:4] == ["git", "-C", str(repo_root), "worktree"]
+            "worktree" in call_args[0][0]
             for call_args in mock_run.call_args_list
         )
 
@@ -363,7 +378,7 @@ class TestCreateWorktree:
     @patch("issue_orchestrator.adapters.worktree._worktree.install_venv_symlink")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_removes_existing_path_when_reuse_disabled(
         self,
         mock_run,
@@ -406,7 +421,7 @@ class TestCreateWorktree:
         mock_install_claude_settings.assert_called_once()
         mock_install_venv_symlink.assert_called_once()
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_creates_base_directory(self, mock_run, tmp_path):
         """Test that worktree base directory is created if it doesn't exist."""
         # Setup
@@ -426,7 +441,7 @@ class TestCreateWorktree:
         assert worktree_base.exists()
         assert worktree_base.is_dir()
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_with_complex_title(self, mock_run, tmp_path):
         """Test worktree creation with complex issue title."""
         # Setup
@@ -444,7 +459,7 @@ class TestCreateWorktree:
         # Verify branch name is properly slugified
         assert branch_name == "999-fix-bug-in-user-s-profile-100-coverage"
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_subprocess_exception(self, mock_run, tmp_path):
         """Test handling of subprocess exceptions."""
         # Setup
@@ -468,7 +483,7 @@ class TestRemoveWorktree:
     """Test the remove_worktree function."""
 
     @patch("issue_orchestrator.adapters.worktree._worktree._get_worktree_branch")
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_success(self, mock_run, mock_get_branch, tmp_path):
         """Test successful worktree removal."""
         # Setup
@@ -511,7 +526,7 @@ class TestRemoveWorktree:
         assert second_call[4] == "-D"
         assert second_call[5] == "123-test-branch"
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_not_exists(self, mock_run, tmp_path):
         """Test error when worktree doesn't exist."""
         # Setup
@@ -525,7 +540,7 @@ class TestRemoveWorktree:
         mock_run.assert_not_called()
 
     @patch("issue_orchestrator.adapters.worktree._worktree._get_worktree_branch")
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_git_fails(self, mock_run, mock_get_branch, tmp_path):
         """Test error when git worktree remove fails."""
         # Setup
@@ -548,7 +563,7 @@ class TestRemoveWorktree:
             remove_worktree(worktree_path)
 
     @patch("issue_orchestrator.adapters.worktree._worktree._get_worktree_branch")
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_branch_deletion_fails_silently(
         self, mock_run, mock_get_branch, tmp_path
     ):
@@ -578,7 +593,7 @@ class TestRemoveWorktree:
         assert mock_run.call_count == 2
 
     @patch("issue_orchestrator.adapters.worktree._worktree._get_worktree_branch")
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_no_branch_name(self, mock_run, mock_get_branch, tmp_path):
         """Test removal when branch name cannot be determined."""
         # Setup
@@ -606,7 +621,7 @@ class TestRemoveWorktree:
 class TestFindWorktreeForBranch:
     """Test the find_worktree_for_branch function."""
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_find_worktree_for_branch_found(self, mock_run, tmp_path):
         """Test finding an existing worktree for a branch."""
         from issue_orchestrator.adapters.worktree._worktree import find_worktree_for_branch
@@ -625,7 +640,7 @@ branch refs/heads/128-m9-ios-styling
         result = find_worktree_for_branch(tmp_path, "128-m9-ios-styling")
         assert result == Path("/path/to/worktree-128")
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_find_worktree_for_branch_not_found(self, mock_run, tmp_path):
         """Test when branch is not checked out in any worktree."""
         from issue_orchestrator.adapters.worktree._worktree import find_worktree_for_branch
@@ -640,7 +655,7 @@ branch refs/heads/main
         result = find_worktree_for_branch(tmp_path, "nonexistent-branch")
         assert result is None
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_find_worktree_for_branch_git_fails(self, mock_run, tmp_path):
         """Test when git command fails."""
         from issue_orchestrator.adapters.worktree._worktree import find_worktree_for_branch
@@ -654,7 +669,7 @@ branch refs/heads/main
 class TestListWorktrees:
     """Test the list_worktrees function."""
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_list_worktrees_success(self, mock_run):
         """Test successful listing of worktrees."""
         # Mock git output
@@ -678,7 +693,7 @@ branch refs/heads/456-bugfix
         assert Path("/path/to/worktree-123") in worktrees
         assert Path("/path/to/worktree-456") in worktrees
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_list_worktrees_empty(self, mock_run):
         """Test listing when only main worktree exists."""
         # Mock git output with only main worktree
@@ -694,7 +709,7 @@ branch refs/heads/main
         assert len(worktrees) == 1
         assert Path("/path/to/main") in worktrees
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_list_worktrees_git_fails(self, mock_run):
         """Test error when git command fails."""
         # Mock failed git command
@@ -706,7 +721,7 @@ branch refs/heads/main
         with pytest.raises(WorktreeError, match="Failed to list worktrees"):
             list_worktrees(Path("/tmp/repo"))
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_list_worktrees_subprocess_exception(self, mock_run):
         """Test handling of subprocess exceptions."""
         # Mock subprocess exception
@@ -764,7 +779,7 @@ class TestWorktreeExists:
 class TestHasUncommittedChanges:
     """Test the has_uncommitted_changes function."""
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_has_uncommitted_changes_true(self, mock_run, tmp_path):
         """Test detecting uncommitted changes."""
         # Setup
@@ -781,7 +796,7 @@ class TestHasUncommittedChanges:
         # Verify
         assert result is True
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_has_uncommitted_changes_false(self, mock_run, tmp_path):
         """Test no uncommitted changes."""
         # Setup
@@ -797,7 +812,7 @@ class TestHasUncommittedChanges:
         # Verify
         assert result is False
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_has_uncommitted_changes_not_exists(self, mock_run, tmp_path):
         """Test error when worktree doesn't exist."""
         # Setup
@@ -810,7 +825,7 @@ class TestHasUncommittedChanges:
         # Git should not have been called
         mock_run.assert_not_called()
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_has_uncommitted_changes_git_fails(self, mock_run, tmp_path):
         """Test error when git status fails."""
         # Setup
@@ -826,7 +841,7 @@ class TestHasUncommittedChanges:
         with pytest.raises(WorktreeError, match="Failed to check worktree status"):
             has_uncommitted_changes(worktree_path)
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_has_uncommitted_changes_staged_only(self, mock_run, tmp_path):
         """Test detecting staged changes."""
         # Setup
@@ -843,7 +858,7 @@ class TestHasUncommittedChanges:
         # Verify - staged changes count as uncommitted
         assert result is True
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_has_uncommitted_changes_untracked_only(self, mock_run, tmp_path):
         """Test detecting untracked files."""
         # Setup
@@ -864,7 +879,7 @@ class TestHasUncommittedChanges:
 class TestGetWorktreeBranch:
     """Test the _get_worktree_branch helper function."""
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_get_worktree_branch_success(self, mock_run, tmp_path):
         """Test successfully getting branch name."""
         # Setup
@@ -890,7 +905,7 @@ class TestGetWorktreeBranch:
         assert cmd[4] == "--abbrev-ref"
         assert cmd[5] == "HEAD"
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_get_worktree_branch_git_fails(self, mock_run, tmp_path):
         """Test when git command fails."""
         # Setup
@@ -907,7 +922,7 @@ class TestGetWorktreeBranch:
         # Verify - should return None on failure
         assert branch_name is None
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_get_worktree_branch_empty_output(self, mock_run, tmp_path):
         """Test when git returns empty output."""
         # Setup
@@ -922,7 +937,7 @@ class TestGetWorktreeBranch:
         # Verify
         assert branch_name is None
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_get_worktree_branch_subprocess_exception(self, mock_run, tmp_path):
         """Test handling of subprocess exceptions."""
         # Setup
@@ -941,7 +956,7 @@ class TestGetWorktreeBranch:
 class TestIntegrationScenarios:
     """Test integration scenarios with multiple operations."""
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_full_lifecycle(self, mock_run, tmp_path):
         """Test complete lifecycle: create, check, remove."""
         # Setup
@@ -987,7 +1002,7 @@ class TestIntegrationScenarios:
         # Remove worktree
         remove_worktree(worktree_path)
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_edge_case_titles(self, mock_run, tmp_path):
         """Test various edge case issue titles."""
         # Setup
@@ -1115,7 +1130,7 @@ class TestInstallHooks:
         assert pre_push_project.stat().st_mode & 0o111, "Project hook should be executable"
         assert pre_push_orchestrator.stat().st_mode & 0o111, "Orchestrator hook should be executable"
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_install_hooks_with_custom_hooks_path(self, mock_run, tmp_path):
         """Test hook installation when project uses core.hooksPath (e.g., .githooks/)."""
         # Setup fake git structure
@@ -1333,7 +1348,7 @@ class TestUpdateWorktreeOntoMain:
 
     def test_update_worktree_success(self, tmp_path):
         """Test successful rebase onto main."""
-        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
+        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main, ResetInfo
 
         # Create a fake git repo with origin/main
         worktree = tmp_path / "worktree"
@@ -1341,60 +1356,75 @@ class TestUpdateWorktreeOntoMain:
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
 
-        with patch("subprocess.run") as mock_run:
-            # Mock successful fetch
+        with patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run:
+            # Mock all git commands in the rebase flow:
+            # 1. fetch origin main
+            # 2. rev-parse --abbrev-ref HEAD (get current branch)
+            # 3. status --porcelain (check for uncommitted changes)
+            # 4. reset --hard HEAD
+            # 5. clean -fd
+            # 6. rebase origin/main
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
-                MagicMock(returncode=0, stdout="", stderr=""),  # ls-remote (branch not on remote)
-                MagicMock(returncode=0, stdout="", stderr=""),  # rebase
+                MagicMock(returncode=0, stdout="", stderr=""),  # status --porcelain (no changes)
+                MagicMock(returncode=0, stdout="", stderr=""),  # reset --hard HEAD
+                MagicMock(returncode=0, stdout="", stderr=""),  # clean -fd
+                MagicMock(returncode=0, stdout="", stderr=""),  # rebase origin/main
             ]
 
             result = _update_worktree_onto_main(worktree, repo_root)
 
-            assert result is True
+            assert result == ResetInfo(success=True, uncommitted_discarded=0, commits_discarded=0)
             # Verify rebase was called
-            assert mock_run.call_count == 4
-            rebase_call = mock_run.call_args_list[3]
+            assert mock_run.call_count == 6
+            rebase_call = mock_run.call_args_list[5]
             assert "rebase" in rebase_call[0][0]
             assert "origin/main" in rebase_call[0][0]
 
     def test_update_worktree_rebase_conflict(self, tmp_path):
-        """Test rebase failure aborts and returns False."""
-        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
+        """Test rebase failure resets to origin/main."""
+        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main, ResetInfo
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
 
-        with patch("subprocess.run") as mock_run:
+        with patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run:
+            # Flow: fetch, rev-parse, status, reset, clean, rebase(fail),
+            #       rebase --abort, rev-list --count, reset --hard origin/main
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
-                MagicMock(returncode=0, stdout="", stderr=""),  # ls-remote (branch not on remote)
+                MagicMock(returncode=0, stdout="", stderr=""),  # status --porcelain
+                MagicMock(returncode=0, stdout="", stderr=""),  # reset --hard HEAD
+                MagicMock(returncode=0, stdout="", stderr=""),  # clean -fd
                 MagicMock(returncode=1, stdout="", stderr="CONFLICT"),  # rebase fails
                 MagicMock(returncode=0, stdout="", stderr=""),  # rebase --abort
+                MagicMock(returncode=0, stdout="2\n", stderr=""),  # rev-list --count
+                MagicMock(returncode=0, stdout="", stderr=""),  # reset --hard origin/main
             ]
 
             result = _update_worktree_onto_main(worktree, repo_root)
 
-            assert result is False
+            # Rebase conflict now returns success=True but with commits_discarded
+            assert result == ResetInfo(success=True, uncommitted_discarded=0, commits_discarded=2)
             # Verify rebase --abort was called
-            abort_call = mock_run.call_args_list[4]
+            abort_call = mock_run.call_args_list[6]
             assert "rebase" in abort_call[0][0]
             assert "--abort" in abort_call[0][0]
 
     def test_update_worktree_on_main_just_pulls(self, tmp_path):
         """Test that being on main just does a pull."""
-        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
+        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main, ResetInfo
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
 
-        with patch("subprocess.run") as mock_run:
+        with patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
                 MagicMock(returncode=0, stdout="main\n", stderr=""),  # rev-parse returns main
@@ -1403,69 +1433,37 @@ class TestUpdateWorktreeOntoMain:
 
             result = _update_worktree_onto_main(worktree, repo_root)
 
-            assert result is True
+            assert result == ResetInfo(success=True)
             # Verify pull was called instead of rebase
             pull_call = mock_run.call_args_list[2]
             assert "pull" in pull_call[0][0]
             assert "--ff-only" in pull_call[0][0]
 
-    def test_skip_rebase_when_branch_exists_on_remote(self, tmp_path):
-        """Test that rebase is skipped if branch already exists on remote.
-
-        When a branch has been pushed before, we should skip rebasing to
-        avoid diverging from the pushed commits. The agent can handle
-        updating from main if needed.
-        """
-        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
+    def test_uncommitted_changes_discarded(self, tmp_path):
+        """Test that uncommitted changes are counted when discarded."""
+        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main, ResetInfo
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
 
-        with patch("subprocess.run") as mock_run:
+        with patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run:
+            # Flow: fetch, rev-parse, status (has changes), reset, clean, rebase
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch origin main
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
-                # ls-remote finds the branch on remote
-                MagicMock(returncode=0, stdout="abc123\trefs/heads/feature-branch\n", stderr=""),
-                MagicMock(returncode=0, stdout="", stderr=""),  # fetch origin feature-branch
+                MagicMock(returncode=0, stdout="M file1.txt\nM file2.txt\n", stderr=""),  # status (2 changes)
+                MagicMock(returncode=0, stdout="", stderr=""),  # reset --hard HEAD
+                MagicMock(returncode=0, stdout="", stderr=""),  # clean -fd
+                MagicMock(returncode=0, stdout="", stderr=""),  # rebase origin/main
             ]
 
             result = _update_worktree_onto_main(worktree, repo_root)
 
-            assert result is True
-            # Verify rebase was NOT called
-            assert mock_run.call_count == 4
-            call_commands = [call[0][0] for call in mock_run.call_args_list]
-            # Should have: fetch main, rev-parse, ls-remote, fetch branch
-            # Should NOT have: rebase
-            for cmd in call_commands:
-                assert "rebase" not in cmd
-
-    def test_rebase_when_branch_not_on_remote(self, tmp_path):
-        """Test that rebase proceeds when branch doesn't exist on remote."""
-        from issue_orchestrator.adapters.worktree._worktree import _update_worktree_onto_main
-
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = [
-                MagicMock(returncode=0, stdout="", stderr=""),  # fetch origin main
-                MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
-                # ls-remote returns empty - branch not on remote
-                MagicMock(returncode=0, stdout="", stderr=""),
-                MagicMock(returncode=0, stdout="", stderr=""),  # rebase
-            ]
-
-            result = _update_worktree_onto_main(worktree, repo_root)
-
-            assert result is True
+            assert result == ResetInfo(success=True, uncommitted_discarded=2, commits_discarded=0)
             # Verify rebase WAS called
-            rebase_call = mock_run.call_args_list[3]
+            rebase_call = mock_run.call_args_list[5]
             assert "rebase" in rebase_call[0][0]
 
 

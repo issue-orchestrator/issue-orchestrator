@@ -104,48 +104,6 @@ def get_repo_from_git() -> str | None:
 
 
 # =============================================================================
-# Terminal Providers (tmux)
-# =============================================================================
-
-
-def get_tmux_manager() -> "TmuxManager":
-    """Get the tmux session manager.
-
-    Returns:
-        TmuxManager instance for managing tmux sessions
-    """
-    from ..adapters.terminal._tmux import get_manager
-
-    return get_manager()
-
-
-def list_tmux_sessions() -> list[str]:
-    """List all tmux sessions.
-
-    Returns:
-        List of tmux session names
-    """
-    from ..adapters.terminal._tmux import list_sessions
-
-    return list_sessions()
-
-
-def attach_tmux_session(session_name: str) -> None:
-    """Attach to a tmux session.
-
-    Args:
-        session_name: Name of the session to attach to
-    """
-    from ..adapters.terminal._tmux import attach_session
-
-    attach_session(session_name)
-
-
-# Need to import the type for the return annotation
-from ..adapters.terminal._tmux import TmuxManager
-
-
-# =============================================================================
 # Worktree Providers
 # =============================================================================
 

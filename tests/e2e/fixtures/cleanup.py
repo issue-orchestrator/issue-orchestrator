@@ -6,10 +6,6 @@ import threading
 import time
 from pathlib import Path
 
-from libtmux import Server
-from libtmux.exc import LibTmuxException
-from libtmux._internal.query_list import ObjectDoesNotExist
-
 from .github_client import _github_adapter
 from .orchestrator_process import _keep_artifacts, _keep_remote_artifacts
 
@@ -39,49 +35,6 @@ def cleanup_local_worktrees(worktree_base: Path | None = None) -> int:
         if count > 0:
             logger.info("[E2E CLEANUP] Removed %d local worktrees from %s", count, worktree_base)
     return 0
-
-
-def cleanup_tmux_sessions(tmux_session: str = "orchestrator") -> None:
-    """Clean up tmux sessions from previous e2e runs.
-
-    Args:
-        tmux_session: Name of the tmux session to kill. Defaults to "orchestrator".
-    """
-    try:
-        server = Server()
-        session = server.sessions.get(session_name=tmux_session)
-        if session:
-            session.kill()
-            logger.info("[E2E CLEANUP] Killed stale tmux session: %s", tmux_session)
-    except (LibTmuxException, ObjectDoesNotExist):
-        # Session doesn't exist or server not running - that's fine
-        pass
-
-
-def cleanup_all_e2e_tmux_sessions() -> int:
-    """Clean up ALL e2e-* tmux sessions from previous (possibly crashed) test runs.
-
-    Returns:
-        Number of sessions killed.
-    """
-    killed = 0
-    try:
-        server = Server()
-        for session in list(server.sessions):
-            name = session.session_name or ""
-            if name.startswith("e2e-"):
-                try:
-                    session.kill()
-                    killed += 1
-                    logger.debug("[E2E CLEANUP] Killed stale e2e session: %s", name)
-                except (LibTmuxException, ObjectDoesNotExist):
-                    pass
-        if killed > 0:
-            logger.info("[E2E CLEANUP] Killed %d stale e2e tmux sessions", killed)
-    except (LibTmuxException, ObjectDoesNotExist):
-        # Server not running - that's fine
-        pass
-    return killed
 
 
 def run_cleanup_step(name: str, fn, timeout_s: int) -> int:
@@ -348,8 +301,6 @@ def cleanup_issues(repo: str) -> int:
 __all__ = [
     "DEFAULT_E2E_FILTER_LABEL",
     "cleanup_local_worktrees",
-    "cleanup_tmux_sessions",
-    "cleanup_all_e2e_tmux_sessions",
     "run_cleanup_step",
     "verify_cleanup_items",
     "cleanup_remote_branches",
