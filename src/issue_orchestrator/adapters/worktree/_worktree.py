@@ -1,5 +1,7 @@
 """Git worktree management module."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -65,6 +67,20 @@ CLAUDE_SETTINGS_FOR_AGENTS = {
         ]
     }
 }
+
+ALLOW_NO_VERIFY_DRY_RUN_PATH = Path(".issue-orchestrator") / "allow-no-verify-dry-run"
+
+
+def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:
+    flag_path = worktree_path / ALLOW_NO_VERIFY_DRY_RUN_PATH
+    try:
+        if allow:
+            flag_path.parent.mkdir(parents=True, exist_ok=True)
+            flag_path.write_text("allow\n")
+        elif flag_path.exists():
+            flag_path.unlink()
+    except OSError:
+        logger.debug("Failed to update dry-run allow flag: %s", flag_path)
 
 
 class WorktreeError(Exception):
@@ -243,11 +259,19 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
         return ResetInfo(success=False)
 
 
-def _push_dry_run_preflight(worktree_path: Path, branch_name: str) -> tuple[bool, str]:
+def _push_dry_run_preflight(
+    worktree_path: Path,
+    branch_name: str,
+    *,
+    allow_no_verify: bool,
+) -> tuple[bool, str]:
     """Check if a dry-run push would succeed for a reused worktree."""
     import time
 
-    cmd = ["push", "--dry-run", "--force-with-lease", "--no-verify", "-u", "origin", branch_name]
+    cmd = ["push", "--dry-run", "--force-with-lease"]
+    if allow_no_verify:
+        cmd.append("--no-verify")
+    cmd += ["-u", "origin", branch_name]
     last_error = ""
     for attempt in range(1, 4):
         result = _git_run(worktree_path, cmd, check=False)
@@ -610,6 +634,61 @@ def extract_issue_number_from_branch(branch_name: str) -> int | None:
     return None
 
 
+def _branch_matches_issue(branch_name: str, issue_number: int) -> bool:
+    extracted = extract_issue_number_from_branch(branch_name)
+    return extracted == issue_number
+
+
+def _list_branch_names(repo_root: Path) -> list[str]:
+    result = _git_run(
+        repo_root,
+        ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes/origin"],
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    names: list[str] = []
+    for line in (result.stdout or "").splitlines():
+        name = line.strip()
+        if not name:
+            continue
+        if name.startswith("origin/"):
+            name = name[len("origin/"):]
+        if name == "HEAD":
+            continue
+        names.append(name)
+    return names
+
+
+def _next_branch_name(repo_root: Path, branch_name: str) -> str:
+    base = re.sub(r"-r\d+$", "", branch_name)
+    existing = _list_branch_names(repo_root)
+    pattern = re.compile(rf"^{re.escape(base)}-r(\d+)$")
+    max_suffix = 0
+    for name in existing:
+        match = pattern.match(name)
+        if match:
+            try:
+                max_suffix = max(max_suffix, int(match.group(1)))
+            except ValueError:
+                continue
+    return f"{base}-r{max_suffix + 1}"
+
+
+def _delete_remote_branch(repo_root: Path, branch_name: str) -> bool:
+    result = _git_run(
+        repo_root,
+        ["push", "origin", "--delete", branch_name],
+        check=False,
+    )
+    if result.returncode == 0:
+        return True
+    stderr = (result.stderr or "").lower()
+    if "remote ref does not exist" in stderr or "remote ref not found" in stderr:
+        return True
+    return False
+
+
 def find_worktree_for_branch(repo_root: Path, branch_name: str) -> Path | None:
     """
     Find an existing worktree that has the given branch checked out.
@@ -762,6 +841,8 @@ def create_worktree(
     if reuse_options is None:
         reuse_options = WorktreeReuseOptions()
     reuse_push_preflight = reuse_options.reuse_push_preflight
+    worktree_branch_on_recreate = reuse_options.worktree_branch_on_recreate
+    allow_no_verify_dry_run_preflight = reuse_options.allow_no_verify_dry_run_preflight
     repo_root = Path(repo_root).resolve()
     logger.info(
         issue_log(issue_number, "Create worktree requested: branch=%s base=%s"),
@@ -872,7 +953,11 @@ def create_worktree(
                     # Fall through to fresh creation
                 else:
                     if reuse_push_preflight:
-                        ok, reason = _push_dry_run_preflight(existing_worktree, branch_name)
+                        ok, reason = _push_dry_run_preflight(
+                            existing_worktree,
+                            branch_name,
+                            allow_no_verify=allow_no_verify_dry_run_preflight,
+                        )
                         if not ok:
                             logger.warning(
                                 issue_log(issue_number, "Push preflight failed, deleting worktree: %s"),
@@ -891,6 +976,7 @@ def create_worktree(
                         if enforce_hooks:
                             install_hooks(existing_worktree, pre_push_hook)
                         install_claude_settings(existing_worktree)
+                        _configure_no_verify_dry_run(existing_worktree, allow_no_verify_dry_run_preflight)
                         install_venv_symlink(existing_worktree, repo_root)
                         sync_cli_tools(existing_worktree, repo_root)
                         logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), existing_worktree)
@@ -960,7 +1046,11 @@ def create_worktree(
                     # Fall through to fresh creation
                 else:
                     if reuse_push_preflight:
-                        ok, reason = _push_dry_run_preflight(worktree_path, existing_branch)
+                        ok, reason = _push_dry_run_preflight(
+                            worktree_path,
+                            existing_branch,
+                            allow_no_verify=allow_no_verify_dry_run_preflight,
+                        )
                         if not ok:
                             logger.warning(
                                 issue_log(issue_number, "Push preflight failed, deleting worktree: %s"),
@@ -979,6 +1069,7 @@ def create_worktree(
                         if enforce_hooks:
                             install_hooks(worktree_path, pre_push_hook)
                         install_claude_settings(worktree_path)
+                        _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
                         install_venv_symlink(worktree_path, repo_root)
                         sync_cli_tools(worktree_path, repo_root)
                         logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), worktree_path)
@@ -993,6 +1084,21 @@ def create_worktree(
                             reset_info.uncommitted_discarded,
                             reset_info.commits_discarded,
                         )
+
+    if recreated_reason and branch_name and _branch_matches_issue(branch_name, issue_number):
+        if worktree_branch_on_recreate == "delete":
+            if _delete_remote_branch(repo_root, branch_name):
+                logger.info(issue_log(issue_number, "Deleted remote branch before recreate: %s"), branch_name)
+            else:
+                logger.warning(issue_log(issue_number, "Failed to delete remote branch before recreate: %s"), branch_name)
+        elif worktree_branch_on_recreate == "create_new_branch":
+            new_branch = _next_branch_name(repo_root, branch_name)
+            logger.info(
+                issue_log(issue_number, "Creating new branch for recreated worktree: %s -> %s"),
+                branch_name,
+                new_branch,
+            )
+            branch_name = new_branch
 
     try:
         # Check if branch already exists
@@ -1063,6 +1169,7 @@ def create_worktree(
 
         # Install Claude Code settings with exit hook to enforce agent-done
         install_claude_settings(worktree_path)
+        _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
 
         # Symlink .venv so agent has access to dev tools for validation
         install_venv_symlink(worktree_path, repo_root)

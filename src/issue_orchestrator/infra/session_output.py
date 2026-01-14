@@ -221,6 +221,40 @@ class SessionOutputManager:
         return log_path
 
     @classmethod
+    def ensure_claude_log_attached(cls, run_dir: Path) -> Path | None:
+        """Ensure a Claude log is linked in the manifest if possible."""
+        manifest = _read_json(run_dir / SESSION_MANIFEST_NAME) or {}
+        existing = manifest.get("claude_log_path")
+        if existing:
+            return Path(existing)
+        return cls._attach_claude_log_for_run(run_dir)
+
+    @classmethod
+    def find_latest_run_dir_for_issue(cls, worktree_path: Path, issue_number: int) -> Path | None:
+        """Find the most recent run dir for an issue inside a worktree."""
+        base_dir = cls.sessions_base_dir(worktree_path)
+        if not base_dir.exists():
+            return None
+        suffixes = (
+            f"__issue-{issue_number}",
+            f"__review-{issue_number}",
+            f"__rework-{issue_number}",
+        )
+        candidates: list[Path] = []
+        for run_dir in base_dir.iterdir():
+            if not run_dir.is_dir() or run_dir.is_symlink():
+                continue
+            name = run_dir.name
+            if name.endswith(suffixes):
+                candidates.append(run_dir)
+                continue
+            manifest = _read_json(run_dir / SESSION_MANIFEST_NAME)
+            if manifest and manifest.get("issue_number") == issue_number:
+                candidates.append(run_dir)
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+    @classmethod
     def _select_claude_log_for_run(cls, run_dir: Path) -> tuple[Path | None, str | None]:
         manifest = _read_json(run_dir / SESSION_MANIFEST_NAME) or {}
         claude_dir = manifest.get("claude_log_dir")
@@ -475,6 +509,34 @@ def _delete_tree(path: Path) -> None:
         else:
             child.unlink()
     path.rmdir()
+
+
+def find_run_dir_for_issue(
+    worktree_bases: list[Path],
+    repo_name: str,
+    issue_number: int,
+) -> tuple[Path | None, Path | None]:
+    """Locate the latest run dir and worktree path for an issue."""
+    seen: set[Path] = set()
+    for base in worktree_bases:
+        if not base or not base.exists():
+            continue
+        base = base.resolve()
+        if base in seen:
+            continue
+        seen.add(base)
+        candidate = base / f"{repo_name}-{issue_number}"
+        if candidate.exists():
+            run_dir = SessionOutputManager.find_latest_run_dir_for_issue(candidate, issue_number)
+            if run_dir:
+                return run_dir, candidate
+        for worktree_path in base.glob(f"{repo_name}-*"):
+            if not worktree_path.is_dir():
+                continue
+            run_dir = SessionOutputManager.find_latest_run_dir_for_issue(worktree_path, issue_number)
+            if run_dir:
+                return run_dir, worktree_path
+    return None, None
 
 
 def session_output_dir(worktree_path: Path, session_name: str) -> Path:

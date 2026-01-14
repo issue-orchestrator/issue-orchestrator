@@ -391,6 +391,7 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
             }
         })
 
+        project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
         try:
             result = subprocess.run(
                 [str(hook_script)],
@@ -398,6 +399,7 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
                 capture_output=True,
                 text=True,
                 timeout=5,
+                cwd=str(project_root) if project_root else None,
             )
             # Exit code 2 = blocked, 0 = allowed
             return result.returncode == 2

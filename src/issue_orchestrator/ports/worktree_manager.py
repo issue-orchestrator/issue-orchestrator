@@ -30,6 +30,8 @@ class WorktreeInfo:
 class WorktreeReuseOptions:
     """Options controlling worktree reuse behavior."""
     reuse_push_preflight: bool = True
+    worktree_branch_on_recreate: str = "delete"
+    allow_no_verify_dry_run_preflight: bool = True
 
 
 class WorktreeManager(Protocol):

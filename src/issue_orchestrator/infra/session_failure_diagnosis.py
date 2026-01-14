@@ -95,11 +95,23 @@ def create_session_failure_diagnosis(
             agent_config = session.agent_config
             break
 
-    # If not found, try to construct from config
+    # If not found, try to locate a recent session output
     if not worktree_path:
-        worktree_base = config.worktree_base or Path.cwd().parent
-        repo_name = config.repo.split("/")[-1] if config.repo else "unknown"
-        worktree_path = Path(worktree_base) / f"{repo_name}-{issue_number}"
+        from .session_output import find_run_dir_for_issue
+
+        bases: list[Path] = []
+        if config.worktree_base:
+            bases.append(Path(config.worktree_base))
+        for agent in config.agents.values():
+            agent_base = getattr(agent, "worktree_base", None)
+            if agent_base:
+                bases.append(Path(agent_base))
+        bases.append(config.repo_root.parent)
+
+        repo_name = config.repo.split("/")[-1] if config.repo else config.repo_root.name
+        _, resolved = find_run_dir_for_issue(bases, repo_name, issue_number)
+        if resolved:
+            worktree_path = Path(resolved)
 
     # Detect AI system and get provider
     ai_system = "claude-code"  # default

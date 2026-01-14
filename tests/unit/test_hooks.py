@@ -228,6 +228,24 @@ class TestClaudeCodeAdapter:
         blocked = adapter._test_hook_blocks(hook_script, "git push origin main")
         assert not blocked
 
+    def test_hook_allows_dry_run_no_verify_with_flag(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        flag_path = temp_project / ".issue-orchestrator" / "allow-no-verify-dry-run"
+        flag_path.parent.mkdir(parents=True, exist_ok=True)
+        flag_path.write_text("allow\n")
+
+        blocked = adapter._test_hook_blocks(hook_script, "git push --dry-run --no-verify")
+        assert not blocked
+
+    def test_hook_blocks_dry_run_no_verify_without_flag(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        blocked = adapter._test_hook_blocks(hook_script, "git push --dry-run --no-verify")
+        assert blocked
+
     def test_hook_blocks_commit_no_verify(self, adapter, temp_project):
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"

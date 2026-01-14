@@ -757,7 +757,33 @@ class TestSupervisorStatus:
         data = response.json()
         assert data["state"] == "running"
         assert data["pid"] == os.getpid()
-        assert data["port"] == 8080
+
+    def test_status_returns_orphaned_when_detected(
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Return running state when untracked orchestrator is detected."""
+        from issue_orchestrator.entrypoints import control_api
+
+        def fake_detect(repo_root: Path, config_name: str) -> dict:
+            return {
+                "port": 19080,
+                "health": "ok",
+                "tick_age_seconds": 1.2,
+                "status": {"shutdown_requested": False, "active_sessions": []},
+            }
+
+        monkeypatch.setattr(control_api, "_detect_orchestrator_by_port", fake_detect)
+
+        response = supervisor_client.get(
+            "/control/orchestrator/status",
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["state"] == "running"
+        assert data["orphaned"] is True
+        assert data["port"] == 19080
 
     def test_status_rejects_invalid_repo_root(
         self, supervisor_client: TestClient
@@ -820,6 +846,34 @@ class TestSupervisorStop:
         assert response.status_code == 400
         assert "Invalid JSON" in response.json()["error"]
 
+    def test_stop_rejects_invalid_port(self, supervisor_client: TestClient, tmp_path: Path) -> None:
+        """Return 400 for invalid port."""
+        response = supervisor_client.post(
+            "/control/orchestrator/stop",
+            json={"repo_root": str(tmp_path), "port": -1},
+        )
+
+        assert response.status_code == 400
+        assert "Invalid port" in response.json()["error"]
+
+    def test_stop_returns_port_mismatch(
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Return 409 when port does not match orchestrator."""
+        from issue_orchestrator.infra import supervisor
+        from issue_orchestrator.entrypoints import control_api
+
+        monkeypatch.setattr(supervisor, "status", lambda *_: supervisor.SupervisorStatus(state="stopped"))
+        monkeypatch.setattr(control_api, "_confirm_orchestrator_at_port", lambda *_: False)
+
+        response = supervisor_client.post(
+            "/control/orchestrator/stop",
+            json={"repo_root": str(tmp_path), "port": 19080},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["error"] == "port_mismatch"
+
 
 class TestSupervisorStart:
     """Tests for POST /control/orchestrator/start endpoint."""
@@ -859,6 +913,66 @@ class TestSupervisorStart:
 
         assert response.status_code == 400
         assert "Invalid port" in response.json()["error"]
+
+    def test_start_reports_orphaned_when_detected(
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Return 409 when an untracked orchestrator is detected."""
+        from issue_orchestrator.entrypoints import control_api
+
+        monkeypatch.setattr(
+            control_api,
+            "_detect_orchestrator_by_port",
+            lambda *_: {"port": 19080, "health": "ok"},
+        )
+
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={"repo_root": str(tmp_path), "config_name": "default.yaml"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["error"] == "orphaned_running"
+
+    def test_start_force_restart_stops_orphaned(
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Force restart should stop the orphaned process before starting."""
+        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.infra import supervisor
+        from issue_orchestrator.infra.repo_lock import LockInfo
+
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(tmp_path / "config"))
+        monkeypatch.setattr(
+            control_api,
+            "_detect_orchestrator_by_port",
+            lambda *_: {"port": 19080, "health": "ok"},
+        )
+        monkeypatch.setattr(supervisor, "stop_by_port", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            supervisor,
+            "start",
+            lambda *_args, **_kwargs: LockInfo(
+                repo_root=str(tmp_path),
+                pid=123,
+                started_at="",
+                http_port=19080,
+                state_dir=str(tmp_path / ".issue-orchestrator" / "state"),
+                recovered=False,
+            ),
+        )
+
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={
+                "repo_root": str(tmp_path),
+                "config_name": "default.yaml",
+                "force_restart": True,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "started"
 
 
 class TestSupervisorLastFailure:

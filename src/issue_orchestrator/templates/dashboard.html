@@ -1223,7 +1223,6 @@
                  data-has-dependencies="{{ 'true' if issue.has_dependencies else 'false' }}"
                  data-dependencies="{{ issue.dependencies if issue.dependencies else '[]' }}"
                  data-dependency-summary="{{ issue.dependency_summary if issue.dependency_summary else '' }}"
-                 title="{{ issue.action_hint }}"
                  onclick="handleClick(this)"
                  onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();handleClick(this);}"
                  oncontextmenu="showContextMenu(event, this)">
@@ -1491,7 +1490,7 @@
             rows.forEach((row) => {
                 const action = row.dataset.action;
                 const issueAction = row.querySelector('.issue-action');
-                let hint = row.title;
+                let hint = '';
                 if (action === 'focus') {
                     hint = terminalBackend === 'subprocess'
                         ? 'View agent log'
@@ -1499,7 +1498,6 @@
                 } else if (row.dataset.url) {
                     hint = 'Open issue on GitHub';
                 }
-                row.title = hint;
                 if (issueAction) {
                     issueAction.title = hint;
                 }

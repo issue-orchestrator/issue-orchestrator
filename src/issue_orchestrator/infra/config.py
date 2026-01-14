@@ -26,6 +26,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     'isolation', 'setup_worktree', 'milestone_sort',
     'milestone_sort_config', 'foundation_milestone',
     'state_file', 'pre_push_hook', 'enforce_hooks', 'queue_refresh_seconds',
+    'worktree_branch_on_recreate', 'allow_no_verify_dry_run_preflight',
     'terminal_adapter', 'session_no_output_seconds', 'session_no_output_tail_lines',
     'session_no_output_max_bytes', 'session_no_output_repeat_seconds',
     'session_output_retention_runs',
@@ -317,6 +318,7 @@ class Config:
     repo_root: Path = field(default_factory=Path.cwd)  # Root of the git repository
     repo_root_from_yaml: bool = False  # Internal: YAML explicitly set repo_root
     worktree_base: Path = Path(".issue-orchestrator/worktrees")  # Base directory for worktrees
+    worktree_branch_on_recreate: str = "delete"  # delete or create_new_branch
 
     # Config validation
     config_strict: bool = False  # If True, unknown fields cause validation errors; if False, warnings only
@@ -410,6 +412,8 @@ class Config:
     setup_worktree: list[str] = field(default_factory=list)
     # Preflight a dry-run push when reusing worktrees to catch stale refs early.
     reuse_push_preflight: bool = True
+    # Allow git push --dry-run --no-verify for reuse preflight (default on).
+    allow_no_verify_dry_run_preflight: bool = True
 
     # Code review workflow (optional) - per-PR review after agent creates PR
     review_enabled: bool = False  # Explicit toggle for code review
@@ -577,6 +581,8 @@ class Config:
                 for label, cfg in self.agents.items()
             },
             "worktree_base": str(self.worktree_base),
+            "worktree_branch_on_recreate": self.worktree_branch_on_recreate,
+            "allow_no_verify_dry_run_preflight": self.allow_no_verify_dry_run_preflight,
             "labels": {
                 "in_progress": self.get_label_in_progress(),
                 "blocked": self.get_label_blocked(),
@@ -789,6 +795,8 @@ class Config:
         if data.get("pre_push_hook"):
             config.pre_push_hook = resolve_relative_path(data["pre_push_hook"], repo_root)
         config.reuse_push_preflight = data.get("reuse_push_preflight", True)
+        config.allow_no_verify_dry_run_preflight = data.get("allow_no_verify_dry_run_preflight", True)
+        config.worktree_branch_on_recreate = data.get("worktree_branch_on_recreate", "delete")
 
         # Worktree setup commands
         config.setup_worktree = data.get("setup_worktree", [])
@@ -942,6 +950,12 @@ class Config:
         elif not self.worktree_base.is_dir():
             errors.append(
                 f"worktree_base is not a directory: {self.worktree_base}"
+            )
+        valid_recreate_modes = {"delete", "create_new_branch"}
+        if self.worktree_branch_on_recreate not in valid_recreate_modes:
+            errors.append(
+                "worktree_branch_on_recreate must be one of "
+                f"{sorted(valid_recreate_modes)}, got: '{self.worktree_branch_on_recreate}'"
             )
 
         for label, agent in self.agents.items():

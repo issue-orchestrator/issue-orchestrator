@@ -23,10 +23,21 @@ input=$(cat)
 # Cursor may send: {"command": "git push ..."} or {"tool_input": {"command": "..."}}
 command=$(echo "$input" | jq -r '.tool_input.command // .command // ""' 2>/dev/null || echo "")
 
-# Allow a dry-run no-verify push for reuse preflight.
+# Allow a dry-run no-verify push for reuse preflight when enabled.
+allow_flag=""
+search_dir="$PWD"
+while [[ -n "$search_dir" && "$search_dir" != "/" ]]; do
+    candidate="$search_dir/.issue-orchestrator/allow-no-verify-dry-run"
+    if [[ -f "$candidate" ]]; then
+        allow_flag="$candidate"
+        break
+    fi
+    search_dir="$(dirname "$search_dir")"
+done
 if echo "$command" | grep -qE "git\\s+push" \
-    && echo "$command" | grep -qE "--dry-run" \
-    && echo "$command" | grep -qE "--no-verify"; then
+    && echo "$command" | grep -qE -- "--dry-run" \
+    && echo "$command" | grep -qE -- "--no-verify" \
+    && [[ -n "$allow_flag" ]] && [[ -f "$allow_flag" ]]; then
     echo '{"permission": "allow"}'
     exit 0
 fi
