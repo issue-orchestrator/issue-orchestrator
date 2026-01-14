@@ -16,6 +16,32 @@ def is_claude_available() -> bool:
     return shutil.which("claude") is not None
 
 
+def is_claude_authenticated() -> bool:
+    """Check if Claude CLI is authenticated and ready to use.
+
+    Returns True only if Claude CLI is available AND authenticated.
+    This catches the case where Claude is installed but requires login.
+    """
+    if not is_claude_available():
+        return False
+
+    try:
+        # Try a minimal Claude command that requires authentication
+        result = subprocess.run(
+            ["claude", "--print", "hi"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # Check for auth failure indicators
+        combined = result.stdout + result.stderr
+        if "Invalid API key" in combined or "Please run /login" in combined:
+            return False
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, Exception):
+        return False
+
+
 def is_github_ci() -> bool:
     """Check if running on GitHub Actions."""
     return os.environ.get("GITHUB_ACTIONS") == "true"
@@ -23,22 +49,28 @@ def is_github_ci() -> bool:
 
 @pytest.fixture
 def require_claude():
-    """Fixture that fails with helpful message if Claude not available locally.
+    """Fixture that fails with helpful message if Claude not available or not authenticated locally.
 
     Use this in tests that require Claude. On GitHub CI, tests are skipped
     via the class-level skipif. Locally, this provides a clear error message.
     """
-    if not is_claude_available() and not is_github_ci():
-        pytest.fail(
-            "Claude CLI not found! This test MUST run locally.\n"
-            "Install Claude: https://claude.ai/download\n"
-            "Or set GITHUB_ACTIONS=true to skip."
-        )
+    if not is_github_ci():
+        if not is_claude_available():
+            pytest.fail(
+                "Claude CLI not found! This test MUST run locally.\n"
+                "Install Claude: https://claude.ai/download\n"
+                "Or set GITHUB_ACTIONS=true to skip."
+            )
+        if not is_claude_authenticated():
+            pytest.fail(
+                "Claude CLI not authenticated! Please run: claude /login\n"
+                "Or set GITHUB_ACTIONS=true to skip."
+            )
 
 
 @pytest.mark.skipif(
-    not is_claude_available() and is_github_ci(),
-    reason="Claude CLI not available (OK on GitHub CI)"
+    not is_claude_authenticated() and is_github_ci(),
+    reason="Claude CLI not available or not authenticated (OK on GitHub CI)"
 )
 class TestClaudeExecution:
     """Integration tests that actually run Claude Code."""
@@ -173,8 +205,8 @@ class TestClaudeExecution:
 
 
 @pytest.mark.skipif(
-    not is_claude_available() and is_github_ci(),
-    reason="Claude CLI not available (OK on GitHub CI)"
+    not is_claude_authenticated() and is_github_ci(),
+    reason="Claude CLI not available or not authenticated (OK on GitHub CI)"
 )
 class TestClaudeWithEnvironmentIsolation:
     """Integration tests for Claude with environment isolation (no HOME isolation).
@@ -326,8 +358,8 @@ class TestShellEscaping:
 
 
 @pytest.mark.skipif(
-    not is_claude_available() and is_github_ci(),
-    reason="Claude CLI not available (OK on GitHub CI)"
+    not is_claude_authenticated() and is_github_ci(),
+    reason="Claude CLI not available or not authenticated (OK on GitHub CI)"
 )
 class TestClaudeViaAdapterPath:
     """E2E test that runs Claude through the same path as tmux adapters.
@@ -501,8 +533,8 @@ class TestClaudeViaAdapterPath:
 
 
 @pytest.mark.skipif(
-    not is_claude_available() and is_github_ci(),
-    reason="Claude CLI not available (OK on GitHub CI)"
+    not is_claude_authenticated() and is_github_ci(),
+    reason="Claude CLI not available or not authenticated (OK on GitHub CI)"
 )
 class TestAgentDoneInvocation:
     """Integration tests for agent-done invocation from Claude.
