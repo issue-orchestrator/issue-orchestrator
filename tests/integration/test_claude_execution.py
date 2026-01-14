@@ -16,30 +16,17 @@ def is_claude_available() -> bool:
     return shutil.which("claude") is not None
 
 
-def is_github_ci() -> bool:
-    """Check if running on GitHub Actions."""
-    return os.environ.get("GITHUB_ACTIONS") == "true"
-
-
 @pytest.fixture
 def require_claude():
-    """Fixture that fails with helpful message if Claude not available locally.
-
-    Use this in tests that require Claude. On GitHub CI, tests are skipped
-    via the class-level skipif. Locally, this provides a clear error message.
-    """
-    if not is_claude_available() and not is_github_ci():
+    """Fixture that fails fast if Claude CLI is not installed."""
+    if not is_claude_available():
         pytest.fail(
-            "Claude CLI not found! This test MUST run locally.\n"
-            "Install Claude: https://claude.ai/download\n"
-            "Or set GITHUB_ACTIONS=true to skip."
+            "Claude CLI not found!\n"
+            "Install Claude: https://claude.ai/download"
         )
 
 
-@pytest.mark.skipif(
-    not is_claude_available() and is_github_ci(),
-    reason="Claude CLI not available (OK on GitHub CI)"
-)
+@pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
 class TestClaudeExecution:
     """Integration tests that actually run Claude Code."""
 
@@ -172,10 +159,7 @@ class TestClaudeExecution:
                 f"Claude couldn't read the file: {result.stdout}"
 
 
-@pytest.mark.skipif(
-    not is_claude_available() and is_github_ci(),
-    reason="Claude CLI not available (OK on GitHub CI)"
-)
+@pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
 class TestClaudeWithEnvironmentIsolation:
     """Integration tests for Claude with environment isolation (no HOME isolation).
 
@@ -325,10 +309,7 @@ class TestShellEscaping:
         assert "single" in result.stdout or "double" in result.stdout
 
 
-@pytest.mark.skipif(
-    not is_claude_available() and is_github_ci(),
-    reason="Claude CLI not available (OK on GitHub CI)"
-)
+@pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
 class TestClaudeViaAdapterPath:
     """E2E test that runs Claude through the same path as tmux adapters.
 
@@ -500,10 +481,7 @@ class TestClaudeViaAdapterPath:
         assert auth_failed, f"Expected auth failure with HOME isolation, got: {combined}"
 
 
-@pytest.mark.skipif(
-    not is_claude_available() and is_github_ci(),
-    reason="Claude CLI not available (OK on GitHub CI)"
-)
+@pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
 class TestAgentDoneInvocation:
     """Integration tests for agent-done invocation from Claude.
 
