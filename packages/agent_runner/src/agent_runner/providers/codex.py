@@ -39,6 +39,10 @@ class CodexProvider(CLIProvider):
     def executable(self) -> str:
         return "codex"
 
+    @property
+    def description(self) -> str:
+        return "OpenAI Codex CLI"
+
     def build_command(
         self,
         prompt: str,

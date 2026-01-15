@@ -261,7 +261,8 @@ class TestCheckPrerequisites:
 
         assert checks["git"] is True
         assert checks["github_auth"] is True
-        assert checks["claude"] is True
+        # Check that at least one provider is available (provider registry checks)
+        assert checks["any_ai_provider"] is True
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
@@ -429,7 +430,7 @@ class TestWizardNewProject:
             "agent:backend",        # first agent label
             ".prompts/backend.md",  # prompt path (accept default)
             "45",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model choice
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -471,7 +472,7 @@ class TestWizardNewProject:
             "agent:reviewer",
             ".prompts/reviewer.md",
             "30",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model
             "default",              # permission mode
             True,                   # YES, this IS a review agent
@@ -507,7 +508,7 @@ class TestWizardNewProject:
             True,                   # yes to add prefix
             ".prompts/backend.md",
             "60",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "opus",                 # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -539,7 +540,7 @@ class TestWizardNewProject:
             "agent:frontend",
             ".prompts/frontend.md",
             "30",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -547,7 +548,7 @@ class TestWizardNewProject:
             "agent:backend",
             ".prompts/backend.md",
             "60",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "opus",                 # model
             "bypassPermissions",    # permission mode (different for variety)
             True,                   # confirm bypassPermissions
@@ -620,7 +621,7 @@ class TestWizardNewProject:
             "agent:backend",
             ".prompts/backend.md",
             "45",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -669,7 +670,7 @@ class TestWizardNewProject:
             "agent:backend",        # now add one
             ".prompts/backend.md",
             "45",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -714,7 +715,7 @@ class TestWizardExistingProject:
             True,                   # add agent:web to config
             ".prompts/web.md",      # prompt path
             "45",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -766,7 +767,7 @@ class TestWizardExistingProject:
             True,                   # add agent:backend
             ".prompts/backend.md",  # prompt path
             "60",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "opus",                 # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -864,7 +865,7 @@ class TestWizardExistingProject:
             True,                   # add agent:web
             ".prompts/web.md",
             "45",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -932,7 +933,7 @@ class TestRunWizard:
     @patch("os.chdir")
     def test_new_project_flow(self, mock_chdir, mock_labels, mock_scan, mock_prereqs, tmp_path):
         """Test the full wizard flow for a new project."""
-        mock_prereqs.return_value = {"git": True, "github_auth": True, "claude": True}
+        mock_prereqs.return_value = {"git": True, "github_auth": True, "any_ai_provider": True}
         mock_scan.return_value = DetectedState(repo="owner/repo")
         mock_labels.return_value = []  # No existing labels
 
@@ -948,7 +949,7 @@ class TestRunWizard:
             "agent:backend",
             ".prompts/backend.md",
             "45",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -980,7 +981,7 @@ class TestRunWizard:
     @patch("os.chdir")
     def test_aborts_when_apply_declined(self, mock_chdir, mock_labels, mock_prereqs, tmp_path):
         """Test that wizard aborts when user declines to apply changes."""
-        mock_prereqs.return_value = {"git": True, "github_auth": True, "claude": True}
+        mock_prereqs.return_value = {"git": True, "github_auth": True, "any_ai_provider": True}
         mock_labels.return_value = []  # No existing labels
 
         target = tmp_path / "myproject"
@@ -993,7 +994,7 @@ class TestRunWizard:
             "agent:backend",
             ".prompts/backend.md",
             "45",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -1024,7 +1025,7 @@ class TestRunWizard:
         mock_prereqs.return_value = {
             "git": True,
             "github_auth": False,  # Not authenticated
-            "claude": False,   # Not installed
+            "any_ai_provider": False,  # No providers installed
         }
 
         target = tmp_path / "myproject"
@@ -1050,7 +1051,7 @@ class TestRunWizard:
         mock_prereqs.return_value = {
             "git": True,
             "github_auth": False,
-            "claude": False,
+            "any_ai_provider": False,
         }
         mock_labels.return_value = []
 
@@ -1065,7 +1066,7 @@ class TestRunWizard:
             "agent:backend",
             ".prompts/backend.md",
             "45",                   # timeout
-            "claude",               # agent type
+            "claude-code",          # agent provider
             "sonnet",               # model
             "default",              # permission mode
             False,                  # is this a review agent?
@@ -1198,7 +1199,7 @@ class TestDryRunMode:
     @patch("os.chdir")
     def test_run_wizard_dry_run_no_files_written(self, mock_chdir, mock_labels, mock_prereqs, tmp_path):
         """Test that dry-run mode doesn't write any files."""
-        mock_prereqs.return_value = {"git": True, "github_auth": True, "claude": True}
+        mock_prereqs.return_value = {"git": True, "github_auth": True, "any_ai_provider": True}
         mock_labels.return_value = []
 
         target = tmp_path / "myproject"
@@ -1240,7 +1241,7 @@ class TestDryRunMode:
     @patch("os.chdir")
     def test_run_wizard_dry_run_shows_summary(self, mock_chdir, mock_labels, mock_prereqs, tmp_path):
         """Test that dry-run mode shows summary output."""
-        mock_prereqs.return_value = {"git": True, "github_auth": True, "claude": True}
+        mock_prereqs.return_value = {"git": True, "github_auth": True, "any_ai_provider": True}
         mock_labels.return_value = []
 
         target = tmp_path / "myproject"

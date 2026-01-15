@@ -4,6 +4,8 @@ This module provides a base class that implements common functionality
 for AI providers that are invoked via command-line interface.
 """
 
+import shutil
+import subprocess
 from abc import ABC, abstractmethod
 
 
@@ -14,6 +16,10 @@ class CLIProvider(ABC):
     - name: Provider identifier
     - executable: The CLI executable name
     - build_command: Build the full command argv
+
+    Subclasses may override:
+    - is_authenticated: Check if CLI is authenticated (default: True if available)
+    - description: Human-readable description
 
     Example subclass:
         class MyProvider(CLIProvider):
@@ -41,24 +47,69 @@ class CLIProvider(ABC):
         """The CLI executable name (e.g., 'claude', 'codex')."""
         ...
 
+    @property
+    def description(self) -> str:
+        """Human-readable description of this provider."""
+        return f"{self.name} CLI"
+
     @abstractmethod
     def build_command(
         self,
         prompt: str,
-        model: str,
+        model: str | None = None,
         **kwargs: str,
     ) -> list[str]:
         """Build the command-line invocation for this provider.
 
         Args:
             prompt: The task/prompt to send to the agent
-            model: Model identifier (provider-specific)
-            **kwargs: Provider-specific options
+            model: Model identifier (provider-specific), None for default
+            **kwargs: Provider-specific options (provider_args from YAML)
 
         Returns:
             Command as argv list
         """
         ...
+
+    def is_available(self) -> bool:
+        """Check if the CLI executable is installed and in PATH.
+
+        Returns:
+            True if executable is found in PATH
+        """
+        return shutil.which(self.executable) is not None
+
+    def is_authenticated(self) -> bool:
+        """Check if the CLI is authenticated and ready to use.
+
+        Default implementation just checks availability.
+        Subclasses can override to perform actual auth checks.
+
+        Returns:
+            True if CLI is ready to use
+        """
+        return self.is_available()
+
+    def check_version(self) -> str | None:
+        """Get the CLI version string, if available.
+
+        Returns:
+            Version string, or None if not available
+        """
+        if not self.is_available():
+            return None
+        try:
+            result = subprocess.run(
+                [self.executable, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip() or result.stderr.strip()
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return None
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name={self.name!r})"

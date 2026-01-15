@@ -19,6 +19,7 @@ DEFAULT_CONFIG_NAME = "default.yaml"
 ALLOWED_TOP_LEVEL_FIELDS = {
     "repo",
     "agents",
+    "default_agent",
     "labels",
     "review",
     "cleanup",
@@ -38,9 +39,9 @@ ALLOWED_TOP_LEVEL_FIELDS = {
 
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
 ALLOWED_AGENT_FIELDS = {
-    'prompt', 'model', 'timeout_minutes',
+    'prompt', 'provider', 'model', 'timeout_minutes',
     'permission_mode', 'skip_review', 'reviewer', 'command',
-    'meta_agent', 'initial_prompt', 'ai_system',
+    'meta_agent', 'initial_prompt', 'ai_system', 'provider_args',
 }
 
 
@@ -157,6 +158,26 @@ class RetryConfig:
     """
     max_validation_retries: int = 3  # Max times to retry after validation failure
     validation_error_file: str = "validation-errors.txt"  # Filename in session output dir
+
+
+@dataclass
+class DefaultAgentConfig:
+    """Default agent configuration inherited by all agents.
+
+    When agents don't specify their own provider/model/args, they inherit
+    from default_agent. If an agent has no provider and no default is set,
+    config validation fails fast.
+
+    Example YAML:
+        default_agent:
+          provider: claude-code
+          model: sonnet
+          provider_args:
+            permission_mode: bypassPermissions
+    """
+    provider: Optional[str] = None  # "claude-code", "codex", etc.
+    model: Optional[str] = None  # Model to use (sonnet, o3, etc.)
+    provider_args: dict = field(default_factory=dict)  # Provider-specific args
 
 
 @dataclass
@@ -307,6 +328,9 @@ class Config:
 
     # Agent configurations keyed by label (e.g., "agent:web")
     agents: dict[str, AgentConfig] = field(default_factory=dict)
+
+    # Default agent configuration inherited by agents without explicit provider
+    default_agent: Optional[DefaultAgentConfig] = None
 
     # Concurrency settings
     max_concurrent_sessions: int = 3
@@ -760,6 +784,15 @@ class Config:
         config._raw_data = data
         config._raw_agents = agents_section
 
+        # Parse default_agent section (inherited by agents without explicit provider)
+        default_agent_section = data.get("default_agent", {})
+        if default_agent_section:
+            config.default_agent = DefaultAgentConfig(
+                provider=default_agent_section.get("provider"),
+                model=default_agent_section.get("model"),
+                provider_args=default_agent_section.get("provider_args", {}),
+            )
+
         # Parse agents
         # All relative paths in agent configs are resolved relative to repo_root
 
@@ -769,11 +802,32 @@ class Config:
             prompt_relative = agent_data["prompt"]
             prompt_path = resolve_relative_path(prompt_relative, repo_root)
 
+            # Inherit provider from default_agent if not specified
+            provider = agent_data.get("provider")
+            if provider is None and config.default_agent:
+                provider = config.default_agent.provider
+
+            # Inherit model from default_agent if not specified
+            model = agent_data.get("model")
+            if model is None and config.default_agent and config.default_agent.model:
+                model = config.default_agent.model
+            if model is None:
+                model = "sonnet"  # Fallback default
+
+            # Merge provider_args: default_agent provides base, agent-specific overrides
+            provider_args = {}
+            if config.default_agent and config.default_agent.provider_args:
+                provider_args.update(config.default_agent.provider_args)
+            if agent_data.get("provider_args"):
+                provider_args.update(agent_data["provider_args"])
+
             agent_kwargs = {
                 "prompt_path": prompt_path,
                 "prompt_relative": prompt_relative,
-                "model": agent_data.get("model", "sonnet"),
+                "provider": provider,
+                "model": model,
                 "timeout_minutes": agent_data.get("timeout_minutes", 45),
+                "provider_args": provider_args,
                 "permission_mode": agent_data.get("permission_mode", "default"),
                 "skip_review": agent_data.get("skip_review", False),
                 "reviewer": agent_data.get("reviewer"),  # Per-agent reviewer override
@@ -1045,6 +1099,17 @@ class Config:
                 f"{sorted(valid_recreate_modes)}, got: '{self.worktree_branch_on_recreate}'"
             )
 
+        # Import provider registry for validation
+        from agent_runner import is_valid_provider, list_providers
+
+        # Validate default_agent.provider if set
+        if self.default_agent and self.default_agent.provider is not None:
+            if not is_valid_provider(self.default_agent.provider):
+                errors.append(
+                    f"default_agent.provider '{self.default_agent.provider}' is not valid. "
+                    f"Available: {list_providers()}"
+                )
+
         for label, agent in self.agents.items():
             # Validate prompt file exists
             if not agent.prompt_path.exists():
@@ -1052,11 +1117,29 @@ class Config:
                     f"Agent '{label}': prompt file not found: {agent.prompt_path}"
                 )
 
-            # Validate model is known
-            known_models = {"haiku", "sonnet", "opus"}
-            if agent.model not in known_models:
+            # Validate provider is set (from agent or default_agent) or command is overridden
+            # The default command template uses claude CLI, so if no provider and default command,
+            # we treat it as using the legacy command approach
+            has_custom_command = "command" in self._raw_agents.get(label, {})
+            if agent.provider is None and not has_custom_command:
                 errors.append(
-                    f"Agent '{label}': unknown model '{agent.model}'. Known: {known_models}"
+                    f"Agent '{label}': no provider specified and no default_agent.provider set. "
+                    f"Either set 'provider' on the agent, set 'default_agent.provider', "
+                    f"or use 'command' to specify a custom command. "
+                    f"Available providers: {list_providers()}"
+                )
+            elif agent.provider is not None and not is_valid_provider(agent.provider):
+                errors.append(
+                    f"Agent '{label}': unknown provider '{agent.provider}'. "
+                    f"Available: {list_providers()}"
+                )
+
+            # Validate model is known (only for claude-code provider or legacy command)
+            # Other providers may have different model naming
+            known_claude_models = {"haiku", "sonnet", "opus"}
+            if agent.provider in (None, "claude-code") and agent.model not in known_claude_models:
+                errors.append(
+                    f"Agent '{label}': unknown model '{agent.model}'. Known: {known_claude_models}"
                 )
 
         # Validate review workflow
