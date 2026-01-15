@@ -16,6 +16,32 @@ def is_claude_available() -> bool:
     return shutil.which("claude") is not None
 
 
+def _run_claude(
+    argv: list[str],
+    *,
+    timeout: int,
+    cwd: str | None = None,
+    env: dict | None = None,
+) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = (exc.stdout or "")[:500]
+        stderr = (exc.stderr or "")[:500]
+        raise AssertionError(
+            "Claude command timed out.\n"
+            f"stdout (truncated): {stdout}\n"
+            f"stderr (truncated): {stderr}"
+        ) from exc
+
+
 @pytest.fixture
 def require_claude():
     """Fixture that fails fast if Claude CLI is not installed."""
@@ -32,12 +58,7 @@ class TestClaudeExecution:
 
     def test_claude_version(self):
         """Verify claude CLI is accessible and responds to --version."""
-        result = subprocess.run(
-            ["claude", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        result = _run_claude(["claude", "--version"], timeout=30)
         assert result.returncode == 0
         assert "claude" in result.stdout.lower() or "Claude" in result.stdout
 
@@ -50,14 +71,12 @@ class TestClaudeExecution:
         3. Claude can perform a simple task and return results
         """
         # Use --print for non-interactive single-turn execution
-        result = subprocess.run(
+        result = _run_claude(
             [
                 "claude",
                 "--print",  # Output response and exit (non-interactive)
                 "What is 2 + 2? Reply with just the number.",
             ],
-            capture_output=True,
-            text=True,
             timeout=60,  # Give Claude time to respond
         )
 
@@ -81,12 +100,7 @@ class TestClaudeExecution:
         # Wrap in zsh -l -c (like TmuxManager.create_session does)
         wrapped_command = f"zsh -l -c '{escaped_command}'"
 
-        result = subprocess.run(
-            ["bash", "-c", wrapped_command],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        result = _run_claude(["bash", "-c", wrapped_command], timeout=60)
 
         assert result.returncode == 0, f"Command failed: {result.stderr}"
         assert "hello" in result.stdout.lower(), f"Expected 'hello' in output: {result.stdout}"
@@ -105,15 +119,13 @@ class TestClaudeExecution:
             test_file = f.name
 
         try:
-            result = subprocess.run(
+            result = _run_claude(
                 [
                     "claude",
                     "--print",
                     "--dangerously-skip-permissions",  # Bypass permission prompts
                     f"Read the file at {test_file} and tell me what the title is. Reply with just the title text.",
                 ],
-                capture_output=True,
-                text=True,
                 timeout=120,
             )
 
@@ -141,15 +153,13 @@ class TestClaudeExecution:
             instruction_file = ai_dir / "test-instructions.md"
             instruction_file.write_text("# Agent Instructions\n\nDo the thing.\n")
 
-            result = subprocess.run(
+            result = _run_claude(
                 [
                     "claude",
                     "--print",
                     "--dangerously-skip-permissions",
                     f"Read {instruction_file} and confirm you can see 'Agent Instructions' in it. Reply YES or NO.",
                 ],
-                capture_output=True,
-                text=True,
                 timeout=120,
                 cwd=tmpdir,  # Run from the temp directory
             )
@@ -184,14 +194,12 @@ class TestClaudeWithEnvironmentIsolation:
 
         # HOME is NOT changed - Claude can access Keychain
 
-        result = subprocess.run(
+        result = _run_claude(
             [
                 "claude",
                 "--print",
                 "Reply with just the word: working",
             ],
-            capture_output=True,
-            text=True,
             timeout=60,
             env=clean_env,
         )
