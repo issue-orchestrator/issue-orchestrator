@@ -550,6 +550,35 @@ def run_doctor(
                 detail="Could not check git status",
             ))
 
+    # === Hook Dependencies ===
+    python3 = shutil.which("python3")
+    if python3:
+        result.checks.append(Check(
+            name="Python3",
+            status="ok",
+            detail=python3,
+        ))
+    else:
+        result.checks.append(Check(
+            name="Python3",
+            status="error",
+            detail="python3 not found in PATH (required for hooks)",
+        ))
+
+    hook_helper = Path.cwd() / "tools" / "hooks" / "allow_git_push.py"
+    if hook_helper.exists():
+        result.checks.append(Check(
+            name="Hook Helper",
+            status="ok",
+            detail=f"Found {hook_helper.relative_to(Path.cwd())}",
+        ))
+    else:
+        result.checks.append(Check(
+            name="Hook Helper",
+            status="error",
+            detail="Missing tools/hooks/allow_git_push.py (required for hook preflight)",
+        ))
+
     # Agents
     agent_count = len(config.agents)
     if agent_count > 0:
