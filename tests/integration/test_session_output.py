@@ -23,7 +23,14 @@ class DummyLabelAdapter:
 
 
 class DummyPRAdapter:
-    def create_pr(self, title: str, body: str, head: str, base: str = "main") -> PRInfo:
+    def create_pr(
+        self,
+        title: str,
+        body: str,
+        head: str,
+        base: str = "main",
+        draft: bool | None = None,
+    ) -> PRInfo:
         return PRInfo(
             number=1,
             title=title,
@@ -37,6 +44,12 @@ class DummyPRAdapter:
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
         return "https://example.com/comment/1"
 
+    def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
+        return []
+
+    def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]:
+        return []
+
 
 class DummyGitAdapter:
     def push(
@@ -47,6 +60,15 @@ class DummyGitAdapter:
         skip_hooks: bool = False,
     ) -> PushResult:
         return PushResult(success=True, branch="feature", remote=remote, message="ok")
+
+    def rebase_on_branch(self, worktree: Path, target: str = "origin/main"):
+        return type("RebaseResult", (), {"success": True, "message": "Rebased"})()
+
+    def create_branch_from_current(self, worktree: Path, branch: str) -> None:
+        return None
+
+    def list_branch_names(self, worktree: Path) -> list[str]:
+        return ["feature"]
 
     def get_current_branch(self, worktree: Path) -> str | None:
         return "feature"

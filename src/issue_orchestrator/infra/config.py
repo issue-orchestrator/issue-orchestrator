@@ -439,6 +439,9 @@ class Config:
     reuse_push_preflight: bool = True
     # Allow git push --dry-run --no-verify for reuse preflight (default on).
     allow_no_verify_dry_run_preflight: bool = True
+    # Remediation strategies for publish-time failures.
+    worktree_remediation_pr_collision: str = "new_branch"  # fail | reuse_open | new_branch
+    worktree_remediation_push_rebase_retry: bool = True
 
     # Code review workflow (optional) - per-PR review after agent creates PR
     review_enabled: bool = False  # Explicit toggle for code review
@@ -597,6 +600,10 @@ class Config:
                 "reuse_push_preflight": self.reuse_push_preflight,
                 "allow_no_verify_dry_run_preflight": self.allow_no_verify_dry_run_preflight,
                 "worktree_branch_on_recreate": self.worktree_branch_on_recreate,
+                "remediation": {
+                    "pr_collision": self.worktree_remediation_pr_collision,
+                    "push_rebase_retry": self.worktree_remediation_push_rebase_retry,
+                },
             },
             "execution": {
                 "concurrency": {
@@ -952,6 +959,15 @@ class Config:
         config.worktree_branch_on_recreate = worktrees_section.get(
             "worktree_branch_on_recreate",
             "delete",
+        )
+        remediation_section = worktrees_section.get("remediation", {})
+        config.worktree_remediation_pr_collision = remediation_section.get(
+            "pr_collision",
+            "new_branch",
+        )
+        config.worktree_remediation_push_rebase_retry = remediation_section.get(
+            "push_rebase_retry",
+            True,
         )
 
         # Review workflow

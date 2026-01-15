@@ -18,6 +18,7 @@ class WorktreeValidator(ConfigValidator):
     """
 
     VALID_RECREATE_MODES = {"delete", "create_new_branch"}
+    VALID_PR_COLLISION_MODES = {"fail", "reuse_open", "new_branch"}
 
     def validate(self, config: "Config") -> list[str]:
         errors = []
@@ -37,6 +38,11 @@ class WorktreeValidator(ConfigValidator):
             errors.append(
                 "worktree_branch_on_recreate must be one of "
                 f"{sorted(self.VALID_RECREATE_MODES)}, got: '{config.worktree_branch_on_recreate}'"
+            )
+        if config.worktree_remediation_pr_collision not in self.VALID_PR_COLLISION_MODES:
+            errors.append(
+                "worktrees.remediation.pr_collision must be one of "
+                f"{sorted(self.VALID_PR_COLLISION_MODES)}, got: '{config.worktree_remediation_pr_collision}'"
             )
 
         return errors

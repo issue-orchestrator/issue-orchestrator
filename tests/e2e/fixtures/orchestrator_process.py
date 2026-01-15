@@ -87,6 +87,10 @@ class OrchestratorProcess:
             "worktrees": {
                 "base": str(self.config.worktree_base),
                 "reuse_push_preflight": self.config.reuse_push_preflight,
+                "remediation": {
+                    "pr_collision": self.config.worktree_remediation_pr_collision,
+                    "push_rebase_retry": self.config.worktree_remediation_push_rebase_retry,
+                },
             },
             "execution": {
                 "terminal_adapter": self.config.terminal_adapter,

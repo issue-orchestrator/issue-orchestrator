@@ -88,21 +88,42 @@ def mock_git_adapter():
     adapter.get_current_branch = Mock(return_value="issue-123")
     adapter.has_uncommitted_changes = Mock(return_value=False)
     adapter.push = Mock(return_value=MagicMock(success=True, message="Pushed"))
+    adapter.rebase_on_branch = Mock(return_value=MagicMock(success=True, message="Rebased"))
+    adapter.create_branch_from_current = Mock()
+    adapter.list_branch_names = Mock(return_value=["issue-123"])
     return adapter
 
 
 class TestPRAlreadyExistsHandling:
     """Tests for handling 'PR already exists' errors."""
 
-    def test_pr_creation_fails_with_closed_pr_existing(
+    def test_pr_creation_switches_branch_for_closed_pr(
         self, mock_label_adapter, mock_git_adapter, tmp_path
     ):
-        """When GitHub rejects PR creation because a closed PR exists, error is captured."""
-        # Setup: mock PR adapter that raises "already exists" error
-        mock_pr_adapter = MagicMock()
-        mock_pr_adapter.create_pr = Mock(
-            side_effect=Exception("a pull request for branch 'issue-123' already exists")
+        """When a closed PR exists for the branch, switch to a new branch and create a PR."""
+        closed_pr = PRInfo(
+            number=10,
+            title="Old PR",
+            url="https://github.com/owner/repo/pull/10",
+            branch="issue-123",
+            body="Old body",
+            state="closed",
+            labels=[],
         )
+        new_pr = PRInfo(
+            number=42,
+            title="New PR",
+            url="https://github.com/owner/repo/pull/42",
+            branch="issue-123-r1",
+            body="New body",
+            state="open",
+            labels=[],
+        )
+
+        mock_pr_adapter = MagicMock()
+        mock_pr_adapter.get_prs_for_issue = Mock(return_value=[])
+        mock_pr_adapter.get_prs_for_branch = Mock(return_value=[closed_pr])
+        mock_pr_adapter.create_pr = Mock(return_value=new_pr)
 
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
@@ -110,7 +131,6 @@ class TestPRAlreadyExistsHandling:
             git_adapter=mock_git_adapter,
         )
 
-        # Create worktree with completion record requesting PR creation
         worktree = tmp_path / "worktree"
         worktree.mkdir()
         record = make_completion_record(
@@ -120,24 +140,18 @@ class TestPRAlreadyExistsHandling:
         )
         write_completion_to_worktree(worktree, record)
 
-        # Process
         result = processor.process(
             worktree=worktree,
             issue_number=123,
             issue_title="Test Issue",
         )
 
-        # Assertions
-        # Push should succeed
-        mock_git_adapter.push.assert_called_once()
-        # PR creation should be attempted
+        assert mock_git_adapter.push.call_count == 2
+        mock_git_adapter.create_branch_from_current.assert_called_once()
         mock_pr_adapter.create_pr.assert_called_once()
-        # Result should capture the error
-        assert result.errors is not None
-        assert any("already exists" in err for err in result.errors)
-        # Since push succeeded, this counts as partial success
-        assert result.success is True  # Partial success: push worked
-        assert result.pr_url is None  # PR was not created
+        assert result.success is True
+        assert result.pr_url == "https://github.com/owner/repo/pull/42"
+        assert result.errors is None
 
     def test_pr_creation_success_no_closed_pr(
         self, mock_label_adapter, mock_git_adapter, tmp_path
@@ -178,6 +192,8 @@ class TestPRAlreadyExistsHandling:
     ):
         """Completion record should be cleaned up even if PR creation fails."""
         mock_pr_adapter = MagicMock()
+        mock_pr_adapter.get_prs_for_issue = Mock(return_value=[])
+        mock_pr_adapter.get_prs_for_branch = Mock(return_value=[])
         mock_pr_adapter.create_pr = Mock(
             side_effect=Exception("a pull request for branch 'issue-123' already exists")
         )

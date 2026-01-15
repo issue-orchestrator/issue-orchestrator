@@ -159,6 +159,12 @@ class GitCLI(Git):
     def commit(self, repo: Path, message: str) -> None:
         self.run(repo, ["commit", "-am", message])
 
+    def rebase(self, repo: Path, target: str) -> GitResult:
+        return self.run(repo, ["rebase", target])
+
+    def rebase_abort(self, repo: Path) -> GitResult:
+        return self.run(repo, ["rebase", "--abort"], check=False)
+
     def push(
         self,
         repo: Path,

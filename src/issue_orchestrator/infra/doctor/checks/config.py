@@ -148,3 +148,15 @@ def check_repository_config(config: Config) -> list[Check]:
         status="warning",
         detail="Not configured",
     )]
+
+
+def check_worktree_remediation(config: Config) -> list[Check]:
+    detail = (
+        f"pr_collision={config.worktree_remediation_pr_collision}, "
+        f"push_rebase_retry={'on' if config.worktree_remediation_push_rebase_retry else 'off'}"
+    )
+    return [Check(
+        name="Worktree Remediation",
+        status="ok",
+        detail=detail,
+    )]
