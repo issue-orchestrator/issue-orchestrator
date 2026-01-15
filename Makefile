@@ -192,9 +192,7 @@ validate:
 	@$(GMAKE) -j5 --output-sync=target _validate-impl
 
 # Internal target for parallel execution
-# Uses test-integration-no-infra to exclude tests requiring external services (GitHub token)
-# Full integration tests run separately via test-integration-full in CI
-_validate-impl: typecheck lint-arch test-unit test-integration-no-infra test-web
+_validate-impl: typecheck lint-arch test-unit test-integration test-web
 	@echo "✓ All validations passed!"
 
 # Full validation including e2e tests - runs 6 jobs in parallel
