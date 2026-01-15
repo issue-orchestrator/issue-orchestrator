@@ -41,17 +41,39 @@ class StubLabelAdapter:
 
 
 class StubPrAdapter:
-    def create_pr(self, title: str, body: str, head: str, base: str = "main"):
+    def create_pr(
+        self,
+        title: str,
+        body: str,
+        head: str,
+        base: str = "main",
+        draft: bool | None = None,
+    ):
         raise RuntimeError("create_pr not expected")
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
         return "comment-id"
+
+    def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list:
+        return []
+
+    def get_prs_for_branch(self, branch: str, state: str = "open") -> list:
+        return []
 
 
 class StubGitAdapter:
     def push(self, worktree: Path, remote: str = "origin", force_with_lease: bool = True,
              set_upstream: bool = True, skip_hooks: bool = False):
         raise RuntimeError("push not expected")
+
+    def rebase_on_branch(self, worktree: Path, target: str = "origin/main"):
+        raise RuntimeError("rebase not expected")
+
+    def create_branch_from_current(self, worktree: Path, branch: str) -> None:
+        raise RuntimeError("create branch not expected")
+
+    def list_branch_names(self, worktree: Path) -> list[str]:
+        return []
 
     def get_current_branch(self, worktree: Path) -> str | None:
         return "issue-1"

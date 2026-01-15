@@ -51,6 +51,8 @@ def mock_label_adapter():
 def mock_pr_adapter():
     """Mock adapter for PR operations."""
     adapter = Mock(spec=PRAdapter)
+    adapter.get_prs_for_issue = Mock(return_value=[])
+    adapter.get_prs_for_branch = Mock(return_value=[])
     adapter.create_pr = Mock(return_value=PRInfo(
         number=42,
         title="Test PR",
@@ -74,6 +76,9 @@ def mock_git_adapter():
         remote="origin",
         message="Pushed",
     ))
+    adapter.rebase_on_branch = Mock(return_value=MagicMock(success=True, message="Rebased"))
+    adapter.create_branch_from_current = Mock()
+    adapter.list_branch_names = Mock(return_value=["issue-123"])
     adapter.get_current_branch = Mock(return_value="issue-123")
     adapter.has_uncommitted_changes = Mock(return_value=False)
     return adapter
@@ -419,6 +424,48 @@ class TestCompletionProcessorGitActions:
 
         assert not result.success
         assert any("Push failed" in err for err in result.errors)
+
+    def test_push_non_fast_forward_retries_after_rebase(
+        self, processor, mock_git_adapter, worktree_with_completion
+    ):
+        """Non-fast-forward push should retry after rebase."""
+        mock_git_adapter.push.side_effect = [
+            PushResult(
+                success=False,
+                branch="issue-123",
+                remote="origin",
+                message="non-fast-forward",
+            ),
+            PushResult(
+                success=True,
+                branch="issue-123",
+                remote="origin",
+                message="Pushed",
+            ),
+        ]
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert result.success
+        mock_git_adapter.rebase_on_branch.assert_called_once_with(worktree, "origin/main")
+        assert mock_git_adapter.push.call_count == 2
+
+    def test_next_branch_name_ignores_embedded_r(self, processor, mock_git_adapter, tmp_path):
+        """Branch suffix detection should only match -r<digits> at the end."""
+        mock_git_adapter.list_branch_names.return_value = [
+            "123-feature-refactor",
+            "123-feature-refactor-r2",
+            "123-feature-refactor-r10",
+            "123-feature-r1",
+        ]
+
+        assert processor._next_branch_name(tmp_path, "123-feature-refactor") == "123-feature-refactor-r11"
 
 
 class TestCompletionProcessorValidation:

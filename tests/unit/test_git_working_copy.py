@@ -623,8 +623,8 @@ class TestRebaseOnBranch:
 
     def test_rebase_success(self, git_wc, worktree_path):
         """Test successful rebase."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.object(git_wc._git, "rebase") as mock_rebase:
+            mock_rebase.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             result = git_wc.rebase_on_branch(worktree_path)
 
@@ -635,34 +635,31 @@ class TestRebaseOnBranch:
 
     def test_rebase_custom_target(self, git_wc, worktree_path):
         """Test rebase with custom target."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        with patch.object(git_wc._git, "rebase") as mock_rebase:
+            mock_rebase.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             result = git_wc.rebase_on_branch(worktree_path, target="origin/develop")
 
             assert result.success is True
             assert "origin/develop" in result.message
-            args = mock_run.call_args[0][1]
-            assert "rebase" in args
-            assert "origin/develop" in args
+            mock_rebase.assert_called_once_with(worktree_path, "origin/develop")
 
     def test_rebase_with_conflicts(self, git_wc, worktree_path):
         """Test rebase failure with conflicts."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            # First call: rebase fails
-            # Second call: git status shows conflicts
-            # Third call: rebase --abort succeeds
-            mock_run.side_effect = [
-                git_error(
-                    1, "git", stderr="CONFLICT (content): Merge conflict"
-                ),
-                MagicMock(
-                    returncode=0,
-                    stdout="UU conflicted_file.py\nUU another_conflict.txt\n",
-                    stderr="",
-                ),
-                MagicMock(returncode=0, stdout="", stderr=""),
-            ]
+        with (
+            patch.object(git_wc._git, "rebase") as mock_rebase,
+            patch.object(git_wc, "_run_git") as mock_run,
+            patch.object(git_wc._git, "rebase_abort") as mock_abort,
+        ):
+            mock_rebase.side_effect = git_error(
+                1, "git", stderr="CONFLICT (content): Merge conflict"
+            )
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="UU conflicted_file.py\nUU another_conflict.txt\n",
+                stderr="",
+            )
+            mock_abort.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             result = git_wc.rebase_on_branch(worktree_path)
 
@@ -673,12 +670,14 @@ class TestRebaseOnBranch:
 
     def test_rebase_abort_fails(self, git_wc, worktree_path):
         """Test rebase failure where abort also fails."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.side_effect = [
-                git_error(1, "git", stderr="CONFLICT"),
-                MagicMock(returncode=0, stdout="UU file.py\n", stderr=""),
-                git_error(1, "git", stderr="abort failed"),
-            ]
+        with (
+            patch.object(git_wc._git, "rebase") as mock_rebase,
+            patch.object(git_wc, "_run_git") as mock_run,
+            patch.object(git_wc._git, "rebase_abort") as mock_abort,
+        ):
+            mock_rebase.side_effect = git_error(1, "git", stderr="CONFLICT")
+            mock_run.return_value = MagicMock(returncode=0, stdout="UU file.py\n", stderr="")
+            mock_abort.side_effect = git_error(1, "git", stderr="abort failed")
 
             result = git_wc.rebase_on_branch(worktree_path)
 
@@ -687,11 +686,12 @@ class TestRebaseOnBranch:
 
     def test_rebase_error_no_conflicts(self, git_wc, worktree_path):
         """Test rebase failure without conflicts."""
-        with patch.object(git_wc, "_run_git") as mock_run:
-            mock_run.side_effect = [
-                git_error(1, "git", stderr="fatal: some error"),
-                MagicMock(returncode=0, stdout="", stderr=""),  # No conflicts
-            ]
+        with (
+            patch.object(git_wc._git, "rebase") as mock_rebase,
+            patch.object(git_wc, "_run_git") as mock_run,
+        ):
+            mock_rebase.side_effect = git_error(1, "git", stderr="fatal: some error")
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             result = git_wc.rebase_on_branch(worktree_path)
 

@@ -43,6 +43,7 @@ def run_doctor(
     result.checks.extend(config_checks.check_config_schema(config))
     result.checks.extend(config_checks.check_template_variables(config))
     result.checks.extend(config_checks.check_repository_config(config))
+    result.checks.extend(config_checks.check_worktree_remediation(config))
 
     result.checks.extend(workspace.check_working_directory(runner))
     result.checks.extend(workspace.check_hook_dependencies(Path.cwd()))

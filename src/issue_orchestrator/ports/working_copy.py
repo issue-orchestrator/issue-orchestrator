@@ -212,6 +212,15 @@ class WorkingCopy(Protocol):
         """
         ...
 
+    def create_branch_from_current(self, worktree: Path, branch: str) -> None:
+        """Create and switch to a branch from the current HEAD.
+
+        Args:
+            worktree: Path to the worktree directory.
+            branch: Branch name to create (or reset) and switch to.
+        """
+        ...
+
     def push(
         self,
         worktree: Path,

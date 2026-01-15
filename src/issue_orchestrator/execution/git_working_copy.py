@@ -202,6 +202,28 @@ class GitWorkingCopy:
             logger.warning("Failed to list remote branches in %s: %s", repo_root, e)
             return []
 
+    def list_branch_names(self, worktree: Path) -> list[str]:
+        """List local and remote branch names for the repo."""
+        try:
+            result = self._run_git(
+                worktree,
+                ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes/origin"],
+            )
+        except GitError as e:
+            logger.warning("Failed to list branches in %s: %s", worktree, e)
+            return []
+        names: list[str] = []
+        for line in (result.stdout or "").splitlines():
+            name = line.strip()
+            if not name:
+                continue
+            if name.startswith("origin/"):
+                name = name[len("origin/"):]
+            if name == "HEAD":
+                continue
+            names.append(name)
+        return names
+
     def is_git_repo(self, repo_root: Path) -> bool:
         """Check if the path is a git repository."""
         try:
@@ -253,7 +275,7 @@ class GitWorkingCopy:
     ) -> RebaseResult:
         """Rebase current branch onto target."""
         try:
-            self._run_git(worktree, ["rebase", target], timeout_s=300)
+            self._git.rebase(worktree, target)
             return RebaseResult(success=True, message=f"Rebased onto {target}")
         except GitError as e:
             # Check for conflicts
@@ -266,7 +288,7 @@ class GitWorkingCopy:
 
                 # Abort the rebase
                 try:
-                    self._run_git(worktree, ["rebase", "--abort"], check=False)
+                    self._git.rebase_abort(worktree)
                     aborted = True
                 except Exception:
                     aborted = False
@@ -283,6 +305,10 @@ class GitWorkingCopy:
                     success=False,
                     message=f"Rebase failed: {error_msg}",
                 )
+
+    def create_branch_from_current(self, worktree: Path, branch: str) -> None:
+        """Create and switch to a branch from the current HEAD."""
+        self._run_git(worktree, ["checkout", "-B", branch], timeout_s=60)
 
     def push(
         self,

@@ -16,6 +16,7 @@ as untrusted input.
 """
 
 import json
+import re
 import logging
 import os
 import time
@@ -23,7 +24,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
 
 from ..domain.models import (
     CompletionRecord,
@@ -37,6 +38,9 @@ from .validation import PublishGate, ValidationRecord, ValidationRecordStore
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from ..infra.config import Config
+
 
 @runtime_checkable
 class LabelAdapter(Protocol):
@@ -47,7 +51,7 @@ class LabelAdapter(Protocol):
 
 
 from ..ports.pull_request_tracker import PRInfo
-from ..ports.working_copy import PushResult
+from ..ports.working_copy import PushResult, RebaseResult
 
 
 @runtime_checkable
@@ -58,6 +62,8 @@ class PRAdapter(Protocol):
         self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None
     ) -> PRInfo: ...
     def add_comment(self, issue_or_pr_number: int, body: str) -> str: ...
+    def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]: ...
+    def get_prs_for_branch(self, branch: str, state: str = "open") -> list[PRInfo]: ...
 
 
 @runtime_checkable
@@ -72,6 +78,9 @@ class GitAdapter(Protocol):
         skip_hooks: bool = False,
     ) -> PushResult: ...
 
+    def rebase_on_branch(self, worktree: Path, target: str = "origin/main") -> RebaseResult: ...
+    def create_branch_from_current(self, worktree: Path, branch: str) -> None: ...
+    def list_branch_names(self, worktree: Path) -> list[str]: ...
     def get_current_branch(self, worktree: Path) -> str | None: ...
     def has_uncommitted_changes(self, worktree: Path) -> bool: ...
 
@@ -108,6 +117,7 @@ class CompletionProcessor:
         event_bus: EventBus | None = None,
         label_config: dict[str, str] | None = None,
         publish_gate: PublishGate | None = None,
+        config: "Config | None" = None,
     ):
         """Initialize the processor with required adapters.
 
@@ -125,6 +135,16 @@ class CompletionProcessor:
         self.event_bus = event_bus
         self.label_config = label_config or {}
         self.publish_gate = publish_gate
+        self._pr_collision_strategy = (
+            config.worktree_remediation_pr_collision
+            if config is not None
+            else "new_branch"
+        )
+        self._push_rebase_retry = (
+            config.worktree_remediation_push_rebase_retry
+            if config is not None
+            else True
+        )
 
     def _emit(
         self,
@@ -448,16 +468,45 @@ class CompletionProcessor:
                         actions_taken.append(f"Pushed branch to remote")
                         logger.info("Push succeeded for #%d", issue_number)
                     else:
-                        errors.append(f"Push failed: {result.message}")
-                        error_details.append({
-                            "action": action.value,
-                            "error": result.message,
-                            "retryable": result.retryable,
-                            "branch": result.branch,
-                            "remote": result.remote,
-                        })
-                        logger.error("Push failed for #%d: %s", issue_number, result.message)
-                        halt_actions = True
+                        retry_result: PushResult | None = None
+                        if self._push_rebase_retry and self._is_non_fast_forward(result.message):
+                            if self.git_adapter.has_uncommitted_changes(worktree):
+                                logger.warning(
+                                    "Push retry skipped due to uncommitted changes: issue=%s",
+                                    issue_number,
+                                )
+                            else:
+                                rebase_result = self.git_adapter.rebase_on_branch(worktree, "origin/main")
+                                if rebase_result.success:
+                                    actions_taken.append("Rebased onto origin/main")
+                                    retry_result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
+                                else:
+                                    errors.append(f"Rebase failed: {rebase_result.message}")
+                                    error_details.append({
+                                        "action": action.value,
+                                        "error": rebase_result.message,
+                                        "stage": "rebase",
+                                        "conflicts": rebase_result.conflicts,
+                                        "aborted": rebase_result.aborted,
+                                    })
+
+                        if retry_result and retry_result.success:
+                            actions_taken.append("Pushed branch to remote after rebase")
+                            logger.info(
+                                "Push succeeded after rebase for #%d",
+                                issue_number,
+                            )
+                        else:
+                            errors.append(f"Push failed: {result.message}")
+                            error_details.append({
+                                "action": action.value,
+                                "error": result.message,
+                                "retryable": result.retryable,
+                                "branch": result.branch,
+                                "remote": result.remote,
+                            })
+                            logger.error("Push failed for #%d: %s", issue_number, result.message)
+                            halt_actions = True
 
                 elif action == RequestedAction.CREATE_PR:
                     if not branch:
@@ -465,18 +514,62 @@ class CompletionProcessor:
                         logger.error("Cannot create PR for #%d: no branch", issue_number)
                         continue
 
+                    skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
+
                     # Build PR title and body
                     pr_title = f"#{issue_number}: {issue_title}"
                     pr_body = self._build_pr_body(record, issue_number)
 
+                    if self._pr_collision_strategy in {"reuse_open", "new_branch"}:
+                        existing_pr = self._get_open_pr_for_issue(issue_number)
+                        if existing_pr:
+                            pr_url = existing_pr.url
+                            actions_taken.append(f"Reused PR #{existing_pr.number}")
+                            logger.info(
+                                "Reused existing PR #%d for issue #%d: %s",
+                                existing_pr.number,
+                                issue_number,
+                                pr_url,
+                            )
+                            continue
+
+                    if self._pr_collision_strategy == "new_branch":
+                        branch = self._maybe_switch_branch_for_pr_collision(
+                            worktree=worktree,
+                            branch=branch,
+                            issue_number=issue_number,
+                            actions_taken=actions_taken,
+                            skip_hooks=skip_hooks,
+                        )
+
                     logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
-                    pr = self.pr_adapter.create_pr(
-                        title=pr_title,
-                        body=pr_body,
-                        head=branch,
-                        base="main",
-                        draft=True,
-                    )
+                    try:
+                        pr = self.pr_adapter.create_pr(
+                            title=pr_title,
+                            body=pr_body,
+                            head=branch,
+                            base="main",
+                            draft=True,
+                        )
+                    except Exception as e:
+                        if self._pr_collision_strategy == "new_branch" and self._is_pr_collision_error(e):
+                            branch = self._switch_to_suffixed_branch(
+                                worktree=worktree,
+                                branch=branch,
+                                issue_number=issue_number,
+                                actions_taken=actions_taken,
+                                skip_hooks=skip_hooks,
+                            )
+                            pr = self.pr_adapter.create_pr(
+                                title=pr_title,
+                                body=pr_body,
+                                head=branch,
+                                base="main",
+                                draft=True,
+                            )
+                        else:
+                            raise
+
                     pr_url = pr.url
                     actions_taken.append(f"Created PR #{pr.number}")
                     logger.info("Created PR #%d for issue #%d: %s", pr.number, issue_number, pr_url)
@@ -670,6 +763,101 @@ class CompletionProcessor:
         ])
 
         return "\n".join(parts)
+
+    def _is_non_fast_forward(self, message: str) -> bool:
+        lower = message.lower()
+        return any(
+            marker in lower
+            for marker in (
+                "non-fast-forward",
+                "fetch first",
+                "rejected",
+                "stale info",
+            )
+        )
+
+    def _is_pr_collision_error(self, error: Exception) -> bool:
+        message = str(error).lower()
+        return "pull request" in message and "already exists" in message
+
+    def _pr_matches_issue(self, pr: PRInfo, issue_number: int) -> bool:
+        if pr.branch and pr.branch.startswith(f"{issue_number}-"):
+            return True
+        if pr.title and f"#{issue_number}" in pr.title:
+            return True
+        return False
+
+    def _get_open_pr_for_issue(self, issue_number: int) -> PRInfo | None:
+        try:
+            prs = self.pr_adapter.get_prs_for_issue(issue_number, state="open")
+        except Exception as e:
+            logger.warning("Failed to query open PRs for issue %s: %s", issue_number, e)
+            return None
+        for pr in prs:
+            if self._pr_matches_issue(pr, issue_number):
+                return pr
+        return None
+
+    def _maybe_switch_branch_for_pr_collision(
+        self,
+        *,
+        worktree: Path,
+        branch: str,
+        issue_number: int,
+        actions_taken: list[str],
+        skip_hooks: bool,
+    ) -> str:
+        try:
+            prs = self.pr_adapter.get_prs_for_branch(branch, state="all")
+        except Exception as e:
+            logger.warning("Failed to query PRs for branch %s: %s", branch, e)
+            return branch
+        if not prs:
+            return branch
+        for pr in prs:
+            if pr.state.lower() == "open" and self._pr_matches_issue(pr, issue_number):
+                return branch
+        return self._switch_to_suffixed_branch(
+            worktree=worktree,
+            branch=branch,
+            issue_number=issue_number,
+            actions_taken=actions_taken,
+            skip_hooks=skip_hooks,
+        )
+
+    def _next_branch_name(self, worktree: Path, branch: str) -> str:
+        base = re.sub(r"-r\d+$", "", branch)
+        existing = self.git_adapter.list_branch_names(worktree)
+        pattern = re.compile(rf"^{re.escape(base)}-r(\d+)$")
+        max_suffix = 0
+        for name in existing:
+            match = pattern.match(name)
+            if match:
+                max_suffix = max(max_suffix, int(match.group(1)))
+        return f"{base}-r{max_suffix + 1}"
+
+    def _switch_to_suffixed_branch(
+        self,
+        *,
+        worktree: Path,
+        branch: str,
+        issue_number: int,
+        actions_taken: list[str],
+        skip_hooks: bool,
+    ) -> str:
+        new_branch = self._next_branch_name(worktree, branch)
+        self.git_adapter.create_branch_from_current(worktree, new_branch)
+        push_result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
+        if not push_result.success:
+            raise RuntimeError(f"Failed to push new branch {new_branch}: {push_result.message}")
+        actions_taken.append(f"Switched to new branch {new_branch}")
+        logger.info(
+            "PR collision remediation for issue #%d: branch=%s -> %s",
+            issue_number,
+            branch,
+            new_branch,
+        )
+        return new_branch
 
     def cleanup_record(self, worktree: Path, completion_path: str | None = None) -> bool:
         """Remove the completion record after processing.

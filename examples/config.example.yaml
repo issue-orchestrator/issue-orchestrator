@@ -68,6 +68,9 @@ worktrees:
     # - "npm install"
     # - "pip install -e '.[dev]'"
   reuse_push_preflight: true
+  remediation:
+    pr_collision: "new_branch"    # fail | reuse_open | new_branch
+    push_rebase_retry: true
 
 execution:
   concurrency:

@@ -97,6 +97,9 @@ worktrees:
   reuse_push_preflight: true
   allow_no_verify_dry_run_preflight: true
   worktree_branch_on_recreate: "delete"
+  remediation:
+    pr_collision: "new_branch"
+    push_rebase_retry: true
 ```
 
 ### execution

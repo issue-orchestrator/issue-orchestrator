@@ -25,6 +25,7 @@ class TestWorktreeValidator:
         config = MagicMock()
         config.worktree_base = worktree_base or tmp_path
         config.worktree_branch_on_recreate = recreate_mode
+        config.worktree_remediation_pr_collision = "new_branch"
         return config
 
     def test_valid_config(self, tmp_path):

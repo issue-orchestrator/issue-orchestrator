@@ -84,6 +84,8 @@ def mock_label_adapter():
 def mock_pr_adapter():
     """Mock PR adapter for CompletionProcessor."""
     adapter = MagicMock()
+    adapter.get_prs_for_issue = Mock(return_value=[])
+    adapter.get_prs_for_branch = Mock(return_value=[])
     adapter.create_pr = Mock(return_value=MagicMock(number=42, url="https://github.com/owner/repo/pull/42"))
     adapter.add_comment = Mock()
     return adapter
@@ -96,6 +98,9 @@ def mock_git_adapter():
     adapter.get_current_branch = Mock(return_value="issue-123")
     adapter.has_uncommitted_changes = Mock(return_value=False)
     adapter.push = Mock(return_value=MagicMock(success=True, message="Pushed"))
+    adapter.rebase_on_branch = Mock(return_value=MagicMock(success=True, message="Rebased"))
+    adapter.create_branch_from_current = Mock()
+    adapter.list_branch_names = Mock(return_value=["issue-123"])
     return adapter
 
 

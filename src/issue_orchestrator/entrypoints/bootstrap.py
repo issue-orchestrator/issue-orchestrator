@@ -274,6 +274,7 @@ def build_orchestrator(
             "code_review": config.code_review_label or "needs-code-review",
             "in_progress": config.get_label_in_progress(),
         },
+        config=config,
     ) if github else None
 
     # Create SessionController (decides session outcomes)
@@ -507,6 +508,7 @@ def build_orchestrator_for_testing(
             "code_review": config.code_review_label or "needs-code-review",
             "in_progress": config.get_label_in_progress(),
         },
+        config=config,
     )
 
     # Create SessionController for testing (with optional validation gate)
