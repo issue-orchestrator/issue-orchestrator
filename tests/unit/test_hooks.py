@@ -144,8 +144,9 @@ class TestClaudeCodeAdapter:
     def test_install_hooks_creates_files(self, adapter, temp_project):
         files = adapter.install_hooks(temp_project)
 
-        assert len(files) == 2
+        assert len(files) == 3
         assert (temp_project / ".claude" / "hooks" / "block-no-verify.sh").exists()
+        assert (temp_project / ".claude" / "hooks" / "allow_git_push.py").exists()
         assert (temp_project / ".claude" / "settings.json").exists()
 
     def test_install_hooks_script_is_executable(self, adapter, temp_project):

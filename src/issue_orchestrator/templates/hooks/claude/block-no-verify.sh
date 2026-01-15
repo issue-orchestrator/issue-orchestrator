@@ -27,7 +27,8 @@ command=$(echo "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo 
 
 # Allow a dry-run no-verify push for reuse preflight when enabled.
 python_bin="$(command -v python3 || true)"
-allow_script="tools/hooks/allow_git_push.py"
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+allow_script="$hook_dir/allow_git_push.py"
 
 if [[ -z "$python_bin" ]]; then
     echo "BLOCKED: python3 is required for orchestrator hooks. Fix PATH or install python3." >&2

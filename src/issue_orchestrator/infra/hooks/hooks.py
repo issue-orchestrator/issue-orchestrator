@@ -229,6 +229,17 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
         else:
             raise FileNotFoundError(f"Template not found: {template}")
 
+        # Copy allow_git_push.py helper into hooks directory
+        allow_src = TEMPLATES_DIR / "claude" / "allow_git_push.py"
+        allow_target = hooks_dir / "allow_git_push.py"
+        if allow_src.exists():
+            shutil.copy(allow_src, allow_target)
+            allow_target.chmod(0o755)
+            files_created.append(allow_target)
+            logger.info(f"Installed {allow_target}")
+        else:
+            raise FileNotFoundError(f"Hook helper not found: {allow_src}")
+
         # Update or create settings.json
         settings_path = project_root / ".claude" / "settings.json"
         settings = {}
