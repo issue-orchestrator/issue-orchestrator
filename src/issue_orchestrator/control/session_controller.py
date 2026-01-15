@@ -30,6 +30,12 @@ from ..events import EventName
 from ..domain.models import SessionStatus
 from ..infra.logging_config import issue_log
 from ..infra.session_output import find_session_log_path, ensure_session_output_dir
+from ..infra.validation_state import (
+    ValidationState,
+    write_validation_state,
+    write_retry_prompt,
+    clear_validation_state,
+)
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
 
@@ -113,6 +119,7 @@ class SessionController:
         session_name: str,
         completion_path: str | None = None,
         validation_retry_count: int = 0,
+        original_prompt: str | None = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
@@ -314,6 +321,25 @@ class SessionController:
                         validation_error[:200] if validation_error else "none",
                         validation_error_file,
                     )
+                    # Write validation state for crash recovery
+                    state = ValidationState(
+                        retry_count=validation_retry_count + 1,
+                        max_retries=self._max_validation_retries,
+                        validation_cmd=self._validation_cmd,
+                        last_error=validation_error[:2000] if validation_error else None,
+                        last_error_file=str(validation_error_file) if validation_error_file else None,
+                    )
+                    write_validation_state(worktree_path, state)
+                    # Write retry prompt for the agent
+                    task_prompt = original_prompt or issue_title
+                    write_retry_prompt(
+                        worktree_path,
+                        original_prompt=task_prompt,
+                        validation_cmd=self._validation_cmd,
+                        validation_error=validation_error or "Unknown error",
+                        retry_count=validation_retry_count,
+                        max_retries=self._max_validation_retries,
+                    )
                     self._emit_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
                         "issue_number": issue_number,
                         "session_name": session_name,
@@ -330,6 +356,8 @@ class SessionController:
                         validation_error[:200] if validation_error else "none",
                         validation_error_file,
                     )
+                    # Clear validation state since we're done retrying
+                    clear_validation_state(worktree_path)
                     self._emit_event(EventName.SESSION_VALIDATION_FAILED, {
                         "issue_number": issue_number,
                         "session_name": session_name,
@@ -341,6 +369,8 @@ class SessionController:
                 logger.info(
                     issue_log(issue_number, "Validation gate PASSED"),
                 )
+                # Clear validation state on success
+                clear_validation_state(worktree_path)
                 self._emit_event(EventName.SESSION_VALIDATION_PASSED, {
                     "issue_number": issue_number,
                     "session_name": session_name,
