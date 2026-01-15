@@ -46,6 +46,8 @@ This ensures deterministic test runs regardless of previous state.
 
 - Use `logging` module, not `print()` - allows proper log filtering
 - Use `logger.info()` for status messages, `logger.warning()` for issues
+- Prefer event-stream waits and targeted refreshes over full refreshes.
+  Only trigger a full refresh when there is no inflight ID to target.
 
 ## For Contributors (no write access)
 
