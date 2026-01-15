@@ -826,9 +826,9 @@ class CompletionProcessor:
         )
 
     def _next_branch_name(self, worktree: Path, branch: str) -> str:
-        base = re.sub(r"-r\\d+$", "", branch)
+        base = re.sub(r"-r\d+$", "", branch)
         existing = self.git_adapter.list_branch_names(worktree)
-        pattern = re.compile(rf"^{re.escape(base)}-r(\\d+)$")
+        pattern = re.compile(rf"^{re.escape(base)}-r(\d+)$")
         max_suffix = 0
         for name in existing:
             match = pattern.match(name)
