@@ -1,7 +1,6 @@
 """Guardrail checks for doctor."""
 
 import os
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -229,20 +228,14 @@ def _check_guardrails_in_worktree(
     finally:
         if worktree_path and worktree_path.exists():
             try:
-                subprocess.run(
+                runner.run(
                     ["git", "worktree", "remove", "--force", str(worktree_path)],
                     cwd=repo_root,
-                    check=False,
-                    capture_output=True,
-                    text=True,
                 )
                 if branch_name:
-                    subprocess.run(
+                    runner.run(
                         ["git", "branch", "-D", branch_name],
                         cwd=repo_root,
-                        check=False,
-                        capture_output=True,
-                        text=True,
                     )
             except Exception:
                 pass
