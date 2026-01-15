@@ -16,6 +16,7 @@ as untrusted input.
 """
 
 import json
+import re
 import logging
 import os
 import time
@@ -825,15 +826,14 @@ class CompletionProcessor:
         )
 
     def _next_branch_name(self, worktree: Path, branch: str) -> str:
-        base = branch.split("-r", 1)[0]
+        base = re.sub(r"-r\\d+$", "", branch)
         existing = self.git_adapter.list_branch_names(worktree)
+        pattern = re.compile(rf"^{re.escape(base)}-r(\\d+)$")
         max_suffix = 0
         for name in existing:
-            if not name.startswith(f"{base}-r"):
-                continue
-            suffix = name[len(base) + 2 :]
-            if suffix.isdigit():
-                max_suffix = max(max_suffix, int(suffix))
+            match = pattern.match(name)
+            if match:
+                max_suffix = max(max_suffix, int(match.group(1)))
         return f"{base}-r{max_suffix + 1}"
 
     def _switch_to_suffixed_branch(
