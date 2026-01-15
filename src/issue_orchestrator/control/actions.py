@@ -12,7 +12,7 @@ Usage:
     # In workflow/planner
     actions = [
         AddLabelAction(issue_number=123, label="in-progress"),
-        LaunchSessionAction(session_type="issue", number=123, ...),
+        LaunchSessionAction(session_type=SessionType.ISSUE, number=123, ...),
     ]
 
     # In applier
@@ -23,6 +23,8 @@ Usage:
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
+
+from .session_manager import SessionType
 
 if TYPE_CHECKING:
     from .reconciliation import ExpectedState
@@ -122,7 +124,7 @@ class SyncLabelsAction(Action):
 class LaunchSessionAction(Action):
     """Launch a terminal session for an agent."""
 
-    session_type: str = ""  # "issue", "review", "rework", "triage"
+    session_type: SessionType = SessionType.ISSUE
     number: int = 0  # Issue or PR number
     command: str = ""
     working_dir: str = ""
@@ -134,7 +136,7 @@ class LaunchSessionAction(Action):
 class StopSessionAction(Action):
     """Stop a terminal session."""
 
-    session_type: str = ""
+    session_type: SessionType = SessionType.ISSUE
     number: int = 0
     action_type: ActionType = field(default=ActionType.STOP_SESSION, init=False)
 

@@ -9,15 +9,9 @@ consistent naming across the codebase. Do not hardcode naming patterns.
 """
 
 from dataclasses import dataclass
-from enum import Enum
 
-
-class SessionType(Enum):
-    """Types of terminal sessions."""
-    ISSUE = "issue"
-    REVIEW = "review"
-    REWORK = "rework"
-    TRIAGE = "triage"
+# Import SessionType from control layer (canonical location)
+from ...control.session_manager import SessionType
 
 
 @dataclass(frozen=True)

@@ -35,6 +35,7 @@ from issue_orchestrator.control.actions import (
     QueueReviewAction,
     AddLabelAction,
     LaunchSessionAction,
+    SessionType,
 )
 from issue_orchestrator.control.planner import Planner, OrchestratorSnapshot
 from issue_orchestrator.control.completion_handler import SessionStatus
@@ -232,7 +233,7 @@ class TestReviewAfterCodingFlow:
         # Should have LaunchSessionAction for review
         launch_actions = [
             a for a in plan.actions
-            if isinstance(a, LaunchSessionAction) and a.session_type == "review"
+            if isinstance(a, LaunchSessionAction) and a.session_type == SessionType.REVIEW
         ]
         assert len(launch_actions) == 1, (
             "Planner must generate LaunchSessionAction for pending reviews"

@@ -64,6 +64,7 @@ from .actions import (
     CreateTriageIssueAction,
     EscalateToHumanAction,
     CleanupSessionAction,
+    SessionType,
 )
 from .reconciliation import build_expected_for_mutation
 from ..infra import labels
@@ -758,7 +759,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 priority_reason, capacity
             )
             actions.append(LaunchSessionAction(
-                session_type="issue",
+                session_type=SessionType.ISSUE,
                 number=issue.number,
                 command="",  # Orchestrator will fill in
                 working_dir="",  # Orchestrator will fill in
@@ -805,7 +806,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     review.pr_number, capacity
                 )
                 actions.append(LaunchSessionAction(
-                    session_type="review",
+                    session_type=SessionType.REVIEW,
                     number=review.pr_number,
                     command="",  # Orchestrator will fill in
                     working_dir="",  # Orchestrator will fill in
@@ -879,7 +880,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         rework.rework_cycle, capacity
                     )
                     actions.append(LaunchSessionAction(
-                        session_type="rework",
+                        session_type=SessionType.REWORK,
                         number=issue_num,
                         command="",  # Orchestrator will fill in
                         working_dir="",  # Orchestrator will fill in
@@ -918,7 +919,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         if decision.should_launch:
             for triage in decision.triage_to_launch[:capacity]:
                 actions.append(LaunchSessionAction(
-                    session_type="triage",
+                    session_type=SessionType.TRIAGE,
                     number=triage.issue_number,
                     command="",  # Orchestrator will fill in
                     working_dir="",  # Orchestrator will fill in

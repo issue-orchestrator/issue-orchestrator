@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
     from .completion_handler import CompletionHandler
     from .action_applier import ActionApplier
+    from .session_manager import SessionType
     from .session_controller import SessionController
     from .session_restorer import SessionRestorer
     from .state_machine_manager import StateMachineManager
@@ -1629,7 +1630,7 @@ def launch_triage_session(
 
 
 def session_launcher_callback(
-    session_type: str,
+    session_type: "SessionType",
     number: int,
     launch_issue_fn: Callable[[int], Optional[Session]],
     launch_review_fn: Callable[[int], Optional[Session]],
@@ -1637,11 +1638,12 @@ def session_launcher_callback(
     launch_triage_fn: Callable[[int], Optional[Session]],
 ) -> Optional[Session]:
     """Session launcher callback - moved per method table."""
+    from .session_manager import SessionType
     handlers = {
-        "issue": launch_issue_fn,
-        "review": launch_review_fn,
-        "rework": launch_rework_fn,
-        "triage": launch_triage_fn,
+        SessionType.ISSUE: launch_issue_fn,
+        SessionType.REVIEW: launch_review_fn,
+        SessionType.REWORK: launch_rework_fn,
+        SessionType.TRIAGE: launch_triage_fn,
     }
     return handlers.get(session_type, lambda n: None)(number)
 
