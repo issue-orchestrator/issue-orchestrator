@@ -95,6 +95,15 @@ test-unit-cov-html:
 test-integration:
 	$(PYTEST) tests/integration -x -q --tb=short
 
+# Integration tests excluding those that require external infrastructure (GitHub token, etc.)
+# Used in pre-push validation where full infra may not be available
+test-integration-no-infra:
+	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra"
+
+# Full integration tests including infrastructure-dependent ones (run in CI)
+test-integration-full:
+	$(PYTEST) tests/integration -x -q --tb=short
+
 # E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
 # Usage: make test-e2e        (stops on first failure)
 #        make test-e2e NOFAST=1  (runs all tests even if some fail)
@@ -183,7 +192,9 @@ validate:
 	@$(GMAKE) -j5 --output-sync=target _validate-impl
 
 # Internal target for parallel execution
-_validate-impl: typecheck lint-arch test-unit test-integration test-web
+# Uses test-integration-no-infra to exclude tests requiring external services (GitHub token)
+# Full integration tests run separately via test-integration-full in CI
+_validate-impl: typecheck lint-arch test-unit test-integration-no-infra test-web
 	@echo "✓ All validations passed!"
 
 # Full validation including e2e tests - runs 6 jobs in parallel

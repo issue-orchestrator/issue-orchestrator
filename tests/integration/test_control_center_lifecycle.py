@@ -56,6 +56,10 @@ def _has_github_token() -> bool:
     return False
 
 
+# Mark entire module as requiring infrastructure (excluded from pre-push, run in CI)
+pytestmark = pytest.mark.requires_infra
+
+
 @pytest.fixture(autouse=True, scope="module")
 def require_github_token():
     """Fail fast if no GitHub token is available.

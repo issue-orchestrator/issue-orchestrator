@@ -81,6 +81,7 @@ markers = [
     "integration: Integration tests that may exercise external adapters",
     "live: Tests that require network access and external services",
     "gh_activity_limit: Enforce GH API activity limits per test (test_gh_activity_limit, system_gh_activity_limit)",
+    "requires_infra: Tests requiring external infrastructure (GitHub token, running services). Run in CI, excluded from pre-push.",
 ]
 
 [tool.pyright]
