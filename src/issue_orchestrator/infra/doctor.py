@@ -394,6 +394,42 @@ def run_doctor(
             detail="No AI keys configured. Run: issue-orchestrator keys set <provider>",
         ))
 
+    # === AI Provider CLIs ===
+    from agent_runner import list_providers, get_provider
+
+    providers = list_providers()
+    available_providers = []
+    missing_providers = []
+
+    for name in providers:
+        provider = get_provider(name)
+        if provider.is_available():
+            version = provider.check_version()
+            version_info = f" ({version})" if version else ""
+            available_providers.append(f"{name}{version_info}")
+        else:
+            missing_providers.append(name)
+
+    if available_providers:
+        result.checks.append(Check(
+            name="AI Provider CLIs",
+            status="ok",
+            detail=", ".join(available_providers),
+        ))
+    else:
+        result.checks.append(Check(
+            name="AI Provider CLIs",
+            status="error",
+            detail=f"No CLIs installed. Install one of: {', '.join(providers)}",
+        ))
+
+    if missing_providers:
+        result.checks.append(Check(
+            name="AI Provider CLIs (Missing)",
+            status="info",
+            detail=f"Not installed: {', '.join(missing_providers)}",
+        ))
+
     # === Configuration ===
     if config is None and config_path:
         if config_path.exists():

@@ -1,4 +1,4 @@
-.PHONY: help install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -9,7 +9,8 @@ GMAKE_VERSION := $(shell $(GMAKE) --version 2>/dev/null | head -1)
 # Default target
 help:
 	@echo "Available targets:"
-	@echo "  install             Install dev dependencies"
+	@echo "  venv                Create/recreate .venv with Python 3.14+ and install all deps"
+	@echo "  install             Install dev dependencies (assumes venv exists)"
 	@echo "  typecheck           Run pyright type checking"
 	@echo "  lint-arch           Run import-linter + AST guardrails"
 	@echo "  test-unit           Run unit tests"
@@ -40,6 +41,23 @@ help:
 	@echo "  clean               Remove build artifacts"
 	@echo ""
 	@echo "Using: $(GMAKE_VERSION)"
+
+# System Python for venv creation - prefer 3.14, fall back to 3.13, 3.12, 3.11
+SYSTEM_PYTHON := $(shell command -v python3.14 2>/dev/null || command -v python3.13 2>/dev/null || command -v python3.12 2>/dev/null || command -v python3.11 2>/dev/null || echo python3)
+
+venv:
+	@if [ -d .venv ]; then \
+		echo "Removing existing .venv..."; \
+		rm -rf .venv; \
+	fi
+	@echo "Creating venv with $(SYSTEM_PYTHON)..."
+	$(SYSTEM_PYTHON) -m venv .venv
+	@echo "Installing agent-runner package first (avoids pip resolution issues)..."
+	.venv/bin/pip install -e "packages/agent_runner"
+	@echo "Installing main package with dev dependencies..."
+	.venv/bin/pip install -e ".[dev]"
+	@echo ""
+	@echo "Done! Activate with: source .venv/bin/activate"
 
 install:
 	pip install -e ".[dev]"

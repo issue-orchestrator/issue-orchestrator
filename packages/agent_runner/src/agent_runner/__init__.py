@@ -8,19 +8,22 @@ Key components:
 - AgentRunner: Core executor that runs agents as subprocesses
 - RunSpec: Specification for an agent run (command, timeout, env, etc.)
 - RunResult: Result of an agent run (exit code, output, timing)
-- AIProvider: Protocol for building agent-specific commands
-- Providers: Claude, Codex implementations
+- Provider registry: list_providers(), get_provider(), is_valid_provider()
 
 Example usage:
-    from agent_runner import AgentRunner, RunSpec
-    from agent_runner.providers import ClaudeCodeProvider
+    from agent_runner import AgentRunner, RunSpec, get_provider, list_providers
 
-    provider = ClaudeCodeProvider()
+    # List available providers
+    print(f"Available: {list_providers()}")
+
+    # Get provider and build command
+    provider = get_provider("codex")
     command = provider.build_command(
         prompt="Fix the bug in auth.py",
-        model="sonnet",
+        model="o3",
     )
 
+    # Run the agent
     runner = AgentRunner()
     result = runner.run(RunSpec(
         command=command,
@@ -36,13 +39,19 @@ Example usage:
 """
 
 from .ports import AIProvider, RunSpec, RunResult
+from .providers import get_provider, is_valid_provider, list_providers
 from .runner import AgentRunner
 
 __all__ = [
+    # Core
     "AgentRunner",
     "AIProvider",
     "RunSpec",
     "RunResult",
+    # Provider registry
+    "list_providers",
+    "get_provider",
+    "is_valid_provider",
 ]
 
 __version__ = "0.1.0"

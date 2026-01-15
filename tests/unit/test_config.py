@@ -1318,6 +1318,9 @@ review:
 worktrees:
   base: {worktree_dir}
 
+default_agent:
+  provider: claude-code
+
 agents:
   agent:test:
     prompt: {prompt_file}

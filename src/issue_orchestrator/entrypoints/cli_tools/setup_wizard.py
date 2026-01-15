@@ -1,12 +1,14 @@
 """Interactive setup wizard for issue-orchestrator."""
 
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Protocol, cast
 
 import yaml
+
+# Import provider registry for agent type selection
+from agent_runner import list_providers, get_provider
 
 
 class Prompter(Protocol):
@@ -151,17 +153,18 @@ def check_prerequisites() -> dict[str, bool]:
     except Exception:
         checks["github_auth"] = False
 
-    # claude CLI
-    try:
-        result = subprocess.run(
-            ["claude", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        checks["claude"] = result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        checks["claude"] = False
+    # Check AI providers from registry
+    providers = list_providers()
+    any_provider_available = False
+    for name in providers:
+        provider = get_provider(name)
+        is_available = provider.is_available()
+        checks[f"provider:{name}"] = is_available
+        if is_available:
+            any_provider_available = True
+
+    # At least one provider should be available
+    checks["any_ai_provider"] = any_provider_available
 
     return checks
 
@@ -353,14 +356,21 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
 
         timeout = prompter.input("Timeout in minutes", "45")
 
-        # Ask about custom command
-        prompter.print("\n  Agent command options:")
-        prompter.print("    claude  - Use Claude Code CLI (default)")
+        # Ask about agent provider
+        providers = list_providers()
+        prompter.print("\n  Agent provider options:")
+        for p in providers:
+            provider_obj = get_provider(p)
+            available = "✓" if provider_obj.is_available() else "✗ not installed"
+            prompter.print(f"    {p}  - {provider_obj.description} ({available})")
         prompter.print("    custom  - Use a custom command/script")
-        agent_type = prompter.choice("Agent type", ["claude", "custom"])
+
+        provider_choices = providers + ["custom"]
+        agent_type = prompter.choice("Agent provider", provider_choices)
 
         custom_command = None
         permission_mode = "default"
+        selected_provider = None
 
         if agent_type == "custom":
             prompter.print("\n  Enter your custom command template. Available variables:")
@@ -368,27 +378,34 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
             custom_command = prompter.input("Custom command")
             model = "sonnet"  # Not relevant for custom, but keep a default
         else:
-            model = prompter.choice("Model for this agent", ["sonnet", "opus", "haiku"])
+            selected_provider = agent_type
+            # Model selection depends on provider
+            if selected_provider == "claude-code":
+                model = prompter.choice("Model for this agent", ["sonnet", "opus", "haiku"])
 
-            # Permission mode for Claude CLI
-            prompter.print("\n  Permission mode controls how Claude handles tool permissions:")
-            prompter.print("    default          - Prompt for each action (safest)")
-            prompter.print("    acceptEdits      - Auto-accept file edits, prompt for others")
-            prompter.print("    bypassPermissions - Skip all prompts (use for trusted automation)")
-            permission_mode = prompter.choice(
-                "Permission mode",
-                ["default", "acceptEdits", "bypassPermissions"]
-            )
+                # Permission mode for Claude CLI
+                prompter.print("\n  Permission mode controls how Claude handles tool permissions:")
+                prompter.print("    default          - Prompt for each action (safest)")
+                prompter.print("    acceptEdits      - Auto-accept file edits, prompt for others")
+                prompter.print("    bypassPermissions - Skip all prompts (use for trusted automation)")
+                permission_mode = prompter.choice(
+                    "Permission mode",
+                    ["default", "acceptEdits", "bypassPermissions"]
+                )
 
-            # Safety confirmation for bypassPermissions
-            if permission_mode == "bypassPermissions":
-                prompter.print("\n  ⚠️  WARNING: bypassPermissions allows the agent to:")
-                prompter.print("     - Execute any shell commands without confirmation")
-                prompter.print("     - Read/write any files without confirmation")
-                prompter.print("     - Access network resources without confirmation")
-                if not prompter.yes_no("Are you sure you want to bypass all permission prompts?", default=False):
-                    permission_mode = "default"
-                    prompter.print("  → Using 'default' mode instead")
+                # Safety confirmation for bypassPermissions
+                if permission_mode == "bypassPermissions":
+                    prompter.print("\n  ⚠️  WARNING: bypassPermissions allows the agent to:")
+                    prompter.print("     - Execute any shell commands without confirmation")
+                    prompter.print("     - Read/write any files without confirmation")
+                    prompter.print("     - Access network resources without confirmation")
+                    if not prompter.yes_no("Are you sure you want to bypass all permission prompts?", default=False):
+                        permission_mode = "default"
+                        prompter.print("  → Using 'default' mode instead")
+            elif selected_provider == "codex":
+                model = prompter.input("Model for Codex", "o3")
+            else:
+                model = prompter.input("Model name", "default")
 
         # Ask if this agent does code reviews (affects initial_prompt template)
         prompter.print("\n  Does this agent do code reviews?")
@@ -416,8 +433,11 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
 
         if custom_command:
             agent_config["command"] = custom_command
-        else:
-            agent_config["permission_mode"] = permission_mode
+        elif selected_provider:
+            agent_config["provider"] = selected_provider
+            # Add provider-specific args
+            if selected_provider == "claude-code" and permission_mode != "default":
+                agent_config["provider_args"] = {"permission_mode": permission_mode}
 
         config["agents"][agent_name] = agent_config
 
@@ -652,14 +672,21 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
 
                 timeout = prompter.input("Timeout (minutes)", "45")
 
-                # Ask about custom command
-                prompter.print("\n  Agent command options:")
-                prompter.print("    claude  - Use Claude Code CLI (default)")
+                # Ask about agent provider
+                providers = list_providers()
+                prompter.print("\n  Agent provider options:")
+                for p in providers:
+                    provider_obj = get_provider(p)
+                    available = "✓" if provider_obj.is_available() else "✗ not installed"
+                    prompter.print(f"    {p}  - {provider_obj.description} ({available})")
                 prompter.print("    custom  - Use a custom command/script")
-                agent_type = prompter.choice("Agent type", ["claude", "custom"])
+
+                provider_choices = providers + ["custom"]
+                agent_type = prompter.choice("Agent provider", provider_choices)
 
                 custom_command = None
                 permission_mode = "default"
+                selected_provider = None
 
                 if agent_type == "custom":
                     prompter.print("\n  Enter your custom command template. Available variables:")
@@ -667,27 +694,34 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
                     custom_command = prompter.input("Custom command")
                     model = "sonnet"  # Not relevant for custom, but keep a default
                 else:
-                    model = prompter.choice("Model", ["sonnet", "opus", "haiku"])
+                    selected_provider = agent_type
+                    # Model selection depends on provider
+                    if selected_provider == "claude-code":
+                        model = prompter.choice("Model", ["sonnet", "opus", "haiku"])
 
-                    # Permission mode for Claude CLI
-                    prompter.print("\n  Permission mode controls how Claude handles tool permissions:")
-                    prompter.print("    default          - Prompt for each action (safest)")
-                    prompter.print("    acceptEdits      - Auto-accept file edits, prompt for others")
-                    prompter.print("    bypassPermissions - Skip all prompts (use for trusted automation)")
-                    permission_mode = prompter.choice(
-                        "Permission mode",
-                        ["default", "acceptEdits", "bypassPermissions"]
-                    )
+                        # Permission mode for Claude CLI
+                        prompter.print("\n  Permission mode controls how Claude handles tool permissions:")
+                        prompter.print("    default          - Prompt for each action (safest)")
+                        prompter.print("    acceptEdits      - Auto-accept file edits, prompt for others")
+                        prompter.print("    bypassPermissions - Skip all prompts (use for trusted automation)")
+                        permission_mode = prompter.choice(
+                            "Permission mode",
+                            ["default", "acceptEdits", "bypassPermissions"]
+                        )
 
-                    # Safety confirmation for bypassPermissions
-                    if permission_mode == "bypassPermissions":
-                        prompter.print("\n  ⚠️  WARNING: bypassPermissions allows the agent to:")
-                        prompter.print("     - Execute any shell commands without confirmation")
-                        prompter.print("     - Read/write any files without confirmation")
-                        prompter.print("     - Access network resources without confirmation")
-                        if not prompter.yes_no("Are you sure you want to bypass all permission prompts?", default=False):
-                            permission_mode = "default"
-                            prompter.print("  → Using 'default' mode instead")
+                        # Safety confirmation for bypassPermissions
+                        if permission_mode == "bypassPermissions":
+                            prompter.print("\n  ⚠️  WARNING: bypassPermissions allows the agent to:")
+                            prompter.print("     - Execute any shell commands without confirmation")
+                            prompter.print("     - Read/write any files without confirmation")
+                            prompter.print("     - Access network resources without confirmation")
+                            if not prompter.yes_no("Are you sure you want to bypass all permission prompts?", default=False):
+                                permission_mode = "default"
+                                prompter.print("  → Using 'default' mode instead")
+                    elif selected_provider == "codex":
+                        model = prompter.input("Model for Codex", "o3")
+                    else:
+                        model = prompter.input("Model name", "default")
 
                 # Ask if this agent does code reviews (affects initial_prompt template)
                 prompter.print("\n  Does this agent do code reviews?")
@@ -718,8 +752,11 @@ def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[d
 
                 if custom_command:
                     agent_cfg["command"] = custom_command
-                else:
-                    agent_cfg["permission_mode"] = permission_mode
+                elif selected_provider:
+                    agent_cfg["provider"] = selected_provider
+                    # Add provider-specific args
+                    if selected_provider == "claude-code" and permission_mode != "default":
+                        agent_cfg["provider_args"] = {"permission_mode": permission_mode}
 
                 config["agents"][agent_label] = agent_cfg
                 prompter.print(f"  ✓ Added {agent_label}")
@@ -1389,8 +1426,11 @@ def run_wizard(
         prompter.print("\n⚠ Some prerequisites are missing. Install them before continuing.")
         if not prereqs["github_auth"]:
             prompter.print("  Set a GitHub token (GITHUB_TOKEN or config)")
-        if not prereqs["claude"]:
-            prompter.print("  Install Claude Code CLI")
+        if not prereqs.get("any_ai_provider", False):
+            prompter.print("  Install at least one AI provider CLI:")
+            for name in list_providers():
+                provider = get_provider(name)
+                prompter.print(f"    - {name}: {provider.description}")
         if not prompter.yes_no("Continue anyway?", default=False):
             sys.exit(1)
 

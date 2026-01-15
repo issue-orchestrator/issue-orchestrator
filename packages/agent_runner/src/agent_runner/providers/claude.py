@@ -51,17 +51,21 @@ class ClaudeCodeProvider(CLIProvider):
     def executable(self) -> str:
         return "claude"
 
+    @property
+    def description(self) -> str:
+        return "Anthropic Claude Code CLI"
+
     def build_command(
         self,
         prompt: str,
-        model: str,
+        model: str | None = None,
         **kwargs: str,
     ) -> list[str]:
         """Build a Claude Code CLI command.
 
         Args:
             prompt: The task to perform
-            model: Model name (haiku, sonnet, opus, or full model ID)
+            model: Model name (haiku, sonnet, opus, or full model ID). None for default.
             **kwargs: Additional options:
                 - permission_mode: Permission handling mode (default: bypassPermissions)
                 - system_prompt: Additional system prompt text
@@ -72,9 +76,10 @@ class ClaudeCodeProvider(CLIProvider):
         """
         cmd = [self.executable, "-p"]
 
-        # Model
-        resolved_model = self.MODEL_ALIASES.get(model, model)
-        cmd.extend(["--model", resolved_model])
+        # Model (optional - Claude will use default if not specified)
+        if model:
+            resolved_model = self.MODEL_ALIASES.get(model, model)
+            cmd.extend(["--model", resolved_model])
 
         # Permission mode (default to bypassPermissions for automation)
         permission_mode = kwargs.get("permission_mode", "bypassPermissions")

@@ -1,6 +1,7 @@
 """Data models for issue-orchestrator."""
 
 import os
+import shlex
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -325,15 +326,22 @@ class AgentConfig:
     prompt_path: Path
     # Original relative path from config - used in commands so agents read from worktree
     prompt_relative: str = ""
+    # Provider name (e.g., "claude-code", "codex") - validated against agent_runner registry
+    # If not set, uses default_agent.provider. If that's also not set, config validation fails.
+    provider: Optional[str] = None
     model: str = "sonnet"
     timeout_minutes: int = 45
+    # Provider-specific arguments (e.g., permission_mode for claude-code, approval_mode for codex)
+    provider_args: dict[str, Any] = field(default_factory=dict)
     # Permission mode for Claude CLI: default, acceptEdits, bypassPermissions, plan, dontAsk
+    # Deprecated: use provider_args instead. Kept for backwards compatibility.
     permission_mode: str = "default"
     # Skip code review for this agent (e.g., domain-expert agents that don't produce code)
     skip_review: bool = False
     # Per-agent reviewer override (uses review.default if not set)
     reviewer: Optional[str] = None
-    # Command template - {initial_prompt} is passed as positional arg to claude
+    # Command template - escape hatch to override provider-generated command
+    # If set, this is used instead of provider.build_command()
     # For non-interactive mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
     command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     # Optional override for hook verification meta-agent (e.g., "claude-code")
@@ -352,6 +360,9 @@ class AgentConfig:
         existing_work: Optional[str] = None,
     ) -> str:
         """Render the command template with actual values, including initial prompt.
+
+        If a provider is configured, uses the provider's build_command() method.
+        Otherwise, falls back to the legacy command template.
 
         Args:
             issue_number: The GitHub issue number
@@ -384,6 +395,11 @@ class AgentConfig:
         if existing_work:
             rendered_prompt = f"IMPORTANT: {existing_work}\n\n{rendered_prompt}"
 
+        # If provider is set, use provider-based command building
+        if self.provider:
+            return self._build_provider_command(rendered_prompt, prompt_for_command)
+
+        # Legacy template-based command building
         # Escape single quotes in the prompt for shell safety
         escaped_prompt = rendered_prompt.replace("'", "'\\''")
 
@@ -401,6 +417,38 @@ class AgentConfig:
             return template.format(**format_kwargs)
 
         return self.command.format(**format_kwargs)
+
+    def _build_provider_command(self, prompt: str, prompt_file: str) -> str:
+        """Build command using the configured provider.
+
+        Args:
+            prompt: The fully rendered prompt to send to the agent
+            prompt_file: Path to the prompt/instructions file (for system prompt)
+
+        Returns:
+            Shell-safe command string
+        """
+        from agent_runner import get_provider
+
+        # self.provider is guaranteed non-None here (caller checks)
+        assert self.provider is not None
+        provider = get_provider(self.provider)
+
+        # Build provider-specific kwargs from provider_args
+        kwargs = dict(self.provider_args)
+
+        # Add system prompt about reading the instructions file
+        if self.provider == "claude-code":
+            # Claude Code uses --append-system-prompt
+            kwargs.setdefault("system_prompt", f"Read {prompt_file} for your instructions.")
+            # Use permission_mode from provider_args or fall back to legacy field
+            kwargs.setdefault("permission_mode", self.permission_mode)
+
+        # Build the command (returns list[str])
+        cmd_list = provider.build_command(prompt=prompt, model=self.model, **kwargs)
+
+        # Convert to shell-safe string
+        return shlex.join(cmd_list)
 
 
 @dataclass
