@@ -18,6 +18,7 @@ from .github_client import (
     _github_adapter,
     get_issue_comments,
     get_issue_labels,
+    get_pr_uncached,
     poll_issue_label,
     POLL_BACKOFF_SECONDS,
 )
@@ -105,6 +106,7 @@ __all__ = [
     "_github_adapter",
     "get_issue_comments",
     "get_issue_labels",
+    "get_pr_uncached",
     "poll_issue_label",
     "POLL_BACKOFF_SECONDS",
     # assertions
