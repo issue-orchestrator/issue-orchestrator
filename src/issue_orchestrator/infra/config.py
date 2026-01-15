@@ -1078,132 +1078,28 @@ class Config:
 
         Call this at startup to catch configuration problems early.
         Returns empty list if valid, list of error messages otherwise.
+
+        Uses modular validators from the validators subpackage for cleaner
+        separation of concerns and easier testing.
         """
-        errors = []
+        from .validators import (
+            AgentValidator,
+            IsolationValidator,
+            ReviewWorkflowValidator,
+            TemplateValidator,
+            UnknownFieldsValidator,
+            WorktreeValidator,
+        )
 
-        # Validate agents
-        if not self.agents:
-            errors.append("No agents configured. Add at least one agent under 'agents:' in config.")
+        errors: list[str] = []
 
-        # Validate worktrees.base
-        if not self.worktree_base.is_absolute():
-            errors.append(
-                f"worktrees.base must be absolute path, got: {self.worktree_base}"
-            )
-        elif not self.worktree_base.exists():
-            errors.append(
-                f"worktrees.base does not exist: {self.worktree_base}"
-            )
-        elif not self.worktree_base.is_dir():
-            errors.append(
-                f"worktrees.base is not a directory: {self.worktree_base}"
-            )
-        valid_recreate_modes = {"delete", "create_new_branch"}
-        if self.worktree_branch_on_recreate not in valid_recreate_modes:
-            errors.append(
-                "worktree_branch_on_recreate must be one of "
-                f"{sorted(valid_recreate_modes)}, got: '{self.worktree_branch_on_recreate}'"
-            )
-
-        # Import provider registry for validation
-        from agent_runner import is_valid_provider, list_providers
-
-        # Validate default_agent.provider if set
-        if self.default_agent and self.default_agent.provider is not None:
-            if not is_valid_provider(self.default_agent.provider):
-                errors.append(
-                    f"default_agent.provider '{self.default_agent.provider}' is not valid. "
-                    f"Available: {list_providers()}"
-                )
-
-        for label, agent in self.agents.items():
-            # Validate prompt file exists
-            if not agent.prompt_path.exists():
-                errors.append(
-                    f"Agent '{label}': prompt file not found: {agent.prompt_path}"
-                )
-
-            # Validate provider is set (from agent or default_agent) or command is overridden
-            # The default command template uses claude CLI, so if no provider and default command,
-            # we treat it as using the legacy command approach
-            has_custom_command = "command" in self._raw_agents.get(label, {})
-            if agent.provider is None and not has_custom_command:
-                errors.append(
-                    f"Agent '{label}': no provider specified and no default_agent.provider set. "
-                    f"Either set 'provider' on the agent, set 'default_agent.provider', "
-                    f"or use 'command' to specify a custom command. "
-                    f"Available providers: {list_providers()}"
-                )
-            elif agent.provider is not None and not is_valid_provider(agent.provider):
-                errors.append(
-                    f"Agent '{label}': unknown provider '{agent.provider}'. "
-                    f"Available: {list_providers()}"
-                )
-
-            # Validate model is known (only for claude-code provider or legacy command)
-            # Other providers may have different model naming
-            known_claude_models = {"haiku", "sonnet", "opus"}
-            if agent.provider in (None, "claude-code") and agent.model not in known_claude_models:
-                errors.append(
-                    f"Agent '{label}': unknown model '{agent.model}'. Known: {known_claude_models}"
-                )
-
-        # Validate review workflow
-        if self.review_enabled:
-            # If reviews are enabled, default reviewer is required
-            if not self.code_review_agent:
-                errors.append(
-                    "review.enabled is true but no default reviewer set. "
-                    "Add 'review: default: agent:reviewer' to config."
-                )
-            elif self.code_review_agent not in self.agents:
-                errors.append(
-                    f"review.default '{self.code_review_agent}' not found in agents. "
-                    f"Available: {list(self.agents.keys())}"
-                )
-
-        if self.triage_review_agent and self.triage_review_agent not in self.agents:
-            errors.append(
-                f"triage_review_agent '{self.triage_review_agent}' not found in agents. "
-                f"Available: {list(self.agents.keys())}"
-            )
-
-        # Validate per-agent reviewers reference valid agents
-        for label, agent in self.agents.items():
-            if agent.reviewer and agent.reviewer not in self.agents:
-                errors.append(
-                    f"Agent '{label}': reviewer '{agent.reviewer}' not found in agents. "
-                    f"Available: {list(self.agents.keys())}"
-                )
-
-        # Validate isolation mode
-        valid_isolation_modes = {"standard", "hardened"}
-        if self.isolation.mode not in valid_isolation_modes:
-            errors.append(
-                f"isolation.mode must be one of {valid_isolation_modes}, got: '{self.isolation.mode}'"
-            )
-
-        # Validate unknown fields (errors or warnings depending on config_strict)
-        unknown_fields = self.validate_unknown_fields()
-        if unknown_fields:
-            import logging
-            logger = logging.getLogger(__name__)
-            for field_path, _ in unknown_fields:
-                msg = f"Unknown config field: '{field_path}'"
-                if self.config_strict:
-                    errors.append(msg)
-                else:
-                    logger.warning(msg)
-
-        # Validate template variables in initial_prompt and command
-        invalid_templates = self.validate_template_variables()
-        for agent_label, field_name, bad_vars in invalid_templates:
-            vars_str = ", ".join(sorted(bad_vars))
-            errors.append(
-                f"Agent '{agent_label}': invalid template variable(s) in {field_name}: {{{vars_str}}}. "
-                f"Valid: issue_number, issue_title, prompt, worktree, model, permission_mode, "
-                f"claude_args, pr_number" + (", initial_prompt" if field_name == "command" else "")
-            )
+        # Run all validators
+        errors.extend(WorktreeValidator().validate(self))
+        errors.extend(AgentValidator().validate(self))
+        errors.extend(ReviewWorkflowValidator().validate(self))
+        errors.extend(IsolationValidator().validate(self))
+        errors.extend(TemplateValidator().validate(self))
+        errors.extend(UnknownFieldsValidator().validate(self))
 
         return errors
 
