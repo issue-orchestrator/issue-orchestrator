@@ -26,21 +26,28 @@ input=$(cat)
 command=$(echo "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
 # Allow a dry-run no-verify push for reuse preflight when enabled.
-allow_flag=""
-search_dir="$PWD"
-while [[ -n "$search_dir" && "$search_dir" != "/" ]]; do
-    candidate="$search_dir/.issue-orchestrator/allow-no-verify-dry-run"
-    if [[ -f "$candidate" ]]; then
-        allow_flag="$candidate"
-        break
+python_bin="$(command -v python3 || command -v python || true)"
+allow_preflight="false"
+if [[ -n "$python_bin" ]]; then
+    if "$python_bin" tools/hooks/allow_git_push.py "$command"; then
+        allow_preflight="true"
     fi
-    search_dir="$(dirname "$search_dir")"
-done
-if echo "$command" | grep -qE "git\\s+push" \
-    && echo "$command" | grep -qE -- "--dry-run" \
-    && echo "$command" | grep -qE -- "--no-verify" \
-    && [[ -n "$allow_flag" ]] && [[ -f "$allow_flag" ]]; then
-    exit 0
+fi
+
+if [[ "$allow_preflight" == "true" ]]; then
+    allow_flag=""
+    search_dir="$PWD"
+    while [[ -n "$search_dir" && "$search_dir" != "/" ]]; do
+        candidate="$search_dir/.issue-orchestrator/allow-no-verify-dry-run"
+        if [[ -f "$candidate" ]]; then
+            allow_flag="$candidate"
+            break
+        fi
+        search_dir="$(dirname "$search_dir")"
+    done
+    if [[ -n "$allow_flag" ]] && [[ -f "$allow_flag" ]]; then
+        exit 0
+    fi
 fi
 
 # Check for --no-verify bypass attempts
