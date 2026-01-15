@@ -437,6 +437,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         label_list: list[str] = []
         if self.config.triage_review_agent:
             label_list.append(self.config.triage_review_agent)
+        if self.config.filtering.label and self.config.filtering.label not in label_list:
+            label_list.append(self.config.filtering.label)
 
         # Add explicit labels from triage config
         label_list.extend(self.config.triage.explicit_labels)

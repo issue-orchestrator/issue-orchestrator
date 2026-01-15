@@ -14,8 +14,10 @@ import time
 
 import pytest
 
+from issue_orchestrator.events import EventName
 from tests.e2e.conftest import e2e_label
 from tests.e2e.flows import E2EFlow
+from tests.e2e.fixtures import _github_adapter, get_pr_uncached
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,28 @@ def _create_concurrent_issues(flow: E2EFlow, count: int, label_prefix: str) -> l
         issues.append(issue)
         logger.info("Created issue #%s", issue.stable_id())
     return issues
+
+
+async def _wait_for_pr_and_fetch(
+    e2e_flow: E2EFlow,
+    issue,
+    *,
+    timeout_s: float,
+) -> tuple[int, dict]:
+    await e2e_flow.issue_event(
+        issue,
+        EventName.PR_VIEW_CHANGED,
+        predicate=lambda e: e.get("payload", {}).get("pr_number") is not None,
+        timeout_s=timeout_s,
+    )
+    issue_watch = e2e_flow._watcher().issue(issue.stable_id())
+    pr_number = issue_watch.pr_number()
+    if pr_number is None:
+        raise AssertionError("PR number not found after PR_VIEW_CHANGED event")
+    pr_payload = get_pr_uncached(e2e_flow.repo, pr_number)
+    if not pr_payload:
+        raise AssertionError(f"PR {pr_number} not found after creation event")
+    return pr_number, pr_payload
 
 
 @pytest.mark.e2e
@@ -104,13 +128,25 @@ class TestConcurrentPipelinePhases:
             ["agent:e2e-test", e2e_label(test_label)],
         )
         pr_number = None
+        pr_branch = None
 
         try:
             logger.info("Phase 2: Waiting for PR to be created...")
-            pr_number = await e2e_flow.pr_created(issue, timeout_s=360)
+            pr_number, pr_payload = await _wait_for_pr_and_fetch(
+                e2e_flow,
+                issue,
+                timeout_s=360,
+            )
+            pr_branch = (pr_payload.get("head") or {}).get("ref")
         finally:
             if pr_number is not None:
-                e2e_flow.close_pr(pr_number)
+                adapter = _github_adapter(e2e_flow.repo)
+                adapter.close_pr(pr_number)
+                if pr_branch:
+                    try:
+                        adapter.delete_branch(pr_branch)
+                    except Exception:
+                        pass
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(600)
@@ -131,9 +167,15 @@ class TestConcurrentPipelinePhases:
             ["agent:e2e-test", e2e_label(test_label)],
         )
         pr_number = None
+        pr_branch = None
 
         try:
-            pr_number = await e2e_flow.pr_created(issue, timeout_s=360)
+            pr_number, pr_payload = await _wait_for_pr_and_fetch(
+                e2e_flow,
+                issue,
+                timeout_s=360,
+            )
+            pr_branch = (pr_payload.get("head") or {}).get("ref")
             logger.info("Phase 3: Waiting for code review outcomes...")
             await e2e_flow.review_outcomes_any_of(
                 issues=[issue],
@@ -141,7 +183,13 @@ class TestConcurrentPipelinePhases:
             )
         finally:
             if pr_number is not None:
-                e2e_flow.close_pr(pr_number)
+                adapter = _github_adapter(e2e_flow.repo)
+                adapter.close_pr(pr_number)
+                if pr_branch:
+                    try:
+                        adapter.delete_branch(pr_branch)
+                    except Exception:
+                        pass
 
 
 # ---------------------------------------------------------------------------

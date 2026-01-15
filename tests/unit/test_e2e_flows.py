@@ -1,8 +1,9 @@
 """Unit tests for E2E flow helpers."""
 
 import pytest
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
+from issue_orchestrator.events import EventName
 from tests.e2e import flows
 
 
@@ -101,3 +102,30 @@ async def test_flow_issue_seen_requires_watcher():
     issue = Mock(stable_id=lambda: "123")
     with pytest.raises(RuntimeError):
         await flow.issue_seen(issue, timeout_s=1)
+
+
+@pytest.mark.asyncio
+async def test_flow_issue_event_delegates_to_issue_watch():
+    """Ensure issue_event delegates to IssueWatch.event with stable ID."""
+    issue_watch = Mock()
+    issue_watch.event = AsyncMock()
+    mock_watcher = Mock()
+    mock_watcher.issue.return_value = issue_watch
+    mock_watcher._snapshot_provider = Mock(url="http://localhost:19080/api/snapshot")
+
+    flow = flows.E2EFlow(repo="owner/repo", watcher=mock_watcher)
+    issue = Mock(stable_id=lambda: "123")
+
+    await flow.issue_event(
+        issue,
+        EventName.ISSUE_LABELS_CHANGED,
+        predicate=lambda e: "in-progress" in e.get("payload", {}).get("labels", []),
+        timeout_s=12.0,
+    )
+
+    mock_watcher.issue.assert_called_once_with("123")
+    issue_watch.event.assert_awaited_once()
+    args, kwargs = issue_watch.event.call_args
+    assert args[0] == EventName.ISSUE_LABELS_CHANGED
+    assert kwargs["timeout_s"] == 12.0
+    assert callable(kwargs["predicate"])

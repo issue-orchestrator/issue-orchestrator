@@ -8,6 +8,8 @@ from issue_orchestrator.adapters.github.http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
 )
+from issue_orchestrator.events import EventName
+from issue_orchestrator.infra import gh_audit
 
 
 def _client_with_transport(transport: httpx.BaseTransport) -> GitHubHttpClient:
@@ -269,3 +271,47 @@ def test_invalidate_labels_etag_clears_cache() -> None:
     assert len(third) == 1
     assert third[0]["name"] == "label-3"  # Fresh data, not cached
     assert "if-none-match" not in requests_seen[0]["headers"]
+
+
+def test_get_prs_with_label_state_all_skips_malformed_items() -> None:
+    class _Sink:
+        def __init__(self) -> None:
+            self.events: list[object] = []
+
+        def publish(self, event) -> None:
+            self.events.append(event)
+
+    sink = _Sink()
+    previous_sink = getattr(gh_audit, "_event_sink", None)
+    gh_audit.set_event_sink(sink)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = request.url.params.get("q", "")
+        if "state:open" in query:
+            return httpx.Response(200, json={
+                "items": [
+                    {"number": 10, "title": "Open PR", "html_url": "https://example.com/open"},
+                    {"title": "Malformed PR", "html_url": "https://example.com/bad"},
+                ],
+            })
+        if "state:closed" in query:
+            return httpx.Response(200, json={
+                "items": [
+                    {"number": 10, "title": "Duplicate PR", "html_url": "https://example.com/open"},
+                    {"number": 11, "title": "Closed PR", "html_url": "https://example.com/closed"},
+                ],
+            })
+        return httpx.Response(200, json={"items": []})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    try:
+        items = client.get_prs_with_label("test-label", state="all")
+    finally:
+        gh_audit.set_event_sink(previous_sink)
+
+    numbers = sorted([item["number"] for item in items])
+    assert numbers == [10, 11]
+    assert any(
+        getattr(event, "name", None) == EventName.GH_SEARCH_ITEM_MALFORMED
+        for event in sink.events
+    )

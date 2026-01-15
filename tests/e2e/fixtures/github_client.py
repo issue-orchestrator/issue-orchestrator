@@ -40,6 +40,18 @@ def get_issue_labels(repo: str, issue_number: int) -> list[str]:
     return _github_adapter(repo).get_issue_labels(issue_number)
 
 
+def get_pr_uncached(repo: str, pr_number: int) -> dict:
+    """Fetch a PR bypassing the HTTP cache (boundary verification)."""
+    adapter = _github_adapter(repo)
+    payload = adapter._client._request_json(
+        "GET",
+        f"/repos/{adapter.repo}/pulls/{pr_number}",
+        use_cache=False,
+        caller="get_pr_uncached",
+    )
+    return payload if isinstance(payload, dict) else {}
+
+
 async def poll_issue_label(
     repo: str,
     issue_number: int,

@@ -6,12 +6,13 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import httpx
 
 from ...infra import gh_audit
+from ...events import EventName
 from ... import __version__
 
 logger = logging.getLogger(__name__)
@@ -593,7 +594,54 @@ class GitHubHttpClient:
         )
         return payload if isinstance(payload, list) else []
 
+    def _valid_pr_search_items(
+        self,
+        payload: dict[str, Any],
+        label: str,
+        state: str,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for item in _search_items(payload):
+            number = item.get("number")
+            if not isinstance(number, int):
+                logger.warning(
+                    "Skipping malformed PR search item: label=%s state=%s url=%s",
+                    label,
+                    state,
+                    item.get("html_url") or item.get("url"),
+                )
+                gh_audit.emit_event(EventName.GH_SEARCH_ITEM_MALFORMED, {
+                    "label": label,
+                    "state": state,
+                    "item": {
+                        "html_url": item.get("html_url"),
+                        "url": item.get("url"),
+                        "title": item.get("title"),
+                    },
+                })
+                continue
+            items.append(item)
+        return items
+
     def get_prs_with_label(self, label: str, state: str = "open") -> list[dict[str, Any]]:
+        if state == "all":
+            items: list[dict[str, Any]] = []
+            seen: set[int] = set()
+            for st in ("open", "closed"):
+                query = f"repo:{self._config.repo} is:pr label:{label} state:{st}"
+                payload = self._request_json(
+                    "GET",
+                    "/search/issues",
+                    params={"q": query, "per_page": 100},
+                    caller="get_prs_with_label",
+                )
+                for item in self._valid_pr_search_items(payload, label=label, state=st):
+                    number = cast(int, item.get("number"))
+                    if number in seen:
+                        continue
+                    seen.add(number)
+                    items.append(item)
+            return items
         query = f"repo:{self._config.repo} is:pr label:{label} state:{state}"
         payload = self._request_json(
             "GET",
@@ -601,7 +649,7 @@ class GitHubHttpClient:
             params={"q": query, "per_page": 100},
             caller="get_prs_with_label",
         )
-        return _search_items(payload)
+        return self._valid_pr_search_items(payload, label=label, state=state)
 
     def get_prs_for_issue(self, issue_number: int) -> list[dict[str, Any]]:
         query = f"repo:{self._config.repo} head:{issue_number} OR #{issue_number}"

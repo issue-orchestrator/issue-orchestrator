@@ -61,6 +61,16 @@ def set_event_sink(sink) -> None:
     _event_sink = sink
 
 
+def emit_event(name, payload: dict[str, Any]) -> None:
+    if _event_sink is None:
+        return
+    try:
+        from ..ports import TraceEvent
+        _event_sink.publish(TraceEvent(name, payload))
+    except Exception:
+        logger.debug("Failed to emit GH audit event: %s", name, exc_info=True)
+
+
 def set_rate_limit_fetcher(fetcher) -> None:
     """Provide a callback to fetch GitHub rate limit snapshots."""
     global _rate_limit_fetcher

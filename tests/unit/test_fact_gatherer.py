@@ -250,7 +250,7 @@ class TestFactGathererTriageFacts:
 
         assert result is not None
         assert result.watch_label == "ready-for-triage"
-        mock_repository_host.get_prs_with_label.assert_called_with("ready-for-triage")
+        mock_repository_host.get_prs_with_label.assert_called_with("ready-for-triage", state="all")
 
 
 class TestFactGathererCleanupFacts:
