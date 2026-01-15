@@ -15,7 +15,6 @@ the orchestrator focused on coordination and main loop logic.
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,10 +39,9 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
-from ..infra.session_output import SessionOutputManager, ensure_session_output_dir, WORKTREE_NOTE_NAME
-from ..infra.logging_config import get_repo_log_path
-from .worktree import Worktree, WorktreePreparationError
-from ..infra.logging_config import log_context
+from ..infra.session_output import SessionOutputManager
+from .worktree import WorktreePreparationError
+from .worktree_context import WorktreeContext
 from ..ports import (
     EventSink,
     TraceEvent,
@@ -52,7 +50,7 @@ from ..ports import (
     WorkingCopy,
     CommandRunner,
 )
-from ..ports.worktree_manager import WorktreeManager, WorktreeInfo, WorktreeReuseOptions
+from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
@@ -97,12 +95,6 @@ def detect_existing_work(worktree_path: Path, working_copy: WorkingCopy) -> Opti
     except Exception as e:
         logger.warning("Failed to detect existing work: %s", e)
         return None
-
-
-def _escape_claude_project_path(path: Path) -> str:
-    """Escape a worktree path into Claude Code's project directory name."""
-    cleaned = str(path).lstrip("/")
-    return "-" + cleaned.replace("/", "-")
 
 
 def _build_worktree_error_comment(error: WorktreePreparationError) -> str:
@@ -223,52 +215,6 @@ class SessionLauncher:
                 )
         return all_ok
 
-    def _write_session_identity(self, worktree_path: Path, payload: dict[str, object]) -> None:
-        """Persist session identity details inside the worktree for later review."""
-        try:
-            session_name = str(payload.get("session_name") or "unknown")
-            log_dir = ensure_session_output_dir(worktree_path, session_name)
-            identity_path = log_dir / "identity.json"
-            payload_with_time = {
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                **payload,
-            }
-            identity_path.write_text(json.dumps(payload_with_time, indent=2, sort_keys=True))
-            logger.info(
-                "[launch] Session identity file: session=%s path=%s",
-                session_name,
-                identity_path,
-            )
-        except Exception as e:
-            logger.warning("Failed to write session identity file: %s", e)
-
-    def _write_worktree_note(
-        self,
-        worktree_path: Path,
-        session_name: str,
-        issue_number: int,
-        branch_name: str,
-        worktree_info: WorktreeInfo,
-    ) -> None:
-        """Write a JSON note about worktree reuse/creation for this session."""
-        try:
-            output_dir = ensure_session_output_dir(worktree_path, session_name)
-            note_path = output_dir / WORKTREE_NOTE_NAME
-            payload = {
-                "issue_number": issue_number,
-                "session_name": session_name,
-                "worktree_path": str(worktree_path),
-                "branch_name": branch_name,
-                "reuse_status": worktree_info.reuse_status,
-                "reuse_reason": worktree_info.reuse_reason,
-                "uncommitted_discarded": worktree_info.uncommitted_discarded,
-                "commits_discarded": worktree_info.commits_discarded,
-                "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-            note_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
-        except Exception as e:
-            logger.warning("Failed to write worktree note: %s", e)
-
     def launch_issue_session(
         self,
         issue: "IssueProtocol",
@@ -351,56 +297,28 @@ class SessionLauncher:
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
 
-        # Create worktree
-        repo_root = self.config.repo_root
+        # Create and prepare worktree using WorktreeContext
         step_start = time.time()
         logger.info(issue_log(issue.number, "Creating worktree..."))
-        worktree_base = self.config.worktree_base
-        if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
-            base_root = Path(worktree_base) if worktree_base else repo_root.parent
-            worktree_base = base_root / session_name
-            logger.info(
-                "[launch] Per-session worktree base: session=%s base=%s",
-                session_name,
-                worktree_base,
-            )
-        worktree_info = self._worktree_manager.create(
-            repo_root=repo_root,
+
+        ctx = WorktreeContext.create(
+            worktree_manager=self._worktree_manager,
+            config=self.config,
+            events=self.events,
             issue_number=issue.number,
             issue_title=issue.title,
-            worktree_base=worktree_base,
+            session_name=session_name,
+            agent_label=issue.agent_type,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(),
         )
-        worktree_path = worktree_info.path
-        branch_name = worktree_info.branch_name
 
-        # Emit event if work was discarded during worktree reset
-        if worktree_info.uncommitted_discarded > 0 or worktree_info.commits_discarded > 0:
-            self.events.publish(TraceEvent(
-                EventName.WORKTREE_RESET,
-                {
-                    "issue_number": issue.number,
-                    "branch_name": branch_name,
-                    "uncommitted_discarded": worktree_info.uncommitted_discarded,
-                    "commits_discarded": worktree_info.commits_discarded,
-                },
-            ))
-
-        # Prepare worktree - clean stale artifacts from previous sessions
-        worktree = Worktree(
-            worktree_path,
-            issue.number,
-            retain_runs=self.config.session_output_retention_runs,
-        )
-        try:
-            worktree.prepare_for_session(session_name)
-        except WorktreePreparationError as e:
+        # Handle worktree preparation errors
+        if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
-            logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), e)
-            _write_worktree_diagnostic(e)
-            # Add blocked-needs-human label and comment
+            logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
+            _write_worktree_diagnostic(ctx.error)
             needs_human_label = self.config.get_label_needs_human()
             self._apply_actions([
                 AddLabelAction(
@@ -410,7 +328,7 @@ class SessionLauncher:
                 ),
                 AddCommentAction(
                     number=issue.number,
-                    comment=_build_worktree_error_comment(e),
+                    comment=_build_worktree_error_comment(ctx.error),
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_issue")
@@ -419,29 +337,27 @@ class SessionLauncher:
                 {
                     "issue_number": issue.number,
                     "issue_title": issue.title,
-                    "reason": str(e),
+                    "reason": str(ctx.error),
                 },
             ))
-            return LaunchResult(None, False, f"Worktree preparation failed: {e}")
+            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
-        self._write_worktree_note(
-            worktree_path,
-            session_name,
-            issue.number,
-            worktree_info.branch_name,
-            worktree_info,
-        )
+        # Extract values from context for local use
+        worktree_path = ctx.worktree_path
+        branch_name = ctx.branch_name
+        worktree_info = ctx.worktree_info
+        run = ctx.run
+        claude_project_dir = ctx.claude_project_dir
 
-        claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
-        run = SessionOutputManager.start_run(
-            worktree_path=worktree_path,
-            session_name=session_name,
-            issue_number=issue.number,
-            agent_label=issue.agent_type,
-            backend=self.config.terminal_adapter or "subprocess",
-            claude_log_dir=str(claude_project_dir),
-            orchestrator_log=str(get_repo_log_path(self.config.repo_root)),
-        )
+        # Write session metadata
+        ctx.write_worktree_note()
+        ctx.write_session_identity({
+            "task": TaskKind.CODE.value,
+            "issue_key": issue_key.stable_id(),
+            "session_key": session_key.stable_id(),
+            "agent": issue.agent_type,
+        })
+
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
             run.run_id,
@@ -461,34 +377,11 @@ class SessionLauncher:
             claude_project_dir,
             claude_project_dir.exists(),
         )
-        self._write_session_identity(
-            worktree_path,
-            {
-                "session_name": session_name,
-                "task": TaskKind.CODE.value,
-                "issue_number": issue.number,
-                "issue_key": issue_key.stable_id(),
-                "session_key": session_key.stable_id(),
-                "agent": issue.agent_type,
-                "branch": branch_name,
-                "worktree": str(worktree_path),
-                "claude_project_dir": str(claude_project_dir),
-                "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", ""),
-                "claude_prompt_mode": os.environ.get("ORCHESTRATOR_CLAUDE_PROMPT_MODE", "arg"),
-            },
-        )
+
         worktree_time = time.time() - step_start
         logger.info(
             issue_log(issue.number, "Worktree ready: path=%s branch=%s rebase_status=%s time=%.1fs"),
             worktree_path, branch_name, "CONFLICT" if worktree_info.rebase_failed else "ok", worktree_time
-        )
-
-        self._write_worktree_note(
-            worktree_path,
-            session_name,
-            issue.number,
-            branch_name,
-            worktree_info,
         )
 
         # Run setup commands
@@ -688,54 +581,25 @@ class SessionLauncher:
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
         )
 
-        # Create worktree
-        repo_root = self.config.repo_root
-        worktree_base = self.config.worktree_base
-        if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
-            base_root = Path(worktree_base) if worktree_base else repo_root.parent
-            worktree_base = base_root / session_name
-            logger.info(
-                "[launch] Per-session worktree base: session=%s base=%s",
-                session_name,
-                worktree_base,
-            )
-        worktree_info = self._worktree_manager.create(
-            repo_root=repo_root,
+        # Create and prepare worktree using WorktreeContext
+        ctx = WorktreeContext.create(
+            worktree_manager=self._worktree_manager,
+            config=self.config,
+            events=self.events,
             issue_number=review.issue_number,
             issue_title=f"Review PR #{review.pr_number}",
+            session_name=session_name,
+            agent_label=agent_label,
             branch_name=review.branch_name,
-            worktree_base=worktree_base,
             enforce_hooks=False,
             reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
         )
-        worktree_path = worktree_info.path
 
-        # Emit event if work was discarded during worktree reset
-        if worktree_info.uncommitted_discarded > 0 or worktree_info.commits_discarded > 0:
-            self.events.publish(TraceEvent(
-                EventName.WORKTREE_RESET,
-                {
-                    "issue_number": review.issue_number,
-                    "pr_number": review.pr_number,
-                    "branch_name": worktree_info.branch_name,
-                    "uncommitted_discarded": worktree_info.uncommitted_discarded,
-                    "commits_discarded": worktree_info.commits_discarded,
-                },
-            ))
-
-        # Prepare worktree - clean stale artifacts from previous sessions
-        worktree = Worktree(
-            worktree_path,
-            review.issue_number,
-            retain_runs=self.config.session_output_retention_runs,
-        )
-        try:
-            worktree.prepare_for_session(session_name)
-        except WorktreePreparationError as e:
+        # Handle worktree preparation errors
+        if ctx.error:
             log_transition("review", review.pr_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
-            logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), e)
-            _write_worktree_diagnostic(e)
-            # Add blocked-needs-human label and comment to the issue
+            logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), ctx.error)
+            _write_worktree_diagnostic(ctx.error)
             needs_human_label = self.config.get_label_needs_human()
             self._apply_actions([
                 AddLabelAction(
@@ -745,7 +609,7 @@ class SessionLauncher:
                 ),
                 AddCommentAction(
                     number=review.issue_number,
-                    comment=_build_worktree_error_comment(e),
+                    comment=_build_worktree_error_comment(ctx.error),
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_review")
@@ -754,29 +618,27 @@ class SessionLauncher:
                 {
                     "issue_number": review.issue_number,
                     "pr_number": review.pr_number,
-                    "reason": str(e),
+                    "reason": str(ctx.error),
                 },
             ))
-            return LaunchResult(None, False, f"Worktree preparation failed: {e}")
+            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
-        self._write_worktree_note(
-            worktree_path,
-            session_name,
-            review.issue_number,
-            worktree_info.branch_name,
-            worktree_info,
-        )
+        # Extract values from context
+        worktree_path = ctx.worktree_path
+        worktree_info = ctx.worktree_info
+        run = ctx.run
+        claude_project_dir = ctx.claude_project_dir
 
-        claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
-        run = SessionOutputManager.start_run(
-            worktree_path=worktree_path,
-            session_name=session_name,
-            issue_number=review.issue_number,
-            agent_label=agent_label,
-            backend=self.config.terminal_adapter or "subprocess",
-            claude_log_dir=str(claude_project_dir),
-            orchestrator_log=str(get_repo_log_path(self.config.repo_root)),
-        )
+        # Write session metadata
+        ctx.write_worktree_note()
+        ctx.write_session_identity({
+            "task": TaskKind.REVIEW.value,
+            "issue_key": issue_key.stable_id(),
+            "pr_number": review.pr_number,
+            "session_key": session_key.stable_id(),
+            "agent": agent_label,
+        })
+
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
             run.run_id,
@@ -796,23 +658,6 @@ class SessionLauncher:
             session_name,
             claude_project_dir,
             claude_project_dir.exists(),
-        )
-        self._write_session_identity(
-            worktree_path,
-            {
-                "session_name": session_name,
-                "task": TaskKind.REVIEW.value,
-                "issue_number": review.issue_number,
-                "issue_key": issue_key.stable_id(),
-                "pr_number": review.pr_number,
-                "session_key": session_key.stable_id(),
-                "agent": agent_label,
-                "branch": review.branch_name,
-                "worktree": str(worktree_path),
-                "claude_project_dir": str(claude_project_dir),
-                "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", ""),
-                "claude_prompt_mode": os.environ.get("ORCHESTRATOR_CLAUDE_PROMPT_MODE", "arg"),
-            },
         )
 
         # Check if rebase failed (PR branch couldn't be updated to latest main)
@@ -962,55 +807,26 @@ class SessionLauncher:
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
         )
 
-        # Create worktree
-        repo_root = self.config.repo_root
-        worktree_base = self.config.worktree_base
-        if os.environ.get("ORCHESTRATOR_WORKTREE_PER_SESSION") == "1":
-            base_root = Path(worktree_base) if worktree_base else repo_root.parent
-            worktree_base = base_root / session_name
-            logger.info(
-                "[launch] Per-session worktree base: session=%s base=%s",
-                session_name,
-                worktree_base,
-            )
-        worktree_info = self._worktree_manager.create(
-            repo_root=repo_root,
+        # Create and prepare worktree using WorktreeContext
+        ctx = WorktreeContext.create(
+            worktree_manager=self._worktree_manager,
+            config=self.config,
+            events=self.events,
             issue_number=issue_number,
             issue_title=f"Rework #{pr_number}",
+            session_name=session_name,
+            agent_label=rework.agent_type,
             branch_name=branch_name,
-            worktree_base=worktree_base,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
         )
-        worktree_path = worktree_info.path
 
-        # Emit event if work was discarded during worktree reset
-        if worktree_info.uncommitted_discarded > 0 or worktree_info.commits_discarded > 0:
-            self.events.publish(TraceEvent(
-                EventName.WORKTREE_RESET,
-                {
-                    "issue_number": issue_number,
-                    "pr_number": pr_number,
-                    "branch_name": worktree_info.branch_name,
-                    "uncommitted_discarded": worktree_info.uncommitted_discarded,
-                    "commits_discarded": worktree_info.commits_discarded,
-                },
-            ))
-
-        # Prepare worktree - clean stale artifacts from previous sessions
-        worktree = Worktree(
-            worktree_path,
-            issue_number,
-            retain_runs=self.config.session_output_retention_runs,
-        )
-        try:
-            worktree.prepare_for_session(session_name)
-        except WorktreePreparationError as e:
+        # Handle worktree preparation errors
+        if ctx.error:
             log_transition("rework", issue_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
-            logger.error(issue_log(issue_number, "BLOCKED: worktree preparation failed for rework: %s"), e)
-            _write_worktree_diagnostic(e)
-            # Add blocked-needs-human label and comment to the issue
+            logger.error(issue_log(issue_number, "BLOCKED: worktree preparation failed for rework: %s"), ctx.error)
+            _write_worktree_diagnostic(ctx.error)
             needs_human_label = self.config.get_label_needs_human()
             self._apply_actions([
                 AddLabelAction(
@@ -1020,7 +836,7 @@ class SessionLauncher:
                 ),
                 AddCommentAction(
                     number=issue_number,
-                    comment=_build_worktree_error_comment(e),
+                    comment=_build_worktree_error_comment(ctx.error),
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_rework")
@@ -1029,21 +845,28 @@ class SessionLauncher:
                 {
                     "issue_number": issue_number,
                     "pr_number": pr_number,
-                    "reason": str(e),
+                    "reason": str(ctx.error),
                 },
             ))
-            return LaunchResult(None, False, f"Worktree preparation failed: {e}")
+            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
-        claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
-        run = SessionOutputManager.start_run(
-            worktree_path=worktree_path,
-            session_name=session_name,
-            issue_number=issue_number,
-            agent_label=rework.agent_type,
-            backend=self.config.terminal_adapter or "subprocess",
-            claude_log_dir=str(claude_project_dir),
-            orchestrator_log=str(get_repo_log_path(self.config.repo_root)),
-        )
+        # Extract values from context
+        worktree_path = ctx.worktree_path
+        worktree_info = ctx.worktree_info
+        run = ctx.run
+        claude_project_dir = ctx.claude_project_dir
+
+        # Write session metadata
+        ctx.write_worktree_note()
+        ctx.write_session_identity({
+            "task": TaskKind.REWORK.value,
+            "issue_key": issue_key.stable_id(),
+            "pr_number": pr_number,
+            "session_key": session_key.stable_id(),
+            "agent": rework.agent_type,
+            "rework_cycle": rework.rework_cycle,
+        })
+
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
             run.run_id,
@@ -1063,24 +886,6 @@ class SessionLauncher:
             session_name,
             claude_project_dir,
             claude_project_dir.exists(),
-        )
-        self._write_session_identity(
-            worktree_path,
-            {
-                "session_name": session_name,
-                "task": TaskKind.REWORK.value,
-                "issue_number": issue_number,
-                "issue_key": issue_key.stable_id(),
-                "pr_number": pr_number,
-                "session_key": session_key.stable_id(),
-                "agent": rework.agent_type,
-                "branch": branch_name,
-                "worktree": str(worktree_path),
-                "rework_cycle": rework.rework_cycle,
-                "claude_project_dir": str(claude_project_dir),
-                "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", ""),
-                "claude_prompt_mode": os.environ.get("ORCHESTRATOR_CLAUDE_PROMPT_MODE", "arg"),
-            },
         )
 
         # Check if rebase failed (rework branch couldn't be updated to latest main)

@@ -4,7 +4,7 @@ These tests verify:
 1. Issue session launching (happy path, error cases, state transitions)
 2. Review session launching (happy path, conflicts, state transitions)
 3. Rework session launching (happy path, PR resolution, conflicts)
-4. Helper functions (detect_existing_work, _escape_claude_project_path, etc.)
+4. Helper functions (detect_existing_work, etc.)
 5. Completion handling and orchestrator wrappers
 
 Tests mock at port boundaries, not internal patches, following the hexagonal architecture.
@@ -21,7 +21,6 @@ from issue_orchestrator.control.session_launcher import (
     SessionLauncher,
     LaunchResult,
     detect_existing_work,
-    _escape_claude_project_path,
     log_transition,
     handle_session_completion,
     orchestrator_launch_session,
@@ -367,28 +366,6 @@ def session_launcher(
 # =============================================================================
 # Helper Function Tests
 # =============================================================================
-
-
-class TestEscapeClaudeProjectPath:
-    """Tests for the _escape_claude_project_path function."""
-
-    def test_escapes_simple_path(self):
-        """Verify simple path escaping."""
-        path = Path("/Users/test/project")
-        result = _escape_claude_project_path(path)
-        assert result == "-Users-test-project"
-
-    def test_escapes_path_with_multiple_segments(self):
-        """Verify path with many segments."""
-        path = Path("/a/b/c/d/e")
-        result = _escape_claude_project_path(path)
-        assert result == "-a-b-c-d-e"
-
-    def test_handles_root_path(self):
-        """Verify root path handling."""
-        path = Path("/")
-        result = _escape_claude_project_path(path)
-        assert result == "-"
 
 
 class TestDetectExistingWork:
