@@ -192,6 +192,84 @@ class TestWriteRetryPrompt:
         # Error should be truncated to 2000 chars
         assert len(content) < 5000
 
+    def test_custom_template_from_file(self, tmp_path: Path):
+        """Custom template loaded from file."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        # Create custom template
+        template_dir = repo_root / ".prompts"
+        template_dir.mkdir()
+        template_file = template_dir / "retry.md"
+        template_file.write_text(
+            "CUSTOM RETRY\n"
+            "Task: {original_task}\n"
+            "Cmd: {validation_cmd}\n"
+            "Error: {error_summary}\n"
+            "Attempt {retry_count} of {max_retries}\n"
+        )
+
+        path = write_retry_prompt(
+            worktree,
+            original_prompt="Fix bug",
+            validation_cmd="make test",
+            validation_error="AssertionError",
+            retry_count=1,
+            max_retries=3,
+            template_path=".prompts/retry.md",
+            repo_root=repo_root,
+        )
+
+        content = path.read_text()
+        assert "CUSTOM RETRY" in content
+        assert "Task: Fix bug" in content
+        assert "Cmd: make test" in content
+        assert "Error: AssertionError" in content
+        assert "Attempt 2 of 4" in content  # 1-based display
+
+    def test_missing_template_uses_default(self, tmp_path: Path):
+        """Missing template file falls back to default."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        path = write_retry_prompt(
+            worktree,
+            original_prompt="Fix bug",
+            validation_cmd="make test",
+            validation_error="Error",
+            retry_count=0,
+            max_retries=3,
+            template_path=".prompts/nonexistent.md",
+            repo_root=repo_root,
+        )
+
+        content = path.read_text()
+        # Should use default template which contains agent-done instructions
+        assert "agent-done completed" in content
+        assert "agent-done blocked" in content
+
+    def test_default_template_includes_blocked_option(self, tmp_path: Path):
+        """Default template includes agent-done blocked option."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        path = write_retry_prompt(
+            worktree,
+            original_prompt="Task",
+            validation_cmd="cmd",
+            validation_error="Error",
+            retry_count=0,
+            max_retries=3,
+        )
+
+        content = path.read_text()
+        assert "agent-done blocked" in content
+        assert "cannot fix" in content.lower() or "unable" in content.lower()
+
 
 class TestClearValidationState:
     """Tests for clearing validation state."""

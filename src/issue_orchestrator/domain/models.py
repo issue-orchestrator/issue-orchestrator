@@ -351,6 +351,11 @@ class AgentConfig:
     # AI system type for log retrieval (e.g., "claude-code", "codex", "gemini", "aider")
     # If not set, auto-detected from command. Must match an entry in ai-systems.yaml.
     ai_system: Optional[str] = None
+    # Path to retry prompt template (relative to repo root). Used when validation fails.
+    # If not set, uses validation.retry_prompt_template or built-in default.
+    # Template variables: {original_task}, {validation_cmd}, {error_file}, {error_summary},
+    #                     {retry_count}, {max_retries}
+    retry_prompt_template: Optional[str] = None
 
     def get_command(
         self,

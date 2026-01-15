@@ -41,7 +41,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
 ALLOWED_AGENT_FIELDS = {
     'prompt', 'provider', 'model', 'timeout_minutes',
     'permission_mode', 'skip_review', 'reviewer', 'command',
-    'meta_agent', 'initial_prompt', 'ai_system', 'provider_args',
+    'meta_agent', 'initial_prompt', 'ai_system', 'provider_args', 'retry_prompt_template',
 }
 
 
@@ -158,6 +158,10 @@ class RetryConfig:
     """
     max_validation_retries: int = 3  # Max times to retry after validation failure
     validation_error_file: str = "validation-errors.txt"  # Filename in session output dir
+    # Default retry prompt template path (relative to repo root).
+    # Agents can override this with their own retry_prompt_template.
+    # If None, uses built-in default template.
+    retry_prompt_template: Optional[str] = None
 
 
 @dataclass
@@ -833,6 +837,7 @@ class Config:
                 "reviewer": agent_data.get("reviewer"),  # Per-agent reviewer override
                 "meta_agent": agent_data.get("meta_agent"),
                 "ai_system": agent_data.get("ai_system"),  # Explicit AI system override
+                "retry_prompt_template": agent_data.get("retry_prompt_template"),  # Per-agent retry template
             }
             if "command" in agent_data:
                 agent_kwargs["command"] = agent_data["command"]
@@ -1019,6 +1024,7 @@ class Config:
             config.retry = RetryConfig(
                 max_validation_retries=retry_data.get("max_validation_retries", 3),
                 validation_error_file=retry_data.get("validation_error_file", "validation-errors.txt"),
+                retry_prompt_template=retry_data.get("retry_prompt_template"),  # Default for all agents
             )
 
         # Parse isolation config

@@ -120,6 +120,8 @@ class SessionController:
         completion_path: str | None = None,
         validation_retry_count: int = 0,
         original_prompt: str | None = None,
+        retry_prompt_template: str | None = None,
+        repo_root: Path | None = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
@@ -339,6 +341,8 @@ class SessionController:
                         validation_error=validation_error or "Unknown error",
                         retry_count=validation_retry_count,
                         max_retries=self._max_validation_retries,
+                        template_path=retry_prompt_template,
+                        repo_root=repo_root,
                     )
                     self._emit_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
                         "issue_number": issue_number,

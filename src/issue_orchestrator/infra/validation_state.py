@@ -25,6 +25,52 @@ VALIDATION_STATE_FILE = "validation-state.json"
 VALIDATION_ERRORS_FILE = "validation-errors.txt"
 RETRY_PROMPT_FILE = "retry-prompt.md"
 
+# Default retry prompt template. Users can override by setting retry.retry_prompt_template
+# or per-agent retry_prompt_template in their config.
+# Template variables:
+#   {original_task} - The original task/prompt
+#   {validation_cmd} - The command that failed
+#   {error_file} - Path to the full error output
+#   {error_summary} - Truncated error output
+#   {retry_count} - Current attempt number (1-based)
+#   {max_retries} - Total allowed attempts
+DEFAULT_RETRY_TEMPLATE = """# Validation Retry (Attempt {retry_count}/{max_retries})
+
+The codebase was working before you started. After your changes, validation failed.
+
+## Original Task
+
+{original_task}
+
+## Validation Failure
+
+Command: `{validation_cmd}`
+
+The full error output is available at: `{error_file}`
+
+### Error Summary
+
+```
+{error_summary}
+```
+
+## Instructions
+
+Fix these validation errors. The failures may be:
+- Directly in code you changed
+- Transitively related (broken imports, renamed dependencies, violated guardrails)
+
+When you've fixed the errors, run:
+```
+agent-done completed --implementation "describe what you fixed" --problems "any remaining issues"
+```
+
+If you cannot fix the problem (e.g., it requires human decision, external dependency, or unclear requirements), run:
+```
+agent-done blocked --reason "explain why you're blocked"
+```
+"""
+
 
 @dataclass
 class ValidationState:
@@ -176,16 +222,26 @@ def write_retry_prompt(
     validation_error: str,
     retry_count: int,
     max_retries: int,
+    template_path: Optional[str] = None,
+    repo_root: Optional[Path] = None,
 ) -> Path:
     """Write retry prompt to worktree.
 
-    The retry prompt includes:
-    - Original task context
-    - Validation command that failed
-    - Error output
-    - Instructions for fixing
+    Renders a retry prompt template with validation error context and writes
+    it to the worktree. The prompt instructs the agent to fix validation errors.
 
-    Returns the path to the retry prompt file.
+    Args:
+        worktree_path: Path to the worktree
+        original_prompt: The original task prompt
+        validation_cmd: The validation command that failed
+        validation_error: Error output (will be truncated to 2000 chars)
+        retry_count: Current retry attempt (0-based, displayed as 1-based)
+        max_retries: Maximum allowed retries
+        template_path: Optional path to custom template (relative to repo_root)
+        repo_root: Repo root for resolving template_path (required if template_path set)
+
+    Returns:
+        Path to the written retry prompt file.
     """
     state_dir = _state_dir(worktree_path)
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -193,34 +249,30 @@ def write_retry_prompt(
     retry_prompt_path = _retry_prompt_file(worktree_path)
     errors_file = _errors_file(worktree_path)
 
-    content = f"""# Validation Retry (Attempt {retry_count + 1}/{max_retries + 1})
+    # Load template - custom or default
+    template = DEFAULT_RETRY_TEMPLATE
+    if template_path and repo_root:
+        template_full_path = repo_root / template_path
+        if template_full_path.exists():
+            try:
+                template = template_full_path.read_text()
+                logger.debug("Loaded retry template from %s", template_full_path)
+            except OSError as e:
+                logger.warning("Failed to load retry template from %s: %s", template_full_path, e)
+        else:
+            logger.warning("Retry template not found at %s, using default", template_full_path)
 
-The codebase was working before you started. After your changes, validation failed.
+    # Render template with variables
+    # Note: retry_count is 0-based internally, display as 1-based
+    content = template.format(
+        original_task=original_prompt,
+        validation_cmd=validation_cmd,
+        error_file=str(errors_file),
+        error_summary=validation_error[:2000],
+        retry_count=retry_count + 1,
+        max_retries=max_retries + 1,
+    )
 
-## Original Task
-
-{original_prompt}
-
-## Validation Failure
-
-Command: `{validation_cmd}`
-
-The full error output is available at: `{errors_file}`
-
-### Error Summary
-
-```
-{validation_error[:2000]}
-```
-
-## Instructions
-
-Fix these errors. The failures may be directly in code you changed, or transitively
-related (e.g., you broke an import, renamed something other code depends on, or
-violated a project guardrail).
-
-When done, run: `agent-done completed --implementation "..." --problems "..."`
-"""
     retry_prompt_path.write_text(content)
     logger.info("Wrote retry prompt to %s", retry_prompt_path)
     return retry_prompt_path
