@@ -26,12 +26,21 @@ input=$(cat)
 command=$(echo "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 
 # Allow a dry-run no-verify push for reuse preflight when enabled.
-python_bin="$(command -v python3 || command -v python || true)"
+python_bin="$(command -v python3 || true)"
+allow_script="tools/hooks/allow_git_push.py"
+
+if [[ -z "$python_bin" ]]; then
+    echo "BLOCKED: python3 is required for orchestrator hooks. Fix PATH or install python3." >&2
+    exit 2
+fi
+if [[ ! -f "$allow_script" ]]; then
+    echo "BLOCKED: missing $allow_script. Reinstall or update the repo hooks." >&2
+    exit 2
+fi
+
 allow_preflight="false"
-if [[ -n "$python_bin" ]]; then
-    if "$python_bin" tools/hooks/allow_git_push.py "$command"; then
-        allow_preflight="true"
-    fi
+if "$python_bin" "$allow_script" "$command"; then
+    allow_preflight="true"
 fi
 
 if [[ "$allow_preflight" == "true" ]]; then
