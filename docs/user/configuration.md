@@ -164,6 +164,42 @@ validation:
   timeout_seconds: 300
 ```
 
+### retry
+
+```yaml
+retry:
+  max_validation_retries: 3
+  retry_prompt_template: null
+```
+
+- `retry.max_validation_retries`: Maximum number of times to retry after validation failure (default: 3)
+- `retry.retry_prompt_template`: Path to default retry prompt template file (relative to repo root). Used when validation fails and agent needs to fix errors. If not set, uses built-in default template.
+
+**Custom retry templates** support these variables:
+- `{original_task}` - The original task/prompt
+- `{validation_cmd}` - The command that failed
+- `{error_file}` - Path to the full error output
+- `{error_summary}` - Truncated error output (max 2000 chars)
+- `{retry_count}` - Current attempt number (1-based)
+- `{max_retries}` - Total allowed attempts
+
+Example custom template at `.prompts/retry.md`:
+```markdown
+# Validation Failed (Attempt {retry_count}/{max_retries})
+
+Your changes broke the build. Original task: {original_task}
+
+Command: `{validation_cmd}`
+
+Errors:
+```
+{error_summary}
+```
+
+Fix the errors and run `agent-done completed` when done.
+If you cannot fix it, run `agent-done blocked --reason "explanation"`.
+```
+
 ### ui
 
 ```yaml
@@ -264,3 +300,24 @@ state:
 config:
   strict: false
 ```
+
+### agents
+
+```yaml
+agents:
+  "agent:developer":
+    prompt: ".issue-orchestrator/prompts/developer.md"
+    model: "sonnet"
+    timeout_minutes: 45
+    skip_review: false
+    reviewer: null
+    retry_prompt_template: null
+```
+
+**Agent fields:**
+- `prompt`: Path to prompt template file (required, relative to repo root)
+- `model`: AI model to use (e.g., "sonnet", "haiku", "opus")
+- `timeout_minutes`: Session timeout (default: from `execution.concurrency.session_timeout_minutes`)
+- `skip_review`: Skip code review for this agent's PRs (default: false)
+- `reviewer`: Override default reviewer agent for this agent's PRs
+- `retry_prompt_template`: Path to custom retry prompt template for validation failures (relative to repo root). If not set, uses `retry.retry_prompt_template` or built-in default.

@@ -56,11 +56,20 @@ def _has_github_token() -> bool:
     return False
 
 
-# Skip entire module if no GitHub token available
-pytestmark = pytest.mark.skipif(
-    not _has_github_token(),
-    reason="Orchestrator requires GitHub token (GITHUB_TOKEN, GH_TOKEN, or ISSUE_ORCH_GITHUB_TOKEN)",
-)
+@pytest.fixture(autouse=True, scope="module")
+def require_github_token():
+    """Fail fast if no GitHub token is available.
+
+    These integration tests require a real GitHub token because the orchestrator
+    subprocess creates a GitHubAdapter during startup. If no token is available,
+    the tests should FAIL (not skip) so the issue gets fixed.
+    """
+    if not _has_github_token():
+        pytest.fail(
+            "GitHub token required for integration tests!\n"
+            "Set GITHUB_TOKEN, GH_TOKEN, or ISSUE_ORCH_GITHUB_TOKEN, "
+            "or store in keyring via: issue-orchestrator keys set github"
+        )
 
 
 # --- Fixtures ---
