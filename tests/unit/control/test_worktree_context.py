@@ -1,0 +1,183 @@
+"""Unit tests for WorktreeContext.
+
+Tests for the WorktreeContext dataclass and helper functions.
+"""
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+import pytest
+
+from issue_orchestrator.control.worktree_context import (
+    WorktreeContext,
+    _escape_claude_project_path,
+)
+from issue_orchestrator.control.worktree import WorktreePreparationError
+from issue_orchestrator.ports.worktree_manager import WorktreeInfo, WorktreeReuseOptions
+
+
+class TestEscapeClaudeProjectPath:
+    """Tests for the _escape_claude_project_path function."""
+
+    def test_escapes_simple_path(self):
+        """Verify simple path escaping."""
+        path = Path("/Users/test/project")
+        result = _escape_claude_project_path(path)
+        assert result == "-Users-test-project"
+
+    def test_escapes_path_with_multiple_segments(self):
+        """Verify path with many segments."""
+        path = Path("/a/b/c/d/e")
+        result = _escape_claude_project_path(path)
+        assert result == "-a-b-c-d-e"
+
+    def test_handles_root_path(self):
+        """Verify root path handling."""
+        path = Path("/")
+        result = _escape_claude_project_path(path)
+        assert result == "-"
+
+
+class TestWorktreeContextCreate:
+    """Tests for WorktreeContext.create factory method."""
+
+    @pytest.fixture
+    def mock_worktree_manager(self, tmp_path):
+        """Create a mock worktree manager."""
+        manager = MagicMock()
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        manager.create.return_value = WorktreeInfo(
+            path=worktree_path,
+            branch_name="issue-123-fix-bug",
+            reuse_status="created",
+            reuse_reason="new worktree",
+            uncommitted_discarded=0,
+            commits_discarded=0,
+            rebase_failed=False,
+        )
+        return manager
+
+    @pytest.fixture
+    def mock_config(self, tmp_path):
+        """Create a mock config."""
+        config = MagicMock()
+        config.repo_root = tmp_path
+        config.worktree_base = None
+        config.session_output_retention_runs = 5
+        config.terminal_adapter = "subprocess"
+        return config
+
+    @pytest.fixture
+    def mock_events(self):
+        """Create a mock event sink."""
+        return MagicMock()
+
+    def test_creates_context_successfully(
+        self, mock_worktree_manager, mock_config, mock_events, tmp_path
+    ):
+        """Verify WorktreeContext.create returns a valid context."""
+        with patch(
+            "issue_orchestrator.control.worktree_context.Worktree"
+        ) as mock_worktree_cls, patch(
+            "issue_orchestrator.control.worktree_context.SessionOutputManager"
+        ) as mock_session_output:
+            mock_worktree = MagicMock()
+            mock_worktree_cls.return_value = mock_worktree
+
+            mock_run = MagicMock()
+            mock_run.run_id = "run-123"
+            mock_run.run_dir = tmp_path / "runs" / "run-123"
+            mock_session_output.start_run.return_value = mock_run
+
+            ctx = WorktreeContext.create(
+                worktree_manager=mock_worktree_manager,
+                config=mock_config,
+                events=mock_events,
+                issue_number=123,
+                issue_title="Fix bug",
+                session_name="issue-123",
+                agent_label="agent:developer",
+            )
+
+            assert ctx.error is None
+            assert ctx.issue_number == 123
+            assert ctx.session_name == "issue-123"
+            assert ctx.branch_name == "issue-123-fix-bug"
+            mock_worktree.prepare_for_session.assert_called_once_with("issue-123")
+
+    def test_returns_error_on_worktree_preparation_failure(
+        self, mock_worktree_manager, mock_config, mock_events, tmp_path
+    ):
+        """Verify WorktreeContext.create captures preparation errors."""
+        with patch(
+            "issue_orchestrator.control.worktree_context.Worktree"
+        ) as mock_worktree_cls:
+            mock_worktree = MagicMock()
+            # Get worktree path from the fixture (already created)
+            worktree_path = mock_worktree_manager.create.return_value.path
+            prep_error = WorktreePreparationError(
+                path=worktree_path,
+                issue_number=123,
+                message="Could not delete stale files",
+            )
+            mock_worktree.prepare_for_session.side_effect = prep_error
+            mock_worktree_cls.return_value = mock_worktree
+
+            ctx = WorktreeContext.create(
+                worktree_manager=mock_worktree_manager,
+                config=mock_config,
+                events=mock_events,
+                issue_number=123,
+                issue_title="Fix bug",
+                session_name="issue-123",
+                agent_label="agent:developer",
+            )
+
+            assert ctx.error is prep_error
+            assert ctx.issue_number == 123
+
+    def test_emits_worktree_reset_event_when_work_discarded(
+        self, mock_worktree_manager, mock_config, mock_events, tmp_path
+    ):
+        """Verify event is emitted when commits are discarded during reset."""
+        # Get the worktree path already created by fixture
+        worktree_path = mock_worktree_manager.create.return_value.path
+        # Update return value to include discarded work
+        mock_worktree_manager.create.return_value = WorktreeInfo(
+            path=worktree_path,
+            branch_name="issue-123-fix-bug",
+            reuse_status="reused",
+            reuse_reason="existing worktree reset",
+            uncommitted_discarded=2,
+            commits_discarded=3,
+            rebase_failed=False,
+        )
+
+        with patch(
+            "issue_orchestrator.control.worktree_context.Worktree"
+        ) as mock_worktree_cls, patch(
+            "issue_orchestrator.control.worktree_context.SessionOutputManager"
+        ) as mock_session_output:
+            mock_worktree = MagicMock()
+            mock_worktree_cls.return_value = mock_worktree
+
+            mock_run = MagicMock()
+            mock_run.run_id = "run-123"
+            mock_run.run_dir = tmp_path / "runs" / "run-123"
+            mock_session_output.start_run.return_value = mock_run
+
+            WorktreeContext.create(
+                worktree_manager=mock_worktree_manager,
+                config=mock_config,
+                events=mock_events,
+                issue_number=123,
+                issue_title="Fix bug",
+                session_name="issue-123",
+                agent_label="agent:developer",
+            )
+
+            # Verify event was emitted
+            mock_events.publish.assert_called()
+            call_args = mock_events.publish.call_args[0][0]
+            assert call_args.data["uncommitted_discarded"] == 2
+            assert call_args.data["commits_discarded"] == 3
