@@ -1,6 +1,7 @@
 """Tests for the hooks module."""
 
 import json
+import shutil
 import os
 import tempfile
 from datetime import datetime
@@ -246,6 +247,42 @@ class TestClaudeCodeAdapter:
 
         blocked = adapter._test_hook_blocks(hook_script, "git push --dry-run --no-verify")
         assert blocked
+
+    def test_hook_blocks_when_python_missing(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        jq_path = shutil.which("jq")
+        if not jq_path:
+            pytest.skip("jq not available to run hook test")
+        jq_bin = Path(jq_path)
+        bin_dir = temp_project / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "jq").symlink_to(jq_bin)
+
+        blocked, stderr = adapter._test_hook_blocks(
+            hook_script,
+            "git push --dry-run --no-verify",
+            env={"PATH": f"{bin_dir}:/bin"},
+            return_stderr=True,
+        )
+        assert blocked
+        assert "python3 is required" in stderr.lower()
+
+    def test_hook_blocks_when_allow_script_missing(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+        allow_script = temp_project / ".claude" / "hooks" / "allow_git_push.py"
+
+        allow_script.unlink()
+
+        blocked, stderr = adapter._test_hook_blocks(
+            hook_script,
+            "git push --dry-run --no-verify",
+            return_stderr=True,
+        )
+        assert blocked
+        assert "missing" in stderr.lower()
 
     def test_hook_blocks_commit_no_verify(self, adapter, temp_project):
         adapter.install_hooks(temp_project)

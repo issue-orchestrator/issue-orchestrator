@@ -389,7 +389,14 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
             checks_failed=checks_failed,
         )
 
-    def _test_hook_blocks(self, hook_script: Path, command: str) -> bool:
+    def _test_hook_blocks(
+        self,
+        hook_script: Path,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        return_stderr: bool = False,
+    ) -> bool | tuple[bool, str]:
         """Test if the hook script blocks a command.
 
         Simulates what Claude Code sends to PreToolUse hooks.
@@ -411,15 +418,19 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
                 text=True,
                 timeout=5,
                 cwd=str(project_root) if project_root else None,
+                env=env,
             )
             # Exit code 2 = blocked, 0 = allowed
-            return result.returncode == 2
+            blocked = result.returncode == 2
+            if return_stderr:
+                return blocked, result.stderr
+            return blocked
         except subprocess.TimeoutExpired:
             logger.warning(f"Hook script timed out testing: {command}")
-            return False
+            return (False, "") if return_stderr else False
         except Exception as e:
             logger.warning(f"Hook script error testing '{command}': {e}")
-            return False
+            return (False, "") if return_stderr else False
 
     def is_installed(self, project_root: Path) -> bool:
         """Check if Claude Code hooks are installed."""
