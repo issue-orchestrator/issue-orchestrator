@@ -348,3 +348,117 @@ class TestStartupManagerResumePartialWork:
         # The session should have been launched (check via callback)
         # Since we mocked the callback, we verify state wasn't modified with label removal
         mock_action_applier.apply.assert_not_called()
+
+
+class TestStartupManagerValidationRetryRecovery:
+    """Tests for validation retry state recovery."""
+
+    @pytest.mark.asyncio
+    async def test_recovers_pending_validation_retry(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """Test that pending validation retries are recovered from worktree state."""
+        from issue_orchestrator.infra.validation_state import (
+            ValidationState,
+            write_validation_state,
+            write_retry_prompt,
+        )
+
+        # Set up worktree path
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        worktree.mkdir()
+
+        # Create validation state in the worktree
+        state = ValidationState(
+            retry_count=1,
+            max_retries=3,
+            validation_cmd="make test",
+            last_error="Test failed: assertion error",
+        )
+        write_validation_state(worktree, state)
+        write_retry_prompt(
+            worktree,
+            original_prompt="Fix the login bug",
+            validation_cmd="make test",
+            validation_error="Test failed: assertion error",
+            retry_count=1,
+            max_retries=3,
+        )
+
+        # Set up issue branches to include this issue
+        mock_issue_branches_fn.return_value = {42: "42-fix-login"}
+
+        await startup_manager.run_startup(sample_state)
+
+        # Verify the pending validation retry was recovered
+        assert len(sample_state.pending_validation_retries) == 1
+        retry = sample_state.pending_validation_retries[0]
+        assert retry.issue_number == 42
+        assert retry.retry_count == 1
+        assert retry.validation_cmd == "make test"
+        assert "Test failed" in retry.validation_error
+
+    @pytest.mark.asyncio
+    async def test_no_recovery_when_no_pending_retry(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """Test that worktrees without pending retries are not recovered."""
+        # Set up worktree path without validation state
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        worktree.mkdir()
+
+        # Set up issue branches to include this issue
+        mock_issue_branches_fn.return_value = {42: "42-feature"}
+
+        await startup_manager.run_startup(sample_state)
+
+        # Verify no pending validation retry was created
+        assert len(sample_state.pending_validation_retries) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_recovery_when_max_retries_exhausted(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """Test that retries at max count are not recovered."""
+        from issue_orchestrator.infra.validation_state import (
+            ValidationState,
+            write_validation_state,
+        )
+
+        # Set up worktree path
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        worktree.mkdir()
+
+        # Create validation state at max retries
+        state = ValidationState(
+            retry_count=3,  # At max
+            max_retries=3,
+            validation_cmd="make test",
+        )
+        write_validation_state(worktree, state)
+
+        # Set up issue branches
+        mock_issue_branches_fn.return_value = {42: "42-feature"}
+
+        await startup_manager.run_startup(sample_state)
+
+        # Verify no pending retry (max exhausted)
+        assert len(sample_state.pending_validation_retries) == 0

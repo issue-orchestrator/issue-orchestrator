@@ -233,6 +233,7 @@ class SessionStatus(Enum):
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     VALIDATION_FAILED = "validation_failed"  # Agent completed but validation gate failed
+    NEEDS_VALIDATION_RETRY = "needs_validation_retry"  # Validation failed but retries remaining
 
 
 class IssueStatus(Enum):
@@ -350,6 +351,11 @@ class AgentConfig:
     # AI system type for log retrieval (e.g., "claude-code", "codex", "gemini", "aider")
     # If not set, auto-detected from command. Must match an entry in ai-systems.yaml.
     ai_system: Optional[str] = None
+    # Path to retry prompt template (relative to repo root). Used when validation fails.
+    # If not set, uses validation.retry_prompt_template or built-in default.
+    # Template variables: {original_task}, {validation_cmd}, {error_file}, {error_summary},
+    #                     {retry_count}, {max_retries}
+    retry_prompt_template: Optional[str] = None
 
     def get_command(
         self,
@@ -474,6 +480,10 @@ class Session:
     started_at: datetime = field(default_factory=datetime.now)
     status: SessionStatus = SessionStatus.RUNNING
     exit_sent: bool = False  # Track if we've already sent /exit
+    validation_retry_count: int = 0  # Number of validation retries attempted
+    original_prompt: str | None = None  # Original prompt for retry context
+    last_validation_error: str | None = None  # Last validation error for retry prompt
+    last_validation_error_file: str | None = None  # Path to validation error file
     last_output_monotonic: float | None = None
     last_output_at: float | None = None
     last_log_mtime: float | None = None
@@ -686,6 +696,25 @@ class PendingTriageReview:
     title: str  # Issue title (for display)
 
 
+@dataclass
+class PendingValidationRetry:
+    """A session that needs to be re-launched with validation retry prompt.
+
+    When validation fails but retries are remaining, the orchestrator queues
+    a retry. The next tick will re-launch the session with error context.
+    """
+    issue_number: int
+    issue_title: str
+    agent_label: str
+    worktree_path: str
+    branch_name: str
+    original_prompt: str | None
+    validation_error: str
+    validation_error_file: str | None
+    retry_count: int  # Current retry count (will be incremented on re-launch)
+    validation_cmd: str | None = None  # For building retry prompt
+
+
 # Backwards compatibility alias
 PendingCTOReview = PendingTriageReview
 
@@ -713,6 +742,7 @@ class OrchestratorState:
     pending_reworks: list[PendingRework] = field(default_factory=list)  # PRs needing rework after review
     pending_triage_reviews: list["PendingTriageReview"] = field(default_factory=list)  # Triage batch reviews waiting
     pending_cleanups: list[PendingCleanup] = field(default_factory=list)  # Sessions awaiting cleanup after review
+    pending_validation_retries: list["PendingValidationRetry"] = field(default_factory=list)  # Sessions needing validation retry
     startup_status: str = "pending"  # "pending", "running", "complete"
     startup_message: str = ""  # Current startup task description
     cached_queue_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached queue for instant pagination

@@ -135,3 +135,25 @@ logger.info("[PLAN] %d action(s)", count, extra=log_context(tick_id=5))
 
 GitHub CLI/API calls are a limited resource. Be mindful of command volume and avoid unnecessary scans or polling. Inefficient usage forces expensive systemic tuning later, so prefer cached data, targeted reads, and minimal refreshes whenever possible.
 Direct `gh` CLI usage from Python is forbidden; token resolution must use explicit config/env or OS keychain/hosts.yml.
+
+## Think Like an Owner
+
+**Goal**: Actually test the system, not just get tests passing in name only.
+
+**Anti-patterns to avoid:**
+- Using `@pytest.mark.skip` to hide infrastructure requirements - tests should FAIL if prerequisites are missing
+- Treating test failures as "not my problem" or "pre-existing issues" - if tests fail, investigate and fix
+- Writing tests that pass but don't actually verify the important behavior
+- Skipping tests because they're hard to set up - that difficulty is valuable feedback
+
+**Owner mindset:**
+- Tests exist to catch problems BEFORE production. A skipped test can't catch anything.
+- If a test requires infrastructure (GitHub token, Claude CLI, etc.), failing clearly tells someone to set it up.
+- Skipping silently means the gap in coverage goes unnoticed indefinitely.
+- The goal isn't green CI - it's a system that works correctly under real conditions.
+
+**When tests fail:**
+1. Investigate the root cause
+2. Fix the underlying issue (not just the symptom)
+3. Verify the fix actually solves the problem
+4. Never dismiss failures as "someone else's job"

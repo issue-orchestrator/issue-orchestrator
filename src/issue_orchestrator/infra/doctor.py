@@ -620,6 +620,37 @@ def run_doctor(
                 status="ok",
                 detail="All found",
             ))
+
+        # Check retry prompt templates
+        repo_root = Path.cwd()
+        missing_templates = []
+
+        # Check global retry template
+        if config.retry and config.retry.retry_prompt_template:
+            template_path = repo_root / config.retry.retry_prompt_template
+            if not template_path.exists():
+                missing_templates.append(f"retry: {config.retry.retry_prompt_template}")
+
+        # Check per-agent retry templates
+        for name, agent_cfg in config.agents.items():
+            if agent_cfg.retry_prompt_template:
+                template_path = repo_root / agent_cfg.retry_prompt_template
+                if not template_path.exists():
+                    missing_templates.append(f"{name}: {agent_cfg.retry_prompt_template}")
+
+        if missing_templates:
+            result.checks.append(Check(
+                name="Retry Templates",
+                status="error",
+                detail=f"Missing: {', '.join(missing_templates[:3])}" + ("..." if len(missing_templates) > 3 else ""),
+            ))
+        elif config.retry and config.retry.retry_prompt_template:
+            result.checks.append(Check(
+                name="Retry Templates",
+                status="ok",
+                detail="All found",
+            ))
+        # No check output if no templates configured (uses built-in default)
     else:
         result.checks.append(Check(
             name="Agents",

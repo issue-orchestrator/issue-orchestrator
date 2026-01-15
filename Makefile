@@ -95,6 +95,15 @@ test-unit-cov-html:
 test-integration:
 	$(PYTEST) tests/integration -x -q --tb=short
 
+# Integration tests excluding those that require external infrastructure (GitHub token, etc.)
+# Used in pre-push validation where full infra may not be available
+test-integration-no-infra:
+	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra"
+
+# Full integration tests including infrastructure-dependent ones (run in CI)
+test-integration-full:
+	$(PYTEST) tests/integration -x -q --tb=short
+
 # E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
 # Usage: make test-e2e        (stops on first failure)
 #        make test-e2e NOFAST=1  (runs all tests even if some fail)

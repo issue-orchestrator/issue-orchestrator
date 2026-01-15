@@ -30,6 +30,12 @@ from ..events import EventName
 from ..domain.models import SessionStatus
 from ..infra.logging_config import issue_log
 from ..infra.session_output import find_session_log_path, ensure_session_output_dir
+from ..infra.validation_state import (
+    ValidationState,
+    write_validation_state,
+    write_retry_prompt,
+    clear_validation_state,
+)
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
 
@@ -85,6 +91,7 @@ class SessionController:
         command_runner: Optional["CommandRunner"] = None,
         validation_cmd: Optional[str] = None,
         validation_timeout_seconds: int = 300,
+        max_validation_retries: int = 0,
     ):
         """Initialize the controller.
 
@@ -94,10 +101,12 @@ class SessionController:
             command_runner: For running validation commands (optional)
             validation_cmd: Validation command to run after completion (optional)
             validation_timeout_seconds: Timeout for validation command
+            max_validation_retries: Maximum number of validation retries (0 = no retries)
         """
         self.completion_processor = completion_processor
         self.events = events
         self._command_runner = command_runner
+        self._max_validation_retries = max_validation_retries
         self._validation_cmd = validation_cmd
         self._validation_timeout = validation_timeout_seconds
 
@@ -109,6 +118,10 @@ class SessionController:
         issue_title: str,
         session_name: str,
         completion_path: str | None = None,
+        validation_retry_count: int = 0,
+        original_prompt: str | None = None,
+        retry_prompt_template: str | None = None,
+        repo_root: Path | None = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
@@ -124,6 +137,8 @@ class SessionController:
             issue_number: The issue number for logging/events
             issue_title: The issue title for PR creation
             session_name: Session name for logging
+            completion_path: Optional path to completion.json (default: .issue-orchestrator/completion.json)
+            validation_retry_count: Current validation retry count (for determining if more retries allowed)
 
         Returns:
             SessionDecision with the determined status and any processing results
@@ -297,22 +312,69 @@ class SessionController:
                 worktree_path, session_name, issue_number
             )
             if not validation_passed:
-                status = SessionStatus.VALIDATION_FAILED
-                logger.warning(
-                    issue_log(issue_number, "Validation gate FAILED: error=%s error_file=%s"),
-                    validation_error[:200] if validation_error else "none",
-                    validation_error_file,
-                )
-                self._emit_event(EventName.SESSION_VALIDATION_FAILED, {
-                    "issue_number": issue_number,
-                    "session_name": session_name,
-                    "validation_cmd": self._validation_cmd,
-                    "error_file": str(validation_error_file) if validation_error_file else None,
-                })
+                # Check if retries are remaining
+                retries_remaining = validation_retry_count < self._max_validation_retries
+                if retries_remaining:
+                    status = SessionStatus.NEEDS_VALIDATION_RETRY
+                    logger.warning(
+                        issue_log(issue_number, "Validation gate FAILED (retry %d/%d): error=%s error_file=%s"),
+                        validation_retry_count + 1,
+                        self._max_validation_retries,
+                        validation_error[:200] if validation_error else "none",
+                        validation_error_file,
+                    )
+                    # Write validation state for crash recovery
+                    state = ValidationState(
+                        retry_count=validation_retry_count + 1,
+                        max_retries=self._max_validation_retries,
+                        validation_cmd=self._validation_cmd,
+                        last_error=validation_error[:2000] if validation_error else None,
+                        last_error_file=str(validation_error_file) if validation_error_file else None,
+                    )
+                    write_validation_state(worktree_path, state)
+                    # Write retry prompt for the agent
+                    task_prompt = original_prompt or issue_title
+                    write_retry_prompt(
+                        worktree_path,
+                        original_prompt=task_prompt,
+                        validation_cmd=self._validation_cmd,
+                        validation_error=validation_error or "Unknown error",
+                        retry_count=validation_retry_count,
+                        max_retries=self._max_validation_retries,
+                        template_path=retry_prompt_template,
+                        repo_root=repo_root,
+                    )
+                    self._emit_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
+                        "issue_number": issue_number,
+                        "session_name": session_name,
+                        "validation_cmd": self._validation_cmd,
+                        "error_file": str(validation_error_file) if validation_error_file else None,
+                        "retry_count": validation_retry_count,
+                        "max_retries": self._max_validation_retries,
+                    })
+                else:
+                    status = SessionStatus.VALIDATION_FAILED
+                    logger.warning(
+                        issue_log(issue_number, "Validation gate FAILED (max retries %d exhausted): error=%s error_file=%s"),
+                        self._max_validation_retries,
+                        validation_error[:200] if validation_error else "none",
+                        validation_error_file,
+                    )
+                    # Clear validation state since we're done retrying
+                    clear_validation_state(worktree_path)
+                    self._emit_event(EventName.SESSION_VALIDATION_FAILED, {
+                        "issue_number": issue_number,
+                        "session_name": session_name,
+                        "validation_cmd": self._validation_cmd,
+                        "error_file": str(validation_error_file) if validation_error_file else None,
+                        "retry_count": validation_retry_count,
+                    })
             else:
                 logger.info(
                     issue_log(issue_number, "Validation gate PASSED"),
                 )
+                # Clear validation state on success
+                clear_validation_state(worktree_path)
                 self._emit_event(EventName.SESSION_VALIDATION_PASSED, {
                     "issue_number": issue_number,
                     "session_name": session_name,

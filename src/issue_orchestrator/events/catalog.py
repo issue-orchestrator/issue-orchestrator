@@ -100,6 +100,7 @@ class EventName(str, Enum):
     SESSION_NO_OUTPUT = "session.no_output"
     SESSION_VALIDATION_PASSED = "session.validation_passed"
     SESSION_VALIDATION_FAILED = "session.validation_failed"
+    SESSION_VALIDATION_RETRY_NEEDED = "session.validation_retry_needed"
     GH_RATE_LIMIT = "gh.rate_limit"
     GH_RATE_LIMIT_WARNING = "gh.rate_limit_warning"
     GH_SEARCH_ITEM_MALFORMED = "gh.search_item_malformed"
