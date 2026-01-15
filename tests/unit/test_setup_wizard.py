@@ -251,11 +251,14 @@ class TestCheckPrerequisites:
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.run_git")
     @patch("subprocess.run")
     @patch("issue_orchestrator.adapters.github.http_client.resolve_github_token")
-    def test_all_prerequisites_met(self, mock_token, mock_subprocess, mock_git):
+    @patch("shutil.which")
+    def test_all_prerequisites_met(self, mock_which, mock_token, mock_subprocess, mock_git):
         """Test when all prerequisites are met."""
         mock_git.return_value = (True, "git version 2.40.0")
         mock_token.return_value = "token"
         mock_subprocess.return_value = Mock(returncode=0)
+        # Mock shutil.which to make providers appear available
+        mock_which.return_value = "/usr/bin/claude"
 
         checks = check_prerequisites()
 
