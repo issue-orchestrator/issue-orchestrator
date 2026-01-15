@@ -186,18 +186,19 @@ playwright-install:
 # Quick validation for agent_gate (~45s)
 validate-quick: typecheck test-unit
 
-# Standard validation - runs 5 jobs in parallel (~40s vs ~90s sequential)
-# Used by CI and pre-push hook
+# Standard validation - runs jobs in parallel (~40s vs ~90s sequential)
+# Used by CI and pre-push hook. Override with VALIDATE_JOBS.
+VALIDATE_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 5)
 validate:
-	@$(GMAKE) -j5 --output-sync=target _validate-impl
+	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-impl
 
 # Internal target for parallel execution
 _validate-impl: typecheck lint-arch test-unit test-integration test-web
 	@echo "✓ All validations passed!"
 
-# Full validation including e2e tests - runs 6 jobs in parallel
+# Full validation including e2e tests
 validate-full:
-	@$(GMAKE) -j6 --output-sync=target _validate-full-impl
+	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-full-impl
 
 # Internal target for parallel execution
 _validate-full-impl: typecheck lint-arch test-unit test-integration test-web test-e2e
