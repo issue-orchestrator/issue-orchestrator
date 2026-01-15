@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 _git = GitCLI(runner=SubprocessCommandRunner())
 
+# Git writes index.lock during operations; treat short-lived locks as in-flight.
+STALE_GIT_LOCK_SECONDS = 5
+STALE_GIT_LOCK_RECHECK_SECONDS = 2
+
 
 def _git_run(
     repo: Path,
@@ -681,6 +685,7 @@ def _next_branch_name(repo_root: Path, branch_name: str) -> str:
 def _delete_remote_branch(repo_root: Path, branch_name: str) -> bool:
     result = _git_run(
         repo_root,
+        # Bypass local hooks (agent-done) for branch deletion only.
         ["push", "--no-verify", "origin", "--delete", branch_name],
         check=False,
         env=_git_env_no_prompt(),
@@ -762,11 +767,11 @@ def _detach_worktree_branch(worktree_path: Path, branch_name: str) -> None:
             lock_path = Path(lock_match.group(1))
             if lock_path.exists():
                 age_seconds = time.time() - lock_path.stat().st_mtime
-                if age_seconds < 5:
-                    time.sleep(2)
+                if age_seconds < STALE_GIT_LOCK_SECONDS:
+                    time.sleep(STALE_GIT_LOCK_RECHECK_SECONDS)
                     if lock_path.exists():
                         age_seconds = time.time() - lock_path.stat().st_mtime
-                if age_seconds > 5:
+                if age_seconds > STALE_GIT_LOCK_SECONDS:
                     logger.warning(
                         "Removing stale git lock before detach: path=%s age=%.1fs",
                         lock_path,

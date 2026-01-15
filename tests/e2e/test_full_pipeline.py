@@ -87,6 +87,7 @@ class TestConcurrentPipelinePhases:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(600)
+    # PR creation + review checks emit extra system activity vs earlier phases.
     @pytest.mark.gh_activity_limit(test_gh_activity_limit=220, system_gh_activity_limit=20)
     async def test_pr_created_for_issue(
         self,

@@ -20,7 +20,7 @@ Usage:
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from ..infra.config import Config
 from ..events import EventName
@@ -37,6 +37,13 @@ if TYPE_CHECKING:
     from .planner import OrchestratorSnapshot
 
 logger = logging.getLogger(__name__)
+
+
+def _pr_labels(pr: Any) -> list[str]:
+    labels = getattr(pr, "labels", None)
+    if labels is None and isinstance(pr, dict):
+        labels = pr.get("labels", [])
+    return labels or []
 
 
 @dataclass
@@ -198,7 +205,11 @@ class FactGatherer:
         # Count PRs ready for triage review (include closed to avoid missing fast-closed PRs)
         prs = self.repository_host.get_prs_with_label(watch_label, state="all")
         if self.config.filtering.label:
-            prs = [pr for pr in prs if self.config.filtering.label in pr.labels]
+            prs = [
+                pr
+                for pr in prs
+                if self.config.filtering.label in _pr_labels(pr)
+            ]
         pr_count = len(prs)
         threshold = self.config.triage_review_threshold
 
@@ -219,7 +230,7 @@ class FactGatherer:
         # Collect all labels from source PRs for label inheritance
         all_labels: set[str] = set()
         for pr in prs:
-            all_labels.update(pr.labels)
+            all_labels.update(_pr_labels(pr))
 
         # Collect milestones from linked issues
         # PRs don't have milestones directly - they're on the linked issues
