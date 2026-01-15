@@ -1282,6 +1282,8 @@ def handle_session_completion(
     pr_url_hint: Optional[str] = None,
     processing_errors: Optional[list[str]] = None,
     diagnostic_path: Optional[str] = None,
+    validation_error: Optional[str] = None,
+    validation_error_file: Optional[str] = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
 
@@ -1298,8 +1300,10 @@ def handle_session_completion(
         pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
         processing_errors: Errors from completion processor (push failed, PR creation failed, etc.)
         diagnostic_path: Path to detailed failure diagnostic file (in worktree)
+        validation_error: Validation error message (for retry prompt)
+        validation_error_file: Path to validation error file (for retry prompt)
     """
-    from ..domain.models import DiscoveredReview, DiscoveredFailure
+    from ..domain.models import DiscoveredReview, DiscoveredFailure, PendingValidationRetry
 
     name = session.terminal_id
     entity = "review" if name.startswith("review-") else ("rework" if name.startswith("rework-") else "issue")
@@ -1307,6 +1311,29 @@ def handle_session_completion(
 
     # Remove by session name, NOT issue number - multiple sessions can share an issue number
     state.active_sessions = [s for s in state.active_sessions if s.terminal_id != session.terminal_id]
+
+    # Handle validation retry - queue for re-launch instead of normal completion
+    if status == SessionStatus.NEEDS_VALIDATION_RETRY:
+        logger.info(
+            "[COMPLETION] Issue #%d needs validation retry (attempt %d), queueing for re-launch",
+            session.issue.number,
+            session.validation_retry_count + 1,
+        )
+        state.pending_validation_retries.append(PendingValidationRetry(
+            issue_number=session.issue.number,
+            issue_title=session.issue.title,
+            agent_label=session.agent_label or "",
+            worktree_path=str(session.worktree_path),
+            branch_name=session.branch_name,
+            original_prompt=session.original_prompt,
+            validation_error=validation_error or "",
+            validation_error_file=validation_error_file,
+            retry_count=session.validation_retry_count,
+            validation_cmd=config.validation_cmd if hasattr(config, 'validation_cmd') else None,
+        ))
+        # Kill the terminal session but don't cleanup worktree (agent will continue there)
+        kill_session_fn(session.terminal_id)
+        return  # Skip normal completion processing
 
     # Process completion through CompletionHandler (includes policy decisions)
     if status == SessionStatus.COMPLETED:
@@ -1548,12 +1575,15 @@ def process_active_sessions(
             continue
         decision = session_controller.decide_outcome(
             obs, session.worktree_path, session.issue.number,
-            session.issue.title, session.terminal_id, session.completion_path
+            session.issue.title, session.terminal_id, session.completion_path,
+            validation_retry_count=session.validation_retry_count
         )
         # Extract pr_url, errors, and diagnostic_path from completion processor result
         pr_url_hint = None
         processing_errors = None
         diagnostic_path = None
+        validation_error = decision.validation_error
+        validation_error_file = decision.validation_error_file
         if decision.processing_result:
             if decision.processing_result.pr_url:
                 pr_url_hint = decision.processing_result.pr_url
@@ -1565,7 +1595,9 @@ def process_active_sessions(
             session, decision.status, state, completion_handler, action_applier,
             observer, worktree_manager, kill_session_fn, config,
             pr_url_hint=pr_url_hint, processing_errors=processing_errors,
-            diagnostic_path=diagnostic_path
+            diagnostic_path=diagnostic_path,
+            validation_error=validation_error,
+            validation_error_file=str(validation_error_file) if validation_error_file else None,
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:
