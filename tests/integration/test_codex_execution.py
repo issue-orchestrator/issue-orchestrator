@@ -165,8 +165,10 @@ class TestCodexWithAgentRunner:
         print(f"Codex stderr: {result.stderr}")
         print(f"Exit code: {result.exit_code}")
 
-        # Should have some output
+        # Should have some output - Codex writes session info to stderr
         assert stdout_content or result.stderr, "Expected some output from Codex"
+        assert len(result.stderr) > 0, "Session log (stderr) should not be empty"
+        assert "codex" in result.stderr.lower(), "Session log should contain Codex output"
 
 
 @pytest.mark.skipif(not is_codex_available(), reason="Codex CLI not installed")
@@ -390,9 +392,11 @@ class TestCodexWithAgentRunnerFullPath:
         print(f"  stdout: {result.stdout[:500] if result.stdout else 'empty'}")
         print(f"  stderr: {result.stderr[:500] if result.stderr else 'empty'}")
 
-        # Verify log files exist
+        # Verify log files exist and stderr has content (Codex writes to stderr)
         assert result.stdout_path.exists()
         assert result.stderr_path.exists()
+        assert len(result.stderr) > 0, "Session log (stderr) should not be empty"
+        assert "codex" in result.stderr.lower(), "Session log should contain Codex output"
 
         # Check for completion.json
         completion_files = list(io_dir.glob("completion*.json"))
