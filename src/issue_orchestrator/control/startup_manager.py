@@ -25,6 +25,7 @@ from ..domain.models import (
     OrchestratorState,
     PendingReview,
     PendingTriageReview,
+    PendingValidationRetry,
     Session,
     ORCHESTRATOR_PR_MARKER,
 )
@@ -35,6 +36,8 @@ from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost, HookVe
 from ..ports.session_runner import DiscoveredSession
 from ..infra import labels
 from ..infra import gh_audit
+from ..infra.validation_state import has_pending_retry, read_validation_state, get_retry_prompt_path
+from .worktree_manager import get_worktree_path
 
 
 
@@ -150,13 +153,16 @@ class StartupManager:
         if self.config.triage_review_agent:
             await self._recover_pending_triage(state)
 
-        # Step 8: Recover orphaned cleanups
+        # Step 8: Recover pending validation retries (crash recovery)
+        self._recover_pending_validation_retries(state, issue_branches)
+
+        # Step 9: Recover orphaned cleanups
         self._recover_orphaned_cleanups(state)
 
-        # Step 9: Resume issues with partial work
+        # Step 10: Resume issues with partial work
         await self._resume_partial_work(state, issues_to_resume)
 
-        # Step 10: Audit and cache the queue
+        # Step 11: Audit and cache the queue
         state.startup_message = "Auditing queue..."
         from ..infra.audit import audit_queue, print_audit
         audit_entries = audit_queue(self.config, state, self.repository_host, issue_branches=issue_branches)
@@ -342,6 +348,70 @@ class StartupManager:
 
         if state.pending_triage_reviews:
             print(f"  Found {len(state.pending_triage_reviews)} triage review(s) to process")
+
+    def _recover_pending_validation_retries(
+        self,
+        state: OrchestratorState,
+        issue_branches: dict[int, str],
+    ) -> None:
+        """Recover validation retries from before restart.
+
+        Scans worktrees for issues that were mid-validation-retry when
+        the orchestrator restarted. Re-queues them for immediate retry.
+
+        Args:
+            state: Orchestrator state to update
+            issue_branches: Map of issue numbers to branch names
+        """
+        recovered = 0
+        for issue_number, branch_name in issue_branches.items():
+            worktree_path = get_worktree_path(self.config, issue_number)
+            if not worktree_path.exists():
+                continue
+
+            # Check if this worktree has a pending validation retry
+            if not has_pending_retry(worktree_path):
+                continue
+
+            # Read the validation state to get retry details
+            validation_state = read_validation_state(worktree_path)
+            if validation_state is None:
+                continue
+
+            # Get the retry prompt path if it exists
+            retry_prompt_path = get_retry_prompt_path(worktree_path)
+            retry_prompt = None
+            if retry_prompt_path:
+                try:
+                    retry_prompt = retry_prompt_path.read_text()
+                except OSError:
+                    pass
+
+            # Create a pending validation retry entry
+            pending_retry = PendingValidationRetry(
+                issue_number=issue_number,
+                issue_title=f"Issue #{issue_number}",  # We don't have the full title here
+                agent_label="",  # Will be determined when launching
+                worktree_path=str(worktree_path),
+                branch_name=branch_name,
+                original_prompt=retry_prompt,
+                validation_error=validation_state.last_error or "Unknown validation error",
+                validation_error_file=validation_state.last_error_file,
+                retry_count=validation_state.retry_count,
+                validation_cmd=validation_state.validation_cmd,
+            )
+            state.pending_validation_retries.append(pending_retry)
+            recovered += 1
+
+            logger.info(
+                "[startup] Recovered pending validation retry: issue=%d retry_count=%d/%d",
+                issue_number,
+                validation_state.retry_count,
+                validation_state.max_retries,
+            )
+
+        if recovered:
+            print(f"\n🔄 Recovered {recovered} pending validation retry(ies)")
 
     def _recover_orphaned_cleanups(self, state: OrchestratorState) -> None:
         """Recover orphaned cleanups from before restart.
