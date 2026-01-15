@@ -253,17 +253,26 @@ class TestClaudeCodeAdapter:
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
         jq_path = shutil.which("jq")
-        if not jq_path:
-            pytest.skip("jq not available to run hook test")
+        grep_path = shutil.which("grep")
+        dirname_path = shutil.which("dirname")
+        cat_path = shutil.which("cat")
+        if not jq_path or not grep_path or not dirname_path or not cat_path:
+            pytest.skip("Required binaries (jq/grep/dirname/cat) not available to run hook test")
         jq_bin = Path(jq_path)
+        grep_bin = Path(grep_path)
+        dirname_bin = Path(dirname_path)
+        cat_bin = Path(cat_path)
         bin_dir = temp_project / "bin"
         bin_dir.mkdir()
         (bin_dir / "jq").symlink_to(jq_bin)
+        (bin_dir / "grep").symlink_to(grep_bin)
+        (bin_dir / "dirname").symlink_to(dirname_bin)
+        (bin_dir / "cat").symlink_to(cat_bin)
 
         blocked, stderr = adapter._test_hook_blocks(
             hook_script,
             "git push --dry-run --no-verify",
-            env={"PATH": f"{bin_dir}:/bin"},
+            env={"PATH": str(bin_dir)},
             return_stderr=True,
         )
         assert blocked
