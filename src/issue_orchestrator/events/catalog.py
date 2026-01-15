@@ -102,6 +102,7 @@ class EventName(str, Enum):
     SESSION_VALIDATION_FAILED = "session.validation_failed"
     GH_RATE_LIMIT = "gh.rate_limit"
     GH_RATE_LIMIT_WARNING = "gh.rate_limit_warning"
+    GH_SEARCH_ITEM_MALFORMED = "gh.search_item_malformed"
 
     # =========================================================================
     # Worktree operations
