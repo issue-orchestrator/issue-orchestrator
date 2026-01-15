@@ -182,14 +182,14 @@ class TestLaunchSessionAction:
         applier.session_launcher = callback
 
         action = LaunchSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
         )
 
         result = applier.apply(action)
 
         assert result.success
-        callback.assert_called_once_with("issue", 123)
+        callback.assert_called_once_with(SessionType.ISSUE, 123)
         assert result.details["session_name"] == "issue-123"
         assert result.details["issue_number"] == 123
 
@@ -199,7 +199,7 @@ class TestLaunchSessionAction:
         applier.session_launcher = callback
 
         action = LaunchSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
         )
 
@@ -211,7 +211,7 @@ class TestLaunchSessionAction:
     def test_launch_session_no_callback_no_command(self, applier):
         """Test launch session without callback or command fails."""
         action = LaunchSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
         )
 
@@ -223,7 +223,7 @@ class TestLaunchSessionAction:
     def test_launch_session_fallback_with_command(self, applier, mock_sessions, tmp_path):
         """Test launch session fallback when command provided."""
         action = LaunchSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
             command="claude work",
             working_dir=str(tmp_path),
@@ -240,7 +240,7 @@ class TestLaunchSessionAction:
         mock_sessions.exists.return_value = True
 
         action = LaunchSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
             command="claude work",
             working_dir=str(tmp_path),
@@ -260,7 +260,7 @@ class TestStopSessionAction:
         mock_sessions.exists.return_value = True
 
         action = StopSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
         )
 
@@ -274,7 +274,7 @@ class TestStopSessionAction:
         mock_sessions.exists.return_value = False
 
         action = StopSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
         )
 

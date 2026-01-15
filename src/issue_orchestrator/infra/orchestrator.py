@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Optional, cast
 
 if TYPE_CHECKING:
     from ..control.planner import Plan
-    from ..control.session_manager import SessionRef
+    from ..control.session_manager import SessionRef, SessionType
     from ..ports.session_runner import DiscoveredSession
 
 from ..events import EventName, EventContext, EventHub
@@ -160,7 +160,7 @@ class Orchestrator:
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str: return get_session_name(number, session_type)
     def _get_worktree_path(self, issue_number: int, agent_config: AgentConfig) -> Path: return get_worktree_path(self.config, issue_number, agent_config)
-    def _session_launcher_callback(self, session_type: str, number: int) -> Optional[Session]: return _session_launcher_callback(session_type, number, self._launch_issue_by_number, self._launch_review_by_number, self._launch_rework_by_number, self._launch_triage_by_number)
+    def _session_launcher_callback(self, session_type: "SessionType", number: int) -> Optional[Session]: return _session_launcher_callback(session_type, number, self._launch_issue_by_number, self._launch_review_by_number, self._launch_rework_by_number, self._launch_triage_by_number)
     def _launch_issue_by_number(self, n: int) -> Optional[Session]: return _gw_launch_issue_by_number(n, self.state.cached_queue_issues, self.launch_session, lambda: setattr(self.state, 'issues_started_count', self.state.issues_started_count + 1))
     def _launch_review_by_number(self, n: int) -> Optional[Session]: return _ch_launch_review_by_number(n, self.state.pending_reviews, self.launch_review_session)
     def _launch_rework_by_number(self, n: int) -> Optional[Session]: return _ch_launch_rework_by_number(n, self.state.pending_reworks, self.launch_rework_session)

@@ -38,6 +38,7 @@ from issue_orchestrator.control.session_launcher import (
     get_session_machine,
 )
 from issue_orchestrator.control.actions import ActionResult, AddLabelAction, RemoveLabelAction
+from issue_orchestrator.control.session_manager import SessionType
 from issue_orchestrator.domain.models import (
     Issue,
     Session,
@@ -1134,21 +1135,10 @@ class TestSessionLauncherCallback:
             calls.append(("triage", n))
             return None
 
-        session_launcher_callback("issue", 123, issue_fn, review_fn, rework_fn, triage_fn)
-        session_launcher_callback("review", 456, issue_fn, review_fn, rework_fn, triage_fn)
+        session_launcher_callback(SessionType.ISSUE, 123, issue_fn, review_fn, rework_fn, triage_fn)
+        session_launcher_callback(SessionType.REVIEW, 456, issue_fn, review_fn, rework_fn, triage_fn)
 
         assert calls == [("issue", 123), ("review", 456)]
-
-    def test_returns_none_for_unknown_type(self):
-        """Verify returns None for unknown session type."""
-        result = session_launcher_callback(
-            "unknown", 123,
-            lambda n: "issue",
-            lambda n: "review",
-            lambda n: "rework",
-            lambda n: "triage",
-        )
-        assert result is None
 
 
 # =============================================================================

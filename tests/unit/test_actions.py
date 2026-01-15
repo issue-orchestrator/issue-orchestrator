@@ -149,7 +149,7 @@ class TestActionDataclasses:
     def test_launch_session_action(self):
         """Test LaunchSessionAction creation."""
         action = LaunchSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
             command="claude",
             working_dir="/path/to/worktree",
@@ -157,7 +157,7 @@ class TestActionDataclasses:
         )
 
         assert action.action_type == ActionType.LAUNCH_SESSION
-        assert action.session_type == "issue"
+        assert action.session_type == SessionType.ISSUE
         assert action.number == 123
 
     def test_actions_are_frozen(self):
@@ -275,7 +275,7 @@ class TestActionApplier:
     def test_apply_launch_session(self, applier, mock_runner):
         """Test applying LaunchSessionAction."""
         action = LaunchSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
             command="claude",
             working_dir="/path/to/worktree",
@@ -290,7 +290,7 @@ class TestActionApplier:
         """Test launch session skips if already running."""
         mock_runner.sessions[123] = {}  # Pre-create
         action = LaunchSessionAction(
-            session_type="issue",
+            session_type=SessionType.ISSUE,
             number=123,
             command="claude",
             working_dir="/path",
@@ -303,7 +303,7 @@ class TestActionApplier:
     def test_apply_stop_session(self, applier, mock_runner):
         """Test applying StopSessionAction."""
         mock_runner.sessions[123] = {}  # Pre-create
-        action = StopSessionAction(session_type="issue", number=123)
+        action = StopSessionAction(session_type=SessionType.ISSUE, number=123)
 
         result = applier.apply(action)
 
@@ -312,7 +312,7 @@ class TestActionApplier:
 
     def test_apply_stop_session_skips_if_not_running(self, applier, mock_runner):
         """Test stop session skips if not running."""
-        action = StopSessionAction(session_type="issue", number=123)
+        action = StopSessionAction(session_type=SessionType.ISSUE, number=123)
 
         result = applier.apply(action)
 

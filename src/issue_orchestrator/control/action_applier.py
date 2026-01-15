@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 # Type alias for session launcher callback
 # Takes (session_type, number) and returns Optional[Session]
 # This allows orchestrator to inject entity lookup + SessionLauncher
-SessionLauncherCallback = Callable[[str, int], Optional[Session]]
+SessionLauncherCallback = Callable[[SessionType, int], Optional[Session]]
 
 
 @dataclass
@@ -421,21 +421,7 @@ class ActionApplier:
                 "No session_launcher callback and action missing command/working_dir"
             )
 
-        # Map session type string to enum
-        session_type_map = {
-            "issue": SessionType.ISSUE,
-            "review": SessionType.REVIEW,
-            "rework": SessionType.REWORK,
-            "triage": SessionType.TRIAGE,
-        }
-
-        session_type = session_type_map.get(action.session_type)
-        if session_type is None:
-            return ActionResult.fail(
-                action, f"Unknown session type: {action.session_type}"
-            )
-
-        ref = SessionRef(session_type=session_type, number=action.number)
+        ref = SessionRef(session_type=action.session_type, number=action.number)
 
         # Check if already running
         if self.sessions.exists(ref):
@@ -459,20 +445,7 @@ class ActionApplier:
         """Stop a terminal session."""
         assert isinstance(action, StopSessionAction)
 
-        session_type_map = {
-            "issue": SessionType.ISSUE,
-            "review": SessionType.REVIEW,
-            "rework": SessionType.REWORK,
-            "triage": SessionType.TRIAGE,
-        }
-
-        session_type = session_type_map.get(action.session_type)
-        if session_type is None:
-            return ActionResult.fail(
-                action, f"Unknown session type: {action.session_type}"
-            )
-
-        ref = SessionRef(session_type=session_type, number=action.number)
+        ref = SessionRef(session_type=action.session_type, number=action.number)
 
         # Check if running
         if not self.sessions.exists(ref):

@@ -15,7 +15,7 @@ from issue_orchestrator.control.planner import (
     SkippedItem,
 )
 from issue_orchestrator.control.scheduler import Scheduler
-from issue_orchestrator.control.actions import ActionType, LaunchSessionAction
+from issue_orchestrator.control.actions import ActionType, LaunchSessionAction, SessionType
 from issue_orchestrator.domain.models import (
     Issue,
     Session,
@@ -163,7 +163,7 @@ class TestPlanIssues:
         assert plan.action_count == 1
         action = plan.actions[0]
         assert isinstance(action, LaunchSessionAction)
-        assert action.session_type == "issue"
+        assert action.session_type == SessionType.ISSUE
         assert action.number == 42
 
     def test_plans_multiple_issues_up_to_capacity(self):
@@ -256,7 +256,7 @@ class TestPlanReviews:
         plan = planner.plan(snapshot)
 
         # Should have review launch action
-        review_actions = [a for a in plan.actions if a.session_type == "review"]
+        review_actions = [a for a in plan.actions if a.session_type == SessionType.REVIEW]
         assert len(review_actions) == 1
         assert review_actions[0].number == 100
 
@@ -268,7 +268,7 @@ class TestPlanHelpers:
         """Plan.has_action_for correctly identifies planned actions."""
         plan = Plan(
             actions=(
-                LaunchSessionAction(session_type="issue", number=42, command="", working_dir=""),
+                LaunchSessionAction(session_type=SessionType.ISSUE, number=42, command="", working_dir=""),
             ),
             skipped=(),
         )
@@ -1219,7 +1219,7 @@ class TestActionPriority:
         # Should launch review, NOT issue (only 1 slot available)
         launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
         assert len(launch_actions) == 1
-        assert launch_actions[0].session_type == "review"
+        assert launch_actions[0].session_type == SessionType.REVIEW
         assert launch_actions[0].number == 100
 
     def test_reworks_take_priority_over_triage(self):
@@ -1270,7 +1270,7 @@ class TestActionPriority:
         # Should launch rework (priority over triage)
         launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
         assert len(launch_actions) == 1
-        assert launch_actions[0].session_type == "rework"
+        assert launch_actions[0].session_type == SessionType.REWORK
 
     def test_no_new_issues_when_pending_reviews_exist(self):
         """New issue work is blocked when pending reviews exist."""
@@ -1302,7 +1302,7 @@ class TestActionPriority:
         # Should NOT launch issues because pending_reviews is non-empty
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == "issue"
+            if a.session_type == SessionType.ISSUE
         ]
         assert len(issue_actions) == 0
 
@@ -1324,7 +1324,7 @@ class TestActionPriority:
         # Should launch issues since nothing else is pending
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == "issue"
+            if a.session_type == SessionType.ISSUE
         ]
         assert len(issue_actions) == 2
 
@@ -1483,7 +1483,7 @@ class TestEdgeCases:
 
         issue_launches = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == "issue"
+            if a.session_type == SessionType.ISSUE
         ]
 
         # Issue 42 is excluded (in discovered_reviews)
@@ -1573,7 +1573,7 @@ class TestEdgeCases:
         # Should launch exactly 2 sessions (max capacity), all reviews (higher priority)
         launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
         assert len(launch_actions) == 2
-        assert all(a.session_type == "review" for a in launch_actions)
+        assert all(a.session_type == SessionType.REVIEW for a in launch_actions)
 
 
 class TestPlanQueueActionsOnlyPhase:
@@ -1751,7 +1751,7 @@ class TestReworkEscalationWithinReworkPlanning:
         escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
         launch_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == "rework"
+            if a.session_type == SessionType.REWORK
         ]
 
         assert len(escalate_actions) == 1
@@ -1789,7 +1789,7 @@ class TestReworkEscalationWithinReworkPlanning:
         # Should launch, not escalate
         launch_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == "rework"
+            if a.session_type == SessionType.REWORK
         ]
         escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
 
@@ -1947,7 +1947,7 @@ class TestMultiplePendingTypesInteraction:
         # Issues should NOT be launched because pending_triage is non-empty
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == "issue"
+            if a.session_type == SessionType.ISSUE
         ]
         assert len(issue_actions) == 0
 
@@ -2010,12 +2010,12 @@ class TestMultiplePendingTypesInteraction:
 
         # Priority order: review first, then rework, then triage
         types = [a.session_type for a in launch_actions]
-        assert types[0] == "review"
-        assert types[1] == "rework"
-        assert types[2] == "triage"
+        assert types[0] == SessionType.REVIEW
+        assert types[1] == SessionType.REWORK
+        assert types[2] == SessionType.TRIAGE
 
         # No issue launches (pending work exists)
-        issue_launches = [a for a in launch_actions if a.session_type == "issue"]
+        issue_launches = [a for a in launch_actions if a.session_type == SessionType.ISSUE]
         assert len(issue_launches) == 0
 
 
