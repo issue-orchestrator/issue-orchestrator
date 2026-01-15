@@ -5,11 +5,18 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional, Any
 
+from issue_orchestrator.events.catalog import EventName
+
 from .materializer import MaterializedView
 from .errors import WaitTimeout, NoProgressTimeout
 from .config import WatcherConfig
 
 Predicate = Callable[[], bool]
+
+def _event_name(event_type: str | EventName) -> str:
+    if isinstance(event_type, EventName):
+        return event_type.value
+    return event_type
 
 def _now() -> float:
     return time.monotonic()
@@ -121,6 +128,27 @@ class IssueWatch:
         await self._await(pred, timeout_s=timeout_s or self.cfg.timeout_fast_s, name=f"pr_has_label({label})")
         return self
 
+    async def event(
+        self,
+        event_type: str | EventName,
+        *,
+        predicate: Callable[[dict[str, Any]], bool] | None = None,
+        timeout_s: Optional[float] = None,
+    ) -> "IssueWatch":
+        etype = _event_name(event_type)
+
+        def pred() -> bool:
+            events = self.view.issue_events.get(self.issue_key, [])
+            for event in reversed(events):
+                if event.get("type") != etype:
+                    continue
+                if predicate is None or predicate(event):
+                    return True
+            return False
+
+        await self._await(pred, timeout_s=timeout_s or self.cfg.timeout_fast_s, name=f"event({etype})")
+        return self
+
     async def not_thrashing(self) -> "IssueWatch":
         def pred():
             iv = self._issue()
@@ -177,4 +205,24 @@ class SystemWatch:
 
     async def idle(self, *, timeout_s: Optional[float] = None) -> "SystemWatch":
         await self._await(lambda: self.view.orchestrator.idle, timeout_s=timeout_s or self.cfg.timeout_idle_s, name="idle()")
+        return self
+
+    async def event(
+        self,
+        event_type: str | EventName,
+        *,
+        predicate: Callable[[dict[str, Any]], bool] | None = None,
+        timeout_s: Optional[float] = None,
+    ) -> "SystemWatch":
+        etype = _event_name(event_type)
+
+        def pred() -> bool:
+            for event in reversed(self.view.global_events):
+                if event.get("type") != etype:
+                    continue
+                if predicate is None or predicate(event):
+                    return True
+            return False
+
+        await self._await(pred, timeout_s=timeout_s or self.cfg.timeout_fast_s, name=f"event({etype})")
         return self

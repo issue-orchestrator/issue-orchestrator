@@ -356,6 +356,29 @@ class E2EFlow:
             fail_on_blocked_failed=self.fail_on_blocked_failed,
         )
 
+    async def event(
+        self,
+        event_type: str | "EventName",
+        predicate: Callable[[dict], bool] | None = None,
+        timeout_s: float = 60,
+    ) -> None:
+        self._refresh_if_needed()
+        await self._watcher().system().event(event_type, predicate=predicate, timeout_s=timeout_s)
+
+    async def issue_event(
+        self,
+        issue: IssueKey,
+        event_type: str | "EventName",
+        predicate: Callable[[dict], bool] | None = None,
+        timeout_s: float = 60,
+    ) -> None:
+        self._refresh_if_needed()
+        await self._watcher().issue(issue.stable_id()).event(
+            event_type,
+            predicate=predicate,
+            timeout_s=timeout_s,
+        )
+
     async def pr_created(self, issue: IssueKey, timeout_s: float = 120) -> int:
         self._refresh_if_needed()
         watcher = self._watcher()
