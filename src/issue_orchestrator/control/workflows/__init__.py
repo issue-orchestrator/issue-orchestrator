@@ -14,11 +14,13 @@ Architecture principle: workflows contain POLICY (what should happen),
 not MECHANICS (how to do it). Mechanics live in execution adapters.
 """
 
+from .decision_base import WorkflowDecision
 from .review_workflow import ReviewWorkflow, ReviewDecision
 from .rework_workflow import ReworkWorkflow, ReworkDecision
 from .triage_workflow import TriageWorkflow, TriageDecision
 
 __all__ = [
+    "WorkflowDecision",
     "ReviewWorkflow",
     "ReviewDecision",
     "ReworkWorkflow",

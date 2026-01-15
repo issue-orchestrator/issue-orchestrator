@@ -208,7 +208,7 @@ class TestReviewAfterCodingFlow:
         mock_review_workflow.is_configured.return_value = True
         mock_review_workflow.should_launch_reviews.return_value = ReviewDecision(
             should_launch=True,
-            reviews_to_launch=(pending,),
+            items_to_launch=(pending,),
             skip_reason=None,
             available_capacity=3,
         )

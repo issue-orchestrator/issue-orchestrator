@@ -15,47 +15,30 @@ Usage:
 """
 
 import logging
-from dataclasses import dataclass, field
-from typing import Optional, Sequence
+from dataclasses import dataclass
+from typing import Sequence
 
 from ...infra.config import Config
 from ...events import EventName
 from ...domain.models import PendingReview
 from ...ports import EventSink, TraceEvent
+from .decision_base import WorkflowDecision
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class ReviewDecision:
+class ReviewDecision(WorkflowDecision[PendingReview]):
     """Decision about what review actions to take.
 
     This is the output of the workflow's decision logic.
     It describes WHAT should happen, not HOW.
     """
 
-    should_launch: bool = False
-    reviews_to_launch: tuple[PendingReview, ...] = field(default_factory=tuple)
-    skip_reason: Optional[str] = None
-    available_capacity: int = 0
-
-    @classmethod
-    def skip(cls, reason: str) -> "ReviewDecision":
-        """Create a decision to skip review processing."""
-        return cls(should_launch=False, skip_reason=reason)
-
-    @classmethod
-    def launch(
-        cls,
-        reviews: Sequence[PendingReview],
-        capacity: int,
-    ) -> "ReviewDecision":
-        """Create a decision to launch reviews."""
-        return cls(
-            should_launch=True,
-            reviews_to_launch=tuple(reviews),
-            available_capacity=capacity,
-        )
+    @property
+    def reviews_to_launch(self) -> tuple[PendingReview, ...]:
+        """Alias for items_to_launch for backwards compatibility."""
+        return self.items_to_launch
 
 
 class ReviewWorkflow:

@@ -14,7 +14,7 @@ Usage:
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
@@ -22,39 +22,22 @@ from ...infra.config import Config
 from ...events import EventName
 from ...domain.models import PendingTriageReview
 from ...ports import EventSink, TraceEvent
+from .decision_base import WorkflowDecision
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class TriageDecision:
+class TriageDecision(WorkflowDecision[PendingTriageReview]):
     """Decision about what triage actions to take.
 
     This is the output of the workflow's decision logic.
     """
 
-    should_launch: bool = False
-    triage_to_launch: tuple[PendingTriageReview, ...] = field(default_factory=tuple)
-    skip_reason: Optional[str] = None
-    available_capacity: int = 0
-
-    @classmethod
-    def skip(cls, reason: str) -> "TriageDecision":
-        """Create a decision to skip triage processing."""
-        return cls(should_launch=False, skip_reason=reason)
-
-    @classmethod
-    def launch(
-        cls,
-        triage: Sequence[PendingTriageReview],
-        capacity: int,
-    ) -> "TriageDecision":
-        """Create a decision to launch triage sessions."""
-        return cls(
-            should_launch=True,
-            triage_to_launch=tuple(triage),
-            available_capacity=capacity,
-        )
+    @property
+    def triage_to_launch(self) -> tuple[PendingTriageReview, ...]:
+        """Alias for items_to_launch for backwards compatibility."""
+        return self.items_to_launch
 
 
 @dataclass(frozen=True)
