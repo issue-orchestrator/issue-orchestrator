@@ -15,46 +15,29 @@ Usage:
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 from ...infra.config import Config
 from ...events import EventName
 from ...domain.models import PendingRework
 from ...ports import EventSink, TraceEvent
+from .decision_base import WorkflowDecision
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class ReworkDecision:
+class ReworkDecision(WorkflowDecision[PendingRework]):
     """Decision about what rework actions to take.
 
     This is the output of the workflow's decision logic.
     """
 
-    should_launch: bool = False
-    reworks_to_launch: tuple[PendingRework, ...] = field(default_factory=tuple)
-    skip_reason: Optional[str] = None
-    available_capacity: int = 0
-
-    @classmethod
-    def skip(cls, reason: str) -> "ReworkDecision":
-        """Create a decision to skip rework processing."""
-        return cls(should_launch=False, skip_reason=reason)
-
-    @classmethod
-    def launch(
-        cls,
-        reworks: Sequence[PendingRework],
-        capacity: int,
-    ) -> "ReworkDecision":
-        """Create a decision to launch reworks."""
-        return cls(
-            should_launch=True,
-            reworks_to_launch=tuple(reworks),
-            available_capacity=capacity,
-        )
+    @property
+    def reworks_to_launch(self) -> tuple[PendingRework, ...]:
+        """Alias for items_to_launch for backwards compatibility."""
+        return self.items_to_launch
 
 
 @dataclass(frozen=True)
