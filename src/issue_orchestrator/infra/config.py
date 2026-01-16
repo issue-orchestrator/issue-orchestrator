@@ -72,6 +72,63 @@ def get_config_dir(repo_root: Path) -> Path:
     return repo_root / CONFIG_DIR
 
 
+class ConfigSectionError(ValueError):
+    """Raised when a config section has an invalid type."""
+
+    pass
+
+
+def _get_section(data: dict, key: str, config_path: Path) -> dict:
+    """Get a config section, validating it's a dict.
+
+    YAML quirk: `section:` with only comments or nothing becomes None.
+    This helper provides clear error messages for this common mistake.
+
+    Args:
+        data: The parsed YAML data
+        key: The section key to retrieve
+        config_path: Path to config file (for error messages)
+
+    Returns:
+        The section as a dict, or empty dict if not present
+
+    Raises:
+        ConfigSectionError: If section exists but isn't a dict
+    """
+    value = data.get(key)
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+
+    # Provide helpful error message based on what we got
+    type_name = type(value).__name__
+    if isinstance(value, str):
+        hint = (
+            f"  Got string: '{value}'\n"
+            f"  Expected a mapping like:\n"
+            f"    {key}:\n"
+            f"      some_option: value"
+        )
+    elif isinstance(value, (list, tuple)):
+        hint = (
+            f"  Got a list, but '{key}' should be a mapping.\n"
+            f"  Expected:\n"
+            f"    {key}:\n"
+            f"      some_option: value"
+        )
+    else:
+        hint = f"  Got {type_name}: {value!r}"
+
+    raise ConfigSectionError(
+        f"Invalid config section '{key}' in {config_path}\n"
+        f"{hint}\n\n"
+        f"If you meant to leave '{key}' empty, either:\n"
+        f"  - Remove the '{key}:' line entirely, or\n"
+        f"  - Use '{key}: {{}}' for an explicit empty mapping"
+    )
+
+
 def list_configs(repo_root: Path) -> list[str]:
     """List available config files in a repo's config directory.
 
@@ -742,24 +799,26 @@ class Config:
         config = cls()
         config.config_path = config_path.resolve()
 
-        repo_section = data.get("repo", {})
-        github_section = repo_section.get("github", {})
-        agents_section = data.get("agents", {})
-        labels_section = data.get("labels", {})
-        review_section = data.get("review", {})
-        cleanup_section = data.get("cleanup", {})
-        worktrees_section = data.get("worktrees", {})
-        execution_section = data.get("execution", {})
-        validation_section = data.get("validation", {})
-        ui_section = data.get("ui", {})
-        observability_section = data.get("observability", {})
-        security_section = data.get("security", {})
-        filtering_section = data.get("filtering", {})
-        triage_section = data.get("triage", {})
-        e2e_section = data.get("e2e", {})
-        milestones_section = data.get("milestones", {})
-        state_section = data.get("state", {})
-        config_section = data.get("config", {})
+        # Extract all sections with validation for clear error messages
+        # (YAML quirk: `section:` with only comments becomes None, not {})
+        repo_section = _get_section(data, "repo", config_path)
+        github_section = _get_section(repo_section, "github", config_path)
+        agents_section = _get_section(data, "agents", config_path)
+        labels_section = _get_section(data, "labels", config_path)
+        review_section = _get_section(data, "review", config_path)
+        cleanup_section = _get_section(data, "cleanup", config_path)
+        worktrees_section = _get_section(data, "worktrees", config_path)
+        execution_section = _get_section(data, "execution", config_path)
+        validation_section = _get_section(data, "validation", config_path)
+        ui_section = _get_section(data, "ui", config_path)
+        observability_section = _get_section(data, "observability", config_path)
+        security_section = _get_section(data, "security", config_path)
+        filtering_section = _get_section(data, "filtering", config_path)
+        triage_section = _get_section(data, "triage", config_path)
+        e2e_section = _get_section(data, "e2e", config_path)
+        milestones_section = _get_section(data, "milestones", config_path)
+        state_section = _get_section(data, "state", config_path)
+        config_section = _get_section(data, "config", config_path)
 
         # Determine repo root using centralized helper
         repo_root = repo_root_from_config_path(config_path)
@@ -853,7 +912,7 @@ class Config:
             config.agents[label] = AgentConfig(**agent_kwargs)
 
         # Parse concurrency
-        concurrency = execution_section.get("concurrency", {})
+        concurrency = _get_section(execution_section, "concurrency", config_path)
         config.max_concurrent_sessions = concurrency.get("max_concurrent_sessions", 3)
         config.session_timeout_minutes = concurrency.get("session_timeout_minutes", 45)
 
@@ -960,7 +1019,7 @@ class Config:
             "worktree_branch_on_recreate",
             "delete",
         )
-        remediation_section = worktrees_section.get("remediation", {})
+        remediation_section = _get_section(worktrees_section, "remediation", config_path)
         config.worktree_remediation_pr_collision = remediation_section.get(
             "pr_collision",
             "new_branch",

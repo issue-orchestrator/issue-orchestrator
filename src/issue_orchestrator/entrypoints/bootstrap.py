@@ -20,6 +20,7 @@ import os
 from typing import TYPE_CHECKING
 
 from ..infra.config import Config
+from ..adapters.github.repo import get_repo_from_git, GitRepoError
 from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner, IssueTracker
 from ..control.orchestrator_deps import OrchestratorDeps
 from ..execution import (
@@ -120,11 +121,23 @@ def build_orchestrator(
     base_events = PluggyEventSink(pm)
     runner = PluggySessionRunner(pm)
 
-    # Create GitHub adapter if repo is configured
+    # Resolve repo: use config, or auto-detect from git remote
+    repo = config.repo
+    if not repo:
+        try:
+            repo = get_repo_from_git()
+            logger.info("Auto-detected repository from git remote: %s", repo)
+            # Update config so other components see the auto-detected repo
+            config.repo = repo
+        except GitRepoError as e:
+            logger.warning("Could not auto-detect repository: %s", e)
+            repo = None
+
+    # Create GitHub adapter if repo is available
     github = None
     github_cache = None
     verification_service = None
-    if config.repo:
+    if repo:
         # Create cache with TTL from config
         cache_ttl = float(max(0, getattr(config, "queue_refresh_seconds", 0)))
         github_cache = GitHubCache(default_ttl=cache_ttl)
@@ -142,7 +155,7 @@ def build_orchestrator(
         verification_service = DefaultVerificationService(default_budget=default_budget)
 
         github = GitHubAdapter(
-            config.repo,
+            repo,
             config=config,
             cache=github_cache,
             verification_service=verification_service,
@@ -300,7 +313,16 @@ def build_orchestrator(
 
     # Validate all dependencies are present (required for OrchestratorDeps)
     if github is None:
-        raise ValueError("GitHubAdapter (repository_host) is required")
+        raise ValueError(
+            "Could not determine GitHub repository.\n\n"
+            "Either:\n"
+            "  1. Set 'repo.name' in your config file:\n"
+            "       repo:\n"
+            "         name: owner/repo-name\n\n"
+            "  2. Or ensure you're running from a git repo with a GitHub remote:\n"
+            "       git remote get-url origin\n"
+            "       # Should show: https://github.com/owner/repo.git"
+        )
     if event_hub is None:
         raise ValueError("EventHub is required")
     if planner is None:

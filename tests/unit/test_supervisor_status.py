@@ -3,13 +3,14 @@
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
 from issue_orchestrator.infra.supervisor import (
     SupervisorStatus,
     status,
+    start,
 )
 
 
@@ -143,3 +144,91 @@ class TestSupervisorStatusToDict:
 
         assert data["state"] == "failed"
         assert data["error"] == "Process not running (stale lock)"
+
+
+class TestSupervisorStartErrorSurfacing:
+    """Tests for error message extraction when orchestrator fails to start."""
+
+    def test_start_failure_extracts_error_from_log(self, tmp_path: Path) -> None:
+        """When process exits immediately, extract ERROR line from log."""
+        # Setup: create state directory and log file with an error
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        logs_dir = state_dir / "logs"
+        logs_dir.mkdir(parents=True)
+        log_file = logs_dir / "orchestrator.log"
+        log_file.write_text(
+            "2024-01-01 [INFO] Starting...\n"
+            "2024-01-01 [ERROR] __main__: Could not determine GitHub repository\n"
+        )
+
+        # Also need config dir for start() to work
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        # Mock subprocess to simulate immediate exit
+        mock_process = MagicMock()
+        mock_process.pid = 99999
+        mock_process.poll.return_value = 1  # Exited with code 1
+
+        with patch("issue_orchestrator.infra.supervisor.subprocess.Popen", return_value=mock_process):
+            with patch("issue_orchestrator.infra.supervisor.read_lock", return_value=None):
+                with pytest.raises(RuntimeError) as exc_info:
+                    start(tmp_path)
+
+        error_msg = str(exc_info.value)
+        assert "exited immediately with code 1" in error_msg
+        assert "Could not determine GitHub repository" in error_msg
+        assert "Full logs at:" in error_msg
+
+    def test_start_failure_shows_last_line_if_no_error(self, tmp_path: Path) -> None:
+        """When no ERROR in log, show last non-empty line as hint."""
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        logs_dir = state_dir / "logs"
+        logs_dir.mkdir(parents=True)
+        log_file = logs_dir / "orchestrator.log"
+        log_file.write_text(
+            "2024-01-01 [INFO] Starting...\n"
+            "2024-01-01 [INFO] Building orchestrator...\n"
+            "2024-01-01 [INFO] Some final message\n"
+        )
+
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        mock_process = MagicMock()
+        mock_process.pid = 99999
+        mock_process.poll.return_value = 1
+
+        with patch("issue_orchestrator.infra.supervisor.subprocess.Popen", return_value=mock_process):
+            with patch("issue_orchestrator.infra.supervisor.read_lock", return_value=None):
+                with pytest.raises(RuntimeError) as exc_info:
+                    start(tmp_path)
+
+        error_msg = str(exc_info.value)
+        assert "Some final message" in error_msg
+
+    def test_start_failure_handles_missing_log(self, tmp_path: Path) -> None:
+        """When log file doesn't exist, still show basic error."""
+        # Don't create log file, but need config dir
+        state_dir = tmp_path / ".issue-orchestrator" / "state"
+        state_dir.mkdir(parents=True)
+
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        mock_process = MagicMock()
+        mock_process.pid = 99999
+        mock_process.poll.return_value = 1
+
+        with patch("issue_orchestrator.infra.supervisor.subprocess.Popen", return_value=mock_process):
+            with patch("issue_orchestrator.infra.supervisor.read_lock", return_value=None):
+                with pytest.raises(RuntimeError) as exc_info:
+                    start(tmp_path)
+
+        error_msg = str(exc_info.value)
+        assert "exited immediately with code 1" in error_msg
+        # Should still mention where logs would be
+        assert "logs" in error_msg.lower()

@@ -1544,3 +1544,84 @@ triage: {}
         assert result["triage"]["inherit_labels"] == ["test-label"]
         assert result["triage"]["explicit_labels"] == ["explicit-label"]
         assert result["triage"]["milestone_strategy"]["inherit_from_issues"] == "latest"
+
+
+class TestConfigSectionErrors:
+    """Test clear error messages for invalid config sections."""
+
+    def test_string_section_gives_clear_error(self, tmp_path):
+        """When a section is a string instead of dict, error is clear."""
+        from issue_orchestrator.infra.config import ConfigSectionError
+
+        config_content = """
+repo: owner/repo-name
+agents: {}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ConfigSectionError) as exc_info:
+            Config.load(config_file)
+
+        error_msg = str(exc_info.value)
+        assert "Invalid config section 'repo'" in error_msg
+        assert "Got string: 'owner/repo-name'" in error_msg
+        assert "Expected a mapping" in error_msg
+
+    def test_list_section_gives_clear_error(self, tmp_path):
+        """When a section is a list instead of dict, error is clear."""
+        from issue_orchestrator.infra.config import ConfigSectionError
+
+        config_content = """
+agents:
+  - item1
+  - item2
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ConfigSectionError) as exc_info:
+            Config.load(config_file)
+
+        error_msg = str(exc_info.value)
+        assert "Invalid config section 'agents'" in error_msg
+        assert "Got a list" in error_msg
+
+    def test_none_section_treated_as_empty_dict(self, tmp_path):
+        """Section with only comments (None in YAML) is treated as empty."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+repo:
+  # Just a comment, creates None
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        # Should not raise - None becomes {}
+        config = Config.load(config_file)
+        assert config.repo is None  # No repo name set
+
+    def test_nested_section_error_gives_context(self, tmp_path):
+        """Error in nested section shows full path."""
+        from issue_orchestrator.infra.config import ConfigSectionError
+
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+execution:
+  concurrency: "not a dict"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ConfigSectionError) as exc_info:
+            Config.load(config_file)
+
+        error_msg = str(exc_info.value)
+        assert "concurrency" in error_msg
+        assert "Got string" in error_msg

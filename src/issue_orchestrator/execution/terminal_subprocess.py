@@ -9,9 +9,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import pty
+import select
 import signal
 import subprocess
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -210,7 +213,7 @@ class SubprocessPlugin:
     def __init__(self) -> None:
         repo_root = Path(os.environ.get("ORCHESTRATOR_REPO_ROOT", Path.cwd())).resolve()
         self._registry = _SubprocessRegistry(repo_root)
-        self._processes: dict[str, subprocess.Popen[str]] = {}
+        self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._repo_root = repo_root
         self._allow_stdin = os.environ.get("ORCHESTRATOR_SUBPROCESS_ALLOW_STDIN", "").lower() in {"1", "true", "yes"}
 
@@ -221,7 +224,7 @@ class SubprocessPlugin:
         log_dir = ensure_session_output_dir(working_dir, session_name)
         return log_dir / "session.log"
 
-    def _start_process(self, command: str, working_dir: Path, session_name: str) -> subprocess.Popen[str]:
+    def _start_process(self, command: str, working_dir: Path, session_name: str) -> subprocess.Popen[bytes]:
         wrapper_dir = self._repo_root / "scripts"
         venv_bin = working_dir / ".venv" / "bin"
         path_prefix = f"{venv_bin}:{wrapper_dir}:{os.environ.get('PATH', '')}"
@@ -229,19 +232,57 @@ class SubprocessPlugin:
         full_cmd = f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command}'
 
         log_path = self._session_log_path(working_dir, session_name)
-        log_file = open(log_path, "a")
-        stdin_mode = subprocess.PIPE if self._allow_stdin else subprocess.DEVNULL
+
+        # Use PTY to force line-buffered output from the child process.
+        # Without a PTY, output is fully buffered and only appears when process exits.
+        master_fd, slave_fd = pty.openpty()
 
         proc = subprocess.Popen(
             ["/bin/bash", "-lc", full_cmd],
             cwd=str(working_dir),
-            # Default to closed stdin to avoid hanging tools; enable via ORCHESTRATOR_SUBPROCESS_ALLOW_STDIN.
-            stdin=stdin_mode,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            text=True,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
             start_new_session=True,
+            close_fds=True,
         )
+        os.close(slave_fd)  # Close slave in parent
+
+        # Start a thread to read from PTY and write to log file
+        def _copy_output():
+            try:
+                with open(log_path, "ab", buffering=0) as log_file:
+                    while True:
+                        try:
+                            ready, _, _ = select.select([master_fd], [], [], 1.0)
+                            if ready:
+                                data = os.read(master_fd, 4096)
+                                if not data:
+                                    break
+                                log_file.write(data)
+                            # Check if process has exited
+                            if proc.poll() is not None:
+                                # Drain any remaining output
+                                while True:
+                                    ready, _, _ = select.select([master_fd], [], [], 0.1)
+                                    if not ready:
+                                        break
+                                    data = os.read(master_fd, 4096)
+                                    if not data:
+                                        break
+                                    log_file.write(data)
+                                break
+                        except OSError:
+                            break
+            finally:
+                try:
+                    os.close(master_fd)
+                except OSError:
+                    pass
+
+        thread = threading.Thread(target=_copy_output, daemon=True)
+        thread.start()
+
         self._processes[session_name] = proc
         return proc
 
@@ -384,7 +425,7 @@ class SubprocessPlugin:
         if not proc or proc.stdin is None:
             return False
         try:
-            proc.stdin.write(text + "\n")
+            proc.stdin.write((text + "\n").encode())
             proc.stdin.flush()
             return True
         except Exception:
