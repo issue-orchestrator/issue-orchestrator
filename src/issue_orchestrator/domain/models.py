@@ -494,6 +494,7 @@ class Session:
     lease_id: str | None = None  # Unique identifier for the claim
     lease_acquired_at: datetime | None = None  # When the claim was acquired
     lease_expires_at: datetime | None = None  # When the claim expires if not renewed
+    last_claim_verified_at: datetime | None = None  # Last time we verified we're still the winner
 
     @property
     def runtime_minutes(self) -> int:

@@ -310,6 +310,24 @@ class Orchestrator:
                     e,
                 )
 
+            # Post comment explaining what happened (best effort)
+            try:
+                comment = (
+                    "## Work Cancelled\n\n"
+                    "Another orchestrator claimed this issue while work was in progress. "
+                    "The session has been terminated to avoid conflicts.\n\n"
+                    f"- **Worktree preserved**: `{session.worktree_path}`\n"
+                    f"- **Branch**: `{session.branch_name}`\n\n"
+                    "To resume work, remove the `blocked:claim-lost` label and re-assign an agent label."
+                )
+                self.deps.repository_host.add_comment(session.issue.number, comment)
+            except Exception as e:
+                logger.warning(
+                    "[CLAIM] Failed to post claim loss comment to issue #%d: %s",
+                    session.issue.number,
+                    e,
+                )
+
             # Note: We preserve the worktree so work isn't lost
 
     def _run_planning_cycle(self) -> None:

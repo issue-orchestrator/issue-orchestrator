@@ -54,24 +54,37 @@ class LeaseRenewer:
         """Check and renew leases for active sessions.
 
         This should be called periodically (e.g., each orchestrator tick).
-        It checks each session's lease and renews if within the renewal
-        threshold.
+        It performs two types of checks:
+
+        1. **Periodic claim verification** (every lease/3 seconds):
+           Verifies we're still the claim winner. This catches claim theft
+           early, before the renewal window.
+
+        2. **Lease renewal** (when within renewal threshold):
+           Renews the lease to extend expiry time.
 
         Args:
             sessions: List of active sessions to check.
 
         Returns:
-            List of sessions that lost their claim (renewal failed).
+            List of sessions that lost their claim.
             These sessions should be terminated by the caller.
         """
         lost_sessions: list["Session"] = []
         now = datetime.now()
         renewal_threshold_seconds = self._config.renewal_threshold_seconds()
+        verification_interval = self._config.lease_seconds // 3  # Check every lease/3
 
         for session in sessions:
             # Skip sessions without claims
             if not session.lease_id or not session.lease_expires_at:
                 continue
+
+            # Check if periodic verification is due (every lease/3 seconds)
+            if self._should_verify_claim(session, now, verification_interval):
+                if not self._verify_claim_ownership(session):
+                    lost_sessions.append(session)
+                    continue  # Skip renewal check, session is lost
 
             # Check if within renewal window
             time_until_expiry = (session.lease_expires_at - now).total_seconds()
@@ -91,9 +104,8 @@ class LeaseRenewer:
                 if success:
                     # Update expiry time on session
                     new_expiry = now + timedelta(seconds=self._config.lease_seconds)
-                    # Note: Session is a dataclass, so we need to update in place
-                    # This requires the session to be mutable or the caller to handle updates
                     session.lease_expires_at = new_expiry
+                    session.last_claim_verified_at = now  # Renewal implies verification
 
                     logger.info(
                         "Renewed lease for issue #%d (new expiry: %s)",
@@ -110,6 +122,69 @@ class LeaseRenewer:
                     self._emit_claim_lost_event(session, "renewal_failed")
 
         return lost_sessions
+
+    def _should_verify_claim(
+        self,
+        session: "Session",
+        now: datetime,
+        interval_seconds: int,
+    ) -> bool:
+        """Check if periodic claim verification is due.
+
+        Args:
+            session: The session to check.
+            now: Current time.
+            interval_seconds: Verification interval (typically lease/3).
+
+        Returns:
+            True if verification is due.
+        """
+        if session.last_claim_verified_at is None:
+            # First check - use lease_acquired_at as baseline
+            baseline = session.lease_acquired_at or session.started_at
+            elapsed = (now - baseline).total_seconds()
+            return elapsed >= interval_seconds
+
+        elapsed = (now - session.last_claim_verified_at).total_seconds()
+        return elapsed >= interval_seconds
+
+    def _verify_claim_ownership(self, session: "Session") -> bool:
+        """Verify we're still the claim winner.
+
+        Updates last_claim_verified_at on success.
+
+        Args:
+            session: The session to verify (must have lease_id).
+
+        Returns:
+            True if still the winner, False if claim was lost.
+        """
+        # Defensive check - caller should ensure lease_id exists
+        if not session.lease_id:
+            return True
+
+        logger.debug(
+            "Periodic claim verification for issue #%d",
+            session.issue.number,
+        )
+
+        is_winner = self._claim_manager.check_winner(
+            session.issue.number,
+            session.lease_id,
+        )
+
+        now = datetime.now()
+        session.last_claim_verified_at = now
+
+        if not is_winner:
+            logger.warning(
+                "Claim lost for issue #%d during periodic verification",
+                session.issue.number,
+            )
+            self._emit_claim_lost_event(session, "periodic_verification")
+            return False
+
+        return True
 
     def check_single_session(self, session: "Session") -> bool:
         """Check and potentially renew a single session's lease.

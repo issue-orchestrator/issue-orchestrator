@@ -43,15 +43,21 @@ def create_test_session(
     issue_number: int = 42,
     lease_id: str | None = "test-lease",
     expires_in_seconds: float = 300,
+    lease_acquired_seconds_ago: float = 300,  # 5 minutes ago by default
+    last_verified_seconds_ago: float | None = None,  # None = never verified
 ) -> Session:
-    """Create a test session with configurable lease expiry."""
+    """Create a test session with configurable lease expiry and verification times."""
     issue_key = MagicMock()
     issue_key.stable_id.return_value = f"issue-{issue_number}"
     session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
 
     now = datetime.now()
-    lease_acquired_at = now - timedelta(minutes=5)
+    lease_acquired_at = now - timedelta(seconds=lease_acquired_seconds_ago) if lease_id else None
     lease_expires_at = now + timedelta(seconds=expires_in_seconds) if lease_id else None
+    last_claim_verified_at = (
+        now - timedelta(seconds=last_verified_seconds_ago)
+        if last_verified_seconds_ago is not None else None
+    )
 
     return Session(
         key=session_key,
@@ -63,8 +69,9 @@ def create_test_session(
         completion_path="completion.json",
         agent_label="test-agent",
         lease_id=lease_id,
-        lease_acquired_at=lease_acquired_at if lease_id else None,
+        lease_acquired_at=lease_acquired_at,
         lease_expires_at=lease_expires_at,
+        last_claim_verified_at=last_claim_verified_at,
     )
 
 
@@ -290,3 +297,133 @@ class TestCheckSingleSession:
         event_type, data = events.events[0]
         assert "lost" in str(event_type).lower()
         assert data["reason"] == "on_demand_check"
+
+
+class TestPeriodicVerification:
+    """Tests for periodic claim verification at lease/3 intervals."""
+
+    @pytest.fixture
+    def config(self):
+        return LeaseConfig(
+            lease_seconds=900,  # 15 minutes
+            renew_interval_seconds=300,  # 5 minutes
+        )
+
+    def test_verifies_claim_at_lease_third_interval(self, config):
+        """Verifies claim when lease/3 seconds (5 min) have passed since acquisition."""
+        claim_manager = MockClaimManager(renew_success=True, is_winner=True)
+        events = MockEventSink()
+        renewer = LeaseRenewer(claim_manager, events, config)
+
+        # Session acquired 6 minutes ago (> 5 min = lease/3), never verified
+        session = create_test_session(
+            issue_number=42,
+            lease_id="test-lease",
+            expires_in_seconds=540,  # 9 min remaining
+            lease_acquired_seconds_ago=360,  # 6 min ago
+            last_verified_seconds_ago=None,  # Never verified
+        )
+
+        lost_sessions = renewer.check_renewals([session])
+
+        assert len(lost_sessions) == 0
+        # Should have called check_winner for periodic verification
+        assert len(claim_manager.check_winner_calls) == 1
+        assert claim_manager.check_winner_calls[0] == (42, "test-lease")
+        # Should have updated last_claim_verified_at
+        assert session.last_claim_verified_at is not None
+
+    def test_skips_verification_when_recently_verified(self, config):
+        """Does not verify if less than lease/3 seconds since last verification."""
+        claim_manager = MockClaimManager(renew_success=True, is_winner=True)
+        events = MockEventSink()
+        renewer = LeaseRenewer(claim_manager, events, config)
+
+        # Session verified 2 minutes ago (< 5 min = lease/3)
+        # renewal_threshold = 900 - 300 = 600s, so 700s remaining is outside renewal window
+        session = create_test_session(
+            issue_number=42,
+            lease_id="test-lease",
+            expires_in_seconds=700,  # 11.6 min remaining (> 600s renewal threshold)
+            lease_acquired_seconds_ago=200,  # 3.3 min ago (< 300s = lease/3)
+            last_verified_seconds_ago=120,  # 2 min ago (< 300s = lease/3)
+        )
+
+        lost_sessions = renewer.check_renewals([session])
+
+        assert len(lost_sessions) == 0
+        # Should NOT have called check_winner (not due for verification)
+        assert len(claim_manager.check_winner_calls) == 0
+        # Should NOT have called renew_claim (not in renewal window)
+        assert len(claim_manager.renew_claim_calls) == 0
+
+    def test_detects_claim_loss_during_periodic_verification(self, config):
+        """Returns session as lost if claim lost during periodic verification."""
+        claim_manager = MockClaimManager(renew_success=True, is_winner=False)
+        events = MockEventSink()
+        renewer = LeaseRenewer(claim_manager, events, config)
+
+        # Session needs verification (6 min since last)
+        session = create_test_session(
+            issue_number=42,
+            lease_id="test-lease",
+            expires_in_seconds=540,  # Not in renewal window
+            lease_acquired_seconds_ago=720,  # 12 min ago
+            last_verified_seconds_ago=360,  # 6 min since last verification
+        )
+
+        lost_sessions = renewer.check_renewals([session])
+
+        assert len(lost_sessions) == 1
+        assert lost_sessions[0] == session
+        # Should have emitted claim lost event
+        assert len(events.events) == 1
+        event_type, data = events.events[0]
+        assert "lost" in str(event_type).lower()
+        assert data["reason"] == "periodic_verification"
+
+    def test_skips_renewal_after_claim_loss_in_verification(self, config):
+        """Does not attempt renewal if claim was lost during periodic verification."""
+        claim_manager = MockClaimManager(renew_success=True, is_winner=False)
+        events = MockEventSink()
+        renewer = LeaseRenewer(claim_manager, events, config)
+
+        # Session needs verification AND is in renewal window
+        session = create_test_session(
+            issue_number=42,
+            lease_id="test-lease",
+            expires_in_seconds=200,  # In renewal window (< 600s threshold)
+            lease_acquired_seconds_ago=720,  # 12 min ago
+            last_verified_seconds_ago=360,  # 6 min since last verification
+        )
+
+        lost_sessions = renewer.check_renewals([session])
+
+        assert len(lost_sessions) == 1
+        # Should have checked winner (verification)
+        assert len(claim_manager.check_winner_calls) == 1
+        # Should NOT have attempted renewal (claim lost in verification)
+        assert len(claim_manager.renew_claim_calls) == 0
+
+    def test_renewal_updates_last_claim_verified_at(self, config):
+        """Successful renewal also updates last_claim_verified_at."""
+        claim_manager = MockClaimManager(renew_success=True, is_winner=True)
+        events = MockEventSink()
+        renewer = LeaseRenewer(claim_manager, events, config)
+
+        # Session in renewal window, recently verified
+        session = create_test_session(
+            issue_number=42,
+            lease_id="test-lease",
+            expires_in_seconds=200,  # In renewal window
+            lease_acquired_seconds_ago=720,  # 12 min ago
+            last_verified_seconds_ago=60,  # 1 min ago (not due for verification)
+        )
+        old_verified = session.last_claim_verified_at
+
+        lost_sessions = renewer.check_renewals([session])
+
+        assert len(lost_sessions) == 0
+        # Renewal should have updated last_claim_verified_at
+        assert session.last_claim_verified_at is not None
+        assert session.last_claim_verified_at > old_verified
