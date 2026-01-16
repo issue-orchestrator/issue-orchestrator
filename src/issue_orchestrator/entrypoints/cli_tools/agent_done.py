@@ -355,14 +355,13 @@ def write_completion_record(record: CompletionRecord) -> Path:
             worktree_root = path
             break
 
-    # Create .issue-orchestrator directory if needed
-    output_dir = worktree_root / ".issue-orchestrator"
-    output_dir.mkdir(exist_ok=True)
-
     # Orchestrator tells agent where to write via env var
     # This ensures each session type writes to a distinct file
     base_path = os.environ.get("ORCHESTRATOR_COMPLETION_PATH", COMPLETION_RECORD_PATH)
     output_path = worktree_root / base_path
+
+    # Create all necessary parent directories
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # If file exists (e.g., second review after rework), add numeric suffix
     if output_path.exists():
@@ -432,12 +431,17 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
     return None, 0
 
 
-def run_validation(worktree: Path, verbose: bool = False) -> Optional[AgentGateResult]:
+def run_validation(
+    worktree: Path,
+    verbose: bool = False,
+    session_output_dir: Path | None = None,
+) -> Optional[AgentGateResult]:
     """Run validation if configured.
 
     Args:
         worktree: Path to the worktree root
         verbose: Whether to print validation output
+        session_output_dir: If provided, write validation output directly here
 
     Returns:
         AgentGateResult if validation was run, None if not configured
@@ -458,7 +462,7 @@ def run_validation(worktree: Path, verbose: bool = False) -> Optional[AgentGateR
         command=cmd,
         timeout_seconds=timeout,
     )
-    result = gate.run()
+    result = gate.run(session_output_dir=session_output_dir)
 
     if verbose:
         if result.passed:
@@ -648,7 +652,17 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     )
 
     if should_validate:
-        validation_result = run_validation(worktree_root, verbose=args.verbose)
+        # Get session output dir for validation to write directly there
+        session_output_dir = None
+        if record.session_id:
+            session_output_dir = SessionOutputManager.find_latest_run_dir(
+                worktree_root, session_name=record.session_id
+            )
+        validation_result = run_validation(
+            worktree_root,
+            verbose=args.verbose,
+            session_output_dir=session_output_dir,
+        )
         if validation_result and not validation_result.passed:
             _record_validation_artifacts(worktree_root, record.session_id, validation_result)
             print(f"\n{'='*60}")

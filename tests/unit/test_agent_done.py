@@ -558,6 +558,7 @@ class TestWriteCompletionRecord:
 
         # Change to tmp_path and write
         original_cwd = Path.cwd()
+        original_completion_path = os.environ.pop("ORCHESTRATOR_COMPLETION_PATH", None)
         try:
             os.chdir(tmp_path)
             output_path = write_completion_record(record)
@@ -572,6 +573,8 @@ class TestWriteCompletionRecord:
             assert data["outcome"] == "completed"
         finally:
             os.chdir(original_cwd)
+            if original_completion_path is not None:
+                os.environ["ORCHESTRATOR_COMPLETION_PATH"] = original_completion_path
 
     def test_write_completion_record_creates_directory(self, tmp_path):
         """Test that write_completion_record creates .issue-orchestrator directory."""
@@ -587,14 +590,17 @@ class TestWriteCompletionRecord:
         )
 
         original_cwd = Path.cwd()
+        original_completion_path = os.environ.pop("ORCHESTRATOR_COMPLETION_PATH", None)
         try:
             os.chdir(tmp_path)
-            output_path = write_completion_record(record)
+            write_completion_record(record)
 
             assert (tmp_path / ".issue-orchestrator").exists()
             assert (tmp_path / ".issue-orchestrator").is_dir()
         finally:
             os.chdir(original_cwd)
+            if original_completion_path is not None:
+                os.environ["ORCHESTRATOR_COMPLETION_PATH"] = original_completion_path
 
 
 class TestWriteMarkerFile:
@@ -730,6 +736,7 @@ class TestMain:
         git_dir.mkdir()
 
         original_cwd = Path.cwd()
+        original_completion_path = os.environ.pop("ORCHESTRATOR_COMPLETION_PATH", None)
         try:
             os.chdir(tmp_path)
 
@@ -752,6 +759,8 @@ class TestMain:
             assert data["implementation"] == "Added feature"
         finally:
             os.chdir(original_cwd)
+            if original_completion_path is not None:
+                os.environ["ORCHESTRATOR_COMPLETION_PATH"] = original_completion_path
 
     def test_main_writes_marker_file(self, tmp_path):
         """Test that main writes marker file."""
