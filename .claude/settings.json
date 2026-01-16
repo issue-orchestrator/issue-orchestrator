@@ -10,6 +10,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f .agent-done-marker || echo '\u26a0\ufe0f  WARNING: Session ending without agent-done! Run: agent-done completed/blocked/needs_human'",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }
