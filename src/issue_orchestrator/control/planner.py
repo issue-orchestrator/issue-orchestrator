@@ -98,6 +98,8 @@ class OrchestratorSnapshot:
     cleanup_facts: Optional[CleanupFacts] = None
     # Issues with stale in-progress labels (label present but no active session)
     stale_in_progress_issues: tuple[Issue, ...] = field(default_factory=tuple)
+    # Issues with stale claims (io:claimed label but claim is expired)
+    stale_claim_issues: tuple[Issue, ...] = field(default_factory=tuple)
     # Issues that failed this cycle - skip until cache refresh (prevents immediate retry)
     failed_this_cycle: frozenset[int] = field(default_factory=frozenset)
     # Issues that completed this session (have session_history entries)
@@ -126,6 +128,7 @@ class OrchestratorSnapshot:
         triage_facts: Optional[TriageFacts] = None,
         cleanup_facts: Optional[CleanupFacts] = None,
         stale_in_progress_issues: Sequence[Issue] = (),
+        stale_claim_issues: Sequence[Issue] = (),
     ) -> "OrchestratorSnapshot":
         """Create snapshot from mutable state.
 
@@ -140,6 +143,7 @@ class OrchestratorSnapshot:
             triage_facts: Facts about triage trigger conditions
             cleanup_facts: Facts about pending cleanups and their review status
             stale_in_progress_issues: Issues with stale in-progress labels
+            stale_claim_issues: Issues with stale/expired claims
         """
         return cls(
             issues=tuple(issues),
@@ -158,6 +162,7 @@ class OrchestratorSnapshot:
             triage_facts=triage_facts,
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues),
+            stale_claim_issues=tuple(stale_claim_issues),
             failed_this_cycle=frozenset(state.failed_this_cycle),
         )
 
@@ -276,6 +281,10 @@ class Planner:
         # 1a. Clean up stale in-progress labels (no session running)
         stale_cleanup_actions = self._plan_stale_cleanup(snapshot)
         actions.extend(stale_cleanup_actions)
+
+        # 1a-2. Clean up stale claims (io:claimed but claim expired)
+        stale_claim_actions = self._plan_stale_claim_cleanup(snapshot)
+        actions.extend(stale_claim_actions)
 
         # 1b. Queue discovered reviews from session completions/scans
         queue_actions = self._plan_discovered_reviews(snapshot)
@@ -667,6 +676,46 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 expected=build_expected_for_mutation(),
             ))
             logger.info("Planner: removing stale in-progress label from issue #%d",
+                       issue.number)
+
+        return actions
+
+    def _plan_stale_claim_cleanup(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+        """Plan cleanup actions for issues with stale/expired claims.
+
+        When an issue has the io:claimed label but the claim has expired
+        (e.g., the orchestrator that held it crashed without releasing),
+        we need to clean up:
+        1. Remove the io:claimed label
+        2. Add blocked:stale-claim label to flag for investigation
+
+        The stale_claim_issues list is populated by the Orchestrator/Observer
+        phase, which checks claims via ClaimManager.get_current_claim().
+
+        Returns:
+            List of label actions for stale claim cleanup
+        """
+        actions: list[Action] = []
+
+        if not snapshot.stale_claim_issues:
+            return actions
+
+        for issue in snapshot.stale_claim_issues:
+            # Remove the io:claimed label
+            actions.append(RemoveLabelAction(
+                issue_number=issue.number,
+                label=labels.IO_CLAIMED,
+                reason="stale claim expired",
+                expected=build_expected_for_mutation(),
+            ))
+            # Add blocked:stale-claim label for visibility
+            actions.append(AddLabelAction(
+                issue_number=issue.number,
+                label=labels.BLOCKED_STALE_CLAIM,
+                reason="stale claim detected - orchestrator may have crashed",
+                expected=build_expected_for_mutation(),
+            ))
+            logger.info("Planner: cleaning up stale claim on issue #%d",
                        issue.number)
 
         return actions
