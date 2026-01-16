@@ -212,13 +212,10 @@ class Orchestrator:
         2. Interval has passed since last run
         3. Main branch HEAD has changed since last tested commit
         """
-        # Use repo directory name as orchestrator_id
-        orchestrator_id = self.config.repo_root.name
-
         triggered = maybe_trigger_e2e(
             config=self.config,
             repo_root=self.config.repo_root,
-            orchestrator_id=orchestrator_id,
+            orchestrator_id=self.config.orchestrator_id,
         )
         if triggered:
             self.deps.events.publish(TraceEvent(
@@ -236,8 +233,7 @@ class Orchestrator:
         if not self.config.e2e.enabled:
             return
 
-        # Use repo directory name as orchestrator_id
-        orchestrator_id = self.config.repo_root.name
+        orchestrator_id = self.config.orchestrator_id
 
         manager = get_e2e_runner_manager()
         status = manager.status(orchestrator_id)
