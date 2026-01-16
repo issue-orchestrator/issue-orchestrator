@@ -1646,17 +1646,16 @@
             if (manifest.claude_log_dir) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_dir)}')">Open Claude Log Dir</button>`;
             }
+            // Orchestrator log buttons - filtered (issue-specific) and full
+            html += `<button class="btn-secondary" onclick="openFilteredOrchestratorLog(${issueNumber})">Open Orchestrator Log</button>`;
             if (manifest.orchestrator_log) {
-                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_log)}')">Open Orchestrator Log</button>`;
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_log)}')">Open Full Log</button>`;
             }
             if (diagnosticPath) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(diagnosticPath)}')">Open Diagnostic</button>`;
             }
             if (manifest.validation_record_path && worktree) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(worktree + '/' + manifest.validation_record_path)}')">Open Validation</button>`;
-            }
-            if (manifest.orchestrator_tail) {
-                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_tail)}')">Open Orchestrator Tail</button>`;
             }
             html += '</div>';
 
@@ -2735,6 +2734,27 @@
                 return;
             }
             openLogFile(path);
+        }
+
+        async function openFilteredOrchestratorLog(issueNumber) {
+            try {
+                showToast('Generating filtered log...');
+                const res = await fetch(`/api/session/orchestrator-log/${issueNumber}`);
+                const data = await res.json();
+                if (data.error) {
+                    // Fall back to full log if available
+                    if (data.full_log_path) {
+                        showToast('Could not filter log, opening full log', 'error');
+                        openPath(data.full_log_path);
+                    } else {
+                        showToast(data.error, 'error');
+                    }
+                    return;
+                }
+                openPath(data.filtered_log_path);
+            } catch (err) {
+                showToast(`Failed to get orchestrator log: ${err.message}`, 'error');
+            }
         }
 
         async function showInfo() {

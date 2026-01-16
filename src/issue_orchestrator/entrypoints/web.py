@@ -1053,6 +1053,84 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
 
 
+@app.get("/api/session/orchestrator-log/{issue_number}")
+async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:
+    """Generate and return a filtered orchestrator log for an issue.
+
+    This generates the log on demand, filtering to entries relevant to the issue.
+    Returns the path to the generated file which can be opened in an editor.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..infra.session_output import SessionOutputManager, find_run_dir_for_issue
+    from ..infra.logging_config import get_repo_log_path
+
+    # Find the session/worktree for this issue
+    worktree_path = None
+    session_name = None
+    for s in _orchestrator.state.active_sessions:
+        if s.issue.number == issue_number:
+            worktree_path = s.worktree_path
+            session_name = s.terminal_id
+            break
+
+    if not worktree_path:
+        for entry in _orchestrator.state.session_history:
+            if entry.issue_number == issue_number:
+                worktree_path = getattr(entry, "worktree_path", None)
+                session_name = getattr(entry, "session_name", None)
+                break
+
+    if not worktree_path:
+        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
+        run_dir, worktree_path = find_run_dir_for_issue(
+            _collect_worktree_bases(_orchestrator.config),
+            repo_name,
+            issue_number,
+        )
+        if run_dir:
+            # Try to extract session name from run dir
+            session_name = SessionOutputManager.session_name_from_path(str(run_dir))
+
+    if not worktree_path:
+        return JSONResponse({
+            "error": f"No worktree found for issue #{issue_number}",
+        }, status_code=404)
+
+    if not session_name:
+        session_name = f"issue-{issue_number}"
+
+    # Get the orchestrator log path
+    log_path = get_repo_log_path(_orchestrator.config.repo_root)
+    if not log_path.exists():
+        return JSONResponse({
+            "error": "Orchestrator log file not found",
+            "full_log_path": str(log_path),
+        }, status_code=404)
+
+    # Generate the filtered log
+    tail_path = SessionOutputManager.write_orchestrator_tail(
+        worktree_path,
+        session_name,
+        log_path,
+        issue_number,
+        max_lines=500,
+    )
+
+    if not tail_path:
+        return JSONResponse({
+            "error": "Could not generate filtered log",
+            "full_log_path": str(log_path),
+        }, status_code=500)
+
+    return JSONResponse({
+        "filtered_log_path": str(tail_path),
+        "full_log_path": str(log_path),
+        "issue_number": issue_number,
+    })
+
+
 @app.post("/api/prompt/{agent_type}")
 async def open_agent_prompt(agent_type: str) -> JSONResponse:
     """Open the agent's prompt file in the default editor."""
