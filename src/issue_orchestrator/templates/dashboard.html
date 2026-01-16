@@ -640,6 +640,22 @@
             color: #8b949e;
             cursor: not-allowed;
         }
+        .blocked-footer .btn-reset {
+            padding: 10px 20px;
+            font-size: 14px;
+            background: #da3633;
+            border: 1px solid #da3633;
+            color: #fff;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        .blocked-footer .btn-reset:hover { background: #f85149; }
+        .blocked-footer .btn-reset:disabled {
+            background: #21262d;
+            border-color: #30363d;
+            color: #8b949e;
+            cursor: not-allowed;
+        }
         .blocked-empty {
             padding: 40px 20px;
             text-align: center;
@@ -1627,6 +1643,9 @@
                 <button class="btn-cancel" onclick="closeBlockedModal()">Cancel</button>
                 <button class="btn-unblock" id="blockedUnblockBtn" onclick="unblockSelectedIssues()" disabled>
                     Unblock &amp; Retry (0)
+                </button>
+                <button class="btn-reset" id="blockedResetBtn" onclick="resetSelectedIssues()" disabled title="Delete worktree, remote branch, and labels - fresh start">
+                    Reset &amp; Retry (0)
                 </button>
             </div>
         </div>
@@ -2639,6 +2658,7 @@
         const blockedWarning = document.getElementById('blockedWarning');
         const blockedWarningText = document.getElementById('blockedWarningText');
         const blockedUnblockBtn = document.getElementById('blockedUnblockBtn');
+        const blockedResetBtn = document.getElementById('blockedResetBtn');
 
         async function openBlockedModal() {
             // Fetch blocked issues
@@ -2748,6 +2768,8 @@
             const count = checkedBoxes.length;
             blockedUnblockBtn.disabled = count === 0;
             blockedUnblockBtn.textContent = `Unblock & Retry (${count})`;
+            blockedResetBtn.disabled = count === 0;
+            blockedResetBtn.textContent = `Reset & Retry (${count})`;
         }
 
         async function unblockSelectedIssues() {
@@ -2787,6 +2809,45 @@
             } catch (err) {
                 console.error('Failed to unblock issues:', err);
                 showToast('Failed to unblock issues', 'error');
+            }
+
+            updateBlockedButton();
+        }
+
+        async function resetSelectedIssues() {
+            const checkedBoxes = blockedList.querySelectorAll('input[type="checkbox"]:checked');
+            const issueNumbers = Array.from(checkedBoxes).map(cb => parseInt(cb.dataset.issue));
+
+            if (issueNumbers.length === 0) return;
+
+            // Confirm with warning about destructive nature
+            const confirmMsg = `⚠️ Reset and retry ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Blocking labels\n\nIssues will return to available state for a fresh retry.`;
+            if (!confirm(confirmMsg)) return;
+
+            // Disable buttons during request
+            blockedResetBtn.disabled = true;
+            blockedResetBtn.textContent = 'Resetting...';
+            blockedUnblockBtn.disabled = true;
+
+            try {
+                const res = await fetch('/api/reset-retry', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ issues: issueNumbers }),
+                });
+                const data = await res.json();
+
+                if (data.reset && data.reset.length > 0) {
+                    showToast(`Reset ${data.reset.length} issue${data.reset.length > 1 ? 's' : ''} - ready for fresh retry`);
+                    closeBlockedModal();
+                    // Reload to show updated state
+                    setTimeout(() => location.reload(), 500);
+                } else if (data.failed && data.failed.length > 0) {
+                    showToast(`Failed to reset some issues: ${data.failed.map(f => f.error).join(', ')}`, 'error');
+                }
+            } catch (err) {
+                console.error('Failed to reset issues:', err);
+                showToast('Failed to reset issues', 'error');
             }
 
             updateBlockedButton();

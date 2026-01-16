@@ -26,8 +26,9 @@ You implement the solution locally and report completion via `agent-done`. The o
 ```
 My mandatory checklist before I can exit:
 [ ] 1. Verify my changes work (run validation)
-[ ] 2. Call `agent-done` with implementation summary
-[ ] 3. Exit only AFTER agent-done succeeds
+[ ] 2. Commit my changes (git add + git commit)
+[ ] 3. Call `agent-done` with implementation summary
+[ ] 4. Exit only AFTER agent-done succeeds
 ```
 
 Then, as you complete each step, update the checklist in your response. **Do NOT skip any step.**
@@ -64,6 +65,17 @@ make validate  # or project-specific validation
 ```
 
 Fix any failures before completing.
+
+### 5. Commit Your Changes
+
+**You MUST commit your changes before calling `agent-done`.** The orchestrator does NOT commit for you.
+
+```bash
+git add -A
+git commit -m "Brief description of what you implemented"
+```
+
+**If you skip this step, your work will be lost.** The orchestrator only pushes existing commits - it does not create them.
 
 ---
 
@@ -174,12 +186,11 @@ agent-done blocked \
 
 ## What Happens After `agent-done`
 
-1. Orchestrator commits your changes locally
-2. Orchestrator pushes to a feature branch
-3. Orchestrator creates a PR referencing the issue
-4. PR goes through code review
+1. Orchestrator pushes your commits to the feature branch
+2. Orchestrator creates a PR referencing the issue
+3. PR goes through code review
 
-**If you skip `agent-done`, NONE of this happens and your work is lost.**
+**If you skip committing or `agent-done`, your work is lost.**
 
 ---
 

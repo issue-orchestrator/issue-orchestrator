@@ -1744,6 +1744,102 @@ async def unblock_and_retry(request: Request) -> JSONResponse:
     })
 
 
+@app.post("/api/reset-retry")
+async def reset_and_retry(request: Request) -> JSONResponse:
+    """Reset issues completely and trigger retry.
+
+    JSON body:
+        issues: list[int] - Issue numbers to reset
+
+    This "nuclear option" cleans up all local and remote state:
+    - Deletes local worktrees
+    - Deletes remote branches
+    - Removes blocking labels
+    - Clears from session history
+
+    Issues return to "available" state for a completely fresh retry.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..infra import labels as label_module
+    from ..control.maintenance import reset_issue, ResetResult
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    issue_numbers = body.get("issues", [])
+    if not issue_numbers or not isinstance(issue_numbers, list):
+        return JSONResponse({"error": "issues must be a non-empty list"}, status_code=400)
+
+    state = _orchestrator.state
+    config = _orchestrator.config
+    repository_host = _orchestrator.repository_host
+    deps = _orchestrator.deps
+
+    reset_results: list[dict] = []
+    failed: list[dict] = []
+
+    for issue_number in issue_numbers:
+        try:
+            # Get current labels to find blocking ones
+            current_labels = repository_host.get_issue_labels(issue_number)
+            blocking_labels = label_module.get_blocking_labels(current_labels)
+
+            result: ResetResult = reset_issue(
+                issue_number=issue_number,
+                config=config,
+                worktree_manager=deps.worktree_manager,
+                working_copy=deps.working_copy,
+                action_applier=deps.action_applier,
+                blocking_labels=blocking_labels,
+                session_history=state.session_history,
+                completed_today=state.completed_today,
+            )
+
+            if result.success:
+                reset_results.append({
+                    "issue": result.issue_number,
+                    "deleted_worktree": result.deleted_worktree,
+                    "deleted_branch": result.deleted_branch,
+                    "labels_removed": result.labels_removed,
+                })
+                logger.info(
+                    "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s",
+                    issue_number,
+                    result.deleted_worktree or "(none)",
+                    result.deleted_branch or "(none)",
+                    result.labels_removed or "(none)",
+                )
+            else:
+                failed.append({
+                    "issue": issue_number,
+                    "error": result.error or "Unknown error",
+                    "partial": {
+                        "deleted_worktree": result.deleted_worktree,
+                        "deleted_branch": result.deleted_branch,
+                        "labels_removed": result.labels_removed,
+                    },
+                })
+
+        except Exception as e:
+            logger.error("[reset-retry] Failed to reset issue #%d: %s", issue_number, e)
+            failed.append({"issue": issue_number, "error": str(e)})
+
+    # Trigger a refresh so the orchestrator picks up the reset issues
+    if reset_results:
+        _orchestrator.request_refresh()
+        logger.info("[reset-retry] Reset %d issues, refresh triggered", len(reset_results))
+
+    return JSONResponse({
+        "reset": reset_results,
+        "failed": failed,
+        "refresh_triggered": len(reset_results) > 0,
+    })
+
+
 @app.get("/api/debug")
 async def get_debug() -> JSONResponse:
     """Get debug info for troubleshooting."""
