@@ -204,7 +204,7 @@ def _get_e2e_status(config) -> dict:
     from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
     from ..infra.e2e_db import E2EDB
 
-    orchestrator_id = config.repo or str(config.repo_root)
+    orchestrator_id = config.orchestrator_id
 
     # Check if E2E is enabled
     if not config.e2e.enabled:

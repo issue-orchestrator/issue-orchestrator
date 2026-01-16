@@ -545,6 +545,16 @@ class Config:
     _raw_data: dict = field(default_factory=dict)
     _raw_agents: dict = field(default_factory=dict)
 
+    @property
+    def orchestrator_id(self) -> str:
+        """Unique identifier for this orchestrator instance.
+
+        Uses the directory name of repo_root as the identifier.
+        This must be consistent across all components (orchestrator, web UI, control API)
+        to ensure E2E test status and other cross-component data is correctly matched.
+        """
+        return self.repo_root.name
+
     def prefixed_label(self, label: str) -> str:
         """Return label with prefix if configured.
 
