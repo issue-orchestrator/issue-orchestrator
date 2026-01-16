@@ -9,7 +9,7 @@ import random
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol as TypingProtocol
 
 from ...domain.claim import Claim, ClaimResult, ClaimState
 from ...domain.lease_config import LeaseConfig
@@ -373,8 +373,8 @@ class GitHubClaimAdapter(ClaimManager):
             logger.debug("Failed to emit event %s: %s", event_name, e)
 
 
-# Type alias for label adapter protocol
-class LabelSetProtocol:
+# Type alias for label adapter protocol (using Protocol for structural typing)
+class LabelSetProtocol(TypingProtocol):
     """Protocol for label operations (matches LabelSet port)."""
 
     def add_label(self, issue_number: int, label: str) -> None:

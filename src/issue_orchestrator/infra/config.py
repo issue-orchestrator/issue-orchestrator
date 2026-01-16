@@ -35,6 +35,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     "milestones",
     "state",
     "config",
+    "claims",
 }
 
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
@@ -311,6 +312,30 @@ class E2EConfig:
     survive_restart: bool = True  # Let worker finish if orchestrator restarts
 
 
+@dataclass
+class ClaimsConfig:
+    """Claims/lease configuration for multi-orchestrator coordination.
+
+    When enabled, orchestrators coordinate via GitHub issue comments to ensure
+    only one orchestrator works on each issue at a time. Uses a convergence
+    protocol with tie-breaking for distributed consensus.
+
+    Single-orchestrator deployments should leave this disabled (the default).
+    """
+    enabled: bool = False  # Whether claims system is active
+    claimant_id: Optional[str] = None  # Unique ID for this orchestrator instance
+
+    # Lease timing (seconds)
+    lease_seconds: int = 900  # 15 min default lease duration
+    renew_before_expiry_seconds: int = 300  # Renew when 5 min remaining
+
+    # Convergence protocol settings
+    convergence_timeout_seconds: float = 5.0  # Max time to wait for convergence
+    convergence_poll_min_ms: int = 250  # Min poll interval (randomized)
+    convergence_poll_max_ms: int = 500  # Max poll interval (randomized)
+    convergence_required_wins: int = 2  # Consecutive wins needed
+
+
 def _parse_e2e_config(data: dict) -> E2EConfig:
     """Parse e2e section from YAML data."""
     pytest_args = data.get("pytest_args") or ["tests/e2e", "-v"]
@@ -325,6 +350,20 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
         allow_retry_once=data.get("allow_retry_once", True),
         quarantine_file=data.get("quarantine_file", "tests/e2e/quarantine.txt"),
         survive_restart=data.get("survive_restart", True),
+    )
+
+
+def _parse_claims_config(data: dict) -> ClaimsConfig:
+    """Parse claims section from YAML data."""
+    return ClaimsConfig(
+        enabled=data.get("enabled", False),
+        claimant_id=data.get("claimant_id"),
+        lease_seconds=data.get("lease_seconds", 900),
+        renew_before_expiry_seconds=data.get("renew_before_expiry_seconds", 300),
+        convergence_timeout_seconds=data.get("convergence_timeout_seconds", 5.0),
+        convergence_poll_min_ms=data.get("convergence_poll_min_ms", 250),
+        convergence_poll_max_ms=data.get("convergence_poll_max_ms", 500),
+        convergence_required_wins=data.get("convergence_required_wins", 2),
     )
 
 
@@ -533,6 +572,9 @@ class Config:
 
     # E2E async test runner configuration
     e2e: E2EConfig = field(default_factory=E2EConfig)
+
+    # Claims/lease configuration for multi-orchestrator coordination
+    claims: ClaimsConfig = field(default_factory=ClaimsConfig)
 
     # Stale in-progress escalation threshold (0 = disabled)
     # If an issue has stale in-progress for K consecutive ticks, emit escalation event
@@ -773,6 +815,16 @@ class Config:
                 "quarantine_file": self.e2e.quarantine_file,
                 "survive_restart": self.e2e.survive_restart,
             },
+            "claims": {
+                "enabled": self.claims.enabled,
+                "claimant_id": self.claims.claimant_id,
+                "lease_seconds": self.claims.lease_seconds,
+                "renew_before_expiry_seconds": self.claims.renew_before_expiry_seconds,
+                "convergence_timeout_seconds": self.claims.convergence_timeout_seconds,
+                "convergence_poll_min_ms": self.claims.convergence_poll_min_ms,
+                "convergence_poll_max_ms": self.claims.convergence_poll_max_ms,
+                "convergence_required_wins": self.claims.convergence_required_wins,
+            },
             "agents": {
                 label: {
                     "prompt_path": str(cfg.prompt_path),
@@ -819,6 +871,7 @@ class Config:
         milestones_section = _get_section(data, "milestones", config_path)
         state_section = _get_section(data, "state", config_path)
         config_section = _get_section(data, "config", config_path)
+        claims_section = _get_section(data, "claims", config_path)
 
         # Determine repo root using centralized helper
         repo_root = repo_root_from_config_path(config_path)
@@ -1118,6 +1171,11 @@ class Config:
         e2e_data = e2e_section
         if e2e_data:
             config.e2e = _parse_e2e_config(e2e_data)
+
+        # Parse claims config
+        claims_data = claims_section
+        if claims_data:
+            config.claims = _parse_claims_config(claims_data)
 
         return config
 

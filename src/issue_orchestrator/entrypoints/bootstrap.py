@@ -43,8 +43,7 @@ from ..control.action_applier import ActionApplier
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
 from ..adapters.github import GitHubIssueResolver, GitHubCache
-# GitHubClaimAdapter imported when claims are enabled:
-# from ..adapters.github.claim_adapter import GitHubClaimAdapter
+from ..adapters.github.claim_adapter import GitHubClaimAdapter
 from ..execution.verification_service import DefaultVerificationService
 from ..ports.verification import VerificationBudget
 from ..execution.worktree_adapter import GitWorktreeManager
@@ -192,20 +191,30 @@ def build_orchestrator(
         _check_github_token_scopes(config, github)
 
     # Create claim management components
-    # For now, always use NullClaimManager (single-orchestrator mode)
-    # TODO: Add config flag to enable GitHubClaimAdapter for multi-orchestrator
-    lease_config = LeaseConfig()
-    claim_manager = NullClaimManager()
-
-    # To enable multi-orchestrator claims, replace with:
-    # if github and config.claims_enabled:
-    #     claim_manager = GitHubClaimAdapter(
-    #         github_client=github,
-    #         claimant_id=config.orchestrator_id or "orchestrator",
-    #         config=lease_config,
-    #     )
-    # else:
-    #     claim_manager = NullClaimManager()
+    # Use GitHubClaimAdapter for multi-orchestrator coordination when enabled
+    if github and config.claims.enabled:
+        # Build LeaseConfig from claims config settings
+        lease_config = LeaseConfig(
+            lease_seconds=config.claims.lease_seconds,
+            renew_interval_seconds=config.claims.renew_before_expiry_seconds,
+            convergence_timeout_seconds=config.claims.convergence_timeout_seconds,
+            convergence_poll_min_ms=config.claims.convergence_poll_min_ms,
+            convergence_poll_max_ms=config.claims.convergence_poll_max_ms,
+            convergence_required_wins=config.claims.convergence_required_wins,
+        )
+        claimant_id = config.claims.claimant_id or f"orchestrator-{os.getpid()}"
+        claim_manager = GitHubClaimAdapter(
+            client=github._client,  # Use the HTTP client from GitHubAdapter
+            claimant_id=claimant_id,
+            config=lease_config,
+            events=events,
+            label_adapter=github,
+        )
+        logger.info("Claims enabled: claimant_id=%s, lease=%ds", claimant_id, lease_config.lease_seconds)
+    else:
+        # Use NullClaimManager for single-orchestrator mode
+        lease_config = LeaseConfig()
+        claim_manager = NullClaimManager()
 
     claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
     lease_renewer = LeaseRenewer(
