@@ -213,6 +213,47 @@ class TestHistoryEntryCreation:
         assert result.history_entry.status == "needs_human"
         assert "human" in result.history_entry.status_reason.lower()
 
+    def test_completed_with_critical_errors_records_failed_status(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Agent reported completed but push/PR failed shows FAILED in history."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUSH
+
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        # Agent said completed, but push failed
+        processing_errors = [f"{ERROR_PREFIX_PUSH}: Push failed: branch too large"]
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=processing_errors,
+        )
+
+        # History should show FAILED, not COMPLETED
+        assert result.history_entry.status == "failed"
+        assert "push" in result.history_entry.status_reason.lower() or "pr" in result.history_entry.status_reason.lower()
+
+    def test_completed_without_errors_records_completed_status(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Successful completion with no errors shows COMPLETED in history."""
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr/42", number=42, labels=[])]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        # No processing errors - successful completion
+        result = handler.process_completion(session, SessionStatus.COMPLETED)
+
+        assert result.history_entry.status == "completed"
+        assert "PR created" in result.history_entry.status_reason
+
 
 # =============================================================================
 # Test: Event Emission

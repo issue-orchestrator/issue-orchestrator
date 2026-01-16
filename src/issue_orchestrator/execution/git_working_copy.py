@@ -603,3 +603,35 @@ class GitWorkingCopy:
                 return True
             logger.warning("Commit failed: %s", e)
             return False
+
+    def delete_remote_branch(
+        self,
+        repo_root: Path,
+        branch: str,
+        remote: str = "origin",
+    ) -> bool:
+        """Delete a branch from the remote.
+
+        Args:
+            repo_root: Path to the git repository root.
+            branch: Branch name to delete (without remote prefix).
+            remote: Remote to delete from.
+
+        Returns:
+            True if deletion succeeded, False otherwise.
+        """
+        try:
+            self._run_git(
+                repo_root,
+                ["push", "--no-verify", remote, "--delete", branch],
+            )
+            logger.info("Deleted remote branch: %s/%s", remote, branch)
+            return True
+        except GitError as e:
+            # Branch might already be deleted
+            output = (e.result.stdout or "") + (e.result.stderr or "")
+            if "remote ref does not exist" in output:
+                logger.info("Remote branch already deleted: %s/%s", remote, branch)
+                return True
+            logger.warning("Failed to delete remote branch %s/%s: %s", remote, branch, e)
+            return False

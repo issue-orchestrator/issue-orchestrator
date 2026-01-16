@@ -273,3 +273,21 @@ class WorkingCopy(Protocol):
             PreflightResult indicating whether push would succeed.
         """
         ...
+
+    def delete_remote_branch(
+        self,
+        repo_root: Path,
+        branch: str,
+        remote: str = "origin",
+    ) -> bool:
+        """Delete a branch from the remote.
+
+        Args:
+            repo_root: Path to the git repository root.
+            branch: Branch name to delete (without remote prefix).
+            remote: Remote to delete from.
+
+        Returns:
+            True if deletion succeeded, False otherwise.
+        """
+        ...
