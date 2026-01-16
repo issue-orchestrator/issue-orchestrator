@@ -2270,7 +2270,7 @@ async def e2e_start(request: Request) -> JSONResponse:
     # Use config values or overrides from request
     pytest_args = body.get("pytest_args") or config.e2e.pytest_args
     allow_retry = body.get("allow_retry_once", config.e2e.allow_retry_once)
-    orchestrator_id = config.repo or str(repo_root)
+    orchestrator_id = config.orchestrator_id
 
     runner = get_e2e_runner_manager()
 
@@ -2322,12 +2322,12 @@ async def e2e_stop(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    # Get orchestrator_id from config
+    # Get orchestrator_id from config (or fallback to directory name)
     try:
         config = Config.find_and_load(repo_root)
-        orchestrator_id = config.repo or str(repo_root)
+        orchestrator_id = config.orchestrator_id
     except FileNotFoundError:
-        orchestrator_id = str(repo_root)
+        orchestrator_id = repo_root.name
 
     runner = get_e2e_runner_manager()
     stopped = runner.stop(orchestrator_id, repo_root)
@@ -2358,14 +2358,14 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
             status_code=400,
         )
 
-    # Get orchestrator_id from config
+    # Get orchestrator_id from config (or fallback to directory name)
     config = None
     try:
         config = Config.find_and_load(validated_root)
-        orchestrator_id = config.repo or str(validated_root)
+        orchestrator_id = config.orchestrator_id
         e2e_enabled = config.e2e.enabled
     except FileNotFoundError:
-        orchestrator_id = str(validated_root)
+        orchestrator_id = validated_root.name
         e2e_enabled = False
 
     # Get process status
@@ -2429,12 +2429,12 @@ async def e2e_runs(
             status_code=400,
         )
 
-    # Get orchestrator_id
+    # Get orchestrator_id (or fallback to directory name)
     try:
         config = Config.find_and_load(validated_root)
-        orchestrator_id = config.repo or str(validated_root)
+        orchestrator_id = config.orchestrator_id
     except FileNotFoundError:
-        orchestrator_id = str(validated_root)
+        orchestrator_id = validated_root.name
 
     db_path = validated_root / ".issue-orchestrator" / "e2e.db"
     if not db_path.exists():
