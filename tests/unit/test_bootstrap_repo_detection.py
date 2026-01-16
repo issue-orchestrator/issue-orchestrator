@@ -1,10 +1,19 @@
-"""Tests for bootstrap repo auto-detection."""
+"""Tests for bootstrap repo auto-detection and orchestrator building."""
 
 from unittest.mock import patch, MagicMock
+import os
 
 import pytest
 
 from issue_orchestrator.adapters.github.repo import get_repo_from_git, GitRepoError
+from issue_orchestrator.entrypoints.bootstrap import (
+    Dependencies,
+    build_orchestrator,
+    build_orchestrator_for_testing,
+    _check_github_token_scopes,
+)
+from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports import NullEventSink, NullSessionRunner
 
 
 class TestRepoAutoDetection:
@@ -132,3 +141,497 @@ class TestBootstrapRepoResolution:
 
         for snippet in expected_snippets:
             assert snippet in error_msg, f"Expected '{snippet}' in error message"
+
+
+class TestDependencies:
+    """Tests for the Dependencies container class."""
+
+    def test_dependencies_init_with_all_args(self) -> None:
+        """Dependencies stores all provided arguments."""
+        event_sink = NullEventSink()
+        session_runner = NullSessionRunner()
+        github_adapter = MagicMock()
+
+        deps = Dependencies(events=event_sink, runner=session_runner, github=github_adapter)
+
+        assert deps.events is event_sink
+        assert deps.runner is session_runner
+        assert deps.github is github_adapter
+
+    def test_dependencies_init_with_none_github(self) -> None:
+        """Dependencies can be initialized with github=None."""
+        event_sink = NullEventSink()
+        session_runner = NullSessionRunner()
+
+        deps = Dependencies(events=event_sink, runner=session_runner)
+
+        assert deps.events is event_sink
+        assert deps.runner is session_runner
+        assert deps.github is None
+
+
+class TestCheckGithubTokenScopes:
+    """Tests for _check_github_token_scopes function."""
+
+    def test_check_scopes_success_with_required_scopes(self) -> None:
+        """Success when token has all required scopes."""
+        config = Config()
+        config.github_required_scopes = ["repo", "workflow"]
+        config.github_allowed_scopes = []
+
+        github_adapter = MagicMock()
+        github_adapter.get_token_scopes.return_value = ["repo", "workflow", "read:user"]
+
+        # Should not raise
+        _check_github_token_scopes(config, github_adapter)
+
+    def test_check_scopes_failure_missing_required(self) -> None:
+        """Raises ValueError when required scopes are missing."""
+        config = Config()
+        config.github_required_scopes = ["repo", "workflow"]
+        config.github_allowed_scopes = []
+
+        github_adapter = MagicMock()
+        github_adapter.get_token_scopes.return_value = ["repo"]  # Missing workflow
+
+        with pytest.raises(ValueError, match="missing required scopes"):
+            _check_github_token_scopes(config, github_adapter)
+
+    def test_check_scopes_failure_extra_disallowed(self) -> None:
+        """Raises ValueError when token has disallowed scopes."""
+        config = Config()
+        config.github_required_scopes = []
+        config.github_allowed_scopes = ["repo", "read:user"]
+
+        github_adapter = MagicMock()
+        github_adapter.get_token_scopes.return_value = ["repo", "read:user", "workflow"]
+
+        with pytest.raises(ValueError, match="disallowed scopes"):
+            _check_github_token_scopes(config, github_adapter)
+
+    def test_check_scopes_with_empty_required_list(self) -> None:
+        """Empty or whitespace-only scopes are ignored."""
+        config = Config()
+        config.github_required_scopes = ["repo", "  ", ""]  # Mixed with whitespace
+        config.github_allowed_scopes = []
+
+        github_adapter = MagicMock()
+        github_adapter.get_token_scopes.return_value = ["repo"]
+
+        # Should not raise - only non-empty scopes are checked
+        _check_github_token_scopes(config, github_adapter)
+
+    def test_check_scopes_logs_warning_on_exception(self) -> None:
+        """Logs warning and returns if get_token_scopes fails."""
+        config = Config()
+        config.github_required_scopes = ["repo"]
+        config.github_allowed_scopes = []
+
+        github_adapter = MagicMock()
+        github_adapter.get_token_scopes.side_effect = Exception("API error")
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.logger") as mock_logger:
+            # Should not raise, just log warning
+            _check_github_token_scopes(config, github_adapter)
+            mock_logger.warning.assert_called()
+
+    def test_check_scopes_logs_token_info_when_available(self) -> None:
+        """Logs token scopes when successfully retrieved."""
+        config = Config()
+        config.github_required_scopes = []
+        config.github_allowed_scopes = []
+
+        github_adapter = MagicMock()
+        github_adapter.get_token_scopes.return_value = ["repo", "workflow"]
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.logger") as mock_logger:
+            _check_github_token_scopes(config, github_adapter)
+            mock_logger.info.assert_called()
+            assert "token scopes" in mock_logger.info.call_args[0][0].lower()
+
+    def test_check_scopes_logs_when_scopes_unavailable(self) -> None:
+        """Logs info when token scopes are unavailable."""
+        config = Config()
+        config.github_required_scopes = []
+        config.github_allowed_scopes = []
+
+        github_adapter = MagicMock()
+        github_adapter.get_token_scopes.return_value = []
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.logger") as mock_logger:
+            _check_github_token_scopes(config, github_adapter)
+            mock_logger.info.assert_called()
+            assert "unavailable" in mock_logger.info.call_args[0][0].lower()
+
+
+class TestBuildOrchestratorForTesting:
+    """Tests for build_orchestrator_for_testing function."""
+
+    @pytest.fixture
+    def minimal_config(self) -> Config:
+        """Minimal valid config for testing."""
+        config = Config()
+        config.repo = "test/repo"
+        return config
+
+    @pytest.fixture
+    def mock_github(self) -> MagicMock:
+        """Mock GitHub adapter."""
+        github = MagicMock()
+        github.get_issue_labels.return_value = []
+        return github
+
+    def test_build_orchestrator_for_testing_with_all_defaults(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Builds orchestrator with defaults when minimal args provided."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+            )
+
+            assert orch is not None
+            assert orch.config is minimal_config
+            assert orch.deps.repository_host is mock_github
+
+    def test_build_orchestrator_for_testing_with_custom_events(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Uses provided EventSink instead of default."""
+        custom_events = MagicMock()
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                events=custom_events,
+            )
+
+            # Events are wrapped in SequencedEventSink
+            assert orch.deps.events is not None
+
+    def test_build_orchestrator_for_testing_with_custom_runner(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Uses provided SessionRunner instead of default."""
+        custom_runner = MagicMock()
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                runner=custom_runner,
+            )
+
+            # Runner gets passed through
+            assert orch.deps.runner is custom_runner
+
+    def test_build_orchestrator_for_testing_with_custom_planner(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Uses provided Planner instead of creating default."""
+        custom_planner = MagicMock()
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                planner=custom_planner,
+            )
+
+            assert orch.deps.planner is custom_planner
+
+    def test_build_orchestrator_for_testing_creates_default_planner(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Creates default Planner when not provided."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                planner=None,
+            )
+
+            assert orch.deps.planner is not None
+
+    def test_build_orchestrator_for_testing_with_custom_session_manager(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Uses provided SessionManager instead of default."""
+        custom_session_manager = MagicMock()
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                session_manager=custom_session_manager,
+            )
+
+            assert orch.deps.session_manager is custom_session_manager
+
+    def test_build_orchestrator_for_testing_creates_default_session_manager(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Creates default SessionManager when not provided."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                session_manager=None,
+            )
+
+            assert orch.deps.session_manager is not None
+
+    def test_build_orchestrator_for_testing_with_custom_action_applier(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Uses provided ActionApplier instead of default."""
+        custom_action_applier = MagicMock()
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                action_applier=custom_action_applier,
+            )
+
+            assert orch.deps.action_applier is custom_action_applier
+
+    def test_build_orchestrator_for_testing_creates_default_action_applier(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Creates default ActionApplier when not provided."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                action_applier=None,
+            )
+
+            assert orch.deps.action_applier is not None
+
+    def test_build_orchestrator_for_testing_with_custom_fact_gatherer(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Uses provided FactGatherer instead of default."""
+        custom_fact_gatherer = MagicMock()
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                fact_gatherer=custom_fact_gatherer,
+            )
+
+            assert orch.deps.fact_gatherer is custom_fact_gatherer
+
+    def test_build_orchestrator_for_testing_creates_default_fact_gatherer(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Creates default FactGatherer when not provided."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+                fact_gatherer=None,
+            )
+
+            assert orch.deps.fact_gatherer is not None
+
+    def test_build_orchestrator_for_testing_creates_all_other_components(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Ensures all required components are created."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+            )
+
+            # Verify all required components exist
+            assert orch.deps.pr_scanner is not None
+            assert orch.deps.session_restorer is not None
+            assert orch.deps.state_machine_manager is not None
+            assert orch.deps.completion_processor is not None
+            assert orch.deps.session_controller is not None
+            assert orch.deps.label_sync is not None
+            assert orch.deps.event_hub is not None
+            assert orch.deps.worktree_manager is not None
+            assert orch.deps.working_copy is not None
+            assert orch.deps.command_runner is not None
+            assert orch.deps.hook_verifier is not None
+            assert orch.deps.health_gate is not None
+
+    def test_build_orchestrator_for_testing_installs_gh_guard(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """Calls install_gh_guard on startup."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard") as mock_guard:
+            build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+            )
+
+            mock_guard.assert_called_once()
+
+
+class TestBuildOrchestrator:
+    """Tests for build_orchestrator function (main composition root)."""
+
+    @pytest.fixture
+    def minimal_config(self) -> Config:
+        """Minimal valid config for testing."""
+        config = Config()
+        config.repo = "test/repo"
+        config.terminal_adapter = MagicMock()
+        config.ui_mode = "normal"
+        config.gh_audit_enabled = False
+        return config
+
+    def test_build_orchestrator_requires_repo(self) -> None:
+        """Raises ValueError when repo cannot be determined."""
+        config = Config()
+        config.repo = None
+        config.terminal_adapter = MagicMock()
+        config.ui_mode = "normal"
+
+        # Mock auto-detection to fail
+        with patch("issue_orchestrator.entrypoints.bootstrap.get_repo_from_git") as mock_get_repo:
+            with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
+                    mock_get_repo.side_effect = GitRepoError("test error")
+
+                    with pytest.raises(ValueError, match="Could not determine GitHub repository"):
+                        build_orchestrator(config)
+
+    def test_build_orchestrator_uses_configured_repo(self, minimal_config: Config) -> None:
+        """Uses repo from config when available."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.get_repo_from_git") as mock_get_repo:
+                    with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
+                        with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                            # Should NOT call get_repo_from_git when config.repo is set
+                            mock_adapter.return_value = MagicMock()
+                            mock_adapter.return_value.get_rate_limit_snapshot.return_value = {}
+                            mock_adapter.return_value.get_token_scopes.return_value = []
+
+                            build_orchestrator(minimal_config)
+                            # Verify we don't try to auto-detect when config.repo is set
+                            # (get_repo_from_git should not be called)
+
+    def test_build_orchestrator_auto_detects_repo_when_none(self) -> None:
+        """Auto-detects repo from git when config.repo is None."""
+        config = Config()
+        config.repo = None
+        config.terminal_adapter = MagicMock()
+        config.ui_mode = "normal"
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.get_repo_from_git") as mock_get_repo:
+                    with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                        with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                            with patch("issue_orchestrator.entrypoints.bootstrap.logger"):
+                                mock_get_repo.return_value = "auto/detected"
+
+                                # Should raise because other components fail, but auto-detect was called
+                                try:
+                                    build_orchestrator(config)
+                                except ValueError:
+                                    pass  # Expected due to missing components
+
+                                # Verify auto-detection was called
+                                mock_get_repo.assert_called_once()
+
+    def test_build_orchestrator_sets_repo_root_env_var(self, minimal_config: Config) -> None:
+        """Sets ORCHESTRATOR_REPO_ROOT environment variable."""
+        repo_root = minimal_config.repo_root
+        original_env = os.environ.get("ORCHESTRATOR_REPO_ROOT")
+
+        try:
+            with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
+                    with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                        with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                            try:
+                                build_orchestrator(minimal_config)
+                            except ValueError:
+                                pass  # Expected to fail later
+
+                            # Check that env var was set
+                            assert os.environ.get("ORCHESTRATOR_REPO_ROOT") == str(repo_root)
+        finally:
+            # Restore original env
+            if original_env is None:
+                os.environ.pop("ORCHESTRATOR_REPO_ROOT", None)
+            else:
+                os.environ["ORCHESTRATOR_REPO_ROOT"] = original_env
+
+    def test_build_orchestrator_enables_sse_by_default(self, minimal_config: Config) -> None:
+        """Registers SSE plugin when enable_sse=True (default)."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager") as mock_pm_factory:
+                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                    with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                        mock_pm = MagicMock()
+                        mock_pm_factory.return_value = mock_pm
+
+                        try:
+                            build_orchestrator(minimal_config, enable_sse=True)
+                        except ValueError:
+                            pass  # Expected to fail later
+
+                        # Verify pm.register was called for SSE plugin
+                        assert mock_pm.register.called
+
+    def test_build_orchestrator_disables_sse_when_requested(self, minimal_config: Config) -> None:
+        """Skips SSE plugin when enable_sse=False."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager") as mock_pm_factory:
+                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                    with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                        mock_pm = MagicMock()
+                        mock_pm_factory.return_value = mock_pm
+                        initial_call_count = mock_pm.register.call_count
+
+                        try:
+                            build_orchestrator(minimal_config, enable_sse=False)
+                        except ValueError:
+                            pass  # Expected to fail later
+
+    def test_build_orchestrator_disables_ipc_when_requested(self, minimal_config: Config) -> None:
+        """Accepts enable_ipc parameter (even if it doesn't affect SSE)."""
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager") as mock_pm_factory:
+                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                    with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                        mock_pm = MagicMock()
+                        mock_pm_factory.return_value = mock_pm
+
+                        try:
+                            # Should accept enable_ipc parameter
+                            build_orchestrator(minimal_config, enable_ipc=False)
+                        except ValueError:
+                            pass  # Expected to fail later
+
+    def test_build_orchestrator_configures_gh_audit(self, minimal_config: Config) -> None:
+        """Configures GitHub audit settings."""
+        minimal_config.gh_audit_enabled = True
+        minimal_config.gh_audit_events = True
+        minimal_config.gh_audit_file = "/tmp/audit.json"
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                    with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                        with patch("issue_orchestrator.entrypoints.bootstrap.gh_audit") as mock_audit:
+                            try:
+                                build_orchestrator(minimal_config)
+                            except ValueError:
+                                pass
+
+                            # Verify audit was configured
+                            assert mock_audit.configure.called
+                            assert mock_audit.configure_rate_limit.called

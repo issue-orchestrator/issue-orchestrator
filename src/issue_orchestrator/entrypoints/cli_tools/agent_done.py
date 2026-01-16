@@ -355,14 +355,13 @@ def write_completion_record(record: CompletionRecord) -> Path:
             worktree_root = path
             break
 
-    # Create .issue-orchestrator directory if needed
-    output_dir = worktree_root / ".issue-orchestrator"
-    output_dir.mkdir(exist_ok=True)
-
     # Orchestrator tells agent where to write via env var
     # This ensures each session type writes to a distinct file
     base_path = os.environ.get("ORCHESTRATOR_COMPLETION_PATH", COMPLETION_RECORD_PATH)
     output_path = worktree_root / base_path
+
+    # Create all necessary parent directories
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # If file exists (e.g., second review after rework), add numeric suffix
     if output_path.exists():
