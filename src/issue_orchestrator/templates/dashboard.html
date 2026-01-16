@@ -58,6 +58,24 @@
         .controls button:hover { background: #30363d; }
         .btn-warning { background: #9e6a03; border-color: #9e6a03; color: #fff; }
         .btn-primary { background: #238636; border-color: #238636; color: #fff; }
+        .btn-secondary {
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            background: #21262d;
+            color: #c9d1d9;
+            cursor: pointer;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .btn-secondary:hover {
+            background: #30363d;
+            border-color: #8b949e;
+        }
+        .btn-secondary:active {
+            background: #282e33;
+        }
 
         /* Focus styles for keyboard navigation */
         button:focus-visible,
@@ -991,6 +1009,156 @@
             cursor: pointer;
         }
         .e2e-failures:hover { text-decoration: underline; }
+
+        /* Claude Log Viewer */
+        .log-viewer-modal {
+            max-width: 90vw !important;
+            width: 1200px !important;
+            max-height: 90vh !important;
+        }
+        .log-viewer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .log-viewer-info {
+            font-size: 13px;
+            color: #8b949e;
+        }
+        .log-viewer-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .log-viewer-filter {
+            padding: 4px 8px;
+            font-size: 12px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+        }
+        .log-viewer-filter:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+        .log-entries {
+            max-height: calc(90vh - 180px);
+            overflow-y: auto;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            padding: 8px 12px;
+            border-bottom: 1px solid #21262d;
+            cursor: pointer;
+        }
+        .log-entry:hover {
+            background: #161b22;
+        }
+        .log-entry.expanded {
+            background: #161b22;
+        }
+        .log-entry-summary {
+            display: flex;
+            gap: 12px;
+            align-items: baseline;
+        }
+        .log-entry-type {
+            font-weight: 600;
+            color: #58a6ff;
+            min-width: 120px;
+        }
+        .log-entry-type.assistant { color: #a371f7; }
+        .log-entry-type.user { color: #3fb950; }
+        .log-entry-type.tool_use { color: #f0883e; }
+        .log-entry-type.tool_result { color: #d29922; }
+        .log-entry-preview {
+            color: #8b949e;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+        }
+        .log-entry-details {
+            display: none;
+            margin-top: 8px;
+            padding: 12px;
+            background: #0d1117;
+            border-radius: 6px;
+            overflow-x: auto;
+        }
+        .log-entry.expanded .log-entry-details {
+            display: block;
+        }
+        /* JSON syntax highlighting */
+        .json-key { color: #7ee787; }
+        .json-string { color: #a5d6ff; }
+        .json-number { color: #f0883e; }
+        .json-boolean { color: #ff7b72; }
+        .json-null { color: #8b949e; }
+        .json-bracket { color: #c9d1d9; }
+
+        /* Live Log Viewer */
+        .live-log-modal {
+            max-width: 90vw !important;
+            width: 1000px !important;
+            max-height: 90vh !important;
+        }
+        .live-log-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #30363d;
+        }
+        .live-log-info {
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .live-log-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .live-log-controls label {
+            font-size: 12px;
+            color: #8b949e;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .live-log-content {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            max-height: calc(90vh - 200px);
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .live-log-line {
+            color: #c9d1d9;
+        }
+        .live-log-line:hover {
+            background: #161b22;
+        }
+        .live-log-status {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #238636;
+            color: white;
+        }
+        .live-log-status.paused {
+            background: #6e7681;
+        }
     </style>
 </head>
 <body>
@@ -1128,14 +1296,19 @@
             {% endif %}
             </span>
 
-            <span class="e2e-next-run" id="e2eNextRun" style="{% if e2e_status.running %}display: none;{% endif %}">
+            <span class="e2e-next-run" id="e2eNextRun"
+                  style="{% if e2e_status.running %}display: none;{% endif %}"
+                  {% if e2e_status.next_run %}
+                  data-next-run-at="{{ e2e_status.next_run.next_run_at or '' }}"
+                  data-next-run-reason="{{ e2e_status.next_run.next_run_reason or '' }}"
+                  {% endif %}>
             {% if e2e_status.next_run %}
                 {% if e2e_status.next_run.next_run_reason == 'interval' %}
                 Next: {{ e2e_status.next_run.next_run_at }}
                 {% elif e2e_status.next_run.next_run_reason == 'main_unchanged' %}
                 Next: waiting for main change
                 {% elif e2e_status.next_run.next_run_reason == 'ready' %}
-                Next: ready
+                Next: pending
                 {% elif e2e_status.next_run.next_run_reason == 'auto_disabled' %}
                 Auto: off
                 {% endif %}
@@ -1637,26 +1810,28 @@
             if (runDir) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(runDir)}')">Open Session Dir</button>`;
             }
+            // Session log - watch live or open file
+            html += `<button class="btn-secondary" onclick="watchSessionLog(${issueNumber})">Watch Log</button>`;
             if (manifest.log_path) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.log_path)}')">Open Session Log</button>`;
             }
             if (manifest.claude_log_path) {
-                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_path)}')">Open Claude Log</button>`;
+                html += `<button class="btn-secondary" onclick="viewClaudeLog(${issueNumber})">View Claude Log</button>`;
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_path)}')">Open Claude Log File</button>`;
             }
             if (manifest.claude_log_dir) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_dir)}')">Open Claude Log Dir</button>`;
             }
+            // Orchestrator log buttons - filtered (issue-specific) and full
+            html += `<button class="btn-secondary" onclick="openFilteredOrchestratorLog(${issueNumber})">Open Orchestrator Log</button>`;
             if (manifest.orchestrator_log) {
-                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_log)}')">Open Orchestrator Log</button>`;
+                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_log)}')">Open Full Log</button>`;
             }
             if (diagnosticPath) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(diagnosticPath)}')">Open Diagnostic</button>`;
             }
             if (manifest.validation_record_path && worktree) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(worktree + '/' + manifest.validation_record_path)}')">Open Validation</button>`;
-            }
-            if (manifest.orchestrator_tail) {
-                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_tail)}')">Open Orchestrator Tail</button>`;
             }
             html += '</div>';
 
@@ -2443,10 +2618,15 @@
         function closeModal(e) {
             if (!e || e.target === modalOverlay) {
                 modalOverlay.classList.remove('visible');
+                // Reset modal classes for viewers
+                const modalEl = modalOverlay.querySelector('.modal');
+                modalEl.classList.remove('log-viewer-modal', 'live-log-modal');
                 if (logPoller) {
                     clearInterval(logPoller);
                     logPoller = null;
                 }
+                // Stop live log poller if running
+                stopLiveLogPoller();
             }
         }
 
@@ -2737,6 +2917,295 @@
             openLogFile(path);
         }
 
+        async function openFilteredOrchestratorLog(issueNumber) {
+            try {
+                showToast('Generating filtered log...');
+                const res = await fetch(`/api/session/orchestrator-log/${issueNumber}`);
+                const data = await res.json();
+                if (data.error) {
+                    // Fall back to full log if available
+                    if (data.full_log_path) {
+                        showToast('Could not filter log, opening full log', 'error');
+                        openPath(data.full_log_path);
+                    } else {
+                        showToast(data.error, 'error');
+                    }
+                    return;
+                }
+                openPath(data.filtered_log_path);
+            } catch (err) {
+                showToast(`Failed to get orchestrator log: ${err.message}`, 'error');
+            }
+        }
+
+        // Claude Log Viewer
+        async function viewClaudeLog(issueNumber) {
+            try {
+                showToast('Loading Claude log...');
+                const res = await fetch(`/api/session/claude-log/${issueNumber}?limit=500`);
+                const data = await res.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+                renderClaudeLogViewer(data);
+            } catch (err) {
+                showToast(`Failed to load Claude log: ${err.message}`, 'error');
+            }
+        }
+
+        function renderClaudeLogViewer(data) {
+            const entries = data.entries || [];
+            let html = `
+                <div class="log-viewer-header">
+                    <div class="log-viewer-info">${entries.length} entries from ${escapeHtml(data.log_path || 'unknown')}</div>
+                    <div class="log-viewer-controls">
+                        <select class="log-viewer-filter" onchange="filterLogEntries(this.value)">
+                            <option value="all">All entries</option>
+                            <option value="assistant">Assistant only</option>
+                            <option value="user">User only</option>
+                            <option value="tool">Tool calls only</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="log-entries" id="logEntries">
+            `;
+
+            entries.forEach((entry, idx) => {
+                const entryType = getEntryType(entry);
+                const preview = getEntryPreview(entry);
+                html += `
+                    <div class="log-entry" data-type="${entryType}" onclick="toggleLogEntry(this)">
+                        <div class="log-entry-summary">
+                            <span class="log-entry-type ${entryType}">${entryType}</span>
+                            <span class="log-entry-preview">${escapeHtml(preview)}</span>
+                        </div>
+                        <div class="log-entry-details">
+                            <pre>${syntaxHighlightJson(entry)}</pre>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+
+            // Open with larger modal class
+            const modal = document.getElementById('modalOverlay');
+            const modalEl = modal.querySelector('.modal');
+            modalEl.classList.add('log-viewer-modal');
+            openModal(`Claude Log #${data.issue_number}`, html);
+        }
+
+        function getEntryType(entry) {
+            if (entry.type === 'human' || entry.role === 'user') return 'user';
+            if (entry.type === 'ai' || entry.role === 'assistant') return 'assistant';
+            if (entry.type === 'tool' || entry.tool_use_id) return 'tool_result';
+            if (entry.name && entry.input) return 'tool_use';
+            return entry.type || 'unknown';
+        }
+
+        function getEntryPreview(entry) {
+            // Try to extract meaningful preview text
+            if (entry.content) {
+                if (typeof entry.content === 'string') {
+                    return entry.content.substring(0, 150);
+                }
+                if (Array.isArray(entry.content)) {
+                    const textBlock = entry.content.find(b => b.type === 'text');
+                    if (textBlock && textBlock.text) {
+                        return textBlock.text.substring(0, 150);
+                    }
+                    const toolUse = entry.content.find(b => b.type === 'tool_use');
+                    if (toolUse) {
+                        return `Tool: ${toolUse.name}`;
+                    }
+                }
+            }
+            if (entry.name && entry.input) {
+                return `Tool: ${entry.name}`;
+            }
+            if (entry.message) {
+                return entry.message.substring(0, 150);
+            }
+            return JSON.stringify(entry).substring(0, 100);
+        }
+
+        function toggleLogEntry(el) {
+            el.classList.toggle('expanded');
+        }
+
+        function filterLogEntries(filter) {
+            const entries = document.querySelectorAll('.log-entry');
+            entries.forEach(entry => {
+                const type = entry.dataset.type;
+                if (filter === 'all') {
+                    entry.style.display = '';
+                } else if (filter === 'tool') {
+                    entry.style.display = (type === 'tool_use' || type === 'tool_result') ? '' : 'none';
+                } else {
+                    entry.style.display = type === filter ? '' : 'none';
+                }
+            });
+        }
+
+        function syntaxHighlightJson(obj) {
+            const json = JSON.stringify(obj, null, 2);
+            return json
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?)/g, (match) => {
+                    let cls = 'json-string';
+                    if (/:$/.test(match)) {
+                        cls = 'json-key';
+                        // Remove the colon from the match for proper highlighting
+                        return `<span class="${cls}">${match.slice(0, -1)}</span>:`;
+                    }
+                    return `<span class="${cls}">${match}</span>`;
+                })
+                .replace(/\b(true|false)\b/g, '<span class="json-boolean">$1</span>')
+                .replace(/\bnull\b/g, '<span class="json-null">null</span>')
+                .replace(/\b(-?\d+\.?\d*)\b/g, '<span class="json-number">$1</span>');
+        }
+
+        // Live Session Log Viewer
+        let liveLogPoller = null;
+        let liveLogIssue = null;
+        let liveLogOffset = 0;
+        let liveLogFollow = true;
+
+        async function watchSessionLog(issueNumber) {
+            // Stop any existing poller
+            if (liveLogPoller) {
+                clearInterval(liveLogPoller);
+                liveLogPoller = null;
+            }
+
+            liveLogIssue = issueNumber;
+            liveLogOffset = 0;
+            liveLogFollow = true;
+
+            showToast('Loading session log...');
+
+            try {
+                const res = await fetch(`/api/log/local/${issueNumber}?limit=500`);
+                const data = await res.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+                renderLiveLogViewer(data);
+                // Start polling for updates
+                liveLogOffset = data.total_lines;
+                liveLogPoller = setInterval(() => pollLiveLog(issueNumber), 1000);
+            } catch (err) {
+                showToast(`Failed to load log: ${err.message}`, 'error');
+            }
+        }
+
+        function renderLiveLogViewer(data) {
+            const html = `
+                <div class="live-log-header">
+                    <div class="live-log-info">
+                        <span id="liveLogStatus" class="live-log-status">Live</span>
+                        <span id="liveLogLines">${data.total_lines} lines</span>
+                        ${data.truncated ? ' (showing last 500)' : ''}
+                    </div>
+                    <div class="live-log-controls">
+                        <label>
+                            <input type="checkbox" id="liveLogFollow" checked onchange="toggleLiveLogFollow(this.checked)">
+                            Auto-scroll
+                        </label>
+                        <button class="btn-secondary" onclick="toggleLiveLogPause()" id="liveLogPauseBtn">Pause</button>
+                    </div>
+                </div>
+                <div class="live-log-content" id="liveLogContent">${escapeHtml((data.lines || []).join('\n'))}</div>
+            `;
+
+            const modal = document.getElementById('modalOverlay');
+            const modalEl = modal.querySelector('.modal');
+            modalEl.classList.add('live-log-modal');
+            openModal(`Session Log #${data.issue_number}`, html);
+
+            // Scroll to bottom
+            const content = document.getElementById('liveLogContent');
+            if (content) {
+                content.scrollTop = content.scrollHeight;
+            }
+        }
+
+        async function pollLiveLog(issueNumber) {
+            if (issueNumber !== liveLogIssue) return;
+
+            try {
+                const res = await fetch(`/api/log/local/${issueNumber}?offset=${liveLogOffset}&limit=0`);
+                const data = await res.json();
+                if (data.error || !data.lines || data.lines.length === 0) return;
+
+                const content = document.getElementById('liveLogContent');
+                const linesEl = document.getElementById('liveLogLines');
+                if (!content) return;
+
+                // Append new lines
+                const newContent = data.lines.join('\n');
+                if (content.textContent) {
+                    content.textContent += '\n' + newContent;
+                } else {
+                    content.textContent = newContent;
+                }
+                liveLogOffset = data.total_lines;
+
+                // Update line count
+                if (linesEl) {
+                    linesEl.textContent = `${data.total_lines} lines`;
+                }
+
+                // Auto-scroll if enabled
+                if (liveLogFollow) {
+                    content.scrollTop = content.scrollHeight;
+                }
+            } catch (err) {
+                // Silently ignore polling errors
+            }
+        }
+
+        function toggleLiveLogFollow(checked) {
+            liveLogFollow = checked;
+            if (checked) {
+                const content = document.getElementById('liveLogContent');
+                if (content) content.scrollTop = content.scrollHeight;
+            }
+        }
+
+        function toggleLiveLogPause() {
+            const btn = document.getElementById('liveLogPauseBtn');
+            const status = document.getElementById('liveLogStatus');
+            if (liveLogPoller) {
+                clearInterval(liveLogPoller);
+                liveLogPoller = null;
+                if (btn) btn.textContent = 'Resume';
+                if (status) {
+                    status.textContent = 'Paused';
+                    status.classList.add('paused');
+                }
+            } else {
+                liveLogPoller = setInterval(() => pollLiveLog(liveLogIssue), 1000);
+                if (btn) btn.textContent = 'Pause';
+                if (status) {
+                    status.textContent = 'Live';
+                    status.classList.remove('paused');
+                }
+            }
+        }
+
+        function stopLiveLogPoller() {
+            if (liveLogPoller) {
+                clearInterval(liveLogPoller);
+                liveLogPoller = null;
+            }
+            liveLogIssue = null;
+        }
+
         async function showInfo() {
             settingsMenu.classList.remove('visible');
             const res = await fetch('/api/info');
@@ -2834,10 +3303,11 @@
             if (reason === 'interval' && nextInfo.next_run_at) {
                 const when = new Date(nextInfo.next_run_at);
                 const deltaMs = when.getTime() - Date.now();
-                return `Next: ${formatRelativeMillis(deltaMs)} (${when.toLocaleString()})`;
+                const timeStr = when.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                return `Next: in ${formatRelativeMillis(deltaMs)} (at ${timeStr})`;
             }
             if (reason === 'main_unchanged') return 'Next: waiting for main change';
-            if (reason === 'ready') return 'Next: ready';
+            if (reason === 'ready') return 'Next: pending';
             if (reason === 'auto_disabled') return 'Auto: off';
             if (reason === 'running') return '';
             return '';

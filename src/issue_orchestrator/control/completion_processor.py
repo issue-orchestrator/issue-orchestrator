@@ -567,23 +567,33 @@ class CompletionProcessor:
                                 base="main",
                                 draft=True,
                             )
+                        elif self._is_no_commits_error(e):
+                            # Branch is identical to main - let human figure out why
+                            raise RuntimeError(
+                                f"Cannot create PR: no commits between main and {branch}. "
+                                f"Possible causes: (1) agent didn't make any changes, "
+                                f"(2) work already merged via another PR, "
+                                f"(3) commits lost during rebase. "
+                                f"Human review required."
+                            )
                         else:
                             raise
 
-                    pr_url = pr.url
-                    actions_taken.append(f"Created PR #{pr.number}")
-                    logger.info("Created PR #%d for issue #%d: %s", pr.number, issue_number, pr_url)
+                    if pr:
+                        pr_url = pr.url
+                        actions_taken.append(f"Created PR #{pr.number}")
+                        logger.info("Created PR #%d for issue #%d: %s", pr.number, issue_number, pr_url)
 
-                    # Apply extra labels to the PR if specified
-                    # Skip for fake/dry-run PRs (numbers 90000-99999)
-                    is_dry_run_pr = 90000 <= pr.number <= 99999
-                    if record.pr_labels and not is_dry_run_pr:
-                        for label in record.pr_labels:
-                            self.label_adapter.add_label(pr.number, label)
-                            logger.info("Added label '%s' to PR #%d", label, pr.number)
-                        actions_taken.append(f"Added labels to PR: {record.pr_labels}")
-                    elif record.pr_labels and is_dry_run_pr:
-                        logger.info("[E2E_DRY_RUN] Skipping PR label addition for fake PR #%d", pr.number)
+                        # Apply extra labels to the PR if specified
+                        # Skip for fake/dry-run PRs (numbers 90000-99999)
+                        is_dry_run_pr = 90000 <= pr.number <= 99999
+                        if record.pr_labels and not is_dry_run_pr:
+                            for label in record.pr_labels:
+                                self.label_adapter.add_label(pr.number, label)
+                                logger.info("Added label '%s' to PR #%d", label, pr.number)
+                            actions_taken.append(f"Added labels to PR: {record.pr_labels}")
+                        elif record.pr_labels and is_dry_run_pr:
+                            logger.info("[E2E_DRY_RUN] Skipping PR label addition for fake PR #%d", pr.number)
 
                 elif action == RequestedAction.POST_COMMENT:
                     if record.comment_body:
@@ -779,6 +789,15 @@ class CompletionProcessor:
     def _is_pr_collision_error(self, error: Exception) -> bool:
         message = str(error).lower()
         return "pull request" in message and "already exists" in message
+
+    def _is_no_commits_error(self, error: Exception) -> bool:
+        """Detect GitHub 422 'No commits between main and branch' error.
+
+        This happens when the branch is identical to main, meaning the work
+        was already merged (possibly from a previous session or other PR).
+        """
+        message = str(error).lower()
+        return "no commits between" in message
 
     def _pr_matches_issue(self, pr: PRInfo, issue_number: int) -> bool:
         if pr.branch and pr.branch.startswith(f"{issue_number}-"):

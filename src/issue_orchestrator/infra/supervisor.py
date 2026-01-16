@@ -155,10 +155,27 @@ def start(
     # Check if process is still alive
     poll = process.poll()
     if poll is not None:
-        # Process exited
+        # Process exited - try to extract error from log
+        error_hint = ""
+        if log_file.exists():
+            try:
+                lines = log_file.read_text().splitlines()
+                # Find ERROR lines or last few lines
+                error_lines = [l for l in lines if "ERROR" in l or "Traceback" in l or "ValueError" in l]
+                if error_lines:
+                    error_hint = f"\n\nError from log:\n  {error_lines[-1]}"
+                elif lines:
+                    # Show last non-empty line as hint
+                    for line in reversed(lines):
+                        if line.strip():
+                            error_hint = f"\n\nLast log entry:\n  {line}"
+                            break
+            except Exception:
+                pass  # Don't fail if we can't read logs
+
         raise RuntimeError(
-            f"Orchestrator process exited immediately with code {poll}. "
-            f"Check logs at {log_file}"
+            f"Orchestrator process exited immediately with code {poll}.{error_hint}\n\n"
+            f"Full logs at: {log_file}"
         )
 
     # Process is running but didn't create lock file yet
