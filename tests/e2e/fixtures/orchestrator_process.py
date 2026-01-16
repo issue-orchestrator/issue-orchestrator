@@ -154,6 +154,14 @@ class OrchestratorProcess:
                 },
             },
         }
+        # Add claims config if enabled
+        if self.config.claims.enabled:
+            data["claims"] = {
+                "enabled": True,
+                "claimant_id": self.config.claims.claimant_id,
+                "lease_seconds": self.config.claims.lease_seconds,
+                "renew_before_expiry_seconds": self.config.claims.renew_before_expiry_seconds,
+            }
         config_path.write_text(yaml.safe_dump(data, sort_keys=False))
         self._config_path = config_path
         return config_path
