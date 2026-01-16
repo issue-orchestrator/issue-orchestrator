@@ -2322,15 +2322,17 @@ async def e2e_stop(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    # Get orchestrator_id from config (or fallback to directory name)
+    # Get orchestrator_id from config - fail fast if not configured
     try:
         config = Config.find_and_load(repo_root)
-        orchestrator_id = config.orchestrator_id
     except FileNotFoundError:
-        orchestrator_id = repo_root.name
+        return JSONResponse(
+            {"error": "config_not_found", "detail": "No orchestrator config found"},
+            status_code=400,
+        )
 
     runner = get_e2e_runner_manager()
-    stopped = runner.stop(orchestrator_id, repo_root)
+    stopped = runner.stop(config.orchestrator_id, repo_root)
 
     return JSONResponse({
         "status": "stopped" if stopped else "not_running",
@@ -2358,19 +2360,18 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
             status_code=400,
         )
 
-    # Get orchestrator_id from config (or fallback to directory name)
-    config = None
+    # Get orchestrator_id from config - fail fast if not configured
     try:
         config = Config.find_and_load(validated_root)
-        orchestrator_id = config.orchestrator_id
-        e2e_enabled = config.e2e.enabled
     except FileNotFoundError:
-        orchestrator_id = validated_root.name
-        e2e_enabled = False
+        return JSONResponse(
+            {"error": "config_not_found", "detail": "No orchestrator config found"},
+            status_code=400,
+        )
 
     # Get process status
     runner = get_e2e_runner_manager()
-    proc_status = runner.status(orchestrator_id)
+    proc_status = runner.status(config.orchestrator_id)
 
     # Get DB status
     db_path = validated_root / ".issue-orchestrator" / "e2e.db"
@@ -2383,21 +2384,21 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
     if db_path.exists():
         try:
             db = E2EDB(db_path)
-            run_obj = db.latest_run(orchestrator_id)
+            run_obj = db.latest_run(config.orchestrator_id)
             if run_obj:
                 last_run = run_obj.to_dict()
                 # Get progress for running tests
                 if run_obj.status == "running":
                     progress = db.get_progress(run_obj.id)
-            signal_score = db.compute_signal_score(orchestrator_id)
+            signal_score = db.compute_signal_score(config.orchestrator_id)
         except Exception as e:
             logger.warning("Failed to read E2E DB: %s", e)
 
-    if e2e_enabled and config:
+    if config.e2e.enabled:
         next_run = get_next_run_info(config, validated_root, run_obj)
 
     return JSONResponse({
-        "enabled": e2e_enabled,
+        "enabled": config.e2e.enabled,
         "running": proc_status["running"],
         "pid": proc_status["pid"],
         "exit_code": proc_status["exit_code"],
@@ -2429,12 +2430,14 @@ async def e2e_runs(
             status_code=400,
         )
 
-    # Get orchestrator_id (or fallback to directory name)
+    # Get orchestrator_id from config - fail fast if not configured
     try:
         config = Config.find_and_load(validated_root)
-        orchestrator_id = config.orchestrator_id
     except FileNotFoundError:
-        orchestrator_id = validated_root.name
+        return JSONResponse(
+            {"error": "config_not_found", "detail": "No orchestrator config found"},
+            status_code=400,
+        )
 
     db_path = validated_root / ".issue-orchestrator" / "e2e.db"
     if not db_path.exists():
@@ -2442,7 +2445,7 @@ async def e2e_runs(
 
     try:
         db = E2EDB(db_path)
-        runs = db.list_runs(orchestrator_id, limit=limit)
+        runs = db.list_runs(config.orchestrator_id, limit=limit)
         return JSONResponse({
             "runs": [r.to_dict() for r in runs],
         })
