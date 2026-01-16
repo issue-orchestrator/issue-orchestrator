@@ -252,6 +252,68 @@ class TestFactGathererTriageFacts:
         assert result.watch_label == "ready-for-triage"
         mock_repository_host.get_prs_with_label.assert_called_with("ready-for-triage", state="all")
 
+    def test_triage_facts_collects_labels_from_prs_and_linked_issues(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Test collects labels from both PRs and their linked issues.
+
+        When gathering triage facts, source_labels should include:
+        - Labels directly on the PRs
+        - Labels on issues linked from the PR body/title (e.g., "Fixes #123")
+
+        This enables triage.inherit_labels to work with labels from linked issues.
+        """
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        # PRs have some labels and reference linked issues in their titles
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(
+                number=10,
+                url="...",
+                title="#100: Fix the bug",
+                branch="b1",
+                labels=["pr-label-1"],
+                body="Fixes #101",
+                state="open",
+            ),
+            PRInfo(
+                number=11,
+                url="...",
+                title="PR 11 for #102",
+                branch="b2",
+                labels=["pr-label-2"],
+                body="",
+                state="open",
+            ),
+        ]
+        mock_repository_host.list_issues.return_value = []
+
+        # Linked issues have different labels (including one we want to inherit)
+        def get_issue_side_effect(issue_num):
+            issues = {
+                100: Issue(number=100, title="Issue 100", labels=["agent:backend", "io-e2e-test-data"]),
+                101: Issue(number=101, title="Issue 101", labels=["agent:backend", "priority:high"]),
+                102: Issue(number=102, title="Issue 102", labels=["agent:frontend", "test-data"]),
+            }
+            return issues.get(issue_num)
+
+        mock_repository_host.get_issue.side_effect = get_issue_side_effect
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        # Should include PR labels
+        assert "pr-label-1" in result.source_labels
+        assert "pr-label-2" in result.source_labels
+        # Should include labels from linked issues
+        assert "agent:backend" in result.source_labels
+        assert "agent:frontend" in result.source_labels
+        assert "io-e2e-test-data" in result.source_labels
+        assert "test-data" in result.source_labels
+        assert "priority:high" in result.source_labels
+
 
 class TestFactGathererCleanupFacts:
     """Tests for gather_cleanup_facts method."""
