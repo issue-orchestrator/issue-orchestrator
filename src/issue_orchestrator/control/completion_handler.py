@@ -35,6 +35,16 @@ from ..infra import labels
 logger = logging.getLogger(__name__)
 
 
+def _has_critical_errors(processing_errors: Optional[list[str]]) -> bool:
+    """Check if processing_errors contains critical push/PR failures."""
+    if not processing_errors:
+        return False
+    return any(
+        error.startswith(ERROR_PREFIX_PUSH) or error.startswith(ERROR_PREFIX_CREATE_PR)
+        for error in processing_errors
+    )
+
+
 @dataclass
 class CompletionResult:
     """Result of processing a session completion."""
@@ -124,9 +134,21 @@ class CompletionHandler:
                 issue_number=session.issue.number,
             )
 
+        # Determine history status: if agent said COMPLETED but push/PR failed,
+        # use FAILED for history to show red dot in UI
+        history_status = status
+        history_status_reason: Optional[str] = None
+        if status == SessionStatus.COMPLETED and _has_critical_errors(processing_errors):
+            logger.info(
+                "[COMPLETION] Agent reported completed but push/PR failed - using FAILED for history: issue=%d",
+                session.issue.number,
+            )
+            history_status = SessionStatus.FAILED
+            history_status_reason = "Push or PR creation failed"
+
         # Create history entry
         history_entry = self._create_history_entry(
-            session, status, pr_url
+            session, history_status, pr_url, status_reason_override=history_status_reason
         )
 
         # Emit trace events
@@ -254,8 +276,17 @@ class CompletionHandler:
         session: Session,
         status: SessionStatus,
         pr_url: Optional[str],
+        status_reason_override: Optional[str] = None,
     ) -> SessionHistoryEntry:
-        """Create a session history entry."""
+        """Create a session history entry.
+
+        Args:
+            session: The session that completed
+            status: The status to record in history
+            pr_url: URL of the PR if one was created
+            status_reason_override: Optional override for the status reason
+                (used when agent said completed but push/PR failed)
+        """
         # Generate human-readable status reason
         status_reasons = {
             SessionStatus.COMPLETED: "PR created successfully",
@@ -264,7 +295,7 @@ class CompletionHandler:
             SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
             SessionStatus.FAILED: "Session ended without PR or status update",
         }
-        status_reason = status_reasons.get(status, "Unknown")
+        status_reason = status_reason_override or status_reasons.get(status, "Unknown")
 
         return SessionHistoryEntry(
             issue_number=session.issue.number,
