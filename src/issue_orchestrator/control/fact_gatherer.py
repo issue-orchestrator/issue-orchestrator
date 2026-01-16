@@ -140,6 +140,7 @@ class FactGatherer:
         state: "OrchestratorState",
         issues: list["Issue"],
         stale_in_progress_issues: list["Issue"] | None = None,
+        stale_claim_issues: list["Issue"] | None = None,
     ) -> "OrchestratorSnapshot":
         """Create an immutable snapshot for planning.
 
@@ -147,6 +148,7 @@ class FactGatherer:
             state: Current orchestrator state
             issues: Current list of issues from GitHub
             stale_in_progress_issues: Issues with in-progress label but no running session
+            stale_claim_issues: Issues with io:claimed label but expired/invalid claim
 
         Returns:
             Immutable snapshot of orchestrator state for Planner
@@ -170,6 +172,7 @@ class FactGatherer:
             triage_facts=self.gather_triage_facts(state),
             cleanup_facts=self.gather_cleanup_facts(state),
             stale_in_progress_issues=tuple(stale_in_progress_issues or []),
+            stale_claim_issues=tuple(stale_claim_issues or []),
             failed_this_cycle=frozenset(state.failed_this_cycle),
             session_history_issue_numbers=frozenset(e.issue_number for e in state.session_history),
         )

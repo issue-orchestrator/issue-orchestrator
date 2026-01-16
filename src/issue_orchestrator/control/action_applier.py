@@ -43,6 +43,7 @@ from .reconciliation import (
     ReconciliationRequired,
     require_reconciliation,
 )
+from .claim_gate import ClaimGate, ClaimLostError
 from .actions import (
     Action,
     ActionResult,
@@ -67,6 +68,10 @@ logger = logging.getLogger(__name__)
 # Takes (session_type, number) and returns Optional[Session]
 # This allows orchestrator to inject entity lookup + SessionLauncher
 SessionLauncherCallback = Callable[[SessionType, int], Optional[Session]]
+
+# Type alias for lease_id lookup callback
+# Takes issue_number and returns lease_id if active session exists
+LeaseIdLookup = Callable[[int], str | None]
 
 
 @dataclass
@@ -93,6 +98,10 @@ class ActionApplier:
     # Injected by orchestrator, allows ActionApplier to launch sessions without
     # knowing about Issue/PendingReview/PendingRework entities
     session_launcher: Optional[SessionLauncherCallback] = None
+    # Claim/lease verification for multi-orchestrator coordination
+    claim_gate: Optional[ClaimGate] = None
+    # Callback to look up lease_id for an issue from active sessions
+    lease_id_lookup: Optional[LeaseIdLookup] = None
 
     def apply(self, action: Action) -> ActionResult:
         """Apply a single action.
@@ -109,6 +118,9 @@ class ActionApplier:
             result = self._dispatch(action)
         except ReconciliationRequired:
             # Re-raise ReconciliationRequired - it must propagate to orchestrator
+            raise
+        except ClaimLostError:
+            # Re-raise ClaimLostError - it must propagate to orchestrator
             raise
         except Exception as e:
             logger.exception(f"Action failed: {action}")
@@ -164,6 +176,8 @@ class ActionApplier:
 
         # Enforce expected state before mutation (raises ReconciliationRequired)
         self._require_expected(action, action.issue_number)
+        # Verify claim ownership before write (raises ClaimLostError)
+        self._verify_claim_before_write(action, action.issue_number)
 
         try:
             self.labels.add_label(action.issue_number, action.label)
@@ -184,6 +198,8 @@ class ActionApplier:
 
         # Enforce expected state before mutation (raises ReconciliationRequired)
         self._require_expected(action, action.issue_number)
+        # Verify claim ownership before write (raises ClaimLostError)
+        self._verify_claim_before_write(action, action.issue_number)
 
         try:
             self.labels.remove_label(action.issue_number, action.label)
@@ -205,6 +221,8 @@ class ActionApplier:
 
         # Enforce expected state before mutation (raises ReconciliationRequired)
         self._require_expected(action, action.number)
+        # Verify claim ownership before write (raises ClaimLostError)
+        self._verify_claim_before_write(action, action.number)
 
         try:
             self.repository_host.add_comment(action.number, action.comment)
@@ -278,6 +296,39 @@ class ActionApplier:
         # This raises ReconciliationRequired if constraints not satisfied
         require_reconciliation(action.expected, actual, entity_type="issue")
 
+    def _verify_claim_before_write(self, action: Action, issue_number: int) -> None:
+        """Verify claim ownership before a write operation.
+
+        For multi-orchestrator coordination, this verifies the current orchestrator
+        still owns the claim for this issue before making any external mutation.
+
+        Args:
+            action: The action being applied (for logging the operation type)
+            issue_number: The issue number to verify claim for
+
+        Raises:
+            ClaimLostError: If the claim has been lost to another orchestrator
+        """
+        if not self.claim_gate:
+            # No claim gate configured - skip verification
+            return
+
+        if not self.lease_id_lookup:
+            # No lease_id lookup configured - skip verification
+            return
+
+        lease_id = self.lease_id_lookup(issue_number)
+        if not lease_id:
+            # No active session with lease for this issue - skip verification
+            return
+
+        # Verify claim ownership - raises ClaimLostError if lost
+        self.claim_gate.verify_or_raise(
+            issue_number=issue_number,
+            lease_id=lease_id,
+            operation=action.action_type.value,
+        )
+
     def _check_reconciliation_for_sync(
         self,
         issue_number: int,
@@ -349,6 +400,8 @@ class ActionApplier:
 
         # Enforce expected state before mutation (raises ReconciliationRequired)
         self._require_expected(action, action.issue_number)
+        # Verify claim ownership before write (raises ClaimLostError)
+        self._verify_claim_before_write(action, action.issue_number)
 
         # Soft reconciliation check (backwards compatibility - logs warnings)
         should_proceed, msg, _current_labels = self._check_reconciliation_for_sync(
@@ -475,6 +528,9 @@ class ActionApplier:
 
         # Enforce expected state before mutation (raises ReconciliationRequired)
         self._require_expected(action, action.pr_number)
+        # Verify claim ownership before write (raises ClaimLostError)
+        # Claims are on issues, not PRs, so use issue_number
+        self._verify_claim_before_write(action, action.issue_number)
 
         errors = []
 
@@ -583,6 +639,10 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         # Enforce expected state before mutation (raises ReconciliationRequired)
         if action.pr_number:
             self._require_expected(action, action.pr_number)
+        # Verify claim ownership before write (raises ClaimLostError)
+        # Claims are on issues, not PRs, so use issue_number
+        if action.issue_number:
+            self._verify_claim_before_write(action, action.issue_number)
 
         # Add review label if available
         if self.labels and action.code_review_label and action.pr_number:
