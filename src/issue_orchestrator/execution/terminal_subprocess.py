@@ -214,6 +214,7 @@ class SubprocessPlugin:
         repo_root = Path(os.environ.get("ORCHESTRATOR_REPO_ROOT", Path.cwd())).resolve()
         self._registry = _SubprocessRegistry(repo_root)
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
+        self._pty_masters: dict[str, int] = {}  # Store PTY master fds for stdin
         self._repo_root = repo_root
         self._allow_stdin = os.environ.get("ORCHESTRATOR_SUBPROCESS_ALLOW_STDIN", "").lower() in {"1", "true", "yes"}
 
@@ -248,15 +249,24 @@ class SubprocessPlugin:
         )
         os.close(slave_fd)  # Close slave in parent
 
+        # Duplicate master_fd: one for reading output, one for writing stdin
+        read_fd = os.dup(master_fd)
+
+        # Store master_fd for stdin writes (if enabled)
+        if self._allow_stdin:
+            self._pty_masters[session_name] = master_fd
+        else:
+            os.close(master_fd)
+
         # Start a thread to read from PTY and write to log file
         def _copy_output():
             try:
                 with open(log_path, "ab", buffering=0) as log_file:
                     while True:
                         try:
-                            ready, _, _ = select.select([master_fd], [], [], 1.0)
+                            ready, _, _ = select.select([read_fd], [], [], 1.0)
                             if ready:
-                                data = os.read(master_fd, 4096)
+                                data = os.read(read_fd, 4096)
                                 if not data:
                                     break
                                 log_file.write(data)
@@ -264,10 +274,10 @@ class SubprocessPlugin:
                             if proc.poll() is not None:
                                 # Drain any remaining output
                                 while True:
-                                    ready, _, _ = select.select([master_fd], [], [], 0.1)
+                                    ready, _, _ = select.select([read_fd], [], [], 0.1)
                                     if not ready:
                                         break
-                                    data = os.read(master_fd, 4096)
+                                    data = os.read(read_fd, 4096)
                                     if not data:
                                         break
                                     log_file.write(data)
@@ -276,7 +286,7 @@ class SubprocessPlugin:
                             break
             finally:
                 try:
-                    os.close(master_fd)
+                    os.close(read_fd)
                 except OSError:
                     pass
 
@@ -422,13 +432,13 @@ class SubprocessPlugin:
             return False
         name = self._session_name(session_id, session_name)
         proc = self._processes.get(name)
-        if not proc or proc.stdin is None:
+        master_fd = self._pty_masters.get(name)
+        if not proc or master_fd is None:
             return False
         try:
-            proc.stdin.write((text + "\n").encode())
-            proc.stdin.flush()
+            os.write(master_fd, (text + "\n").encode())
             return True
-        except Exception:
+        except OSError:
             return False
 
     @hookimpl
@@ -449,6 +459,13 @@ class SubprocessPlugin:
         for record in records.values():
             if self._process_alive(record.pid):
                 self._kill_process(record.pid)
+        # Close any open PTY master fds
+        for master_fd in self._pty_masters.values():
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+        self._pty_masters.clear()
         self._registry.clear()
 
     @hookimpl

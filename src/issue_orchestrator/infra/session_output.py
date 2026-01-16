@@ -340,16 +340,24 @@ class SessionOutputManager:
         issue_number: int,
         max_lines: int = 400,
     ) -> Path | None:
-        """Write an issue-scoped tail of the orchestrator log into the run dir."""
+        """Write a session-scoped tail of the orchestrator log into the run dir.
+
+        Filters to only entries from the current session by:
+        1. Finding SESSION_RUN_START marker with matching run_id (primary)
+        2. Filtering by started_at timestamp from manifest (fallback)
+        3. Filtering by issue number token
+        """
         if not log_path.exists():
             return None
         run_dir = cls.find_latest_run_dir(worktree_path, session_name=session_name)
         if not run_dir:
             return None
         run_id = None
+        started_at = None
         manifest = _read_json(run_dir / SESSION_MANIFEST_NAME)
         if manifest:
             run_id = manifest.get("run_id")
+            started_at = manifest.get("started_at")
         try:
             lines = log_path.read_text(errors="ignore").splitlines()
         except OSError:
@@ -358,13 +366,22 @@ class SessionOutputManager:
             return None
         issue_token = f"issue-{issue_number}"
         session_token = f"session_id={session_name}"
+
+        # Try to find session start by run_id marker
         segment = lines
+        found_marker = False
         if run_id:
             marker = f"run_id={run_id}"
             for idx in range(len(lines) - 1, -1, -1):
                 if "SESSION_RUN_START" in lines[idx] and marker in lines[idx]:
                     segment = lines[idx:]
+                    found_marker = True
                     break
+
+        # Fallback: filter by timestamp if marker not found
+        if not found_marker and started_at:
+            segment = cls._filter_lines_by_timestamp(lines, started_at)
+
         scoped = [
             line for line in segment[-2000:]
             if issue_token in line or session_token in line
@@ -376,6 +393,34 @@ class SessionOutputManager:
         _write_text(tail_path, "\n".join(tail_lines))
         cls.update_manifest(run_dir, {"orchestrator_tail": str(tail_path)})
         return tail_path
+
+    @classmethod
+    def _filter_lines_by_timestamp(cls, lines: list[str], started_at: str) -> list[str]:
+        """Filter log lines to only those after the given ISO timestamp."""
+        import re
+        # Parse started_at (ISO format: 2026-01-15T10:30:45+00:00)
+        try:
+            start_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            # Convert to naive local time for comparison with log timestamps
+            start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, AttributeError):
+            return lines
+
+        # Log format: "2026-01-15 10:30:45 [INFO] ..."
+        timestamp_pattern = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+        result = []
+        for line in lines:
+            match = timestamp_pattern.match(line)
+            if match:
+                line_ts = match.group(1)
+                # Simple string comparison works for ISO-style timestamps
+                if line_ts >= start_str:
+                    result.append(line)
+            elif result:
+                # Include continuation lines (no timestamp) after we start capturing
+                result.append(line)
+        return result if result else lines
 
     @classmethod
     def session_name_from_path(cls, rel_path: str | None) -> str | None:

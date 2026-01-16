@@ -894,11 +894,16 @@ async def get_session_log(issue_number: int) -> JSONResponse:
 
 
 @app.get("/api/log/local/{issue_number}")
-async def get_agent_ui_log(issue_number: int) -> JSONResponse:
+async def get_agent_ui_log(issue_number: int, offset: int = 0, limit: int = 200) -> JSONResponse:
     """Get the local agent UI log for an issue.
 
     This reads .issue-orchestrator/sessions/<session>/session.log (subprocess backend) or
     .issue-orchestrator/sessions/<session>/pane.log (tmux backend) from the worktree.
+
+    Args:
+        issue_number: Issue number to get log for
+        offset: Line number to start from (for efficient polling). 0 = from beginning.
+        limit: Maximum lines to return (default 200, 0 = no limit)
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -946,18 +951,31 @@ async def get_agent_ui_log(issue_number: int) -> JSONResponse:
         }, status_code=404)
 
     try:
-        lines = log_path.read_text(errors="ignore").splitlines()
-        total_lines = len(lines)
-        max_lines = 200
-        if total_lines > max_lines:
-            lines = lines[-max_lines:]
-            truncated = True
+        all_lines = log_path.read_text(errors="ignore").splitlines()
+        total_lines = len(all_lines)
+
+        # If offset specified, return lines from that point
+        if offset > 0:
+            lines = all_lines[offset:]
         else:
-            truncated = False
+            lines = all_lines
+
+        # Apply limit (0 = no limit for live tailing)
+        truncated = False
+        if limit > 0 and len(lines) > limit:
+            # For initial load (offset=0), take last N lines
+            # For polling (offset>0), take first N lines (new content)
+            if offset == 0:
+                lines = lines[-limit:]
+                truncated = True
+            else:
+                lines = lines[:limit]
+
         return JSONResponse({
             "issue_number": issue_number,
             "log_path": str(log_path),
             "total_lines": total_lines,
+            "offset": offset,
             "truncated": truncated,
             "lines": lines,
         })
@@ -1128,6 +1146,89 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:
         "filtered_log_path": str(tail_path),
         "full_log_path": str(log_path),
         "issue_number": issue_number,
+    })
+
+
+@app.get("/api/session/claude-log/{issue_number}")
+async def get_claude_log_content(issue_number: int, limit: int = 200) -> JSONResponse:
+    """Fetch and parse Claude session log for viewing in the dashboard.
+
+    Returns parsed JSONL entries for display in a formatted viewer.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..infra.session_output import SessionOutputManager, find_run_dir_for_issue, SESSION_MANIFEST_NAME
+
+    # Find the run directory for this issue
+    worktree_path = None
+    for s in _orchestrator.state.active_sessions:
+        if s.issue.number == issue_number:
+            worktree_path = s.worktree_path
+            break
+
+    if not worktree_path:
+        for entry in _orchestrator.state.session_history:
+            if entry.issue_number == issue_number:
+                worktree_path = getattr(entry, "worktree_path", None)
+                break
+
+    run_dir = None
+    if worktree_path:
+        run_dir = SessionOutputManager.find_latest_run_dir(Path(worktree_path))
+
+    if not run_dir:
+        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
+        run_dir, worktree_path = find_run_dir_for_issue(
+            _collect_worktree_bases(_orchestrator.config),
+            repo_name,
+            issue_number,
+        )
+
+    if not run_dir:
+        return JSONResponse({"error": f"No session found for issue #{issue_number}"}, status_code=404)
+
+    # Get claude_log_path from manifest
+    manifest_path = run_dir / SESSION_MANIFEST_NAME
+    if not manifest_path.exists():
+        return JSONResponse({"error": "Session manifest not found"}, status_code=404)
+
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
+
+    claude_log_path = manifest.get("claude_log_path")
+    if not claude_log_path:
+        return JSONResponse({"error": "No Claude log path in manifest"}, status_code=404)
+
+    log_path = Path(claude_log_path)
+    if not log_path.exists():
+        return JSONResponse({"error": f"Claude log file not found: {claude_log_path}"}, status_code=404)
+
+    # Parse JSONL file
+    entries = []
+    try:
+        with open(log_path, "r") as f:
+            for i, line in enumerate(f):
+                if i >= limit:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    entries.append(entry)
+                except json.JSONDecodeError:
+                    entries.append({"_raw": line, "_parse_error": True})
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
+
+    return JSONResponse({
+        "log_path": str(log_path),
+        "issue_number": issue_number,
+        "entry_count": len(entries),
+        "entries": entries,
     })
 
 
@@ -1765,8 +1866,6 @@ async def create_issue(request: Request) -> JSONResponse:
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    _config = _orchestrator.config
 
     try:
         body = await request.json()
