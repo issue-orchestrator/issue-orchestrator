@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -22,6 +23,23 @@ if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
+
+# Pattern to match ANSI escape sequences:
+# - \x1b[...m (SGR - colors, bold, etc.)
+# - \x1b[...A/B/C/D/etc (cursor movement)
+# - \x1b]...BEL (OSC sequences - terminal titles)
+# - \x1b[?...h/l/s/u (private mode set/reset like ?2026h)
+_ANSI_ESCAPE_PATTERN = re.compile(
+    r"\x1b\[[0-9;]*[a-zA-Z]"  # Standard CSI sequences
+    r"|\x1b\][^\x07]*\x07"  # OSC sequences (title, etc.)
+    r"|\x1b\[\?[0-9;]*[hlsu]"  # Private mode sequences
+)
+
+
+def strip_ansi_codes(text: str) -> str:
+    """Strip ANSI escape sequences from text."""
+    return _ANSI_ESCAPE_PATTERN.sub("", text)
+
 
 # Create FastAPI app
 app = FastAPI(title="Issue Orchestrator")
@@ -979,13 +997,16 @@ async def get_agent_ui_log(issue_number: int, offset: int = 0, limit: int = 200)
             else:
                 lines = lines[:limit]
 
+        # Strip ANSI escape sequences for clean display in web UI
+        cleaned_lines = [strip_ansi_codes(line) for line in lines]
+
         return JSONResponse({
             "issue_number": issue_number,
             "log_path": str(log_path),
             "total_lines": total_lines,
             "offset": offset,
             "truncated": truncated,
-            "lines": lines,
+            "lines": cleaned_lines,
         })
     except Exception as e:
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)

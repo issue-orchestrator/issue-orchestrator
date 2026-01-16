@@ -1880,3 +1880,98 @@ class TestRunWithWebDashboard:
 
                     web._orchestrator = None
                     web._server = None
+
+
+class TestStripAnsiCodes:
+    """Test the strip_ansi_codes function."""
+
+    def test_strips_color_codes(self):
+        """Test stripping SGR color codes."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        # Red text
+        text = "\x1b[31mError\x1b[0m"
+        assert strip_ansi_codes(text) == "Error"
+
+        # Bold green
+        text = "\x1b[1;32mSuccess\x1b[0m"
+        assert strip_ansi_codes(text) == "Success"
+
+        # 256-color
+        text = "\x1b[38;5;196mBright Red\x1b[0m"
+        assert strip_ansi_codes(text) == "Bright Red"
+
+        # 24-bit RGB color (like Claude Code uses)
+        text = "\x1b[38;2;215;119;87m✶\x1b[0m"
+        assert strip_ansi_codes(text) == "✶"
+
+    def test_strips_cursor_movement(self):
+        """Test stripping cursor movement codes."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        # Cursor up
+        text = "\x1b[6AText"
+        assert strip_ansi_codes(text) == "Text"
+
+        # Cursor down, right, left
+        text = "Start\x1b[2B\x1b[1C\x1b[3DEnd"
+        assert strip_ansi_codes(text) == "StartEnd"
+
+    def test_strips_private_mode_sequences(self):
+        """Test stripping private mode sequences like ?2026h."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        # Synchronized output mode (used by Claude Code spinner)
+        text = "\x1b[?2026lText\x1b[?2026h"
+        assert strip_ansi_codes(text) == "Text"
+
+        # Other private modes
+        text = "\x1b[?25hVisible\x1b[?25l"  # Show/hide cursor
+        assert strip_ansi_codes(text) == "Visible"
+
+    def test_strips_osc_sequences(self):
+        """Test stripping OSC sequences (terminal title, etc.)."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        # Set terminal title
+        text = "\x1b]0;My Title\x07Content"
+        assert strip_ansi_codes(text) == "Content"
+
+    def test_real_claude_code_spinner_output(self):
+        """Test stripping real Claude Code spinner output."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        # Actual output from Claude Code spinner
+        # Note: Must include \x1b before each [ for real ANSI sequences
+        text = "\x1b[?2026l\x1b[?2026h\n\x1b[6A\x1b[38;2;215;119;87m✶\x1b[1C\x1b[38;2;221;125;93mPerusing…\x1b[39m"
+        result = strip_ansi_codes(text)
+        # Should preserve the visible text
+        assert "✶" in result
+        assert "Perusing…" in result
+        # Should remove escape sequences
+        assert "\x1b[?2026" not in result
+        assert "\x1b[6A" not in result
+        assert "\x1b[38;2;" not in result
+
+    def test_preserves_plain_text(self):
+        """Test that plain text without ANSI codes is preserved."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        text = "Hello, World!"
+        assert strip_ansi_codes(text) == "Hello, World!"
+
+        text = "Line 1\nLine 2\nLine 3"
+        assert strip_ansi_codes(text) == "Line 1\nLine 2\nLine 3"
+
+    def test_empty_string(self):
+        """Test with empty string."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        assert strip_ansi_codes("") == ""
+
+    def test_mixed_content(self):
+        """Test with mixed ANSI codes and regular text."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        text = "Normal \x1b[1mbold\x1b[0m normal \x1b[31mred\x1b[0m end"
+        assert strip_ansi_codes(text) == "Normal bold normal red end"
