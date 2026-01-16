@@ -441,6 +441,16 @@ class CompletionProcessor:
                     message=f"Validation failed: {gate_reason}",
                     errors=[f"Validation: {gate_reason}"],
                 )
+            else:
+                # Attach validation artifacts even on success so output is always available
+                if gate_record and session_name:
+                    record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
+                    self._attach_validation_artifacts(
+                        worktree,
+                        session_name,
+                        record=gate_record,
+                        record_path=record_path,
+                    )
 
         # Get branch name for PR operations
         branch = self.git_adapter.get_current_branch(worktree)

@@ -215,6 +215,33 @@ Timestamp: {_now_iso()}
     return errors_file
 
 
+def _truncate_with_tail(text: str, max_length: int = 4000, tail_length: int = 2000) -> str:
+    """Truncate text keeping both head and tail.
+
+    For test output, the summary (pass/fail counts, failure details) is at the end.
+    This function keeps the last `tail_length` chars which contain the important info.
+
+    Args:
+        text: The text to truncate
+        max_length: Maximum total length
+        tail_length: How much of the end to preserve
+
+    Returns:
+        Truncated text with "[...truncated...]" marker if needed
+    """
+    if len(text) <= max_length:
+        return text
+
+    # Keep tail_length from the end (has the summary)
+    # Use remaining budget for the head
+    head_length = max_length - tail_length - 30  # 30 chars for marker
+    if head_length < 100:
+        # If not enough room for meaningful head, just show tail
+        return f"[...truncated {len(text) - tail_length} chars...]\n\n{text[-tail_length:]}"
+
+    return f"{text[:head_length]}\n\n[...truncated {len(text) - head_length - tail_length} chars...]\n\n{text[-tail_length:]}"
+
+
 def write_retry_prompt(
     worktree_path: Path,
     original_prompt: str,
@@ -234,7 +261,7 @@ def write_retry_prompt(
         worktree_path: Path to the worktree
         original_prompt: The original task prompt
         validation_cmd: The validation command that failed
-        validation_error: Error output (will be truncated to 2000 chars)
+        validation_error: Error output (will be truncated, preserving tail)
         retry_count: Current retry attempt (0-based, displayed as 1-based)
         max_retries: Maximum allowed retries
         template_path: Optional path to custom template (relative to repo_root)
@@ -264,11 +291,12 @@ def write_retry_prompt(
 
     # Render template with variables
     # Note: retry_count is 0-based internally, display as 1-based
+    # Use _truncate_with_tail to preserve the end (pytest summary is at the end)
     content = template.format(
         original_task=original_prompt,
         validation_cmd=validation_cmd,
         error_file=str(errors_file),
-        error_summary=validation_error[:2000],
+        error_summary=_truncate_with_tail(validation_error),
         retry_count=retry_count + 1,
         max_retries=max_retries + 1,
     )
