@@ -265,20 +265,22 @@ class CompletionProcessor:
     def _check_publish_gate(
         self,
         worktree: Path,
+        session_output_dir: Path | None = None,
     ) -> tuple[bool, str, ValidationRecord | None]:
         """Check if publishing is allowed by the publish gate.
 
         Args:
             worktree: Path to the worktree.
+            session_output_dir: If provided, validation output is written directly here.
 
         Returns:
-            Tuple of (allowed, reason).
+            Tuple of (allowed, reason, record).
         """
         if self.publish_gate is None:
             # No gate configured = allowed
             return True, "", None
 
-        result = self.publish_gate.check()
+        result = self.publish_gate.check(session_output_dir=session_output_dir)
         if result.allowed:
             cache_note = " (cached)" if result.cache_hit else ""
             logger.info("Publish gate passed%s: %s", cache_note, result.reason)
@@ -307,6 +309,11 @@ class CompletionProcessor:
         record: ValidationRecord | None = None,
         record_path: Path | None = None,
     ) -> None:
+        """Attach validation artifacts to session output.
+
+        If validation wrote directly to session output (preferred), just update manifest.
+        For legacy records (validation/output/), copy files to session output.
+        """
         run_dir = ensure_session_output_dir(worktree, session_name)
         if record_path is None and record is not None:
             record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
@@ -323,25 +330,36 @@ class CompletionProcessor:
             record = self._load_validation_record(record_path)
         if record is None:
             return
+
         updates: dict[str, str] = {}
-        if record.stdout_path:
+        stdout_dest = run_dir / "validation-stdout.log"
+        stderr_dest = run_dir / "validation-stderr.log"
+
+        # Check if files already exist in session output (written directly by validation)
+        if stdout_dest.exists():
+            updates["validation_stdout"] = str(stdout_dest)
+        elif record.stdout_path:
+            # Fallback: copy from legacy location (validation/output/)
             stdout_src = worktree / record.stdout_path
-            if stdout_src.exists():
-                stdout_dest = run_dir / "validation-stdout.log"
+            if stdout_src.exists() and stdout_src.resolve() != stdout_dest.resolve():
                 try:
                     stdout_dest.write_text(stdout_src.read_text(errors="ignore"))
                     updates["validation_stdout"] = str(stdout_dest)
                 except OSError:
                     logger.debug("Failed to write validation stdout for %s", run_dir)
-        if record.stderr_path:
+
+        if stderr_dest.exists():
+            updates["validation_stderr"] = str(stderr_dest)
+        elif record.stderr_path:
+            # Fallback: copy from legacy location (validation/output/)
             stderr_src = worktree / record.stderr_path
-            if stderr_src.exists():
-                stderr_dest = run_dir / "validation-stderr.log"
+            if stderr_src.exists() and stderr_src.resolve() != stderr_dest.resolve():
                 try:
                     stderr_dest.write_text(stderr_src.read_text(errors="ignore"))
                     updates["validation_stderr"] = str(stderr_dest)
                 except OSError:
                     logger.debug("Failed to write validation stderr for %s", run_dir)
+
         if updates:
             SessionOutputManager.update_manifest(run_dir, updates)
 
@@ -402,10 +420,18 @@ class CompletionProcessor:
 
         # Check publish gate if actions require it
         if self._requires_publish_gate(record):
-            gate_passed, gate_reason, gate_record = self._check_publish_gate(worktree)
+            # Get session output dir for validation to write directly there
+            session_output_dir = None
+            if session_name:
+                session_output_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name)
+
+            gate_passed, gate_reason, gate_record = self._check_publish_gate(
+                worktree, session_output_dir=session_output_dir
+            )
             if not gate_passed:
                 if gate_record and session_name:
                     record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
+                    # Note: validation output already written to session_output_dir by publish_gate
                     self._attach_validation_artifacts(
                         worktree,
                         session_name,

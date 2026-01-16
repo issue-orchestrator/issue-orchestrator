@@ -432,12 +432,17 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
     return None, 0
 
 
-def run_validation(worktree: Path, verbose: bool = False) -> Optional[AgentGateResult]:
+def run_validation(
+    worktree: Path,
+    verbose: bool = False,
+    session_output_dir: Path | None = None,
+) -> Optional[AgentGateResult]:
     """Run validation if configured.
 
     Args:
         worktree: Path to the worktree root
         verbose: Whether to print validation output
+        session_output_dir: If provided, write validation output directly here
 
     Returns:
         AgentGateResult if validation was run, None if not configured
@@ -458,7 +463,7 @@ def run_validation(worktree: Path, verbose: bool = False) -> Optional[AgentGateR
         command=cmd,
         timeout_seconds=timeout,
     )
-    result = gate.run()
+    result = gate.run(session_output_dir=session_output_dir)
 
     if verbose:
         if result.passed:
@@ -648,7 +653,17 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     )
 
     if should_validate:
-        validation_result = run_validation(worktree_root, verbose=args.verbose)
+        # Get session output dir for validation to write directly there
+        session_output_dir = None
+        if record.session_id:
+            session_output_dir = SessionOutputManager.find_latest_run_dir(
+                worktree_root, session_name=record.session_id
+            )
+        validation_result = run_validation(
+            worktree_root,
+            verbose=args.verbose,
+            session_output_dir=session_output_dir,
+        )
         if validation_result and not validation_result.passed:
             _record_validation_artifacts(worktree_root, record.session_id, validation_result)
             print(f"\n{'='*60}")

@@ -202,6 +202,7 @@ class ValidationRunner:
         command: str,
         timeout_seconds: int = 1800,
         cwd: Optional[Path] = None,
+        session_output_dir: Optional[Path] = None,
     ) -> ValidationRecord:
         """Run a validation command and return a record.
 
@@ -211,6 +212,9 @@ class ValidationRunner:
             command: The command to run
             timeout_seconds: Timeout in seconds
             cwd: Working directory (defaults to store's worktree)
+            session_output_dir: If provided, write stdout/stderr directly here
+                instead of validation/output/. This is the preferred location
+                as it keeps all session artifacts together.
 
         Returns:
             ValidationRecord with results
@@ -254,10 +258,18 @@ class ValidationRunner:
         ended_at = datetime.now()
         passed = exit_code == 0
 
-        # Write stdout/stderr files
-        stdout_path, stderr_path = self.store.write_output(
-            head_sha, stdout, stderr
-        )
+        # Write stdout/stderr files - prefer session output dir if provided
+        if session_output_dir:
+            session_output_dir.mkdir(parents=True, exist_ok=True)
+            stdout_path = session_output_dir / "validation-stdout.log"
+            stderr_path = session_output_dir / "validation-stderr.log"
+            stdout_path.write_text(stdout)
+            stderr_path.write_text(stderr)
+            logger.debug("Wrote validation output to session dir: %s", session_output_dir)
+        else:
+            stdout_path, stderr_path = self.store.write_output(
+                head_sha, stdout, stderr
+            )
 
         # Create record
         record = ValidationRecord(
@@ -433,7 +445,7 @@ class PublishGate:
             logger.warning("Failed to get HEAD SHA in %s", self.worktree)
         return head_sha
 
-    def check(self) -> PublishGateResult:
+    def check(self, session_output_dir: Optional[Path] = None) -> PublishGateResult:
         """Check if publishing is allowed.
 
         This method:
@@ -442,6 +454,10 @@ class PublishGate:
         3. Checks cache for existing passing result
         4. Runs validation if no cache hit
         5. Returns the result
+
+        Args:
+            session_output_dir: If provided, write validation output directly here
+                instead of validation/output/. Keeps all session artifacts together.
 
         Returns:
             PublishGateResult with allowed status and reason
@@ -484,6 +500,7 @@ class PublishGate:
             head_sha=head_sha,
             command=self.command,
             timeout_seconds=self.timeout_seconds,
+            session_output_dir=session_output_dir,
         )
 
         if record.passed:
@@ -554,12 +571,16 @@ class AgentGate:
             logger.warning("Failed to get HEAD SHA in %s", self.worktree)
         return head_sha
 
-    def run(self) -> AgentGateResult:
+    def run(self, session_output_dir: Optional[Path] = None) -> AgentGateResult:
         """Run the agent gate validation.
 
         Unlike PublishGate.check(), this always runs the validation
         (no cache lookup) because we want to capture the result at
         the specific point in time when agent_done is called.
+
+        Args:
+            session_output_dir: If provided, write validation output directly here
+                instead of validation/output/. Keeps all session artifacts together.
 
         Returns:
             AgentGateResult with validation status
@@ -587,6 +608,7 @@ class AgentGate:
             head_sha=head_sha,
             command=self.command,
             timeout_seconds=self.timeout_seconds,
+            session_output_dir=session_output_dir,
         )
 
         # Get the path where the record was written
