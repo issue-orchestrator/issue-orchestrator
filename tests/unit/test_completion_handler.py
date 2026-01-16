@@ -968,10 +968,10 @@ class TestLabelActionGeneration:
         assert remove_label is not None
         assert remove_label.label == config.get_label_in_progress()
 
-    def test_failure_generates_blocked_failed_label_and_comment(
+    def test_failure_generates_blocked_needs_human_label_and_comment(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        """Failure generates blocked-failed label, comment, and removes in-progress."""
+        """Failure (no completion) generates blocked-needs-human label for investigation."""
         issue = make_issue(number=456)
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
@@ -985,10 +985,10 @@ class TestLabelActionGeneration:
         remove_label = next((a for a in actions if isinstance(a, RemoveLabelAction)), None)
 
         assert add_label is not None
-        assert add_label.label == labels.BLOCKED_FAILED
+        assert add_label.label == labels.BLOCKED_NEEDS_HUMAN  # Needs human investigation
 
         assert comment is not None
-        assert "Failed" in comment.comment
+        assert "Investigation" in comment.comment  # Explains agent-done was not called
 
         assert remove_label is not None
         assert remove_label.label == config.get_label_in_progress()
@@ -1249,10 +1249,10 @@ class TestIntegrationBehaviors:
         # Events emitted
         assert events.has_event(str(EventName.SESSION_FAILED))
 
-        # Actions include blocked-failed label and comment
+        # Actions include blocked-needs-human label (for investigation) and comment
         add_label = next((a for a in result.actions if isinstance(a, AddLabelAction)), None)
         assert add_label is not None
-        assert add_label.label == labels.BLOCKED_FAILED
+        assert add_label.label == labels.BLOCKED_NEEDS_HUMAN
 
         # No cleanup or review queuing
         assert result.should_defer_cleanup is False

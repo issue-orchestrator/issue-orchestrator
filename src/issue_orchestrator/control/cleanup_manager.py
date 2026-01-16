@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from ..domain.models import PendingCleanup
     from ..ports import RepositoryHost
     from ..ports.worktree_manager import WorktreeManager
+    from ..ports.pull_request_tracker import PRInfo
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,12 @@ class CleanupManager:
             print("  No reviewed PRs found")
             return 0
 
+        # Consistency check: PRs with code-reviewed label should not be draft
+        # This catches cases where review completed but PR wasn't marked ready
+        draft_fixed = self._fix_draft_reviewed_prs(reviewed_prs)
+        if draft_fixed > 0:
+            print(f"  Fixed {draft_fixed} draft PR(s) with '{cleanup_label}' label")
+
         cleaned_count = 0
         for pr in reviewed_prs:
             # Extract issue number from branch name (e.g., "328-description" -> 328)
@@ -246,3 +253,38 @@ class CleanupManager:
             print("  No orphaned worktrees found")
 
         return cleaned_count
+
+    def _fix_draft_reviewed_prs(self, prs: list["PRInfo"]) -> int:
+        """Fix PRs that have code-reviewed label but are still draft.
+
+        This is a consistency check that runs on startup. If a PR has
+        the code-reviewed label, it should not be draft - mark it ready.
+
+        This handles edge cases where:
+        - Review session completed but crashed before marking PR ready
+        - Race condition between label addition and draft status update
+        - Manual label addition to a draft PR
+
+        Args:
+            prs: List of PRInfo objects to check
+
+        Returns:
+            Number of PRs fixed
+        """
+        fixed_count = 0
+        for pr in prs:
+            # Check if PR is draft (PRInfo has draft attribute)
+            if getattr(pr, "draft", None) is True:
+                try:
+                    logger.info(
+                        "[STARTUP] PR #%d has code-reviewed label but is draft - marking ready",
+                        pr.number
+                    )
+                    self.repository_host.set_pr_draft(pr.number, False)
+                    fixed_count += 1
+                except Exception as e:
+                    logger.warning(
+                        "[STARTUP] Failed to mark PR #%d as ready: %s",
+                        pr.number, e
+                    )
+        return fixed_count
