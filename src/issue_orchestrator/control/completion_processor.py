@@ -38,6 +38,11 @@ from .validation import PublishGate, ValidationRecord, ValidationRecordStore
 
 logger = logging.getLogger(__name__)
 
+# Error prefixes for critical failures (used by completion_handler to detect blocking errors)
+# Keep in sync with completion_handler.py's critical error detection
+ERROR_PREFIX_PUSH = "push_branch"
+ERROR_PREFIX_CREATE_PR = "create_pr"
+
 if TYPE_CHECKING:
     from ..infra.config import Config
 
@@ -481,7 +486,7 @@ class CompletionProcessor:
                                     actions_taken.append("Rebased onto origin/main")
                                     retry_result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
                                 else:
-                                    errors.append(f"Rebase failed: {rebase_result.message}")
+                                    errors.append(f"{ERROR_PREFIX_PUSH}: Rebase failed: {rebase_result.message}")
                                     error_details.append({
                                         "action": action.value,
                                         "error": rebase_result.message,
@@ -497,7 +502,7 @@ class CompletionProcessor:
                                 issue_number,
                             )
                         else:
-                            errors.append(f"Push failed: {result.message}")
+                            errors.append(f"{ERROR_PREFIX_PUSH}: Push failed: {result.message}")
                             error_details.append({
                                 "action": action.value,
                                 "error": result.message,
@@ -510,7 +515,7 @@ class CompletionProcessor:
 
                 elif action == RequestedAction.CREATE_PR:
                     if not branch:
-                        errors.append("Cannot create PR: no branch")
+                        errors.append(f"{ERROR_PREFIX_CREATE_PR}: Cannot create PR - no branch")
                         logger.error("Cannot create PR for #%d: no branch", issue_number)
                         continue
 

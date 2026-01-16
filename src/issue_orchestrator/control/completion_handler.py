@@ -28,6 +28,7 @@ from ..infra.logging_config import log_context
 from ..domain.models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
+from .completion_processor import ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR
 from .reconciliation import build_expected_for_mutation
 from ..infra import labels
 
@@ -623,7 +624,7 @@ class CompletionHandler:
         if processing_errors:
             critical_errors = [
                 error for error in processing_errors
-                if error.startswith("push_branch") or error.startswith("create_pr")
+                if error.startswith(ERROR_PREFIX_PUSH) or error.startswith(ERROR_PREFIX_CREATE_PR)
             ]
         if status == SessionStatus.COMPLETED and critical_errors:
             logger.info(
