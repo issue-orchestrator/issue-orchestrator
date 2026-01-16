@@ -744,23 +744,30 @@ class CompletionHandler:
                 ))
 
         elif status == SessionStatus.FAILED:
-            # POLICY: Failure → blocked-failed + comment + release claim
+            # POLICY: Failure (no completion record) → blocked-needs-human + comment + release claim
+            # This requires human investigation - agent-done is MANDATORY but was not called
             if is_issue_session:
                 actions.append(AddLabelAction(
                     issue_number=issue_number,
-                    label=labels.BLOCKED_FAILED,
-                    reason="Session failed without completing",
+                    label=labels.BLOCKED_NEEDS_HUMAN,
+                    reason="Session terminated without calling agent-done (mandatory)",
                     expected=expected,
                 ))
                 actions.append(AddCommentAction(
                     number=issue_number,
-                    comment=f"❌ **Session Failed**\n\n"
-                            f"The agent session ended without creating a PR or status update.\n\n"
+                    comment=f"🔍 **Session Needs Investigation**\n\n"
+                            f"The agent session terminated without calling `agent-done`.\n\n"
+                            f"**This is unexpected** - `agent-done` is mandatory and must be called "
+                            f"to complete any session (completed, blocked, or needs_human).\n\n"
                             f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                             f"- Session: `{session.terminal_id}`\n\n"
-                            f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
-                            f"Remove the label to allow reprocessing.",
-                    reason="Notify about session failure",
+                            f"**Possible causes:**\n"
+                            f"- Agent crashed or was interrupted\n"
+                            f"- Agent ignored the mandatory `agent-done` requirement\n"
+                            f"- Infrastructure issue prevented completion\n\n"
+                            f"This issue has been marked as `{labels.BLOCKED_NEEDS_HUMAN}` for investigation.\n"
+                            f"Remove the label after investigating to allow reprocessing.",
+                    reason="Notify about session needing human investigation",
                     expected=expected,
                 ))
                 actions.append(RemoveLabelAction(
@@ -770,14 +777,16 @@ class CompletionHandler:
                     expected=expected,
                 ))
             else:
+                # Review/rework session failed - needs human to check what happened
                 actions.append(AddCommentAction(
                     number=issue_number,
-                    comment=f"❌ **{session_kind.capitalize()} Session Failed**\n\n"
-                            f"The {session_kind} session ended without producing a review outcome.\n\n"
+                    comment=f"🔍 **{session_kind.capitalize()} Session Needs Investigation**\n\n"
+                            f"The {session_kind} session terminated without calling `agent-done`.\n\n"
+                            f"**This is unexpected** - `agent-done` is mandatory.\n\n"
                             f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                             f"- Session: `{session.terminal_id}`\n\n"
-                            f"The PR remains pending; review will be retried automatically.",
-                    reason=f"Notify about {session_kind} session failure",
+                            f"The PR remains pending; please investigate what happened.",
+                    reason=f"Notify about {session_kind} session needing investigation",
                     expected=expected,
                 ))
 

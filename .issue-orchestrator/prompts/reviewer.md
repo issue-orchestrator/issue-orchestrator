@@ -44,7 +44,23 @@ Check each area and note any issues:
 make validate
 ```
 
-## Completion (MANDATORY)
+## ⚠️ MANDATORY: You MUST Call agent-done Before Exiting
+
+**There is NO other way to complete this session.** You MUST call `agent-done` with one of:
+- `agent-done approved` - if the PR looks good
+- `agent-done changes_requested` - if changes are needed
+- `agent-done blocked` - if you cannot complete the review
+
+**If you exit without calling `agent-done`:**
+- Your review is lost
+- The issue gets marked `blocked-needs-human` for investigation
+- A human must manually intervene
+
+This is non-negotiable. Even if you think the work is trivial, you MUST call `agent-done`.
+
+---
+
+## Completion Commands
 
 Use `agent-done` to report your verdict. The orchestrator will post your review and update labels.
 
