@@ -108,3 +108,50 @@ class ClaimManager(Protocol):
             The winning Claim if one exists, None if no valid claims.
         """
         ...
+
+
+class NullClaimManager:
+    """No-op ClaimManager for when claims are disabled.
+
+    This follows the "No Nulls" pattern - instead of Optional[ClaimManager],
+    we inject NullClaimManager which behaves as if all claims succeed instantly
+    and there's never any contention.
+
+    Use this when:
+    - Running in single-orchestrator mode
+    - Claims are explicitly disabled in config
+    - Testing without claim infrastructure
+    """
+
+    def attempt_claim(self, issue_number: int) -> ClaimResult:
+        """Always succeeds with a dummy lease_id."""
+        from ..domain.claim import ClaimResult, ClaimState
+        return ClaimResult(
+            success=True,
+            lease_id=f"null-claim-{issue_number}",
+            state=ClaimState.CLAIMED,  # Immediately claimed, no convergence needed
+        )
+
+    def run_convergence(self, issue_number: int, lease_id: str) -> bool:  # noqa: ARG002
+        """Always succeeds - no convergence needed in single-orchestrator mode."""
+        del issue_number, lease_id  # Unused in null implementation
+        return True
+
+    def renew_claim(self, issue_number: int, lease_id: str) -> bool:  # noqa: ARG002
+        """Always succeeds - no renewal needed."""
+        del issue_number, lease_id  # Unused in null implementation
+        return True
+
+    def release_claim(self, issue_number: int, lease_id: str) -> None:  # noqa: ARG002
+        """No-op - nothing to release."""
+        del issue_number, lease_id  # Unused in null implementation
+
+    def check_winner(self, issue_number: int, lease_id: str) -> bool:  # noqa: ARG002
+        """Always the winner - no contention in single-orchestrator mode."""
+        del issue_number, lease_id  # Unused in null implementation
+        return True
+
+    def get_current_claim(self, issue_number: int) -> Claim | None:  # noqa: ARG002
+        """No claims tracked."""
+        del issue_number  # Unused in null implementation
+        return None

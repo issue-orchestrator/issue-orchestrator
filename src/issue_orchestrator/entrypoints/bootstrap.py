@@ -43,6 +43,8 @@ from ..control.action_applier import ActionApplier
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
 from ..adapters.github import GitHubIssueResolver, GitHubCache
+# GitHubClaimAdapter imported when claims are enabled:
+# from ..adapters.github.claim_adapter import GitHubClaimAdapter
 from ..execution.verification_service import DefaultVerificationService
 from ..ports.verification import VerificationBudget
 from ..execution.worktree_adapter import GitWorktreeManager
@@ -50,7 +52,11 @@ from ..execution.git_working_copy import GitWorkingCopy
 from ..execution.command_runner import LocalCommandRunner
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
+from ..control.claim_gate import ClaimGate
+from ..control.lease_renewer import LeaseRenewer
 from ..infra import gh_audit
+from ..ports.claim_manager import NullClaimManager
+from ..domain.lease_config import LeaseConfig
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -184,6 +190,29 @@ def build_orchestrator(
         gh_audit.check_rate_limit("startup")
     if github:
         _check_github_token_scopes(config, github)
+
+    # Create claim management components
+    # For now, always use NullClaimManager (single-orchestrator mode)
+    # TODO: Add config flag to enable GitHubClaimAdapter for multi-orchestrator
+    lease_config = LeaseConfig()
+    claim_manager = NullClaimManager()
+
+    # To enable multi-orchestrator claims, replace with:
+    # if github and config.claims_enabled:
+    #     claim_manager = GitHubClaimAdapter(
+    #         github_client=github,
+    #         claimant_id=config.orchestrator_id or "orchestrator",
+    #         config=lease_config,
+    #     )
+    # else:
+    #     claim_manager = NullClaimManager()
+
+    claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
+    lease_renewer = LeaseRenewer(
+        claim_manager=claim_manager,
+        events=events,
+        config=lease_config,
+    )
 
     # Create control plane components
     scheduler = Scheduler(config=config)
@@ -368,6 +397,9 @@ def build_orchestrator(
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
         health_gate=health_gate,
+        claim_manager=claim_manager,
+        claim_gate=claim_gate,
+        lease_renewer=lease_renewer,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -549,6 +581,16 @@ def build_orchestrator_for_testing(
     # Create EventHub for testing
     event_hub = EventHub()
 
+    # Create claim components for testing (always use NullClaimManager)
+    lease_config = LeaseConfig()
+    claim_manager = NullClaimManager()
+    claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
+    lease_renewer = LeaseRenewer(
+        claim_manager=claim_manager,
+        events=events,
+        config=lease_config,
+    )
+
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(
         events=events,
@@ -571,6 +613,9 @@ def build_orchestrator_for_testing(
         completion_processor=completion_processor,
         session_controller=session_controller,
         health_gate=health_gate,
+        claim_manager=claim_manager,
+        claim_gate=claim_gate,
+        lease_renewer=lease_renewer,
     )
 
     return Orchestrator(config=config, deps=deps)

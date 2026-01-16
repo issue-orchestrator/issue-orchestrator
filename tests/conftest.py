@@ -565,6 +565,21 @@ def build_test_orchestrator_deps(
     event_hub = EventHub()
     command_runner = LocalCommandRunner()
 
+    # Create claim components (always use NullClaimManager for tests)
+    from issue_orchestrator.ports.claim_manager import NullClaimManager
+    from issue_orchestrator.domain.lease_config import LeaseConfig
+    from issue_orchestrator.control.claim_gate import ClaimGate
+    from issue_orchestrator.control.lease_renewer import LeaseRenewer
+
+    lease_config = LeaseConfig.for_testing()
+    claim_manager = NullClaimManager()
+    claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
+    lease_renewer = LeaseRenewer(
+        claim_manager=claim_manager,
+        events=events,
+        config=lease_config,
+    )
+
     return OrchestratorDeps(
         events=events,
         runner=runner,
@@ -586,6 +601,9 @@ def build_test_orchestrator_deps(
         completion_processor=completion_processor,
         session_controller=_session_controller,
         health_gate=health_gate,
+        claim_manager=claim_manager,
+        claim_gate=claim_gate,
+        lease_renewer=lease_renewer,
     )
 
 
