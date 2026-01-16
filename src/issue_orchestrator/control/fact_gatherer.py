@@ -232,9 +232,9 @@ class FactGatherer:
         for pr in prs:
             all_labels.update(_pr_labels(pr))
 
-        # Collect milestones from linked issues
+        # Collect milestones and labels from linked issues
         # PRs don't have milestones directly - they're on the linked issues
-        # Extract issue numbers from PR bodies/titles and look up milestones
+        # Extract issue numbers from PR bodies/titles and look up milestones + labels
         source_milestones: list[tuple[int, str]] = []
         for pr in prs:
             # Try to extract linked issue number from PR body or title
@@ -244,10 +244,14 @@ class FactGatherer:
                 issue_num = int(match)
                 try:
                     issue = self.repository_host.get_issue(issue_num)
-                    if issue and issue.milestone and issue.milestone_number:
-                        milestone_tuple = (issue.milestone_number, issue.milestone)
-                        if milestone_tuple not in source_milestones:
-                            source_milestones.append(milestone_tuple)
+                    if issue:
+                        # Collect labels from linked issue
+                        all_labels.update(issue.labels)
+                        # Collect milestone if present
+                        if issue.milestone and issue.milestone_number:
+                            milestone_tuple = (issue.milestone_number, issue.milestone)
+                            if milestone_tuple not in source_milestones:
+                                source_milestones.append(milestone_tuple)
                 except Exception:
                     pass  # Ignore lookup errors
 
