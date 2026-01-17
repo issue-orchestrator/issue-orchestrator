@@ -30,20 +30,20 @@ class TestLeaseConfig:
         assert config.convergence_poll_max_ms == 200
         assert config.convergence_required_wins == 2
 
-    def test_renewal_threshold_seconds(self):
-        """renewal_threshold_seconds calculates when to renew."""
+    def test_renewal_trigger_threshold(self):
+        """renewal_trigger_threshold returns when to trigger renewal."""
         config = LeaseConfig()
 
-        # Should renew when 5 minutes (300s) remain
-        threshold = config.renewal_threshold_seconds()
+        # With 15-min lease and 5-min renew interval, trigger when 10 min remain
+        threshold = config.renewal_trigger_threshold()
         assert threshold == 600  # 900 - 300
 
-    def test_renewal_threshold_for_testing(self):
-        """renewal_threshold_seconds works for test config."""
+    def test_renewal_trigger_threshold_for_testing(self):
+        """renewal_trigger_threshold works for test config."""
         config = LeaseConfig.for_testing()
 
-        # Should renew when 10s remain
-        threshold = config.renewal_threshold_seconds()
+        # With 30s lease and 10s renew interval, trigger when 20s remain
+        threshold = config.renewal_trigger_threshold()
         assert threshold == 20  # 30 - 10
 
     def test_is_immutable(self):

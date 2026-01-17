@@ -72,7 +72,7 @@ class LeaseRenewer:
         """
         lost_sessions: list["Session"] = []
         now = datetime.now()
-        renewal_threshold_seconds = self._config.renewal_threshold_seconds()
+        renewal_trigger_threshold = self._config.renewal_trigger_threshold()
         verification_interval = self._config.lease_seconds // 3  # Check every lease/3
 
         for session in sessions:
@@ -89,7 +89,7 @@ class LeaseRenewer:
             # Check if within renewal window
             time_until_expiry = (session.lease_expires_at - now).total_seconds()
 
-            if time_until_expiry <= renewal_threshold_seconds:
+            if time_until_expiry <= renewal_trigger_threshold:
                 logger.info(
                     "Attempting lease renewal for issue #%d (expires in %.1fs)",
                     session.issue.number,

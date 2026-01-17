@@ -132,26 +132,27 @@ class NullClaimManager:
             state=ClaimState.CLAIMED,  # Immediately claimed, no convergence needed
         )
 
-    def run_convergence(self, issue_number: int, lease_id: str) -> bool:  # noqa: ARG002
+    def run_convergence(self, issue_number: int, lease_id: str) -> bool:
         """Always succeeds - no convergence needed in single-orchestrator mode."""
-        del issue_number, lease_id  # Unused in null implementation
+        # Parameters unused in null implementation
+        _ = issue_number, lease_id
         return True
 
-    def renew_claim(self, issue_number: int, lease_id: str) -> bool:  # noqa: ARG002
+    def renew_claim(self, issue_number: int, lease_id: str) -> bool:
         """Always succeeds - no renewal needed."""
-        del issue_number, lease_id  # Unused in null implementation
+        _ = issue_number, lease_id
         return True
 
-    def release_claim(self, issue_number: int, lease_id: str) -> None:  # noqa: ARG002
+    def release_claim(self, issue_number: int, lease_id: str) -> None:
         """No-op - nothing to release."""
-        del issue_number, lease_id  # Unused in null implementation
+        _ = issue_number, lease_id
 
-    def check_winner(self, issue_number: int, lease_id: str) -> bool:  # noqa: ARG002
+    def check_winner(self, issue_number: int, lease_id: str) -> bool:
         """Always the winner - no contention in single-orchestrator mode."""
-        del issue_number, lease_id  # Unused in null implementation
+        _ = issue_number, lease_id
         return True
 
-    def get_current_claim(self, issue_number: int) -> Claim | None:  # noqa: ARG002
+    def get_current_claim(self, issue_number: int) -> Claim | None:
         """No claims tracked."""
-        del issue_number  # Unused in null implementation
+        _ = issue_number
         return None

@@ -138,15 +138,19 @@ class GitHubClaimAdapter(ClaimManager):
         """
         consecutive_wins = 0
         deadline = time.monotonic() + self._config.convergence_timeout_seconds
+        max_polls = self._config.convergence_max_polls
+        poll_count = 0
 
         logger.debug(
-            "Starting convergence for issue #%d, lease_id=%s, timeout=%.1fs",
+            "Starting convergence for issue #%d, lease_id=%s, timeout=%.1fs, max_polls=%d",
             issue_number,
             lease_id,
             self._config.convergence_timeout_seconds,
+            max_polls,
         )
 
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and poll_count < max_polls:
+            poll_count += 1
             claims = self._fetch_all_claims(issue_number)
             winner = self._determine_winner(claims)
 
@@ -194,10 +198,13 @@ class GitHubClaimAdapter(ClaimManager):
             )
             time.sleep(jitter_ms / 1000)
 
+        reason = "max polls reached" if poll_count >= max_polls else "timeout"
         logger.warning(
-            "Convergence timed out for issue #%d, lease_id=%s",
+            "Convergence failed for issue #%d, lease_id=%s (%s after %d polls)",
             issue_number,
             lease_id,
+            reason,
+            poll_count,
         )
         return False
 

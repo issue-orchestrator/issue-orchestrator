@@ -26,6 +26,7 @@ class LeaseConfig:
     convergence_poll_min_ms: int = 250
     convergence_poll_max_ms: int = 500
     convergence_required_wins: int = 2
+    convergence_max_polls: int = 15  # Safety limit on API calls during convergence
 
     @classmethod
     def for_testing(cls) -> "LeaseConfig":
@@ -39,11 +40,13 @@ class LeaseConfig:
             convergence_required_wins=2,
         )
 
-    def renewal_threshold_seconds(self) -> int:
-        """Get the threshold at which renewal should be attempted.
+    def renewal_trigger_threshold(self) -> int:
+        """Get the time-remaining threshold that triggers renewal.
 
         Returns:
-            Seconds remaining when renewal should be triggered.
+            When this many seconds remain before expiry, renewal should
+            be attempted. E.g., with 15-min lease and 5-min renew interval,
+            returns 600 (renew when 10 min remain = 5 min before expiry).
         """
         return self.lease_seconds - self.renew_interval_seconds
 
