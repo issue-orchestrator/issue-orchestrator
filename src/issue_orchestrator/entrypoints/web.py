@@ -17,6 +17,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from jinja2 import Environment, FileSystemLoader
 
+from ..infra.e2e_runner import get_e2e_role
+
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
 
@@ -608,6 +610,10 @@ async def get_status() -> JSONResponse:
     if not isinstance(last_tick_time, (int, float)):
         last_tick_time = None
 
+    # Determine E2E role for this instance
+    instance_id = os.environ.get("INSTANCE_ID")
+    e2e_role = get_e2e_role(config.e2e, instance_id=instance_id)
+
     return JSONResponse({
         "paused": state.paused,
         "shutdown_requested": getattr(_orchestrator, '_shutdown_requested', False),
@@ -618,6 +624,7 @@ async def get_status() -> JSONResponse:
         "pending_reviews": pending_reviews,
         "tick_id": tick_id,
         "last_tick_time": last_tick_time,
+        "e2e_role": e2e_role if config.e2e.enabled else None,
     })
 
 

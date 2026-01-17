@@ -490,6 +490,11 @@ class Session:
     last_log_size: int | None = None
     last_output_tail: str | None = None
     last_no_output_monotonic: float | None = None
+    # Claim/lease fields for multi-orchestrator coordination
+    lease_id: str | None = None  # Unique identifier for the claim
+    lease_acquired_at: datetime | None = None  # When the claim was acquired
+    lease_expires_at: datetime | None = None  # When the claim expires if not renewed
+    last_claim_verified_at: datetime | None = None  # Last time we verified we're still the winner
 
     @property
     def runtime_minutes(self) -> int:

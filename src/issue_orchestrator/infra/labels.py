@@ -35,6 +35,22 @@ LEGACY_FAILED = "failed"
 # The magic prefix that indicates blocking
 BLOCKING_PREFIX = "blocked-"
 
+# =============================================================================
+# Claim/Lease Labels - for multi-orchestrator coordination
+# =============================================================================
+
+# Issue is claimed by an orchestrator instance
+IO_CLAIMED = "io:claimed"
+
+# Claim was lost during active session (work may be salvageable)
+BLOCKED_CLAIM_LOST = "blocked:claim-lost"
+
+# Stale claim detected (orchestrator crashed without releasing)
+BLOCKED_STALE_CLAIM = "blocked:stale-claim"
+
+# Issue needs reconciliation after claim conflict
+NEEDS_RECONCILE = "needs-reconcile"
+
 
 # =============================================================================
 # Query Functions

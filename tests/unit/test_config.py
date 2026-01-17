@@ -1625,3 +1625,139 @@ execution:
         error_msg = str(exc_info.value)
         assert "concurrency" in error_msg
         assert "Got string" in error_msg
+
+
+class TestEnvVarSubstitution:
+    """Tests for ${VAR} environment variable substitution in config."""
+
+    def test_expands_env_var_in_string(self, tmp_path, monkeypatch):
+        """${VAR} in config value is replaced with env var value."""
+        monkeypatch.setenv("TEST_CLAIMANT_ID", "prod-west-1")
+
+        config_content = """
+claims:
+  enabled: true
+  claimant_id: "${TEST_CLAIMANT_ID}"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.claims.claimant_id == "prod-west-1"
+
+    def test_expands_multiple_env_vars_in_string(self, tmp_path, monkeypatch):
+        """Multiple ${VAR} references in one string are all expanded."""
+        monkeypatch.setenv("ENV_NAME", "prod")
+        monkeypatch.setenv("REGION", "west")
+
+        config_content = """
+claims:
+  enabled: true
+  claimant_id: "${ENV_NAME}-${REGION}-orchestrator"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.claims.claimant_id == "prod-west-orchestrator"
+
+    def test_expands_env_var_in_nested_config(self, tmp_path, monkeypatch):
+        """${VAR} works in deeply nested config values."""
+        monkeypatch.setenv("GITHUB_TOKEN_VAR", "MY_GITHUB_TOKEN")
+
+        config_content = """
+repo:
+  github:
+    token_env: "${GITHUB_TOKEN_VAR}"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.github_token_env == "MY_GITHUB_TOKEN"
+
+    def test_expands_env_var_in_list(self, tmp_path, monkeypatch):
+        """${VAR} works in list items."""
+        monkeypatch.setenv("EXCLUDE_LABEL", "wip")
+
+        config_content = """
+filtering:
+  exclude_labels:
+    - "${EXCLUDE_LABEL}"
+    - "draft"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert "wip" in config.filtering.exclude_labels
+        assert "draft" in config.filtering.exclude_labels
+
+    def test_error_on_missing_env_var(self, tmp_path):
+        """Missing env var raises ConfigEnvVarError with clear message."""
+        from issue_orchestrator.infra.config import ConfigEnvVarError
+
+        config_content = """
+claims:
+  enabled: true
+  claimant_id: "${NONEXISTENT_VAR_12345}"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ConfigEnvVarError) as exc_info:
+            Config.load(config_file)
+
+        error_msg = str(exc_info.value)
+        assert "NONEXISTENT_VAR_12345" in error_msg
+        assert "not set" in error_msg
+
+    def test_error_message_includes_config_path(self, tmp_path):
+        """Error message shows where in config the missing var was referenced."""
+        from issue_orchestrator.infra.config import ConfigEnvVarError
+
+        config_content = """
+claims:
+  claimant_id: "${MISSING_VAR}"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ConfigEnvVarError) as exc_info:
+            Config.load(config_file)
+
+        error_msg = str(exc_info.value)
+        assert "claims.claimant_id" in error_msg
+
+    def test_literal_string_without_env_var_unchanged(self, tmp_path):
+        """Strings without ${VAR} are unchanged."""
+        config_content = """
+claims:
+  enabled: true
+  claimant_id: "literal-string-value"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.claims.claimant_id == "literal-string-value"
+
+    def test_numbers_and_booleans_unchanged(self, tmp_path):
+        """Non-string values (numbers, booleans) pass through unchanged."""
+        config_content = """
+claims:
+  enabled: true
+  lease_seconds: 900
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.claims.enabled is True
+        assert config.claims.lease_seconds == 900

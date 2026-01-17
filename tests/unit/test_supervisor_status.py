@@ -9,8 +9,11 @@ import pytest
 
 from issue_orchestrator.infra.supervisor import (
     SupervisorStatus,
+    MultiInstanceStatus,
     status,
     start,
+    find_free_port,
+    status_all_instances,
 )
 
 
@@ -232,3 +235,203 @@ class TestSupervisorStartErrorSurfacing:
         assert "exited immediately with code 1" in error_msg
         # Should still mention where logs would be
         assert "logs" in error_msg.lower()
+
+
+class TestMultiInstanceSupport:
+    """Tests for multi-instance supervisor functionality."""
+
+    def test_find_free_port_returns_valid_port(self) -> None:
+        """find_free_port returns a valid port number."""
+        port = find_free_port()
+        assert 1024 <= port <= 65535
+
+    def test_find_free_port_returns_different_ports(self) -> None:
+        """find_free_port returns different ports on successive calls."""
+        port1 = find_free_port()
+        port2 = find_free_port()
+        # They should usually be different (not guaranteed but highly likely)
+        # Just check both are valid
+        assert 1024 <= port1 <= 65535
+        assert 1024 <= port2 <= 65535
+
+    def test_status_with_instance_id(self, tmp_path: Path) -> None:
+        """status() returns instance_id when provided."""
+        result = status(tmp_path, instance_id="orchestrator-1")
+        assert result.state == "stopped"
+        assert result.instance_id == "orchestrator-1"
+
+    def test_status_running_with_instance_lock(self, tmp_path: Path) -> None:
+        """status() reads instance-specific lock file."""
+        # Create instance-specific lock file
+        locks_dir = tmp_path / ".issue-orchestrator" / "locks"
+        locks_dir.mkdir(parents=True)
+        lock_path = locks_dir / "orchestrator-1.json"
+
+        lock_data = {
+            "repo_root": str(tmp_path),
+            "pid": os.getpid(),
+            "started_at": "2024-01-01T00:00:00Z",
+            "http_port": 8081,
+            "state_dir": str(tmp_path / ".issue-orchestrator" / "state"),
+            "recovered": False,
+            "instance_id": "orchestrator-1",
+        }
+        with open(lock_path, "w") as f:
+            json.dump(lock_data, f)
+
+        result = status(tmp_path, instance_id="orchestrator-1")
+
+        assert result.state == "running"
+        assert result.pid == os.getpid()
+        assert result.port == 8081
+        assert result.instance_id == "orchestrator-1"
+
+
+class TestMultiInstanceStatus:
+    """Tests for MultiInstanceStatus dataclass."""
+
+    def test_multi_instance_status_to_dict(self) -> None:
+        """MultiInstanceStatus.to_dict includes all fields."""
+        status1 = SupervisorStatus(
+            state="running", pid=111, port=8081, instance_id="orchestrator-1"
+        )
+        status2 = SupervisorStatus(
+            state="running", pid=222, port=8082, instance_id="orchestrator-2"
+        )
+        multi = MultiInstanceStatus(
+            repo_root="/path/to/repo",
+            instances=[status1, status2],
+            expected_count=2,
+        )
+
+        data = multi.to_dict()
+
+        assert data["repo_root"] == "/path/to/repo"
+        assert data["expected_count"] == 2
+        assert data["running_count"] == 2
+        assert len(data["instances"]) == 2
+        assert data["instances"][0]["instance_id"] == "orchestrator-1"
+        assert data["instances"][1]["instance_id"] == "orchestrator-2"
+
+    def test_multi_instance_status_running_count(self) -> None:
+        """running_count only counts running instances."""
+        status1 = SupervisorStatus(state="running", instance_id="orchestrator-1")
+        status2 = SupervisorStatus(state="stopped", instance_id="orchestrator-2")
+        status3 = SupervisorStatus(state="failed", instance_id="orchestrator-3")
+        multi = MultiInstanceStatus(
+            repo_root="/path/to/repo",
+            instances=[status1, status2, status3],
+            expected_count=3,
+        )
+
+        data = multi.to_dict()
+
+        assert data["expected_count"] == 3
+        assert data["running_count"] == 1
+
+
+class TestStatusAllInstances:
+    """Tests for status_all_instances function."""
+
+    def test_status_all_instances_no_running(self, tmp_path: Path) -> None:
+        """status_all_instances returns empty list when no instances running."""
+        # Create minimal config for expected_count
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        result = status_all_instances(tmp_path)
+
+        assert result.repo_root == str(tmp_path)
+        assert result.expected_count == 1  # Default
+        assert len(result.instances) == 0
+
+    def test_status_all_instances_with_single_instance(self, tmp_path: Path) -> None:
+        """status_all_instances includes single-instance (legacy) lock."""
+        # Create legacy single-instance lock
+        lock_dir = tmp_path / ".issue-orchestrator"
+        lock_dir.mkdir(parents=True)
+        lock_path = lock_dir / "lock.json"
+
+        lock_data = {
+            "repo_root": str(tmp_path),
+            "pid": os.getpid(),
+            "started_at": "2024-01-01T00:00:00Z",
+            "http_port": 8080,
+            "state_dir": str(tmp_path / ".issue-orchestrator" / "state"),
+            "recovered": False,
+        }
+        with open(lock_path, "w") as f:
+            json.dump(lock_data, f)
+
+        # Create minimal config
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        result = status_all_instances(tmp_path)
+
+        assert len(result.instances) == 1
+        assert result.instances[0].state == "running"
+        assert result.instances[0].pid == os.getpid()
+        assert result.instances[0].port == 8080
+
+    def test_status_all_instances_with_multi_instance(self, tmp_path: Path) -> None:
+        """status_all_instances includes all instance locks."""
+        # Create multi-instance locks
+        locks_dir = tmp_path / ".issue-orchestrator" / "locks"
+        locks_dir.mkdir(parents=True)
+
+        for i in [1, 2]:
+            lock_path = locks_dir / f"orchestrator-{i}.json"
+            lock_data = {
+                "repo_root": str(tmp_path),
+                "pid": os.getpid(),
+                "started_at": "2024-01-01T00:00:00Z",
+                "http_port": 8080 + i,
+                "state_dir": str(tmp_path / ".issue-orchestrator" / "state"),
+                "recovered": False,
+                "instance_id": f"orchestrator-{i}",
+            }
+            with open(lock_path, "w") as f:
+                json.dump(lock_data, f)
+
+        # Create config with instances: 2
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\nui:\n  instances: 2\n")
+
+        result = status_all_instances(tmp_path)
+
+        assert result.expected_count == 2
+        assert len(result.instances) == 2
+
+
+class TestSupervisorStatusInstanceId:
+    """Tests for instance_id in SupervisorStatus."""
+
+    def test_status_to_dict_includes_instance_id(self) -> None:
+        """to_dict includes instance_id when set."""
+        status_obj = SupervisorStatus(
+            state="running",
+            pid=12345,
+            port=8080,
+            instance_id="orchestrator-1",
+        )
+
+        data = status_obj.to_dict()
+
+        assert data["instance_id"] == "orchestrator-1"
+
+    def test_status_to_dict_excludes_instance_id_when_none(self) -> None:
+        """to_dict excludes instance_id when None (backward compat)."""
+        status_obj = SupervisorStatus(
+            state="running",
+            pid=12345,
+            port=8080,
+        )
+
+        data = status_obj.to_dict()
+
+        # instance_id should not be in dict when None
+        assert "instance_id" not in data

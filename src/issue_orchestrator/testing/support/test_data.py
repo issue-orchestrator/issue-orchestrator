@@ -239,6 +239,29 @@ def cleanup_test_issues(repo: str) -> int:
     return count
 
 
+def get_issue_labels(repo: str, issue_number: int) -> list[str]:
+    """Get current labels for an issue.
+
+    Args:
+        repo: GitHub repo in owner/repo format
+        issue_number: The issue number to get labels for
+
+    Returns:
+        List of label names currently on the issue
+
+    Raises:
+        RuntimeError: If issue not found
+    """
+    adapter = _adapter_for(repo)
+    with gh_audit.context(reason=gh_audit.AuditReason.GH_READ, scope=gh_audit.AuditScope.TEST):
+        issue = adapter.get_issue(issue_number)
+
+    if issue is None:
+        raise RuntimeError(f"Issue #{issue_number} not found")
+
+    return list(issue.labels)
+
+
 def create_test_issues(repo: str, agent_labels: Optional[list[str]] = None) -> list[int]:
     """Create multiple test issues for batch testing.
 

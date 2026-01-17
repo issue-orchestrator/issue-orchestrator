@@ -43,6 +43,7 @@ from ..control.action_applier import ActionApplier
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
 from ..adapters.github import GitHubIssueResolver, GitHubCache
+from ..adapters.github.claim_adapter import GitHubClaimAdapter
 from ..execution.verification_service import DefaultVerificationService
 from ..ports.verification import VerificationBudget
 from ..execution.worktree_adapter import GitWorktreeManager
@@ -51,7 +52,11 @@ from ..execution.command_runner import LocalCommandRunner
 from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
+from ..control.claim_gate import ClaimGate
+from ..control.lease_renewer import LeaseRenewer
 from ..infra import gh_audit
+from ..ports.claim_manager import NullClaimManager
+from ..domain.lease_config import LeaseConfig
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -185,6 +190,39 @@ def build_orchestrator(
         gh_audit.check_rate_limit("startup")
     if github:
         _check_github_token_scopes(config, github)
+
+    # Create claim management components
+    # Use GitHubClaimAdapter for multi-orchestrator coordination when enabled
+    if github and config.claims.enabled:
+        # Build LeaseConfig from claims config settings
+        lease_config = LeaseConfig(
+            lease_seconds=config.claims.lease_seconds,
+            renew_interval_seconds=config.claims.renew_before_expiry_seconds,
+            convergence_timeout_seconds=config.claims.convergence_timeout_seconds,
+            convergence_poll_min_ms=config.claims.convergence_poll_min_ms,
+            convergence_poll_max_ms=config.claims.convergence_poll_max_ms,
+            convergence_required_wins=config.claims.convergence_required_wins,
+        )
+        claimant_id = config.claims.claimant_id or f"orchestrator-{os.getpid()}"
+        claim_manager = GitHubClaimAdapter(
+            client=github.http_client,
+            claimant_id=claimant_id,
+            config=lease_config,
+            events=events,
+            label_adapter=github,
+        )
+        logger.info("Claims enabled: claimant_id=%s, lease=%ds", claimant_id, lease_config.lease_seconds)
+    else:
+        # Use NullClaimManager for single-orchestrator mode
+        lease_config = LeaseConfig()
+        claim_manager = NullClaimManager()
+
+    claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
+    lease_renewer = LeaseRenewer(
+        claim_manager=claim_manager,
+        events=events,
+        config=lease_config,
+    )
 
     # Create control plane components
     scheduler = Scheduler(config=config)
@@ -373,6 +411,9 @@ def build_orchestrator(
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
         health_gate=health_gate,
+        claim_manager=claim_manager,
+        claim_gate=claim_gate,
+        lease_renewer=lease_renewer,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -557,6 +598,16 @@ def build_orchestrator_for_testing(
     # Create EventHub for testing
     event_hub = EventHub()
 
+    # Create claim components for testing (always use NullClaimManager)
+    lease_config = LeaseConfig()
+    claim_manager = NullClaimManager()
+    claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
+    lease_renewer = LeaseRenewer(
+        claim_manager=claim_manager,
+        events=events,
+        config=lease_config,
+    )
+
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(
         events=events,
@@ -580,6 +631,9 @@ def build_orchestrator_for_testing(
         completion_processor=completion_processor,
         session_controller=session_controller,
         health_gate=health_gate,
+        claim_manager=claim_manager,
+        claim_gate=claim_gate,
+        lease_renewer=lease_renewer,
     )
 
     return Orchestrator(config=config, deps=deps)

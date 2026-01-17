@@ -105,6 +105,46 @@
         .repo-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
         .repo-actions button { padding: 5px 10px; font-size: 11px; }
 
+        /* Multi-instance styling */
+        .instance-row {
+            display: grid;
+            grid-template-columns: 1fr 120px 80px 200px;
+            align-items: center;
+            padding: 10px 16px 10px 40px;
+            border-bottom: 1px solid #21262d;
+            background: #0d1117;
+            font-size: 12px;
+        }
+        .instance-row:last-child { border-bottom: none; }
+        .instance-row:hover { background: #161b22; }
+        .instance-id { color: #8b949e; font-family: monospace; }
+        .instance-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
+        .instance-port { font-size: 12px; color: #8b949e; font-family: monospace; }
+        .e2e-badge {
+            display: inline-block;
+            padding: 1px 5px;
+            font-size: 9px;
+            border-radius: 3px;
+            margin-left: 6px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+        .e2e-badge.executor { background: #238636; color: #fff; }
+        .e2e-badge.observer { background: #6e7681; color: #fff; }
+        .instance-actions { display: flex; gap: 6px; justify-content: flex-end; }
+        .instance-actions button { padding: 4px 8px; font-size: 10px; }
+        .expand-toggle {
+            cursor: pointer;
+            user-select: none;
+            margin-right: 8px;
+            color: #8b949e;
+            font-size: 10px;
+        }
+        .expand-toggle:hover { color: #58a6ff; }
+        .instances-container { display: none; }
+        .instances-container.expanded { display: block; }
+        .status-partial .status-dot { background: #d29922; }
+
         .empty-state {
             padding: 48px;
             text-align: center;
@@ -551,6 +591,15 @@
             const div = document.createElement('div');
             div.textContent = str;
             return div.innerHTML;
+        }
+
+        function toggleInstances(repoId) {
+            const container = document.getElementById(`instances-${repoId}`);
+            const toggle = document.getElementById(`toggle-${repoId}`);
+            if (container && toggle) {
+                const isExpanded = container.classList.toggle('expanded');
+                toggle.textContent = isExpanded ? '▼' : '▶';
+            }
         }
 
         function showToast(message, isError = false) {
@@ -1272,17 +1321,132 @@
                                 </div>
                             </div>
                         `;
+                    } else if (repo.expected_instances > 1 && repo.instances) {
+                        // Multi-instance mode - show aggregated row with expandable instances
+                        const selectedConfig = repo.selected_config || repo.configs[0];
+                        const configOptions = repo.configs.map(c =>
+                            `<option value="${escapeHtml(c)}" ${c === selectedConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`
+                        ).join('');
+                        const runningCount = status.running_count || 0;
+                        const expectedCount = repo.expected_instances;
+                        const isPartial = status.state === 'partial';
+                        const allRunning = runningCount === expectedCount;
+                        const allStopped = runningCount === 0;
+
+                        // Status for multi-instance
+                        let multiStatusClass, multiStatusLabel;
+                        if (allRunning) {
+                            multiStatusClass = 'status-running';
+                            multiStatusLabel = `${runningCount}/${expectedCount} Running`;
+                        } else if (isPartial) {
+                            multiStatusClass = 'status-partial';
+                            multiStatusLabel = `${runningCount}/${expectedCount} Running`;
+                        } else {
+                            multiStatusClass = 'status-stopped';
+                            multiStatusLabel = 'Stopped';
+                        }
+
+                        const repoId = escapeHtml(repo.name).replace(/[^a-zA-Z0-9]/g, '_');
+
+                        html += `
+                            <div class="repo-row" data-path="${escapeHtml(repo.path)}">
+                                <div>
+                                    <span class="expand-toggle" onclick="toggleInstances('${repoId}')" id="toggle-${repoId}">▶</span>
+                                    <span>
+                                        <div class="repo-name" style="display:inline;">${escapeHtml(repo.name)}</div>
+                                        <span style="font-size:11px;color:#8b949e;margin-left:8px;">(${expectedCount} instances)</span>
+                                    </span>
+                                    <div class="repo-path" title="${escapeHtml(repo.path)}" style="margin-left:18px;">${escapeHtml(repo.path)}</div>
+                                </div>
+                                <span class="repo-status ${multiStatusClass}">
+                                    <span class="status-dot"></span>
+                                    ${multiStatusLabel}
+                                </span>
+                                <span class="repo-port">-</span>
+                                <div class="repo-actions">
+                                    ${allRunning || isPartial
+                                        ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}', null)">Stop All</button>`
+                                        : `<select class="btn" style="min-width:100px;" id="config-${repoId}" onchange="updateSelectedConfig('${escapeHtml(repo.path)}', this.value)">${configOptions}</select>
+                                           <button class="btn" onclick="viewConfig('${escapeHtml(repo.path)}', document.getElementById('config-${repoId}').value)" title="View config">View</button>
+                                           <button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}', document.getElementById('config-${repoId}').value)">Start All</button>`
+                                    }
+                                    <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
+                                    <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')" title="Remove">&times;</button>
+                                </div>
+                            </div>
+                            <div class="instances-container" id="instances-${repoId}">
+                        `;
+
+                        // Render each instance as a sub-row
+                        for (const inst of repo.instances) {
+                            const instRunning = inst.state === 'running';
+                            const instFailed = inst.state === 'failed';
+                            const instPaused = inst.paused && !inst.shutdown_requested;
+                            let instStatusClass, instStatusLabel;
+
+                            if (instPaused) {
+                                instStatusClass = 'status-paused';
+                                instStatusLabel = 'Paused';
+                            } else if (instRunning) {
+                                instStatusClass = 'status-running';
+                                instStatusLabel = 'Running';
+                            } else if (instFailed) {
+                                instStatusClass = 'status-failed';
+                                instStatusLabel = 'Failed';
+                            } else {
+                                instStatusClass = 'status-stopped';
+                                instStatusLabel = 'Stopped';
+                            }
+
+                            const instId = inst.instance_id || 'default';
+
+                            // E2E role badge (only shown when running and role is set)
+                            let e2eBadge = '';
+                            if (instRunning && inst.e2e_role) {
+                                const roleClass = inst.e2e_role === 'executor' ? 'executor' : 'observer';
+                                const roleLabel = inst.e2e_role === 'executor' ? 'E2E' : 'E2E Observer';
+                                e2eBadge = `<span class="e2e-badge ${roleClass}">${roleLabel}</span>`;
+                            }
+
+                            html += `
+                                <div class="instance-row">
+                                    <div class="instance-id">${escapeHtml(instId)}${e2eBadge}</div>
+                                    <span class="instance-status ${instStatusClass}">
+                                        <span class="status-dot"></span>
+                                        ${instStatusLabel}
+                                    </span>
+                                    <span class="instance-port">${inst.port || '-'}</span>
+                                    <div class="instance-actions">
+                                        ${instRunning
+                                            ? `<button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${inst.port})">Open</button>`
+                                            : ''
+                                        }
+                                    </div>
+                                </div>
+                            `;
+                        }
+
+                        html += `</div>`; // Close instances-container
+
                     } else {
-                        // Has config(s) - show normal row with config dropdown
+                        // Single instance mode - show normal row with config dropdown
                         const selectedConfig = repo.selected_config || repo.configs[0];
                         const configOptions = repo.configs.map(c =>
                             `<option value="${escapeHtml(c)}" ${c === selectedConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`
                         ).join('');
 
+                        // E2E role badge for single-instance mode
+                        let singleE2eBadge = '';
+                        if (isRunning && status.e2e_role) {
+                            const roleClass = status.e2e_role === 'executor' ? 'executor' : 'observer';
+                            const roleLabel = status.e2e_role === 'executor' ? 'E2E' : 'E2E Observer';
+                            singleE2eBadge = `<span class="e2e-badge ${roleClass}">${roleLabel}</span>`;
+                        }
+
                         html += `
                             <div class="repo-row" data-path="${escapeHtml(repo.path)}">
                                 <div>
-                                    <div class="repo-name">${escapeHtml(repo.name)}</div>
+                                    <div class="repo-name">${escapeHtml(repo.name)}${singleE2eBadge}</div>
                                     <div class="repo-path" title="${escapeHtml(repo.path)}">${escapeHtml(repo.path)}</div>
                                 </div>
                                 <span class="repo-status ${statusClass}">

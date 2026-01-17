@@ -17,6 +17,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Callable
 
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from ..observation.observer import SessionObserver
     from ..domain.models import OrchestratorState
     from ..ports.session_runner import DiscoveredSession
+    from ..ports.claim_manager import ClaimManager
 
 from ..infra.config import Config
 from ..infra.logging_config import issue_log, log_context
@@ -176,6 +178,7 @@ class SessionLauncher:
         get_review_machine: Callable[[int, int], Optional["ReviewStateMachine"]],
         refresh_issue_fn: Optional[Callable[[int], Optional["IssueProtocol"]]] = None,
         dependency_evaluator: Optional["DependencyEvaluator"] = None,
+        claim_manager: Optional["ClaimManager"] = None,
     ):
         self.config = config
         self.events = events
@@ -193,6 +196,7 @@ class SessionLauncher:
         self._get_review_machine = get_review_machine
         self._refresh_issue = refresh_issue_fn
         self._dependency_evaluator = dependency_evaluator
+        self._claim_manager = claim_manager
 
     def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
         return WorktreeReuseOptions(
@@ -299,6 +303,58 @@ class SessionLauncher:
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
 
+        # Acquire claim if claim manager is configured
+        lease_id: str | None = None
+        lease_acquired_at: datetime | None = None
+        lease_expires_at: datetime | None = None
+
+        if self._claim_manager:
+            logger.info(issue_log(issue.number, "Acquiring claim..."))
+            claim_result = self._claim_manager.attempt_claim(issue.number)
+
+            if not claim_result.success:
+                log_transition("issue", issue.number, "LAUNCHING", "CLAIM_FAILED", f"claim attempt failed: {claim_result.error}")
+                self.events.publish(TraceEvent(
+                    EventName.CLAIM_CONTESTED,
+                    {
+                        "issue_number": issue.number,
+                        "issue_title": issue.title,
+                        "error": claim_result.error,
+                    },
+                ))
+                return LaunchResult(None, False, f"Failed to claim issue: {claim_result.error}")
+
+            # Run convergence to confirm ownership
+            logger.info(issue_log(issue.number, "Running claim convergence..."))
+            converged = self._claim_manager.run_convergence(issue.number, claim_result.lease_id or "")
+
+            if not converged:
+                log_transition("issue", issue.number, "LAUNCHING", "CLAIM_LOST", "convergence failed - another claimant won")
+                self._claim_manager.release_claim(issue.number, claim_result.lease_id or "")
+                self.events.publish(TraceEvent(
+                    EventName.CLAIM_LOST,
+                    {
+                        "issue_number": issue.number,
+                        "issue_title": issue.title,
+                        "lease_id": claim_result.lease_id,
+                        "reason": "convergence_failed",
+                    },
+                ))
+                return LaunchResult(None, False, "Claim convergence failed - another orchestrator won")
+
+            # Claim acquired successfully
+            lease_id = claim_result.lease_id
+            lease_acquired_at = datetime.now()
+            lease_expires_at = lease_acquired_at + timedelta(seconds=self.config.claim_lease_seconds if hasattr(self.config, 'claim_lease_seconds') else 900)
+            logger.info(issue_log(issue.number, "Claim acquired: lease_id=%s"), lease_id)
+            self.events.publish(TraceEvent(
+                EventName.CLAIM_ACQUIRED,
+                {
+                    "issue_number": issue.number,
+                    "lease_id": lease_id,
+                },
+            ))
+
         # Create and prepare worktree using WorktreeContext
         step_start = time.time()
         logger.info(issue_log(issue.number, "Creating worktree..."))
@@ -346,6 +402,10 @@ class SessionLauncher:
                     "reason": str(ctx.error),
                 },
             ))
+            # Release claim if we acquired one
+            if self._claim_manager and lease_id:
+                self._claim_manager.release_claim(issue.number, lease_id)
+                logger.info(issue_log(issue.number, "Released claim after worktree failure: lease_id=%s"), lease_id)
             return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
         # Extract values from context for local use
@@ -420,6 +480,10 @@ class SessionLauncher:
                 logger.info(issue_log(issue.number, "Cleaned up worktree after launch failure: %s"), worktree_path)
             except Exception as e:
                 logger.warning(issue_log(issue.number, "Failed to remove worktree after launch failure: %s"), e)
+            # Release claim if we acquired one
+            if self._claim_manager and lease_id:
+                self._claim_manager.release_claim(issue.number, lease_id)
+                logger.info(issue_log(issue.number, "Released claim after label failure: lease_id=%s"), lease_id)
             return LaunchResult(None, False, "Failed to add in-progress label")
         label_time = time.time() - step_start
         logger.info("[launch] Label added in %.1fs", label_time)
@@ -499,6 +563,10 @@ class SessionLauncher:
                     reason="session creation failed",
                 ),
             ], context="launch_session_creation_failed")
+            # Release claim if we acquired one
+            if self._claim_manager and lease_id:
+                self._claim_manager.release_claim(issue.number, lease_id)
+                logger.info(issue_log(issue.number, "Released claim after session creation failure: lease_id=%s"), lease_id)
             return LaunchResult(None, False, "Failed to create terminal session")
 
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
@@ -513,6 +581,9 @@ class SessionLauncher:
             branch_name=branch_name,
             completion_path=completion_path,
             agent_label=issue.agent_type,
+            lease_id=lease_id,
+            lease_acquired_at=lease_acquired_at,
+            lease_expires_at=lease_expires_at,
         )
 
         total_time = time.time() - launch_start
@@ -1113,6 +1184,8 @@ def handle_session_completion(
     diagnostic_path: Optional[str] = None,
     validation_error: Optional[str] = None,
     validation_error_file: Optional[str] = None,
+    claim_manager: Optional["ClaimManager"] = None,
+    events: Optional[EventSink] = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
 
@@ -1132,6 +1205,8 @@ def handle_session_completion(
         diagnostic_path: Path to detailed failure diagnostic file (in worktree)
         validation_error: Validation error message (for retry prompt)
         validation_error_file: Path to validation error file (for retry prompt)
+        claim_manager: Optional ClaimManager for releasing claims on completion
+        events: Optional EventSink for emitting claim events
     """
     from ..domain.models import DiscoveredReview, DiscoveredFailure, PendingValidationRetry
 
@@ -1201,6 +1276,31 @@ def handle_session_completion(
 
     # Observer handles session-level cleanup (kill sessions, close tabs)
     observer.handle_completion(session, status)
+
+    # Release claim if session had one
+    if claim_manager and session.lease_id:
+        try:
+            claim_manager.release_claim(session.issue.number, session.lease_id)
+            logger.info(
+                "[COMPLETION] Released claim for issue #%d: lease_id=%s",
+                session.issue.number,
+                session.lease_id,
+            )
+            if events:
+                events.publish(TraceEvent(
+                    EventName.CLAIM_RELEASED,
+                    {
+                        "issue_number": session.issue.number,
+                        "lease_id": session.lease_id,
+                        "status": status.value,
+                    },
+                ))
+        except Exception as e:
+            logger.warning(
+                "[COMPLETION] Failed to release claim for issue #%d: %s",
+                session.issue.number,
+                e,
+            )
 
     state.session_history.append(result.history_entry)
     if result.should_defer_cleanup and result.pending_cleanup:

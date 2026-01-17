@@ -32,16 +32,35 @@ def state_dir(repo_root: Path | str) -> Path:
     return normalize_repo_root(repo_root) / ".issue-orchestrator" / "state"
 
 
-def lock_file(repo_root: Path | str) -> Path:
-    """Get the lock file path for a repository.
+def lock_file(repo_root: Path | str, instance_id: str | None = None) -> Path:
+    """Get the lock file path for a repository (or specific instance).
+
+    Args:
+        repo_root: Repository root path
+        instance_id: Optional instance ID for multi-instance deployments.
+                    If None, returns the legacy single-instance lock path.
+
+    Returns:
+        Path to lock file:
+        - Single instance: .issue-orchestrator/lock.json
+        - Multi-instance: .issue-orchestrator/locks/{instance_id}.json
+    """
+    repo_root = normalize_repo_root(repo_root)
+    if instance_id is None:
+        return repo_root / ".issue-orchestrator" / "lock.json"
+    return repo_root / ".issue-orchestrator" / "locks" / f"{instance_id}.json"
+
+
+def locks_dir(repo_root: Path | str) -> Path:
+    """Get the locks directory for multi-instance deployments.
 
     Args:
         repo_root: Repository root path
 
     Returns:
-        Path to .issue-orchestrator/lock.json
+        Path to .issue-orchestrator/locks/
     """
-    return normalize_repo_root(repo_root) / ".issue-orchestrator" / "lock.json"
+    return normalize_repo_root(repo_root) / ".issue-orchestrator" / "locks"
 
 
 def _resolve_git_dir(repo_path: Path) -> Optional[Path]:

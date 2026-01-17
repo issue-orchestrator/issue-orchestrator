@@ -251,6 +251,20 @@ class EventName(str, Enum):
     E2E_FAILED = "e2e.failed"
     E2E_STOPPED = "e2e.stopped"
 
+    # =========================================================================
+    # Claim/Lease lifecycle (multi-orchestrator coordination)
+    # =========================================================================
+    CLAIM_ATTEMPTED = "claim.attempted"  # Orchestrator attempting to claim
+    CLAIM_ACQUIRED = "claim.acquired"  # Successfully acquired claim
+    CLAIM_CONTESTED = "claim.contested"  # Multiple claimants detected
+    CLAIM_CONVERGED = "claim.converged"  # Convergence completed, winner determined
+    CLAIM_LOST = "claim.lost"  # Lost claim during session
+    CLAIM_LOST_BEFORE_WRITE = "claim.lost_before_write"  # Lost claim before mutation
+    CLAIM_EXPIRED = "claim.expired"  # Claim expired without renewal
+    CLAIM_RENEWED = "claim.renewed"  # Successfully renewed lease
+    CLAIM_RELEASED = "claim.released"  # Voluntarily released claim
+    CLAIM_STALE_DETECTED = "claim.stale_detected"  # Found orphaned claim
+
     def __str__(self) -> str:
         """Return the event name string for use in TraceEvent."""
         return self.value

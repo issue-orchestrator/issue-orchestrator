@@ -119,6 +119,11 @@ class GitHubAdapter:
 
         logger.info(f"GitHubAdapter initialized for repo: {self.repo}")
 
+    @property
+    def http_client(self) -> "GitHubHttpClient":
+        """Expose the HTTP client for use by other adapters (e.g., ClaimAdapter)."""
+        return self._client
+
     def update_label_cache(self, issue_number: int, labels: list[str]) -> None:
         """Update cached labels for an issue."""
         if not self._cache_enabled:

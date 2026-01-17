@@ -942,6 +942,11 @@ class TestSupervisorStart:
         from issue_orchestrator.infra import supervisor
         from issue_orchestrator.infra.repo_lock import LockInfo
 
+        # Create config file (required since start endpoint loads config to check instances)
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
         monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(tmp_path / "config"))
         monkeypatch.setattr(
             control_api,

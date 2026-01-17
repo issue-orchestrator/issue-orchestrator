@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
+    from ..ports.claim_manager import ClaimManager
     from .planner import Planner
     from .session_manager import SessionManager
     from .label_sync import LabelSync
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
     from .completion_processor import CompletionProcessor
     from .session_controller import SessionController
     from .health_gate import HealthGate
+    from .claim_gate import ClaimGate
+    from .lease_renewer import LeaseRenewer
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,9 @@ class OrchestratorDeps:
         session_controller: Decides session outcomes
         health_gate: System health checks (capacity, rate limits)
         session_output: Session artifact storage (logs, manifests, validation)
+        claim_manager: Manages issue claims for multi-orchestrator coordination
+        claim_gate: Verifies claims before write operations
+        lease_renewer: Renews leases for long-running sessions
     """
 
     # Core event/runtime ports
@@ -103,3 +109,8 @@ class OrchestratorDeps:
     hook_verifier: "HookVerifier"
     command_runner: "CommandRunner"
     session_output: "SessionOutput"
+
+    # Claim/lease management (multi-orchestrator coordination)
+    claim_manager: "ClaimManager"
+    claim_gate: "ClaimGate"
+    lease_renewer: "LeaseRenewer"

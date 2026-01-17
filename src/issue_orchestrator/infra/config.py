@@ -1,8 +1,10 @@
 """Configuration loading and management."""
 
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 import yaml
 
@@ -35,6 +37,7 @@ ALLOWED_TOP_LEVEL_FIELDS = {
     "milestones",
     "state",
     "config",
+    "claims",
 }
 
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
@@ -43,6 +46,56 @@ ALLOWED_AGENT_FIELDS = {
     'permission_mode', 'skip_review', 'reviewer', 'command',
     'meta_agent', 'initial_prompt', 'ai_system', 'provider_args', 'retry_prompt_template',
 }
+
+# Pattern for ${VAR} environment variable references
+_ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+class ConfigEnvVarError(Exception):
+    """Raised when an environment variable referenced in config is not set."""
+
+    pass
+
+
+def _expand_env_vars(value: Any, path: str = "") -> Any:
+    """Recursively expand ${VAR} environment variable references in config values.
+
+    Args:
+        value: The config value to expand (can be dict, list, or scalar).
+        path: Dot-separated path to current location (for error messages).
+
+    Returns:
+        The value with all ${VAR} references expanded.
+
+    Raises:
+        ConfigEnvVarError: If a referenced environment variable is not set.
+    """
+    if isinstance(value, dict):
+        return {
+            k: _expand_env_vars(v, f"{path}.{k}" if path else k)
+            for k, v in value.items()
+        }
+    elif isinstance(value, list):
+        return [
+            _expand_env_vars(item, f"{path}[{i}]")
+            for i, item in enumerate(value)
+        ]
+    elif isinstance(value, str):
+        # Find all ${VAR} references and expand them
+        def replace_env_var(match: re.Match[str]) -> str:
+            var_name = match.group(1)
+            env_value = os.environ.get(var_name)
+            if env_value is None:
+                location = f" (in {path})" if path else ""
+                raise ConfigEnvVarError(
+                    f"Environment variable '{var_name}' is not set{location}"
+                )
+            return env_value
+
+        return _ENV_VAR_PATTERN.sub(replace_env_var, value)
+    else:
+        # Numbers, booleans, None - return as-is
+        return value
 
 
 def repo_root_from_config_path(config_path: Path) -> Path:
@@ -302,13 +355,51 @@ class E2EConfig:
     """E2E async test runner settings.
 
     Controls local async E2E test execution with results persisted to SQLite.
+
+    Role determines whether this orchestrator runs E2E tests:
+    - "auto": Determine role automatically (default)
+    - "executor": Run tests and publish results
+    - "reader": Only display results (don't run tests)
+    - "disabled": E2E functionality completely off
+
+    In "auto" mode:
+    - orchestrator-1 (or single instance) is executor
+    - Other instances become readers
+
+    For multi-machine setups, use explicit role with env var:
+        role: ${E2E_ROLE}  # Set E2E_ROLE=executor on designated machine
     """
     enabled: bool = False  # Whether E2E runner is active
+    role: str = "auto"  # auto | executor | reader | disabled
     auto_run_interval_minutes: int = 30  # Min interval between auto runs (0 = disable auto)
     pytest_args: list[str] = field(default_factory=lambda: ["tests/e2e", "-v"])
     allow_retry_once: bool = True  # Retry failing tests once to reduce flakiness
     quarantine_file: str = "tests/e2e/quarantine.txt"  # Path to quarantine list
     survive_restart: bool = True  # Let worker finish if orchestrator restarts
+
+
+@dataclass
+class ClaimsConfig:
+    """Claims/lease configuration for multi-orchestrator coordination.
+
+    When enabled, orchestrators coordinate via GitHub issue comments to ensure
+    only one orchestrator works on each issue at a time. Uses a convergence
+    protocol with tie-breaking for distributed consensus.
+
+    Single-orchestrator deployments should leave this disabled (the default).
+    """
+    enabled: bool = False  # Whether claims system is active
+    claimant_id: Optional[str] = None  # Unique ID for this orchestrator instance
+
+    # Lease timing (seconds)
+    lease_seconds: int = 900  # 15 min default lease duration
+    renew_before_expiry_seconds: int = 300  # Renew when 5 min remaining
+
+    # Convergence protocol settings
+    convergence_timeout_seconds: float = 5.0  # Max time to wait for convergence
+    convergence_poll_min_ms: int = 250  # Min poll interval (randomized)
+    convergence_poll_max_ms: int = 500  # Max poll interval (randomized)
+    convergence_required_wins: int = 2  # Consecutive wins needed
 
 
 def _parse_e2e_config(data: dict) -> E2EConfig:
@@ -318,13 +409,33 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
         # Support space-separated string
         pytest_args = pytest_args.split()
 
+    # Validate role
+    role = data.get("role", "auto")
+    if role not in ("auto", "executor", "reader", "disabled"):
+        role = "auto"
+
     return E2EConfig(
         enabled=data.get("enabled", False),
+        role=role,
         auto_run_interval_minutes=data.get("auto_run_interval_minutes", 30),
         pytest_args=list(pytest_args),
         allow_retry_once=data.get("allow_retry_once", True),
         quarantine_file=data.get("quarantine_file", "tests/e2e/quarantine.txt"),
         survive_restart=data.get("survive_restart", True),
+    )
+
+
+def _parse_claims_config(data: dict) -> ClaimsConfig:
+    """Parse claims section from YAML data."""
+    return ClaimsConfig(
+        enabled=data.get("enabled", False),
+        claimant_id=data.get("claimant_id"),
+        lease_seconds=data.get("lease_seconds", 900),
+        renew_before_expiry_seconds=data.get("renew_before_expiry_seconds", 300),
+        convergence_timeout_seconds=data.get("convergence_timeout_seconds", 5.0),
+        convergence_poll_min_ms=data.get("convergence_poll_min_ms", 250),
+        convergence_poll_max_ms=data.get("convergence_poll_max_ms", 500),
+        convergence_required_wins=data.get("convergence_required_wins", 2),
     )
 
 
@@ -443,6 +554,9 @@ class Config:
     web_port: int = 8080  # Port for web dashboard
     control_api_port: int = 19080  # Port for control API (always available, 0 = disabled)
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
+
+    # Multi-instance support (for multi-orchestrator coordination)
+    instances: int = 1  # Number of orchestrator instances to spawn (CC manages this)
     session_no_output_seconds: int = 120  # Emit session_no_output after this many seconds idle
     session_no_output_tail_lines: int = 50  # Max tail lines to include in session_no_output
     session_no_output_max_bytes: int = 10000  # Max bytes of tail content
@@ -533,6 +647,9 @@ class Config:
 
     # E2E async test runner configuration
     e2e: E2EConfig = field(default_factory=E2EConfig)
+
+    # Claims/lease configuration for multi-orchestrator coordination
+    claims: ClaimsConfig = field(default_factory=ClaimsConfig)
 
     # Stale in-progress escalation threshold (0 = disabled)
     # If an issue has stale in-progress for K consecutive ticks, emit escalation event
@@ -690,6 +807,7 @@ class Config:
                 "web_port": self.web_port,
                 "control_api_port": self.control_api_port,
                 "queue_refresh_seconds": self.queue_refresh_seconds,
+                "instances": self.instances,
             },
             "observability": {
                 "session_no_output_seconds": self.session_no_output_seconds,
@@ -783,6 +901,16 @@ class Config:
                 "quarantine_file": self.e2e.quarantine_file,
                 "survive_restart": self.e2e.survive_restart,
             },
+            "claims": {
+                "enabled": self.claims.enabled,
+                "claimant_id": self.claims.claimant_id,
+                "lease_seconds": self.claims.lease_seconds,
+                "renew_before_expiry_seconds": self.claims.renew_before_expiry_seconds,
+                "convergence_timeout_seconds": self.claims.convergence_timeout_seconds,
+                "convergence_poll_min_ms": self.claims.convergence_poll_min_ms,
+                "convergence_poll_max_ms": self.claims.convergence_poll_max_ms,
+                "convergence_required_wins": self.claims.convergence_required_wins,
+            },
             "agents": {
                 label: {
                     "prompt_path": str(cfg.prompt_path),
@@ -805,6 +933,9 @@ class Config:
         if data is None:
             data = {}
         _apply_yaml_overrides(data, overrides or [])
+
+        # Expand ${VAR} environment variable references
+        data = _expand_env_vars(data)
 
         config = cls()
         config.config_path = config_path.resolve()
@@ -829,6 +960,7 @@ class Config:
         milestones_section = _get_section(data, "milestones", config_path)
         state_section = _get_section(data, "state", config_path)
         config_section = _get_section(data, "config", config_path)
+        claims_section = _get_section(data, "claims", config_path)
 
         # Determine repo root using centralized helper
         repo_root = repo_root_from_config_path(config_path)
@@ -961,6 +1093,7 @@ class Config:
         config.web_port = ui_section.get("web_port", 8080)
         config.control_api_port = ui_section.get("control_api_port", 19080)
         config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
+        config.instances = ui_section.get("instances", 1)
 
         # Observability / session reporting
         config.session_no_output_seconds = observability_section.get("session_no_output_seconds", 120)
@@ -1128,6 +1261,11 @@ class Config:
         e2e_data = e2e_section
         if e2e_data:
             config.e2e = _parse_e2e_config(e2e_data)
+
+        # Parse claims config
+        claims_data = claims_section
+        if claims_data:
+            config.claims = _parse_claims_config(claims_data)
 
         return config
 

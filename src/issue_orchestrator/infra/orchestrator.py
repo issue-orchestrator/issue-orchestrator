@@ -1,6 +1,6 @@
 """Main orchestrator - ties everything together."""
 
-import asyncio, logging, signal, time
+import asyncio, logging, os, signal, time
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -210,13 +210,18 @@ class Orchestrator:
 
         Triggers when:
         1. E2E is enabled with auto_run_interval_minutes > 0
-        2. Interval has passed since last run
-        3. Main branch HEAD has changed since last tested commit
+        2. This instance has executor role (not reader/disabled)
+        3. Interval has passed since last run
+        4. Main branch HEAD has changed since last tested commit
         """
+        # Get instance_id from environment (set by CC for multi-instance)
+        instance_id = os.environ.get("INSTANCE_ID")
+
         triggered = maybe_trigger_e2e(
             config=self.config,
             repo_root=self.config.repo_root,
             orchestrator_id=self.config.orchestrator_id,
+            instance_id=instance_id,
         )
         if triggered:
             self.deps.events.publish(TraceEvent(
@@ -262,6 +267,70 @@ class Orchestrator:
             self.state, self.observer, self.deps.session_controller, self._completion_handler,
             self.deps.action_applier, self.deps.worktree_manager, self._kill_session, self.config
         )
+        # Check lease renewals for active sessions
+        self._check_lease_renewals()
+
+    def _check_lease_renewals(self) -> None:
+        """Check and renew leases for active sessions.
+
+        Handles sessions that have lost their claims by terminating them
+        and adding the appropriate blocked label.
+        """
+        from ..infra import labels
+
+        # Check renewals - returns sessions that lost their claim
+        lost_sessions = self.deps.lease_renewer.check_renewals(
+            list(self.state.active_sessions)
+        )
+
+        # Handle claim losses
+        for session in lost_sessions:
+            logger.warning(
+                "[CLAIM] Session for issue #%d lost claim - terminating",
+                session.issue.number,
+            )
+
+            # Kill the terminal session
+            self._kill_session(session.terminal_id)
+
+            # Remove from active sessions
+            self.state.active_sessions = [
+                s for s in self.state.active_sessions
+                if s.terminal_id != session.terminal_id
+            ]
+
+            # Add blocked label (best effort - session lost claim so this may also fail)
+            try:
+                self.deps.action_applier.labels.add_label(
+                    session.issue.number,
+                    labels.BLOCKED_CLAIM_LOST,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[CLAIM] Failed to add blocked label to issue #%d: %s",
+                    session.issue.number,
+                    e,
+                )
+
+            # Post comment explaining what happened (best effort)
+            try:
+                comment = (
+                    "## Work Cancelled\n\n"
+                    "Another orchestrator claimed this issue while work was in progress. "
+                    "The session has been terminated to avoid conflicts.\n\n"
+                    f"- **Worktree preserved**: `{session.worktree_path}`\n"
+                    f"- **Branch**: `{session.branch_name}`\n\n"
+                    "To resume work, remove the `blocked:claim-lost` label and re-assign an agent label."
+                )
+                self.deps.repository_host.add_comment(session.issue.number, comment)
+            except Exception as e:
+                logger.warning(
+                    "[CLAIM] Failed to post claim loss comment to issue #%d: %s",
+                    session.issue.number,
+                    e,
+                )
+
+            # Note: We preserve the worktree so work isn't lost
 
     def _run_planning_cycle(self) -> None:
         # Capture and clear the refresh flag before the cycle.
@@ -270,7 +339,7 @@ class Orchestrator:
         # new value when the cycle returns.
         refresh_to_process = self._refresh_requested
         self._refresh_requested = False
-        self._last_issue_fetch, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, refresh_to_process, self._inflight_stable_ids, self.observer)
+        self._last_issue_fetch, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, refresh_to_process, self._inflight_stable_ids, self.observer, self.deps.claim_manager)
 
     def _clear_discovered_facts(self) -> None: self._plan_applier._clear_discovered_facts()
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier._emit_heartbeat_if_needed()

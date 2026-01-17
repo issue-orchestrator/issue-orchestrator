@@ -12,11 +12,46 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from .e2e_db import E2EDB
 
+if TYPE_CHECKING:
+    from .config import E2EConfig
+
 logger = logging.getLogger(__name__)
+
+
+def get_e2e_role(
+    e2e_config: "E2EConfig",
+    instance_id: str | None = None,
+) -> str:
+    """Determine the E2E role for this orchestrator instance.
+
+    Args:
+        e2e_config: E2E configuration from config file
+        instance_id: Instance ID (e.g., "orchestrator-1") from INSTANCE_ID env var
+
+    Returns:
+        One of: "executor", "reader", "disabled"
+
+    Role resolution:
+    1. If role is explicitly set (not "auto"), use that
+    2. Otherwise, orchestrator-1 (or single instance) is executor
+
+    For multi-machine setups, use explicit role with env var:
+        role: ${E2E_ROLE}  # Set E2E_ROLE=executor on designated machine
+    """
+    # Explicit role overrides auto-detection
+    if e2e_config.role != "auto":
+        return e2e_config.role
+
+    # Auto mode: first instance on single-machine setup is executor
+    # instance_id is None for single-instance mode, or "orchestrator-1" for first instance
+    if instance_id is None or instance_id == "orchestrator-1":
+        return "executor"
+
+    return "reader"
 
 
 class E2EAlreadyRunning(Exception):
@@ -423,19 +458,22 @@ def maybe_trigger_e2e(
     config: "Config",
     repo_root: Path,
     orchestrator_id: str,
+    instance_id: str | None = None,
 ) -> bool:
     """Check if E2E tests should be auto-triggered and start if appropriate.
 
     Auto-trigger conditions:
     1. E2E is enabled and auto_run_interval_minutes > 0
-    2. No E2E run currently in progress
-    3. Enough time has passed since last E2E run
-    4. Main branch HEAD has changed since last tested commit
+    2. This instance has executor role (not reader/disabled)
+    3. No E2E run currently in progress
+    4. Enough time has passed since last E2E run
+    5. Main branch HEAD has changed since last tested commit
 
     Args:
         config: Configuration with E2E settings
         repo_root: Path to repository root
         orchestrator_id: Unique orchestrator identifier
+        instance_id: Instance ID from INSTANCE_ID env var (for multi-instance setups)
 
     Returns:
         True if E2E was triggered, False otherwise
@@ -444,6 +482,12 @@ def maybe_trigger_e2e(
     if not config.e2e.enabled:
         return False
     if config.e2e.auto_run_interval_minutes <= 0:
+        return False
+
+    # Check role - only executors run E2E tests
+    role = get_e2e_role(config.e2e, instance_id=instance_id)
+    if role != "executor":
+        logger.debug("E2E auto-trigger: skipping (role=%s, not executor)", role)
         return False
 
     # Check if already running
