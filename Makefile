@@ -1,4 +1,4 @@
-.PHONY: help venv install typecheck lint-arch test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv install typecheck lint-arch lint-complexity test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -13,6 +13,7 @@ help:
 	@echo "  install             Install dev dependencies (assumes venv exists)"
 	@echo "  typecheck           Run pyright type checking"
 	@echo "  lint-arch           Run import-linter + AST guardrails"
+	@echo "  lint-complexity     Check cyclomatic complexity (C901) and branch count (PLR0912)"
 	@echo "  test-unit           Run unit tests"
 	@echo "  test-unit-cov       Run unit tests with coverage report"
 	@echo "  test-unit-cov-html  Run unit tests with HTML coverage (open htmlcov/index.html)"
@@ -77,10 +78,16 @@ typecheck:
 	$(PYRIGHT) --project pyrightconfig.strict.json --warnings
 
 LINT_IMPORTS ?= .venv/bin/lint-imports
+RUFF ?= .venv/bin/ruff
 
 lint-arch:
 	$(LINT_IMPORTS)
 	$(PYTHON) tools/check_arch_guardrails.py src
+
+# Complexity checks - reporting only (doesn't fail build)
+lint-complexity:
+	@echo "Checking code complexity (C901) and branch count (PLR0912)..."
+	$(RUFF) check src packages/agent_runner/src --exit-zero --output-format=concise
 
 test-unit:
 	$(PYTEST) tests/unit -x -q --tb=short
@@ -193,7 +200,7 @@ validate:
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-impl
 
 # Internal target for parallel execution
-_validate-impl: typecheck lint-arch test-unit test-integration test-web
+_validate-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web
 	@echo "✓ All validations passed!"
 
 # Full validation including e2e tests
@@ -201,7 +208,7 @@ validate-full:
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-full-impl
 
 # Internal target for parallel execution
-_validate-full-impl: typecheck lint-arch test-unit test-integration test-web test-e2e
+_validate-full-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web test-e2e
 	@echo "✓ All validations passed (including e2e)!"
 
 # Demo - show orchestrator features with mock data
