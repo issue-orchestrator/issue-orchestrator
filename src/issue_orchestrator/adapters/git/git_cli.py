@@ -72,7 +72,8 @@ class GitCLI(Git):
     runner: CommandRunner
     default_timeout_s: int = 30
 
-    def _clean_env(self) -> dict[str, str]:
+    def clean_env(self) -> dict[str, str]:
+        """Return a copy of the environment with git-specific vars stripped."""
         env = dict(os.environ)
         for var in GIT_ENV_STRIP:
             env.pop(var, None)
@@ -91,7 +92,7 @@ class GitCLI(Git):
         result = self.runner.run(
             cmd,
             cwd=None,
-            env=env if env is not None else self._clean_env(),
+            env=env if env is not None else self.clean_env(),
             timeout_seconds=timeout_s or self.default_timeout_s,
             shell=False,
         )

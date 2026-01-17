@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 
 import pytest
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
+from issue_orchestrator.infra.env import ENV_PREFIX
 
 
 def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float = 5.0) -> None:
@@ -38,11 +38,11 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     (worktree / ".issue-orchestrator").mkdir()
     _ensure_worktree_venv(worktree)
 
-    monkeypatch.setenv("ORCHESTRATOR_REPO_ROOT", str(repo_root))
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
     completion_path = ".issue-orchestrator/sessions/issue-42/completion.json"
     command = (
         "echo 'hello-from-subprocess' && "
-        f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}' && "
+        f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}' && "
         "agent-done completed --implementation 'subprocess test' --problems 'none'"
     )
 
@@ -74,8 +74,8 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
     (worktree / ".issue-orchestrator").mkdir()
     _ensure_worktree_venv(worktree)
 
-    monkeypatch.setenv("ORCHESTRATOR_REPO_ROOT", str(repo_root))
-    monkeypatch.setenv("ORCHESTRATOR_SUBPROCESS_ALLOW_STDIN", "1")
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
+    monkeypatch.setenv(f"{ENV_PREFIX}SUBPROCESS_ALLOW_STDIN", "1")
     command = "read -r line; echo \"INPUT:$line\" >> .issue-orchestrator/sessions/issue-7/session.log"
 
     plugin = SubprocessPlugin()

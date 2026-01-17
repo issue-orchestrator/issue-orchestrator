@@ -27,6 +27,7 @@ from typing import NoReturn, Optional
 import os
 
 from ...infra.logging_config import issue_log
+from ...infra.env import get_env
 
 logger = logging.getLogger(__name__)
 
@@ -358,7 +359,7 @@ def write_completion_record(record: CompletionRecord) -> Path:
 
     # Orchestrator tells agent where to write via env var
     # This ensures each session type writes to a distinct file
-    base_path = os.environ.get("ORCHESTRATOR_COMPLETION_PATH", COMPLETION_RECORD_PATH)
+    base_path = get_env("COMPLETION_PATH") or COMPLETION_RECORD_PATH
     output_path = worktree_root / base_path
 
     # Create all necessary parent directories
@@ -874,7 +875,7 @@ def write_error_completion(error_msg: str, status: str) -> Optional[Path]:
     """
     try:
         worktree_root = find_worktree_root()
-        base_path = os.environ.get("ORCHESTRATOR_COMPLETION_PATH", COMPLETION_RECORD_PATH)
+        base_path = get_env("COMPLETION_PATH") or COMPLETION_RECORD_PATH
         output_path = worktree_root / base_path
 
         error_record = {
