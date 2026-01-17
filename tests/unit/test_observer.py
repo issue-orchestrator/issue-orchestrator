@@ -5,7 +5,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 from issue_orchestrator.observation.observer import SessionObserver
-from issue_orchestrator.infra.session_output import session_output_dir
+from issue_orchestrator.execution.session_output_adapter import (
+    session_output_dir,
+    FileSystemSessionOutput,
+)
 from issue_orchestrator.domain.models import (
     Session,
     SessionStatus,
@@ -70,6 +73,7 @@ def monitor(mock_config, mock_session_runner, mock_repository_host, mock_fresh_i
         session_runner=mock_session_runner,
         repository_host=mock_repository_host,
         fresh_issue_reader=mock_fresh_issue_reader,
+        session_output=FileSystemSessionOutput(),
     )
 
 
@@ -82,6 +86,7 @@ def monitor_with_machines(mock_config, mock_session_runner, mock_repository_host
         session_runner=mock_session_runner,
         repository_host=mock_repository_host,
         fresh_issue_reader=mock_fresh_issue_reader,
+        session_output=FileSystemSessionOutput(),
     )
 
 
@@ -818,6 +823,7 @@ class TestEmitNoOutputIfStale:
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
+            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -861,6 +867,7 @@ class TestEmitNoOutputIfStale:
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
+            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -899,6 +906,7 @@ class TestEmitNoOutputIfStale:
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
+            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -927,6 +935,7 @@ class TestEmitNoOutputIfStale:
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
+            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -1124,35 +1133,28 @@ class TestEmitNoOutputEdgeCases:
         self, mock_config, mock_session_runner, mock_repository_host, sample_session, tmp_path
     ):
         """Test that no event is emitted when stat() raises OSError."""
-        from unittest.mock import patch, MagicMock
-
         mock_events = MagicMock()
+
+        # Create a mock session_output that returns a path that fails on stat()
+        mock_session_output = MagicMock()
+        mock_log_path = MagicMock()
+        mock_log_path.exists.return_value = True
+        mock_log_path.stat.side_effect = OSError("Permission denied")
+        mock_session_output.get_log_path.return_value = mock_log_path
 
         monitor = SessionObserver(
             mock_config,
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
+            session_output=mock_session_output,
         )
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
         sample_session.worktree_path = worktree
 
-        # Create a log file that will exist but fail on stat
-        log_dir = session_output_dir(worktree, sample_session.terminal_id)
-        log_dir.mkdir(parents=True)
-        log_file = log_dir / "session.log"
-        log_file.write_text("content")
-
-        # Create a mock Path object that raises OSError on stat()
-        mock_log_path = MagicMock()
-        mock_log_path.exists.return_value = True
-        mock_log_path.stat.side_effect = OSError("Permission denied")
-
-        # Patch find_session_log_path to return our mock path
-        with patch("issue_orchestrator.observation.observer.find_session_log_path", return_value=mock_log_path):
-            monitor._emit_no_output_if_stale(sample_session)
+        monitor._emit_no_output_if_stale(sample_session)
 
         # No events should be emitted
         mock_events.publish.assert_not_called()
@@ -1173,6 +1175,7 @@ class TestEmitNoOutputEdgeCases:
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
+            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -1210,6 +1213,7 @@ class TestEmitNoOutputEdgeCases:
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
+            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"

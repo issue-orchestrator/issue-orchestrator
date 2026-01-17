@@ -17,6 +17,7 @@ from issue_orchestrator.domain.models import AgentConfig, Issue, Session, Sessio
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports import TraceEvent
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
 class StubSessionRunner:
@@ -124,12 +125,18 @@ def test_timeout_observation_and_decision(tmp_path):
     assert observation.observation == SessionObservation.TIMED_OUT
     assert observation.session_exists is True
 
+    session_output = FileSystemSessionOutput()
     completion_processor = CompletionProcessor(
         label_adapter=StubLabelAdapter(),
         pr_adapter=StubPrAdapter(),
         git_adapter=StubGitAdapter(),
+        session_output=session_output,
     )
-    controller = SessionController(completion_processor=completion_processor, events=events)
+    controller = SessionController(
+        completion_processor=completion_processor,
+        events=events,
+        session_output=session_output,
+    )
 
     decision = controller.decide_outcome(
         observation=SessionObservationResult(

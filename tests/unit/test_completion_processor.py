@@ -28,9 +28,10 @@ from issue_orchestrator.control.completion_processor import (
     LabelAdapter,
     PRAdapter,
     GitAdapter,
-    PRInfo,
-    PushResult,
 )
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.working_copy import PushResult
 from issue_orchestrator.domain.events import EventBus, SessionEvent
 from issue_orchestrator.infra.issue_diagnostics import DiagnosticReference
 
@@ -98,6 +99,7 @@ def processor(mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus):
         pr_adapter=mock_pr_adapter,
         git_adapter=mock_git_adapter,
         event_bus=event_bus,
+        session_output=FileSystemSessionOutput(),
         label_config={
             "blocked": "blocked",
             "needs_human": "needs-human",
@@ -644,6 +646,7 @@ class TestCompletionProcessorPublishGate:
             pr_adapter=mock_pr_adapter,
             git_adapter=mock_git_adapter,
             publish_gate=mock_publish_gate,
+            session_output=FileSystemSessionOutput(),
         )
 
     def test_cannot_publish_without_validation_passing(
@@ -758,7 +761,7 @@ class TestCompletionProcessorPublishGate:
         """Validation failure output should be written into session output."""
         from issue_orchestrator.control.validation import PublishGateResult, ValidationRecord, ValidationRecordStore
         from issue_orchestrator.domain.models import CompletionRecord
-        from issue_orchestrator.infra.session_output import SessionOutputManager
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
@@ -774,7 +777,8 @@ class TestCompletionProcessorPublishGate:
         )
         (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
 
-        SessionOutputManager.start_run(worktree, "issue-123", issue_number=123)
+        session_output = FileSystemSessionOutput()
+        session_output.start_run(worktree, "issue-123", issue_number=123)
 
         output_dir = worktree / ".issue-orchestrator" / "validation" / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -808,7 +812,7 @@ class TestCompletionProcessorPublishGate:
         result = processor_with_gate.process(worktree, issue_number=123, issue_title="Test")
 
         assert not result.success
-        run_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name="issue-123")
+        run_dir = session_output.find_run_dir(worktree, session_name="issue-123")
         assert run_dir is not None
         assert (run_dir / "validation-stdout.log").read_text() == "validation stdout"
         assert (run_dir / "validation-stderr.log").read_text() == "validation stderr"

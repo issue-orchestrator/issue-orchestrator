@@ -11,6 +11,7 @@ from issue_orchestrator.infra.hooks.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
 # =============================================================================
@@ -510,11 +511,13 @@ def build_test_orchestrator_deps(
     _fact_gatherer = fact_gatherer or FactGatherer(config=config, repository_host=repo_host, events=events)
     state_machine_manager = StateMachineManager(config=config, events=events)
 
+    session_output = FileSystemSessionOutput()
     completion_processor = CompletionProcessor(
         label_adapter=repo_host,
         pr_adapter=repo_host,
         git_adapter=working_copy,
         event_bus=None,
+        session_output=session_output,
         label_config={
             "blocked": config.get_label_blocked(),
             "needs_human": config.get_label_needs_human(),
@@ -527,6 +530,7 @@ def build_test_orchestrator_deps(
     _session_controller = session_controller or SessionController(
         completion_processor=completion_processor,
         events=events,
+        session_output=session_output,
     )
     pr_scanner = PRScanner(
         config=config,
@@ -601,6 +605,7 @@ def build_test_orchestrator_deps(
         completion_processor=completion_processor,
         session_controller=_session_controller,
         health_gate=health_gate,
+        session_output=session_output,
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,

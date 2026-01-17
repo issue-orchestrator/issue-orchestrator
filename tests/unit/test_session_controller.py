@@ -16,6 +16,7 @@ from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
 from issue_orchestrator.ports import NullEventSink
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
 def make_record(outcome: CompletionOutcome, **kwargs) -> CompletionRecord:
@@ -68,7 +69,7 @@ class TestSessionControllerRunning:
     def test_running_session_returns_running_status(self):
         """A running session should stay running."""
         processor = MockCompletionProcessor()
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.running(runtime_minutes=5.0)
 
@@ -91,7 +92,7 @@ class TestSessionControllerTerminated:
         """Session that exits without completion.json = FAILED."""
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
@@ -115,7 +116,7 @@ class TestSessionControllerTerminated:
             summary="Done",
             requested_actions=[RequestedAction.CREATE_PR],
         )
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
@@ -139,7 +140,7 @@ class TestSessionControllerTerminated:
             summary="Blocked by dependency",
             blocked_reason="Waiting for API",
         )
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
@@ -162,7 +163,7 @@ class TestSessionControllerTerminated:
             summary="Need clarification",
             question="What API should I use?",
         )
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
@@ -185,7 +186,7 @@ class TestSessionControllerTimeout:
         """Session that times out without completion.json = TIMED_OUT."""
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.timed_out(
             runtime_minutes=60.0,
@@ -213,7 +214,7 @@ class TestSessionControllerTimeout:
             summary="Done",
             requested_actions=[RequestedAction.CREATE_PR],
         )
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.timed_out(
             runtime_minutes=60.0,
@@ -242,7 +243,7 @@ class TestSessionControllerTimeout:
             summary="Blocked",
             blocked_reason="External dependency",
         )
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.timed_out(
             runtime_minutes=60.0,
@@ -273,7 +274,7 @@ class TestSessionControllerReviewOutcomes:
             CompletionOutcome.REVIEW_APPROVED,
             summary="LGTM",
         )
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.terminated(runtime_minutes=5.0)
 
@@ -294,7 +295,7 @@ class TestSessionControllerReviewOutcomes:
             CompletionOutcome.REVIEW_CHANGES_REQUESTED,
             summary="Needs work",
         )
-        controller = SessionController(processor, NullEventSink())
+        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
 
         observation = SessionObservationResult.terminated(runtime_minutes=5.0)
 

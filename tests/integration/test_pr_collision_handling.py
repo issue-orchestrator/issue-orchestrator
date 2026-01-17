@@ -29,6 +29,7 @@ from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.control.pr_scanner import PRScanner
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
 class MockEventSink:
@@ -125,14 +126,17 @@ class TestPRAlreadyExistsHandling:
         mock_pr_adapter.get_prs_for_branch = Mock(return_value=[closed_pr])
         mock_pr_adapter.create_pr = Mock(return_value=new_pr)
 
+        session_output = FileSystemSessionOutput()
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
             git_adapter=mock_git_adapter,
+            session_output=session_output,
         )
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
+        session_output.start_run(worktree, "issue-123", issue_number=123)
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
@@ -162,14 +166,17 @@ class TestPRAlreadyExistsHandling:
             return_value=MagicMock(number=42, url="https://github.com/owner/repo/pull/42")
         )
 
+        session_output = FileSystemSessionOutput()
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
             git_adapter=mock_git_adapter,
+            session_output=session_output,
         )
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
+        session_output.start_run(worktree, "issue-123", issue_number=123)
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
@@ -198,14 +205,17 @@ class TestPRAlreadyExistsHandling:
             side_effect=Exception("a pull request for branch 'issue-123' already exists")
         )
 
+        session_output = FileSystemSessionOutput()
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
             git_adapter=mock_git_adapter,
+            session_output=session_output,
         )
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
+        session_output.start_run(worktree, "issue-123", issue_number=123)
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],

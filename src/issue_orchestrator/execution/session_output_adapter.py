@@ -921,3 +921,18 @@ def find_run_dir_for_issue(
                 return run_dir, worktree_path
 
     return None, None
+
+
+def session_output_dir(worktree_path: Path, session_name: str) -> Path:
+    """Return the stable session directory (symlink to latest run).
+
+    This is a convenience function for constructing session directory paths.
+
+    Args:
+        worktree_path: Path to the worktree
+        session_name: Name of the session
+
+    Returns:
+        Path to the session directory
+    """
+    return worktree_path / ".issue-orchestrator" / SESSION_OUTPUT_DIR / session_name
