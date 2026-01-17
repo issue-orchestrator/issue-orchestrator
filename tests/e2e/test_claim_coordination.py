@@ -29,13 +29,6 @@ from .fixtures import (
 )
 
 
-# Skip all tests in this module if claims E2E is not enabled
-pytestmark = pytest.mark.skipif(
-    os.environ.get("E2E_CLAIMS_ENABLED") != "1",
-    reason="Set E2E_CLAIMS_ENABLED=1 to run multi-orchestrator claim tests"
-)
-
-
 CLAIM_E2E_LABEL = "io-e2e-claim-test"
 
 
