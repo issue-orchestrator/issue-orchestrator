@@ -1172,20 +1172,26 @@ def create_worktree(
 
     # Try reuse strategies
     if not ctx.disable_reuse:
-        result = _try_reuse_by_branch(
+        reuse_result, reuse_recreated_reason = _try_reuse_by_branch(
             ctx.repo_root, ctx.branch_name, ctx.issue_number, ctx.policy,
             ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook,
         )
-        if result is not None:
-            return result
+        if reuse_result is not None:
+            return reuse_result
+        # Capture recreated_reason from failed reuse (validation/sync/reset/preflight)
+        if reuse_recreated_reason:
+            recreated_reason = reuse_recreated_reason
 
         if ctx.worktree_path.exists():
-            result = _try_reuse_by_path(
+            reuse_result, reuse_recreated_reason = _try_reuse_by_path(
                 ctx.worktree_path, ctx.repo_root, ctx.issue_number, ctx.policy,
                 ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook,
             )
-            if result is not None:
-                return result
+            if reuse_result is not None:
+                return reuse_result
+            # Capture recreated_reason from failed reuse (validation/sync/reset/preflight)
+            if reuse_recreated_reason and not recreated_reason:
+                recreated_reason = reuse_recreated_reason
 
     # Handle branch on recreate
     final_branch = ctx.branch_name
@@ -1228,15 +1234,17 @@ def _try_reuse_by_branch(
     reuse_options: WorktreeReuseOptions,
     enforce_hooks: bool,
     pre_push_hook: Path | None,
-) -> tuple[Path, str, str, str | None, bool, int, int] | None:
+) -> tuple[tuple[Path, str, str, str | None, bool, int, int] | None, str | None]:
     """Try to reuse an existing worktree by branch name.
 
     Returns:
-        Full result tuple if successful, None if reuse failed.
+        Tuple of (result, recreated_reason) where:
+        - result is the full result tuple if successful, None if failed
+        - recreated_reason is set if the worktree was deleted (for branch_on_recreate handling)
     """
     existing_worktree = find_worktree_for_branch(repo_root, branch_name)
     if not existing_worktree or not existing_worktree.exists():
-        return None
+        return (None, None)
 
     logger.info(issue_log(issue_number, "Reusing existing worktree: branch=%s path=%s"), branch_name, existing_worktree)
 
@@ -1251,7 +1259,8 @@ def _try_reuse_by_branch(
     )
 
     if not result.success:
-        return None
+        # Return the recreated_reason so create_worktree can handle branch_on_recreate
+        return (None, result.recreated_reason)
 
     # Success - finalize and return
     _finalize_worktree(
@@ -1261,13 +1270,16 @@ def _try_reuse_by_branch(
     logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), existing_worktree)
     reset_info = result.reset_info or ResetInfo(success=True)
     return (
-        existing_worktree,
-        branch_name,
-        "reused",
-        "existing_worktree_by_branch",
-        False,
-        reset_info.uncommitted_discarded,
-        reset_info.commits_discarded,
+        (
+            existing_worktree,
+            branch_name,
+            "reused",
+            "existing_worktree_by_branch",
+            False,
+            reset_info.uncommitted_discarded,
+            reset_info.commits_discarded,
+        ),
+        None,
     )
 
 
@@ -1279,11 +1291,13 @@ def _try_reuse_by_path(
     reuse_options: WorktreeReuseOptions,
     enforce_hooks: bool,
     pre_push_hook: Path | None,
-) -> tuple[Path, str, str, str | None, bool, int, int] | None:
+) -> tuple[tuple[Path, str, str, str | None, bool, int, int] | None, str | None]:
     """Try to reuse an existing worktree by path.
 
     Returns:
-        Full result tuple if successful, None if reuse failed.
+        Tuple of (result, recreated_reason) where:
+        - result is the full result tuple if successful, None if failed
+        - recreated_reason is set if the worktree was deleted (for branch_on_recreate handling)
     """
     logger.info(issue_log(issue_number, "Reusing existing worktree by path: %s"), worktree_path)
 
@@ -1295,7 +1309,7 @@ def _try_reuse_by_path(
             validation.reason,
         )
         policy.delete_worktree(worktree_path, repo_root)
-        return None
+        return (None, f"validation_failed: {validation.reason}")
 
     # Get current branch
     branch_result = _git_run(
@@ -1306,7 +1320,7 @@ def _try_reuse_by_path(
     if branch_result.returncode != 0:
         logger.warning(issue_log(issue_number, "Could not get branch, deleting worktree"))
         policy.delete_worktree(worktree_path, repo_root)
-        return None
+        return (None, "validation_failed: could not determine branch")
 
     existing_branch = branch_result.stdout.strip()
     logger.info(issue_log(issue_number, "Existing worktree branch: %s"), existing_branch)
@@ -1322,7 +1336,8 @@ def _try_reuse_by_path(
     )
 
     if not result.success:
-        return None
+        # Return the recreated_reason so create_worktree can handle branch_on_recreate
+        return (None, result.recreated_reason)
 
     # Success - finalize and return
     _finalize_worktree(
@@ -1332,13 +1347,16 @@ def _try_reuse_by_path(
     logger.info(issue_log(issue_number, "Worktree reuse complete: path=%s"), worktree_path)
     reset_info = result.reset_info or ResetInfo(success=True)
     return (
-        worktree_path,
-        existing_branch,
-        "reused",
-        "existing_worktree_by_path",
-        False,
-        reset_info.uncommitted_discarded,
-        reset_info.commits_discarded,
+        (
+            worktree_path,
+            existing_branch,
+            "reused",
+            "existing_worktree_by_path",
+            False,
+            reset_info.uncommitted_discarded,
+            reset_info.commits_discarded,
+        ),
+        None,
     )
 
 
