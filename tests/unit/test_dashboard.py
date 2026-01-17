@@ -104,7 +104,7 @@ def create_orchestrator(config=None):
     orchestrator = MagicMock()
     orchestrator.config = config
     orchestrator.state = OrchestratorState()
-    orchestrator._shutdown_requested = False
+    orchestrator.shutdown_requested = False
 
     return orchestrator
 
@@ -736,12 +736,12 @@ class TestRunWithDashboard:
         """Test that run_with_dashboard sets shutdown flag when dashboard exits."""
         orchestrator = create_orchestrator()
         orchestrator.run_loop = AsyncMock()
-        orchestrator._shutdown_requested = False
+        orchestrator.shutdown_requested = False
 
         with patch('issue_orchestrator.entrypoints.dashboard.Dashboard.run', new_callable=AsyncMock):
             await run_with_dashboard(orchestrator, ui_mode="tmux")
 
-            assert orchestrator._shutdown_requested is True
+            assert orchestrator.shutdown_requested is True
 
     @pytest.mark.asyncio
     async def test_run_with_dashboard_returns_attach_flag(self):

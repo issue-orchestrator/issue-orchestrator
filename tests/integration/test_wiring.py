@@ -157,7 +157,7 @@ class TestCLIWiring:
                 mock_orch = MagicMock()
                 mock_orch.startup = AsyncMock()
                 mock_orch.run_loop = AsyncMock()
-                mock_orch._shutdown_requested = False
+                mock_orch.shutdown_requested = False
                 mock_orch_class.return_value = mock_orch
 
                 # Patch dashboard module
@@ -267,7 +267,7 @@ class TestDashboardWiring:
         mock_orch.state.paused = False
         mock_orch.config = MagicMock()
         mock_orch.config.max_concurrent_sessions = 2
-        mock_orch._shutdown_requested = False
+        mock_orch.shutdown_requested = False
 
         dashboard = Dashboard(mock_orch)
 
@@ -287,7 +287,7 @@ class TestDashboardWiring:
         mock_orch.state.paused = True
         mock_orch.config = MagicMock()
         mock_orch.config.max_concurrent_sessions = 2
-        mock_orch._shutdown_requested = False
+        mock_orch.shutdown_requested = False
 
         dashboard = Dashboard(mock_orch)
 

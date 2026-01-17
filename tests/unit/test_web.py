@@ -60,7 +60,7 @@ def create_mock_orchestrator():
     mock_orch.pause = MagicMock()
     mock_orch.resume = MagicMock()
     mock_orch.request_shutdown = MagicMock()
-    mock_orch._shutdown_requested = False  # Explicit value for JSON serialization
+    mock_orch.shutdown_requested = False  # Public property for JSON serialization
 
     return mock_orch
 
@@ -1179,7 +1179,7 @@ class TestKillSessionEndpoint:
         issue = create_issue(1, "Issue to Kill")
         session = create_session(issue)
         mock_orch.state.active_sessions = [session]
-        mock_orch._kill_session = MagicMock()
+        mock_orch.kill_session = MagicMock()
 
         web._orchestrator = mock_orch
 
@@ -1192,7 +1192,7 @@ class TestKillSessionEndpoint:
             assert data["status"] == "killed"
             assert data["issue_number"] == 1
             assert data["title"] == "Issue to Kill"
-            mock_orch._kill_session.assert_called_once_with("issue-1")
+            mock_orch.kill_session.assert_called_once_with("issue-1")
             # Session should be removed from active sessions
             assert len(mock_orch.state.active_sessions) == 0
         finally:
@@ -1221,7 +1221,7 @@ class TestKillSessionEndpoint:
         issue = create_issue(1)
         session = create_session(issue)
         mock_orch.state.active_sessions = [session]
-        mock_orch._kill_session = MagicMock(side_effect=Exception("Kill failed"))
+        mock_orch.kill_session = MagicMock(side_effect=Exception("Kill failed"))
 
         web._orchestrator = mock_orch
 

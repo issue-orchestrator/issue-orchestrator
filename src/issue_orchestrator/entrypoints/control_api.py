@@ -250,7 +250,7 @@ async def snapshot() -> JSONResponse:
 
     builder = SnapshotBuilder(config=_orchestrator.config, repository_host=_orchestrator.deps.repository_host)
     snapshot_id = _orchestrator.event_hub.last_event_id
-    last_tick_id = _orchestrator._event_context.tick_id
+    last_tick_id = _orchestrator.event_context.tick_id
 
     try:
         data = await asyncio.to_thread(
@@ -448,7 +448,7 @@ async def resume_issue(issue_number: int) -> JSONResponse:
 
 
 @control_app.post("/api/issues/{issue_number}/debug-session")
-async def launch_debug_session(issue_number: int) -> JSONResponse:
+async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
     """Launch an interactive debug session for a blocked issue.
 
     This endpoint creates a terminal session in the issue's existing worktree,
@@ -805,7 +805,7 @@ def _is_shutdown_complete(port: int | None) -> bool:
 
 
 @control_app.post("/control/orchestrator/start")
-async def control_start(request: Request) -> JSONResponse:
+async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR0912
     """Start an orchestrator for a repository.
 
     JSON body:
@@ -1378,7 +1378,7 @@ async def control_log_tail(
 # These endpoints manage the repo registry for multi-repo supervision.
 
 
-def _build_repos_status() -> list[dict[str, Any]]:
+def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912
     """Build status data for all registered repos.
 
     Shared by both the REST endpoint and SSE stream.
@@ -1898,7 +1898,7 @@ async def get_repo_config(
 
 
 @control_app.get("/control/repos/discover")
-async def discover_repos_endpoint(
+async def discover_repos_endpoint(  # noqa: C901
     search_paths: str = Query(
         default="",
         description="Comma-separated paths to search (default: ~/dev, ~/projects, ~/code, ~/repos)",
@@ -1939,7 +1939,7 @@ async def discover_repos_endpoint(
 
     discovered = []
 
-    def scan_directory(base: Path, depth: int) -> None:
+    def scan_directory(base: Path, depth: int) -> None:  # noqa: C901
         if depth > max_depth:
             return
         if not base.exists() or not base.is_dir():
@@ -2050,7 +2050,7 @@ async def setup_prereqs() -> JSONResponse:
 
 
 @control_app.get("/control/setup/detect")
-async def setup_detect(repo_root: str = Query(...)) -> JSONResponse:
+async def setup_detect(repo_root: str = Query(...)) -> JSONResponse:  # noqa: C901, PLR0912
     """Detect repository state for setup wizard.
 
     Query params:
@@ -2193,7 +2193,7 @@ async def setup_preview(request: Request) -> JSONResponse:
 
 
 @control_app.post("/control/setup/save")
-async def setup_save(request: Request) -> JSONResponse:
+async def setup_save(request: Request) -> JSONResponse:  # noqa: C901, PLR0912
     """Save the configuration and create necessary files.
 
     JSON body:

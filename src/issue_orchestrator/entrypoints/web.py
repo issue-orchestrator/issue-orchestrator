@@ -268,7 +268,7 @@ def _get_e2e_status(config) -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(
+async def dashboard(  # noqa: C901, PLR0912
     request: Request,
     orchestrator=Depends(get_orchestrator)
 ) -> HTMLResponse:
@@ -539,7 +539,7 @@ async def dashboard(
 
     # Compute active session count for status display
     active_count = len(state.active_sessions) if state else 0
-    shutdown_requested = getattr(orchestrator, '_shutdown_requested', False) if orchestrator else False
+    shutdown_requested = orchestrator.shutdown_requested if orchestrator else False
 
     # Get agents for the create issue form
     agents = config.agents if config else {}
@@ -603,10 +603,10 @@ async def get_status() -> JSONResponse:
             "branch_name": review.branch_name,
         })
 
-    tick_id = getattr(_orchestrator._event_context, "tick_id", 0)
+    tick_id = _orchestrator.event_context.tick_id
     if not isinstance(tick_id, (int, float)):
         tick_id = None
-    last_tick_time = getattr(_orchestrator, "_last_tick_time", 0.0)
+    last_tick_time = _orchestrator.last_tick_time
     if not isinstance(last_tick_time, (int, float)):
         last_tick_time = None
 
@@ -616,7 +616,7 @@ async def get_status() -> JSONResponse:
 
     return JSONResponse({
         "paused": state.paused,
-        "shutdown_requested": getattr(_orchestrator, '_shutdown_requested', False),
+        "shutdown_requested": _orchestrator.shutdown_requested,
         "active_sessions": sessions,
         "max_sessions": config.max_concurrent_sessions,
         "completed_today": state.completed_today,
@@ -755,7 +755,7 @@ async def kill_session(issue_number: int) -> JSONResponse:
 
     # Kill the session
     try:
-        _orchestrator._kill_session(session.terminal_id)
+        _orchestrator.kill_session(session.terminal_id)
     except Exception as e:
         return JSONResponse({"error": f"Failed to kill session: {e}"}, status_code=500)
 
@@ -827,7 +827,7 @@ async def open_in_finder(issue_number: int) -> JSONResponse:
 
 
 @app.get("/api/log/{issue_number}")
-async def get_session_log(issue_number: int) -> JSONResponse:
+async def get_session_log(issue_number: int) -> JSONResponse:  # noqa: C901
     """Get Claude session log for an issue.
 
     Finds the most recent session log from ~/.claude/projects/<worktree-path>/
@@ -919,7 +919,9 @@ async def get_session_log(issue_number: int) -> JSONResponse:
 
 
 @app.get("/api/log/local/{issue_number}")
-async def get_agent_ui_log(issue_number: int, offset: int = 0, limit: int = 200) -> JSONResponse:
+async def get_agent_ui_log(  # noqa: C901, PLR0912
+    issue_number: int, offset: int = 0, limit: int = 200
+) -> JSONResponse:
     """Get the local agent UI log for an issue.
 
     This reads .issue-orchestrator/sessions/<session>/session.log (subprocess backend) or
@@ -1013,7 +1015,7 @@ async def get_agent_ui_log(issue_number: int, offset: int = 0, limit: int = 200)
 
 
 @app.get("/api/session/manifest/{issue_number}")
-async def get_session_manifest(issue_number: int) -> JSONResponse:
+async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912
     """Get the session manifest for an issue."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -1103,7 +1105,7 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
 
 
 @app.get("/api/session/phases/{issue_number}")
-async def get_session_phases(issue_number: int) -> JSONResponse:
+async def get_session_phases(issue_number: int) -> JSONResponse:  # noqa: C901
     """Get the linear phase history for an issue.
 
     Returns the sequence of phases (coding-1, review-1, coding-2, etc.)
@@ -1199,7 +1201,7 @@ def _phase_status_icon(status: str) -> str:
 
 
 @app.get("/api/session/orchestrator-log/{issue_number}")
-async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:
+async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912
     """Generate and return a filtered orchestrator log for an issue.
 
     This generates the log on demand, filtering to entries relevant to the issue.
@@ -1285,7 +1287,9 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:
 
 
 @app.get("/api/session/claude-log/{issue_number}")
-async def get_claude_log_content(issue_number: int, limit: int = 200) -> JSONResponse:
+async def get_claude_log_content(  # noqa: C901, PLR0912
+    issue_number: int, limit: int = 200
+) -> JSONResponse:
     """Fetch and parse Claude session log for viewing in the dashboard.
 
     Returns parsed JSONL entries for display in a formatted viewer.
@@ -1813,7 +1817,7 @@ async def open_file(request: Request) -> JSONResponse:
 
 
 @app.post("/api/unblock-retry")
-async def unblock_and_retry(request: Request) -> JSONResponse:
+async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901
     """Remove blocking labels from issues and trigger a refresh.
 
     JSON body:
@@ -2376,7 +2380,7 @@ async def run_with_web_dashboard(
     finally:
         # When web server stops, stop orchestrator
         logger.info("[web] Shutting down orchestrator...")
-        orchestrator._shutdown_requested = True
+        orchestrator.shutdown_requested = True
         orchestrator_task.cancel()
         try:
             # Give the task 2 seconds to clean up, then exit anyway

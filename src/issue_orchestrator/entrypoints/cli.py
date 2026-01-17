@@ -61,7 +61,7 @@ def _build_action_applier(config: "Config", adapter: "RepositoryHost"):
     )
 
 
-def _run_test_setup(config: "Config") -> bool:
+def _run_test_setup(config: "Config") -> bool:  # noqa: C901
     """Run test teardown and setup. Returns True on success."""
     adapter = _get_repository_host(config)
     if adapter is None:
@@ -141,7 +141,337 @@ def _run_test_setup(config: "Config") -> bool:
     return True
 
 
-def cmd_start(args: argparse.Namespace) -> int:
+def _apply_cli_overrides(args: argparse.Namespace, config: "Config") -> None:  # noqa: C901, PLR0912
+    """Apply CLI argument overrides to config."""
+    # Handle milestone override
+    if hasattr(args, "milestones") and args.milestones:
+        milestones = [m.strip() for m in args.milestones.split(",") if m.strip()]
+        config.filtering.milestones = milestones
+        config.filtering.milestone = None
+        console.print(f"[cyan]Filtering by milestones: {', '.join(milestones)}[/cyan]")
+    elif hasattr(args, 'milestone') and args.milestone:
+        config.filtering.milestone = args.milestone
+        config.filtering.milestones = []
+        console.print(f"[cyan]Filtering by milestone: {args.milestone}[/cyan]")
+
+    # Handle label override
+    if hasattr(args, 'label') and args.label:
+        config.filtering.label = args.label
+        console.print(f"[cyan]Filtering by label: {args.label}[/cyan]")
+
+    # Handle single issue filter
+    if hasattr(args, 'issue') and args.issue:
+        config.filtering.issue = args.issue
+        console.print(f"[cyan]Processing only issue #{args.issue}[/cyan]")
+
+    # Handle ui_mode override
+    if hasattr(args, 'ui_mode') and args.ui_mode:
+        config.ui_mode = args.ui_mode
+    console.print(f"[dim]UI mode: {config.ui_mode}[/dim]")
+
+    # Handle queue_refresh override
+    if hasattr(args, 'queue_refresh') and args.queue_refresh is not None:
+        config.queue_refresh_seconds = args.queue_refresh
+
+    # Handle GH audit overrides
+    if hasattr(args, 'gh_audit') and args.gh_audit:
+        config.gh_audit_enabled = True
+    if hasattr(args, 'gh_audit_events') and args.gh_audit_events:
+        config.gh_audit_events = True
+    if hasattr(args, 'gh_audit_file') and args.gh_audit_file is not None:
+        config.gh_audit_file = args.gh_audit_file
+
+    # Handle max_issues override
+    if hasattr(args, 'max_issues') and args.max_issues is not None:
+        config.filtering.max_to_start = args.max_issues
+        if config.filtering.max_to_start > 0:
+            console.print(f"[dim]Max issues to start: {config.filtering.max_to_start}[/dim]")
+
+    # Handle review workflow overrides
+    if hasattr(args, 'review_label') and args.review_label is not None:
+        config.triage_review_label = args.review_label
+        console.print(f"[dim]Review label: {config.triage_review_label}[/dim]")
+    if hasattr(args, 'review_threshold') and args.review_threshold is not None:
+        config.triage_review_threshold = args.review_threshold
+        if config.triage_review_threshold > 0:
+            console.print(f"[dim]Review threshold: {config.triage_review_threshold} PRs[/dim]")
+
+
+def _run_dry_run(args: argparse.Namespace, config: "Config") -> int:
+    """Run dry-run mode - show what would be processed without starting."""
+    from ..control.scheduler import Scheduler
+    from ..execution.providers import create_repository_host
+    from ..infra.analysis import analyze_all_issues, extract_issue_branches
+    from ..execution.git_working_copy import GitWorkingCopy
+
+    console.print("\n[cyan]DRY RUN - showing what would be processed:[/cyan]\n")
+
+    scheduler = Scheduler(config)
+    github = create_repository_host(config.repo) if config.repo else None
+    working_copy = GitWorkingCopy()
+    all_issues = []
+
+    milestones = config.get_filter_milestones()
+    if not milestones:
+        milestones = [None]
+
+    for agent_label in config.agents.keys():
+        labels = [agent_label]
+        if config.filtering.label:
+            labels.append(config.filtering.label)
+        for milestone in milestones:
+            if github:
+                issues = github.list_issues(
+                    labels=labels,
+                    milestone=milestone,
+                    limit=config.filtering.fetch_limit,
+                )
+                all_issues.extend(issues)
+
+    if not all_issues:
+        console.print("[yellow]No matching issues found.[/yellow]")
+        return 0
+
+    # Analyze all issues using shared logic
+    issue_branches = extract_issue_branches(
+        working_copy.list_remote_branches(config.repo_root)
+    )
+    states = analyze_all_issues(
+        issues=all_issues,
+        repo=config.repo,
+        issue_branches=issue_branches,
+        check_session_fn=lambda _: False,
+    )
+
+    # Sort by priority
+    states.sort(key=lambda s: s.issue.priority)
+
+    _print_dry_run_table(states)
+    _print_dry_run_summary(states, all_issues, scheduler, config)
+    _print_orphan_branches(states, config, github, working_copy)
+
+    return 0
+
+
+def _print_dry_run_table(states: list) -> None:
+    """Print the issues table for dry-run mode."""
+    table = Table(title="All Matching Issues")
+    table.add_column("#", style="cyan")
+    table.add_column("Title", style="white")
+    table.add_column("Agent", style="blue")
+    table.add_column("Pri", style="magenta", width=4)
+    table.add_column("Status", style="yellow")
+    table.add_column("Session", style="green")
+    table.add_column("Branch", style="cyan")
+
+    for state in states:
+        issue = state.issue
+        status = state.status_summary
+        status_styles = {
+            "available": "green",
+            "active": "green",
+            "pr-pending": "blue",
+            "blocked": "red",
+            "needs-human": "red",
+            "stale-with-branch": "yellow",
+            "stale-orphaned": "yellow",
+        }
+        style = status_styles.get(status, "white")
+        session_status = "[green]active[/green]" if state.has_session else "[dim]none[/dim]"
+        branch_status = (
+            f"[cyan]{state.branch[:20]}...[/cyan]"
+            if state.branch and len(state.branch) > 20
+            else f"[cyan]{state.branch}[/cyan]" if state.branch else "[dim]none[/dim]"
+        )
+
+        table.add_row(
+            str(issue.number),
+            issue.title[:35] + ("..." if len(issue.title) > 35 else ""),
+            (issue.agent_type or "-").replace("agent:", ""),
+            f"P{issue.priority}",
+            f"[{style}]{status}[/{style}]",
+            session_status,
+            branch_status,
+        )
+
+    console.print(table)
+
+
+def _print_dry_run_summary(states: list, all_issues: list, scheduler, config: "Config") -> None:
+    """Print summary statistics for dry-run mode."""
+    available, _ = scheduler.get_available_issues(all_issues, check_dependencies=False)
+    console.print(f"\n[dim]Total issues: {len(all_issues)}[/dim]")
+    console.print(f"[dim]Available to process: {len(available)}[/dim]")
+    console.print(f"[dim]Would launch up to {config.max_concurrent_sessions} concurrent sessions[/dim]")
+
+    # Warnings for stale issues
+    stale_states = [s for s in states if s.is_stale]
+    if stale_states:
+        console.print(f"\n[yellow]Warning: {len(stale_states)} issue(s) marked in-progress but have no active session:[/yellow]")
+        for state in stale_states:
+            if state.branch:
+                console.print(f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:35]} [cyan](has branch: {state.branch})[/cyan]")
+            else:
+                console.print(f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:40]}")
+        console.print("\n[dim]Options:[/dim]")
+        console.print("[dim]  - Reset to restart fresh: gh issue edit # --remove-label in-progress[/dim]")
+        console.print("[dim]  - Resume from branch: orchestrator will checkout existing branch if present[/dim]")
+
+
+def _print_orphan_branches(states: list, config: "Config", github, working_copy) -> None:
+    """Print orphan branches analysis for dry-run mode."""
+    from ..infra.analysis import extract_issue_branches, analyze_orphan_branches
+
+    issue_branches = extract_issue_branches(
+        working_copy.list_remote_branches(config.repo_root)
+    )
+    in_progress_nums = {s.issue.number for s in states if s.issue.is_in_progress}
+    orphan_states = analyze_orphan_branches(
+        issue_branches,
+        in_progress_nums,
+        config.repo,
+        issue_tracker=github,
+        pr_tracker=github,
+        commits_ahead_fn=lambda b: working_copy.get_commits_ahead_count(config.repo_root, b),
+        last_commit_date_fn=lambda b: working_copy.get_last_commit_date(config.repo_root, b),
+    )
+
+    if not orphan_states:
+        return
+
+    console.print(f"\n[yellow]Warning: {len(orphan_states)} orphan branch(es) found:[/yellow]")
+
+    orphan_table = Table(title=None, box=None)
+    orphan_table.add_column("#", style="cyan", width=6)
+    orphan_table.add_column("Branch", style="dim")
+    orphan_table.add_column("Issue", style="white")
+    orphan_table.add_column("Commits", style="magenta", width=7)
+    orphan_table.add_column("Age", style="dim", width=12)
+    orphan_table.add_column("Action", style="yellow")
+
+    for orphan in orphan_states:
+        issue_info = _format_orphan_issue_info(orphan)
+        action = _format_orphan_action(orphan)
+        orphan_table.add_row(
+            str(orphan.issue_number),
+            orphan.branch_name[:30] + ("..." if len(orphan.branch_name) > 30 else ""),
+            issue_info,
+            str(orphan.commits_ahead),
+            orphan.last_commit_date or "-",
+            action,
+        )
+
+    console.print(orphan_table)
+
+    # Actionable hints
+    resume_count = sum(1 for o in orphan_states if o.suggested_action == "resume-work")
+    delete_count = sum(1 for o in orphan_states if o.suggested_action == "delete-branch")
+    if resume_count > 0:
+        console.print(f"\n[dim]To resume work on open issues, add in-progress label:[/dim]")
+        console.print(f"[dim]  gh issue edit # --add-label {config.get_label_in_progress()}[/dim]")
+    if delete_count > 0:
+        console.print(f"\n[dim]To clean up stale branches:[/dim]")
+        console.print(f"[dim]  git push origin --delete <branch-name>[/dim]")
+
+
+def _format_orphan_issue_info(orphan) -> str:
+    """Format issue info for orphan branch display."""
+    if orphan.issue_title:
+        title_short = orphan.issue_title[:25] + ("..." if len(orphan.issue_title) > 25 else "")
+        state_color = "green" if orphan.issue_state == "open" else "red"
+        return f"[{state_color}]{orphan.issue_state}[/{state_color}]: {title_short}"
+    elif orphan.issue_state:
+        state_color = "green" if orphan.issue_state == "open" else "red"
+        return f"[{state_color}]{orphan.issue_state}[/{state_color}]"
+    return "[dim]not found[/dim]"
+
+
+def _format_orphan_action(orphan) -> str:
+    """Format suggested action for orphan branch display."""
+    action_styles = {
+        "resume-work": "[green]resume[/green]",
+        "investigate": "[yellow]investigate[/yellow]",
+        "delete-branch": "[red]delete[/red]",
+    }
+    return action_styles.get(orphan.suggested_action) or str(orphan.suggested_action)
+
+
+async def _run_no_dashboard(orchestrator, api_port: int | None) -> None:
+    """Run orchestrator without dashboard UI."""
+    from .control_api import ControlAPIServer
+
+    control_api = None
+    if api_port:
+        control_api = ControlAPIServer(orchestrator, port=api_port)
+        try:
+            await control_api.start()
+        except OSError as exc:
+            logging.warning("Control API failed to start on port %s: %s", api_port, exc)
+            control_api = None
+
+    try:
+        await orchestrator.startup()
+        await orchestrator.run_loop()
+    finally:
+        if control_api:
+            await control_api.stop()
+
+
+async def _run_web_dashboard(orchestrator, config: "Config", args: argparse.Namespace, api_port: int | None) -> None:
+    """Run orchestrator with web dashboard."""
+    import signal
+    from .web import run_with_web_dashboard, trigger_server_shutdown
+    from .control_api import ControlAPIServer
+
+    def handle_signal():
+        if orchestrator.shutdown_requested:
+            orchestrator.request_shutdown(force=True)
+            trigger_server_shutdown()
+        else:
+            orchestrator.request_shutdown()
+            trigger_server_shutdown()
+
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGINT, handle_signal)
+    loop.add_signal_handler(signal.SIGTERM, handle_signal)
+
+    control_api = None
+    if api_port:
+        console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
+        control_api = ControlAPIServer(orchestrator, port=api_port)
+        try:
+            await control_api.start()
+        except OSError as exc:
+            logging.warning("Control API failed to start on port %s: %s", api_port, exc)
+            control_api = None
+
+    try:
+        port = args.port if args.port != 8080 else config.web_port
+        await run_with_web_dashboard(orchestrator, port=port)
+    finally:
+        if control_api:
+            await control_api.stop()
+
+
+async def _run_tui_dashboard(orchestrator, config: "Config", api_port: int | None) -> bool:
+    """Run orchestrator with TUI dashboard."""
+    from .control_api import ControlAPIServer
+    from .dashboard import run_with_dashboard
+
+    control_api = None
+    if api_port:
+        control_api = ControlAPIServer(orchestrator, port=api_port)
+        await control_api.start()
+
+    try:
+        await orchestrator.startup()
+        return await run_with_dashboard(orchestrator, config.ui_mode)
+    finally:
+        if control_api:
+            await control_api.stop()
+
+
+def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
     """Start the orchestrator."""
     debug = getattr(args, 'debug', False)
     no_dashboard = getattr(args, 'no_dashboard', False)
@@ -262,238 +592,15 @@ def cmd_start(args: argparse.Namespace) -> int:
         config.filtering.label = "test-data"
         console.print("[cyan]Test mode: filtering.label set to 'test-data'[/cyan]")
 
-    # Handle milestone override
-    if hasattr(args, "milestones") and args.milestones:
-        milestones = [m.strip() for m in args.milestones.split(",") if m.strip()]
-        config.filtering.milestones = milestones
-        config.filtering.milestone = None
-        console.print(f"[cyan]Filtering by milestones: {', '.join(milestones)}[/cyan]")
-    elif hasattr(args, 'milestone') and args.milestone:
-        config.filtering.milestone = args.milestone
-        config.filtering.milestones = []
-        console.print(f"[cyan]Filtering by milestone: {args.milestone}[/cyan]")
-
-    # Handle label override
-    if hasattr(args, 'label') and args.label:
-        config.filtering.label = args.label
-        console.print(f"[cyan]Filtering by label: {args.label}[/cyan]")
-
-    # Handle single issue filter
-    if hasattr(args, 'issue') and args.issue:
-        config.filtering.issue = args.issue
-        console.print(f"[cyan]Processing only issue #{args.issue}[/cyan]")
-
-    # Handle ui_mode override
-    if hasattr(args, 'ui_mode') and args.ui_mode:
-        config.ui_mode = args.ui_mode
-    console.print(f"[dim]UI mode: {config.ui_mode}[/dim]")
-
-    # Handle queue_refresh override
-    if hasattr(args, 'queue_refresh') and args.queue_refresh is not None:
-        config.queue_refresh_seconds = args.queue_refresh
-
-    # Handle GH audit overrides
-    if hasattr(args, 'gh_audit') and args.gh_audit:
-        config.gh_audit_enabled = True
-    if hasattr(args, 'gh_audit_events') and args.gh_audit_events:
-        config.gh_audit_events = True
-    if hasattr(args, 'gh_audit_file') and args.gh_audit_file is not None:
-        config.gh_audit_file = args.gh_audit_file
-
-    # Handle max_issues override
-    if hasattr(args, 'max_issues') and args.max_issues is not None:
-        config.filtering.max_to_start = args.max_issues
-        if config.filtering.max_to_start > 0:
-            console.print(f"[dim]Max issues to start: {config.filtering.max_to_start}[/dim]")
-
-    # Handle review workflow overrides
-    if hasattr(args, 'review_label') and args.review_label is not None:
-        config.triage_review_label = args.review_label
-        console.print(f"[dim]Review label: {config.triage_review_label}[/dim]")
-    if hasattr(args, 'review_threshold') and args.review_threshold is not None:
-        config.triage_review_threshold = args.review_threshold
-        if config.triage_review_threshold > 0:
-            console.print(f"[dim]Review threshold: {config.triage_review_threshold} PRs[/dim]")
+    # Apply CLI argument overrides to config
+    _apply_cli_overrides(args, config)
 
     console.print(f"[dim]Loaded config with {len(config.agents)} agent types[/dim]")
     console.print(f"[dim]Max concurrent sessions: {config.max_concurrent_sessions}[/dim]")
 
     # Handle dry-run mode
     if hasattr(args, 'dry_run') and args.dry_run:
-        from ..control.scheduler import Scheduler
-        from ..execution.providers import create_repository_host
-        from ..infra.analysis import analyze_all_issues, extract_issue_branches
-        from ..execution.git_working_copy import GitWorkingCopy
-
-        console.print("\n[cyan]DRY RUN - showing what would be processed:[/cyan]\n")
-
-        scheduler = Scheduler(config)
-        github = create_repository_host(config.repo) if config.repo else None
-        working_copy = GitWorkingCopy()
-        all_issues = []
-
-        milestones = config.get_filter_milestones()
-        if not milestones:
-            milestones = [None]
-
-        for agent_label in config.agents.keys():
-            labels = [agent_label]
-            if config.filtering.label:
-                labels.append(config.filtering.label)
-            for milestone in milestones:
-                if github:
-                    issues = github.list_issues(
-                        labels=labels,
-                        milestone=milestone,
-                        limit=config.filtering.fetch_limit,
-                    )
-                    all_issues.extend(issues)
-
-        if not all_issues:
-            console.print("[yellow]No matching issues found.[/yellow]")
-            return 0
-
-        # Analyze all issues using shared logic
-        issue_branches = extract_issue_branches(
-            working_copy.list_remote_branches(config.repo_root)
-        )
-        states = analyze_all_issues(
-            issues=all_issues,
-            repo=config.repo,
-            issue_branches=issue_branches,
-            check_session_fn=lambda _: False,  # No session check in dry-run
-        )
-
-        # Sort by priority
-        states.sort(key=lambda s: s.issue.priority)
-
-        table = Table(title="All Matching Issues")
-        table.add_column("#", style="cyan")
-        table.add_column("Title", style="white")
-        table.add_column("Agent", style="blue")
-        table.add_column("Pri", style="magenta", width=4)
-        table.add_column("Status", style="yellow")
-        table.add_column("Session", style="green")
-        table.add_column("Branch", style="cyan")
-
-        for state in states:
-            issue = state.issue
-
-            # Status styling
-            status = state.status_summary
-            status_styles = {
-                "available": "green",
-                "active": "green",
-                "pr-pending": "blue",
-                "blocked": "red",
-                "needs-human": "red",
-                "stale-with-branch": "yellow",
-                "stale-orphaned": "yellow",
-            }
-            style = status_styles.get(status, "white")
-
-            session_status = "[green]active[/green]" if state.has_session else "[dim]none[/dim]"
-            branch_status = f"[cyan]{state.branch[:20]}...[/cyan]" if state.branch and len(state.branch) > 20 else f"[cyan]{state.branch}[/cyan]" if state.branch else "[dim]none[/dim]"
-
-            table.add_row(
-                str(issue.number),
-                issue.title[:35] + ("..." if len(issue.title) > 35 else ""),
-                (issue.agent_type or "-").replace("agent:", ""),
-                f"P{issue.priority}",
-                f"[{style}]{status}[/{style}]",
-                session_status,
-                branch_status,
-            )
-
-        console.print(table)
-
-        # Summary
-        available, _ = scheduler.get_available_issues(all_issues, check_dependencies=False)
-        console.print(f"\n[dim]Total issues: {len(all_issues)}[/dim]")
-        console.print(f"[dim]Available to process: {len(available)}[/dim]")
-        console.print(f"[dim]Would launch up to {config.max_concurrent_sessions} concurrent sessions[/dim]")
-
-        # Warnings for stale issues
-        stale_states = [s for s in states if s.is_stale]
-        if stale_states:
-            console.print(f"\n[yellow]⚠ {len(stale_states)} issue(s) marked in-progress but have no active session:[/yellow]")
-            for state in stale_states:
-                if state.branch:
-                    console.print(f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:35]} [cyan](has branch: {state.branch})[/cyan]")
-                else:
-                    console.print(f"  [yellow]#{state.issue.number}[/yellow]: {state.issue.title[:40]}")
-
-            console.print("\n[dim]Options:[/dim]")
-            console.print("[dim]  • Reset to restart fresh: gh issue edit # --remove-label in-progress[/dim]")
-            console.print("[dim]  • Resume from branch: orchestrator will checkout existing branch if present[/dim]")
-
-        # Show issues with branches but not in-progress (might be abandoned PRs)
-        from ..infra.analysis import analyze_orphan_branches
-        issue_branches = extract_issue_branches(
-            working_copy.list_remote_branches(config.repo_root)
-        )
-        in_progress_nums = {s.issue.number for s in states if s.issue.is_in_progress}
-        orphan_states = analyze_orphan_branches(
-            issue_branches,
-            in_progress_nums,
-            config.repo,
-            issue_tracker=github,
-            pr_tracker=github,
-            commits_ahead_fn=lambda b: working_copy.get_commits_ahead_count(config.repo_root, b),
-            last_commit_date_fn=lambda b: working_copy.get_last_commit_date(config.repo_root, b),
-        )
-        if orphan_states:
-            console.print(f"\n[yellow]⚠ {len(orphan_states)} orphan branch(es) found:[/yellow]")
-
-            orphan_table = Table(title=None, box=None)
-            orphan_table.add_column("#", style="cyan", width=6)
-            orphan_table.add_column("Branch", style="dim")
-            orphan_table.add_column("Issue", style="white")
-            orphan_table.add_column("Commits", style="magenta", width=7)
-            orphan_table.add_column("Age", style="dim", width=12)
-            orphan_table.add_column("Action", style="yellow")
-
-            for orphan in orphan_states:
-                issue_info = ""
-                if orphan.issue_title:
-                    title_short = orphan.issue_title[:25] + ("..." if len(orphan.issue_title) > 25 else "")
-                    state_color = "green" if orphan.issue_state == "open" else "red"
-                    issue_info = f"[{state_color}]{orphan.issue_state}[/{state_color}]: {title_short}"
-                elif orphan.issue_state:
-                    state_color = "green" if orphan.issue_state == "open" else "red"
-                    issue_info = f"[{state_color}]{orphan.issue_state}[/{state_color}]"
-                else:
-                    issue_info = "[dim]not found[/dim]"
-
-                action_styles = {
-                    "resume-work": "[green]resume[/green]",
-                    "investigate": "[yellow]investigate[/yellow]",
-                    "delete-branch": "[red]delete[/red]",
-                }
-                action = action_styles.get(orphan.suggested_action, orphan.suggested_action)
-
-                orphan_table.add_row(
-                    str(orphan.issue_number),
-                    orphan.branch_name[:30] + ("..." if len(orphan.branch_name) > 30 else ""),
-                    issue_info,
-                    str(orphan.commits_ahead),
-                    orphan.last_commit_date or "-",
-                    action,
-                )
-
-            console.print(orphan_table)
-
-            # Actionable hints
-            resume_count = sum(1 for o in orphan_states if o.suggested_action == "resume-work")
-            delete_count = sum(1 for o in orphan_states if o.suggested_action == "delete-branch")
-            if resume_count > 0:
-                console.print(f"\n[dim]To resume work on open issues, add in-progress label:[/dim]")
-                console.print(f"[dim]  gh issue edit # --add-label {config.get_label_in_progress()}[/dim]")
-            if delete_count > 0:
-                console.print(f"\n[dim]To clean up stale branches:[/dim]")
-                console.print(f"[dim]  git push origin --delete <branch-name>[/dim]")
-
-        return 0
+        return _run_dry_run(args, config)
 
     orchestrator = build_orchestrator(config=config)
 
@@ -506,102 +613,18 @@ def cmd_start(args: argparse.Namespace) -> int:
             console.print("[dim]Running without dashboard UI[/dim]")
             if api_port:
                 console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
-
-            async def run_with_control_api():
-                from .control_api import ControlAPIServer
-
-                # Start control API FIRST so it's available during startup
-                # This allows e2e tests to trigger refresh immediately
-                control_api = None
-                if api_port:
-                    control_api = ControlAPIServer(orchestrator, port=api_port)
-                    try:
-                        await control_api.start()
-                    except OSError as exc:
-                        logging.warning("Control API failed to start on port %s: %s", api_port, exc)
-                        control_api = None
-
-                try:
-                    # Run startup (cleans up stale issues, restores sessions)
-                    await orchestrator.startup()
-                    # Then run the main loop
-                    await orchestrator.run_loop()
-                finally:
-                    if control_api:
-                        await control_api.stop()
-
-            asyncio.run(run_with_control_api())
+            asyncio.run(_run_no_dashboard(orchestrator, api_port))
         elif config.ui_mode == "web":
             # Run with web dashboard in browser
-            from .web import run_with_web_dashboard
-            # CLI --port overrides config web_port
             port = args.port if args.port != 8080 else config.web_port
             console.print("[dim]Starting web dashboard...[/dim]")
             console.print(f"[green]Dashboard will open at http://localhost:{port}[/green]")
-
-            # Wrapper to set up signal handlers inside asyncio context
-            # (asyncio.run() overwrites signal handlers set before it)
-            async def run_with_signals():
-                import signal
-                from .web import trigger_server_shutdown
-                from .control_api import ControlAPIServer
-
-                def handle_signal():
-                    if orchestrator._shutdown_requested:
-                        # Second signal - force kill
-                        orchestrator.request_shutdown(force=True)
-                        trigger_server_shutdown()
-                    else:
-                        # First signal - graceful shutdown
-                        orchestrator.request_shutdown()
-                        trigger_server_shutdown()
-
-                loop = asyncio.get_running_loop()
-                loop.add_signal_handler(signal.SIGINT, handle_signal)
-                loop.add_signal_handler(signal.SIGTERM, handle_signal)
-
-                control_api = None
-                if api_port:
-                    console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
-                    control_api = ControlAPIServer(orchestrator, port=api_port)
-                    try:
-                        await control_api.start()
-                    except OSError as exc:
-                        logging.warning("Control API failed to start on port %s: %s", api_port, exc)
-                        control_api = None
-
-                try:
-                    await run_with_web_dashboard(orchestrator, port=port)
-                finally:
-                    if control_api:
-                        await control_api.stop()
-
-            asyncio.run(run_with_signals())
+            asyncio.run(_run_web_dashboard(orchestrator, config, args, api_port))
         else:
             # Run with interactive TUI dashboard (tmux mode)
             if api_port:
                 console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
-
-            async def run_tui_with_control_api():
-                from .control_api import ControlAPIServer
-                from .dashboard import run_with_dashboard
-
-                # Start control API FIRST so it's available during startup
-                control_api = None
-                if api_port:
-                    control_api = ControlAPIServer(orchestrator, port=api_port)
-                    await control_api.start()
-
-                try:
-                    # Run startup (cleans up stale issues, restores sessions)
-                    await orchestrator.startup()
-                    # Then run the dashboard with orchestrator
-                    return await run_with_dashboard(orchestrator, config.ui_mode)
-                finally:
-                    if control_api:
-                        await control_api.stop()
-
-            asyncio.run(run_tui_with_control_api())
+            asyncio.run(_run_tui_dashboard(orchestrator, config, api_port))
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutting down...[/yellow]")
 
@@ -988,7 +1011,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_verify(args: argparse.Namespace) -> int:
+def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
     """Verify the orchestrator setup works correctly."""
     console.print("[bold cyan]Orchestrator Setup Verification[/bold cyan]\n")
 
@@ -1441,7 +1464,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 0
 
 
-def cmd_demo(args: argparse.Namespace) -> int:
+def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901
     """Demonstrate orchestrator features with mock data.
 
     Behavior per DEMO_CONTRACT.md:
@@ -1652,7 +1675,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_trace(args: argparse.Namespace) -> int:
+def cmd_trace(args: argparse.Namespace) -> int:  # noqa: C901
     """Trace log entries for a specific issue."""
     import re
 

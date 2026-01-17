@@ -316,7 +316,7 @@ def scan_existing_repo(path: Path | None = None) -> DetectedState:
     return state
 
 
-def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
+def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR0912
     """Walk through new project setup."""
     config: dict[str, Any] = {"agents": {}}
 
@@ -601,7 +601,9 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:
     return config
 
 
-def wizard_existing_project(state: DetectedState, prompter: Prompter) -> tuple[dict[str, Any], Optional[Path]]:
+def wizard_existing_project(  # noqa: C901, PLR0912
+    state: DetectedState, prompter: Prompter
+) -> tuple[dict[str, Any], Optional[Path]]:
     """Walk through existing project onboarding.
 
     Returns:
@@ -1353,7 +1355,7 @@ def setup_ai_providers(prompter: Prompter) -> None:
             prompter.print("  Skipped (no key provided)\n")
 
 
-def run_wizard(
+def run_wizard(  # noqa: C901, PLR0912
     target_path: Path | None = None,
     prompter: Prompter | None = None,
     dry_run: bool = False,
