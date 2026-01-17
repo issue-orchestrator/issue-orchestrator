@@ -1158,7 +1158,7 @@ def _build_repos_status() -> list[dict[str, Any]]:
 
     from ..infra import supervisor
     from ..infra.repo_registry import list_repos
-    from ..infra.config import list_configs
+    from ..infra.config import list_configs, get_config_path, Config
 
     repos = list_repos()
     result = []
@@ -1166,55 +1166,106 @@ def _build_repos_status() -> list[dict[str, Any]]:
     for repo in repos:
         # Get status for each repo
         path = Path(repo.path)
-        status_info = supervisor.status(path) if path.exists() else None
+
+        # Check if multi-instance mode is configured
+        expected_instances = 1
+        if path.exists() and repo.selected_config:
+            try:
+                config_path = get_config_path(path, repo.selected_config)
+                if config_path.exists():
+                    config = Config.load(config_path)
+                    expected_instances = config.instances
+            except Exception:
+                pass  # Fall back to single instance
 
         # Get available configs
         available_configs = list_configs(path) if path.exists() else []
 
-        repo_data = {
+        # Build base repo data
+        repo_data: dict[str, Any] = {
             "path": repo.path,
             "name": repo.name,
             "added_at": repo.added_at,
             "exists": path.exists(),
-            "status": status_info.to_dict() if status_info else None,
             "configs": available_configs,
-            "selected_config": repo.selected_config,  # Last used config
+            "selected_config": repo.selected_config,
+            "expected_instances": expected_instances,
         }
 
-        if status_info and status_info.state != "running" and path.exists():
-            detected = _detect_orchestrator_by_port(path, repo.selected_config)
-            if detected:
-                status_data = detected.get("status", {})
-                repo_data["status"] = {
-                    "state": "running",
-                    "pid": None,
-                    "port": detected["port"],
-                    "started_at": None,
-                    "recovered": False,
-                    "error": None,
-                    "orphaned": True,
-                    "health": detected.get("health", "unknown"),
-                    "tick_age_seconds": detected.get("tick_age_seconds"),
-                    "shutdown_requested": status_data.get("shutdown_requested", False),
-                    "active_session_count": len(status_data.get("active_sessions", [])),
-                }
+        if expected_instances > 1 and path.exists():
+            # Multi-instance mode: get status for all instances
+            multi_status = supervisor.status_all_instances(path)
+            repo_data["instances"] = []
 
-        # If running, fetch internal state from the orchestrator
-        if status_info and status_info.state == "running" and status_info.port:
-            try:
-                resp = httpx.get(
-                    f"http://127.0.0.1:{status_info.port}/api/status",
-                    timeout=2.0,
-                )
-                if resp.status_code == 200:
-                    internal = resp.json()
-                    repo_data["status"]["paused"] = internal.get("paused", False)
-                    repo_data["status"]["shutdown_requested"] = internal.get("shutdown_requested", False)
-                    # Include active session count for shutdown state determination
-                    active_sessions = internal.get("active_sessions", [])
-                    repo_data["status"]["active_session_count"] = len(active_sessions)
-            except Exception:
-                pass  # Keep supervisor status only
+            for inst_status in multi_status.instances:
+                inst_data = inst_status.to_dict()
+
+                # Fetch internal state from each running instance
+                if inst_status.state == "running" and inst_status.port:
+                    try:
+                        resp = httpx.get(
+                            f"http://127.0.0.1:{inst_status.port}/api/status",
+                            timeout=2.0,
+                        )
+                        if resp.status_code == 200:
+                            internal = resp.json()
+                            inst_data["paused"] = internal.get("paused", False)
+                            inst_data["shutdown_requested"] = internal.get("shutdown_requested", False)
+                            active_sessions = internal.get("active_sessions", [])
+                            inst_data["active_session_count"] = len(active_sessions)
+                    except Exception:
+                        pass
+
+                repo_data["instances"].append(inst_data)
+
+            # Compute aggregate status for the repo
+            running_count = sum(1 for i in multi_status.instances if i.state == "running")
+            if running_count == expected_instances:
+                repo_data["status"] = {"state": "running", "running_count": running_count}
+            elif running_count > 0:
+                repo_data["status"] = {"state": "partial", "running_count": running_count}
+            else:
+                repo_data["status"] = {"state": "stopped", "running_count": 0}
+
+        else:
+            # Single instance mode (existing behavior)
+            status_info = supervisor.status(path) if path.exists() else None
+            repo_data["status"] = status_info.to_dict() if status_info else None
+
+            if status_info and status_info.state != "running" and path.exists():
+                detected = _detect_orchestrator_by_port(path, repo.selected_config)
+                if detected:
+                    status_data = detected.get("status", {})
+                    repo_data["status"] = {
+                        "state": "running",
+                        "pid": None,
+                        "port": detected["port"],
+                        "started_at": None,
+                        "recovered": False,
+                        "error": None,
+                        "orphaned": True,
+                        "health": detected.get("health", "unknown"),
+                        "tick_age_seconds": detected.get("tick_age_seconds"),
+                        "shutdown_requested": status_data.get("shutdown_requested", False),
+                        "active_session_count": len(status_data.get("active_sessions", [])),
+                    }
+
+            # If running, fetch internal state from the orchestrator
+            if status_info and status_info.state == "running" and status_info.port:
+                try:
+                    resp = httpx.get(
+                        f"http://127.0.0.1:{status_info.port}/api/status",
+                        timeout=2.0,
+                    )
+                    if resp.status_code == 200 and repo_data["status"]:
+                        internal = resp.json()
+                        repo_data["status"]["paused"] = internal.get("paused", False)
+                        repo_data["status"]["shutdown_requested"] = internal.get("shutdown_requested", False)
+                        # Include active session count for shutdown state determination
+                        active_sessions = internal.get("active_sessions", [])
+                        repo_data["status"]["active_session_count"] = len(active_sessions)
+                except Exception:
+                    pass  # Keep supervisor status only
 
         # Include cached health status if available
         if repo.health:
