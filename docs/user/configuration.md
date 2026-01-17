@@ -54,6 +54,21 @@ agents:
 
 ## Reference (defaults shown)
 
+### Environment variable substitution
+
+Any string value in config can reference environment variables using `${VAR}` syntax:
+
+```yaml
+claims:
+  claimant_id: "${ORCHESTRATOR_ID}"    # Expands to value of ORCHESTRATOR_ID env var
+
+repo:
+  github:
+    token_env: "${GITHUB_TOKEN_VAR}"   # Works in any string field
+```
+
+If the referenced environment variable is not set, config loading fails with a clear error message showing which variable is missing and where it was referenced.
+
 ### repo
 
 ```yaml
@@ -309,6 +324,35 @@ state:
 config:
   strict: false
 ```
+
+### claims
+
+Multi-orchestrator coordination. When multiple orchestrator instances work on the same repository, the claims system ensures only one orchestrator works on each issue at a time.
+
+```yaml
+claims:
+  enabled: false                      # Enable multi-orchestrator coordination
+  claimant_id: null                   # Unique ID for this instance (required if enabled)
+  lease_seconds: 900                  # Claim lease duration (15 min default)
+  renew_before_expiry_seconds: 300    # Renew when this much time remains (5 min)
+```
+
+**For multi-orchestrator deployments:**
+
+Each orchestrator needs a unique `claimant_id`. Use environment variable substitution:
+
+```yaml
+claims:
+  enabled: true
+  claimant_id: "${ORCHESTRATOR_ID}"   # Set ORCHESTRATOR_ID=prod-west-1 in environment
+```
+
+If `claimant_id` is not set, it defaults to `orchestrator-{pid}` which changes on restart.
+
+**Labels added by claims system:**
+- `io:claimed` - Issue is being worked on by an orchestrator
+- `blocked:claim-lost` - Work was interrupted because another orchestrator took over
+- `blocked:stale-claim` - Claim expired without being released (orchestrator crashed)
 
 ### agents
 

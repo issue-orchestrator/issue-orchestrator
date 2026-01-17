@@ -1,8 +1,10 @@
 """Configuration loading and management."""
 
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 import yaml
 
@@ -44,6 +46,56 @@ ALLOWED_AGENT_FIELDS = {
     'permission_mode', 'skip_review', 'reviewer', 'command',
     'meta_agent', 'initial_prompt', 'ai_system', 'provider_args', 'retry_prompt_template',
 }
+
+# Pattern for ${VAR} environment variable references
+_ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+class ConfigEnvVarError(Exception):
+    """Raised when an environment variable referenced in config is not set."""
+
+    pass
+
+
+def _expand_env_vars(value: Any, path: str = "") -> Any:
+    """Recursively expand ${VAR} environment variable references in config values.
+
+    Args:
+        value: The config value to expand (can be dict, list, or scalar).
+        path: Dot-separated path to current location (for error messages).
+
+    Returns:
+        The value with all ${VAR} references expanded.
+
+    Raises:
+        ConfigEnvVarError: If a referenced environment variable is not set.
+    """
+    if isinstance(value, dict):
+        return {
+            k: _expand_env_vars(v, f"{path}.{k}" if path else k)
+            for k, v in value.items()
+        }
+    elif isinstance(value, list):
+        return [
+            _expand_env_vars(item, f"{path}[{i}]")
+            for i, item in enumerate(value)
+        ]
+    elif isinstance(value, str):
+        # Find all ${VAR} references and expand them
+        def replace_env_var(match: re.Match[str]) -> str:
+            var_name = match.group(1)
+            env_value = os.environ.get(var_name)
+            if env_value is None:
+                location = f" (in {path})" if path else ""
+                raise ConfigEnvVarError(
+                    f"Environment variable '{var_name}' is not set{location}"
+                )
+            return env_value
+
+        return _ENV_VAR_PATTERN.sub(replace_env_var, value)
+    else:
+        # Numbers, booleans, None - return as-is
+        return value
 
 
 def repo_root_from_config_path(config_path: Path) -> Path:
@@ -847,6 +899,9 @@ class Config:
         if data is None:
             data = {}
         _apply_yaml_overrides(data, overrides or [])
+
+        # Expand ${VAR} environment variable references
+        data = _expand_env_vars(data)
 
         config = cls()
         config.config_path = config_path.resolve()
