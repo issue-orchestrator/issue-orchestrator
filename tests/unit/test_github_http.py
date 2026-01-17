@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import httpx
 
+import json
+
+import pytest
+
 from issue_orchestrator.adapters.github.http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
+    GitHubHttpError,
 )
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra import gh_audit
@@ -315,3 +320,155 @@ def test_get_prs_with_label_state_all_skips_malformed_items() -> None:
         getattr(event, "name", None) == EventName.GH_SEARCH_ITEM_MALFORMED
         for event in sink.events
     )
+
+
+# -------------------- GraphQL tests --------------------
+
+
+def test_graphql_successful_query() -> None:
+    """Verify _graphql() makes POST to /graphql with query and variables."""
+    requests_seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append({
+            "method": request.method,
+            "path": request.url.path,
+            "body": json.loads(request.content),
+        })
+        return httpx.Response(200, json={
+            "data": {"repository": {"pullRequest": {"id": "PR_123"}}}
+        })
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    result = client._graphql(
+        "query($owner: String!) { repository(owner: $owner) { id } }",
+        {"owner": "test"},
+    )
+
+    assert len(requests_seen) == 1
+    assert requests_seen[0]["method"] == "POST"
+    assert requests_seen[0]["path"] == "/graphql"
+    assert "query" in requests_seen[0]["body"]
+    assert requests_seen[0]["body"]["variables"] == {"owner": "test"}
+    assert result["data"]["repository"]["pullRequest"]["id"] == "PR_123"
+
+
+def test_graphql_raises_on_graphql_errors() -> None:
+    """Verify _graphql() raises GitHubHttpError on GraphQL-level errors."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "data": None,
+            "errors": [{"message": "Field 'foo' not found"}]
+        })
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubHttpError) as exc_info:
+        client._graphql("query { foo }")
+
+    assert "Field 'foo' not found" in str(exc_info.value)
+
+
+def test_graphql_raises_on_http_error() -> None:
+    """Verify _graphql() raises GitHubHttpError on HTTP errors."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "Bad credentials"})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubHttpError) as exc_info:
+        client._graphql("query { viewer { login } }")
+
+    assert exc_info.value.status_code == 401
+
+
+# -------------------- set_pr_draft tests --------------------
+
+
+def test_set_pr_draft_marks_ready_for_review() -> None:
+    """Verify set_pr_draft(draft=False) uses markPullRequestReadyForReview mutation."""
+    requests_seen: list[dict] = []
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        body = json.loads(request.content)
+        requests_seen.append({"call": call_count, "body": body})
+
+        if call_count == 1:
+            # First call: query for node ID
+            return httpx.Response(200, json={
+                "data": {"repository": {"pullRequest": {"id": "PR_node_123"}}}
+            })
+        else:
+            # Second call: mutation
+            return httpx.Response(200, json={
+                "data": {
+                    "markPullRequestReadyForReview": {
+                        "pullRequest": {"id": "PR_node_123", "number": 42, "isDraft": False}
+                    }
+                }
+            })
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    result = client.set_pr_draft(42, draft=False)
+
+    assert len(requests_seen) == 2
+    # First request: get node ID
+    assert "pullRequest(number: $number)" in requests_seen[0]["body"]["query"]
+    assert requests_seen[0]["body"]["variables"]["number"] == 42
+    # Second request: mutation
+    assert "markPullRequestReadyForReview" in requests_seen[1]["body"]["query"]
+    assert requests_seen[1]["body"]["variables"]["pullRequestId"] == "PR_node_123"
+    # Result
+    assert result["isDraft"] is False
+    assert result["number"] == 42
+
+
+def test_set_pr_draft_converts_to_draft() -> None:
+    """Verify set_pr_draft(draft=True) uses convertPullRequestToDraft mutation."""
+    requests_seen: list[dict] = []
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        body = json.loads(request.content)
+        requests_seen.append({"call": call_count, "body": body})
+
+        if call_count == 1:
+            return httpx.Response(200, json={
+                "data": {"repository": {"pullRequest": {"id": "PR_node_456"}}}
+            })
+        else:
+            return httpx.Response(200, json={
+                "data": {
+                    "convertPullRequestToDraft": {
+                        "pullRequest": {"id": "PR_node_456", "number": 99, "isDraft": True}
+                    }
+                }
+            })
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    result = client.set_pr_draft(99, draft=True)
+
+    assert len(requests_seen) == 2
+    # Second request should use convertPullRequestToDraft
+    assert "convertPullRequestToDraft" in requests_seen[1]["body"]["query"]
+    assert result["isDraft"] is True
+
+
+def test_set_pr_draft_raises_on_pr_not_found() -> None:
+    """Verify set_pr_draft() raises GitHubHttpError when PR doesn't exist."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "data": {"repository": {"pullRequest": None}}
+        })
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubHttpError) as exc_info:
+        client.set_pr_draft(9999, draft=False)
+
+    assert "PR #9999 not found" in str(exc_info.value)

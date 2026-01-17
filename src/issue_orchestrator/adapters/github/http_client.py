@@ -255,6 +255,95 @@ class GitHubHttpClient:
                 rate_limit=rate_limit_info,
             )
 
+    def _graphql(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        caller: str = "graphql",
+    ) -> dict[str, Any]:
+        """Execute a GraphQL query or mutation.
+
+        Args:
+            query: The GraphQL query or mutation string.
+            variables: Variables to pass to the query.
+            caller: Identifier for audit logging.
+
+        Returns:
+            The parsed JSON response containing 'data' and optionally 'errors'.
+
+        Raises:
+            GitHubHttpError: If the request fails or returns GraphQL errors.
+        """
+        json_body: dict[str, Any] = {"query": query}
+        if variables:
+            json_body["variables"] = variables
+
+        start = time.monotonic()
+        error: str | None = None
+        response_text = ""
+        status_code: int | None = None
+        payload: dict[str, Any] = {}
+        response: httpx.Response | None = None
+        try:
+            try:
+                response = self._client.request(
+                    "POST",
+                    "/graphql",
+                    json=json_body,
+                )
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                error = f"transport_error: {exc}"
+                raise GitHubTransportError(
+                    "GitHub GraphQL transport error",
+                    method="POST",
+                    url="/graphql",
+                    original=exc,
+                ) from exc
+
+            status_code = response.status_code
+            response_text = response.text
+
+            if status_code >= 400:
+                error = f"{status_code} {response_text.strip()}"
+                raise GitHubHttpError(
+                    f"GitHub GraphQL request failed: {status_code}",
+                    method="POST",
+                    url="/graphql",
+                    status_code=status_code,
+                    response_text=response_text,
+                )
+
+            payload = response.json()
+
+            # Check for GraphQL-level errors
+            if "errors" in payload and payload["errors"]:
+                error_messages = [e.get("message", str(e)) for e in payload["errors"]]
+                error = f"GraphQL errors: {error_messages}"
+                raise GitHubHttpError(
+                    f"GitHub GraphQL error: {error_messages[0]}",
+                    method="POST",
+                    url="/graphql",
+                    status_code=status_code,
+                    response_text=response_text,
+                )
+
+            return payload
+        finally:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            rate_limit_info = _extract_rate_limit_headers(response) if response is not None else None
+            gh_audit.record(
+                args=["POST", "/graphql", caller],
+                repo=self._config.repo,
+                duration_ms=duration_ms,
+                error=error,
+                caller=caller,
+                bytes_returned=len(response_text.encode("utf-8")) if response_text else 0,
+                items_returned=1 if payload.get("data") else 0,
+                full_scan=False,
+                rate_limit=rate_limit_info,
+            )
+
     # -------------------- Issues --------------------
 
     def list_issues(
@@ -682,14 +771,74 @@ class GitHubHttpClient:
         return payload if isinstance(payload, dict) else None
 
     def set_pr_draft(self, pr_number: int, draft: bool) -> dict[str, Any] | None:
-        payload = self._request_json(
-            "PATCH",
-            f"/repos/{self._config.repo}/pulls/{pr_number}",
-            json_body={"draft": draft},
-            use_cache=False,
-            caller="set_pr_draft",
+        """Set draft status on a pull request using GraphQL.
+
+        The REST API does not support changing draft status, so we must use
+        GraphQL mutations: markPullRequestReadyForReview or convertPullRequestToDraft.
+        """
+        owner, repo = self._config.repo.split("/")
+
+        # First, get the PR's GraphQL node ID
+        node_id_query = """
+        query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $number) {
+                    id
+                }
+            }
+        }
+        """
+        result = self._graphql(
+            node_id_query,
+            {"owner": owner, "repo": repo, "number": pr_number},
+            caller="set_pr_draft_get_id",
         )
-        return payload if isinstance(payload, dict) else None
+        pr_data = result.get("data", {}).get("repository", {}).get("pullRequest")
+        if not pr_data:
+            raise GitHubHttpError(
+                f"PR #{pr_number} not found",
+                method="POST",
+                url="/graphql",
+                status_code=200,
+                response_text=str(result),
+            )
+        node_id = pr_data["id"]
+
+        # Use the appropriate mutation based on desired draft status
+        if draft:
+            mutation = """
+            mutation($pullRequestId: ID!) {
+                convertPullRequestToDraft(input: {pullRequestId: $pullRequestId}) {
+                    pullRequest {
+                        id
+                        number
+                        isDraft
+                    }
+                }
+            }
+            """
+            mutation_name = "convertPullRequestToDraft"
+        else:
+            mutation = """
+            mutation($pullRequestId: ID!) {
+                markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) {
+                    pullRequest {
+                        id
+                        number
+                        isDraft
+                    }
+                }
+            }
+            """
+            mutation_name = "markPullRequestReadyForReview"
+
+        result = self._graphql(
+            mutation,
+            {"pullRequestId": node_id},
+            caller="set_pr_draft_mutate",
+        )
+        mutation_result = result.get("data", {}).get(mutation_name, {})
+        return mutation_result.get("pullRequest")
 
     # -------------------- Rate limits --------------------
 
