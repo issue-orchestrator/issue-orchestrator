@@ -205,7 +205,7 @@ def build_orchestrator(
         )
         claimant_id = config.claims.claimant_id or f"orchestrator-{os.getpid()}"
         claim_manager = GitHubClaimAdapter(
-            client=github._client,  # Use the HTTP client from GitHubAdapter
+            client=github.http_client,
             claimant_id=claimant_id,
             config=lease_config,
             events=events,
