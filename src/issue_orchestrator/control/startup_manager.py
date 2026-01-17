@@ -18,7 +18,7 @@ import re
 import time
 from typing import Callable, Optional
 
-from ..infra.analysis import analyze_issue
+from ..infra.analysis import analyze_issue, IssueState
 from ..infra.config import Config
 from ..ports.issue import Issue
 from ..domain.models import (
@@ -199,85 +199,76 @@ class StartupManager:
         issue_branches: dict[int, str],
         issues_to_resume: list[tuple[Issue, str]],
     ) -> None:
-        """Check all in-progress issues and determine action.
-
-        Args:
-            state: Orchestrator state
-            issue_branches: Map of issue number to branch name
-            issues_to_resume: List to append issues that need resuming
-        """
+        """Check all in-progress issues and determine action."""
         for agent_label in self.config.agents.keys():
-            state.startup_message = f"Checking in-progress issues for {agent_label}..."
-            api_start = time.time()
-
-            milestones = self.config.get_filter_milestones()
-            if not milestones:
-                milestones = [None]
-            issues = []
-            for milestone in milestones:
-                with gh_audit.context(
-                    reason=gh_audit.AuditReason.STARTUP_REFRESH,
-                    scope=gh_audit.AuditScope.STARTUP,
-                ):
-                    issues.extend(self.repository_host.list_issues(
-                        labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
-                        milestone=milestone,
-                        limit=self.config.filtering.fetch_limit,
-                    ))
-
-            elapsed = time.time() - api_start
-            logger.debug("Fetched %d in-progress issues for %s in %.1fs", len(issues), agent_label, elapsed)
-            print(f"[startup] Fetched {len(issues)} in-progress issues for {agent_label} in {elapsed:.1f}s")
-
+            issues = self._fetch_in_progress_issues_for_agent(state, agent_label)
             for issue in issues:
-                state.startup_message = f"Analyzing issue #{issue.number}..."
+                self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label)
 
-                # Use shared analysis logic
-                analysis = analyze_issue(
-                    issue=issue,
-                    repo=self.config.repo,
-                    issue_branches=issue_branches,
-                    check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
-                )
+    def _fetch_in_progress_issues_for_agent(self, state: OrchestratorState, agent_label: str) -> list[Issue]:
+        """Fetch in-progress issues for a specific agent."""
+        state.startup_message = f"Checking in-progress issues for {agent_label}..."
+        api_start = time.time()
 
-                # Skip blocked issues
-                if issue.is_blocked:
-                    print(f"  #{issue.number}: Blocked - waiting for intervention")
-                    continue
+        milestones = self.config.get_filter_milestones() or [None]
+        issues = []
+        for milestone in milestones:
+            with gh_audit.context(reason=gh_audit.AuditReason.STARTUP_REFRESH, scope=gh_audit.AuditScope.STARTUP):
+                issues.extend(self.repository_host.list_issues(
+                    labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
+                    milestone=milestone, limit=self.config.filtering.fetch_limit,
+                ))
 
-                if analysis.has_session:
-                    print(f"  #{issue.number}: Active session found - resuming monitoring")
-                elif analysis.has_open_pr:
-                    # S2: PR exists but issue might be missing pr-pending label
-                    # Add pr-pending and remove in-progress (crash recovery)
-                    if not labels.is_pr_pending(issue.labels):
-                        print(f"  #{issue.number}: Has open PR - adding pr-pending label (crash recovery)")
-                        self._apply_label_actions([
-                            AddLabelAction(
-                                issue_number=issue.number,
-                                label=labels.PR_PENDING,
-                                reason="startup recovery: missing pr-pending",
-                            ),
-                            RemoveLabelAction(
-                                issue_number=issue.number,
-                                label=self.config.get_label_in_progress(),
-                                reason="startup recovery: remove stale in-progress",
-                            ),
-                        ])
-                    else:
-                        print(f"  #{issue.number}: Has open PR ({analysis.pr_url or 'unknown'}) - already has pr-pending")
-                elif analysis.has_partial_work:
-                    print(f"  #{issue.number}: Has branch '{analysis.branch}' with commits - queuing for resume")
-                    issues_to_resume.append((issue, agent_label))
-                elif analysis.is_orphaned_label:
-                    print(f"  #{issue.number}: No session or branch - clearing stale label")
-                    self._apply_label_actions([
-                        RemoveLabelAction(
-                            issue_number=issue.number,
-                            label=self.config.get_label_in_progress(),
-                            reason="startup recovery: clear stale in-progress",
-                        ),
-                    ])
+        elapsed = time.time() - api_start
+        logger.debug("Fetched %d in-progress issues for %s in %.1fs", len(issues), agent_label, elapsed)
+        print(f"[startup] Fetched {len(issues)} in-progress issues for {agent_label} in {elapsed:.1f}s")
+        return issues
+
+    def _analyze_and_handle_issue(
+        self,
+        state: OrchestratorState,
+        issue: Issue,
+        issue_branches: dict[int, str],
+        issues_to_resume: list[tuple[Issue, str]],
+        agent_label: str,
+    ) -> None:
+        """Analyze an in-progress issue and handle appropriately."""
+        state.startup_message = f"Analyzing issue #{issue.number}..."
+
+        analysis = analyze_issue(
+            issue=issue, repo=self.config.repo, issue_branches=issue_branches,
+            check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
+        )
+
+        if issue.is_blocked:
+            print(f"  #{issue.number}: Blocked - waiting for intervention")
+        elif analysis.has_session:
+            print(f"  #{issue.number}: Active session found - resuming monitoring")
+        elif analysis.has_open_pr:
+            self._handle_issue_with_pr(issue, analysis)
+        elif analysis.has_partial_work:
+            print(f"  #{issue.number}: Has branch '{analysis.branch}' with commits - queuing for resume")
+            issues_to_resume.append((issue, agent_label))
+        elif analysis.is_orphaned_label:
+            self._clear_orphaned_label(issue)
+
+    def _handle_issue_with_pr(self, issue: Issue, analysis: IssueState) -> None:
+        """Handle issue that has an open PR."""
+        if not labels.is_pr_pending(issue.labels):
+            print(f"  #{issue.number}: Has open PR - adding pr-pending label (crash recovery)")
+            self._apply_label_actions([
+                AddLabelAction(issue_number=issue.number, label=labels.PR_PENDING, reason="startup recovery: missing pr-pending"),
+                RemoveLabelAction(issue_number=issue.number, label=self.config.get_label_in_progress(), reason="startup recovery: remove stale in-progress"),
+            ])
+        else:
+            print(f"  #{issue.number}: Has open PR ({analysis.pr_url or 'unknown'}) - already has pr-pending")
+
+    def _clear_orphaned_label(self, issue: Issue) -> None:
+        """Clear stale in-progress label from issue."""
+        print(f"  #{issue.number}: No session or branch - clearing stale label")
+        self._apply_label_actions([
+            RemoveLabelAction(issue_number=issue.number, label=self.config.get_label_in_progress(), reason="startup recovery: clear stale in-progress"),
+        ])
 
     async def _recover_pending_reviews(self, state: OrchestratorState) -> None:
         """Recover PRs needing code review after crash/restart."""

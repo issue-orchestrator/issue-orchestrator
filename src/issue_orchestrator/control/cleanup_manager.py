@@ -84,77 +84,104 @@ class CleanupManager:
         if not pending_cleanups:
             return pending_cleanups
 
-        # Determine which label indicates review is complete
-        if self.config.triage_review_agent:
-            cleanup_label = self.config.triage_reviewed_label
-        elif self.config.code_review_agent:
-            cleanup_label = self.config.code_reviewed_label
-        else:
-            logger.warning("[CLEANUP] Found deferred cleanups but no review workflow configured")
-            return pending_cleanups
-
+        cleanup_label = self._get_cleanup_label()
         if not cleanup_label:
-            logger.warning("[CLEANUP] No cleanup label configured")
             return pending_cleanups
 
-        # Get all PRs with the cleanup label
-        try:
-            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
-            reviewed_pr_numbers = {pr.number for pr in reviewed_prs}
-        except Exception as e:
-            logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
+        reviewed_pr_numbers = self._get_reviewed_pr_numbers(cleanup_label)
+        if reviewed_pr_numbers is None:
             return pending_cleanups
 
-        # Process each pending cleanup
-        cleanups_to_remove = []
-        for pending in pending_cleanups:
-            if pending.pr_number in reviewed_pr_numbers:
-                logger.info(f"[CLEANUP] PR #{pending.pr_number} has '{cleanup_label}' label - cleaning up")
-                cleanup_succeeded = True
+        cleanups_to_remove = self._process_pending_cleanups(pending_cleanups, reviewed_pr_numbers, cleanup_label)
 
-                # Close terminal session if configured
-                close_tabs = (
-                    self.config.cleanup.with_triage.close_ai_session_tabs
-                    if self.config.triage_review_agent
-                    else self.config.cleanup.without_triage.close_ai_session_tabs
-                )
-                if close_tabs:
-                    try:
-                        self._kill_session(pending.terminal_session_name)
-                        logger.info(f"[CLEANUP] Closed terminal session for #{pending.issue_number}")
-                    except Exception as e:
-                        logger.warning(f"[CLEANUP] Failed to close session for #{pending.issue_number}: {e}")
-                        cleanup_succeeded = False
-
-                # Remove worktree if configured
-                remove_wt = (
-                    self.config.cleanup.with_triage.remove_worktrees
-                    if self.config.triage_review_agent
-                    else self.config.cleanup.without_triage.remove_worktrees
-                )
-                if remove_wt:
-                    try:
-                        self._worktree_manager.remove(pending.worktree_path)
-                        logger.info(f"[CLEANUP] Removed worktree for #{pending.issue_number}")
-                    except Exception as e:
-                        logger.warning(f"[CLEANUP] Failed to remove worktree for #{pending.issue_number}: {e}")
-                        cleanup_succeeded = False
-
-                if cleanup_succeeded:
-                    cleanups_to_remove.append(pending)
-                else:
-                    logger.warning(
-                        "[CLEANUP] Cleanup incomplete for #%d - leaving pending for retry",
-                        pending.issue_number,
-                    )
-
-        # Remove processed cleanups
         remaining = [c for c in pending_cleanups if c not in cleanups_to_remove]
-
         if cleanups_to_remove:
             logger.info(f"[CLEANUP] Processed {len(cleanups_to_remove)} deferred cleanups")
 
         return remaining
+
+    def _get_cleanup_label(self) -> str | None:
+        """Get the label that indicates review is complete."""
+        if self.config.triage_review_agent:
+            label = self.config.triage_reviewed_label
+        elif self.config.code_review_agent:
+            label = self.config.code_reviewed_label
+        else:
+            logger.warning("[CLEANUP] Found deferred cleanups but no review workflow configured")
+            return None
+
+        if not label:
+            logger.warning("[CLEANUP] No cleanup label configured")
+            return None
+
+        return label
+
+    def _get_reviewed_pr_numbers(self, cleanup_label: str) -> set[int] | None:
+        """Get PR numbers that have the cleanup label."""
+        try:
+            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
+            return {pr.number for pr in reviewed_prs}
+        except Exception as e:
+            logger.warning(f"[CLEANUP] Failed to fetch PRs with label {cleanup_label}: {e}")
+            return None
+
+    def _get_cleanup_settings(self) -> tuple[bool, bool]:
+        """Get cleanup settings (close_tabs, remove_worktrees) based on workflow."""
+        if self.config.triage_review_agent:
+            return (
+                self.config.cleanup.with_triage.close_ai_session_tabs,
+                self.config.cleanup.with_triage.remove_worktrees,
+            )
+        return (
+            self.config.cleanup.without_triage.close_ai_session_tabs,
+            self.config.cleanup.without_triage.remove_worktrees,
+        )
+
+    def _process_pending_cleanups(
+        self,
+        pending_cleanups: list["PendingCleanup"],
+        reviewed_pr_numbers: set[int],
+        cleanup_label: str,
+    ) -> list["PendingCleanup"]:
+        """Process each pending cleanup and return list of successful cleanups."""
+        close_tabs, remove_wt = self._get_cleanup_settings()
+        cleanups_to_remove = []
+
+        for pending in pending_cleanups:
+            if pending.pr_number not in reviewed_pr_numbers:
+                continue
+
+            logger.info(f"[CLEANUP] PR #{pending.pr_number} has '{cleanup_label}' label - cleaning up")
+            cleanup_succeeded = self._execute_cleanup(pending, close_tabs, remove_wt)
+
+            if cleanup_succeeded:
+                cleanups_to_remove.append(pending)
+            else:
+                logger.warning("[CLEANUP] Cleanup incomplete for #%d - leaving pending for retry", pending.issue_number)
+
+        return cleanups_to_remove
+
+    def _execute_cleanup(self, pending: "PendingCleanup", close_tabs: bool, remove_wt: bool) -> bool:
+        """Execute cleanup for a single pending cleanup. Returns True if successful."""
+        success = True
+
+        if close_tabs:
+            try:
+                self._kill_session(pending.terminal_session_name)
+                logger.info(f"[CLEANUP] Closed terminal session for #{pending.issue_number}")
+            except Exception as e:
+                logger.warning(f"[CLEANUP] Failed to close session for #{pending.issue_number}: {e}")
+                success = False
+
+        if remove_wt:
+            try:
+                self._worktree_manager.remove(pending.worktree_path)
+                logger.info(f"[CLEANUP] Removed worktree for #{pending.issue_number}")
+            except Exception as e:
+                logger.warning(f"[CLEANUP] Failed to remove worktree for #{pending.issue_number}: {e}")
+                success = False
+
+        return success
 
     def recover_orphaned_cleanups(
         self,
@@ -172,80 +199,27 @@ class CleanupManager:
         Returns:
             Number of orphaned worktrees cleaned up
         """
-        # Determine which label indicates cleanup is due
-        if self.config.triage_review_agent:
-            cleanup_label = self.config.triage_reviewed_label
-            close_tabs = self.config.cleanup.with_triage.close_ai_session_tabs
-            remove_wt = self.config.cleanup.with_triage.remove_worktrees
-        elif self.config.code_review_agent:
-            cleanup_label = self.config.code_reviewed_label
-            close_tabs = self.config.cleanup.without_triage.close_ai_session_tabs
-            remove_wt = self.config.cleanup.without_triage.remove_worktrees
-        else:
-            return 0
-
+        cleanup_label = self._get_cleanup_label()
         if not cleanup_label:
             return 0
+
+        close_tabs, remove_wt = self._get_cleanup_settings()
 
         if set_startup_message:
             set_startup_message("Checking for orphaned cleanups...")
         print(f"\nChecking for orphaned cleanups (PRs with '{cleanup_label}' label)...")
 
-        try:
-            reviewed_prs = self.repository_host.get_prs_with_label(cleanup_label)
-        except Exception as e:
-            logger.warning(f"[CLEANUP] Failed to fetch reviewed PRs: {e}")
-            return 0
-
+        reviewed_prs = self._fetch_reviewed_prs(cleanup_label)
         if not reviewed_prs:
             print("  No reviewed PRs found")
             return 0
 
         # Consistency check: PRs with code-reviewed label should not be draft
-        # This catches cases where review completed but PR wasn't marked ready
         draft_fixed = self._fix_draft_reviewed_prs(reviewed_prs)
         if draft_fixed > 0:
             print(f"  Fixed {draft_fixed} draft PR(s) with '{cleanup_label}' label")
 
-        cleaned_count = 0
-        for pr in reviewed_prs:
-            # Extract issue number from branch name (e.g., "328-description" -> 328)
-            branch = pr.branch
-            issue_number = self._worktree_manager.extract_issue_number(branch)
-            if issue_number is None:
-                continue
-            session_name = self._get_session_name(issue_number, "issue")
-
-            # Check if session is still running (skip if so)
-            if self._session_exists(session_name):
-                logger.debug(f"[CLEANUP] Session {session_name} still running - skipping")
-                continue
-
-            # Check each agent config for matching worktree
-            for _agent_label, agent_config in self.config.agents.items():
-                worktree_path = self._get_worktree_path(issue_number, agent_config)
-
-                if worktree_path.exists():
-                    logger.info(f"[CLEANUP] Found orphaned worktree for #{issue_number} at {worktree_path}")
-                    print(f"  #{issue_number}: Cleaning up orphaned worktree")
-
-                    # Close terminal if configured (may already be closed)
-                    if close_tabs:
-                        try:
-                            self._kill_session(session_name)
-                        except Exception:
-                            pass  # Session probably already gone
-
-                    # Remove worktree if configured
-                    if remove_wt:
-                        try:
-                            self._worktree_manager.remove(worktree_path)
-                            logger.info(f"[CLEANUP] Removed orphaned worktree for #{issue_number}")
-                        except Exception as e:
-                            logger.warning(f"[CLEANUP] Failed to remove worktree for #{issue_number}: {e}")
-
-                    cleaned_count += 1
-                    break  # Found the worktree, no need to check other agents
+        cleaned_count = self._cleanup_orphaned_worktrees(reviewed_prs, close_tabs, remove_wt)
 
         if cleaned_count > 0:
             print(f"  Cleaned up {cleaned_count} orphaned worktree(s)")
@@ -253,6 +227,72 @@ class CleanupManager:
             print("  No orphaned worktrees found")
 
         return cleaned_count
+
+    def _fetch_reviewed_prs(self, cleanup_label: str) -> list["PRInfo"]:
+        """Fetch PRs with the cleanup label."""
+        try:
+            return self.repository_host.get_prs_with_label(cleanup_label)
+        except Exception as e:
+            logger.warning(f"[CLEANUP] Failed to fetch reviewed PRs: {e}")
+            return []
+
+    def _cleanup_orphaned_worktrees(
+        self,
+        reviewed_prs: list["PRInfo"],
+        close_tabs: bool,
+        remove_wt: bool,
+    ) -> int:
+        """Clean up orphaned worktrees for reviewed PRs."""
+        cleaned_count = 0
+
+        for pr in reviewed_prs:
+            issue_number = self._worktree_manager.extract_issue_number(pr.branch)
+            if issue_number is None:
+                continue
+
+            session_name = self._get_session_name(issue_number, "issue")
+            if self._session_exists(session_name):
+                logger.debug(f"[CLEANUP] Session {session_name} still running - skipping")
+                continue
+
+            if self._cleanup_worktree_for_issue(issue_number, session_name, close_tabs, remove_wt):
+                cleaned_count += 1
+
+        return cleaned_count
+
+    def _cleanup_worktree_for_issue(
+        self,
+        issue_number: int,
+        session_name: str,
+        close_tabs: bool,
+        remove_wt: bool,
+    ) -> bool:
+        """Clean up worktree for a specific issue. Returns True if cleaned."""
+        for _agent_label, agent_config in self.config.agents.items():
+            worktree_path = self._get_worktree_path(issue_number, agent_config)
+
+            if not worktree_path.exists():
+                continue
+
+            logger.info(f"[CLEANUP] Found orphaned worktree for #{issue_number} at {worktree_path}")
+            print(f"  #{issue_number}: Cleaning up orphaned worktree")
+
+            if close_tabs:
+                try:
+                    self._kill_session(session_name)
+                except Exception:
+                    pass  # Session probably already gone
+
+            if remove_wt:
+                try:
+                    self._worktree_manager.remove(worktree_path)
+                    logger.info(f"[CLEANUP] Removed orphaned worktree for #{issue_number}")
+                except Exception as e:
+                    logger.warning(f"[CLEANUP] Failed to remove worktree for #{issue_number}: {e}")
+
+            return True  # Found the worktree, no need to check other agents
+
+        return False
 
     def _fix_draft_reviewed_prs(self, prs: list["PRInfo"]) -> int:
         """Fix PRs that have code-reviewed label but are still draft.

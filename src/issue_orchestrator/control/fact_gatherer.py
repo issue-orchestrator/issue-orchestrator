@@ -64,76 +64,65 @@ class FactGatherer:
         milestone: Optional[str] = None,
         required_stable_ids: set[str] | None = None,
     ) -> list["Issue"]:
-        """Fetch all issues for configured agents from GitHub.
+        """Fetch all issues for configured agents from GitHub."""
+        milestones = self.config.get_filter_milestones() or [milestone]
+        all_issues, seen, still_needed = [], set(), set(required_stable_ids) if required_stable_ids else None
 
-        Args:
-            labels_for_agent: Labels that identify agent issues
-            milestone: Optional milestone filter
-            required_stable_ids: Optional set of stable IDs that must be discovered.
-                If provided and missing after cached fetch, retry without cache.
-
-        Returns:
-            List of issues across all agent types
-        """
-        milestones = self.config.get_filter_milestones()
-        if not milestones:
-            milestones = [milestone]
-
-        all_issues: list["Issue"] = []
-        seen: set[int] = set()
-        # Track which required IDs still need to be found across all agent types
-        # Once an ID is found in any query, remove it from the required set
-        still_needed = set(required_stable_ids) if required_stable_ids else None
         for agent_label in self.config.agents.keys():
-            labels = list(labels_for_agent)
-            labels.append(agent_label)
+            labels = list(labels_for_agent) + [agent_label]
             for milestone_name in milestones:
                 issues = self.repository_host.list_issues(
-                    labels=labels,
-                    milestone=milestone_name,
-                    limit=self.config.filtering.fetch_limit,
-                    required_stable_ids=still_needed,
+                    labels=labels, milestone=milestone_name,
+                    limit=self.config.filtering.fetch_limit, required_stable_ids=still_needed,
                 )
-                for issue in issues:
-                    if issue.number in seen:
-                        continue
-                    seen.add(issue.number)
-                    all_issues.append(issue)
-                    # Remove found IDs from the still_needed set
-                    if still_needed and issue.key.stable_id() in still_needed:
-                        still_needed.discard(issue.key.stable_id())
-                if self.events:
-                    self.events.publish(TraceEvent(EventName.ISSUES_FETCHED, {
-                        "agent": agent_label,
-                        "labels": labels,
-                        "milestone": milestone_name,
-                        "count": len(issues),
-                        "issue_numbers": [i.number for i in issues],
-                    }))
-                    for issue in issues:
-                        self.events.publish(TraceEvent(
-                            EventName.ISSUE_LABELS_CHANGED,
-                            {
-                                "issue_number": issue.number,
-                                "issue_key": issue.key.stable_id(),
-                                "labels": list(issue.labels),
-                                "state": issue.state,
-                            },
-                        ))
+                self._process_fetched_issues(issues, all_issues, seen, still_needed, agent_label, labels, milestone_name)
 
-        # Apply exclusion filter (runs after GitHub API filtering)
+        return self._apply_issue_filter(all_issues)
+
+    def _process_fetched_issues(
+        self,
+        issues: list["Issue"],
+        all_issues: list["Issue"],
+        seen: set[int],
+        still_needed: set[str] | None,
+        agent_label: str,
+        labels: list[str],
+        milestone_name: str | None,
+    ) -> None:
+        """Process fetched issues and emit events."""
+        for issue in issues:
+            if issue.number in seen:
+                continue
+            seen.add(issue.number)
+            all_issues.append(issue)
+            if still_needed and issue.key.stable_id() in still_needed:
+                still_needed.discard(issue.key.stable_id())
+
+        if self.events:
+            self._emit_issues_fetched_events(issues, agent_label, labels, milestone_name)
+
+    def _emit_issues_fetched_events(self, issues: list["Issue"], agent_label: str, labels: list[str], milestone_name: str | None) -> None:
+        """Emit events for fetched issues."""
+        self.events.publish(TraceEvent(EventName.ISSUES_FETCHED, {
+            "agent": agent_label, "labels": labels, "milestone": milestone_name,
+            "count": len(issues), "issue_numbers": [i.number for i in issues],
+        }))
+        for issue in issues:
+            self.events.publish(TraceEvent(EventName.ISSUE_LABELS_CHANGED, {
+                "issue_number": issue.number, "issue_key": issue.key.stable_id(),
+                "labels": list(issue.labels), "state": issue.state,
+            }))
+
+    def _apply_issue_filter(self, all_issues: list["Issue"]) -> list["Issue"]:
+        """Apply exclusion filter to issues."""
         issue_filter = self.config.get_issue_filter()
-        if not issue_filter.is_empty():
-            before_count = len(all_issues)
-            all_issues = issue_filter.apply(all_issues)
-            if before_count != len(all_issues):
-                logger.debug(
-                    "Excluded %d issues via filter %s",
-                    before_count - len(all_issues),
-                    issue_filter,
-                )
-
-        return all_issues
+        if issue_filter.is_empty():
+            return all_issues
+        before_count = len(all_issues)
+        filtered = issue_filter.apply(all_issues)
+        if before_count != len(filtered):
+            logger.debug("Excluded %d issues via filter %s", before_count - len(filtered), issue_filter)
+        return filtered
 
     def create_snapshot(
         self,
@@ -181,92 +170,83 @@ class FactGatherer:
         self,
         state: "OrchestratorState",
     ) -> Optional["TriageFacts"]:
-        """Gather facts for triage review trigger decision.
-
-        Returns immutable facts for the Planner to decide whether to create
-        a triage issue. Does NOT create the issue - that's the Planner's job.
-
-        Args:
-            state: Current orchestrator state (for future use)
-
-        Returns:
-            TriageFacts if triage is configured, else None
-        """
+        """Gather facts for triage review trigger decision."""
         from ..domain.models import TriageFacts
 
-        # Check if triage review is configured
-        if not self.config.triage_review_agent:
-            return None
-        if self.config.triage_review_threshold <= 0:
-            return None
-
-        # Label to watch: either explicit triage_review_label or code_reviewed_label
-        watch_label = self.config.triage_review_label or self.config.code_reviewed_label
+        watch_label = self._get_triage_watch_label()
         if not watch_label:
             return None
 
-        # Count PRs ready for triage review (include closed to avoid missing fast-closed PRs)
-        prs = self.repository_host.get_prs_with_label(watch_label, state="all")
-        if self.config.filtering.label:
-            prs = [
-                pr
-                for pr in prs
-                if self.config.filtering.label in _pr_labels(pr)
-            ]
-        pr_count = len(prs)
-        threshold = self.config.triage_review_threshold
-
-        # Check if a triage review issue already exists
-        existing_triage_issue: Optional[int] = None
-        existing = self.repository_host.list_issues(
-            labels=[self.config.triage_review_agent],
-            limit=10,
-        )
-        for issue in existing:
-            if "Batch Review" in issue.title or "Triage Review" in issue.title:
-                existing_triage_issue = issue.number
-                break
-
-        # Build PR info tuples for body generation
-        pr_tuples = tuple((pr.number, pr.title) for pr in prs)
-
-        # Collect all labels from source PRs for label inheritance
-        all_labels: set[str] = set()
-        for pr in prs:
-            all_labels.update(_pr_labels(pr))
-
-        # Collect milestones and labels from linked issues
-        # PRs don't have milestones directly - they're on the linked issues
-        # Extract issue numbers from PR bodies/titles and look up milestones + labels
-        source_milestones: list[tuple[int, str]] = []
-        for pr in prs:
-            # Try to extract linked issue number from PR body or title
-            # Common patterns: "Fixes #123", "Closes #123", "#123", "issue-123"
-            matches = re.findall(r'#(\d+)', (pr.body or "") + " " + pr.title)
-            for match in matches:
-                issue_num = int(match)
-                try:
-                    issue = self.repository_host.get_issue(issue_num)
-                    if issue:
-                        # Collect labels from linked issue
-                        all_labels.update(issue.labels)
-                        # Collect milestone if present
-                        if issue.milestone and issue.milestone_number:
-                            milestone_tuple = (issue.milestone_number, issue.milestone)
-                            if milestone_tuple not in source_milestones:
-                                source_milestones.append(milestone_tuple)
-                except Exception:
-                    pass  # Ignore lookup errors
+        prs = self._fetch_triage_prs(watch_label)
+        existing_triage_issue = self._find_existing_triage_issue()
+        all_labels, source_milestones = self._collect_pr_metadata(prs)
 
         return TriageFacts(
-            pr_count=pr_count,
-            threshold=threshold,
+            pr_count=len(prs),
+            threshold=self.config.triage_review_threshold,
             existing_triage_issue=existing_triage_issue,
             watch_label=watch_label,
-            prs=pr_tuples,
+            prs=tuple((pr.number, pr.title) for pr in prs),
             source_labels=frozenset(all_labels),
             source_milestones=tuple(source_milestones),
         )
+
+    def _get_triage_watch_label(self) -> str | None:
+        """Get the label to watch for triage review."""
+        if not self.config.triage_review_agent or self.config.triage_review_threshold <= 0:
+            return None
+        return self.config.triage_review_label or self.config.code_reviewed_label
+
+    def _fetch_triage_prs(self, watch_label: str) -> list[Any]:
+        """Fetch PRs ready for triage review."""
+        prs = self.repository_host.get_prs_with_label(watch_label, state="all")
+        if self.config.filtering.label:
+            prs = [pr for pr in prs if self.config.filtering.label in _pr_labels(pr)]
+        return prs
+
+    def _find_existing_triage_issue(self) -> int | None:
+        """Find existing triage review issue if any."""
+        triage_agent = self.config.triage_review_agent
+        if not triage_agent:
+            return None
+        existing = self.repository_host.list_issues(labels=[triage_agent], limit=10)
+        for issue in existing:
+            if "Batch Review" in issue.title or "Triage Review" in issue.title:
+                return issue.number
+        return None
+
+    def _collect_pr_metadata(self, prs: list[Any]) -> tuple[set[str], list[tuple[int, str]]]:
+        """Collect labels and milestones from PRs and their linked issues."""
+        all_labels: set[str] = set()
+        source_milestones: list[tuple[int, str]] = []
+
+        for pr in prs:
+            all_labels.update(_pr_labels(pr))
+            self._collect_linked_issue_metadata(pr, all_labels, source_milestones)
+
+        return all_labels, source_milestones
+
+    def _collect_linked_issue_metadata(
+        self,
+        pr: object,
+        all_labels: set[str],
+        source_milestones: list[tuple[int, str]],
+    ) -> None:
+        """Collect metadata from issues linked to a PR."""
+        matches = re.findall(r'#(\d+)', (getattr(pr, 'body', '') or "") + " " + pr.title)
+        for match in matches:
+            issue_num = int(match)
+            try:
+                issue = self.repository_host.get_issue(issue_num)
+                if not issue:
+                    continue
+                all_labels.update(issue.labels)
+                if issue.milestone and issue.milestone_number:
+                    milestone_tuple = (issue.milestone_number, issue.milestone)
+                    if milestone_tuple not in source_milestones:
+                        source_milestones.append(milestone_tuple)
+            except Exception:
+                pass
 
     def gather_cleanup_facts(
         self,

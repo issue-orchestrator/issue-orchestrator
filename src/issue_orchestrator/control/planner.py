@@ -411,26 +411,36 @@ class Planner:
         return actions
 
     def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:
-        """Plan triage issue creation if threshold is met.
-
-        Returns:
-            CreateTriageIssueAction if threshold met and no existing issue, else None
-        """
+        """Plan triage issue creation if threshold is met."""
         if not snapshot.triage_facts:
             return None
 
         facts = snapshot.triage_facts
+        if not self._should_create_triage_issue(facts):
+            return None
+
+        title, body = self._build_triage_issue_content(facts)
+        labels = self._compute_triage_labels(facts)
+        milestone = self._compute_triage_milestone(facts)
+
+        logger.info("Planner: creating triage issue for %d PRs (labels=%s, milestone=%s)", facts.pr_count, labels, milestone)
+        return CreateTriageIssueAction(
+            title=title, body=body, labels=labels, pr_count=facts.pr_count,
+            milestone=milestone, reason=f"threshold met: {facts.pr_count} >= {facts.threshold}",
+        )
+
+    def _should_create_triage_issue(self, facts: "TriageFacts") -> bool:
+        """Check if triage issue should be created."""
         if facts.pr_count < facts.threshold:
-            logger.debug("Planner: triage threshold not met (%d/%d)",
-                        facts.pr_count, facts.threshold)
-            return None
-
+            logger.debug("Planner: triage threshold not met (%d/%d)", facts.pr_count, facts.threshold)
+            return False
         if facts.existing_triage_issue:
-            logger.debug("Planner: triage issue #%d already exists",
-                        facts.existing_triage_issue)
-            return None
+            logger.debug("Planner: triage issue #%d already exists", facts.existing_triage_issue)
+            return False
+        return True
 
-        # Build issue body from PR list
+    def _build_triage_issue_content(self, facts: "TriageFacts") -> tuple[str, str]:
+        """Build title and body for triage issue."""
         pr_list = "\n".join(f"- PR #{pr[0]}: {pr[1]}" for pr in facts.prs)
         body = f"""## Triage Batch Review Triggered
 
@@ -442,56 +452,38 @@ Review these PRs for patterns, architectural concerns, and process improvements.
 Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` after review.
 """
         title = f"Triage Batch Review: {facts.pr_count} PRs pending"
+        return title, body
 
-        # Compute labels: agent label + explicit + inherited + priority
+    def _compute_triage_labels(self, facts: "TriageFacts") -> tuple[str, ...]:
+        """Compute labels for triage issue."""
         label_list: list[str] = []
         if self.config.triage_review_agent:
             label_list.append(self.config.triage_review_agent)
         if self.config.filtering.label and self.config.filtering.label not in label_list:
             label_list.append(self.config.filtering.label)
-
-        # Add explicit labels from triage config
         label_list.extend(self.config.triage.explicit_labels)
-
-        # Add inherited labels (labels in inherit_labels that exist in source_labels)
         for inherit_label in self.config.triage.inherit_labels:
             if inherit_label in facts.source_labels:
                 label_list.append(inherit_label)
-
-        # Add priority if configured
         if self.config.triage.priority:
             label_list.append(self.config.triage.priority)
+        return tuple(label_list)
 
-        labels = tuple(label_list)
-
-        # Compute milestone from strategy
-        milestone: Optional[int] = None
+    def _compute_triage_milestone(self, facts: "TriageFacts") -> int | None:
+        """Compute milestone for triage issue."""
         triage_ms = self.config.triage.milestone_strategy
 
         if triage_ms.explicit:
-            # Explicit milestone - need to look up milestone number by name
-            # For now, we can't resolve name to number here, so skip explicit
-            # This would require passing repository_host to planner
-            logger.debug("Planner: explicit milestone '%s' configured but name lookup not implemented",
-                        triage_ms.explicit)
-        elif triage_ms.inherit_from_issues and facts.source_milestones:
-            # Inherit from source issues
+            logger.debug("Planner: explicit milestone '%s' configured but name lookup not implemented", triage_ms.explicit)
+            return None
+
+        if triage_ms.inherit_from_issues and facts.source_milestones:
             sorted_milestones = sorted(facts.source_milestones, key=lambda m: m[0])
             if triage_ms.inherit_from_issues == "earliest":
-                milestone = sorted_milestones[0][0]  # Lowest number
-            else:  # "latest" (default)
-                milestone = sorted_milestones[-1][0]  # Highest number
+                return sorted_milestones[0][0]
+            return sorted_milestones[-1][0]
 
-        logger.info("Planner: creating triage issue for %d PRs (labels=%s, milestone=%s)",
-                   facts.pr_count, labels, milestone)
-        return CreateTriageIssueAction(
-            title=title,
-            body=body,
-            labels=labels,
-            pr_count=facts.pr_count,
-            milestone=milestone,
-            reason=f"threshold met: {facts.pr_count} >= {facts.threshold}",
-        )
+        return None
 
     def _plan_discovered_reworks(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         """Plan queue actions for discovered reworks from scans.

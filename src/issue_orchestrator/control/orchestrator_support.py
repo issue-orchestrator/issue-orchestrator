@@ -64,7 +64,7 @@ def init_orchestrator_components(orch: "Orchestrator", dep_eval: "DependencyEval
     orch.scheduler = orch.deps.planner.scheduler
 
     # Wire up action_applier's session_launcher callback
-    orch.deps.action_applier.session_launcher = orch._session_launcher_callback
+    orch.deps.action_applier.session_launcher = orch.session_launcher_callback
 
     # Create observer (still created here as it depends on runtime orchestrator state)
     orch.observer = SessionObserver(
@@ -183,185 +183,194 @@ class OrchestratorSupport:
         if plan.action_count == 0:
             return
 
-        self.events.publish(TraceEvent(
-            EventName.APPLY_STARTED,
-            self.event_context.enrich({"steps": plan.action_count}),
-        ))
+        self.events.publish(TraceEvent(EventName.APPLY_STARTED, self.event_context.enrich({"steps": plan.action_count})))
 
         applied_count = 0
         failed_count = 0
 
-        from .actions import ActionType
-        failed_actions_mark_issue = {
-            ActionType.ADD_LABEL,
-            ActionType.REMOVE_LABEL,
-            ActionType.SYNC_LABELS,
-            ActionType.ADD_COMMENT,
-        }
-
-        def _resolve_issue_number(action: "Action") -> int | None:
-            issue_number = getattr(action, "issue_number", None)
-            if issue_number is not None:
-                return issue_number
-            number = getattr(action, "number", None)
-            if number is None:
-                return None
-            if getattr(action, "is_pr", False):
-                return None
-            return number
-
         for action in plan.actions:
             if self.state.paused:
                 break
-            try:
-                if action.action_type == ActionType.CREATE_TRIAGE_ISSUE and self._cleanup_manager:
-                    if not self._cleanup_manager.should_retry_triage_issue():
-                        logger.warning("[PLAN] Skipping triage issue creation due to cooldown")
-                        failed_count += 1
-                        self.events.publish(TraceEvent(
-                            EventName.APPLY_FAILED,
-                            self.event_context.enrich({
-                                "step_type": action.action_type.value,
-                                "issue_number": getattr(action, "number", getattr(action, "issue_number", None)),
-                                "error": "triage_issue_creation_cooldown",
-                            }),
-                        ))
-                        continue
-                result = self._aa.apply(action)
-                if result.success:
-                    self._update_state_after_action(action, result)
-                    applied_count += 1
-                    self.events.publish(TraceEvent(
-                        EventName.APPLY_STEP_APPLIED,
-                        self.event_context.enrich({
-                            "step_type": action.action_type.value,
-                            "issue_number": getattr(action, "number", getattr(action, "issue_number", None)),
-                            "result": "success",
-                        }),
-                    ))
-                else:
-                    failed_count += 1
-                    logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
-                    if action.action_type in failed_actions_mark_issue:
-                        issue_number = _resolve_issue_number(action)
-                        if issue_number is not None:
-                            self.state.failed_this_cycle.add(issue_number)
-                            logger.info(
-                                "[PLAN] Marked issue #%d failed_this_cycle due to %s failure",
-                                issue_number,
-                                action.action_type.value,
-                            )
-                    if action.action_type.value == "create_triage_issue":
-                        try:
-                            self._cleanup_manager.mark_triage_issue_failure()
-                        except Exception:
-                            pass
-                    self.events.publish(TraceEvent(
-                        EventName.APPLY_FAILED,
-                        self.event_context.enrich({
-                            "step_type": action.action_type.value,
-                            "issue_number": getattr(action, "number", getattr(action, "issue_number", None)),
-                            "error": result.error or "unknown",
-                        }),
-                    ))
-            except ReconciliationRequired as rr:
-                issue_number = rr.entity_id
-                failed_count += 1
-                logger.warning(
-                    "[RECONCILIATION] Drift detected for %s #%d: %s",
-                    rr.entity_type, issue_number, rr.reason
-                )
-                self.events.publish(TraceEvent(
-                    EventName.RECONCILIATION_REQUIRED,
-                    self.event_context.enrich({
-                        "issue_number": issue_number,
-                        "entity_type": rr.entity_type,
-                        "reason": rr.reason,
-                        "expected_labels": list(rr.expected.labels),
-                        "actual_labels": list(rr.actual.labels),
-                    }),
-                ))
-                pause_issue_callback(issue_number, rr.reason)
-                break
-            except Exception as e:
-                failed_count += 1
-                logger.exception("Failed to apply action %s: %s", action, e)
-                self.events.publish(TraceEvent(
-                    EventName.APPLY_FAILED,
-                    self.event_context.enrich({
-                        "step_type": action.action_type.value,
-                        "error": str(e),
-                    }),
-                ))
 
+            result_info = self._apply_single_action(action, pause_issue_callback)
+            if result_info.success:
+                applied_count += 1
+            else:
+                failed_count += 1
+
+            if result_info.halt:
+                break
+
+        self.events.publish(TraceEvent(EventName.APPLY_COMPLETED, self.event_context.enrich({"applied_steps": applied_count, "failed_steps": failed_count})))
+
+    @dataclass
+    class _ActionApplyResult:
+        """Result of applying a single action."""
+        success: bool = False
+        halt: bool = False  # Stop processing remaining actions
+
+    def _apply_single_action(self, action: "Action", pause_issue_callback: Callable[[int, str], None]) -> "_ActionApplyResult":
+        """Apply a single action and return the result."""
+        from .actions import ActionType
+
+        # Check triage cooldown
+        if action.action_type == ActionType.CREATE_TRIAGE_ISSUE and self._cleanup_manager:
+            if not self._cleanup_manager.should_retry_triage_issue():
+                logger.warning("[PLAN] Skipping triage issue creation due to cooldown")
+                self._emit_apply_failed(action, "triage_issue_creation_cooldown")
+                return self._ActionApplyResult(success=False)
+
+        try:
+            result = self._aa.apply(action)
+            if result.success:
+                return self._handle_action_success(action, result)
+            return self._handle_action_failure(action, result)
+        except ReconciliationRequired as rr:
+            return self._handle_reconciliation_error(rr, pause_issue_callback)
+        except Exception as e:
+            logger.exception("Failed to apply action %s: %s", action, e)
+            self.events.publish(TraceEvent(EventName.APPLY_FAILED, self.event_context.enrich({"step_type": action.action_type.value, "error": str(e)})))
+            return self._ActionApplyResult(success=False)
+
+    def _handle_action_success(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
+        """Handle successful action application."""
+        self._update_state_after_action(action, result)
         self.events.publish(TraceEvent(
-            EventName.APPLY_COMPLETED,
+            EventName.APPLY_STEP_APPLIED,
+            self.event_context.enrich({"step_type": action.action_type.value, "issue_number": self._get_action_issue_number(action), "result": "success"}),
+        ))
+        return self._ActionApplyResult(success=True)
+
+    def _handle_action_failure(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
+        """Handle failed action application."""
+        from .actions import ActionType
+
+        logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
+
+        # Mark issue as failed if applicable
+        failed_actions_mark_issue = {ActionType.ADD_LABEL, ActionType.REMOVE_LABEL, ActionType.SYNC_LABELS, ActionType.ADD_COMMENT}
+        if action.action_type in failed_actions_mark_issue:
+            issue_number = self._resolve_action_issue_number(action)
+            if issue_number is not None:
+                self.state.failed_this_cycle.add(issue_number)
+                logger.info("[PLAN] Marked issue #%d failed_this_cycle due to %s failure", issue_number, action.action_type.value)
+
+        # Handle triage issue failure cooldown
+        if action.action_type.value == "create_triage_issue" and self._cleanup_manager:
+            try:
+                self._cleanup_manager.mark_triage_issue_failure()
+            except Exception:
+                pass
+
+        self._emit_apply_failed(action, result.error or "unknown")
+        return self._ActionApplyResult(success=False)
+
+    def _handle_reconciliation_error(self, rr: ReconciliationRequired, pause_issue_callback: Callable[[int, str], None]) -> "_ActionApplyResult":
+        """Handle reconciliation required error."""
+        issue_number = rr.entity_id
+        logger.warning("[RECONCILIATION] Drift detected for %s #%d: %s", rr.entity_type, issue_number, rr.reason)
+        self.events.publish(TraceEvent(
+            EventName.RECONCILIATION_REQUIRED,
             self.event_context.enrich({
-                "applied_steps": applied_count,
-                "failed_steps": failed_count,
+                "issue_number": issue_number, "entity_type": rr.entity_type, "reason": rr.reason,
+                "expected_labels": list(rr.expected.labels), "actual_labels": list(rr.actual.labels),
             }),
         ))
+        pause_issue_callback(issue_number, rr.reason)
+        return self._ActionApplyResult(success=False, halt=True)
+
+    def _emit_apply_failed(self, action: "Action", error: str) -> None:
+        """Emit APPLY_FAILED event."""
+        self.events.publish(TraceEvent(
+            EventName.APPLY_FAILED,
+            self.event_context.enrich({"step_type": action.action_type.value, "issue_number": self._get_action_issue_number(action), "error": error}),
+        ))
+
+    def _get_action_issue_number(self, action: "Action") -> int | None:
+        """Get issue number from action for events."""
+        return getattr(action, "number", getattr(action, "issue_number", None))
+
+    def _resolve_action_issue_number(self, action: "Action") -> int | None:
+        """Resolve issue number from action, excluding PRs."""
+        issue_number = getattr(action, "issue_number", None)
+        if issue_number is not None:
+            return issue_number
+        number = getattr(action, "number", None)
+        if number is None or getattr(action, "is_pr", False):
+            return None
+        return number
 
     def _update_state_after_action(self, action: "Action", result: "ActionResult") -> None:
-        from .actions import (
-            ActionType, LaunchSessionAction, CreateTriageIssueAction,
-            CleanupSessionAction, EscalateToHumanAction, QueueReviewAction,
-            QueueReworkAction, QueueTriageAction,
-        )
+        from .actions import ActionType
 
-        t = action.action_type
-        if t == ActionType.LAUNCH_SESSION:
-            a = cast(LaunchSessionAction, action)
-            logger.info("[PLAN] Launched %s session for #%d", a.session_type, a.number)
-        elif t == ActionType.ESCALATE_TO_HUMAN:
-            a = cast(EscalateToHumanAction, action)
-            logger.info("[PLAN] Escalated PR #%d (cycle %d)", a.pr_number, a.rework_cycles)
-        elif t == ActionType.CREATE_TRIAGE_ISSUE:
-            a = cast(CreateTriageIssueAction, action)
-            num = result.details.get("issue_number")
-            if num:
-                self.state.pending_triage_reviews.append(PendingTriageReview(num, a.title))
-                logger.info("Created triage #%d", num)
-        elif t == ActionType.CLEANUP_SESSION:
-            a = cast(CleanupSessionAction, action)
-            self.state.pending_cleanups = [
-                c for c in self.state.pending_cleanups if c.pr_number != a.pr_number
-            ]
-        elif t == ActionType.QUEUE_REVIEW:
-            a = cast(QueueReviewAction, action)
-            if not any(r.pr_number == a.pr_number for r in self.state.pending_reviews):
-                self.state.pending_reviews.append(
-                    PendingReview(
-                        issue_key=self.repository_host.create_issue_key(a.issue_number),
-                        pr_number=a.pr_number,
-                        pr_url=a.pr_url,
-                        branch_name=a.branch_name,
-                        _issue_number=a.issue_number,
-                        agent_label=a.agent_label,
-                    )
-                )
-                log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
-                self.get_review_machine(a.pr_number, a.issue_number)
-        elif t == ActionType.QUEUE_REWORK:
-            a = cast(QueueReworkAction, action)
-            if not any(r.resolve_issue_number() == a.issue_number for r in self.state.pending_reworks):
-                agent = next(
-                    (r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number),
-                    "agent:developer",
-                )
-                self.state.pending_reworks.append(
-                    PendingRework(
-                        self.repository_host.create_issue_key(a.issue_number),
-                        agent,
-                        a.rework_cycle,
-                        issue_number=a.issue_number,
-                    )
-                )
-                log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
-        elif t == ActionType.QUEUE_TRIAGE:
-            a = cast(QueueTriageAction, action)
-            if not any(t.issue_number == a.issue_number for t in self.state.pending_triage_reviews):
-                self.state.pending_triage_reviews.append(PendingTriageReview(a.issue_number, a.title))
+        handlers = {
+            ActionType.LAUNCH_SESSION: self._handle_launch_session,
+            ActionType.ESCALATE_TO_HUMAN: self._handle_escalate_to_human,
+            ActionType.CREATE_TRIAGE_ISSUE: self._handle_create_triage_issue,
+            ActionType.CLEANUP_SESSION: self._handle_cleanup_session,
+            ActionType.QUEUE_REVIEW: self._handle_queue_review,
+            ActionType.QUEUE_REWORK: self._handle_queue_rework,
+            ActionType.QUEUE_TRIAGE: self._handle_queue_triage,
+        }
+
+        handler = handlers.get(action.action_type)
+        if handler:
+            handler(action, result)
+
+    def _handle_launch_session(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import LaunchSessionAction
+        a = cast(LaunchSessionAction, action)
+        logger.info("[PLAN] Launched %s session for #%d", a.session_type, a.number)
+
+    def _handle_escalate_to_human(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import EscalateToHumanAction
+        a = cast(EscalateToHumanAction, action)
+        logger.info("[PLAN] Escalated PR #%d (cycle %d)", a.pr_number, a.rework_cycles)
+
+    def _handle_create_triage_issue(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import CreateTriageIssueAction
+        a = cast(CreateTriageIssueAction, action)
+        num = result.details.get("issue_number")
+        if num:
+            self.state.pending_triage_reviews.append(PendingTriageReview(num, a.title))
+            logger.info("Created triage #%d", num)
+
+    def _handle_cleanup_session(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import CleanupSessionAction
+        a = cast(CleanupSessionAction, action)
+        self.state.pending_cleanups = [c for c in self.state.pending_cleanups if c.pr_number != a.pr_number]
+
+    def _handle_queue_review(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import QueueReviewAction
+        a = cast(QueueReviewAction, action)
+        if any(r.pr_number == a.pr_number for r in self.state.pending_reviews):
+            return
+        self.state.pending_reviews.append(
+            PendingReview(
+                issue_key=self.repository_host.create_issue_key(a.issue_number),
+                pr_number=a.pr_number, pr_url=a.pr_url, branch_name=a.branch_name,
+                _issue_number=a.issue_number, agent_label=a.agent_label,
+            )
+        )
+        log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
+        self.get_review_machine(a.pr_number, a.issue_number)
+
+    def _handle_queue_rework(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import QueueReworkAction
+        a = cast(QueueReworkAction, action)
+        if any(r.resolve_issue_number() == a.issue_number for r in self.state.pending_reworks):
+            return
+        agent = next((r.agent_type for r in self.state.discovered_reworks if r.issue_number == a.issue_number), "agent:developer")
+        self.state.pending_reworks.append(
+            PendingRework(self.repository_host.create_issue_key(a.issue_number), agent, a.rework_cycle, issue_number=a.issue_number)
+        )
+        log_transition("rework", a.issue_number, "CREATED", "QUEUED", f"cycle {a.rework_cycle}")
+
+    def _handle_queue_triage(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import QueueTriageAction
+        a = cast(QueueTriageAction, action)
+        if not any(t.issue_number == a.issue_number for t in self.state.pending_triage_reviews):
+            self.state.pending_triage_reviews.append(PendingTriageReview(a.issue_number, a.title))
 
     def update_queue_cache(self) -> None:
         from .queue_projection import QueueProjection
@@ -467,7 +476,7 @@ def handle_signal(
         frame: Stack frame (unused).
     """
     # Force shutdown if already requested, otherwise graceful
-    orchestrator.request_shutdown(force=orchestrator._shutdown_requested)
+    orchestrator.request_shutdown(force=orchestrator.shutdown_requested)
 
 
 # Keep PlanApplier for backward compatibility during transition
@@ -556,152 +565,150 @@ def run_planning_cycle(
     observer: object | None = None,
     claim_manager: object | None = None,
 ) -> tuple[float, bool]:
-    """Run the planning cycle - extracted from Orchestrator per move map Step 2.
-
-    Args:
-        claim_manager: Optional ClaimManager for stale claim detection
-
-    Returns:
-        Tuple of (updated_last_issue_fetch, updated_refresh_requested)
-    """
+    """Run the planning cycle - extracted from Orchestrator per move map Step 2."""
     should_fetch = (time.time() - last_issue_fetch >= config.queue_refresh_seconds) or refresh_requested
 
     if should_fetch:
-        manual_refresh = refresh_requested
-        # Collect required inflight IDs before fetch
-        required_stable_ids = set(inflight_stable_ids.keys()) if inflight_stable_ids else None
-        if required_stable_ids:
-            logger.info("[FETCH] %s refresh with %d required inflight IDs: %s",
-                       "Manual" if manual_refresh else "Scheduled",
-                       len(required_stable_ids), sorted(required_stable_ids))
-        else:
-            logger.info("[FETCH] %s refresh", "Manual" if manual_refresh else "Scheduled")
-        refresh_requested = False
-        from ..infra import gh_audit
-        reason = gh_audit.AuditReason.QUEUE_REFRESH_MANUAL if manual_refresh else gh_audit.AuditReason.QUEUE_REFRESH_SCHEDULED
-        scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
-        with gh_audit.context(reason=reason, scope=scope):
-            all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
-        last_issue_fetch = time.time()
-
-        # Remove discovered inflight IDs
-        if required_stable_ids:
-            discovered_ids = {i.key.stable_id() for i in all_issues}
-            found = required_stable_ids & discovered_ids
-            if found:
-                for sid in found:
-                    inflight_stable_ids.pop(sid, None)
-                logger.info("[INFLIGHT] Discovered %d/%d required IDs: %s",
-                           len(found), len(required_stable_ids), sorted(found))
-            still_missing = required_stable_ids - discovered_ids
-            if still_missing:
-                logger.warning("[INFLIGHT] Still missing %d required IDs after refresh: %s",
-                              len(still_missing), sorted(still_missing))
-        for issue in all_issues:
-            try:
-                repository_host.update_label_cache(issue.number, list(issue.labels))
-            except Exception:
-                logger.debug("Failed to update label cache for issue #%s", issue.number, exc_info=True)
-        github_workflow.scan_needs_code_review_prs(state)
-        github_workflow.scan_needs_rework_prs(state)
-        _, dep_blocked = scheduler.get_available_issues(all_issues)
-        github_workflow.update_dependency_problems(state, dep_blocked)
-        exclude = {e.issue_number for e in state.session_history} | {s.issue.number for s in state.active_sessions}
-        filtered = [i for i in all_issues if i.number not in exclude]
-        new_queue = [i for i in filtered if i.number == config.filtering.issue] if config.filtering.issue else filtered
-
-        # Detect queue changes and emit event
-        old_numbers = {i.number for i in state.cached_queue_issues}
-        new_numbers = {i.number for i in new_queue}
-        added_numbers = new_numbers - old_numbers
-        removed_numbers = old_numbers - new_numbers
-        if added_numbers or removed_numbers:
-            added = [{"number": i.number, "title": i.title} for i in new_queue if i.number in added_numbers]
-            removed = [{"number": n} for n in removed_numbers]
-            events.publish(TraceEvent(
-                EventName.QUEUE_CHANGED,
-                {"added": added, "removed": removed, "total": len(new_queue)},
-            ))
-            logger.info("Queue changed: %d added, %d removed, %d total",
-                       len(added), len(removed), len(new_queue))
-
-        state.cached_queue_issues = new_queue
-
-        # Clear failed_this_cycle on cache refresh - GitHub now has the blocked-failed labels
-        if state.failed_this_cycle:
-            logger.info(
-                "[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)",
-                state.failed_this_cycle,
-            )
-            state.failed_this_cycle.clear()
-
-    # Detect stale in-progress issues (label present but no active session)
-    stale_issues = []
-    if observer and hasattr(observer, 'detect_stale_in_progress'):
-        stale_issues = observer.detect_stale_in_progress(
-            state.cached_queue_issues,
-            state.active_sessions,
+        last_issue_fetch, refresh_requested = _fetch_and_update_queue(
+            config, events, state, repository_host, scheduler, github_workflow,
+            refresh_requested, inflight_stable_ids,
         )
-        # Emit events for each stale issue
-        for issue in stale_issues:
-            events.publish(TraceEvent(
-                EventName.STALE_IN_PROGRESS_DETECTED,
-                event_context.enrich({
-                    "issue_number": issue.number,
-                    "labels": list(issue.labels),
-                }),
-            ))
 
-    # Detect stale claims (io:claimed label but expired/invalid claim)
-    stale_claim_issues = _detect_stale_claims(
-        state.cached_queue_issues,
-        state.active_sessions,
-        claim_manager,
-        events,
-        event_context,
-    )
+    # Detect stale issues and claims
+    stale_issues = _detect_stale_in_progress(observer, state, events, event_context)
+    stale_claim_issues = _detect_stale_claims(state.cached_queue_issues, state.active_sessions, claim_manager, events, event_context)
 
-    snapshot = fact_gatherer.create_snapshot(
-        state,
-        state.cached_queue_issues,
-        stale_in_progress_issues=stale_issues,
-        stale_claim_issues=stale_claim_issues,
-    )
-
-    # Emit facts.gathered
-    events.publish(TraceEvent(
-        EventName.FACTS_GATHERED,
-        event_context.enrich({
-            "issues_count": len(state.cached_queue_issues),
-            "active_sessions": len(state.active_sessions),
-            "pending_reviews": len(state.pending_reviews),
-            "pending_reworks": len(state.pending_reworks),
-            "stale_in_progress_count": len(stale_issues),
-        }),
-    ))
+    # Create snapshot and plan
+    snapshot = fact_gatherer.create_snapshot(state, state.cached_queue_issues, stale_in_progress_issues=stale_issues, stale_claim_issues=stale_claim_issues)
+    _emit_facts_gathered(events, event_context, state, stale_issues)
 
     plan = planner.plan(snapshot)
-
-    # Emit plan.computed
-    events.publish(TraceEvent(
-        EventName.PLAN_COMPUTED,
-        event_context.enrich({
-            "steps": plan.action_count,
-            "actions": [a.action_type.value for a in plan.actions],
-        }),
-    ))
+    _emit_plan_computed(events, event_context, plan)
 
     if plan.action_count > 0:
         logger.info("[PLAN] %d action(s): %s", plan.action_count, ", ".join(f"{a.action_type.value}:{getattr(a, 'number', '?')}" for a in plan.actions))
 
     apply_plan_fn(plan)
-
-    # Track consecutive stale ticks for escalation (if threshold > 0)
     _track_stale_ticks(config, events, event_context, state, stale_issues)
-
     clear_discovered_facts_fn()
 
     return last_issue_fetch, refresh_requested
+
+
+def _fetch_and_update_queue(
+    config: "Config",
+    events: EventSink,
+    state: "OrchestratorState",
+    repository_host: RepositoryHost,
+    scheduler: object,
+    github_workflow: object,
+    refresh_requested: bool,
+    inflight_stable_ids: dict[str, float],
+) -> tuple[float, bool]:
+    """Fetch issues and update queue cache."""
+    from ..infra import gh_audit
+
+    manual_refresh = refresh_requested
+    required_stable_ids = set(inflight_stable_ids.keys()) if inflight_stable_ids else None
+
+    if required_stable_ids:
+        logger.info("[FETCH] %s refresh with %d required inflight IDs: %s", "Manual" if manual_refresh else "Scheduled", len(required_stable_ids), sorted(required_stable_ids))
+    else:
+        logger.info("[FETCH] %s refresh", "Manual" if manual_refresh else "Scheduled")
+
+    reason = gh_audit.AuditReason.QUEUE_REFRESH_MANUAL if manual_refresh else gh_audit.AuditReason.QUEUE_REFRESH_SCHEDULED
+    scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
+    with gh_audit.context(reason=reason, scope=scope):
+        all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
+
+    _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)
+    _update_label_cache(repository_host, all_issues)
+
+    github_workflow.scan_needs_code_review_prs(state)
+    github_workflow.scan_needs_rework_prs(state)
+    _, dep_blocked = scheduler.get_available_issues(all_issues)
+    github_workflow.update_dependency_problems(state, dep_blocked)
+
+    new_queue = _filter_queue(config, state, all_issues)
+    _emit_queue_changes(events, state, new_queue)
+    state.cached_queue_issues = new_queue
+
+    if state.failed_this_cycle:
+        logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)
+        state.failed_this_cycle.clear()
+
+    return time.time(), False
+
+
+def _process_inflight_ids(required_stable_ids: set[str] | None, all_issues: list["Issue"], inflight_stable_ids: dict[str, float]) -> None:
+    """Process and remove discovered inflight IDs."""
+    if not required_stable_ids:
+        return
+    discovered_ids = {i.key.stable_id() for i in all_issues}
+    found = required_stable_ids & discovered_ids
+    if found:
+        for sid in found:
+            inflight_stable_ids.pop(sid, None)
+        logger.info("[INFLIGHT] Discovered %d/%d required IDs: %s", len(found), len(required_stable_ids), sorted(found))
+    still_missing = required_stable_ids - discovered_ids
+    if still_missing:
+        logger.warning("[INFLIGHT] Still missing %d required IDs after refresh: %s", len(still_missing), sorted(still_missing))
+
+
+def _update_label_cache(repository_host: RepositoryHost, all_issues: list["Issue"]) -> None:
+    """Update label cache for all issues."""
+    for issue in all_issues:
+        try:
+            repository_host.update_label_cache(issue.number, list(issue.labels))
+        except Exception:
+            logger.debug("Failed to update label cache for issue #%s", issue.number, exc_info=True)
+
+
+def _filter_queue(config: "Config", state: "OrchestratorState", all_issues: list["Issue"]) -> list["Issue"]:
+    """Filter issues for the queue."""
+    exclude = {e.issue_number for e in state.session_history} | {s.issue.number for s in state.active_sessions}
+    filtered = [i for i in all_issues if i.number not in exclude]
+    return [i for i in filtered if i.number == config.filtering.issue] if config.filtering.issue else filtered
+
+
+def _emit_queue_changes(events: EventSink, state: "OrchestratorState", new_queue: list["Issue"]) -> None:
+    """Detect and emit queue changes."""
+    old_numbers = {i.number for i in state.cached_queue_issues}
+    new_numbers = {i.number for i in new_queue}
+    added_numbers = new_numbers - old_numbers
+    removed_numbers = old_numbers - new_numbers
+    if added_numbers or removed_numbers:
+        added = [{"number": i.number, "title": i.title} for i in new_queue if i.number in added_numbers]
+        removed = [{"number": n} for n in removed_numbers]
+        events.publish(TraceEvent(EventName.QUEUE_CHANGED, {"added": added, "removed": removed, "total": len(new_queue)}))
+        logger.info("Queue changed: %d added, %d removed, %d total", len(added), len(removed), len(new_queue))
+
+
+def _detect_stale_in_progress(observer: object | None, state: "OrchestratorState", events: EventSink, event_context: EventContext) -> list["Issue"]:
+    """Detect stale in-progress issues."""
+    if not (observer and hasattr(observer, 'detect_stale_in_progress')):
+        return []
+    stale_issues = observer.detect_stale_in_progress(state.cached_queue_issues, state.active_sessions)
+    for issue in stale_issues:
+        events.publish(TraceEvent(EventName.STALE_IN_PROGRESS_DETECTED, event_context.enrich({"issue_number": issue.number, "labels": list(issue.labels)})))
+    return stale_issues
+
+
+def _emit_facts_gathered(events: EventSink, event_context: EventContext, state: "OrchestratorState", stale_issues: list["Issue"]) -> None:
+    """Emit facts gathered event."""
+    events.publish(TraceEvent(
+        EventName.FACTS_GATHERED,
+        event_context.enrich({
+            "issues_count": len(state.cached_queue_issues), "active_sessions": len(state.active_sessions),
+            "pending_reviews": len(state.pending_reviews), "pending_reworks": len(state.pending_reworks),
+            "stale_in_progress_count": len(stale_issues),
+        }),
+    ))
+
+
+def _emit_plan_computed(events: EventSink, event_context: EventContext, plan: "Plan") -> None:
+    """Emit plan computed event."""
+    events.publish(TraceEvent(EventName.PLAN_COMPUTED, event_context.enrich({"steps": plan.action_count, "actions": [a.action_type.value for a in plan.actions]})))
 
 
 def _track_stale_ticks(
