@@ -1422,6 +1422,204 @@ class TestDependencyProblemsEndpoint:
         assert "error" in response.json()
 
 
+class TestSessionPhasesEndpoint:
+    """Tests for the GET /api/session/phases/{issue_number} endpoint."""
+
+    def test_phases_returns_empty_when_no_worktree_found(self):
+        """Test phases endpoint returns empty when no worktree exists for issue."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.state.active_sessions = []
+        mock_orch.state.session_history = []
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/phases/999")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["phases"] == []
+            assert data["current_phase"] is None
+            assert "error" in data or data.get("issue_number") == 999
+        finally:
+            web._orchestrator = None
+
+    def test_phases_returns_503_when_orchestrator_not_running(self):
+        """Test phases endpoint returns 503 when orchestrator not initialized."""
+        from issue_orchestrator.entrypoints import web
+        web._orchestrator = None
+
+        client = TestClient(app)
+        response = client.get("/api/session/phases/123")
+
+        assert response.status_code == 503
+        assert "error" in response.json()
+
+    def test_phases_finds_worktree_from_active_session(self, tmp_path):
+        """Test phases endpoint finds worktree from active session."""
+        from issue_orchestrator.entrypoints import web
+        import json
+
+        mock_orch = create_mock_orchestrator()
+
+        # Create a worktree with session data
+        sessions_dir = tmp_path / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        run_dir = sessions_dir / "20260117-100000Z__coding-1"
+        run_dir.mkdir()
+        (run_dir / "manifest.json").write_text(json.dumps({
+            "session_name": "coding-1",
+            "run_id": "20260117-100000Z",
+            "started_at": "2026-01-17T10:00:00Z",
+            "ended_at": "2026-01-17T10:30:00Z",
+            "issue_number": 123,
+            "agent_label": "agent:developer",
+            "outcome": "completed",
+        }))
+
+        (sessions_dir / "index.json").write_text(json.dumps({
+            "runs": [{
+                "session_name": "coding-1",
+                "run_id": "20260117-100000Z",
+                "started_at": "2026-01-17T10:00:00Z",
+                "issue_number": 123,
+                "run_dir": str(run_dir),
+                "agent_label": "agent:developer",
+            }]
+        }))
+
+        # Create an active session pointing to this worktree
+        issue = create_issue(123, "Test Issue")
+        session = create_session(issue, worktree_path=str(tmp_path))
+        mock_orch.state.active_sessions = [session]
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/phases/123")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data["phases"]) == 1
+            assert data["phases"][0]["name"] == "coding-1"
+            assert data["phases"][0]["display_name"] == "Coding 1"
+            assert data["phases"][0]["status"] == "completed"
+            assert data["issue_number"] == 123
+        finally:
+            web._orchestrator = None
+
+    def test_phases_formats_phase_names_correctly(self, tmp_path):
+        """Test that phase names are formatted correctly for display."""
+        from issue_orchestrator.entrypoints import web
+        import json
+
+        mock_orch = create_mock_orchestrator()
+
+        sessions_dir = tmp_path / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        # Create multiple phases
+        phases_data = [
+            ("coding-1", "20260117-100000Z"),
+            ("review-1", "20260117-110000Z"),
+            ("coding-2", "20260117-120000Z"),
+        ]
+
+        runs_index = []
+        for phase_name, run_id in phases_data:
+            run_dir = sessions_dir / f"{run_id}__{phase_name}"
+            run_dir.mkdir()
+            (run_dir / "manifest.json").write_text(json.dumps({
+                "session_name": phase_name,
+                "run_id": run_id,
+                "started_at": f"2026-01-17T{run_id[9:11]}:00:00Z",
+                "ended_at": f"2026-01-17T{run_id[9:11]}:30:00Z",
+                "outcome": "completed",
+            }))
+            runs_index.append({
+                "session_name": phase_name,
+                "run_id": run_id,
+                "started_at": f"2026-01-17T{run_id[9:11]}:00:00Z",
+                "run_dir": str(run_dir),
+            })
+
+        (sessions_dir / "index.json").write_text(json.dumps({"runs": runs_index}))
+
+        issue = create_issue(123, "Test Issue")
+        session = create_session(issue, worktree_path=str(tmp_path))
+        mock_orch.state.active_sessions = [session]
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/phases/123")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data["phases"]) == 3
+            assert data["phases"][0]["display_name"] == "Coding 1"
+            assert data["phases"][1]["display_name"] == "Review 1"
+            assert data["phases"][2]["display_name"] == "Coding 2"
+        finally:
+            web._orchestrator = None
+
+    def test_phases_identifies_current_in_progress_phase(self, tmp_path):
+        """Test that current_phase is set for in_progress phases."""
+        from issue_orchestrator.entrypoints import web
+        import json
+
+        mock_orch = create_mock_orchestrator()
+
+        sessions_dir = tmp_path / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        # Create one completed and one in-progress phase
+        run1_dir = sessions_dir / "20260117-100000Z__coding-1"
+        run1_dir.mkdir()
+        (run1_dir / "manifest.json").write_text(json.dumps({
+            "session_name": "coding-1",
+            "started_at": "2026-01-17T10:00:00Z",
+            "ended_at": "2026-01-17T10:30:00Z",
+            "outcome": "completed",
+        }))
+
+        run2_dir = sessions_dir / "20260117-110000Z__review-1"
+        run2_dir.mkdir()
+        (run2_dir / "manifest.json").write_text(json.dumps({
+            "session_name": "review-1",
+            "started_at": "2026-01-17T11:00:00Z",
+            # No ended_at - still in progress
+        }))
+
+        (sessions_dir / "index.json").write_text(json.dumps({
+            "runs": [
+                {"session_name": "coding-1", "run_id": "20260117-100000Z",
+                 "started_at": "2026-01-17T10:00:00Z", "run_dir": str(run1_dir)},
+                {"session_name": "review-1", "run_id": "20260117-110000Z",
+                 "started_at": "2026-01-17T11:00:00Z", "run_dir": str(run2_dir)},
+            ]
+        }))
+
+        issue = create_issue(123, "Test Issue")
+        session = create_session(issue, worktree_path=str(tmp_path))
+        mock_orch.state.active_sessions = [session]
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/phases/123")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["current_phase"] == "review-1"
+            assert data["phases"][1]["status"] == "in_progress"
+        finally:
+            web._orchestrator = None
+
+
 def _get_available_port() -> int:
     """Get an available port by binding to port 0 and releasing it."""
     import socket
