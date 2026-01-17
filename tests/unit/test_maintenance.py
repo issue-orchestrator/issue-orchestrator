@@ -1,0 +1,666 @@
+"""Unit tests for maintenance.py - issue reset operations."""
+
+import pytest
+from pathlib import Path
+from unittest.mock import MagicMock
+
+from issue_orchestrator.control.maintenance import (
+    _find_issue_branch,
+    ResetResult,
+    reset_issue,
+)
+from issue_orchestrator.control.actions import RemoveLabelAction
+from issue_orchestrator.domain.models import SessionHistoryEntry
+
+
+# =============================================================================
+# Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def mock_working_copy():
+    """Create a mock WorkingCopy adapter."""
+    wc = MagicMock()
+    wc.list_remote_branches = MagicMock(return_value=[])
+    wc.delete_remote_branch = MagicMock()
+    return wc
+
+
+@pytest.fixture
+def mock_worktree_manager():
+    """Create a mock WorktreeManager."""
+    wm = MagicMock()
+    wm.remove = MagicMock()
+    return wm
+
+
+@pytest.fixture
+def mock_action_applier():
+    """Create a mock ActionApplier."""
+    aa = MagicMock()
+    # By default, apply succeeds
+    aa.apply = MagicMock(
+        return_value=MagicMock(success=True, error=None)
+    )
+    return aa
+
+
+@pytest.fixture
+def mock_config(tmp_path):
+    """Create a mock Config."""
+    config = MagicMock()
+    config.repo_root = tmp_path
+    config.worktree_base = tmp_path / "worktrees"
+    config.worktree_base.mkdir(parents=True, exist_ok=True)
+    return config
+
+
+@pytest.fixture
+def sample_session_history_entry():
+    """Create a sample SessionHistoryEntry."""
+    return SessionHistoryEntry(
+        issue_number=123,
+        title="Test Issue",
+        agent_type="agent:web",
+        status="completed",
+        runtime_minutes=5,
+    )
+
+
+# =============================================================================
+# Tests for _find_issue_branch
+# =============================================================================
+
+
+class TestFindIssueBranch:
+    """Tests for the _find_issue_branch function."""
+
+    def test_find_issue_branch_simple(self, mock_working_copy):
+        """Test finding a simple issue branch."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/3767-fix-something",
+            "origin/main",
+        ]
+
+        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 3767)
+
+        assert branch == "3767-fix-something"
+
+    def test_find_issue_branch_strips_origin_prefix(self, mock_working_copy):
+        """Test that origin/ prefix is stripped."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/123-feature-name",
+        ]
+
+        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 123)
+
+        assert branch == "123-feature-name"
+
+    def test_find_issue_branch_handles_no_prefix(self, mock_working_copy):
+        """Test branches without origin/ prefix."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "456-another-feature",
+            "main",
+        ]
+
+        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 456)
+
+        assert branch == "456-another-feature"
+
+    def test_find_issue_branch_not_found(self, mock_working_copy):
+        """Test when branch is not found."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/main",
+            "origin/develop",
+        ]
+
+        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 999)
+
+        assert branch is None
+
+    def test_find_issue_branch_with_multiple_candidates(self, mock_working_copy):
+        """Test returns first matching branch."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/100-first",
+            "origin/100-second",  # Same issue number, different suffix
+            "origin/main",
+        ]
+
+        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 100)
+
+        # Should return the first match
+        assert branch == "100-first"
+
+    def test_find_issue_branch_skips_non_numeric_branches(self, mock_working_copy):
+        """Test that branches not starting with numbers are skipped."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/feature-100",  # Doesn't start with number
+            "origin/100-fix",  # Starts with number
+            "origin/main",
+        ]
+
+        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 100)
+
+        assert branch == "100-fix"
+
+    def test_find_issue_branch_with_whitespace(self, mock_working_copy):
+        """Test handling of branches with leading/trailing whitespace."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "  origin/200-feature  ",
+            "origin/main",
+        ]
+
+        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 200)
+
+        assert branch == "200-feature"
+
+    def test_find_issue_branch_complex_name(self, mock_working_copy):
+        """Test finding branch with complex name."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/789-fix-bug-in-feature-X",
+            "origin/main",
+        ]
+
+        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 789)
+
+        assert branch == "789-fix-bug-in-feature-X"
+
+    def test_find_issue_branch_calls_list_remote_branches(self, mock_working_copy):
+        """Test that list_remote_branches is called with correct repo."""
+        repo_path = Path("/my/repo")
+        mock_working_copy.list_remote_branches.return_value = []
+
+        _find_issue_branch(mock_working_copy, repo_path, 123)
+
+        mock_working_copy.list_remote_branches.assert_called_once_with(repo_path)
+
+
+# =============================================================================
+# Tests for ResetResult
+# =============================================================================
+
+
+class TestResetResult:
+    """Tests for the ResetResult dataclass."""
+
+    def test_reset_result_success_creation(self):
+        """Test creating a successful ResetResult."""
+        result = ResetResult(
+            success=True,
+            issue_number=123,
+            deleted_worktree="/path/to/worktree",
+            deleted_branch="123-feature",
+            labels_removed=["blocked", "in-progress"],
+        )
+
+        assert result.success is True
+        assert result.issue_number == 123
+        assert result.deleted_worktree == "/path/to/worktree"
+        assert result.deleted_branch == "123-feature"
+        assert result.labels_removed == ["blocked", "in-progress"]
+        assert result.error is None
+
+    def test_reset_result_failure_creation(self):
+        """Test creating a failed ResetResult."""
+        result = ResetResult(
+            success=False,
+            issue_number=456,
+            error="Permission denied",
+        )
+
+        assert result.success is False
+        assert result.issue_number == 456
+        assert result.error == "Permission denied"
+        assert result.deleted_worktree is None
+        assert result.deleted_branch is None
+        assert result.labels_removed is None
+
+    def test_reset_result_minimal_creation(self):
+        """Test creating ResetResult with minimal fields."""
+        result = ResetResult(success=True, issue_number=789)
+
+        assert result.success is True
+        assert result.issue_number == 789
+        assert result.deleted_worktree is None
+        assert result.deleted_branch is None
+        assert result.labels_removed is None
+        assert result.error is None
+
+
+# =============================================================================
+# Tests for reset_issue
+# =============================================================================
+
+
+class TestResetIssue:
+    """Tests for the reset_issue function."""
+
+    def test_reset_issue_success_all_steps(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test successful reset with all cleanup operations."""
+        # Setup - compute worktree path the same way get_worktree_path does
+        worktree_path = mock_config.worktree_base / f"{mock_config.repo_root.name}-123"
+        worktree_path.mkdir(parents=True)
+
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/123-feature",
+        ]
+
+        session_history = []
+        completed_today = []
+
+        # Execute
+        result = reset_issue(
+            issue_number=123,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=["blocked"],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        # Assert result
+        assert result.success is True
+        assert result.issue_number == 123
+        assert result.deleted_worktree == str(worktree_path)
+        assert result.deleted_branch == "123-feature"
+        assert result.labels_removed == ["blocked"]
+
+        # Assert worktree was removed
+        mock_worktree_manager.remove.assert_called_once_with(worktree_path)
+
+        # Assert branch was deleted
+        mock_working_copy.delete_remote_branch.assert_called_once_with(
+            mock_config.repo_root, "123-feature"
+        )
+
+        # Assert label was removed
+        assert mock_action_applier.apply.call_count == 1
+        call_args = mock_action_applier.apply.call_args[0][0]
+        assert isinstance(call_args, RemoveLabelAction)
+        assert call_args.issue_number == 123
+        assert call_args.label == "blocked"
+
+    def test_reset_issue_no_worktree(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test reset when no worktree exists."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/456-feature",
+        ]
+
+        session_history = []
+        completed_today = []
+
+        result = reset_issue(
+            issue_number=456,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=["blocked"],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        assert result.success is True
+        assert result.deleted_worktree is None
+        # Worktree manager should not be called
+        mock_worktree_manager.remove.assert_not_called()
+
+    def test_reset_issue_no_branch(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        tmp_path,
+    ):
+        """Test reset when branch doesn't exist."""
+        # Setup worktree
+        worktree_path = tmp_path / "worktrees" / "789"
+        worktree_path.mkdir(parents=True)
+
+        # No branches found
+        mock_working_copy.list_remote_branches.return_value = []
+
+        session_history = []
+        completed_today = []
+
+        result = reset_issue(
+            issue_number=789,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=["blocked"],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        assert result.success is True
+        assert result.deleted_branch is None
+        # Branch deletion should not be called
+        mock_working_copy.delete_remote_branch.assert_not_called()
+
+    def test_reset_issue_no_labels(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test reset with no blocking labels."""
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/100-feature",
+        ]
+
+        session_history = []
+        completed_today = []
+
+        result = reset_issue(
+            issue_number=100,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=[],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        assert result.success is True
+        assert result.labels_removed == []
+        # Action applier should not be called for label removal
+        mock_action_applier.apply.assert_not_called()
+
+    def test_reset_issue_multiple_labels(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test reset with multiple blocking labels."""
+        mock_working_copy.list_remote_branches.return_value = []
+
+        session_history = []
+        completed_today = []
+
+        result = reset_issue(
+            issue_number=111,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=["blocked", "in-progress", "needs-review"],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        assert result.success is True
+        assert result.labels_removed == ["blocked", "in-progress", "needs-review"]
+        assert mock_action_applier.apply.call_count == 3
+
+    def test_reset_issue_removes_from_session_history(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test that issue is removed from session history."""
+        mock_working_copy.list_remote_branches.return_value = []
+
+        # Create session history with entries including the one we're resetting
+        session_history = [
+            SessionHistoryEntry(
+                issue_number=222,
+                title="Other Issue",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+            ),
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue to Reset",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+            ),
+            SessionHistoryEntry(
+                issue_number=333,
+                title="Another Issue",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+            ),
+        ]
+
+        completed_today = []
+
+        reset_issue(
+            issue_number=123,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=[],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        # Should have removed the entry for issue 123
+        assert len(session_history) == 2
+        assert all(e.issue_number != 123 for e in session_history)
+        assert session_history[0].issue_number == 222
+        assert session_history[1].issue_number == 333
+
+    def test_reset_issue_removes_from_completed_today(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test that issue is removed from completed_today list."""
+        mock_working_copy.list_remote_branches.return_value = []
+
+        session_history = []
+        completed_today = [100, 123, 456]
+
+        reset_issue(
+            issue_number=123,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=[],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        assert 123 not in completed_today
+        assert completed_today == [100, 456]
+
+    def test_reset_issue_completed_today_not_present(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test reset when issue is not in completed_today."""
+        mock_working_copy.list_remote_branches.return_value = []
+
+        session_history = []
+        completed_today = [100, 456]
+
+        result = reset_issue(
+            issue_number=123,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=[],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        # Should still succeed
+        assert result.success is True
+        # completed_today should be unchanged
+        assert completed_today == [100, 456]
+
+    def test_reset_issue_worktree_removal_failure(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        tmp_path,
+    ):
+        """Test that failure to remove worktree is logged but doesn't stop reset."""
+        worktree_path = tmp_path / "worktrees" / "555"
+        worktree_path.mkdir(parents=True)
+
+        mock_worktree_manager.remove.side_effect = Exception("Permission denied")
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/555-feature",
+        ]
+
+        session_history = []
+        completed_today = []
+
+        result = reset_issue(
+            issue_number=555,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=[],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        # Reset should still succeed overall
+        assert result.success is True
+        # But worktree deletion should be None
+        assert result.deleted_worktree is None
+        # Branch deletion should still happen
+        assert result.deleted_branch == "555-feature"
+
+    def test_reset_issue_branch_deletion_failure(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test that failure to delete branch is logged but doesn't stop reset."""
+        # Compute worktree path the same way get_worktree_path does
+        worktree_path = mock_config.worktree_base / f"{mock_config.repo_root.name}-666"
+        worktree_path.mkdir(parents=True)
+
+        mock_working_copy.delete_remote_branch.side_effect = Exception("API error")
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/666-feature",
+        ]
+
+        session_history = []
+        completed_today = []
+
+        result = reset_issue(
+            issue_number=666,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=[],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        # Reset should still succeed overall
+        assert result.success is True
+        # Worktree deletion should succeed
+        assert result.deleted_worktree == str(worktree_path)
+        # But branch deletion should be None
+        assert result.deleted_branch is None
+
+    def test_reset_issue_label_removal_failure(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test that failure to remove label is logged but doesn't stop reset."""
+        mock_working_copy.list_remote_branches.return_value = []
+
+        # First label succeeds, second fails
+        mock_action_applier.apply.side_effect = [
+            MagicMock(success=True, error=None),
+            MagicMock(success=False, error="API error"),
+        ]
+
+        session_history = []
+        completed_today = []
+
+        result = reset_issue(
+            issue_number=777,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=["blocked", "in-progress"],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        # Reset should still succeed overall
+        assert result.success is True
+        # Only successful label removal should be in the list
+        assert result.labels_removed == ["blocked"]
+
+    def test_reset_issue_unforeseen_exception(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+    ):
+        """Test handling of unexpected exceptions during reset."""
+        mock_working_copy.list_remote_branches.side_effect = RuntimeError("Unexpected error")
+
+        session_history = []
+        completed_today = []
+
+        result = reset_issue(
+            issue_number=888,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            blocking_labels=[],
+            session_history=session_history,
+            completed_today=completed_today,
+        )
+
+        # Reset should fail with the error
+        assert result.success is False
+        assert result.issue_number == 888
+        assert result.error is not None
+        assert "Unexpected error" in result.error
