@@ -1264,3 +1264,172 @@ class TestPreflightPushEndpoint:
         data = response.json()
         assert data["would_succeed"] is False
         assert "timed out" in data["error"].lower()
+
+
+# --- Test: Resume Issue Endpoint ---
+
+
+class TestResumeIssueEndpoint:
+    """Test the POST /api/issues/{issue_number}/resume endpoint."""
+
+    def test_resume_returns_503_when_orchestrator_not_initialized(
+        self, client_without_orchestrator
+    ):
+        """Returns 503 when orchestrator is None."""
+        response = client_without_orchestrator.post("/api/issues/123/resume")
+
+        assert response.status_code == 503
+        assert response.json()["error"] == "Orchestrator not initialized"
+
+    def test_resume_returns_404_when_worktree_not_found(
+        self, client_with_orchestrator, tmp_path
+    ):
+        """Returns 404 when worktree does not exist."""
+        client, mock_orch = client_with_orchestrator
+
+        with patch(
+            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+        ) as mock_get_path:
+            mock_get_path.return_value = tmp_path / "nonexistent-worktree"
+
+            response = client.post("/api/issues/123/resume")
+
+        assert response.status_code == 404
+        data = response.json()
+        assert data["success"] is False
+        assert "not found" in data["error"].lower()
+
+    def test_resume_returns_404_when_no_completion_record(
+        self, client_with_orchestrator, tmp_path
+    ):
+        """Returns 404 when completion.json does not exist."""
+        client, mock_orch = client_with_orchestrator
+
+        # Create worktree without completion.json
+        worktree = tmp_path / "repo-123"
+        worktree.mkdir()
+
+        with patch(
+            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+        ) as mock_get_path:
+            mock_get_path.return_value = worktree
+
+            response = client.post("/api/issues/123/resume")
+
+        assert response.status_code == 404
+        data = response.json()
+        assert data["success"] is False
+        assert "completion" in data["error"].lower()
+
+    def test_resume_processes_completion_successfully(
+        self, client_with_orchestrator, tmp_path
+    ):
+        """Successfully processes completion when worktree and completion.json exist."""
+        client, mock_orch = client_with_orchestrator
+
+        # Create worktree with completion.json
+        worktree = tmp_path / "repo-123"
+        worktree.mkdir()
+        completion_dir = worktree / ".issue-orchestrator"
+        completion_dir.mkdir()
+        completion_path = completion_dir / "completion.json"
+        completion_path.write_text('{"outcome": "completed"}')
+
+        # Mock the completion processor
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.message = "Completion processed"
+        mock_result.pr_url = "https://github.com/test/repo/pull/456"
+        mock_result.actions_taken = ["pushed", "pr_created"]
+        mock_result.errors = []
+        mock_orch.deps.completion_processor.process.return_value = mock_result
+
+        with patch(
+            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+        ) as mock_get_path:
+            mock_get_path.return_value = worktree
+
+            response = client.post("/api/issues/123/resume")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["message"] == "Completion processed"
+        assert data["pr_url"] == "https://github.com/test/repo/pull/456"
+        assert data["actions_taken"] == ["pushed", "pr_created"]
+
+        # Verify completion processor was called with correct args
+        mock_orch.deps.completion_processor.process.assert_called_once()
+        call_kwargs = mock_orch.deps.completion_processor.process.call_args.kwargs
+        assert call_kwargs["worktree"] == worktree
+        assert call_kwargs["issue_number"] == 123
+
+    def test_resume_handles_processing_failure(
+        self, client_with_orchestrator, tmp_path
+    ):
+        """Returns error when completion processing fails."""
+        client, mock_orch = client_with_orchestrator
+
+        # Create worktree with completion.json
+        worktree = tmp_path / "repo-123"
+        worktree.mkdir()
+        completion_dir = worktree / ".issue-orchestrator"
+        completion_dir.mkdir()
+        completion_path = completion_dir / "completion.json"
+        completion_path.write_text('{"outcome": "completed"}')
+
+        # Mock the completion processor to raise an exception
+        mock_orch.deps.completion_processor.process.side_effect = Exception(
+            "Push failed: remote rejected"
+        )
+
+        with patch(
+            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+        ) as mock_get_path:
+            mock_get_path.return_value = worktree
+
+            response = client.post("/api/issues/123/resume")
+
+        assert response.status_code == 500
+        data = response.json()
+        assert data["success"] is False
+        assert "remote rejected" in data["error"]
+
+    def test_resume_fetches_issue_title_from_cache(
+        self, client_with_orchestrator, tmp_path
+    ):
+        """Uses cached issue title when available."""
+        client, mock_orch = client_with_orchestrator
+
+        # Create worktree with completion.json
+        worktree = tmp_path / "repo-123"
+        worktree.mkdir()
+        completion_dir = worktree / ".issue-orchestrator"
+        completion_dir.mkdir()
+        (completion_dir / "completion.json").write_text('{"outcome": "completed"}')
+
+        # Add issue to cached queue
+        mock_issue = MagicMock()
+        mock_issue.number = 123
+        mock_issue.title = "Cached Issue Title"
+        mock_orch.state.cached_queue_issues = [mock_issue]
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.message = "OK"
+        mock_result.pr_url = None
+        mock_result.actions_taken = []
+        mock_result.errors = []
+        mock_orch.deps.completion_processor.process.return_value = mock_result
+
+        with patch(
+            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+        ) as mock_get_path:
+            mock_get_path.return_value = worktree
+
+            response = client.post("/api/issues/123/resume")
+
+        assert response.status_code == 200
+        # Verify title was used from cache
+        call_kwargs = mock_orch.deps.completion_processor.process.call_args.kwargs
+        assert call_kwargs["issue_title"] == "Cached Issue Title"

@@ -14,6 +14,7 @@ Control API endpoints (in-process):
 - POST /api/gh_audit_report - Emit GH audit report to disk
 - GET /api/snapshot - Fetch snapshot for test resync
 - POST /api/shutdown - Request graceful shutdown
+- POST /api/issues/{issue_number}/resume - Resume processing for a debug session
 
 Supervisor Control API endpoints (process management):
 - POST /control/orchestrator/start - Start orchestrator for a repo
@@ -355,6 +356,94 @@ async def preflight_push(request: Request) -> JSONResponse:
         "error": result.error,
         "fix_hint": result.fix_hint,
     })
+
+
+@control_app.post("/api/issues/{issue_number}/resume")
+async def resume_issue(issue_number: int) -> JSONResponse:
+    """Resume orchestrator processing for a blocked/debug issue.
+
+    This endpoint is called by `agent-done --resume` after writing a completion
+    record in a debug session. It triggers the orchestrator to process the
+    completion.json and continue the normal flow (create PR, run review, etc.).
+
+    Can also be called from the web UI "Process Completion" button.
+
+    Args:
+        issue_number: The issue number to resume processing for
+
+    Returns:
+        JSON with:
+        - success: bool - Whether processing succeeded
+        - message: str - Status message
+        - pr_url: str | null - PR URL if one was created
+        - actions_taken: list[str] | null - Actions performed
+        - errors: list[str] | null - Any errors encountered
+    """
+    if _orchestrator is None:
+        return JSONResponse(
+            {"success": False, "error": "Orchestrator not initialized"},
+            status_code=503
+        )
+
+    from ..control.worktree_manager import get_worktree_path
+
+    # Get worktree path for this issue
+    worktree = get_worktree_path(_orchestrator.config, issue_number)
+
+    if not worktree.exists():
+        return JSONResponse({
+            "success": False,
+            "error": f"Worktree not found: {worktree}",
+            "hint": "The worktree may have been cleaned up. Check if the issue is still blocked.",
+        }, status_code=404)
+
+    # Check for completion.json
+    completion_path = worktree / ".issue-orchestrator" / "completion.json"
+    if not completion_path.exists():
+        return JSONResponse({
+            "success": False,
+            "error": "No completion record found",
+            "hint": "Run 'agent-done completed --implementation ... --problems ...' first.",
+        }, status_code=404)
+
+    # Get issue title - try cache first, then fetch
+    issue_title = f"Issue #{issue_number}"  # Default fallback
+    try:
+        # Check if issue is in cached queue
+        for issue in _orchestrator.state.cached_queue_issues:
+            if issue.number == issue_number:
+                issue_title = issue.title
+                break
+        else:
+            # Fetch from GitHub
+            issue_data = _orchestrator.deps.repository_host.get_issue(issue_number)
+            if issue_data:
+                issue_title = issue_data.title
+    except Exception as e:
+        logger.warning("Could not fetch issue title for #%d: %s", issue_number, e)
+        # Continue with default title
+
+    # Process the completion
+    try:
+        result = _orchestrator.deps.completion_processor.process(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+        )
+
+        return JSONResponse({
+            "success": result.success,
+            "message": result.message,
+            "pr_url": result.pr_url,
+            "actions_taken": result.actions_taken,
+            "errors": result.errors,
+        })
+    except Exception as e:
+        logger.exception("Error processing completion for issue #%d: %s", issue_number, e)
+        return JSONResponse({
+            "success": False,
+            "error": f"Processing failed: {e}",
+        }, status_code=500)
 
 
 @control_app.post("/control/shutdown")

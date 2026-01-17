@@ -474,6 +474,70 @@ def run_validation(
     return result
 
 
+def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None]:
+    """Trigger the orchestrator to resume processing for this issue.
+
+    This is used after writing completion.json in a debug session to tell
+    the orchestrator to pick up the completion and continue the flow
+    (create PR, run review, etc.).
+
+    Requires ORCHESTRATOR_API_PORT and ORCHESTRATOR_ISSUE_NUMBER env vars,
+    which are set automatically when launching debug sessions from the web UI.
+
+    Args:
+        verbose: Whether to print status messages
+
+    Returns:
+        Tuple of (success, error_message)
+    """
+    import urllib.request
+    import urllib.error
+
+    port = os.environ.get("ORCHESTRATOR_API_PORT")
+    issue_number = os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
+
+    if not port or not issue_number:
+        missing = []
+        if not port:
+            missing.append("ORCHESTRATOR_API_PORT")
+        if not issue_number:
+            missing.append("ORCHESTRATOR_ISSUE_NUMBER")
+        return False, (
+            f"Cannot resume: missing environment variables: {', '.join(missing)}. "
+            f"Completion record written. Resume processing from the web UI."
+        )
+
+    url = f"http://localhost:{port}/api/issues/{issue_number}/resume"
+
+    if verbose:
+        print(f"Triggering orchestrator resume for issue #{issue_number}...")
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            if result.get("success"):
+                return True, None
+            else:
+                return False, result.get("error", "Unknown error from orchestrator")
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8")
+            error_data = json.loads(body)
+            return False, error_data.get("error", f"HTTP {e.code}: {body}")
+        except Exception:
+            return False, f"HTTP {e.code}: {e.reason}"
+    except urllib.error.URLError as e:
+        return False, f"Could not reach orchestrator API: {e}"
+    except Exception as e:
+        return False, f"Resume request failed: {e}"
+
+
 def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[bool, str | None, str | None]:
     """Check if git push would succeed by calling the orchestrator API.
 
@@ -539,6 +603,9 @@ def main() -> None:
 EXAMPLES:
   Completed successfully:
     agent-done completed --implementation "Added user auth" --problems "None"
+
+  Completed with resume (debug session):
+    agent-done completed --implementation "Fixed the bug" --problems "None" --resume
 
   Blocked:
     agent-done blocked --reason "Need API credentials" --attempted "Checked env vars"
@@ -612,6 +679,13 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
         "--verbose", "-v",
         action="store_true",
         help="Show detailed output",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="After writing completion, trigger orchestrator to resume processing. "
+             "Requires ORCHESTRATOR_API_PORT and ORCHESTRATOR_ISSUE_NUMBER env vars "
+             "(set automatically when launching debug sessions from the web UI).",
     )
 
     args = parser.parse_args()
@@ -767,14 +841,29 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     if validation_result:
         validation_status = "passed" if validation_result.passed else "failed"
         print(f"Validation: {validation_status}")
-    print("\nThe orchestrator will process this record and perform the necessary actions.")
+
+    # Handle --resume flag: trigger orchestrator to process completion
+    if args.resume:
+        print("\nTriggering orchestrator resume...")
+        resume_success, resume_error = trigger_orchestrator_resume(verbose=args.verbose)
+        if resume_success:
+            print("Orchestrator resume triggered successfully.")
+            print("The orchestrator will now process this completion and continue the flow.")
+        else:
+            print(f"\n{resume_error}")
+            # Don't exit with error - completion was written successfully,
+            # user can still use web UI to resume
+    else:
+        print("\nThe orchestrator will process this record and perform the necessary actions.")
 
     # Log successful outcome
     if issue_number:
-        logger.info(issue_log(issue_number, "agent-done outcome: status=%s validation=%s"),
-                   status, "passed" if validation_result and validation_result.passed else "skipped")
+        logger.info(issue_log(issue_number, "agent-done outcome: status=%s validation=%s resume=%s"),
+                   status, "passed" if validation_result and validation_result.passed else "skipped",
+                   "triggered" if args.resume else "not_requested")
     else:
-        logger.info("[agent-done] Outcome (standalone): status=%s", status)
+        logger.info("[agent-done] Outcome (standalone): status=%s resume=%s", status,
+                   "triggered" if args.resume else "not_requested")
 
 
 def write_error_completion(error_msg: str, status: str) -> Optional[Path]:
