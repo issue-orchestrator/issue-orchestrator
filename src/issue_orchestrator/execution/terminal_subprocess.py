@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..control.isolation import build_isolation_prefix
+from ..infra.env import get_env
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
 from .session_output_adapter import FileSystemSessionOutput
@@ -211,12 +212,13 @@ class SubprocessPlugin:
     """Terminal plugin that uses subprocesses instead of tmux."""
 
     def __init__(self) -> None:
-        repo_root = Path(os.environ.get("ORCHESTRATOR_REPO_ROOT", Path.cwd())).resolve()
+        repo_root = Path(get_env("REPO_ROOT") or Path.cwd()).resolve()
         self._registry = _SubprocessRegistry(repo_root)
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._pty_masters: dict[str, int] = {}  # Store PTY master fds for stdin
         self._repo_root = repo_root
-        self._allow_stdin = os.environ.get("ORCHESTRATOR_SUBPROCESS_ALLOW_STDIN", "").lower() in {"1", "true", "yes"}
+        allow_stdin_val = get_env("SUBPROCESS_ALLOW_STDIN") or ""
+        self._allow_stdin = allow_stdin_val.lower() in {"1", "true", "yes"}
 
     def _session_name(self, session_id: int, session_name: Optional[str]) -> str:
         return session_name or f"issue-{session_id}"
