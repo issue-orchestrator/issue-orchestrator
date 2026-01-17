@@ -52,11 +52,16 @@ class WorktreeContext:
 
     This dataclass is created via WorktreeContext.create() which handles
     all the worktree creation, preparation, and setup.
+
+    Attributes:
+        session_name: Terminal session identifier (globally unique, e.g., "issue-42")
+        phase_name: Logical phase name for session output directories (e.g., "coding-1")
     """
 
     worktree_path: Path
     branch_name: str
     session_name: str
+    phase_name: str
     issue_number: int
     worktree_info: WorktreeInfo
     run: SessionRun
@@ -83,6 +88,7 @@ class WorktreeContext:
         enforce_hooks: bool = False,
         pre_push_hook: Optional[Path] = None,
         reuse_options: Optional[WorktreeReuseOptions] = None,
+        phase_name: Optional[str] = None,
     ) -> "WorktreeContext":
         """Create and prepare a worktree context for a session.
 
@@ -92,16 +98,21 @@ class WorktreeContext:
             events: For emitting trace events
             issue_number: Issue number
             issue_title: Issue title (for worktree naming)
-            session_name: Name of the session (e.g., "issue-123")
+            session_name: Terminal session identifier (globally unique, e.g., "issue-123")
             agent_label: Agent label for the session
             branch_name: Optional branch name (auto-generated if None)
             enforce_hooks: Whether to enforce git hooks
             pre_push_hook: Optional pre-push hook script
             reuse_options: Worktree reuse configuration
+            phase_name: Logical phase name for session output (e.g., "coding-1").
+                        Defaults to session_name if not provided.
 
         Returns:
             WorktreeContext with worktree ready for use, or with error set
         """
+        # Default phase_name to session_name for backward compatibility
+        if phase_name is None:
+            phase_name = session_name
         repo_root = config.repo_root
         worktree_base = config.worktree_base
 
@@ -149,13 +160,14 @@ class WorktreeContext:
             session_output=session_output,
         )
         try:
-            worktree.prepare_for_session(session_name)
+            worktree.prepare_for_session(phase_name)
         except WorktreePreparationError as e:
             # Return context with error - caller handles the error response
             return cls(
                 worktree_path=worktree_path,
                 branch_name=actual_branch,
                 session_name=session_name,
+                phase_name=phase_name,
                 issue_number=issue_number,
                 worktree_info=worktree_info,
                 run=None,  # type: ignore[arg-type]
@@ -169,7 +181,7 @@ class WorktreeContext:
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
         run = session_output.start_run(
             worktree_path=worktree_path,
-            session_name=session_name,
+            session_name=phase_name,
             issue_number=issue_number,
             agent_label=agent_label,
             backend=config.terminal_adapter or "subprocess",
@@ -181,6 +193,7 @@ class WorktreeContext:
             worktree_path=worktree_path,
             branch_name=actual_branch,
             session_name=session_name,
+            phase_name=phase_name,
             issue_number=issue_number,
             worktree_info=worktree_info,
             run=run,

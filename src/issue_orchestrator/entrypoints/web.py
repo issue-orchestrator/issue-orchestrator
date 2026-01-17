@@ -1103,6 +1103,102 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
 
 
+@app.get("/api/session/phases/{issue_number}")
+async def get_session_phases(issue_number: int) -> JSONResponse:
+    """Get the linear phase history for an issue.
+
+    Returns the sequence of phases (coding-1, review-1, coding-2, etc.)
+    with their status and summary information for the UI.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..execution.session_output_adapter import FileSystemSessionOutput, find_run_dir_for_issue
+
+    # Find worktree for this issue
+    worktree_path = None
+    for s in _orchestrator.state.active_sessions:
+        if s.issue.number == issue_number:
+            worktree_path = s.worktree_path
+            break
+
+    if not worktree_path:
+        for entry in _orchestrator.state.session_history:
+            if entry.issue_number == issue_number:
+                worktree_path = getattr(entry, "worktree_path", None)
+                break
+
+    if not worktree_path:
+        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
+        _, worktree_path = find_run_dir_for_issue(
+            _collect_worktree_bases(_orchestrator.config),
+            repo_name,
+            issue_number,
+        )
+
+    if not worktree_path:
+        return JSONResponse({
+            "phases": [],
+            "current_phase": None,
+            "error": "No worktree found for issue",
+        })
+
+    session_output = FileSystemSessionOutput()
+    runs = session_output.list_runs(worktree_path)
+
+    # Transform runs into phase info for UI
+    phases = []
+    current_phase = None
+    for run in runs:
+        phase_name = run.get("session_name", "unknown")
+        status = run.get("status", "unknown")
+        phase = {
+            "name": phase_name,
+            "display_name": _format_phase_name(phase_name),
+            "status": status,
+            "status_icon": _phase_status_icon(status),
+            "started_at": run.get("started_at"),
+            "ended_at": run.get("ended_at"),
+            "agent_label": run.get("agent_label"),
+            "run_dir": run.get("run_dir"),
+            "outcome": run.get("outcome"),
+            "validation_passed": run.get("validation_passed"),
+        }
+        phases.append(phase)
+        if status == "in_progress":
+            current_phase = phase_name
+
+    return JSONResponse({
+        "phases": phases,
+        "current_phase": current_phase,
+        "issue_number": issue_number,
+    })
+
+
+def _format_phase_name(phase_name: str) -> str:
+    """Format phase name for display (e.g., 'coding-1' -> 'Coding 1')."""
+    if not phase_name:
+        return "Unknown"
+    parts = phase_name.split("-")
+    if len(parts) == 2:
+        name, num = parts
+        return f"{name.title()} {num}"
+    return phase_name.replace("-", " ").title()
+
+
+def _phase_status_icon(status: str) -> str:
+    """Return status icon for a phase."""
+    icons = {
+        "completed": "✓",
+        "in_progress": "●",
+        "validation_failed": "✗",
+        "blocked": "✗",
+        "timeout": "✗",
+        "unknown": "○",
+    }
+    return icons.get(status, "○")
+
+
 @app.get("/api/session/orchestrator-log/{issue_number}")
 async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:
     """Generate and return a filtered orchestrator log for an issue.
