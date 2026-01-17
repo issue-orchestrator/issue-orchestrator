@@ -186,6 +186,29 @@ def audit_queue(
     return entries
 
 
+def _audit_in_progress_issue(
+    issue: Issue,
+    config: Config,
+    active_numbers: set[int],
+    issue_branches: Optional[dict[int, str]],
+) -> IssueAuditEntry:
+    """Audit an issue with in-progress label."""
+    if issue_branches is not None:
+        state = analyze_issue(
+            issue=issue,
+            repo=config.repo,
+            issue_branches=issue_branches,
+            check_session_fn=lambda n: n in active_numbers,
+        )
+        if state.has_open_pr:
+            return IssueAuditEntry(issue, SkipReason.HAS_OPEN_PR, "PR pending review")
+        if state.has_partial_work:
+            return IssueAuditEntry(issue, SkipReason.HAS_BRANCH, f"branch '{state.branch}' exists")
+        if state.is_orphaned_label:
+            return IssueAuditEntry(issue, SkipReason.IN_PROGRESS, "orphaned - will be cleaned at startup")
+    return IssueAuditEntry(issue, SkipReason.IN_PROGRESS, "work in progress")
+
+
 def audit_issue(
     issue: Issue,
     config: Config,
@@ -194,41 +217,20 @@ def audit_issue(
     issue_branches: Optional[dict[int, str]] = None,
 ) -> IssueAuditEntry:
     """Determine why an issue is queued or skipped."""
-
-    # Check if closed
     if issue.state == "closed":
         return IssueAuditEntry(issue, SkipReason.CLOSED)
 
-    # Check for active session
     if issue.number in active_numbers:
         return IssueAuditEntry(issue, SkipReason.ACTIVE_SESSION)
 
-    # Check labels - use centralized label_utils for blocking check
     label_in_progress = config.get_label_in_progress()
     label_needs_human = config.get_label_needs_human()
 
     if label_in_progress in issue.labels or "in-progress" in issue.labels:
-        # Use analyze_issue to get accurate state (same logic as startup)
-        if issue_branches is not None:
-            state = analyze_issue(
-                issue=issue,
-                repo=config.repo,
-                issue_branches=issue_branches,
-                check_session_fn=lambda n: n in active_numbers,
-            )
-            if state.has_open_pr:
-                return IssueAuditEntry(issue, SkipReason.HAS_OPEN_PR, f"PR pending review")
-            elif state.has_partial_work:
-                return IssueAuditEntry(issue, SkipReason.HAS_BRANCH, f"branch '{state.branch}' exists")
-            elif state.is_orphaned_label:
-                return IssueAuditEntry(issue, SkipReason.IN_PROGRESS, "orphaned - will be cleaned at startup")
-        # Fallback if no branches info
-        return IssueAuditEntry(issue, SkipReason.IN_PROGRESS, "work in progress")
+        return _audit_in_progress_issue(issue, config, active_numbers, issue_branches)
 
-    # Use centralized blocking check - catches blocked, blocked-failed, blocked-needs-human, etc.
     blocking_labels = label_utils.get_blocking_labels(issue.labels)
     if blocking_labels:
-        # Return specific reason based on blocking label
         if label_utils.requires_human_any(issue.labels):
             return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN, f"label: {blocking_labels[0]}")
         return IssueAuditEntry(issue, SkipReason.BLOCKED, f"label: {blocking_labels[0]}")
@@ -236,19 +238,12 @@ def audit_issue(
     if label_needs_human in issue.labels or "needs-human" in issue.labels:
         return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN)
 
-    # Check session history
     if issue.number in history_numbers:
         return IssueAuditEntry(issue, SkipReason.IN_HISTORY, "already processed this run")
 
-    # Check for agent label
     if not issue.agent_type or issue.agent_type not in config.agents:
-        return IssueAuditEntry(
-            issue,
-            SkipReason.NO_AGENT,
-            f"has {issue.agent_type or 'no agent label'}"
-        )
+        return IssueAuditEntry(issue, SkipReason.NO_AGENT, f"has {issue.agent_type or 'no agent label'}")
 
-    # Issue is queued
     return IssueAuditEntry(issue, SkipReason.QUEUED)
 
 

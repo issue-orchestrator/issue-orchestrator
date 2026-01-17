@@ -153,11 +153,11 @@ class OrchestratorSupport:
             paused=self.state.paused,
         )
 
-    def _clear_discovered_facts(self) -> None:
+    def clear_discovered_facts(self) -> None:
         for attr in ("discovered_reviews", "discovered_reworks", "discovered_escalations", "discovered_failures"):
             getattr(self.state, attr).clear()
 
-    def _emit_heartbeat_if_needed(self) -> None:
+    def emit_heartbeat_if_needed(self) -> None:
         if time.time() - self._last_ui_update >= self._ui_update_interval and self.state.active_sessions:
             self.events.publish(TraceEvent(
                 EventName.ORCHESTRATOR_HEARTBEAT,
@@ -179,7 +179,7 @@ class OrchestratorSupport:
         else:
             logger.info("[REFRESH] Manual refresh requested")
 
-    def _apply_plan(self, plan: "Plan", pause_issue_callback: Callable[[int, str], None]) -> None:
+    def apply_plan(self, plan: "Plan", pause_issue_callback: Callable[[int, str], None]) -> None:
         if plan.action_count == 0:
             return
 
@@ -368,7 +368,7 @@ class OrchestratorSupport:
         projection = QueueProjection(self.config, self.repository_host, self.events)
         projection.update_and_emit(self.state)
 
-    def _recover_orphaned_cleanups(self) -> None:
+    def recover_orphaned_cleanups(self) -> None:
         self._cleanup_manager.recover_orphaned_cleanups(
             lambda msg: setattr(self.state, 'startup_message', msg)
         )

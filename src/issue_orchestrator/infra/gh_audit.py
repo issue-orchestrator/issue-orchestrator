@@ -296,6 +296,85 @@ def _ensure_totals_entry(container: dict[str, Any], key: str) -> dict[str, Any]:
     return entry
 
 
+def _record_basic_stats(command: str, caller: str, key: str, duration_ms: int) -> None:
+    """Record basic call statistics."""
+    _stats["total_calls"] += 1
+    _stats["by_command"][command] = _stats["by_command"].get(command, 0) + 1
+    _stats["by_caller"][caller] = _stats["by_caller"].get(caller, 0) + 1
+    entry = _stats["by_caller_command"].setdefault(
+        key, {"caller": caller, "command": command, "count": 0, "total_ms": 0}
+    )
+    entry["count"] += 1
+    entry["total_ms"] += duration_ms
+
+
+def _record_reason_stats(reason: str, command: str, duration_ms: int) -> None:
+    """Record reason-based statistics."""
+    _stats["by_reason"][reason] = _stats["by_reason"].get(reason, 0) + 1
+    reason_totals = _ensure_totals_entry(_stats["by_reason_totals"], reason)
+    reason_totals["calls"] += 1
+    reason_totals["total_ms"] += duration_ms
+    reason_key = f"{reason}::{command}"
+    rc_entry = _stats["by_reason_command"].setdefault(
+        reason_key, {"reason": reason, "command": command, "count": 0, "total_ms": 0}
+    )
+    rc_entry["count"] += 1
+    rc_entry["total_ms"] += duration_ms
+
+
+def _record_scope_stats(scope: str, reason: str | None, duration_ms: int) -> dict[str, Any]:
+    """Record scope-based statistics. Returns sr_entry for further updates."""
+    _stats["by_scope"][scope] = _stats["by_scope"].get(scope, 0) + 1
+    scope_totals = _ensure_totals_entry(_stats["by_scope_totals"], scope)
+    scope_totals["calls"] += 1
+    scope_totals["total_ms"] += duration_ms
+    scope_key = f"{scope}::{reason or 'unknown'}"
+    sr_entry = _stats["by_scope_reason"].setdefault(
+        scope_key,
+        {"scope": scope, "reason": reason or "unknown", "count": 0, "total_ms": 0,
+         "items_returned": 0, "bytes_returned": 0, "full_scan_calls": 0, "full_scan_items_returned": 0},
+    )
+    sr_entry["count"] += 1
+    sr_entry["total_ms"] += duration_ms
+    return sr_entry
+
+
+def _add_to_stat(
+    key: str, global_key: str, value: int, reason: str | None, scope: str | None, sr_entry: dict | None
+) -> None:
+    """Add value to stat across global, reason, scope, and sr_entry."""
+    _stats[global_key] += value
+    if reason and reason in _stats["by_reason_totals"]:
+        _stats["by_reason_totals"][reason][key] += value
+    if scope and scope in _stats["by_scope_totals"]:
+        _stats["by_scope_totals"][scope][key] += value
+        if sr_entry is not None:
+            sr_entry[key] += value
+
+
+def _record_metrics(
+    reason: str | None, scope: str | None, sr_entry: dict | None,
+    bytes_returned: int | None, items_returned: int | None, full_scan: bool | None,
+) -> None:
+    """Record bytes/items/full_scan metrics."""
+    if bytes_returned is not None:
+        _add_to_stat("bytes_returned", "total_bytes_returned", bytes_returned, reason, scope, sr_entry)
+
+    if items_returned is not None:
+        _add_to_stat("items_returned", "total_items_returned", items_returned, reason, scope, sr_entry)
+
+    if full_scan:
+        _stats["full_scan_calls"] += 1
+        if reason and reason in _stats["by_reason_totals"]:
+            _stats["by_reason_totals"][reason]["full_scan_calls"] += 1
+        if scope and scope in _stats["by_scope_totals"]:
+            _stats["by_scope_totals"][scope]["full_scan_calls"] += 1
+            if sr_entry is not None:
+                sr_entry["full_scan_calls"] += 1
+        if items_returned is not None:
+            _add_to_stat("full_scan_items_returned", "full_scan_items_returned", items_returned, reason, scope, sr_entry)
+
+
 def record(
     *,
     args: list[str],
@@ -317,120 +396,58 @@ def record(
         global _call_id
         _call_id += 1
         call_id = _call_id
-        _stats["total_calls"] += 1
-        _stats["by_command"][command] = _stats["by_command"].get(command, 0) + 1
-        _stats["by_caller"][caller] = _stats["by_caller"].get(caller, 0) + 1
-        entry = _stats["by_caller_command"].setdefault(
-            key,
-            {"caller": caller, "command": command, "count": 0, "total_ms": 0},
-        )
-        entry["count"] += 1
-        entry["total_ms"] += duration_ms
+
+        _record_basic_stats(command, caller, key, duration_ms)
+
         if reason:
-            _stats["by_reason"][reason] = _stats["by_reason"].get(reason, 0) + 1
-            reason_totals = _ensure_totals_entry(_stats["by_reason_totals"], reason)
-            reason_totals["calls"] += 1
-            reason_totals["total_ms"] += duration_ms
-            reason_key = f"{reason}::{command}"
-            rc_entry = _stats["by_reason_command"].setdefault(
-                reason_key,
-                {"reason": reason, "command": command, "count": 0, "total_ms": 0},
-            )
-            rc_entry["count"] += 1
-            rc_entry["total_ms"] += duration_ms
+            _record_reason_stats(reason, command, duration_ms)
+
         sr_entry = None
         if scope:
-            _stats["by_scope"][scope] = _stats["by_scope"].get(scope, 0) + 1
-            scope_totals = _ensure_totals_entry(_stats["by_scope_totals"], scope)
-            scope_totals["calls"] += 1
-            scope_totals["total_ms"] += duration_ms
-            scope_key = f"{scope}::{reason or 'unknown'}"
-            sr_entry = _stats["by_scope_reason"].setdefault(
-                scope_key,
-                {
-                    "scope": scope,
-                    "reason": reason or "unknown",
-                    "count": 0,
-                    "total_ms": 0,
-                    "items_returned": 0,
-                    "bytes_returned": 0,
-                    "full_scan_calls": 0,
-                    "full_scan_items_returned": 0,
-                },
-            )
-            sr_entry["count"] += 1
-            sr_entry["total_ms"] += duration_ms
+            sr_entry = _record_scope_stats(scope, reason, duration_ms)
+
         if issue_key:
             _stats["by_issue"][issue_key] = _stats["by_issue"].get(issue_key, 0) + 1
         if error:
             _stats["errors"] += 1
-        if bytes_returned is not None:
-            _stats["total_bytes_returned"] += bytes_returned
-            if reason:
-                _stats["by_reason_totals"][reason]["bytes_returned"] += bytes_returned
-            if scope:
-                _stats["by_scope_totals"][scope]["bytes_returned"] += bytes_returned
-                if sr_entry is not None:
-                    sr_entry["bytes_returned"] += bytes_returned
-        if items_returned is not None:
-            _stats["total_items_returned"] += items_returned
-            if reason:
-                _stats["by_reason_totals"][reason]["items_returned"] += items_returned
-            if scope:
-                _stats["by_scope_totals"][scope]["items_returned"] += items_returned
-                if sr_entry is not None:
-                    sr_entry["items_returned"] += items_returned
-        if full_scan:
-            _stats["full_scan_calls"] += 1
-            if reason:
-                _stats["by_reason_totals"][reason]["full_scan_calls"] += 1
-            if scope:
-                _stats["by_scope_totals"][scope]["full_scan_calls"] += 1
-                if sr_entry is not None:
-                    sr_entry["full_scan_calls"] += 1
-            if items_returned is not None:
-                _stats["full_scan_items_returned"] += items_returned
-                if reason:
-                    _stats["by_reason_totals"][reason]["full_scan_items_returned"] += items_returned
-                if scope:
-                    _stats["by_scope_totals"][scope]["full_scan_items_returned"] += items_returned
-                    if sr_entry is not None:
-                        sr_entry["full_scan_items_returned"] += items_returned
-        # Store rate limit info from response headers (more current than /rate_limit endpoint)
+
+        _record_metrics(reason, scope, sr_entry, bytes_returned, items_returned, full_scan)
+
         if rate_limit is not None:
-            _stats["last_rate_limit_from_headers"] = {
-                **rate_limit,
-                "updated_at": time.time(),
-            }
+            _stats["last_rate_limit_from_headers"] = {**rate_limit, "updated_at": time.time()}
+
         if _INCLUDE_EVENTS:
             _stats["events"].append({
-                "call_id": call_id,
-                "ts": time.time(),
-                "caller": caller,
-                "command": command,
-                "args": list(args),
-                "repo": repo,
-                "duration_ms": duration_ms,
-                "error": error,
-                "reason": reason,
-                "scope": scope,
-                "issue_key": issue_key,
-                "items_returned": items_returned,
-                "bytes_returned": bytes_returned,
-                "full_scan": bool(full_scan),
+                "call_id": call_id, "ts": time.time(), "caller": caller, "command": command,
+                "args": list(args), "repo": repo, "duration_ms": duration_ms, "error": error,
+                "reason": reason, "scope": scope, "issue_key": issue_key,
+                "items_returned": items_returned, "bytes_returned": bytes_returned, "full_scan": bool(full_scan),
             })
+
         _calls[call_id] = {
-            "items_returned": items_returned,
-            "bytes_returned": bytes_returned,
-            "full_scan": full_scan,
-            "reason": reason,
-            "scope": scope,
+            "items_returned": items_returned, "bytes_returned": bytes_returned,
+            "full_scan": full_scan, "reason": reason, "scope": scope,
         }
         total_calls = _stats["total_calls"]
         _context.last_call_id = call_id
 
     if _rate_limit_every_calls and total_calls % _rate_limit_every_calls == 0:
         check_rate_limit(f"every_{_rate_limit_every_calls}_calls")
+
+
+def _update_metric_delta(
+    stat_key: str, global_key: str, reason: str | None, scope: str | None, delta: int, scope_key: str | None
+) -> None:
+    """Update a metric across global, reason, and scope stats."""
+    _stats[global_key] += delta
+    if reason and reason in _stats["by_reason_totals"]:
+        _stats["by_reason_totals"][reason][stat_key] += delta
+    if scope and scope in _stats["by_scope_totals"]:
+        _stats["by_scope_totals"][scope][stat_key] += delta
+        if scope_key:
+            sr_entry = _stats["by_scope_reason"].get(scope_key)
+            if sr_entry is not None:
+                sr_entry[stat_key] += delta
 
 
 def update_last_call(*, items_returned: int | None = None, bytes_returned: int | None = None) -> None:
@@ -445,41 +462,24 @@ def update_last_call(*, items_returned: int | None = None, bytes_returned: int |
             return
         reason = entry.get("reason")
         scope = entry.get("scope")
+        scope_key = f"{scope}::{reason or 'unknown'}" if scope else None
+
         if items_returned is not None:
             prev_items = entry.get("items_returned") or 0
-            _stats["total_items_returned"] += items_returned - prev_items
+            delta = items_returned - prev_items
             entry["items_returned"] = items_returned
-            if reason:
-                _stats["by_reason_totals"][reason]["items_returned"] += items_returned - prev_items
-            if scope:
-                _stats["by_scope_totals"][scope]["items_returned"] += items_returned - prev_items
-                scope_key = f"{scope}::{reason or 'unknown'}"
-                sr_entry = _stats["by_scope_reason"].get(scope_key)
-                if sr_entry is not None:
-                    sr_entry["items_returned"] += items_returned - prev_items
+            _update_metric_delta("items_returned", "total_items_returned", reason, scope, delta, scope_key)
+
         if bytes_returned is not None:
             prev_bytes = entry.get("bytes_returned") or 0
-            _stats["total_bytes_returned"] += bytes_returned - prev_bytes
+            delta = bytes_returned - prev_bytes
             entry["bytes_returned"] = bytes_returned
-            if reason:
-                _stats["by_reason_totals"][reason]["bytes_returned"] += bytes_returned - prev_bytes
-            if scope:
-                _stats["by_scope_totals"][scope]["bytes_returned"] += bytes_returned - prev_bytes
-                scope_key = f"{scope}::{reason or 'unknown'}"
-                sr_entry = _stats["by_scope_reason"].get(scope_key)
-                if sr_entry is not None:
-                    sr_entry["bytes_returned"] += bytes_returned - prev_bytes
+            _update_metric_delta("bytes_returned", "total_bytes_returned", reason, scope, delta, scope_key)
+
         if entry.get("full_scan") and items_returned is not None:
             prev_full = entry.get("items_returned") or 0
-            _stats["full_scan_items_returned"] += items_returned - prev_full
-            if reason:
-                _stats["by_reason_totals"][reason]["full_scan_items_returned"] += items_returned - prev_full
-            if scope:
-                _stats["by_scope_totals"][scope]["full_scan_items_returned"] += items_returned - prev_full
-                scope_key = f"{scope}::{reason or 'unknown'}"
-                sr_entry = _stats["by_scope_reason"].get(scope_key)
-                if sr_entry is not None:
-                    sr_entry["full_scan_items_returned"] += items_returned - prev_full
+            delta = items_returned - prev_full
+            _update_metric_delta("full_scan_items_returned", "full_scan_items_returned", reason, scope, delta, scope_key)
 
 
 def _summary_lines() -> list[str]:

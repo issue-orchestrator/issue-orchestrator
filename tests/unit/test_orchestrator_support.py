@@ -426,12 +426,12 @@ class TestCheckHealth:
 
 
 # =============================================================================
-# Tests for OrchestratorSupport._apply_plan
+# Tests for OrchestratorSupport.apply_plan
 # =============================================================================
 
 
 class TestOrchestratorSupportApplyPlan:
-    """Tests for OrchestratorSupport._apply_plan method."""
+    """Tests for OrchestratorSupport.apply_plan method."""
 
     @pytest.fixture
     def support(
@@ -481,7 +481,7 @@ class TestOrchestratorSupportApplyPlan:
         empty_plan.actions = []
 
         pause_callback = Mock()
-        support._apply_plan(empty_plan, pause_callback)
+        support.apply_plan(empty_plan, pause_callback)
 
         # No events should be published for empty plan
         assert mock_event_sink.publish.call_count == 0
@@ -501,7 +501,7 @@ class TestOrchestratorSupportApplyPlan:
         mock_result.details = {}
         support.action_applier.apply = Mock(return_value=mock_result)
 
-        support._apply_plan(plan, Mock())
+        support.apply_plan(plan, Mock())
 
         # Should have APPLY_STARTED and APPLY_COMPLETED
         event_names = [e.name for e in mock_event_sink.events]
@@ -529,7 +529,7 @@ class TestOrchestratorSupportApplyPlan:
 
         support.action_applier.apply = Mock(side_effect=pause_on_second_apply)
 
-        support._apply_plan(plan, Mock())
+        support.apply_plan(plan, Mock())
 
         # Should have stopped after 1 action (paused before second)
         assert apply_count == 1
@@ -555,7 +555,7 @@ class TestOrchestratorSupportApplyPlan:
         )
 
         pause_callback = Mock()
-        support._apply_plan(plan, pause_callback)
+        support.apply_plan(plan, pause_callback)
 
         # Should have called pause callback
         pause_callback.assert_called_once_with(42, "Labels changed")
@@ -576,7 +576,7 @@ class TestOrchestratorSupportApplyPlan:
         # Set cooldown active
         support._cleanup_manager.should_retry_triage_issue = Mock(return_value=False)
 
-        support._apply_plan(plan, Mock())
+        support.apply_plan(plan, Mock())
 
         # Should not have called apply for this action
         support.action_applier.apply.assert_not_called()
@@ -596,7 +596,7 @@ class TestOrchestratorSupportApplyPlan:
             return_value=ActionResult.fail(action, "boom")
         )
 
-        support._apply_plan(plan, Mock())
+        support.apply_plan(plan, Mock())
 
         assert 42 in sample_orchestrator_state.failed_this_cycle
 

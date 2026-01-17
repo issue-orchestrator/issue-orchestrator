@@ -167,6 +167,48 @@ class OrphanBranchState:
         return "investigate"
 
 
+def _safe_call(fn, *args, default=None):
+    """Call fn safely, returning default on exception."""
+    if fn is None:
+        return default
+    try:
+        return fn(*args)
+    except Exception:
+        return default
+
+
+def _enrich_orphan_state(
+    state: OrphanBranchState,
+    issue_tracker: "IssueTracker | None",
+    pr_tracker: "PullRequestTracker | None",
+    commits_ahead_fn: Callable[[str], int] | None,
+    last_commit_date_fn: Callable[[str], Optional[str]] | None,
+) -> None:
+    """Enrich orphan branch state with additional data."""
+    if commits_ahead_fn:
+        result = _safe_call(commits_ahead_fn, state.branch_name)
+        if result is not None:
+            state.commits_ahead = result
+
+    if last_commit_date_fn:
+        result = _safe_call(last_commit_date_fn, state.branch_name)
+        if result is not None:
+            state.last_commit_date = result
+
+    if issue_tracker:
+        issue = _safe_call(issue_tracker.get_issue, state.issue_number)
+        if issue:
+            state.issue_state = str(issue.state).lower()
+            state.issue_title = issue.title
+
+    if pr_tracker:
+        prs = _safe_call(pr_tracker.get_prs_for_branch, state.branch_name, "all", default=[])
+        closed_prs = [p for p in prs if p.state.lower() in ("closed", "merged")]
+        if closed_prs:
+            state.has_closed_pr = True
+            state.closed_pr_url = closed_prs[0].url
+
+
 def analyze_orphan_branches(
     issue_branches: dict[int, str],
     in_progress_issue_numbers: set[int],
@@ -176,61 +218,14 @@ def analyze_orphan_branches(
     commits_ahead_fn: Callable[[str], int] | None = None,
     last_commit_date_fn: Callable[[str], Optional[str]] | None = None,
 ) -> list[OrphanBranchState]:
-    """Analyze branches that exist but aren't marked in-progress.
-
-    Args:
-        issue_branches: Dict of issue number -> branch name
-        in_progress_issue_numbers: Set of issue numbers currently marked in-progress
-        repo: GitHub repo (owner/repo format)
-        commits_ahead_fn: Optional function to get commits ahead for a branch
-        last_commit_date_fn: Optional function to get last commit date for a branch
-
-    Returns:
-        List of OrphanBranchState objects
-    """
+    """Analyze branches that exist but aren't marked in-progress."""
     orphans = []
     for issue_num, branch_name in issue_branches.items():
         if issue_num in in_progress_issue_numbers:
             continue
 
-        state = OrphanBranchState(
-            issue_number=issue_num,
-            branch_name=branch_name,
-        )
-
-        if commits_ahead_fn:
-            try:
-                state.commits_ahead = commits_ahead_fn(branch_name)
-            except Exception:
-                pass
-
-        if last_commit_date_fn:
-            try:
-                state.last_commit_date = last_commit_date_fn(branch_name)
-            except Exception:
-                pass
-
-        # Check issue state via IssueTracker (if provided)
-        if issue_tracker:
-            try:
-                issue = issue_tracker.get_issue(issue_num)
-                if issue:
-                    state.issue_state = str(issue.state).lower()
-                    state.issue_title = issue.title
-            except Exception:
-                pass
-
-        # Check for closed PRs on this branch
-        if pr_tracker:
-            try:
-                prs = pr_tracker.get_prs_for_branch(branch_name, state="all")
-                closed_prs = [p for p in prs if p.state.lower() in ("closed", "merged")]
-                if closed_prs:
-                    state.has_closed_pr = True
-                    state.closed_pr_url = closed_prs[0].url
-            except Exception:
-                pass
-
+        state = OrphanBranchState(issue_number=issue_num, branch_name=branch_name)
+        _enrich_orphan_state(state, issue_tracker, pr_tracker, commits_ahead_fn, last_commit_date_fn)
         orphans.append(state)
 
     # Sort by suggested action priority (resume-work first, then investigate, then delete)

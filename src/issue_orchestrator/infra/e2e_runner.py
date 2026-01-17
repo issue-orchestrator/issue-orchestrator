@@ -454,85 +454,75 @@ def _get_main_head(repo_root: Path) -> Optional[str]:
     return None
 
 
+def _should_skip_e2e_trigger(
+    config: "Config", repo_root: Path, orchestrator_id: str, instance_id: str | None
+) -> bool:
+    """Check if E2E trigger should be skipped. Returns True to skip."""
+    if not config.e2e.enabled or config.e2e.auto_run_interval_minutes <= 0:
+        return True
+
+    role = get_e2e_role(config.e2e, instance_id=instance_id)
+    if role != "executor":
+        logger.debug("E2E auto-trigger: skipping (role=%s, not executor)", role)
+        return True
+
+    manager = get_e2e_runner_manager()
+    status = manager.status(orchestrator_id)
+    if status["running"]:
+        logger.debug("E2E auto-trigger: already running")
+        return True
+
+    return False
+
+
+def _check_e2e_interval_and_head(config: "Config", repo_root: Path, orchestrator_id: str) -> bool:
+    """Check if enough time passed and HEAD changed. Returns True to skip."""
+    db_path = repo_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return False
+
+    try:
+        db = E2EDB(db_path)
+        last_run = db.latest_run(orchestrator_id)
+        if not last_run or not last_run.finished_at:
+            return False
+
+        from datetime import datetime, timezone
+        finished = datetime.fromisoformat(last_run.finished_at.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        minutes_since = (now - finished).total_seconds() / 60
+
+        if minutes_since < config.e2e.auto_run_interval_minutes:
+            logger.debug(
+                "E2E auto-trigger: only %.1f min since last run (need %d)",
+                minutes_since, config.e2e.auto_run_interval_minutes,
+            )
+            return True
+
+        current_head = _get_main_head(repo_root)
+        if current_head and last_run.commit_sha == current_head:
+            logger.debug(
+                "E2E auto-trigger: main HEAD unchanged (%s), skipping",
+                current_head[:8] if current_head else "unknown",
+            )
+            return True
+    except Exception as e:
+        logger.warning("E2E auto-trigger: failed to check last run: %s", e)
+    return False
+
+
 def maybe_trigger_e2e(
     config: "Config",
     repo_root: Path,
     orchestrator_id: str,
     instance_id: str | None = None,
 ) -> bool:
-    """Check if E2E tests should be auto-triggered and start if appropriate.
-
-    Auto-trigger conditions:
-    1. E2E is enabled and auto_run_interval_minutes > 0
-    2. This instance has executor role (not reader/disabled)
-    3. No E2E run currently in progress
-    4. Enough time has passed since last E2E run
-    5. Main branch HEAD has changed since last tested commit
-
-    Args:
-        config: Configuration with E2E settings
-        repo_root: Path to repository root
-        orchestrator_id: Unique orchestrator identifier
-        instance_id: Instance ID from INSTANCE_ID env var (for multi-instance setups)
-
-    Returns:
-        True if E2E was triggered, False otherwise
-    """
-    # Check if auto-trigger is enabled
-    if not config.e2e.enabled:
-        return False
-    if config.e2e.auto_run_interval_minutes <= 0:
+    """Check if E2E tests should be auto-triggered and start if appropriate."""
+    if _should_skip_e2e_trigger(config, repo_root, orchestrator_id, instance_id):
         return False
 
-    # Check role - only executors run E2E tests
-    role = get_e2e_role(config.e2e, instance_id=instance_id)
-    if role != "executor":
-        logger.debug("E2E auto-trigger: skipping (role=%s, not executor)", role)
+    if _check_e2e_interval_and_head(config, repo_root, orchestrator_id):
         return False
-
-    # Check if already running
-    manager = get_e2e_runner_manager()
-    status = manager.status(orchestrator_id)
-    if status["running"]:
-        logger.debug("E2E auto-trigger: already running")
-        return False
-
-    # Check time since last run and whether main HEAD changed
-    db_path = repo_root / ".issue-orchestrator" / "e2e.db"
-    last_run = None
-    if db_path.exists():
-        try:
-            db = E2EDB(db_path)
-            last_run = db.latest_run(orchestrator_id)
-            if last_run and last_run.finished_at:
-                # Check interval first
-                from datetime import datetime, timezone
-
-                finished = datetime.fromisoformat(
-                    last_run.finished_at.replace("Z", "+00:00")
-                )
-                now = datetime.now(timezone.utc)
-                minutes_since = (now - finished).total_seconds() / 60
-
-                if minutes_since < config.e2e.auto_run_interval_minutes:
-                    logger.debug(
-                        "E2E auto-trigger: only %.1f min since last run (need %d)",
-                        minutes_since,
-                        config.e2e.auto_run_interval_minutes,
-                    )
-                    return False
-
-                # Interval passed - now check if main HEAD changed
-                current_head = _get_main_head(repo_root)
-                if current_head and last_run.commit_sha == current_head:
-                    logger.debug(
-                        "E2E auto-trigger: main HEAD unchanged (%s), skipping",
-                        current_head[:8] if current_head else "unknown",
-                    )
-                    return False
-        except Exception as e:
-            logger.warning("E2E auto-trigger: failed to check last run: %s", e)
-            # Continue anyway - if we can't check, try to run
 
     # All conditions met - trigger E2E (or resume interrupted)
     try:
@@ -541,6 +531,7 @@ def maybe_trigger_e2e(
             "E2E auto-trigger: starting/resuming (main HEAD: %s)",
             current_head[:8] if current_head else "unknown",
         )
+        manager = get_e2e_runner_manager()
         result = manager.start_or_resume(
             repo_root=repo_root,
             orchestrator_id=orchestrator_id,
