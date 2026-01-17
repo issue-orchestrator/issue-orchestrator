@@ -83,6 +83,7 @@ RUFF ?= .venv/bin/ruff
 lint-arch:
 	$(LINT_IMPORTS)
 	$(PYTHON) tools/check_arch_guardrails.py src
+	scripts/check_agents_md.sh
 
 # Complexity checks - reporting only (doesn't fail build)
 lint-complexity:

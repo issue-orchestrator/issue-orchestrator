@@ -30,12 +30,15 @@ jobs:
               - src/**
               - tests/**
               - tools/**
+              - scripts/**
               - Makefile
               - requirements*.txt
               - pyproject.toml
               - pyrightconfig*.json
               - tools/ast_guardrails.yml
               - .github/workflows/**
+              - '**/AGENTS.md'
+              - '**/CLAUDE.md'
 
   validate:
     needs: changes
