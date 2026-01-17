@@ -66,6 +66,7 @@ from issue_orchestrator.ports import (
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
 # =============================================================================
@@ -351,6 +352,7 @@ def session_launcher(
         get_issue_machine=get_issue_machine,
         get_session_machine=get_session_machine,
         get_review_machine=get_review_machine,
+        session_output=FileSystemSessionOutput(),
     )
 
     # Expose call tracking for tests

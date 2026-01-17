@@ -9,7 +9,7 @@ from pathlib import Path
 
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.domain.models import CompletionOutcome, CompletionRecord, get_completion_path
-from issue_orchestrator.infra.session_output import SessionOutputManager
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput as SessionOutputManager
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.working_copy import PushResult
 
@@ -84,7 +84,8 @@ def _write_completion(path: Path, record: CompletionRecord) -> None:
 
 def test_session_output_manifest_and_validation_pointer(tmp_path: Path) -> None:
     session_name = "issue-1"
-    run = SessionOutputManager.start_run(
+    session_output = SessionOutputManager()
+    run = session_output.start_run(
         worktree_path=tmp_path,
         session_name=session_name,
         issue_number=1,
@@ -109,6 +110,7 @@ def test_session_output_manifest_and_validation_pointer(tmp_path: Path) -> None:
         pr_adapter=DummyPRAdapter(),
         git_adapter=DummyGitAdapter(),
         event_bus=None,
+        session_output=session_output,
     )
     result = processor.process(
         worktree=tmp_path,
@@ -128,8 +130,9 @@ def test_session_output_manifest_and_validation_pointer(tmp_path: Path) -> None:
 
 def test_orchestrator_tail_scoped_to_run(tmp_path: Path) -> None:
     session_name = "issue-1"
-    run1 = SessionOutputManager.start_run(tmp_path, session_name, issue_number=1)
-    run2 = SessionOutputManager.start_run(tmp_path, session_name, issue_number=1)
+    session_output = SessionOutputManager()
+    run1 = session_output.start_run(tmp_path, session_name, issue_number=1)
+    run2 = session_output.start_run(tmp_path, session_name, issue_number=1)
 
     log_path = tmp_path / "orchestrator.log"
     lines = [
@@ -140,11 +143,11 @@ def test_orchestrator_tail_scoped_to_run(tmp_path: Path) -> None:
     ]
     log_path.write_text("\n".join(lines))
 
-    tail_path = SessionOutputManager.write_orchestrator_tail(
-        worktree_path=tmp_path,
-        session_name=session_name,
+    tail_path = session_output.write_orchestrator_tail(
+        run_dir=run2.run_dir,
         log_path=log_path,
         issue_number=1,
+        session_name=session_name,
     )
     assert tail_path is not None
     tail = tail_path.read_text()
@@ -156,7 +159,8 @@ def test_session_output_selects_claude_log(tmp_path: Path) -> None:
     session_name = "issue-2"
     claude_dir = tmp_path / ".claude" / "projects" / "test"
     claude_dir.mkdir(parents=True, exist_ok=True)
-    run = SessionOutputManager.start_run(
+    session_output = SessionOutputManager()
+    run = session_output.start_run(
         worktree_path=tmp_path,
         session_name=session_name,
         issue_number=2,
@@ -187,7 +191,7 @@ def test_session_output_selects_claude_log(tmp_path: Path) -> None:
     os.utime(older, (run_start.timestamp() + 300, run_start.timestamp() + 300))
     os.utime(newer, (run_start.timestamp() + 600, run_start.timestamp() + 600))
 
-    selected = SessionOutputManager.attach_claude_log(tmp_path, session_name)
+    selected = session_output.attach_claude_log(run.run_dir)
     assert selected == newer
 
     manifest = json.loads((run.run_dir / "manifest.json").read_text())

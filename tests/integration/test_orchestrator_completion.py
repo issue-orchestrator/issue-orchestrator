@@ -28,6 +28,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.ports import TraceEvent, NullEventSink
 from issue_orchestrator.control.session_controller import SessionController, SessionDecision
 from issue_orchestrator.control.completion_processor import CompletionProcessor
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -127,6 +128,7 @@ def completion_processor(mock_label_adapter, mock_pr_adapter, mock_git_adapter):
         label_adapter=mock_label_adapter,
         pr_adapter=mock_pr_adapter,
         git_adapter=mock_git_adapter,
+        session_output=FileSystemSessionOutput(),
     )
 
 
@@ -136,6 +138,7 @@ def session_controller(completion_processor, mock_event_sink):
     return SessionController(
         completion_processor=completion_processor,
         events=mock_event_sink,
+        session_output=FileSystemSessionOutput(),
     )
 
 

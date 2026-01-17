@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from issue_orchestrator.entrypoints import web
-from issue_orchestrator.infra.session_output import SessionOutputManager
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
 def test_session_manifest_uses_fallback_worktree_path(tmp_path, monkeypatch) -> None:
@@ -15,7 +15,8 @@ def test_session_manifest_uses_fallback_worktree_path(tmp_path, monkeypatch) -> 
     worktree_path = tmp_path / f"repo-{issue_number}"
     worktree_path.mkdir(parents=True, exist_ok=True)
 
-    run = SessionOutputManager.start_run(
+    session_output = FileSystemSessionOutput()
+    run = session_output.start_run(
         worktree_path=worktree_path,
         session_name=f"issue-{issue_number}",
         issue_number=issue_number,

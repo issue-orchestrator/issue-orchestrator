@@ -1090,6 +1090,7 @@ def handle_session_completion(
     worktree_manager: Optional[WorktreeManager],
     kill_session_fn: Callable[[str], None],
     config: Config,
+    session_output: Optional[SessionOutput] = None,
     pr_url_hint: Optional[str] = None,
     processing_errors: Optional[list[str]] = None,
     diagnostic_path: Optional[str] = None,
@@ -1107,6 +1108,7 @@ def handle_session_completion(
         observer: For cleanup
         worktree_manager: For worktree removal
         kill_session_fn: Function to kill terminal session
+        session_output: For session artifact management
         config: Configuration
         pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
         processing_errors: Errors from completion processor (push failed, PR creation failed, etc.)
@@ -1153,9 +1155,7 @@ def handle_session_completion(
         session, status, pr_url_hint=pr_url_hint,
         processing_errors=processing_errors, diagnostic_path=diagnostic_path
     )
-    if session.worktree_path:
-        from ..execution.session_output_adapter import FileSystemSessionOutput
-        session_output = FileSystemSessionOutput()
+    if session.worktree_path and session_output:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
         if run_dir:
             session_output.attach_claude_log(run_dir)
