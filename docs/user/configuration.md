@@ -226,7 +226,15 @@ ui:
   web_port: 8080
   control_api_port: 19080
   queue_refresh_seconds: 600
+  instances: 1                        # Number of orchestrator instances (for multi-orchestrator)
 ```
+
+When `instances` is greater than 1, the Control Center spawns multiple orchestrator processes. Each instance gets:
+- A unique `INSTANCE_ID` environment variable (e.g., `orchestrator-1`, `orchestrator-2`)
+- Auto-assigned ports (no conflicts)
+- Isolated worktree directories (`worktree_base/orchestrator-1/`, etc.)
+
+Use with `claims.enabled: true` to coordinate which instance works on each issue.
 
 ### observability
 

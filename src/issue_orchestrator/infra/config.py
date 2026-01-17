@@ -534,6 +534,9 @@ class Config:
     web_port: int = 8080  # Port for web dashboard
     control_api_port: int = 19080  # Port for control API (always available, 0 = disabled)
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
+
+    # Multi-instance support (for multi-orchestrator coordination)
+    instances: int = 1  # Number of orchestrator instances to spawn (CC manages this)
     session_no_output_seconds: int = 120  # Emit session_no_output after this many seconds idle
     session_no_output_tail_lines: int = 50  # Max tail lines to include in session_no_output
     session_no_output_max_bytes: int = 10000  # Max bytes of tail content
@@ -774,6 +777,7 @@ class Config:
                 "web_port": self.web_port,
                 "control_api_port": self.control_api_port,
                 "queue_refresh_seconds": self.queue_refresh_seconds,
+                "instances": self.instances,
             },
             "observability": {
                 "session_no_output_seconds": self.session_no_output_seconds,
@@ -1059,6 +1063,7 @@ class Config:
         config.web_port = ui_section.get("web_port", 8080)
         config.control_api_port = ui_section.get("control_api_port", 19080)
         config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
+        config.instances = ui_section.get("instances", 1)
 
         # Observability / session reporting
         config.session_no_output_seconds = observability_section.get("session_no_output_seconds", 120)

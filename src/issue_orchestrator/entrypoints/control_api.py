@@ -636,15 +636,37 @@ async def control_start(request: Request) -> JSONResponse:
         # Update selected config in registry
         set_selected_config(repo_root, config_name)
 
-        # Start orchestrator with the selected config
-        info = supervisor.start(repo_root, config_name=config_name)
-        return JSONResponse({
-            "status": "started",
-            "pid": info.pid,
-            "port": info.http_port,
-            "repo_root": str(repo_root),
-            "config_name": config_name,
-        })
+        # Load config to check if multi-instance mode
+        from ..infra.config import Config, get_config_path
+        config_path = get_config_path(repo_root, config_name)
+        config = Config.load(config_path)
+
+        if config.instances > 1:
+            # Multi-instance mode: start all instances
+            infos = supervisor.start_instances(repo_root, config_name=config_name)
+            return JSONResponse({
+                "status": "started",
+                "instances": [
+                    {
+                        "pid": info.pid,
+                        "port": info.http_port,
+                        "instance_id": info.instance_id,
+                    }
+                    for info in infos
+                ],
+                "repo_root": str(repo_root),
+                "config_name": config_name,
+            })
+        else:
+            # Single instance mode
+            info = supervisor.start(repo_root, config_name=config_name)
+            return JSONResponse({
+                "status": "started",
+                "pid": info.pid,
+                "port": info.http_port,
+                "repo_root": str(repo_root),
+                "config_name": config_name,
+            })
     except FileNotFoundError as e:
         return JSONResponse({
             "error": "config_not_found",
@@ -733,12 +755,19 @@ async def control_stop(request: Request) -> JSONResponse:
                 "detail": "No matching orchestrator found on the provided port.",
             }, status_code=409)
         stopped = supervisor.stop_by_port(port_override, force=force)
+        stopped_count = 1 if stopped else 0
     else:
-        stopped = supervisor.stop(repo_root, force=force)
-    logger.info("[control_stop] supervisor.stop returned: %s", stopped)
+        # Stop all instances (single and multi-instance)
+        stopped_count = supervisor.stop_all_instances(repo_root, force=force)
+        stopped = stopped_count > 0
+    logger.info("[control_stop] supervisor.stop_all_instances returned: %d", stopped_count)
 
     if stopped:
-        return JSONResponse({"status": "stopped", "repo_root": str(repo_root)})
+        return JSONResponse({
+            "status": "stopped",
+            "repo_root": str(repo_root),
+            "stopped_count": stopped_count,
+        })
     else:
         return JSONResponse({
             "status": "not_running",
@@ -756,6 +785,9 @@ async def control_status(
     Query params:
         repo_root: str - Repository root path
         config_name: str (optional) - Config name to probe for untracked processes
+
+    Returns either a single status dict (legacy) or multi-instance status when
+    instances > 1 in config.
     """
     from ..infra import supervisor
 
@@ -766,9 +798,28 @@ async def control_status(
             status_code=400,
         )
 
+    # Get status of all instances
+    selected = config_name or _get_selected_config(path) or "default.yaml"
+    multi_status = supervisor.status_all_instances(path, config_name=selected)
+
+    # If multiple instances expected or running, return multi-instance format
+    if multi_status.expected_count > 1 or len(multi_status.instances) > 1:
+        return JSONResponse({
+            "multi_instance": True,
+            "repo_root": str(path),
+            "expected_count": multi_status.expected_count,
+            "running_count": sum(1 for s in multi_status.instances if s.state == "running"),
+            "instances": [s.to_dict() for s in multi_status.instances],
+        })
+
+    # Single instance mode - return backward-compatible format
+    # Check if we have exactly one running instance
+    if multi_status.instances and len(multi_status.instances) == 1:
+        return JSONResponse(multi_status.instances[0].to_dict())
+
+    # No running instances - check for orphaned process
     status_info = supervisor.status(path)
     if status_info.state != "running":
-        selected = config_name or _get_selected_config(path)
         detected = _detect_orchestrator_by_port(path, selected)
         if detected:
             status_data = detected.get("status", {})

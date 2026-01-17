@@ -1,7 +1,11 @@
 """Repository lock management.
 
-Ensures only one orchestrator runs per repository by maintaining a lock file
-with PID and process liveness checks.
+Ensures only one orchestrator runs per repository (or per instance in
+multi-instance mode) by maintaining lock files with PID and process liveness
+checks.
+
+Single-instance mode: .issue-orchestrator/lock.json
+Multi-instance mode:  .issue-orchestrator/locks/{instance_id}.json
 """
 
 import json
@@ -11,18 +15,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .repo_identity import lock_file, normalize_repo_root, state_dir
+from .repo_identity import lock_file, locks_dir, normalize_repo_root, state_dir
 
 
 class AlreadyRunning(Exception):
-    """Raised when another orchestrator is already running for this repo."""
+    """Raised when another orchestrator is already running for this repo/instance."""
 
-    def __init__(self, pid: int, repo_root: Path, port: int | None):
+    def __init__(
+        self,
+        pid: int,
+        repo_root: Path,
+        port: int | None,
+        instance_id: str | None = None,
+    ):
         self.pid = pid
         self.repo_root = repo_root
         self.port = port
+        self.instance_id = instance_id
+        instance_str = f" instance={instance_id}" if instance_id else ""
         super().__init__(
-            f"Orchestrator already running for {repo_root} (pid={pid}, port={port})"
+            f"Orchestrator already running for {repo_root}{instance_str} (pid={pid}, port={port})"
         )
 
 
@@ -36,10 +48,11 @@ class LockInfo:
     http_port: int | None
     state_dir: str
     recovered: bool = False
+    instance_id: str | None = None  # For multi-instance deployments
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for JSON serialization."""
-        return {
+        result = {
             "repo_root": self.repo_root,
             "pid": self.pid,
             "started_at": self.started_at,
@@ -47,6 +60,9 @@ class LockInfo:
             "state_dir": self.state_dir,
             "recovered": self.recovered,
         }
+        if self.instance_id is not None:
+            result["instance_id"] = self.instance_id
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "LockInfo":
@@ -58,6 +74,7 @@ class LockInfo:
             http_port=data.get("http_port"),
             state_dir=data["state_dir"],
             recovered=data.get("recovered", False),
+            instance_id=data.get("instance_id"),
         )
 
 
@@ -114,21 +131,26 @@ def _write_lock(lock_path: Path, info: LockInfo) -> None:
     tmp_path.rename(lock_path)
 
 
-def acquire_lock(repo_root: Path | str, port: int | None = None) -> LockInfo:
-    """Acquire the repository lock.
+def acquire_lock(
+    repo_root: Path | str,
+    port: int | None = None,
+    instance_id: str | None = None,
+) -> LockInfo:
+    """Acquire the repository lock (or instance-specific lock).
 
     Args:
         repo_root: Repository root path
         port: HTTP port the orchestrator will listen on
+        instance_id: Optional instance ID for multi-instance deployments
 
     Returns:
         LockInfo for the acquired lock
 
     Raises:
-        AlreadyRunning: If another orchestrator is running for this repo
+        AlreadyRunning: If another orchestrator is running for this repo/instance
     """
     repo_root = normalize_repo_root(repo_root)
-    lock_path = lock_file(repo_root)
+    lock_path = lock_file(repo_root, instance_id)
 
     # Check existing lock
     existing = _read_lock(lock_path)
@@ -139,6 +161,7 @@ def acquire_lock(repo_root: Path | str, port: int | None = None) -> LockInfo:
                 pid=existing.pid,
                 repo_root=repo_root,
                 port=existing.http_port,
+                instance_id=instance_id,
             )
         # Stale lock - process is dead, we can take over
 
@@ -151,26 +174,32 @@ def acquire_lock(repo_root: Path | str, port: int | None = None) -> LockInfo:
         http_port=port,
         state_dir=str(state_dir(repo_root)),
         recovered=recovered,
+        instance_id=instance_id,
     )
 
     _write_lock(lock_path, info)
     return info
 
 
-def release_lock(repo_root: Path | str, pid: int | None = None) -> bool:
-    """Release the repository lock.
+def release_lock(
+    repo_root: Path | str,
+    pid: int | None = None,
+    instance_id: str | None = None,
+) -> bool:
+    """Release the repository lock (or instance-specific lock).
 
     Only releases if the lock belongs to the specified PID (or current process).
 
     Args:
         repo_root: Repository root path
         pid: PID that should own the lock (defaults to current process)
+        instance_id: Optional instance ID for multi-instance deployments
 
     Returns:
         True if lock was released, False if lock didn't exist or belonged to another process
     """
     repo_root = normalize_repo_root(repo_root)
-    lock_path = lock_file(repo_root)
+    lock_path = lock_file(repo_root, instance_id)
     pid = pid or os.getpid()
 
     existing = _read_lock(lock_path)
@@ -188,29 +217,55 @@ def release_lock(repo_root: Path | str, pid: int | None = None) -> bool:
         return False
 
 
-def read_lock(repo_root: Path | str) -> LockInfo | None:
-    """Read the current lock file for a repository.
+def read_lock(repo_root: Path | str, instance_id: str | None = None) -> LockInfo | None:
+    """Read the current lock file for a repository (or specific instance).
 
     Args:
         repo_root: Repository root path
+        instance_id: Optional instance ID for multi-instance deployments
 
     Returns:
         LockInfo if lock exists, None otherwise
     """
     repo_root = normalize_repo_root(repo_root)
-    return _read_lock(lock_file(repo_root))
+    return _read_lock(lock_file(repo_root, instance_id))
 
 
-def is_locked(repo_root: Path | str) -> bool:
-    """Check if a repository has an active lock.
+def is_locked(repo_root: Path | str, instance_id: str | None = None) -> bool:
+    """Check if a repository (or specific instance) has an active lock.
+
+    Args:
+        repo_root: Repository root path
+        instance_id: Optional instance ID for multi-instance deployments
+
+    Returns:
+        True if there's an active lock with a live process
+    """
+    info = read_lock(repo_root, instance_id)
+    if info is None:
+        return False
+    return _is_process_alive(info.pid)
+
+
+def list_instance_locks(repo_root: Path | str) -> list[LockInfo]:
+    """List all active instance locks for a repository.
 
     Args:
         repo_root: Repository root path
 
     Returns:
-        True if there's an active lock with a live process
+        List of LockInfo for all active instances
     """
-    info = read_lock(repo_root)
-    if info is None:
-        return False
-    return _is_process_alive(info.pid)
+    repo_root = normalize_repo_root(repo_root)
+    locks_directory = locks_dir(repo_root)
+
+    if not locks_directory.exists():
+        return []
+
+    active_locks = []
+    for lock_path in locks_directory.glob("*.json"):
+        info = _read_lock(lock_path)
+        if info is not None and _is_process_alive(info.pid):
+            active_locks.append(info)
+
+    return active_locks
