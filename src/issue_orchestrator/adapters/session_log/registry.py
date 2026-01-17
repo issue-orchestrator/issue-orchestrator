@@ -70,8 +70,12 @@ class DataDrivenLogProvider:
             logger.warning("[LOG] Failed to parse log %s: %s", log_path, e)
             return f"Failed to parse log: {e}"
 
-    def _parse_jsonl_log(self, log_path: Path, max_lines: int) -> str:
-        """Parse JSONL log file (Claude, Codex)."""
+    def _read_jsonl_entries(self, log_path: Path) -> list[dict] | str:
+        """Read and parse JSONL entries from a log file.
+
+        Returns:
+            List of parsed entries, or error string on failure.
+        """
         entries = []
         try:
             with open(log_path, "r") as f:
@@ -84,10 +88,10 @@ class DataDrivenLogProvider:
                             continue
         except Exception as e:
             return f"Failed to read log: {e}"
+        return entries
 
-        if not entries:
-            return "Log file is empty"
-
+    def _build_jsonl_context(self, entries: list[dict]) -> list[str]:
+        """Build context parts from JSONL entries."""
         context_parts = []
 
         # Look for errors
@@ -117,6 +121,19 @@ class DataDrivenLogProvider:
             else:
                 context_parts.append(f"\n## Completion: {self._config.completion_marker} NOT CALLED")
 
+        return context_parts
+
+    def _parse_jsonl_log(self, log_path: Path, max_lines: int) -> str:
+        """Parse JSONL log file (Claude, Codex)."""
+        result = self._read_jsonl_entries(log_path)
+        if isinstance(result, str):
+            return result  # Error message
+        entries = result
+
+        if not entries:
+            return "Log file is empty"
+
+        context_parts = self._build_jsonl_context(entries)
         return "\n".join(context_parts) if context_parts else "No specific failure context found"
 
     def _parse_json_log(self, log_path: Path, max_lines: int) -> str:

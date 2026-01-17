@@ -160,6 +160,11 @@ class GitHubHttpClient:
             timeout=config.timeout_seconds,
         )
 
+    @property
+    def config(self) -> GitHubHttpConfig:
+        """Expose config for use by adapters that need to create temporary clients."""
+        return self._config
+
     def close(self) -> None:
         self._client.close()
 

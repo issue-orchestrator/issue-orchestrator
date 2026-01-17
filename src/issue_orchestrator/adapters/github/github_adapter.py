@@ -296,6 +296,62 @@ class GitHubAdapter:
 
     # IssueRepository implementation
 
+    def _raw_issues_to_issues(self, raw_issues: list[dict]) -> "list[Issue]":
+        """Convert raw API response to Issue objects."""
+        return [
+            GitHubIssue(
+                number=item["number"],
+                repo=self.repo,
+                title=item.get("title", ""),
+                labels=tuple(label["name"] for label in item.get("labels", [])),
+                state=str(item.get("state", "open")).lower(),
+                body=item.get("body"),
+                milestone=(item.get("milestone") or {}).get("title"),
+                milestone_number=(item.get("milestone") or {}).get("number"),
+                milestone_due_on=(item.get("milestone") or {}).get("due_on"),
+            )
+            for item in raw_issues
+            if isinstance(item, dict)
+        ]
+
+    def _retry_for_missing_ids(
+        self,
+        fetch_fn,
+        required_stable_ids: set[str],
+        issues: "list[Issue]",
+    ) -> "list[Issue]":
+        """Retry fetching issues until all required IDs are found or retries exhausted.
+
+        GitHub has eventual consistency - this handles missing IDs with exponential backoff.
+        """
+        found_ids = {i.key.stable_id() for i in issues}
+        still_missing = required_stable_ids - found_ids
+        if not still_missing:
+            return issues
+
+        # Retry with exponential backoff (~63s total)
+        backoff_delays = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
+        for delay in backoff_delays:
+            logger.info(
+                "[INFLIGHT] Waiting %.1fs for GitHub eventual consistency, missing: %s",
+                delay, sorted(still_missing)
+            )
+            time.sleep(delay)
+            raw_issues = fetch_fn(use_cache=False)
+            issues = self._raw_issues_to_issues(raw_issues)
+            found_ids = {i.key.stable_id() for i in issues}
+            still_missing = required_stable_ids - found_ids
+            if not still_missing:
+                logger.info("[INFLIGHT] All required IDs discovered after retry")
+                return issues
+
+        # Log final result
+        logger.warning(
+            "[INFLIGHT] Still missing %d required IDs after retries: %s",
+            len(still_missing), sorted(still_missing)
+        )
+        return issues
+
     def list_issues(
         self,
         labels: list[str] | None = None,
@@ -326,27 +382,10 @@ class GitHubAdapter:
                 use_cache=use_cache,
             )
 
-        def _to_issues(raw_issues: list[dict]) -> "list[Issue]":
-            return [
-                GitHubIssue(
-                    number=item["number"],
-                    repo=self.repo,
-                    title=item.get("title", ""),
-                    labels=tuple(label["name"] for label in item.get("labels", [])),
-                    state=str(item.get("state", "open")).lower(),
-                    body=item.get("body"),
-                    milestone=(item.get("milestone") or {}).get("title"),
-                    milestone_number=(item.get("milestone") or {}).get("number"),
-                    milestone_due_on=(item.get("milestone") or {}).get("due_on"),
-                )
-                for item in raw_issues
-                if isinstance(item, dict)
-            ]
-
         try:
             # First attempt with cache
             raw_issues = _fetch(use_cache=True)
-            issues = _to_issues(raw_issues)
+            issues = self._raw_issues_to_issues(raw_issues)
 
             # If required IDs are specified, check if any are missing
             if required_stable_ids:
@@ -359,36 +398,14 @@ class GitHubAdapter:
                     )
                     # Retry without cache to bypass potential stale 304
                     raw_issues = _fetch(use_cache=False)
-                    issues = _to_issues(raw_issues)
+                    issues = self._raw_issues_to_issues(raw_issues)
 
-                    # Check if still missing and retry with backoff for eventual consistency
+                    # Retry with backoff for eventual consistency if still missing
+                    issues = self._retry_for_missing_ids(_fetch, required_stable_ids, issues)
+
+                    # Final check
                     found_ids = {i.key.stable_id() for i in issues}
-                    still_missing = required_stable_ids - found_ids
-                    if still_missing:
-                        # GitHub has eventual consistency - retry with exponential backoff
-                        # Total ~63s of retries to avoid flaky failures
-                        backoff_delays = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
-                        for delay in backoff_delays:
-                            logger.info(
-                                "[INFLIGHT] Waiting %.1fs for GitHub eventual consistency, missing: %s",
-                                delay, sorted(still_missing)
-                            )
-                            time.sleep(delay)
-                            raw_issues = _fetch(use_cache=False)
-                            issues = _to_issues(raw_issues)
-                            found_ids = {i.key.stable_id() for i in issues}
-                            still_missing = required_stable_ids - found_ids
-                            if not still_missing:
-                                logger.info("[INFLIGHT] All required IDs discovered after retry")
-                                break
-
-                    # Log final result
-                    if still_missing:
-                        logger.warning(
-                            "[INFLIGHT] Still missing %d required IDs after retries: %s",
-                            len(still_missing), sorted(still_missing)
-                        )
-                    else:
+                    if required_stable_ids <= found_ids:
                         logger.info("[INFLIGHT] All required IDs discovered")
 
             return issues
@@ -962,6 +979,34 @@ class GitHubAdapter:
             logger.error(f"Failed to add comment to issue/PR {issue_or_pr_number}")
             raise
 
+    def _get_issue_for_repo(self, issue_number: int, target_repo: str) -> dict[str, Any] | None:
+        """Get issue data for a specific repository.
+
+        Creates a temporary client if needed for cross-repo lookups.
+
+        Args:
+            issue_number: The issue number to fetch.
+            target_repo: Repository in owner/repo format.
+
+        Returns:
+            Issue data dict, or None if not found.
+        """
+        if target_repo != self.repo:
+            temp_client = GitHubHttpClient(
+                GitHubHttpConfig(
+                    repo=target_repo,
+                    token=self._client.config.token,
+                    base_url=self._client.config.base_url,
+                    timeout_seconds=self._client.config.timeout_seconds,
+                )
+            )
+            try:
+                return temp_client.get_issue(issue_number)
+            finally:
+                temp_client.close()
+        else:
+            return self._client.get_issue(issue_number)
+
     def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
         """Get the state of an issue ('open', 'closed', or None if not found).
 
@@ -977,19 +1022,7 @@ class GitHubAdapter:
         """
         target_repo = repo or self.repo
         try:
-            if target_repo != self.repo:
-                temp_client = GitHubHttpClient(
-                    GitHubHttpConfig(
-                        repo=target_repo,
-                        token=self._client._config.token,
-                        base_url=self._client._config.base_url,
-                        timeout_seconds=self._client._config.timeout_seconds,
-                    )
-                )
-                output = temp_client.get_issue(issue_number)
-                temp_client.close()
-            else:
-                output = self._client.get_issue(issue_number)
+            output = self._get_issue_for_repo(issue_number, target_repo)
 
             if isinstance(output, dict):
                 return output.get("state")
@@ -1016,19 +1049,7 @@ class GitHubAdapter:
         """
         target_repo = repo or self.repo
         try:
-            if target_repo != self.repo:
-                temp_client = GitHubHttpClient(
-                    GitHubHttpConfig(
-                        repo=target_repo,
-                        token=self._client._config.token,
-                        base_url=self._client._config.base_url,
-                        timeout_seconds=self._client._config.timeout_seconds,
-                    )
-                )
-                output = temp_client.get_issue(issue_number)
-                temp_client.close()
-            else:
-                output = self._client.get_issue(issue_number)
+            output = self._get_issue_for_repo(issue_number, target_repo)
 
             if isinstance(output, dict):
                 milestone = output.get("milestone")
