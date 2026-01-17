@@ -134,13 +134,14 @@ class Orchestrator:
             lambda issue: self.deps.state_machine_manager.issue_machines.get(issue.number),
             lambda s: self.deps.state_machine_manager.session_machines.get(s),
             lambda n: self.deps.state_machine_manager.review_machines.get(n),
+            self.deps.session_output,
         )
 
     @cached_property
     def _session_launcher(self) -> SessionLauncher:
         return SessionLauncher(
             self.config, self.deps.events, self.deps.repository_host, self.deps.action_applier, self.deps.session_manager,
-            self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner,
+            self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner, self.deps.session_output,
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
             self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),

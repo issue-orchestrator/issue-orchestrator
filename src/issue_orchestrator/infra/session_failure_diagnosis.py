@@ -97,7 +97,7 @@ def create_session_failure_diagnosis(
 
     # If not found, try to locate a recent session output
     if not worktree_path:
-        from .session_output import find_run_dir_for_issue
+        from ..execution.session_output_adapter import find_run_dir_for_issue
 
         bases: list[Path] = []
         if config.worktree_base:

@@ -23,7 +23,7 @@ from typing import Optional
 from ..control.isolation import build_isolation_prefix
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
-from ..infra.session_output import ensure_session_output_dir
+from .session_output_adapter import FileSystemSessionOutput
 
 logger = logging.getLogger(__name__)
 
@@ -222,8 +222,9 @@ class SubprocessPlugin:
         return session_name or f"issue-{session_id}"
 
     def _session_log_path(self, working_dir: Path, session_name: str) -> Path:
-        log_dir = ensure_session_output_dir(working_dir, session_name)
-        return log_dir / "session.log"
+        session_output = FileSystemSessionOutput()
+        run_dir = session_output.ensure_run_dir(working_dir, session_name)
+        return run_dir / "session.log"
 
     def _start_process(self, command: str, working_dir: Path, session_name: str) -> subprocess.Popen[bytes]:
         wrapper_dir = self._repo_root / "scripts"

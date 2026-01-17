@@ -41,7 +41,6 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
-from ..infra.session_output import SessionOutputManager
 from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
 from ..ports import (
@@ -52,6 +51,7 @@ from ..ports import (
     WorkingCopy,
     CommandRunner,
 )
+from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
@@ -170,6 +170,7 @@ class SessionLauncher:
         worktree_manager: WorktreeManager,
         working_copy: WorkingCopy,
         command_runner: CommandRunner,
+        session_output: SessionOutput,
         session_exists_fn: Callable[[str], bool],
         create_session_fn: Callable[[str, str, Path, str | None], bool],
         get_issue_machine: Callable[["IssueProtocol"], Optional["IssueStateMachine"]],
@@ -187,6 +188,7 @@ class SessionLauncher:
         self._worktree_manager = worktree_manager
         self._working_copy = working_copy
         self._command_runner = command_runner
+        self._session_output = session_output
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -361,6 +363,7 @@ class SessionLauncher:
             worktree_manager=self._worktree_manager,
             config=self.config,
             events=self.events,
+            session_output=self._session_output,
             issue_number=issue.number,
             issue_title=issue.title,
             session_name=session_name,
@@ -510,7 +513,7 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         completion_path = get_completion_path(issue.agent_type, session_name=session_name)
-        SessionOutputManager.update_manifest(
+        self._session_output.update_manifest(
             run.run_dir,
             {"completion_path": completion_path},
         )
@@ -657,6 +660,7 @@ class SessionLauncher:
             worktree_manager=self._worktree_manager,
             config=self.config,
             events=self.events,
+            session_output=self._session_output,
             issue_number=review.issue_number,
             issue_title=f"Review PR #{review.pr_number}",
             session_name=session_name,
@@ -750,7 +754,7 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         completion_path = get_completion_path(agent_label, session_name=session_name)
-        SessionOutputManager.update_manifest(
+        self._session_output.update_manifest(
             run.run_dir,
             {"completion_path": completion_path},
         )
@@ -883,6 +887,7 @@ class SessionLauncher:
             worktree_manager=self._worktree_manager,
             config=self.config,
             events=self.events,
+            session_output=self._session_output,
             issue_number=issue_number,
             issue_title=f"Rework #{pr_number}",
             session_name=session_name,
@@ -980,7 +985,7 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         completion_path = get_completion_path(rework.agent_type, session_name=session_name)
-        SessionOutputManager.update_manifest(
+        self._session_output.update_manifest(
             run.run_dir,
             {"completion_path": completion_path},
         )
@@ -1224,8 +1229,11 @@ def handle_session_completion(
         processing_errors=processing_errors, diagnostic_path=diagnostic_path
     )
     if session.worktree_path:
-        from ..infra.session_output import SessionOutputManager
-        SessionOutputManager.attach_claude_log(session.worktree_path, session.terminal_id)
+        from ..execution.session_output_adapter import FileSystemSessionOutput
+        session_output = FileSystemSessionOutput()
+        run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
+        if run_dir:
+            session_output.attach_claude_log(run_dir)
 
     # Apply completion actions (from CompletionHandler policy)
     if result.actions:

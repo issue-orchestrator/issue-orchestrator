@@ -1,0 +1,513 @@
+"""Session output port for session artifact storage.
+
+This module defines the protocol for storing and retrieving session artifacts.
+All artifacts for a session live in a single run directory:
+
+    .issue-orchestrator/sessions/<run_id>__<session_name>/
+        manifest.json           # Session metadata
+        session.log             # Session output log
+        validation-record.json  # Validation result
+        validation-stdout.log   # Validation stdout
+        validation-stderr.log   # Validation stderr
+        validation-state.json   # Retry flow state
+        validation-errors.txt   # Human-readable errors
+        retry-prompt.md         # Retry prompt for agent
+        failure-diagnostic-*.json  # Failure diagnostics
+        worktree.json           # Worktree metadata
+        ...
+
+The principle is simple: all artifacts for a session go in one place.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Protocol
+
+
+@dataclass(frozen=True)
+class SessionRun:
+    """Represents a single session run directory."""
+
+    session_name: str
+    run_id: str
+    run_dir: Path
+    log_path: Path
+    manifest_path: Path
+    started_at: str
+
+
+@dataclass(frozen=True)
+class ValidationRecord:
+    """Validation run result.
+
+    Stored at: <run_dir>/validation-record.json
+    """
+
+    schema_version: int
+    suite: str  # "publish_gate" or "agent_gate"
+    head_sha: str
+    passed: bool
+    exit_code: int
+    command: str
+    started_at: str
+    ended_at: str
+    timed_out: bool = False
+    stdout_path: str | None = None
+    stderr_path: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "schema_version": self.schema_version,
+            "suite": self.suite,
+            "head_sha": self.head_sha,
+            "passed": self.passed,
+            "exit_code": self.exit_code,
+            "command": self.command,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "timed_out": self.timed_out,
+            "stdout_path": self.stdout_path,
+            "stderr_path": self.stderr_path,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ValidationRecord:
+        """Create from dictionary (JSON deserialization)."""
+        return cls(
+            schema_version=data.get("schema_version", 1),
+            suite=data["suite"],
+            head_sha=data["head_sha"],
+            passed=data["passed"],
+            exit_code=data["exit_code"],
+            command=data["command"],
+            started_at=data["started_at"],
+            ended_at=data["ended_at"],
+            timed_out=data.get("timed_out", False),
+            stdout_path=data.get("stdout_path"),
+            stderr_path=data.get("stderr_path"),
+        )
+
+
+@dataclass
+class ValidationState:
+    """Retry flow state for a session.
+
+    Stored at: <run_dir>/validation-state.json
+    """
+
+    retry_count: int = 0
+    max_retries: int = 3
+    validation_cmd: str | None = None
+    last_error: str | None = None
+    last_error_file: str | None = None
+    original_prompt_file: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    @property
+    def retries_remaining(self) -> int:
+        """Number of retries still available."""
+        return max(0, self.max_retries - self.retry_count)
+
+    @property
+    def can_retry(self) -> bool:
+        """Whether more retries are allowed."""
+        return self.retry_count < self.max_retries
+
+
+class SessionOutput(Protocol):
+    """Protocol for session artifact storage.
+
+    All artifacts for a session are stored in a single run directory.
+    This provides a unified interface for:
+    - Run lifecycle (create, find, prune)
+    - Manifest management
+    - Validation artifacts
+    - Retry state
+    - Diagnostics
+    - Session metadata
+    """
+
+    # -------------------------------------------------------------------------
+    # Run Lifecycle
+    # -------------------------------------------------------------------------
+
+    def start_run(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        issue_number: int | None = None,
+        agent_label: str | None = None,
+        backend: str | None = None,
+        claude_log_dir: str | None = None,
+        orchestrator_log: str | None = None,
+        completion_path: str | None = None,
+    ) -> SessionRun:
+        """Create a new run directory and initial manifest.
+
+        Args:
+            worktree_path: Path to the worktree
+            session_name: Name of the session (e.g., "issue-42")
+            issue_number: Issue number being worked on
+            agent_label: Agent label (e.g., "agent:developer")
+            backend: Terminal backend (e.g., "subprocess", "tmux")
+            claude_log_dir: Path to Claude log directory
+            orchestrator_log: Path to orchestrator log
+            completion_path: Path where completion.json will be written
+
+        Returns:
+            SessionRun with paths to the new run directory
+        """
+        ...
+
+    def find_run_dir(
+        self,
+        worktree_path: Path,
+        session_name: str | None = None,
+    ) -> Path | None:
+        """Find the latest run directory for a session.
+
+        Args:
+            worktree_path: Path to the worktree
+            session_name: Session name to find, or None for any latest
+
+        Returns:
+            Path to run directory, or None if not found
+        """
+        ...
+
+    def ensure_run_dir(
+        self,
+        worktree_path: Path,
+        session_name: str,
+    ) -> Path:
+        """Get existing run dir or create a minimal one.
+
+        Args:
+            worktree_path: Path to the worktree
+            session_name: Name of the session
+
+        Returns:
+            Path to the run directory
+        """
+        ...
+
+    def prune_runs(
+        self,
+        worktree_path: Path,
+        keep: int,
+    ) -> list[Path]:
+        """Delete old runs, keeping the last N.
+
+        Args:
+            worktree_path: Path to the worktree
+            keep: Number of runs to keep
+
+        Returns:
+            List of paths that were deleted
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Manifest
+    # -------------------------------------------------------------------------
+
+    def update_manifest(
+        self,
+        run_dir: Path,
+        updates: dict[str, Any],
+    ) -> None:
+        """Update the manifest with additional data.
+
+        Args:
+            run_dir: Path to the run directory
+            updates: Dictionary of fields to update
+        """
+        ...
+
+    def read_manifest(
+        self,
+        run_dir: Path,
+    ) -> dict[str, Any] | None:
+        """Read the manifest from a run directory.
+
+        Args:
+            run_dir: Path to the run directory
+
+        Returns:
+            Manifest dictionary, or None if not found
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Validation Artifacts
+    # -------------------------------------------------------------------------
+
+    def write_validation_record(
+        self,
+        run_dir: Path,
+        record: ValidationRecord,
+    ) -> Path:
+        """Write a validation record to the run directory.
+
+        Args:
+            run_dir: Path to the run directory
+            record: Validation record to write
+
+        Returns:
+            Path to the written record
+        """
+        ...
+
+    def read_validation_record(
+        self,
+        run_dir: Path,
+    ) -> ValidationRecord | None:
+        """Read validation record from run directory.
+
+        Args:
+            run_dir: Path to the run directory
+
+        Returns:
+            ValidationRecord if found, None otherwise
+        """
+        ...
+
+    def write_validation_output(
+        self,
+        run_dir: Path,
+        stdout: str,
+        stderr: str,
+    ) -> tuple[Path, Path]:
+        """Write validation stdout/stderr to run directory.
+
+        Args:
+            run_dir: Path to the run directory
+            stdout: Standard output content
+            stderr: Standard error content
+
+        Returns:
+            Tuple of (stdout_path, stderr_path)
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Retry State
+    # -------------------------------------------------------------------------
+
+    def write_validation_state(
+        self,
+        run_dir: Path,
+        state: ValidationState,
+    ) -> Path:
+        """Write validation retry state to run directory.
+
+        Args:
+            run_dir: Path to the run directory
+            state: Validation state to write
+
+        Returns:
+            Path to the written state file
+        """
+        ...
+
+    def read_validation_state(
+        self,
+        run_dir: Path,
+    ) -> ValidationState | None:
+        """Read validation retry state from run directory.
+
+        Args:
+            run_dir: Path to the run directory
+
+        Returns:
+            ValidationState if found, None otherwise
+        """
+        ...
+
+    def write_validation_errors(
+        self,
+        run_dir: Path,
+        validation_cmd: str,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+    ) -> Path:
+        """Write human-readable validation errors to run directory.
+
+        Args:
+            run_dir: Path to the run directory
+            validation_cmd: Command that failed
+            stdout: Standard output
+            stderr: Standard error
+            exit_code: Exit code
+
+        Returns:
+            Path to the written errors file
+        """
+        ...
+
+    def write_retry_prompt(
+        self,
+        run_dir: Path,
+        content: str,
+    ) -> Path:
+        """Write retry prompt for agent to run directory.
+
+        Args:
+            run_dir: Path to the run directory
+            content: Rendered retry prompt content
+
+        Returns:
+            Path to the written prompt file
+        """
+        ...
+
+    def clear_retry_state(
+        self,
+        run_dir: Path,
+    ) -> None:
+        """Clear retry state files from run directory.
+
+        Called when validation passes or max retries exhausted.
+
+        Args:
+            run_dir: Path to the run directory
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Diagnostics
+    # -------------------------------------------------------------------------
+
+    def write_diagnostic(
+        self,
+        run_dir: Path,
+        diagnostic: dict[str, Any],
+        prefix: str = "failure-diagnostic",
+    ) -> Path:
+        """Write a diagnostic file to run directory.
+
+        Args:
+            run_dir: Path to the run directory
+            diagnostic: Diagnostic data to write
+            prefix: Filename prefix (timestamp will be appended)
+
+        Returns:
+            Path to the written diagnostic file
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Session Metadata
+    # -------------------------------------------------------------------------
+
+    def write_worktree_note(
+        self,
+        run_dir: Path,
+        payload: dict[str, Any],
+    ) -> Path:
+        """Write worktree metadata to run directory.
+
+        Args:
+            run_dir: Path to the run directory
+            payload: Worktree metadata
+
+        Returns:
+            Path to the written note file
+        """
+        ...
+
+    def write_session_identity(
+        self,
+        run_dir: Path,
+        payload: dict[str, Any],
+    ) -> Path:
+        """Write session identity to run directory.
+
+        Args:
+            run_dir: Path to the run directory
+            payload: Session identity data
+
+        Returns:
+            Path to the written identity file
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Log Access
+    # -------------------------------------------------------------------------
+
+    def get_log_path(
+        self,
+        worktree_path: Path,
+        session_name: str,
+    ) -> Path | None:
+        """Get the session log path for a session.
+
+        Args:
+            worktree_path: Path to the worktree
+            session_name: Name of the session
+
+        Returns:
+            Path to session log, or None if not found
+        """
+        ...
+
+    def attach_claude_log(
+        self,
+        run_dir: Path,
+    ) -> Path | None:
+        """Find and attach Claude log to run directory.
+
+        Creates a symlink and updates manifest with Claude log path.
+
+        Args:
+            run_dir: Path to the run directory
+
+        Returns:
+            Path to Claude log, or None if not found
+        """
+        ...
+
+    def write_orchestrator_tail(
+        self,
+        run_dir: Path,
+        log_path: Path,
+        issue_number: int,
+        session_name: str,
+        max_lines: int = 400,
+    ) -> Path | None:
+        """Write filtered orchestrator log tail to run directory.
+
+        Filters to entries relevant to this session.
+
+        Args:
+            run_dir: Path to the run directory
+            log_path: Path to full orchestrator log
+            issue_number: Issue number for filtering
+            session_name: Session name for filtering
+            max_lines: Maximum lines to include
+
+        Returns:
+            Path to written tail file, or None on failure
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Utility Methods
+    # -------------------------------------------------------------------------
+
+    def session_name_from_path(self, rel_path: str | None) -> str | None:
+        """Extract session name from a path containing sessions directory.
+
+        Args:
+            rel_path: Relative path that may contain sessions directory
+
+        Returns:
+            Session name if found, None otherwise
+        """
+        ...

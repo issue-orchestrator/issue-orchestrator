@@ -49,6 +49,7 @@ from ..ports.verification import VerificationBudget
 from ..execution.worktree_adapter import GitWorktreeManager
 from ..execution.git_working_copy import GitWorkingCopy
 from ..execution.command_runner import LocalCommandRunner
+from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
@@ -264,6 +265,7 @@ def build_orchestrator(
     worktree_manager = GitWorktreeManager()
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
+    session_output = FileSystemSessionOutput()
 
     # Create FreshIssueReader (cache-bypassing reads)
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
@@ -316,6 +318,7 @@ def build_orchestrator(
         label_adapter=github,
         pr_adapter=github,
         git_adapter=working_copy,
+        session_output=session_output,
         event_bus=None,  # EventBus removed
         label_config={
             "blocked": config.get_label_blocked(),
@@ -334,6 +337,7 @@ def build_orchestrator(
     session_controller_instance = SessionController(
         completion_processor=completion_processor,
         events=events,
+        session_output=session_output,
         command_runner=command_runner if config.validation and config.validation.cmd else None,
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
@@ -402,6 +406,7 @@ def build_orchestrator(
         working_copy=working_copy,
         hook_verifier=hook_verifier,
         command_runner=command_runner,
+        session_output=session_output,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
@@ -492,6 +497,7 @@ def build_orchestrator_for_testing(
     worktree_manager = GitWorktreeManager()
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
+    session_output = FileSystemSessionOutput()
 
     class _TestFreshIssueReader:
         """Fallback FreshIssueReader for tests without network dependencies."""
@@ -562,6 +568,7 @@ def build_orchestrator_for_testing(
         label_adapter=github,
         pr_adapter=github,
         git_adapter=working_copy,
+        session_output=session_output,
         event_bus=None,
         label_config={
             "blocked": config.get_label_blocked(),
@@ -579,6 +586,7 @@ def build_orchestrator_for_testing(
     session_controller = SessionController(
         completion_processor=completion_processor,
         events=events,
+        session_output=session_output,
         command_runner=command_runner if config.validation and config.validation.cmd else None,
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
@@ -618,6 +626,7 @@ def build_orchestrator_for_testing(
         working_copy=working_copy,
         hook_verifier=hook_verifier,
         command_runner=command_runner,
+        session_output=session_output,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,
