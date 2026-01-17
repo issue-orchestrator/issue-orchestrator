@@ -303,6 +303,7 @@ class TestObserverWiring:
         """Verify observer detects when a session has completed."""
         from issue_orchestrator.observation import SessionObserver
         from issue_orchestrator.domain.models import Session, Issue, AgentConfig, SessionStatus
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
         from datetime import datetime
 
         config = MagicMock()
@@ -321,6 +322,7 @@ class TestObserverWiring:
 
         observer = SessionObserver(
             config,
+            FileSystemSessionOutput(),
             session_runner=mock_runner,
             repository_host=mock_repo_host,
         )
@@ -350,6 +352,7 @@ class TestObserverWiring:
         """Verify observer detects when a session is still running."""
         from issue_orchestrator.observation import SessionObserver
         from issue_orchestrator.domain.models import Session, Issue, AgentConfig, SessionStatus
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
         from datetime import datetime
 
         config = MagicMock()
@@ -358,7 +361,7 @@ class TestObserverWiring:
         mock_runner = MagicMock()
         mock_runner.session_exists_by_name.return_value = True
 
-        observer = SessionObserver(config, session_runner=mock_runner)
+        observer = SessionObserver(config, FileSystemSessionOutput(), session_runner=mock_runner)
 
         issue = Issue(number=101, title="Test", labels=["agent:test"])
         issue_key = FakeIssueKey(name="101")

@@ -6,7 +6,6 @@ worktree.
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from ..ports.session_output import SessionOutput
 
@@ -44,16 +43,16 @@ class Worktree:
         self,
         path: Path,
         issue_number: int,
+        session_output: SessionOutput,
         retain_runs: int = 7,
-        session_output: Optional[SessionOutput] = None,
     ):
         """Initialize worktree.
 
         Args:
             path: Path to the worktree directory
             issue_number: Issue number (for logging)
-            retain_runs: Number of session runs to retain
             session_output: SessionOutput port for session artifact management
+            retain_runs: Number of session runs to retain
         """
         self.path = path
         self.issue_number = issue_number
@@ -83,9 +82,8 @@ class Worktree:
         )
 
         try:
-            removed_session_output = (
-                self._session_output.prune_runs(self.path, self._retain_runs)
-                if self._session_output else []
+            removed_session_output = self._session_output.prune_runs(
+                self.path, self._retain_runs
             )
             removed_completions = self._delete_files(self.COMPLETION_PATTERN)
             removed_identities = self._delete_files(self.SESSION_IDENTITY_PATTERN)

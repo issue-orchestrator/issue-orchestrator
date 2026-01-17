@@ -79,7 +79,7 @@ class CompletionHandler:
         get_issue_machine_fn: Callable[[Issue], Optional["IssueStateMachine"]],
         get_session_machine_fn: Callable[[str], Optional["SessionStateMachine"]],
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
-        session_output: Optional[SessionOutput] = None,
+        session_output: SessionOutput,
     ):
         self.config = config
         self.events = events
@@ -180,18 +180,23 @@ class CompletionHandler:
             SessionStatus.BLOCKED,
             SessionStatus.NEEDS_HUMAN,
         ) or processing_errors:
-            if self._session_output:
-                log_path = get_repo_log_path(self.config.repo_root)
-                run_dir = self._session_output.find_run_dir(
-                    session.worktree_path, session.terminal_id
+            log_path = get_repo_log_path(self.config.repo_root)
+            run_dir = self._session_output.find_run_dir(
+                session.worktree_path, session.terminal_id
+            )
+            if run_dir:
+                self._session_output.write_orchestrator_tail(
+                    run_dir=run_dir,
+                    log_path=log_path,
+                    issue_number=session.issue.number,
+                    session_name=session.terminal_id,
                 )
-                if run_dir:
-                    self._session_output.write_orchestrator_tail(
-                        run_dir=run_dir,
-                        log_path=log_path,
-                        issue_number=session.issue.number,
-                        session_name=session.terminal_id,
-                    )
+            else:
+                logger.warning(
+                    "[%s] No session output dir found for failed session - "
+                    "session may have crashed before setup completed",
+                    session.terminal_id,
+                )
 
         result = CompletionResult(
             history_entry=history_entry,

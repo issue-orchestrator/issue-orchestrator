@@ -1090,7 +1090,7 @@ def handle_session_completion(
     worktree_manager: Optional[WorktreeManager],
     kill_session_fn: Callable[[str], None],
     config: Config,
-    session_output: Optional[SessionOutput] = None,
+    session_output: SessionOutput,
     pr_url_hint: Optional[str] = None,
     processing_errors: Optional[list[str]] = None,
     diagnostic_path: Optional[str] = None,
@@ -1155,10 +1155,15 @@ def handle_session_completion(
         session, status, pr_url_hint=pr_url_hint,
         processing_errors=processing_errors, diagnostic_path=diagnostic_path
     )
-    if session.worktree_path and session_output:
+    if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
         if run_dir:
             session_output.attach_claude_log(run_dir)
+        else:
+            logger.warning(
+                "[%s] No session output dir found - Claude log won't be attached",
+                session.terminal_id,
+            )
 
     # Apply completion actions (from CompletionHandler policy)
     if result.actions:
@@ -1408,6 +1413,7 @@ def process_active_sessions(
         handle_session_completion(
             session, decision.status, state, completion_handler, action_applier,
             observer, worktree_manager, kill_session_fn, config,
+            session_output=session_controller.session_output,
             pr_url_hint=pr_url_hint, processing_errors=processing_errors,
             diagnostic_path=diagnostic_path,
             validation_error=validation_error,

@@ -38,6 +38,7 @@ from issue_orchestrator.domain.state_machines.session_machine import SessionStat
 from issue_orchestrator.domain.state_machines.review_machine import ReviewStateMachine, ReviewState
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus, PendingCleanup
 from issue_orchestrator.ports import NullEventSink, InMemoryEventSink, TraceEvent
+from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra import labels
 
@@ -118,6 +119,7 @@ def make_handler(
     issue_machine: Any | None = None,
     session_machine: Any | None = None,
     review_machine: Any | None = None,
+    session_output: SessionOutput | None = None,
 ) -> CompletionHandler:
     """Create a CompletionHandler with sensible defaults."""
     # Use explicit None check - InMemoryEventSink with 0 events is falsy
@@ -128,6 +130,7 @@ def make_handler(
         get_issue_machine_fn=lambda _issue: issue_machine,
         get_session_machine_fn=lambda _terminal_id: session_machine,
         get_review_machine_fn=lambda _pr_number: review_machine,
+        session_output=session_output if session_output is not None else Mock(spec=SessionOutput),
     )
 
 

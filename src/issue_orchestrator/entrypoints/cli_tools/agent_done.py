@@ -435,15 +435,15 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
 
 def run_validation(
     worktree: Path,
+    session_output_dir: Path,
     verbose: bool = False,
-    session_output_dir: Path | None = None,
 ) -> Optional[AgentGateResult]:
     """Run validation if configured.
 
     Args:
         worktree: Path to the worktree root
+        session_output_dir: Directory to write validation output
         verbose: Whether to print validation output
-        session_output_dir: If provided, write validation output directly here
 
     Returns:
         AgentGateResult if validation was run, None if not configured
@@ -654,18 +654,28 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     )
 
     if should_validate:
-        # Get session output dir for validation to write directly there
-        session_output_dir = None
-        if record.session_id:
+        # Check if validation is configured before requiring session output
+        validation_cmd, _ = load_validation_cmd(worktree_root)
+        if validation_cmd:
+            # Get session output dir for validation to write directly there
+            if not record.session_id:
+                logger.error("[agent-done] Validation requires session_id but none found")
+                sys.exit(1)
             session_output_helper = FileSystemSessionOutput()
             session_output_dir = session_output_helper.find_run_dir(
                 worktree_root, session_name=record.session_id
             )
-        validation_result = run_validation(
-            worktree_root,
-            verbose=args.verbose,
-            session_output_dir=session_output_dir,
-        )
+            if session_output_dir is None:
+                logger.error(
+                    "[agent-done] Validation requires session output dir but not found for %s",
+                    record.session_id,
+                )
+                sys.exit(1)
+            validation_result = run_validation(
+                worktree_root,
+                session_output_dir=session_output_dir,
+                verbose=args.verbose,
+            )
         if validation_result and not validation_result.passed:
             _record_validation_artifacts(worktree_root, record.session_id, validation_result)
             print(f"\n{'='*60}")

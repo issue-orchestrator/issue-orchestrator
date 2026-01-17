@@ -45,11 +45,12 @@ class MockEventSink:
 def make_completion_record(
     outcome: CompletionOutcome,
     requested_actions: list[RequestedAction],
+    session_id: str = "test-session",
     **kwargs
 ) -> CompletionRecord:
     """Helper to create a CompletionRecord with required fields."""
     return CompletionRecord(
-        session_id="test-session",
+        session_id=session_id,
         timestamp=datetime.now().isoformat(),
         outcome=outcome,
         summary="Test completion",
@@ -140,6 +141,7 @@ class TestPRAlreadyExistsHandling:
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            session_id="issue-123",
             implementation="Added feature",
         )
         write_completion_to_worktree(worktree, record)
@@ -180,6 +182,7 @@ class TestPRAlreadyExistsHandling:
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            session_id="issue-123",
             implementation="Added feature",
         )
         write_completion_to_worktree(worktree, record)
@@ -219,6 +222,7 @@ class TestPRAlreadyExistsHandling:
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            session_id="issue-123",
         )
         write_completion_to_worktree(worktree, record)
 

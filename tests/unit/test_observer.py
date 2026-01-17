@@ -9,6 +9,7 @@ from issue_orchestrator.execution.session_output_adapter import (
     session_output_dir,
     FileSystemSessionOutput,
 )
+from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.domain.models import (
     Session,
     SessionStatus,
@@ -33,6 +34,12 @@ def mock_config():
     config.label_needs_human = "needs-human"
     config.ui_mode = "tmux"
     return config
+
+
+@pytest.fixture
+def mock_session_output():
+    """Create a mock SessionOutput port."""
+    return MagicMock(spec=SessionOutput)
 
 
 @pytest.fixture
@@ -116,32 +123,33 @@ class TestSessionObserverInit:
 
     def test_init_with_config(self, mock_config):
         """Test initializing monitor with config."""
-        monitor = SessionObserver(mock_config)
+        monitor = SessionObserver(mock_config, mock_session_output)
         assert monitor.config == mock_config
         assert monitor.session_machines == {}
 
     def test_init_stores_config(self, mock_config):
         """Test that config is properly stored."""
-        monitor = SessionObserver(mock_config)
+        monitor = SessionObserver(mock_config, mock_session_output)
         assert monitor.config.repo == "owner/repo"
         assert monitor.config.max_concurrent_sessions == 3
 
     def test_init_with_session_machines(self, mock_config):
         """Test initializing monitor with session machines."""
         machines = {"issue-1": MagicMock(), "issue-2": MagicMock()}
-        monitor = SessionObserver(mock_config, session_machines=machines)
+        monitor = SessionObserver(mock_config, mock_session_output, session_machines=machines)
         assert monitor.config == mock_config
         assert monitor.session_machines == machines
 
     def test_init_session_machines_defaults_to_empty_dict(self, mock_config):
         """Test that session_machines defaults to empty dict when None."""
-        monitor = SessionObserver(mock_config, session_machines=None)
+        monitor = SessionObserver(mock_config, mock_session_output, session_machines=None)
         assert monitor.session_machines == {}
 
-    def test_init_with_ports(self, mock_config, mock_session_runner, mock_repository_host):
+    def test_init_with_ports(self, mock_config, mock_session_output, mock_session_runner, mock_repository_host):
         """Test initializing monitor with ports."""
         monitor = SessionObserver(
             mock_config,
+            mock_session_output,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
         )
@@ -152,11 +160,12 @@ class TestSessionObserverInit:
 class TestSessionObserverBackends:
     """Test backend delegation methods."""
 
-    def test_session_exists_uses_runner(self, mock_config, mock_session_runner, mock_repository_host):
+    def test_session_exists_uses_runner(self, mock_config, mock_session_output, mock_session_runner, mock_repository_host):
         """Test _session_exists delegates to session runner."""
         mock_session_runner.session_exists.return_value = True
         monitor = SessionObserver(
             mock_config,
+            mock_session_output,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
         )
@@ -168,17 +177,18 @@ class TestSessionObserverBackends:
 
     def test_session_exists_returns_false_without_runner(self, mock_config):
         """Test _session_exists returns False when no runner."""
-        monitor = SessionObserver(mock_config)
+        monitor = SessionObserver(mock_config, mock_session_output)
 
         result = monitor._session_exists(123)
 
         assert result is False
 
-    def test_send_exit_to_session_uses_runner(self, mock_config, mock_session_runner, mock_repository_host):
+    def test_send_exit_to_session_uses_runner(self, mock_config, mock_session_output, mock_session_runner, mock_repository_host):
         """Test _send_exit_to_session delegates to session runner."""
         mock_session_runner.send_to_session.return_value = True
         monitor = SessionObserver(
             mock_config,
+            mock_session_output,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
         )
@@ -190,7 +200,7 @@ class TestSessionObserverBackends:
 
     def test_send_exit_to_session_returns_false_without_runner(self, mock_config):
         """Test _send_exit_to_session returns False when no runner."""
-        monitor = SessionObserver(mock_config)
+        monitor = SessionObserver(mock_config, mock_session_output)
 
         result = monitor._send_exit_to_session(123)
 
@@ -773,6 +783,7 @@ class TestObserveSession:
         mock_events = MagicMock()
         monitor = SessionObserver(
             mock_config,
+            FileSystemSessionOutput(),
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
@@ -820,10 +831,10 @@ class TestEmitNoOutputIfStale:
 
         monitor = SessionObserver(
             mock_config,
+            FileSystemSessionOutput(),
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
-            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -864,10 +875,10 @@ class TestEmitNoOutputIfStale:
 
         monitor = SessionObserver(
             mock_config,
+            FileSystemSessionOutput(),
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
-            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -932,10 +943,10 @@ class TestEmitNoOutputIfStale:
 
         monitor = SessionObserver(
             mock_config,
+            FileSystemSessionOutput(),
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
-            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -1011,25 +1022,25 @@ class TestPortDelegation:
 
     def test_session_exists_by_name_without_runner_returns_false(self, mock_config):
         """Test _session_exists_by_name returns False when no runner."""
-        monitor = SessionObserver(mock_config)
+        monitor = SessionObserver(mock_config, mock_session_output)
         result = monitor._session_exists_by_name("issue-123")
         assert result is False
 
     def test_send_exit_by_name_without_runner_returns_false(self, mock_config):
         """Test _send_exit_to_session_by_name returns False when no runner."""
-        monitor = SessionObserver(mock_config)
+        monitor = SessionObserver(mock_config, mock_session_output)
         result = monitor._send_exit_to_session_by_name("issue-123")
         assert result is False
 
     def test_get_open_prs_without_host_returns_empty_list(self, mock_config):
         """Test _get_open_prs_for_branch returns empty list when no host."""
-        monitor = SessionObserver(mock_config)
+        monitor = SessionObserver(mock_config, mock_session_output)
         result = monitor._get_open_prs_for_branch("some-branch")
         assert result == []
 
     def test_get_issue_labels_without_host_returns_empty_list(self, mock_config):
         """Test _get_issue_labels returns empty list when no host."""
-        monitor = SessionObserver(mock_config)
+        monitor = SessionObserver(mock_config, mock_session_output)
         result = monitor._get_issue_labels(123)
         assert result == []
 
@@ -1172,10 +1183,10 @@ class TestEmitNoOutputEdgeCases:
 
         monitor = SessionObserver(
             mock_config,
+            FileSystemSessionOutput(),
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
-            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -1210,10 +1221,10 @@ class TestEmitNoOutputEdgeCases:
 
         monitor = SessionObserver(
             mock_config,
+            FileSystemSessionOutput(),
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
-            session_output=FileSystemSessionOutput(),
         )
 
         worktree = tmp_path / "worktree"
@@ -1282,6 +1293,7 @@ class TestTerminalObserverIntegration:
         """Create a SessionObserver with terminal observer."""
         return SessionObserver(
             mock_config,
+            FileSystemSessionOutput(),
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,
             terminal_observer=mock_terminal_observer,
@@ -1395,6 +1407,7 @@ class TestTerminalObserverIntegration:
         mock_events = MagicMock()
         monitor = SessionObserver(
             mock_config,
+            FileSystemSessionOutput(),
             events=mock_events,
             session_runner=mock_session_runner,
             repository_host=mock_repository_host,

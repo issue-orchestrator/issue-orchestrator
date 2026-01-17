@@ -919,6 +919,10 @@ validation:
   timeout_seconds: 10
 """)
 
+        # Create session output directory (required for validation)
+        session_output_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
+        session_output_dir.mkdir(parents=True)
+
         original_cwd = Path.cwd()
         try:
             os.chdir(tmp_path)
@@ -960,6 +964,10 @@ validation:
   cmd: "exit 1"
   timeout_seconds: 10
 """)
+
+        # Create session output directory (required for validation)
+        session_output_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
+        session_output_dir.mkdir(parents=True)
 
         original_cwd = Path.cwd()
         try:
@@ -1071,6 +1079,10 @@ validation:
   cmd: "echo 'FAILED test_something.py::test_case - AssertionError' >&2 && exit 1"
   timeout_seconds: 10
 """)
+
+        # Create session output directory (required for validation)
+        session_output_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
+        session_output_dir.mkdir(parents=True)
 
         original_cwd = Path.cwd()
         try:
