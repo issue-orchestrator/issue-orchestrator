@@ -500,6 +500,18 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
+        .blocked-item-actions .debug-btn {
+            background: #1f6feb;
+            border-color: #1f6feb;
+            color: white;
+        }
+        .blocked-item-actions .debug-btn:hover {
+            background: #388bfd;
+        }
+        .blocked-item-actions .debug-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
         .blocked-item-worktree {
             font-size: 11px;
             color: var(--dim);
@@ -2741,6 +2753,7 @@
                             </div>
                             <div class="blocked-item-actions">
                                 ${hasWorktree ? `<button class="copy-path-btn" onclick="copyWorktreePath('${escapeHtml(issue.worktree_path)}', event)" title="Copy worktree path">Copy Path</button>` : ''}
+                                ${hasWorktree ? `<button class="debug-btn" onclick="launchDebugSession(${issue.issue_number}, event)" title="Launch interactive debug session">Launch Debug</button>` : ''}
                                 ${hasCompletion ? `<button class="resume-btn" onclick="resumeIssue(${issue.issue_number}, event)" title="Process completion and continue flow">Resume</button>` : ''}
                                 <button class="diagnose-btn" onclick="toggleDiagnosis(${issue.issue_number}, event)">Diagnose</button>
                             </div>
@@ -2927,6 +2940,40 @@
             } catch (err) {
                 console.error('Failed to resume issue:', err);
                 showToast('Failed to resume issue', 'error');
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        }
+
+        // Launch interactive debug session for a blocked issue
+        async function launchDebugSession(issueNumber, event) {
+            event.stopPropagation();
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Launching...';
+
+            try {
+                const res = await fetch(`/api/issues/${issueNumber}/debug-session`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showToast(`Debug session launched for #${issueNumber}. Use 'agent-done --resume' when done.`);
+                    closeBlockedModal();
+                    // Reload to show updated state
+                    setTimeout(() => location.reload(), 500);
+                } else {
+                    showToast(`Failed to launch: ${data.error || 'Unknown error'}`, 'error');
+                    btn.disabled = false;
+                    btn.textContent = originalText;
+                }
+            } catch (err) {
+                console.error('Failed to launch debug session:', err);
+                showToast('Failed to launch debug session', 'error');
                 btn.disabled = false;
                 btn.textContent = originalText;
             }

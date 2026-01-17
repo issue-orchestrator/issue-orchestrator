@@ -15,6 +15,7 @@ Control API endpoints (in-process):
 - GET /api/snapshot - Fetch snapshot for test resync
 - POST /api/shutdown - Request graceful shutdown
 - POST /api/issues/{issue_number}/resume - Resume processing for a debug session
+- POST /api/issues/{issue_number}/debug-session - Launch interactive debug session
 
 Supervisor Control API endpoints (process management):
 - POST /control/orchestrator/start - Start orchestrator for a repo
@@ -444,6 +445,145 @@ async def resume_issue(issue_number: int) -> JSONResponse:
             "success": False,
             "error": f"Processing failed: {e}",
         }, status_code=500)
+
+
+@control_app.post("/api/issues/{issue_number}/debug-session")
+async def launch_debug_session(issue_number: int) -> JSONResponse:
+    """Launch an interactive debug session for a blocked issue.
+
+    This endpoint creates a terminal session in the issue's existing worktree,
+    with environment variables set so `agent-done --resume` can signal completion
+    back to the orchestrator.
+
+    The session runs the issue's configured agent in interactive mode (without
+    the -p flag for Claude, etc.) so users can debug and fix issues manually.
+
+    Args:
+        issue_number: The issue number to debug
+
+    Returns:
+        JSON with:
+        - success: bool - Whether session launched
+        - session_name: str - Terminal session name
+        - worktree_path: str - Path to the worktree
+        - agent: str - Agent type being used
+        - hint: str - Instructions for the user
+    """
+    if _orchestrator is None:
+        return JSONResponse(
+            {"success": False, "error": "Orchestrator not initialized"},
+            status_code=503
+        )
+
+    from ..control.worktree_manager import get_worktree_path
+
+    config = _orchestrator.config
+    state = _orchestrator.state
+
+    # Get worktree path for this issue
+    worktree = get_worktree_path(config, issue_number)
+
+    if not worktree.exists():
+        return JSONResponse({
+            "success": False,
+            "error": f"Worktree not found: {worktree}",
+            "hint": "The worktree may have been cleaned up. The issue needs to be re-run first.",
+        }, status_code=404)
+
+    # Find the issue in cached queue to get its agent type
+    issue = None
+    for cached_issue in state.cached_queue_issues:
+        if cached_issue.number == issue_number:
+            issue = cached_issue
+            break
+
+    if not issue:
+        # Try to fetch from GitHub
+        try:
+            issue = _orchestrator.deps.repository_host.get_issue(issue_number)
+        except Exception as e:
+            logger.warning("Could not fetch issue #%d: %s", issue_number, e)
+
+    if not issue:
+        return JSONResponse({
+            "success": False,
+            "error": f"Issue #{issue_number} not found",
+            "hint": "The issue may have been closed or doesn't exist.",
+        }, status_code=404)
+
+    agent_type = issue.agent_type
+    if not agent_type:
+        return JSONResponse({
+            "success": False,
+            "error": "Issue has no agent type label",
+            "hint": "Add an agent label (e.g., 'agent:claude') to the issue.",
+        }, status_code=400)
+
+    agent_config = config.agents.get(agent_type)
+    if not agent_config:
+        return JSONResponse({
+            "success": False,
+            "error": f"No agent config for {agent_type}",
+            "hint": "Check your orchestrator configuration.",
+        }, status_code=400)
+
+    # Check if a session already exists for this issue
+    session_name = f"debug-{issue_number}"
+    if _orchestrator.deps.runner.session_exists(issue_number, session_name):
+        return JSONResponse({
+            "success": False,
+            "error": f"Debug session already exists: {session_name}",
+            "hint": "A debug session is already running. Focus on it or kill it first.",
+        }, status_code=409)
+
+    # Build command using agent_config.get_command()
+    # Add context that this is a debug session with existing work to evaluate
+    debug_context = (
+        "This is an INTERACTIVE DEBUG SESSION. A previous automated run failed or was blocked. "
+        "Work with the user to investigate and fix the issue. When done, the user will run "
+        "'agent-done --resume' to continue the orchestrator flow."
+    )
+    base_command = agent_config.get_command(
+        issue_number=issue_number,
+        issue_title=issue.title,
+        worktree=worktree,
+        existing_work=debug_context,
+    )
+
+    # Set env vars for agent-done --resume
+    env_exports = f"export ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
+    env_exports += f" ORCHESTRATOR_API_PORT='{config.web_port}'"
+    env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_type}'"
+    command = f"{env_exports} && {base_command}"
+
+    logger.info(
+        "[debug-session] Launching for issue #%d: session=%s worktree=%s agent=%s",
+        issue_number, session_name, worktree, agent_type,
+    )
+
+    # Create the terminal session
+    session_created = _orchestrator.deps.runner.create_session(
+        session_id=issue_number,
+        command=command,
+        working_dir=str(worktree),
+        title=f"Debug #{issue_number}",
+        session_name=session_name,
+    )
+
+    if not session_created:
+        return JSONResponse({
+            "success": False,
+            "error": "Failed to create terminal session",
+            "hint": "Check if tmux is running and accessible.",
+        }, status_code=500)
+
+    return JSONResponse({
+        "success": True,
+        "session_name": session_name,
+        "worktree_path": str(worktree),
+        "agent": agent_type.replace("agent:", ""),
+        "hint": f"Debug session launched. When done, run 'agent-done --resume' to process completion.",
+    })
 
 
 @control_app.post("/control/shutdown")
