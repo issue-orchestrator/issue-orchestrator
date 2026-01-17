@@ -155,20 +155,6 @@ class TestValidationRecordStore:
         record = store.read("corrupted")
         assert record is None
 
-    def test_write_output_files(self, store):
-        """Test writing stdout/stderr files."""
-        # New API uses just sha (not suite + sha)
-        stdout_path, stderr_path = store.write_output(
-            "abc123",
-            "stdout content",
-            "stderr content",
-        )
-
-        assert stdout_path.exists()
-        assert stderr_path.exists()
-        assert stdout_path.read_text() == "stdout content"
-        assert stderr_path.read_text() == "stderr content"
-
 
 class TestValidationRunner:
     """Tests for ValidationRunner."""
@@ -180,6 +166,13 @@ class TestValidationRunner:
             yield Path(tmpdir)
 
     @pytest.fixture
+    def session_output_dir(self, temp_worktree):
+        """Create a session output directory."""
+        output_dir = temp_worktree / ".issue-orchestrator" / "sessions" / "test-session"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    @pytest.fixture
     def store(self, temp_worktree):
         """Create a store for the temp worktree."""
         return ValidationRecordStore(temp_worktree)
@@ -189,13 +182,14 @@ class TestValidationRunner:
         """Create a runner with the store."""
         return ValidationRunner(store, LocalCommandRunner())
 
-    def test_run_passing_command(self, runner):
+    def test_run_passing_command(self, runner, session_output_dir):
         """Test running a passing command."""
         record = runner.run(
             suite="publish_gate",
             head_sha="abc123",
             command="echo 'hello'",
             timeout_seconds=10,
+            session_output_dir=session_output_dir,
         )
 
         assert record.passed is True
@@ -204,33 +198,35 @@ class TestValidationRunner:
         assert record.suite == "publish_gate"
         assert record.head_sha == "abc123"
 
-    def test_run_failing_command(self, runner):
+    def test_run_failing_command(self, runner, session_output_dir):
         """Test running a failing command."""
         record = runner.run(
             suite="publish_gate",
             head_sha="abc123",
             command="exit 1",
             timeout_seconds=10,
+            session_output_dir=session_output_dir,
         )
 
         assert record.passed is False
         assert record.exit_code == 1
         assert record.timed_out is False
 
-    def test_run_timeout(self, runner):
+    def test_run_timeout(self, runner, session_output_dir):
         """Test command timeout."""
         record = runner.run(
             suite="publish_gate",
             head_sha="abc123",
             command="sleep 10",
             timeout_seconds=1,
+            session_output_dir=session_output_dir,
         )
 
         assert record.passed is False
         assert record.timed_out is True
         assert record.exit_code == -1
 
-    def test_run_handles_command_runner_exception(self, store):
+    def test_run_handles_command_runner_exception(self, store, session_output_dir):
         """Test that runner records failures when command runner raises."""
         class FailingRunner:
             def run(self, *args, **kwargs):
@@ -243,6 +239,7 @@ class TestValidationRunner:
             head_sha="abc123",
             command="echo 'test'",
             timeout_seconds=10,
+            session_output_dir=session_output_dir,
         )
 
         assert record.passed is False
@@ -250,13 +247,14 @@ class TestValidationRunner:
         stderr_path = store.worktree / record.stderr_path
         assert "Validation runner error: boom" in stderr_path.read_text()
 
-    def test_run_writes_record_to_store(self, runner, store):
+    def test_run_writes_record_to_store(self, runner, store, session_output_dir):
         """Test that running writes the record to the store."""
         record = runner.run(
             suite="agent_gate",
             head_sha="def456",
             command="echo 'test'",
             timeout_seconds=10,
+            session_output_dir=session_output_dir,
         )
 
         # Read back from store (new API uses just sha)
@@ -451,6 +449,13 @@ class TestPublishGate:
             )
             yield worktree
 
+    @pytest.fixture
+    def session_output_dir(self, temp_worktree):
+        """Create a session output directory."""
+        output_dir = temp_worktree / ".issue-orchestrator" / "sessions" / "test-session"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
     def test_gate_disabled_when_no_command(self, temp_worktree):
         """Test gate is disabled when no command is configured."""
         gate = PublishGate(
@@ -465,7 +470,7 @@ class TestPublishGate:
         assert "disabled" in result.reason.lower()
         assert result.record is None
 
-    def test_gate_passes_when_command_succeeds(self, temp_worktree):
+    def test_gate_passes_when_command_succeeds(self, temp_worktree, session_output_dir):
         """Test gate passes when validation command succeeds."""
         gate = PublishGate(
             temp_worktree,
@@ -474,14 +479,14 @@ class TestPublishGate:
             command="echo 'ok'",
             timeout_seconds=10,
         )
-        result = gate.check()
+        result = gate.check(session_output_dir=session_output_dir)
 
         assert result.allowed is True
         assert result.record is not None
         assert result.record.passed is True
         assert result.cache_hit is False
 
-    def test_gate_fails_when_command_fails(self, temp_worktree):
+    def test_gate_fails_when_command_fails(self, temp_worktree, session_output_dir):
         """Test gate fails when validation command fails."""
         gate = PublishGate(
             temp_worktree,
@@ -490,14 +495,14 @@ class TestPublishGate:
             command="exit 1",
             timeout_seconds=10,
         )
-        result = gate.check()
+        result = gate.check(session_output_dir=session_output_dir)
 
         assert result.allowed is False
         assert result.record is not None
         assert result.record.passed is False
         assert "failed" in result.reason.lower()
 
-    def test_gate_uses_cache_on_second_call(self, temp_worktree):
+    def test_gate_uses_cache_on_second_call(self, temp_worktree, session_output_dir):
         """Test gate uses cache on subsequent calls."""
         gate = PublishGate(
             temp_worktree,
@@ -508,16 +513,16 @@ class TestPublishGate:
         )
 
         # First call runs validation
-        result1 = gate.check()
+        result1 = gate.check(session_output_dir=session_output_dir)
         assert result1.allowed is True
         assert result1.cache_hit is False
 
         # Second call should hit cache
-        result2 = gate.check()
+        result2 = gate.check(session_output_dir=session_output_dir)
         assert result2.allowed is True
         assert result2.cache_hit is True
 
-    def test_gate_fails_when_timeout(self, temp_worktree):
+    def test_gate_fails_when_timeout(self, temp_worktree, session_output_dir):
         """Test gate fails when command times out."""
         gate = PublishGate(
             temp_worktree,
@@ -526,14 +531,14 @@ class TestPublishGate:
             command="sleep 10",
             timeout_seconds=1,
         )
-        result = gate.check()
+        result = gate.check(session_output_dir=session_output_dir)
 
         assert result.allowed is False
         assert result.record is not None
         assert result.record.timed_out is True
         assert "timed out" in result.reason.lower()
 
-    def test_gate_reruns_on_cached_failure(self, temp_worktree):
+    def test_gate_reruns_on_cached_failure(self, temp_worktree, session_output_dir):
         """Test gate re-runs validation on cached failure (flaky test resilience).
 
         Failures are NOT trusted from cache because they might be due to flaky
@@ -548,12 +553,12 @@ class TestPublishGate:
         )
 
         # First call fails
-        result1 = gate.check()
+        result1 = gate.check(session_output_dir=session_output_dir)
         assert result1.allowed is False
         assert result1.cache_hit is False
 
         # Second call should re-run, not trust cached failure
-        result2 = gate.check()
+        result2 = gate.check(session_output_dir=session_output_dir)
         assert result2.allowed is False
         assert result2.cache_hit is False  # Re-ran validation, didn't trust cache
 
@@ -596,7 +601,14 @@ class TestAgentGate:
             )
             yield worktree
 
-    def test_gate_disabled_when_no_command(self, temp_worktree):
+    @pytest.fixture
+    def session_output_dir(self, temp_worktree):
+        """Create a session output directory."""
+        output_dir = temp_worktree / ".issue-orchestrator" / "sessions" / "test-session"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def test_gate_disabled_when_no_command(self, temp_worktree, session_output_dir):
         """Test gate is disabled when no command is configured."""
         gate = AgentGate(
             temp_worktree,
@@ -604,13 +616,13 @@ class TestAgentGate:
             working_copy=GitWorkingCopy(),
             command=None,
         )
-        result = gate.run()
+        result = gate.run(session_output_dir)
 
         assert result.passed is True
         assert "disabled" in result.reason.lower()
         assert result.record is None
 
-    def test_gate_passes_when_command_succeeds(self, temp_worktree):
+    def test_gate_passes_when_command_succeeds(self, temp_worktree, session_output_dir):
         """Test gate passes when validation command succeeds."""
         gate = AgentGate(
             temp_worktree,
@@ -619,14 +631,14 @@ class TestAgentGate:
             command="echo 'ok'",
             timeout_seconds=10,
         )
-        result = gate.run()
+        result = gate.run(session_output_dir)
 
         assert result.passed is True
         assert result.record is not None
         assert result.record.passed is True
         assert result.record.suite == "agent_gate"
 
-    def test_gate_fails_when_command_fails(self, temp_worktree):
+    def test_gate_fails_when_command_fails(self, temp_worktree, session_output_dir):
         """Test gate fails when validation command fails."""
         gate = AgentGate(
             temp_worktree,
@@ -635,14 +647,14 @@ class TestAgentGate:
             command="exit 1",
             timeout_seconds=10,
         )
-        result = gate.run()
+        result = gate.run(session_output_dir)
 
         assert result.passed is False
         assert result.record is not None
         assert result.record.passed is False
         assert "failed" in result.reason.lower()
 
-    def test_gate_always_runs_no_cache(self, temp_worktree):
+    def test_gate_always_runs_no_cache(self, temp_worktree, session_output_dir):
         """Test gate always runs validation (no caching)."""
         gate = AgentGate(
             temp_worktree,
@@ -653,18 +665,18 @@ class TestAgentGate:
         )
 
         # First call runs validation
-        result1 = gate.run()
+        result1 = gate.run(session_output_dir)
         assert result1.passed is True
         assert result1.record is not None
 
         # Second call runs validation again (not cached)
-        result2 = gate.run()
+        result2 = gate.run(session_output_dir)
         assert result2.passed is True
         assert result2.record is not None
         # Records should have different timestamps
         assert result2.record.started_at != result1.record.started_at
 
-    def test_gate_fails_when_timeout(self, temp_worktree):
+    def test_gate_fails_when_timeout(self, temp_worktree, session_output_dir):
         """Test gate fails when command times out."""
         gate = AgentGate(
             temp_worktree,
@@ -673,14 +685,14 @@ class TestAgentGate:
             command="sleep 10",
             timeout_seconds=1,
         )
-        result = gate.run()
+        result = gate.run(session_output_dir)
 
         assert result.passed is False
         assert result.record is not None
         assert result.record.timed_out is True
         assert "timed out" in result.reason.lower()
 
-    def test_gate_writes_record_to_store(self, temp_worktree):
+    def test_gate_writes_record_to_store(self, temp_worktree, session_output_dir):
         """Test gate writes validation record to store."""
         gate = AgentGate(
             temp_worktree,
@@ -689,7 +701,7 @@ class TestAgentGate:
             command="echo 'ok'",
             timeout_seconds=10,
         )
-        result = gate.run()
+        result = gate.run(session_output_dir)
 
         # Verify record was written (new API uses just sha)
         store = ValidationRecordStore(temp_worktree)

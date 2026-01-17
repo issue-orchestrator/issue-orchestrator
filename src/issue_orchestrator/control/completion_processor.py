@@ -314,8 +314,8 @@ class CompletionProcessor:
     ) -> None:
         """Attach validation artifacts to session output.
 
-        If validation wrote directly to session output (preferred), just update manifest.
-        For legacy records (validation/output/), copy files to session output.
+        Updates manifest with paths to validation files that should already exist
+        in the session output directory (written directly by validation).
         """
         run_dir = self.session_output.ensure_run_dir(worktree, session_name)
         if record_path is None and record is not None:
@@ -329,39 +329,16 @@ class CompletionProcessor:
                 (run_dir / "validation-record.path").write_text(str(record_path))
             except OSError:
                 logger.debug("Failed to write validation pointer for %s", run_dir)
-        if record is None and record_path is not None and record_path.exists():
-            record = self._load_validation_record(record_path)
-        if record is None:
-            return
 
+        # Update manifest with validation output paths (files written by validation)
         updates: dict[str, str] = {}
-        stdout_dest = run_dir / "validation-stdout.log"
-        stderr_dest = run_dir / "validation-stderr.log"
+        stdout_path = run_dir / "validation-stdout.log"
+        stderr_path = run_dir / "validation-stderr.log"
 
-        # Check if files already exist in session output (written directly by validation)
-        if stdout_dest.exists():
-            updates["validation_stdout"] = str(stdout_dest)
-        elif record.stdout_path:
-            # Fallback: copy from legacy location (validation/output/)
-            stdout_src = worktree / record.stdout_path
-            if stdout_src.exists() and stdout_src.resolve() != stdout_dest.resolve():
-                try:
-                    stdout_dest.write_text(stdout_src.read_text(errors="ignore"))
-                    updates["validation_stdout"] = str(stdout_dest)
-                except OSError:
-                    logger.debug("Failed to write validation stdout for %s", run_dir)
-
-        if stderr_dest.exists():
-            updates["validation_stderr"] = str(stderr_dest)
-        elif record.stderr_path:
-            # Fallback: copy from legacy location (validation/output/)
-            stderr_src = worktree / record.stderr_path
-            if stderr_src.exists() and stderr_src.resolve() != stderr_dest.resolve():
-                try:
-                    stderr_dest.write_text(stderr_src.read_text(errors="ignore"))
-                    updates["validation_stderr"] = str(stderr_dest)
-                except OSError:
-                    logger.debug("Failed to write validation stderr for %s", run_dir)
+        if stdout_path.exists():
+            updates["validation_stdout"] = str(stdout_path)
+        if stderr_path.exists():
+            updates["validation_stderr"] = str(stderr_path)
 
         if updates:
             self.session_output.update_manifest(run_dir, updates)
@@ -426,9 +403,19 @@ class CompletionProcessor:
         # Check publish gate if actions require it
         if self._requires_publish_gate(record):
             # Get session output dir for validation to write directly there
-            session_output_dir = None
-            if session_name:
-                session_output_dir = self.session_output.find_run_dir(worktree, session_name)
+            if not session_name:
+                return ProcessingResult(
+                    success=False,
+                    message="Publish gate requires session output but no session name available",
+                    errors=["session_name is required for publish gate"],
+                )
+            session_output_dir = self.session_output.find_run_dir(worktree, session_name)
+            if session_output_dir is None:
+                return ProcessingResult(
+                    success=False,
+                    message=f"Publish gate requires session output but run dir not found for {session_name}",
+                    errors=[f"Session output directory not found for {session_name}"],
+                )
 
             gate_passed, gate_reason, gate_record = self._check_publish_gate(
                 worktree, session_output_dir=session_output_dir

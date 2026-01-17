@@ -113,8 +113,10 @@ def test_timeout_observation_and_decision(tmp_path):
     config.session_no_output_tail_lines = 50
     config.session_no_output_max_bytes = 10000
     config.session_no_output_repeat_seconds = 120
+    session_output = FileSystemSessionOutput()
     observer = SessionObserver(
         config=config,
+        session_output=session_output,
         events=events,
         session_runner=StubSessionRunner(),
         repository_host=None,
@@ -125,7 +127,6 @@ def test_timeout_observation_and_decision(tmp_path):
     assert observation.observation == SessionObservation.TIMED_OUT
     assert observation.session_exists is True
 
-    session_output = FileSystemSessionOutput()
     completion_processor = CompletionProcessor(
         label_adapter=StubLabelAdapter(),
         pr_adapter=StubPrAdapter(),

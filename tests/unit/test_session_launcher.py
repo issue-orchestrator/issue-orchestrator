@@ -65,6 +65,7 @@ from issue_orchestrator.ports import (
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -1340,6 +1341,7 @@ class TestHandleSessionCompletion:
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
+            session_output=MagicMock(spec=SessionOutput),
         )
 
         assert len(state.active_sessions) == 0
@@ -1394,6 +1396,7 @@ class TestHandleSessionCompletion:
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
+            session_output=MagicMock(spec=SessionOutput),
         )
 
         assert len(state.discovered_failures) == 1
@@ -1448,6 +1451,7 @@ class TestHandleSessionCompletion:
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
+            session_output=MagicMock(spec=SessionOutput),
         )
 
         assert len(state.discovered_reviews) == 1

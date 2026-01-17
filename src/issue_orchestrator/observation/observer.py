@@ -48,25 +48,25 @@ class SessionObserver:
     def __init__(
         self,
         config: Config,
+        session_output: SessionOutput,
         session_machines: dict[str, "SessionStateMachine"] | None = None,
         events: EventSink | None = None,
         session_runner: Optional["SessionRunner"] = None,
         repository_host: Optional["RepositoryHost"] = None,
         fresh_issue_reader: Optional["FreshIssueReader"] = None,
         terminal_observer: Optional["TerminalObserver"] = None,
-        session_output: Optional[SessionOutput] = None,
     ) -> None:
         """Initialize the observer with configuration.
 
         Args:
             config: Orchestrator configuration
+            session_output: SessionOutput port for session artifacts
             session_machines: Optional dict mapping session names to state machines
             events: Optional EventSink for emitting trace events
             session_runner: SessionRunner port for terminal operations
             repository_host: RepositoryHost port for GitHub operations
             fresh_issue_reader: FreshIssueReader port for correctness-critical reads
             terminal_observer: Optional TerminalObserver for process state detection
-            session_output: Optional SessionOutput port for session artifacts
         """
         self.config = config
         self.session_machines = session_machines or {}

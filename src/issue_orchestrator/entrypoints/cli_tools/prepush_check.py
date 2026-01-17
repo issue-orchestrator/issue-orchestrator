@@ -92,7 +92,10 @@ def run_prepush_check(verbose: bool = False) -> int:
         timeout_seconds=timeout,
     )
     start = time.monotonic()
-    result = gate.check()
+    # Create a temp directory for validation output (prepush runs outside orchestrator sessions)
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="prepush-validation-") as tmpdir:
+        result = gate.check(session_output_dir=Path(tmpdir))
     duration = time.monotonic() - start
     logger.info(
         "Pre-push validation completed in %.2fs: allowed=%s cache_hit=%s",

@@ -138,6 +138,10 @@ def worktree_with_completion(tmp_path):
         record_dir.mkdir(parents=True, exist_ok=True)
         record_path = record_dir / "completion.json"
         record_path.write_text(json.dumps(record.to_dict()))
+        # Create session output directory if session_id is present
+        if record.session_id:
+            session_dir = record_dir / "sessions" / record.session_id
+            session_dir.mkdir(parents=True, exist_ok=True)
         return worktree
     return _create
 
@@ -778,14 +782,11 @@ class TestCompletionProcessorPublishGate:
         (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
 
         session_output = FileSystemSessionOutput()
-        session_output.start_run(worktree, "issue-123", issue_number=123)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
 
-        output_dir = worktree / ".issue-orchestrator" / "validation" / "output"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        stdout_file = output_dir / "publish-gate-stdout.txt"
-        stderr_file = output_dir / "publish-gate-stderr.txt"
-        stdout_file.write_text("validation stdout")
-        stderr_file.write_text("validation stderr")
+        # Validation output is written directly to session output dir
+        (run.run_dir / "validation-stdout.log").write_text("validation stdout")
+        (run.run_dir / "validation-stderr.log").write_text("validation stderr")
 
         store = ValidationRecordStore(worktree)
         validation_record = ValidationRecord(
@@ -798,8 +799,8 @@ class TestCompletionProcessorPublishGate:
             started_at=datetime.now(timezone.utc).isoformat(),
             ended_at=datetime.now(timezone.utc).isoformat(),
             timed_out=False,
-            stdout_path=str(stdout_file.relative_to(worktree)),
-            stderr_path=str(stderr_file.relative_to(worktree)),
+            stdout_path=str((run.run_dir / "validation-stdout.log").relative_to(worktree)),
+            stderr_path=str((run.run_dir / "validation-stderr.log").relative_to(worktree)),
         )
         store.write(validation_record)
 

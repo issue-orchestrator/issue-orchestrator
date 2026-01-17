@@ -65,10 +65,6 @@ class ValidationRecordStore:
         """Get the path for a validation record (one per SHA)."""
         return self.base_dir / f"{sha}.json"
 
-    def _get_output_dir(self) -> Path:
-        """Get the directory for stdout/stderr files."""
-        return self.base_dir / "output"
-
     def write(self, record: ValidationRecord) -> Path:
         """Write a validation record to disk.
 
@@ -108,30 +104,6 @@ class ValidationRecordStore:
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning("Failed to read validation record at %s: %s", path, e)
             return None
-
-    def write_output(
-        self, sha: str, stdout: str, stderr: str
-    ) -> tuple[Path, Path]:
-        """Write stdout/stderr to files.
-
-        Args:
-            sha: The HEAD SHA
-            stdout: Standard output content
-            stderr: Standard error content
-
-        Returns:
-            Tuple of (stdout_path, stderr_path)
-        """
-        output_dir = self._get_output_dir()
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        stdout_path = output_dir / f"{sha}.stdout"
-        stderr_path = output_dir / f"{sha}.stderr"
-
-        stdout_path.write_text(stdout)
-        stderr_path.write_text(stderr)
-
-        return stdout_path, stderr_path
 
     # Legacy methods for backwards compatibility with old suite-based paths
     def _get_legacy_record_path(self, suite: str, sha: str) -> Path:
@@ -184,13 +156,16 @@ class ValidationRunner:
             command: The command to run
             timeout_seconds: Timeout in seconds
             cwd: Working directory (defaults to store's worktree)
-            session_output_dir: If provided, write stdout/stderr directly here
-                instead of validation/output/. This is the preferred location
-                as it keeps all session artifacts together.
+            session_output_dir: Directory to write stdout/stderr (required)
 
         Returns:
             ValidationRecord with results
+
+        Raises:
+            ValueError: If session_output_dir is not provided
         """
+        if session_output_dir is None:
+            raise ValueError("session_output_dir is required")
         cwd = cwd or self.store.worktree
         started_at = datetime.now()
 
@@ -230,18 +205,23 @@ class ValidationRunner:
         ended_at = datetime.now()
         passed = exit_code == 0
 
-        # Write stdout/stderr files - prefer session output dir if provided
-        if session_output_dir:
-            session_output_dir.mkdir(parents=True, exist_ok=True)
-            stdout_path = session_output_dir / "validation-stdout.log"
-            stderr_path = session_output_dir / "validation-stderr.log"
-            stdout_path.write_text(stdout)
-            stderr_path.write_text(stderr)
-            logger.debug("Wrote validation output to session dir: %s", session_output_dir)
-        else:
-            stdout_path, stderr_path = self.store.write_output(
-                head_sha, stdout, stderr
-            )
+        # Write stdout/stderr files to session output dir
+        session_output_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path = session_output_dir / "validation-stdout.log"
+        stderr_path = session_output_dir / "validation-stderr.log"
+        stdout_path.write_text(stdout)
+        stderr_path.write_text(stderr)
+        logger.debug("Wrote validation output to session dir: %s", session_output_dir)
+
+        # Store paths - relative to worktree if possible, otherwise absolute
+        # (prepush_check uses a temp dir outside the worktree)
+        try:
+            stdout_path_str = str(stdout_path.relative_to(self.store.worktree))
+            stderr_path_str = str(stderr_path.relative_to(self.store.worktree))
+        except ValueError:
+            # Output dir is not under worktree (e.g., prepush temp dir)
+            stdout_path_str = str(stdout_path)
+            stderr_path_str = str(stderr_path)
 
         # Create record
         record = ValidationRecord(
@@ -254,8 +234,8 @@ class ValidationRunner:
             started_at=started_at.isoformat(),
             ended_at=ended_at.isoformat(),
             timed_out=timed_out,
-            stdout_path=str(stdout_path.relative_to(self.store.worktree)),
-            stderr_path=str(stderr_path.relative_to(self.store.worktree)),
+            stdout_path=stdout_path_str,
+            stderr_path=stderr_path_str,
         )
 
         # Write record
@@ -543,7 +523,7 @@ class AgentGate:
             logger.warning("Failed to get HEAD SHA in %s", self.worktree)
         return head_sha
 
-    def run(self, session_output_dir: Optional[Path] = None) -> AgentGateResult:
+    def run(self, session_output_dir: Path) -> AgentGateResult:
         """Run the agent gate validation.
 
         Unlike PublishGate.check(), this always runs the validation
@@ -551,8 +531,7 @@ class AgentGate:
         the specific point in time when agent_done is called.
 
         Args:
-            session_output_dir: If provided, write validation output directly here
-                instead of validation/output/. Keeps all session artifacts together.
+            session_output_dir: Directory to write validation output
 
         Returns:
             AgentGateResult with validation status
