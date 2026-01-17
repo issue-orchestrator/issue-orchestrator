@@ -180,3 +180,83 @@ class TestWorktreeContextCreate:
             call_args = mock_events.publish.call_args[0][0]
             assert call_args.data["uncommitted_discarded"] == 2
             assert call_args.data["commits_discarded"] == 3
+
+    def test_phase_name_defaults_to_session_name(
+        self, mock_worktree_manager, mock_config, mock_events, mock_session_output
+    ):
+        """Verify phase_name defaults to session_name when not provided."""
+        with patch(
+            "issue_orchestrator.control.worktree_context.Worktree"
+        ) as mock_worktree_cls:
+            mock_worktree = MagicMock()
+            mock_worktree_cls.return_value = mock_worktree
+
+            ctx = WorktreeContext.create(
+                worktree_manager=mock_worktree_manager,
+                config=mock_config,
+                events=mock_events,
+                session_output=mock_session_output,
+                issue_number=123,
+                issue_title="Fix bug",
+                session_name="issue-123",
+                agent_label="agent:developer",
+            )
+
+            assert ctx.session_name == "issue-123"
+            assert ctx.phase_name == "issue-123"  # Defaults to session_name
+            # Verify prepare_for_session uses phase_name
+            mock_worktree.prepare_for_session.assert_called_once_with("issue-123")
+
+    def test_phase_name_can_be_set_independently(
+        self, mock_worktree_manager, mock_config, mock_events, mock_session_output
+    ):
+        """Verify phase_name can be set separately from session_name."""
+        with patch(
+            "issue_orchestrator.control.worktree_context.Worktree"
+        ) as mock_worktree_cls:
+            mock_worktree = MagicMock()
+            mock_worktree_cls.return_value = mock_worktree
+
+            ctx = WorktreeContext.create(
+                worktree_manager=mock_worktree_manager,
+                config=mock_config,
+                events=mock_events,
+                session_output=mock_session_output,
+                issue_number=123,
+                issue_title="Fix bug",
+                session_name="issue-123",
+                agent_label="agent:developer",
+                phase_name="coding-1",
+            )
+
+            assert ctx.session_name == "issue-123"
+            assert ctx.phase_name == "coding-1"
+            # Verify prepare_for_session uses phase_name, not session_name
+            mock_worktree.prepare_for_session.assert_called_once_with("coding-1")
+
+    def test_session_output_uses_phase_name_for_run(
+        self, mock_worktree_manager, mock_config, mock_events, mock_session_output
+    ):
+        """Verify session_output.start_run receives phase_name, not session_name."""
+        with patch(
+            "issue_orchestrator.control.worktree_context.Worktree"
+        ) as mock_worktree_cls:
+            mock_worktree = MagicMock()
+            mock_worktree_cls.return_value = mock_worktree
+
+            WorktreeContext.create(
+                worktree_manager=mock_worktree_manager,
+                config=mock_config,
+                events=mock_events,
+                session_output=mock_session_output,
+                issue_number=123,
+                issue_title="Fix bug",
+                session_name="issue-123",
+                agent_label="agent:developer",
+                phase_name="review-2",
+            )
+
+            # Verify start_run was called with phase_name
+            mock_session_output.start_run.assert_called_once()
+            call_kwargs = mock_session_output.start_run.call_args[1]
+            assert call_kwargs["session_name"] == "review-2"
