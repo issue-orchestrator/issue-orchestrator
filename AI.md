@@ -130,7 +130,7 @@ logger.info("[PLAN] %d action(s)", count, extra=log_context(tick_id=5))
 - Events via `self.events.publish(TraceEvent(...))`, never direct pluggy
 - Session ops via `self.runner.*`, never direct plugin manager
 - All orchestrator dependencies injected via constructor
-- Unless explicitly asked otherwise, do all agent work in a git worktree (not the base repo).
+- **Worktrees are mandatory**: All agent work MUST be done in a git worktree (not the base repo). Run `make venv` to set up the worktree environment.
 
 ## GitHub API Discipline
 
