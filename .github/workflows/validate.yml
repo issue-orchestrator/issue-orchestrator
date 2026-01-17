@@ -82,6 +82,6 @@ jobs:
           key: tooling-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'pyproject.toml', 'pyrightconfig*.json', 'tools/ast_guardrails.yml', 'Makefile') }}
 
       - name: Run validate
-        run: make validate PYRIGHT=pyright PYTEST=pytest LINT_IMPORTS=lint-imports PYTHON=python
+        run: make validate PYRIGHT=pyright PYTEST=pytest LINT_IMPORTS=lint-imports RUFF=ruff PYTHON=python
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
