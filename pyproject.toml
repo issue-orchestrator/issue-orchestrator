@@ -208,4 +208,5 @@ target-version = "py311"
 [tool.ruff.lint]
 # C901: cyclomatic complexity (default max: 10)
 # PLR0912: too many branches (default max: 12)
-select = ["C901", "PLR0912"]
+# SLF001: private member access (access to _private members from outside class)
+select = ["C901", "PLR0912", "SLF001"]
