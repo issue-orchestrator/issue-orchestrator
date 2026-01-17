@@ -310,6 +310,83 @@ class GitWorkingCopy:
         """Create and switch to a branch from the current HEAD."""
         self._run_git(worktree, ["checkout", "-B", branch], timeout_s=60)
 
+    def _check_e2e_dry_run(
+        self, branch: str | None, remote: str
+    ) -> PushResult | None:
+        """Check for E2E dry-run mode and return early result if enabled."""
+        if os.environ.get("E2E_DRY_RUN_PUSH") == "1":
+            logger.info(
+                "[E2E_DRY_RUN] Push skipped (would push branch=%s to remote=%s)",
+                branch,
+                remote,
+            )
+            return PushResult(
+                success=True,
+                branch=branch or "unknown",
+                remote=remote,
+                message=f"[DRY_RUN] Would push {branch} to {remote}",
+            )
+        return None
+
+    def _fetch_for_push(
+        self, worktree: Path, remote: str, branch: str
+    ) -> PushResult | None:
+        """Fetch remote refs before push, return error result if fetch fails."""
+        try:
+            fetch_result = self._run_git(
+                worktree,
+                ["fetch", remote, branch],
+                check=False,
+                timeout_s=60,
+            )
+            if fetch_result.returncode != 0:
+                stderr = fetch_result.stderr or ""
+                if "couldn't find remote ref" not in stderr:
+                    return PushResult(
+                        success=False,
+                        branch=branch,
+                        remote=remote,
+                        message=f"Failed to update tracking refs before push: {stderr}",
+                        retryable=True,
+                    )
+                self._clear_stale_remote_ref(worktree, remote, branch)
+                logger.debug("Branch %s not on remote yet (first push)", branch)
+        except Exception as e:
+            error_str = str(e)
+            if "couldn't find remote ref" in error_str:
+                self._clear_stale_remote_ref(worktree, remote, branch)
+                logger.debug("Branch %s not on remote yet (first push, from exception)", branch)
+            else:
+                return PushResult(
+                    success=False,
+                    branch=branch,
+                    remote=remote,
+                    message=f"Failed to update tracking refs before push: {e}",
+                    retryable=True,
+                )
+        return None
+
+    def _build_push_args(
+        self, remote: str, branch: str, set_upstream: bool, skip_hooks: bool
+    ) -> list[str]:
+        """Build git push command arguments."""
+        args = ["push", "--force-with-lease"]
+        if skip_hooks:
+            args.append("--no-verify")
+        if set_upstream:
+            args.extend(["-u", remote, branch])
+        else:
+            args.append(remote)
+        return args
+
+    def _determine_retryable(self, error_msg: str) -> bool:
+        """Determine if a push error is retryable."""
+        if "non-fast-forward" in error_msg or "rejected" in error_msg:
+            return False
+        if "permission denied" in error_msg.lower():
+            return False
+        return True
+
     def push(
         self,
         worktree: Path,
@@ -328,19 +405,10 @@ class GitWorkingCopy:
         branch = self.get_current_branch(worktree)
 
         # E2E dry-run mode: verify push would be called but don't actually push
-        # This avoids running pre-push hooks (make validate) in e2e tests
-        if os.environ.get("E2E_DRY_RUN_PUSH") == "1":
-            logger.info(
-                "[E2E_DRY_RUN] Push skipped (would push branch=%s to remote=%s)",
-                branch,
-                remote,
-            )
-            return PushResult(
-                success=True,
-                branch=branch or "unknown",
-                remote=remote,
-                message=f"[DRY_RUN] Would push {branch} to {remote}",
-            )
+        dry_run_result = self._check_e2e_dry_run(branch, remote)
+        if dry_run_result:
+            return dry_run_result
+
         if not branch:
             return PushResult(
                 success=False,
@@ -351,55 +419,11 @@ class GitWorkingCopy:
             )
 
         # Try to fetch the branch to update tracking refs for --force-with-lease.
-        # If fetch fails with "couldn't find remote ref", it's a first push - continue.
-        # If fetch fails with other error (network, auth), fail early with context.
-        # NOTE: We can't rely on local tracking refs (rev-parse origin/branch) because
-        # stale refs may exist from previous failed sessions.
-        try:
-            fetch_result = self._run_git(
-                worktree,
-                ["fetch", remote, branch],
-                check=False,
-                timeout_s=60,
-            )
-            if fetch_result.returncode != 0:
-                stderr = fetch_result.stderr or ""
-                # "couldn't find remote ref" means branch doesn't exist on remote
-                if "couldn't find remote ref" not in stderr:
-                    # Real error (network, auth, etc.) - fail early
-                    return PushResult(
-                        success=False,
-                        branch=branch,
-                        remote=remote,
-                        message=f"Failed to update tracking refs before push: {stderr}",
-                        retryable=True,
-                    )
-                self._clear_stale_remote_ref(worktree, remote, branch)
-                # First push case - continue without fetched refs
-                logger.debug("Branch %s not on remote yet (first push)", branch)
-        except Exception as e:
-            # Defensive: also check exception message for first-push case
-            # This handles edge cases where GitError is raised despite check=False
-            error_str = str(e)
-            if "couldn't find remote ref" in error_str:
-                self._clear_stale_remote_ref(worktree, remote, branch)
-                logger.debug("Branch %s not on remote yet (first push, from exception)", branch)
-            else:
-                return PushResult(
-                    success=False,
-                    branch=branch,
-                    remote=remote,
-                    message=f"Failed to update tracking refs before push: {e}",
-                    retryable=True,
-                )
+        fetch_error = self._fetch_for_push(worktree, remote, branch)
+        if fetch_error:
+            return fetch_error
 
-        args = ["push", "--force-with-lease"]
-        if skip_hooks:
-            args.append("--no-verify")
-        if set_upstream:
-            args.extend(["-u", remote, branch])
-        else:
-            args.append(remote)
+        args = self._build_push_args(remote, branch, set_upstream, skip_hooks)
 
         start = time.monotonic()
         try:
@@ -429,20 +453,12 @@ class GitWorkingCopy:
                 skip_hooks,
                 error_msg,
             )
-
-            # Determine if retryable
-            retryable = True
-            if "non-fast-forward" in error_msg or "rejected" in error_msg:
-                retryable = False  # Needs force or rebase
-            if "permission denied" in error_msg.lower():
-                retryable = False  # Auth issue
-
             return PushResult(
                 success=False,
                 branch=branch,
                 remote=remote,
                 message=error_msg,
-                retryable=retryable,
+                retryable=self._determine_retryable(error_msg),
             )
 
     def get_issue_number_from_branch(self, worktree: Path) -> int | None:
@@ -476,6 +492,47 @@ class GitWorkingCopy:
 
         return None
 
+    def _fetch_for_preflight(
+        self, worktree: Path, remote: str, branch: str
+    ) -> PreflightResult | None:
+        """Fetch remote refs before preflight check, return error result if fetch fails."""
+        try:
+            fetch_result = self._run_git(
+                worktree,
+                ["fetch", remote, branch],
+                check=False,
+                timeout_s=60,
+            )
+            if fetch_result.returncode != 0:
+                stderr = fetch_result.stderr or ""
+                if "couldn't find remote ref" not in stderr:
+                    return PreflightResult(
+                        would_succeed=False,
+                        error=f"Failed to update tracking refs: {stderr}",
+                        fix_hint="Network or remote issue - retry later",
+                    )
+                self._clear_stale_remote_ref(worktree, remote, branch)
+        except Exception as e:
+            error_str = str(e)
+            if "couldn't find remote ref" not in error_str:
+                return PreflightResult(
+                    would_succeed=False,
+                    error=f"Failed to update tracking refs: {e}",
+                    fix_hint="Network or remote issue - retry later",
+                )
+            self._clear_stale_remote_ref(worktree, remote, branch)
+        return None
+
+    def _get_preflight_fix_hint(self, error_msg: str) -> str | None:
+        """Determine fix hint based on preflight error message."""
+        if "stale info" in error_msg or "rejected" in error_msg:
+            return "Branch has diverged. Run: git fetch origin && git rebase origin/main"
+        if "no upstream" in error_msg.lower():
+            return "No upstream branch set. This should be handled automatically."
+        if "permission denied" in error_msg.lower() or "authentication" in error_msg.lower():
+            return "Authentication issue - contact orchestrator administrator."
+        return None
+
     def push_preflight(
         self,
         worktree: Path,
@@ -496,37 +553,9 @@ class GitWorkingCopy:
             )
 
         # Try to fetch the branch to update tracking refs for --force-with-lease.
-        # If fetch fails with "couldn't find remote ref", it's a first push - continue.
-        # If fetch fails with other error (network, auth), fail early with context.
-        try:
-            fetch_result = self._run_git(
-                worktree,
-                ["fetch", remote, branch],
-                check=False,
-                timeout_s=60,
-            )
-            if fetch_result.returncode != 0:
-                stderr = fetch_result.stderr or ""
-                if "couldn't find remote ref" not in stderr:
-                    # Real error (network, auth, etc.)
-                    return PreflightResult(
-                        would_succeed=False,
-                        error=f"Failed to update tracking refs: {stderr}",
-                        fix_hint="Network or remote issue - retry later",
-                    )
-                self._clear_stale_remote_ref(worktree, remote, branch)
-                # First push case - continue
-        except Exception as e:
-            # Defensive: also check exception message for first-push case
-            error_str = str(e)
-            if "couldn't find remote ref" not in error_str:
-                return PreflightResult(
-                    would_succeed=False,
-                    error=f"Failed to update tracking refs: {e}",
-                    fix_hint="Network or remote issue - retry later",
-                )
-            self._clear_stale_remote_ref(worktree, remote, branch)
-            # First push case - continue
+        fetch_error = self._fetch_for_preflight(worktree, remote, branch)
+        if fetch_error:
+            return fetch_error
 
         args = ["push", "--dry-run", "-u", remote, branch, "--force-with-lease"]
 
@@ -535,23 +564,12 @@ class GitWorkingCopy:
             return PreflightResult(would_succeed=True)
         except GitError as e:
             error_msg = e.result.stderr if e.result.stderr else str(e)
-            fix_hint = None
-
-            # Provide specific hints based on error type
-            if "stale info" in error_msg or "rejected" in error_msg:
-                fix_hint = "Branch has diverged. Run: git fetch origin && git rebase origin/main"
-            elif "no upstream" in error_msg.lower():
-                fix_hint = "No upstream branch set. This should be handled automatically."
-            elif "permission denied" in error_msg.lower() or "authentication" in error_msg.lower():
-                fix_hint = "Authentication issue - contact orchestrator administrator."
-
             return PreflightResult(
                 would_succeed=False,
                 error=error_msg,
-                fix_hint=fix_hint,
+                fix_hint=self._get_preflight_fix_hint(error_msg),
             )
         except Exception as e:
-            # Timeout or other error
             error_msg = str(e)
             if "timed out" in error_msg.lower():
                 return PreflightResult(
