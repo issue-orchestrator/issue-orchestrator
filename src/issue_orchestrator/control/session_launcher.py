@@ -303,6 +303,8 @@ class SessionLauncher:
         step_start = time.time()
         logger.info(issue_log(issue.number, "Creating worktree..."))
 
+        # Initial coding session is always attempt 1
+        phase_name = "coding-1"
         ctx = WorktreeContext.create(
             worktree_manager=self._worktree_manager,
             config=self.config,
@@ -315,6 +317,7 @@ class SessionLauncher:
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(),
+            phase_name=phase_name,
         )
 
         # Handle worktree preparation errors
@@ -584,6 +587,13 @@ class SessionLauncher:
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
         )
 
+        # Determine review attempt number from rework_count
+        # First review is review-1, after first rework it's review-2, etc.
+        review_machine = self._get_review_machine(review.pr_number, review.issue_number)
+        rework_count = review_machine.rework_count if review_machine else 0
+        review_attempt = rework_count + 1
+        phase_name = f"review-{review_attempt}"
+
         # Create and prepare worktree using WorktreeContext
         ctx = WorktreeContext.create(
             worktree_manager=self._worktree_manager,
@@ -597,6 +607,7 @@ class SessionLauncher:
             branch_name=review.branch_name,
             enforce_hooks=False,
             reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
+            phase_name=phase_name,
         )
 
         # Handle worktree preparation errors
@@ -811,6 +822,11 @@ class SessionLauncher:
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
         )
 
+        # Rework cycle N means coding attempt N+1
+        # (initial coding was attempt 1, first rework is attempt 2, etc.)
+        coding_attempt = rework.rework_cycle + 1
+        phase_name = f"coding-{coding_attempt}"
+
         # Create and prepare worktree using WorktreeContext
         ctx = WorktreeContext.create(
             worktree_manager=self._worktree_manager,
@@ -825,6 +841,7 @@ class SessionLauncher:
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
+            phase_name=phase_name,
         )
 
         # Handle worktree preparation errors

@@ -673,6 +673,78 @@
         }
         .manage-blocked-btn:hover { background: #30363d; border-color: #8b949e; }
 
+        /* Phase Info Modal */
+        .phase-modal { max-width: 400px; }
+        .phase-info { padding: 0 20px; }
+        .phase-status-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #21262d;
+        }
+        .phase-status-icon {
+            font-size: 24px;
+            width: 32px;
+            text-align: center;
+        }
+        .phase-status-icon.success { color: #3fb950; }
+        .phase-status-icon.failed { color: #f85149; }
+        .phase-status-icon.in-progress { color: #1f6feb; }
+        .phase-status-label {
+            font-size: 16px;
+            font-weight: 600;
+            color: #c9d1d9;
+        }
+        .phase-details { margin-bottom: 16px; }
+        .phase-detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            font-size: 14px;
+        }
+        .phase-detail-label { color: #8b949e; }
+        .phase-detail-value { color: #c9d1d9; font-weight: 500; }
+        .phase-summary {
+            background: #161b22;
+            border-radius: 6px;
+            padding: 12px;
+            margin-top: 12px;
+        }
+        .phase-summary p {
+            margin: 0;
+            color: #c9d1d9;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .phase-footer {
+            display: flex;
+            justify-content: flex-end;
+            padding: 12px 20px;
+            border-top: 1px solid #21262d;
+            background: #0d1117;
+        }
+        .btn-details {
+            padding: 8px 16px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-details:hover { background: #30363d; border-color: #8b949e; }
+
+        /* Clickable flow steps */
+        .flow-step.clickable {
+            cursor: pointer;
+        }
+        .flow-step.clickable:hover {
+            background: #388bfd;
+            color: #fff;
+        }
+
         /* Pagination */
         .pagination {
             display: flex;
@@ -1427,9 +1499,13 @@
                 </span>
                 <span class="issue-status">
                     {% if issue.flow_steps %}
-                    <span class="flow-stepper {% if issue.blocked_summary %}blocked{% endif %}" aria-label="Workflow: {% for step in issue.flow_steps %}{{ step.label }}{% if not loop.last %}, {% endif %}{% endfor %}. Current: {{ issue.flow_stage_label if issue.flow_stage_label else issue.flow_stage }}.">
+                    <span class="flow-stepper {% if issue.blocked_summary %}blocked{% endif %}" aria-label="Workflow: {% for step in issue.flow_steps %}{{ step.label }}{% if not loop.last %}, {% endif %}{% endfor %}. Current: {{ issue.flow_stage_label if issue.flow_stage_label else issue.flow_stage }}." data-issue="{{ issue.issue_number }}">
                         {% for step in issue.flow_steps %}
-                        <span class="flow-step {% if step.key == issue.flow_stage %}active{% endif %}" tabindex="0">
+                        <span class="flow-step clickable {% if step.key == issue.flow_stage %}active{% endif %}"
+                              tabindex="0"
+                              data-phase="{{ step.key }}"
+                              onclick="handlePhaseClick(event, {{ issue.issue_number }}, '{{ step.key }}')"
+                              onkeydown="if(event.key==='Enter'){handlePhaseClick(event, {{ issue.issue_number }}, '{{ step.key }}')}">
                             {{ step.label }}
                         </span>
                         {% endfor %}
@@ -1647,6 +1723,44 @@
                 <button class="btn-reset" id="blockedResetBtn" onclick="resetSelectedIssues()" disabled title="Delete worktree, remote branch, and labels - fresh start">
                     Reset &amp; Retry (0)
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Phase Info Modal -->
+    <div class="modal-overlay" id="phaseModal" onclick="closePhaseModal(event)">
+        <div class="modal phase-modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2 id="phaseModalTitle">Phase Details</h2>
+                <button class="modal-close" onclick="closePhaseModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="phase-info">
+                    <div class="phase-status-row">
+                        <span class="phase-status-icon" id="phaseStatusIcon">✓</span>
+                        <span class="phase-status-label" id="phaseStatusLabel">Completed</span>
+                    </div>
+                    <div class="phase-details">
+                        <div class="phase-detail-row">
+                            <span class="phase-detail-label">Duration:</span>
+                            <span class="phase-detail-value" id="phaseDuration">-</span>
+                        </div>
+                        <div class="phase-detail-row">
+                            <span class="phase-detail-label">Agent:</span>
+                            <span class="phase-detail-value" id="phaseAgent">-</span>
+                        </div>
+                        <div class="phase-detail-row" id="phaseValidationRow" style="display: none;">
+                            <span class="phase-detail-label">Validation:</span>
+                            <span class="phase-detail-value" id="phaseValidation">-</span>
+                        </div>
+                    </div>
+                    <div class="phase-summary" id="phaseSummary" style="display: none;">
+                        <p id="phaseSummaryText"></p>
+                    </div>
+                </div>
+            </div>
+            <div class="phase-footer">
+                <button class="btn-details" id="phaseDetailsBtn" onclick="openPhaseDetails()">Details</button>
             </div>
         </div>
     </div>
@@ -2679,6 +2793,142 @@
             if (!e || e.target === blockedModal) {
                 blockedModal.classList.remove('visible');
             }
+        }
+
+        // Phase Info Modal
+        const phaseModal = document.getElementById('phaseModal');
+        let currentPhaseData = null;
+        let currentPhaseIssue = null;
+
+        async function openPhaseModal(issueNumber, flowStepKey) {
+            currentPhaseIssue = issueNumber;
+            try {
+                const res = await fetch(`/api/session/phases/${issueNumber}`);
+                const data = await res.json();
+
+                if (data.error) {
+                    console.error('Failed to fetch phases:', data.error);
+                    return;
+                }
+
+                // Map flow_step keys to actual phase types
+                // in_progress -> coding-*, review -> review-*, rework -> coding-*
+                let phase = null;
+                const phases = data.phases || [];
+
+                if (flowStepKey === 'in_progress' || flowStepKey === 'rework') {
+                    // Find the latest coding phase
+                    phase = [...phases].reverse().find(p => p.name.startsWith('coding-'));
+                } else if (flowStepKey === 'review' || flowStepKey === 'triage') {
+                    // Find the latest review phase
+                    phase = [...phases].reverse().find(p => p.name.startsWith('review-'));
+                } else if (phases.length > 0) {
+                    // Default to latest phase
+                    phase = phases[phases.length - 1];
+                }
+
+                if (!phase) {
+                    // No phases yet, show a simple message
+                    document.getElementById('phaseModalTitle').textContent = flowStepKey.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                    document.getElementById('phaseStatusIcon').textContent = '○';
+                    document.getElementById('phaseStatusIcon').className = 'phase-status-icon';
+                    document.getElementById('phaseStatusLabel').textContent = 'Not started';
+                    document.getElementById('phaseDuration').textContent = '-';
+                    document.getElementById('phaseAgent').textContent = '-';
+                    document.getElementById('phaseValidationRow').style.display = 'none';
+                    document.getElementById('phaseDetailsBtn').style.display = 'none';
+                    phaseModal.classList.add('visible');
+                    return;
+                }
+
+                currentPhaseData = phase;
+
+                // Update modal content
+                document.getElementById('phaseModalTitle').textContent = phase.display_name;
+
+                const iconEl = document.getElementById('phaseStatusIcon');
+                const labelEl = document.getElementById('phaseStatusLabel');
+
+                iconEl.textContent = phase.status_icon;
+                iconEl.className = 'phase-status-icon ' + getStatusClass(phase.status);
+                labelEl.textContent = formatStatus(phase.status);
+
+                // Duration
+                const duration = calculateDuration(phase.started_at, phase.ended_at);
+                document.getElementById('phaseDuration').textContent = duration || '-';
+
+                // Agent
+                document.getElementById('phaseAgent').textContent = phase.agent_label || '-';
+
+                // Validation
+                const validationRow = document.getElementById('phaseValidationRow');
+                if (phase.validation_passed !== null && phase.validation_passed !== undefined) {
+                    validationRow.style.display = 'flex';
+                    document.getElementById('phaseValidation').textContent =
+                        phase.validation_passed ? 'Passed' : 'Failed';
+                    document.getElementById('phaseValidation').style.color =
+                        phase.validation_passed ? '#3fb950' : '#f85149';
+                } else {
+                    validationRow.style.display = 'none';
+                }
+
+                // Show Details button
+                document.getElementById('phaseDetailsBtn').style.display = 'block';
+
+                phaseModal.classList.add('visible');
+            } catch (err) {
+                console.error('Error fetching phase data:', err);
+            }
+        }
+
+        function closePhaseModal(e) {
+            if (!e || e.target === phaseModal) {
+                phaseModal.classList.remove('visible');
+                currentPhaseData = null;
+            }
+        }
+
+        function openPhaseDetails() {
+            if (currentPhaseData && currentPhaseData.run_dir) {
+                // Open the session manifest modal with this specific run
+                openSessionManifest(currentPhaseIssue);
+                closePhaseModal();
+            }
+        }
+
+        function getStatusClass(status) {
+            if (status === 'completed') return 'success';
+            if (status === 'in_progress') return 'in-progress';
+            if (['validation_failed', 'blocked', 'timeout'].includes(status)) return 'failed';
+            return '';
+        }
+
+        function formatStatus(status) {
+            const labels = {
+                'completed': 'Completed',
+                'in_progress': 'In Progress',
+                'validation_failed': 'Validation Failed',
+                'blocked': 'Blocked',
+                'timeout': 'Timed Out',
+            };
+            return labels[status] || status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        }
+
+        function calculateDuration(startedAt, endedAt) {
+            if (!startedAt) return null;
+            const start = new Date(startedAt);
+            const end = endedAt ? new Date(endedAt) : new Date();
+            const diffMs = end - start;
+            const diffMins = Math.floor(diffMs / 60000);
+            if (diffMins < 60) return `${diffMins}m`;
+            const hours = Math.floor(diffMins / 60);
+            const mins = diffMins % 60;
+            return `${hours}h ${mins}m`;
+        }
+
+        function handlePhaseClick(e, issueNumber, phaseName) {
+            e.stopPropagation();
+            openPhaseModal(issueNumber, phaseName);
         }
 
         function renderBlockedList() {
