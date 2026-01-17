@@ -120,6 +120,17 @@
         .instance-id { color: #8b949e; font-family: monospace; }
         .instance-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
         .instance-port { font-size: 12px; color: #8b949e; font-family: monospace; }
+        .e2e-badge {
+            display: inline-block;
+            padding: 1px 5px;
+            font-size: 9px;
+            border-radius: 3px;
+            margin-left: 6px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+        .e2e-badge.executor { background: #238636; color: #fff; }
+        .e2e-badge.observer { background: #6e7681; color: #fff; }
         .instance-actions { display: flex; gap: 6px; justify-content: flex-end; }
         .instance-actions button { padding: 4px 8px; font-size: 10px; }
         .expand-toggle {
@@ -1389,9 +1400,17 @@
 
                             const instId = inst.instance_id || 'default';
 
+                            // E2E role badge (only shown when running and role is set)
+                            let e2eBadge = '';
+                            if (instRunning && inst.e2e_role) {
+                                const roleClass = inst.e2e_role === 'executor' ? 'executor' : 'observer';
+                                const roleLabel = inst.e2e_role === 'executor' ? 'E2E' : 'E2E Observer';
+                                e2eBadge = `<span class="e2e-badge ${roleClass}">${roleLabel}</span>`;
+                            }
+
                             html += `
                                 <div class="instance-row">
-                                    <div class="instance-id">${escapeHtml(instId)}</div>
+                                    <div class="instance-id">${escapeHtml(instId)}${e2eBadge}</div>
                                     <span class="instance-status ${instStatusClass}">
                                         <span class="status-dot"></span>
                                         ${instStatusLabel}
@@ -1416,10 +1435,18 @@
                             `<option value="${escapeHtml(c)}" ${c === selectedConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`
                         ).join('');
 
+                        // E2E role badge for single-instance mode
+                        let singleE2eBadge = '';
+                        if (isRunning && status.e2e_role) {
+                            const roleClass = status.e2e_role === 'executor' ? 'executor' : 'observer';
+                            const roleLabel = status.e2e_role === 'executor' ? 'E2E' : 'E2E Observer';
+                            singleE2eBadge = `<span class="e2e-badge ${roleClass}">${roleLabel}</span>`;
+                        }
+
                         html += `
                             <div class="repo-row" data-path="${escapeHtml(repo.path)}">
                                 <div>
-                                    <div class="repo-name">${escapeHtml(repo.name)}</div>
+                                    <div class="repo-name">${escapeHtml(repo.name)}${singleE2eBadge}</div>
                                     <div class="repo-path" title="${escapeHtml(repo.path)}">${escapeHtml(repo.path)}</div>
                                 </div>
                                 <span class="repo-status ${statusClass}">

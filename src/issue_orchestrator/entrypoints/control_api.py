@@ -1213,6 +1213,7 @@ def _build_repos_status() -> list[dict[str, Any]]:
                             inst_data["shutdown_requested"] = internal.get("shutdown_requested", False)
                             active_sessions = internal.get("active_sessions", [])
                             inst_data["active_session_count"] = len(active_sessions)
+                            inst_data["e2e_role"] = internal.get("e2e_role")
                     except Exception:
                         pass
 
@@ -1264,6 +1265,7 @@ def _build_repos_status() -> list[dict[str, Any]]:
                         # Include active session count for shutdown state determination
                         active_sessions = internal.get("active_sessions", [])
                         repo_data["status"]["active_session_count"] = len(active_sessions)
+                        repo_data["status"]["e2e_role"] = internal.get("e2e_role")
                 except Exception:
                     pass  # Keep supervisor status only
 
