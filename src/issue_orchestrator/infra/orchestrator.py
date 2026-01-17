@@ -1,6 +1,6 @@
 """Main orchestrator - ties everything together."""
 
-import asyncio, logging, signal, time
+import asyncio, logging, os, signal, time
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -209,16 +209,21 @@ class Orchestrator:
 
         Triggers when:
         1. E2E is enabled with auto_run_interval_minutes > 0
-        2. Interval has passed since last run
-        3. Main branch HEAD has changed since last tested commit
+        2. This instance has executor role (not reader/disabled)
+        3. Interval has passed since last run
+        4. Main branch HEAD has changed since last tested commit
         """
         # Use repo directory name as orchestrator_id
         orchestrator_id = self.config.repo_root.name
+
+        # Get instance_id from environment (set by CC for multi-instance)
+        instance_id = os.environ.get("INSTANCE_ID")
 
         triggered = maybe_trigger_e2e(
             config=self.config,
             repo_root=self.config.repo_root,
             orchestrator_id=orchestrator_id,
+            instance_id=instance_id,
         )
         if triggered:
             self.deps.events.publish(TraceEvent(

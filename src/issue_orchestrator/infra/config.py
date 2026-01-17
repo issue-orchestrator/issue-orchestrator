@@ -355,8 +355,20 @@ class E2EConfig:
     """E2E async test runner settings.
 
     Controls local async E2E test execution with results persisted to SQLite.
+
+    Role determines whether this orchestrator runs E2E tests:
+    - "auto": Determine role automatically (default)
+    - "executor": Run tests and publish results
+    - "reader": Only display results (don't run tests)
+    - "disabled": E2E functionality completely off
+
+    In "auto" mode:
+    - If executor_claimant is set, only that claimant_id is executor
+    - Otherwise, orchestrator-1 (or single instance) is executor
     """
     enabled: bool = False  # Whether E2E runner is active
+    role: str = "auto"  # auto | executor | reader | disabled
+    executor_claimant: Optional[str] = None  # Which claimant_id is the executor (for auto mode)
     auto_run_interval_minutes: int = 30  # Min interval between auto runs (0 = disable auto)
     pytest_args: list[str] = field(default_factory=lambda: ["tests/e2e", "-v"])
     allow_retry_once: bool = True  # Retry failing tests once to reduce flakiness
@@ -395,8 +407,15 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
         # Support space-separated string
         pytest_args = pytest_args.split()
 
+    # Validate role
+    role = data.get("role", "auto")
+    if role not in ("auto", "executor", "reader", "disabled"):
+        role = "auto"
+
     return E2EConfig(
         enabled=data.get("enabled", False),
+        role=role,
+        executor_claimant=data.get("executor_claimant"),
         auto_run_interval_minutes=data.get("auto_run_interval_minutes", 30),
         pytest_args=list(pytest_args),
         allow_retry_once=data.get("allow_retry_once", True),
