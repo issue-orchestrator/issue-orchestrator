@@ -2148,6 +2148,10 @@ async def run_web_dashboard(
     global _orchestrator, _server
     _orchestrator = orchestrator
 
+    # Also set orchestrator for mounted control_app
+    from .control_api import set_orchestrator as set_control_orchestrator
+    set_control_orchestrator(orchestrator)
+
     # Ensure port is available before starting
     ensure_port_available(port)
 
@@ -2266,3 +2270,9 @@ async def run_with_web_dashboard(
         logger.info("[web] Shutdown complete, exiting via shutdown_manager")
         shutdown_manager.request_shutdown(reason="web server stopped")
         shutdown_manager.exit()
+
+
+# Mount control API AFTER all routes are defined so app's routes take precedence
+# This allows dashboard JS to fetch /control/... routes from the same port
+from .control_api import control_app
+app.mount("", control_app)
