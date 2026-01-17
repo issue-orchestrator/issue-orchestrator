@@ -210,6 +210,62 @@ class FileSystemSessionOutput:
 
         return removed
 
+    def list_runs(
+        self,
+        worktree_path: Path,
+    ) -> list[dict[str, Any]]:
+        """List all runs in a worktree, sorted by start time (oldest first).
+
+        Returns a list of run summaries from the index, each containing:
+        - session_name: The phase name (e.g., "coding-1", "review-1")
+        - run_id: Timestamp identifier
+        - started_at: ISO timestamp
+        - issue_number: Associated issue
+        - run_dir: Path to run directory
+        - agent_label: Agent type used
+        - status: Derived status (completed, in_progress, failed)
+        """
+        index_path = self.sessions_base_dir(worktree_path) / INDEX_NAME
+        index = self._read_json(index_path)
+        if not index or "runs" not in index:
+            return []
+
+        runs = []
+        for run_info in index["runs"]:
+            run_dir = run_info.get("run_dir")
+            if run_dir and Path(run_dir).exists():
+                # Enhance with status from manifest
+                manifest = self.read_manifest(Path(run_dir))
+                if manifest:
+                    run_info = {**run_info}  # Copy to avoid mutating index
+                    run_info["status"] = self._derive_run_status(manifest, Path(run_dir))
+                    run_info["ended_at"] = manifest.get("ended_at")
+                    run_info["outcome"] = manifest.get("outcome")
+                    run_info["validation_passed"] = manifest.get("validation_passed")
+                runs.append(run_info)
+
+        # Sort by started_at (oldest first for linear display)
+        runs.sort(key=lambda r: r.get("started_at", ""))
+        return runs
+
+    def _derive_run_status(self, manifest: dict[str, Any], run_dir: Path) -> str:
+        """Derive the status of a run from its manifest and artifacts."""
+        if manifest.get("ended_at"):
+            outcome = manifest.get("outcome", "unknown")
+            if outcome in ("completed", "blocked", "timeout"):
+                validation = manifest.get("validation_passed")
+                if validation is False:
+                    return "validation_failed"
+                return outcome
+            return outcome
+        # Check if session is still running (no completion)
+        completion_path = manifest.get("completion_path")
+        if completion_path:
+            full_path = run_dir.parent.parent / completion_path
+            if full_path.exists():
+                return "completed"
+        return "in_progress"
+
     # -------------------------------------------------------------------------
     # Manifest
     # -------------------------------------------------------------------------
