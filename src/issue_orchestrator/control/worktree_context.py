@@ -22,7 +22,6 @@ Usage:
     ctx.write_session_identity({"agent": "claude-code"})
 """
 
-import json
 import logging
 import os
 import time
@@ -32,9 +31,9 @@ from typing import Optional
 
 from ..events import EventName
 from ..infra.config import Config
-from ..infra.session_output import SessionOutputManager, ensure_session_output_dir, WORKTREE_NOTE_NAME
 from ..infra.logging_config import get_repo_log_path
 from ..ports import EventSink, TraceEvent
+from ..ports.session_output import SessionOutput, SessionRun
 from ..ports.worktree_manager import WorktreeManager, WorktreeInfo, WorktreeReuseOptions
 from .worktree import Worktree, WorktreePreparationError
 
@@ -60,12 +59,13 @@ class WorktreeContext:
     session_name: str
     issue_number: int
     worktree_info: WorktreeInfo
-    run: SessionOutputManager.Run
+    run: SessionRun
     claude_project_dir: Path
     error: Optional[WorktreePreparationError] = None
 
     # Internal references for write operations
     _config: Config = field(repr=False, default=None)  # type: ignore[assignment]
+    _session_output: SessionOutput = field(repr=False, default=None)  # type: ignore[assignment]
 
     @classmethod
     def create(
@@ -74,6 +74,7 @@ class WorktreeContext:
         worktree_manager: WorktreeManager,
         config: Config,
         events: EventSink,
+        session_output: SessionOutput,
         issue_number: int,
         issue_title: str,
         session_name: str,
@@ -145,6 +146,7 @@ class WorktreeContext:
             worktree_path,
             issue_number,
             retain_runs=config.session_output_retention_runs,
+            session_output=session_output,
         )
         try:
             worktree.prepare_for_session(session_name)
@@ -160,11 +162,12 @@ class WorktreeContext:
                 claude_project_dir=Path(),
                 error=e,
                 _config=config,
+                _session_output=session_output,
             )
 
         # Setup output directories and tracking
         claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
-        run = SessionOutputManager.start_run(
+        run = session_output.start_run(
             worktree_path=worktree_path,
             session_name=session_name,
             issue_number=issue_number,
@@ -183,13 +186,12 @@ class WorktreeContext:
             run=run,
             claude_project_dir=claude_project_dir,
             _config=config,
+            _session_output=session_output,
         )
 
     def write_worktree_note(self) -> None:
         """Write a JSON note about worktree reuse/creation for this session."""
         try:
-            output_dir = ensure_session_output_dir(self.worktree_path, self.session_name)
-            note_path = output_dir / WORKTREE_NOTE_NAME
             payload = {
                 "issue_number": self.issue_number,
                 "session_name": self.session_name,
@@ -201,7 +203,8 @@ class WorktreeContext:
                 "commits_discarded": self.worktree_info.commits_discarded,
                 "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
-            note_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+            if self.run:
+                self._session_output.write_worktree_note(self.run.run_dir, payload)
         except Exception as e:
             logger.warning("Failed to write worktree note: %s", e)
 
@@ -212,8 +215,6 @@ class WorktreeContext:
             extra: Additional session-specific fields (agent, task type, etc.)
         """
         try:
-            log_dir = ensure_session_output_dir(self.worktree_path, self.session_name)
-            identity_path = log_dir / "identity.json"
             payload = {
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "session_name": self.session_name,
@@ -225,16 +226,17 @@ class WorktreeContext:
                 "claude_prompt_mode": os.environ.get("ORCHESTRATOR_CLAUDE_PROMPT_MODE", "arg"),
                 **extra,
             }
-            identity_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
-            logger.info(
-                "[launch] Session identity file: session=%s path=%s",
-                self.session_name,
-                identity_path,
-            )
+            if self.run:
+                self._session_output.write_session_identity(self.run.run_dir, payload)
+                logger.info(
+                    "[launch] Session identity file: session=%s run_dir=%s",
+                    self.session_name,
+                    self.run.run_dir,
+                )
         except Exception as e:
             logger.warning("Failed to write session identity file: %s", e)
 
     def update_manifest(self, updates: dict[str, object]) -> None:
         """Update the session run manifest with additional data."""
         if self.run:
-            SessionOutputManager.update_manifest(self.run.run_dir, updates)
+            self._session_output.update_manifest(self.run.run_dir, updates)

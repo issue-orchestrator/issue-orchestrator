@@ -846,7 +846,7 @@ async def get_session_log(issue_number: int) -> JSONResponse:
     worktree_path = _find_worktree_path()
 
     if not worktree_path:
-        from ..infra.session_output import find_run_dir_for_issue
+        from ..execution.session_output_adapter import find_run_dir_for_issue
 
         repo_name = orchestrator.config.repo.split("/")[-1] if orchestrator.config.repo else orchestrator.config.repo_root.name
         run_dir, worktree_path = find_run_dir_for_issue(
@@ -940,7 +940,7 @@ async def get_agent_ui_log(issue_number: int, offset: int = 0, limit: int = 200)
                 break
 
     if not worktree_path:
-        from ..infra.session_output import find_run_dir_for_issue, find_latest_session_log_path, find_session_log_path
+        from ..execution.session_output_adapter import find_run_dir_for_issue
 
         repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
         _, worktree_path = find_run_dir_for_issue(
@@ -953,14 +953,15 @@ async def get_agent_ui_log(issue_number: int, offset: int = 0, limit: int = 200)
                 "error": f"No worktree path found for issue #{issue_number}",
                 "hint": "Session may have been cleaned up or never started"
             }, status_code=404)
-    else:
-        from ..infra.session_output import find_latest_session_log_path, find_session_log_path
+
+    from ..execution.session_output_adapter import FileSystemSessionOutput
+    session_output = FileSystemSessionOutput()
 
     log_path = None
     if session:
-        log_path = find_session_log_path(worktree_path, session.terminal_id)
+        log_path = session_output.get_log_path(worktree_path, session.terminal_id)
     if not log_path:
-        log_path = find_latest_session_log_path(worktree_path)
+        log_path = session_output.find_latest_session_log_path(worktree_path)
 
     if not log_path:
         return JSONResponse({
@@ -1024,9 +1025,9 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
                 break
 
     if not worktree_path:
-        from ..infra.session_output import (
-            SessionOutputManager,
-            SESSION_MANIFEST_NAME,
+        from ..execution.session_output_adapter import (
+            FileSystemSessionOutput,
+            MANIFEST_NAME,
             find_run_dir_for_issue,
         )
 
@@ -1037,8 +1038,9 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
             issue_number,
         )
         if run_dir:
-            SessionOutputManager.ensure_claude_log_attached(run_dir)
-            manifest_path = run_dir / SESSION_MANIFEST_NAME
+            session_output_manager = FileSystemSessionOutput()
+            session_output_manager.attach_claude_log(run_dir)
+            manifest_path = run_dir / MANIFEST_NAME
             if not manifest_path.exists():
                 return JSONResponse({
                     "run_dir": str(run_dir),
@@ -1061,8 +1063,9 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
             "hint": "Session may have been cleaned up or never started",
         }, status_code=404)
 
-    from ..infra.session_output import SessionOutputManager, SESSION_MANIFEST_NAME
-    run_dir = SessionOutputManager.find_latest_run_dir(
+    from ..execution.session_output_adapter import FileSystemSessionOutput, MANIFEST_NAME
+    session_output_helper = FileSystemSessionOutput()
+    run_dir = session_output_helper.find_run_dir(
         worktree_path,
         session_name=session.terminal_id if session else None,
     )
@@ -1071,9 +1074,9 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:
             "error": "No session run found",
             "hint": "Session may not have started or output was removed",
         }, status_code=404)
-    SessionOutputManager.ensure_claude_log_attached(run_dir)
+    session_output_helper.attach_claude_log(run_dir)
 
-    manifest_path = run_dir / SESSION_MANIFEST_NAME
+    manifest_path = run_dir / MANIFEST_NAME
     if not manifest_path.exists():
         return JSONResponse({
             "run_dir": str(run_dir),
@@ -1102,8 +1105,10 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..infra.session_output import SessionOutputManager, find_run_dir_for_issue
+    from ..execution.session_output_adapter import FileSystemSessionOutput, find_run_dir_for_issue
     from ..infra.logging_config import get_repo_log_path
+
+    session_output_util = FileSystemSessionOutput()
 
     # Find the session/worktree for this issue
     worktree_path = None
@@ -1130,7 +1135,7 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:
         )
         if run_dir:
             # Try to extract session name from run dir
-            session_name = SessionOutputManager.session_name_from_path(str(run_dir))
+            session_name = session_output_util.session_name_from_path(str(run_dir))
 
     if not worktree_path:
         return JSONResponse({
@@ -1149,11 +1154,17 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:
         }, status_code=404)
 
     # Generate the filtered log
-    tail_path = SessionOutputManager.write_orchestrator_tail(
-        worktree_path,
-        session_name,
+    run_dir = session_output_util.find_run_dir(worktree_path, session_name)
+    if not run_dir:
+        return JSONResponse({
+            "error": "Could not find session run directory",
+            "worktree_path": str(worktree_path),
+        }, status_code=500)
+    tail_path = session_output_util.write_orchestrator_tail(
+        run_dir,
         log_path,
         issue_number,
+        session_name,
         max_lines=500,
     )
 
@@ -1179,7 +1190,9 @@ async def get_claude_log_content(issue_number: int, limit: int = 200) -> JSONRes
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..infra.session_output import SessionOutputManager, find_run_dir_for_issue, SESSION_MANIFEST_NAME
+    from ..execution.session_output_adapter import FileSystemSessionOutput, MANIFEST_NAME, find_run_dir_for_issue
+
+    session_output_mgr = FileSystemSessionOutput()
 
     # Find the run directory for this issue
     worktree_path = None
@@ -1196,7 +1209,7 @@ async def get_claude_log_content(issue_number: int, limit: int = 200) -> JSONRes
 
     run_dir = None
     if worktree_path:
-        run_dir = SessionOutputManager.find_latest_run_dir(Path(worktree_path))
+        run_dir = session_output_mgr.find_run_dir(Path(worktree_path))
 
     if not run_dir:
         repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
@@ -1210,7 +1223,7 @@ async def get_claude_log_content(issue_number: int, limit: int = 200) -> JSONRes
         return JSONResponse({"error": f"No session found for issue #{issue_number}"}, status_code=404)
 
     # Get claude_log_path from manifest
-    manifest_path = run_dir / SESSION_MANIFEST_NAME
+    manifest_path = run_dir / MANIFEST_NAME
     if not manifest_path.exists():
         return JSONResponse({"error": "Session manifest not found"}, status_code=404)
 

@@ -41,6 +41,7 @@ from issue_orchestrator.control.planner import Planner, OrchestratorSnapshot
 from issue_orchestrator.control.completion_handler import SessionStatus
 from issue_orchestrator.control.session_launcher import handle_session_completion
 from issue_orchestrator.control.scheduler import Scheduler
+from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.control.workflows.review_workflow import ReviewDecision
 
 
@@ -135,6 +136,7 @@ class TestReviewAfterCodingFlow:
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
+            session_output=MagicMock(spec=SessionOutput),
         )
 
         assert len(state.discovered_reviews) == 1, (
@@ -281,6 +283,7 @@ class TestReviewNotQueuedWhenConditionsNotMet:
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
+            session_output=MagicMock(spec=SessionOutput),
         )
 
         assert len(state.discovered_reviews) == 0, (
@@ -328,6 +331,7 @@ class TestReviewNotQueuedWhenConditionsNotMet:
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
+            session_output=MagicMock(spec=SessionOutput),
         )
 
         assert len(state.discovered_reviews) == 0, (
@@ -371,6 +375,7 @@ class TestReviewNotQueuedWhenConditionsNotMet:
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
+            session_output=MagicMock(spec=SessionOutput),
         )
 
         assert len(state.discovered_reviews) == 0, (

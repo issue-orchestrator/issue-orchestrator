@@ -28,6 +28,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.ports import TraceEvent, NullEventSink
 from issue_orchestrator.control.session_controller import SessionController, SessionDecision
 from issue_orchestrator.control.completion_processor import CompletionProcessor
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -36,11 +37,12 @@ from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 def make_completion_record(
     outcome: CompletionOutcome,
     requested_actions: list[RequestedAction],
+    session_id: str = "test-session",
     **kwargs
 ) -> CompletionRecord:
     """Helper to create a CompletionRecord with required fields."""
     return CompletionRecord(
-        session_id="test-session",
+        session_id=session_id,
         timestamp=datetime.now().isoformat(),
         outcome=outcome,
         summary="Test completion",
@@ -127,6 +129,7 @@ def completion_processor(mock_label_adapter, mock_pr_adapter, mock_git_adapter):
         label_adapter=mock_label_adapter,
         pr_adapter=mock_pr_adapter,
         git_adapter=mock_git_adapter,
+        session_output=FileSystemSessionOutput(),
     )
 
 
@@ -136,6 +139,7 @@ def session_controller(completion_processor, mock_event_sink):
     return SessionController(
         completion_processor=completion_processor,
         events=mock_event_sink,
+        session_output=FileSystemSessionOutput(),
     )
 
 
@@ -157,6 +161,12 @@ def session_with_worktree(tmp_path):
         subprocess.run(["git", "commit", "-m", "initial"], cwd=worktree, capture_output=True)
         subprocess.run(["git", "checkout", "-b", f"issue-{issue_number}"], cwd=worktree, capture_output=True)
 
+        terminal_id = f"issue-{issue_number}"
+
+        # Create session output directory (required for fail-fast validation)
+        session_output_dir = worktree / ".issue-orchestrator" / "sessions" / terminal_id
+        session_output_dir.mkdir(parents=True, exist_ok=True)
+
         issue = Issue(
             number=issue_number,
             title="Test Issue",
@@ -171,7 +181,7 @@ def session_with_worktree(tmp_path):
         return Session(
             key=session_key,
             issue=issue,
-            terminal_id=f"issue-{issue_number}",
+            terminal_id=terminal_id,
             branch_name=f"issue-{issue_number}",
             worktree_path=worktree,
             agent_config=agent_config,
@@ -214,6 +224,7 @@ class TestSessionControllerDecision:
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH],
+            session_id=session.terminal_id,
             implementation="Added feature",
         )
         write_completion_to_worktree(session.worktree_path, record)
@@ -245,6 +256,7 @@ class TestSessionControllerDecision:
         record = make_completion_record(
             outcome=CompletionOutcome.BLOCKED,
             requested_actions=[RequestedAction.ADD_BLOCKED_LABEL],
+            session_id=session.terminal_id,
             blocked_reason="Waiting for API access",
         )
         write_completion_to_worktree(session.worktree_path, record)
@@ -273,6 +285,7 @@ class TestSessionControllerDecision:
         record = make_completion_record(
             outcome=CompletionOutcome.NEEDS_HUMAN,
             requested_actions=[RequestedAction.ADD_NEEDS_HUMAN_LABEL],
+            session_id=session.terminal_id,
             question="Which approach should I use?",
         )
         write_completion_to_worktree(session.worktree_path, record)
@@ -303,6 +316,7 @@ class TestSessionControllerDecision:
                 RequestedAction.ADD_CODE_REVIEWED_LABEL,
                 RequestedAction.REMOVE_CODE_REVIEW_LABEL,
             ],
+            session_id=session.terminal_id,
             review_summary="LGTM",
         )
         write_completion_to_worktree(session.worktree_path, record)
@@ -334,6 +348,7 @@ class TestSessionControllerDecision:
                 RequestedAction.ADD_NEEDS_REWORK_LABEL,
                 RequestedAction.REMOVE_CODE_REVIEW_LABEL,
             ],
+            session_id=session.terminal_id,
             review_issues="Missing error handling",
         )
         write_completion_to_worktree(session.worktree_path, record)
@@ -366,6 +381,7 @@ class TestEventEmission:
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            session_id=session.terminal_id,
         )
         write_completion_to_worktree(session.worktree_path, record)
         observation = SessionObservationResult(
@@ -395,6 +411,7 @@ class TestEventEmission:
         record = make_completion_record(
             outcome=CompletionOutcome.BLOCKED,
             requested_actions=[RequestedAction.ADD_BLOCKED_LABEL],
+            session_id=session.terminal_id,
         )
         write_completion_to_worktree(session.worktree_path, record)
         observation = SessionObservationResult(

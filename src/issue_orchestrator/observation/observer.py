@@ -25,10 +25,10 @@ from ..domain import ProcessState
 from ..infra.config import Config
 from ..infra import labels
 from ..infra.logging_config import issue_log
-from ..infra.session_output import find_session_log_path
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
 from ..ports import EventSink, TraceEvent, NullEventSink
+from ..ports.session_output import SessionOutput
 from .observation import SessionObservation, SessionObservationResult
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ class SessionObserver:
     def __init__(
         self,
         config: Config,
+        session_output: SessionOutput,
         session_machines: dict[str, "SessionStateMachine"] | None = None,
         events: EventSink | None = None,
         session_runner: Optional["SessionRunner"] = None,
@@ -59,6 +60,7 @@ class SessionObserver:
 
         Args:
             config: Orchestrator configuration
+            session_output: SessionOutput port for session artifacts
             session_machines: Optional dict mapping session names to state machines
             events: Optional EventSink for emitting trace events
             session_runner: SessionRunner port for terminal operations
@@ -73,6 +75,7 @@ class SessionObserver:
         self._repository_host = repository_host
         self._fresh_issue_reader = fresh_issue_reader
         self._terminal_observer = terminal_observer
+        self._session_output = session_output
 
     def _extract_session_number(self, session_name: str) -> int:
         """Extract the numeric ID from a session name (handles both issue- and review- prefixes)."""
@@ -274,7 +277,10 @@ class SessionObserver:
                 session_age = (datetime.now() - session.started_at).total_seconds()
 
                 # Check log file activity - if log was modified recently, session is active
-                log_path = find_session_log_path(session.worktree_path, session.terminal_id)
+                log_path = (
+                    self._session_output.get_log_path(session.worktree_path, session.terminal_id)
+                    if self._session_output else None
+                )
                 log_is_progressing = False
                 log_age = float("inf")  # Default to "very old" if we can't read
                 if log_path and log_path.exists():
@@ -343,7 +349,10 @@ class SessionObserver:
 
     def _emit_no_output_if_stale(self, session: Session) -> None:
         """Emit a session_no_output event if the session log is idle too long."""
-        log_path = find_session_log_path(session.worktree_path, session.terminal_id)
+        log_path = (
+            self._session_output.get_log_path(session.worktree_path, session.terminal_id)
+            if self._session_output else None
+        )
         if not log_path or not log_path.exists():
             return
 

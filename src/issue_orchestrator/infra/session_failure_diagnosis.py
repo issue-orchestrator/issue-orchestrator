@@ -52,6 +52,57 @@ class SessionFailureDiagnosis:
         }
 
 
+def _find_worktree_for_issue(
+    worktree_bases: list[Path],
+    repo_name: str,
+    issue_number: int,
+) -> Path | None:
+    """Find the worktree path for an issue.
+
+    Searches worktree bases for a directory matching the naming convention.
+    This is a simplified version that doesn't depend on execution layer.
+
+    Args:
+        worktree_bases: List of directories to search
+        repo_name: Repository name for naming convention
+        issue_number: Issue number to find
+
+    Returns:
+        Worktree path if found, None otherwise
+    """
+    seen: set[Path] = set()
+
+    for base in worktree_bases:
+        if not base or not base.exists():
+            continue
+        base = base.resolve()
+        if base in seen:
+            continue
+        seen.add(base)
+
+        # Try direct match first
+        candidate = base / f"{repo_name}-{issue_number}"
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+
+        # Search all worktrees in this base
+        for worktree_path in base.glob(f"{repo_name}-*"):
+            if not worktree_path.is_dir():
+                continue
+            # Check if this worktree has a session for this issue
+            sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
+            if sessions_dir.exists():
+                # Look for session dirs matching this issue
+                for session_dir in sessions_dir.iterdir():
+                    if not session_dir.is_dir():
+                        continue
+                    name = session_dir.name
+                    if f"issue-{issue_number}" in name or f"review-{issue_number}" in name or f"rework-{issue_number}" in name:
+                        return worktree_path
+
+    return None
+
+
 def create_session_failure_diagnosis(
     issue_number: int,
     session_history: list,
@@ -97,8 +148,6 @@ def create_session_failure_diagnosis(
 
     # If not found, try to locate a recent session output
     if not worktree_path:
-        from .session_output import find_run_dir_for_issue
-
         bases: list[Path] = []
         if config.worktree_base:
             bases.append(Path(config.worktree_base))
@@ -109,9 +158,7 @@ def create_session_failure_diagnosis(
         bases.append(config.repo_root.parent)
 
         repo_name = config.repo.split("/")[-1] if config.repo else config.repo_root.name
-        _, resolved = find_run_dir_for_issue(bases, repo_name, issue_number)
-        if resolved:
-            worktree_path = Path(resolved)
+        worktree_path = _find_worktree_for_issue(bases, repo_name, issue_number)
 
     # Detect AI system and get provider
     ai_system = "claude-code"  # default

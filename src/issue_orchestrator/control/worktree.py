@@ -7,7 +7,7 @@ worktree.
 import logging
 from pathlib import Path
 
-from ..infra.session_output import SessionOutputManager
+from ..ports.session_output import SessionOutput
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class Worktree:
     """Cleans stale session artifacts from a worktree.
 
     Usage:
-        worktree = Worktree(path, issue_number)
+        worktree = Worktree(path, issue_number, session_output=session_output)
         worktree.prepare_for_session(session_id)
     """
 
@@ -39,17 +39,26 @@ class Worktree:
     LEGACY_SESSION_LOG = "session.log"
     LEGACY_PANE_LOG = "pane.log"
 
-    def __init__(self, path: Path, issue_number: int, retain_runs: int = 7):
+    def __init__(
+        self,
+        path: Path,
+        issue_number: int,
+        session_output: SessionOutput,
+        retain_runs: int = 7,
+    ):
         """Initialize worktree.
 
         Args:
             path: Path to the worktree directory
             issue_number: Issue number (for logging)
+            session_output: SessionOutput port for session artifact management
+            retain_runs: Number of session runs to retain
         """
         self.path = path
         self.issue_number = issue_number
         self._orchestrator_dir = path / self.ORCHESTRATOR_DIR
         self._retain_runs = retain_runs
+        self._session_output = session_output
 
     def prepare_for_session(self, session_id: str) -> None:
         """Prepare worktree for a new session by removing stale artifacts.
@@ -73,7 +82,9 @@ class Worktree:
         )
 
         try:
-            removed_session_output = SessionOutputManager.prune_runs(self.path, keep=self._retain_runs)
+            removed_session_output = self._session_output.prune_runs(
+                self.path, self._retain_runs
+            )
             removed_completions = self._delete_files(self.COMPLETION_PATTERN)
             removed_identities = self._delete_files(self.SESSION_IDENTITY_PATTERN)
             removed_logs = self._delete_legacy_logs()

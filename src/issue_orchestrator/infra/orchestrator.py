@@ -134,13 +134,14 @@ class Orchestrator:
             lambda issue: self.deps.state_machine_manager.issue_machines.get(issue.number),
             lambda s: self.deps.state_machine_manager.session_machines.get(s),
             lambda n: self.deps.state_machine_manager.review_machines.get(n),
+            self.deps.session_output,
         )
 
     @cached_property
     def _session_launcher(self) -> SessionLauncher:
         return SessionLauncher(
             self.config, self.deps.events, self.deps.repository_host, self.deps.action_applier, self.deps.session_manager,
-            self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner,
+            self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner, self.deps.session_output,
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
             self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),
@@ -195,7 +196,7 @@ class Orchestrator:
     async def startup(self) -> None: await self._startup_manager.run_startup(self.state)
 
     def launch_session(self, issue: Issue) -> Optional[Session]: return _launch_session(issue, self.state, self._session_launcher)
-    def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config)
+    def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output)
 
     def tick(self) -> bool:
         self._last_tick_time = time.time()

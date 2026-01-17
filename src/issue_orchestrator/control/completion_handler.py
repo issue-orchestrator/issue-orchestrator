@@ -24,9 +24,10 @@ if TYPE_CHECKING:
 
 from ..infra.config import Config
 from ..events import EventName
-from ..infra.logging_config import log_context
+from ..infra.logging_config import log_context, get_repo_log_path
 from ..domain.models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
+from ..ports.session_output import SessionOutput
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
 from .completion_processor import ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR
 from .reconciliation import build_expected_for_mutation
@@ -78,6 +79,7 @@ class CompletionHandler:
         get_issue_machine_fn: Callable[[Issue], Optional["IssueStateMachine"]],
         get_session_machine_fn: Callable[[str], Optional["SessionStateMachine"]],
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
+        session_output: SessionOutput,
     ):
         self.config = config
         self.events = events
@@ -85,6 +87,7 @@ class CompletionHandler:
         self._get_issue_machine = get_issue_machine_fn
         self._get_session_machine = get_session_machine_fn
         self._get_review_machine = get_review_machine_fn
+        self._session_output = session_output
 
     def process_completion(
         self,
@@ -177,15 +180,23 @@ class CompletionHandler:
             SessionStatus.BLOCKED,
             SessionStatus.NEEDS_HUMAN,
         ) or processing_errors:
-            from ..infra.session_output import SessionOutputManager
-            from ..infra.logging_config import get_repo_log_path
             log_path = get_repo_log_path(self.config.repo_root)
-            SessionOutputManager.write_orchestrator_tail(
-                worktree_path=session.worktree_path,
-                session_name=session.terminal_id,
-                log_path=log_path,
-                issue_number=session.issue.number,
+            run_dir = self._session_output.find_run_dir(
+                session.worktree_path, session.terminal_id
             )
+            if run_dir:
+                self._session_output.write_orchestrator_tail(
+                    run_dir=run_dir,
+                    log_path=log_path,
+                    issue_number=session.issue.number,
+                    session_name=session.terminal_id,
+                )
+            else:
+                logger.warning(
+                    "[%s] No session output dir found for failed session - "
+                    "session may have crashed before setup completed",
+                    session.terminal_id,
+                )
 
         result = CompletionResult(
             history_entry=history_entry,
