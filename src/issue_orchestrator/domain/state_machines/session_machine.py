@@ -216,7 +216,7 @@ class SessionStateMachine:
     def _on_slow(self, event: EventData) -> None:
         """Callback for mark_slow transition."""
         data = event.kwargs.get('data', {})
-        runtime = self._get_runtime_minutes()
+        runtime = self.get_runtime_minutes()
         transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
 
         self.last_transition = TransitionResult(
@@ -232,7 +232,7 @@ class SessionStateMachine:
     def _on_completed(self, event: EventData) -> None:
         """Callback for complete transition."""
         data = event.kwargs.get('data', {})
-        runtime = self._get_runtime_minutes()
+        runtime = self.get_runtime_minutes()
         from_state = event.transition.source if hasattr(event, 'transition') and event.transition else SessionState.RUNNING.value
         transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
 
@@ -249,7 +249,7 @@ class SessionStateMachine:
     def _on_failed(self, event: EventData) -> None:
         """Callback for fail transition."""
         data = event.kwargs.get('data', {})
-        runtime = self._get_runtime_minutes()
+        runtime = self.get_runtime_minutes()
         from_state = event.transition.source if hasattr(event, 'transition') and event.transition else SessionState.RUNNING.value
         transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
 
@@ -266,7 +266,7 @@ class SessionStateMachine:
     def _on_timed_out(self, event: EventData) -> None:
         """Callback for timeout transition."""
         data = event.kwargs.get('data', {})
-        runtime = self._get_runtime_minutes()
+        runtime = self.get_runtime_minutes()
         from_state = event.transition.source if hasattr(event, 'transition') and event.transition else SessionState.RUNNING.value
         transition_data = {**data, 'session_id': self.session_id, 'runtime_minutes': runtime}
 
@@ -325,7 +325,7 @@ class SessionStateMachine:
 
         logger.info(f"Session {self.session_id} resumed")
 
-    def _get_runtime_minutes(self) -> Optional[float]:
+    def get_runtime_minutes(self) -> Optional[float]:
         """Calculate runtime in minutes since session started.
 
         Returns:
@@ -348,7 +348,7 @@ class SessionStateMachine:
         if self.timeout_minutes is None:
             return False
 
-        runtime = self._get_runtime_minutes()
+        runtime = self.get_runtime_minutes()
         if runtime is None:
             return False
 
@@ -396,7 +396,7 @@ class SessionStateMachine:
             - timeout_minutes: Configured timeout (or None)
             - is_timed_out: Whether session has exceeded timeout
         """
-        runtime = self._get_runtime_minutes()
+        runtime = self.get_runtime_minutes()
         is_timed_out = False
         if self.timeout_minutes is not None and runtime is not None:
             is_timed_out = runtime > self.timeout_minutes

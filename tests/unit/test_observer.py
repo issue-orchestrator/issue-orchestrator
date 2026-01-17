@@ -226,7 +226,7 @@ class TestCheckSession:
         # Create a mock state machine that indicates timeout
         mock_machine = MagicMock()
         mock_machine.check_timeout.return_value = True
-        mock_machine._get_runtime_minutes.return_value = 60.0
+        mock_machine.get_runtime_minutes.return_value = 60.0
         mock_machine.timeout_minutes = 30
 
         # Add machine to monitor
@@ -761,7 +761,7 @@ class TestObserveSession:
         sample_session.worktree_path = tmp_path
 
         mock_machine = MagicMock()
-        mock_machine._get_runtime_minutes.return_value = 60.0
+        mock_machine.get_runtime_minutes.return_value = 60.0
         mock_machine.timeout_minutes = 30
 
         monitor_with_machines.session_machines[sample_session.terminal_id] = mock_machine
