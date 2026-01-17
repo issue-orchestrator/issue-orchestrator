@@ -29,15 +29,13 @@ if TYPE_CHECKING:
 from ..events import EventName
 from ..domain.models import SessionStatus
 from ..infra.logging_config import issue_log
-from ..infra.session_output import find_session_log_path, ensure_session_output_dir
 from ..infra.validation_state import (
-    ValidationState,
-    write_validation_state,
-    write_retry_prompt,
-    clear_validation_state,
+    DEFAULT_RETRY_TEMPLATE,
+    _truncate_with_tail,
 )
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
+from ..ports.session_output import SessionOutput, ValidationState
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +86,7 @@ class SessionController:
         self,
         completion_processor: "CompletionProcessor",
         events: EventSink,
+        session_output: SessionOutput,
         command_runner: Optional["CommandRunner"] = None,
         validation_cmd: Optional[str] = None,
         validation_timeout_seconds: int = 300,
@@ -98,6 +97,7 @@ class SessionController:
         Args:
             completion_processor: For reading/processing completion records
             events: For emitting trace events
+            session_output: For session artifact storage
             command_runner: For running validation commands (optional)
             validation_cmd: Validation command to run after completion (optional)
             validation_timeout_seconds: Timeout for validation command
@@ -105,6 +105,7 @@ class SessionController:
         """
         self.completion_processor = completion_processor
         self.events = events
+        self.session_output = session_output
         self._command_runner = command_runner
         self._max_validation_retries = max_validation_retries
         self._validation_cmd = validation_cmd
@@ -191,7 +192,7 @@ class SessionController:
             # No completion record - agent died without calling agent-done
             # Try to capture session log for diagnostics
             session_log = ""
-            log_path = find_session_log_path(worktree_path, session_name)
+            log_path = self.session_output.get_log_path(worktree_path, session_name)
             if log_path and log_path.exists():
                 try:
                     # Get last 50 lines of session log
@@ -311,6 +312,9 @@ class SessionController:
             validation_passed, validation_error, validation_error_file = self._run_validation(
                 worktree_path, session_name, issue_number
             )
+            # Get run_dir for storing validation artifacts
+            run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
+
             if not validation_passed:
                 # Check if retries are remaining
                 retries_remaining = validation_retry_count < self._max_validation_retries
@@ -331,19 +335,19 @@ class SessionController:
                         last_error=validation_error[:2000] if validation_error else None,
                         last_error_file=str(validation_error_file) if validation_error_file else None,
                     )
-                    write_validation_state(worktree_path, state)
+                    self.session_output.write_validation_state(run_dir, state)
                     # Write retry prompt for the agent
                     task_prompt = original_prompt or issue_title
-                    write_retry_prompt(
-                        worktree_path,
-                        original_prompt=task_prompt,
-                        validation_cmd=self._validation_cmd,
+                    retry_prompt_content = self._render_retry_prompt(
+                        task_prompt=task_prompt,
                         validation_error=validation_error or "Unknown error",
+                        validation_error_file=validation_error_file,
                         retry_count=validation_retry_count,
                         max_retries=self._max_validation_retries,
                         template_path=retry_prompt_template,
                         repo_root=repo_root,
                     )
+                    self.session_output.write_retry_prompt(run_dir, retry_prompt_content)
                     self._emit_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
                         "issue_number": issue_number,
                         "session_name": session_name,
@@ -361,7 +365,7 @@ class SessionController:
                         validation_error_file,
                     )
                     # Clear validation state since we're done retrying
-                    clear_validation_state(worktree_path)
+                    self.session_output.clear_retry_state(run_dir)
                     self._emit_event(EventName.SESSION_VALIDATION_FAILED, {
                         "issue_number": issue_number,
                         "session_name": session_name,
@@ -374,7 +378,7 @@ class SessionController:
                     issue_log(issue_number, "Validation gate PASSED"),
                 )
                 # Clear validation state on success
-                clear_validation_state(worktree_path)
+                self.session_output.clear_retry_state(run_dir)
                 self._emit_event(EventName.SESSION_VALIDATION_PASSED, {
                     "issue_number": issue_number,
                     "session_name": session_name,
@@ -480,25 +484,62 @@ class SessionController:
         Returns:
             Path to the error file
         """
-        output_dir = ensure_session_output_dir(worktree_path, session_name)
-        error_file = output_dir / "validation-errors.txt"
-
-        content = f"""=== VALIDATION ERRORS ===
-Command: {self._validation_cmd}
-Timeout: {self._validation_timeout}s
-
-=== STDERR ===
-{error}
-
-=== STDOUT ===
-{output}
-"""
-        error_file.write_text(content)
-        logger.info(
-            "Wrote validation errors to %s",
-            error_file,
+        run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
+        return self.session_output.write_validation_errors(
+            run_dir,
+            validation_cmd=self._validation_cmd or "",
+            stdout=output,
+            stderr=error,
+            exit_code=-1,  # Unknown exit code in this context
         )
-        return error_file
+
+    def _render_retry_prompt(
+        self,
+        task_prompt: str,
+        validation_error: str,
+        validation_error_file: Optional[Path],
+        retry_count: int,
+        max_retries: int,
+        template_path: Optional[str] = None,
+        repo_root: Optional[Path] = None,
+    ) -> str:
+        """Render the retry prompt content.
+
+        Args:
+            task_prompt: The original task prompt
+            validation_error: Error output (will be truncated, preserving tail)
+            validation_error_file: Path to the full error file
+            retry_count: Current retry attempt (0-based, displayed as 1-based)
+            max_retries: Maximum allowed retries
+            template_path: Optional path to custom template (relative to repo_root)
+            repo_root: Repo root for resolving template_path
+
+        Returns:
+            Rendered retry prompt content.
+        """
+        # Load template - custom or default
+        template = DEFAULT_RETRY_TEMPLATE
+        if template_path and repo_root:
+            template_full_path = repo_root / template_path
+            if template_full_path.exists():
+                try:
+                    template = template_full_path.read_text()
+                    logger.debug("Loaded retry template from %s", template_full_path)
+                except OSError as e:
+                    logger.warning("Failed to load retry template from %s: %s", template_full_path, e)
+            else:
+                logger.warning("Retry template not found at %s, using default", template_full_path)
+
+        # Render template with variables
+        # Note: retry_count is 0-based internally, display as 1-based
+        return template.format(
+            original_task=task_prompt,
+            validation_cmd=self._validation_cmd or "",
+            error_file=str(validation_error_file) if validation_error_file else "unknown",
+            error_summary=_truncate_with_tail(validation_error),
+            retry_count=retry_count + 1,
+            max_retries=max_retries + 1,
+        )
 
     def _emit_event(self, event_type: EventName, data: dict[str, Any]) -> None:
         """Emit a trace event."""

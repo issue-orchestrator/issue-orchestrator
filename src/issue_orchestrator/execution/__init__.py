@@ -42,6 +42,7 @@ from .event_sink_adapter import PluggyEventSink, CompositeEventSink, LoggingEven
 from .session_runner_adapter import PluggySessionRunner
 from ..adapters.github.issue_resolver import GitHubIssueResolver
 from .command_runner import LocalCommandRunner
+from .session_output_adapter import FileSystemSessionOutput
 
 __all__ = [
     # Main interface (internal, used by composition root)
@@ -69,4 +70,6 @@ __all__ = [
     "LocalCommandRunner",
     # Session stores
     "JsonSessionStore",
+    # Session output
+    "FileSystemSessionOutput",
 ]

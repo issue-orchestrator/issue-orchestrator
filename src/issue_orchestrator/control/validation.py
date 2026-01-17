@@ -1,7 +1,7 @@
 """Validation module - record format, storage, runner, and cache.
 
 This module handles validation gates for the orchestrator:
-- ValidationRecord: Dataclass for validation results
+- ValidationRecord: Dataclass for validation results (imported from ports)
 - ValidationRecordStore: Read/write validation records to disk
 - ValidationRunner: Execute validation commands
 - ValidationCache: Cache lookup for validation results
@@ -11,47 +11,19 @@ Storage location: .issue-orchestrator/validation/<suite>/<HEAD_SHA>.json
 
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from ..infra.emit import emit_event
 from ..ports import CommandRunner, CommandResult, WorkingCopy
+from ..ports.session_output import ValidationRecord
 
 logger = logging.getLogger(__name__)
 
 # Schema version for validation records
 VALIDATION_SCHEMA_VERSION = 1
-
-
-@dataclass(frozen=True)
-class ValidationRecord:
-    """Immutable record of a validation run.
-
-    Stored at: .issue-orchestrator/validation/<suite>/<head_sha>.json
-    """
-
-    schema_version: int
-    suite: str  # "publish_gate" or "agent_gate"
-    head_sha: str  # Git HEAD SHA at time of validation
-    passed: bool  # True if exit_code == 0
-    exit_code: int
-    command: str  # Command that was run
-    started_at: str  # ISO 8601 timestamp
-    ended_at: str  # ISO 8601 timestamp
-    timed_out: bool = False  # True if command timed out
-    stdout_path: Optional[str] = None  # Path to stdout file (relative to worktree)
-    stderr_path: Optional[str] = None  # Path to stderr file (relative to worktree)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ValidationRecord":
-        """Create from dictionary (JSON deserialization)."""
-        return cls(**data)
 
 
 @dataclass

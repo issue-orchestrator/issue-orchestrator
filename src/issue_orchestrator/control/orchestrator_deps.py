@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         RepositoryHost,
         CommandRunner,
         HookVerifier,
+        SessionOutput,
     )
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
@@ -69,6 +70,7 @@ class OrchestratorDeps:
         completion_processor: Processes session completion files
         session_controller: Decides session outcomes
         health_gate: System health checks (capacity, rate limits)
+        session_output: Session artifact storage (logs, manifests, validation)
     """
 
     # Core event/runtime ports
@@ -100,3 +102,4 @@ class OrchestratorDeps:
     working_copy: "WorkingCopy"
     hook_verifier: "HookVerifier"
     command_runner: "CommandRunner"
+    session_output: "SessionOutput"

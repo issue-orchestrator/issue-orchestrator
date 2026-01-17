@@ -37,7 +37,7 @@ from ...domain.models import (
     COMPLETION_RECORD_PATH,
 )
 from ...control.validation import AgentGate, AgentGateResult
-from ...infra.session_output import SessionOutputManager, ensure_session_output_dir
+from ...execution.session_output_adapter import FileSystemSessionOutput
 
 
 class AgentStatus:
@@ -135,7 +135,8 @@ def _record_validation_artifacts(
     if not record_path and not record:
         return
 
-    run_dir = ensure_session_output_dir(worktree_root, session_id)
+    session_output = FileSystemSessionOutput()
+    run_dir = session_output.ensure_run_dir(worktree_root, session_id)
     updates: dict[str, str] = {}
     if record_path:
         updates["validation_record_path"] = record_path
@@ -144,7 +145,7 @@ def _record_validation_artifacts(
         updates["validation_reason"] = validation_result.reason
 
     if updates:
-        SessionOutputManager.update_manifest(run_dir, updates)
+        session_output.update_manifest(run_dir, updates)
 
     if not record:
         return
@@ -155,7 +156,7 @@ def _record_validation_artifacts(
             stdout_dest = run_dir / "validation-stdout.log"
             try:
                 stdout_dest.write_text(stdout_src.read_text(errors="ignore"))
-                SessionOutputManager.update_manifest(run_dir, {"validation_stdout": str(stdout_dest)})
+                session_output.update_manifest(run_dir, {"validation_stdout": str(stdout_dest)})
             except OSError:
                 logger.debug("Failed to write validation stdout for %s", run_dir)
     if record.stderr_path:
@@ -164,7 +165,7 @@ def _record_validation_artifacts(
             stderr_dest = run_dir / "validation-stderr.log"
             try:
                 stderr_dest.write_text(stderr_src.read_text(errors="ignore"))
-                SessionOutputManager.update_manifest(run_dir, {"validation_stderr": str(stderr_dest)})
+                session_output.update_manifest(run_dir, {"validation_stderr": str(stderr_dest)})
             except OSError:
                 logger.debug("Failed to write validation stderr for %s", run_dir)
 
@@ -656,7 +657,8 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
         # Get session output dir for validation to write directly there
         session_output_dir = None
         if record.session_id:
-            session_output_dir = SessionOutputManager.find_latest_run_dir(
+            session_output_helper = FileSystemSessionOutput()
+            session_output_dir = session_output_helper.find_run_dir(
                 worktree_root, session_name=record.session_id
             )
         validation_result = run_validation(

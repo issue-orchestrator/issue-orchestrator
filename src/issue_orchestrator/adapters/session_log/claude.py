@@ -70,10 +70,11 @@ class ClaudeLogProvider:
 
     def _find_run_dir(self, worktree_path: Path, session_name: str) -> Path | None:
         try:
-            from ...infra.session_output import SessionOutputManager
+            from ...execution.session_output_adapter import FileSystemSessionOutput
         except Exception:
             return None
-        return SessionOutputManager.find_latest_run_dir(worktree_path, session_name=session_name)
+        session_output = FileSystemSessionOutput()
+        return session_output.find_run_dir(worktree_path, session_name=session_name)
 
     def _read_manifest(self, run_dir: Path) -> dict[str, Any] | None:
         manifest_path = run_dir / "manifest.json"

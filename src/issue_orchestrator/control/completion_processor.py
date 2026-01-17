@@ -33,8 +33,8 @@ from ..domain.models import (
 )
 from ..domain.events import EventBus, SessionEvent
 from ..infra.issue_diagnostics import write_issue_diagnostic
-from ..infra.session_output import SessionOutputManager, ensure_session_output_dir
-from .validation import PublishGate, ValidationRecord, ValidationRecordStore
+from ..ports.session_output import SessionOutput, ValidationRecord
+from .validation import PublishGate, ValidationRecordStore
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,7 @@ class CompletionProcessor:
         label_adapter: LabelAdapter,
         pr_adapter: PRAdapter,
         git_adapter: GitAdapter,
+        session_output: SessionOutput,
         event_bus: EventBus | None = None,
         label_config: dict[str, str] | None = None,
         publish_gate: PublishGate | None = None,
@@ -130,6 +131,7 @@ class CompletionProcessor:
             label_adapter: Adapter for label operations (add/remove labels).
             pr_adapter: Adapter for PR operations (create PR, add comment).
             git_adapter: Adapter for git operations (push).
+            session_output: Session output storage for artifacts.
             event_bus: Optional EventBus for emitting processing events.
             label_config: Optional mapping of label names (e.g., {"blocked": "blocked"}).
             publish_gate: Optional PublishGate for validating before publish actions.
@@ -137,6 +139,7 @@ class CompletionProcessor:
         self.label_adapter = label_adapter
         self.pr_adapter = pr_adapter
         self.git_adapter = git_adapter
+        self.session_output = session_output
         self.event_bus = event_bus
         self.label_config = label_config or {}
         self.publish_gate = publish_gate
@@ -314,11 +317,11 @@ class CompletionProcessor:
         If validation wrote directly to session output (preferred), just update manifest.
         For legacy records (validation/output/), copy files to session output.
         """
-        run_dir = ensure_session_output_dir(worktree, session_name)
+        run_dir = self.session_output.ensure_run_dir(worktree, session_name)
         if record_path is None and record is not None:
             record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
         if record_path is not None:
-            SessionOutputManager.update_manifest(
+            self.session_output.update_manifest(
                 run_dir,
                 {"validation_record_path": str(record_path)},
             )
@@ -361,7 +364,7 @@ class CompletionProcessor:
                     logger.debug("Failed to write validation stderr for %s", run_dir)
 
         if updates:
-            SessionOutputManager.update_manifest(run_dir, updates)
+            self.session_output.update_manifest(run_dir, updates)
 
     def process(
         self, worktree: Path, issue_number: int, issue_title: str,
@@ -399,7 +402,7 @@ class CompletionProcessor:
                 errors=["Completion record not found or invalid"],
             )
 
-        session_name = SessionOutputManager.session_name_from_path(completion_path) or record.session_id
+        session_name = self.session_output.session_name_from_path(completion_path) or record.session_id
         if record.validation_record_path and session_name:
             self._attach_validation_artifacts(
                 worktree,
@@ -407,7 +410,9 @@ class CompletionProcessor:
                 record_path=Path(record.validation_record_path),
             )
         if session_name:
-            SessionOutputManager.attach_claude_log(worktree, session_name)
+            run_dir = self.session_output.find_run_dir(worktree, session_name)
+            if run_dir:
+                self.session_output.attach_claude_log(run_dir)
 
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)
@@ -423,7 +428,7 @@ class CompletionProcessor:
             # Get session output dir for validation to write directly there
             session_output_dir = None
             if session_name:
-                session_output_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name)
+                session_output_dir = self.session_output.find_run_dir(worktree, session_name)
 
             gate_passed, gate_reason, gate_record = self._check_publish_gate(
                 worktree, session_output_dir=session_output_dir
@@ -1015,13 +1020,13 @@ class CompletionProcessor:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         filename = f"failure-diagnostic-{timestamp}.json"
         if session_name:
-            run_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name=session_name)
+            run_dir = self.session_output.find_run_dir(worktree, session_name=session_name)
             if run_dir:
                 diagnostic_dir = run_dir
                 diagnostic_rel = f".issue-orchestrator/sessions/{run_dir.name}/{filename}"
             else:
-                diagnostic_dir = ensure_session_output_dir(worktree, session_name)
-                diagnostic_rel = f".issue-orchestrator/sessions/{session_name}/{filename}"
+                diagnostic_dir = self.session_output.ensure_run_dir(worktree, session_name)
+                diagnostic_rel = f".issue-orchestrator/sessions/{diagnostic_dir.name}/{filename}"
         else:
             diagnostic_dir = worktree / ".issue-orchestrator"
             diagnostic_rel = f".issue-orchestrator/{filename}"
@@ -1046,9 +1051,9 @@ class CompletionProcessor:
             diagnostic_dir.mkdir(parents=True, exist_ok=True)
             diagnostic_path.write_text(json.dumps(diagnostic, indent=2))
             if session_name:
-                run_dir = SessionOutputManager.find_latest_run_dir(worktree, session_name=session_name)
+                run_dir = self.session_output.find_run_dir(worktree, session_name=session_name)
                 if run_dir:
-                    SessionOutputManager.update_manifest(
+                    self.session_output.update_manifest(
                         run_dir,
                         {"diagnostic_path": diagnostic_rel},
                     )

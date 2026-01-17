@@ -50,6 +50,12 @@ from issue_orchestrator.ports.command_runner import CommandRunner, CommandResult
 from issue_orchestrator.ports.git import Git, GitResult, GitError
 from issue_orchestrator.ports.hook_verifier import HookVerifier, HookVerificationResult
 from issue_orchestrator.ports.terminal_observer import TerminalObserver, NullTerminalObserver
+from issue_orchestrator.ports.session_output import (
+    SessionOutput,
+    SessionRun,
+    ValidationRecord,
+    ValidationState,
+)
 
 __all__ = [
     # Issue Protocol (abstract work item)
@@ -100,4 +106,9 @@ __all__ = [
     # Terminal process observation
     "TerminalObserver",
     "NullTerminalObserver",
+    # Session output storage
+    "SessionOutput",
+    "SessionRun",
+    "ValidationRecord",
+    "ValidationState",
 ]
