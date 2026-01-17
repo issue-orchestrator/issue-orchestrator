@@ -1,5 +1,23 @@
 # AI Assistant Guide for issue-orchestrator
 
+---
+
+## STOP - Read This First
+
+**Before making ANY code changes, create a git worktree.**
+
+```bash
+git worktree add ../issue-orchestrator-wt-my-branch-name -b my-branch-name
+cd ../issue-orchestrator-wt-my-branch-name
+make venv  # Set up the worktree environment
+```
+
+This is not optional. Do not edit files in the base repo. If the user explicitly says "edit directly" or "no worktree", then and only then may you skip this. Otherwise: **worktree first, then work.**
+
+This instruction has been ignored multiple times. Don't be the next one.
+
+---
+
 ## What This Is
 
 **issue-orchestrator** orchestrates multiple Claude Code agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions (tmux/iTerm2/web), enforces structured completion via `agent-done`, and manages the full lifecycle including code review and triage.
@@ -123,6 +141,28 @@ self.events.publish(TraceEvent(EventName.TICK_COMPLETED, ctx.enrich({"idle": Tru
 logger.info("[PLAN] %d action(s)", count, extra=log_context(tick_id=5))
 ```
 
+## Fail-Fast Design
+
+**Fallbacks are strongly discouraged.** While there may be rare cases where appropriate, the default stance is:
+
+- **Strong typing over optionals** - If a value must exist, don't make it `Optional`. Let the type system enforce it.
+- **Runtime failures for None** - Prefer crashing on unexpected `None` over silently returning defaults. A crash tells you exactly where the bug is.
+- **No silent degradation** - Don't hide problems behind fallback behavior. If something is wrong, fail loudly.
+- **Less to test** - Fallback paths are code paths. Every fallback doubles your test matrix. Fail-fast means fewer branches to cover.
+- **Don't hide bugs** - A fallback that "works" masks the real issue. The bug still exists, you just can't see it anymore.
+
+```python
+# BAD - hides bugs, more to test
+def get_session(self, id: str) -> Session | None:
+    return self._sessions.get(id)  # Caller might forget to check None
+
+# GOOD - fails fast, less to test
+def get_session(self, id: str) -> Session:
+    if id not in self._sessions:
+        raise SessionNotFoundError(id)  # Bug is immediately visible
+    return self._sessions[id]
+```
+
 ## Conventions
 
 - Ports in `ports/`, adapters in `execution/`
@@ -130,7 +170,6 @@ logger.info("[PLAN] %d action(s)", count, extra=log_context(tick_id=5))
 - Events via `self.events.publish(TraceEvent(...))`, never direct pluggy
 - Session ops via `self.runner.*`, never direct plugin manager
 - All orchestrator dependencies injected via constructor
-- **Worktrees are mandatory**: All agent work MUST be done in a git worktree (not the base repo). Run `make venv` to set up the worktree environment.
 
 ## GitHub API Discipline
 
