@@ -25,34 +25,28 @@ logger = logging.getLogger(__name__)
 def get_e2e_role(
     e2e_config: "E2EConfig",
     instance_id: str | None = None,
-    claimant_id: str | None = None,
 ) -> str:
     """Determine the E2E role for this orchestrator instance.
 
     Args:
         e2e_config: E2E configuration from config file
         instance_id: Instance ID (e.g., "orchestrator-1") from INSTANCE_ID env var
-        claimant_id: Claimant ID from claims config
 
     Returns:
         One of: "executor", "reader", "disabled"
 
     Role resolution:
     1. If role is explicitly set (not "auto"), use that
-    2. If executor_claimant is set, check if we match
-    3. Otherwise, orchestrator-1 (or single instance) is executor
+    2. Otherwise, orchestrator-1 (or single instance) is executor
+
+    For multi-machine setups, use explicit role with env var:
+        role: ${E2E_ROLE}  # Set E2E_ROLE=executor on designated machine
     """
     # Explicit role overrides auto-detection
     if e2e_config.role != "auto":
         return e2e_config.role
 
-    # Auto mode: check if we're the designated executor
-    if e2e_config.executor_claimant:
-        if claimant_id == e2e_config.executor_claimant:
-            return "executor"
-        return "reader"
-
-    # Fallback: first instance on single-machine setup is executor
+    # Auto mode: first instance on single-machine setup is executor
     # instance_id is None for single-instance mode, or "orchestrator-1" for first instance
     if instance_id is None or instance_id == "orchestrator-1":
         return "executor"
@@ -491,11 +485,7 @@ def maybe_trigger_e2e(
         return False
 
     # Check role - only executors run E2E tests
-    role = get_e2e_role(
-        config.e2e,
-        instance_id=instance_id,
-        claimant_id=config.claims.claimant_id,
-    )
+    role = get_e2e_role(config.e2e, instance_id=instance_id)
     if role != "executor":
         logger.debug("E2E auto-trigger: skipping (role=%s, not executor)", role)
         return False

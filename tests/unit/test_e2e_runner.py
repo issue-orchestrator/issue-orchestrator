@@ -171,8 +171,6 @@ class TestMaybeTriggerE2E:
         config.e2e.allow_retry_once = True
         config.e2e.quarantine_file = "tests/e2e/quarantine.txt"
         config.e2e.role = "auto"  # Default role
-        config.e2e.executor_claimant = None  # No designated executor claimant
-        config.claims.claimant_id = None  # No claimant_id set
         config.repo_root = tmp_path
         config.orchestrator_id = "test-orch"
         return config

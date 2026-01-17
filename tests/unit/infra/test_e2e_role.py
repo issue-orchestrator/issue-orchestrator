@@ -24,46 +24,19 @@ class TestGetE2ERole:
         config = E2EConfig(enabled=True, role="disabled")
         assert get_e2e_role(config) == "disabled"
 
-    def test_auto_with_executor_claimant_match(self) -> None:
-        """Auto mode with matching executor_claimant returns executor."""
-        config = E2EConfig(
-            enabled=True,
-            role="auto",
-            executor_claimant="e2e-server",
-        )
-        assert get_e2e_role(config, claimant_id="e2e-server") == "executor"
-
-    def test_auto_with_executor_claimant_no_match(self) -> None:
-        """Auto mode with non-matching claimant_id returns reader."""
-        config = E2EConfig(
-            enabled=True,
-            role="auto",
-            executor_claimant="e2e-server",
-        )
-        assert get_e2e_role(config, claimant_id="alice-mbp") == "reader"
-
-    def test_auto_with_executor_claimant_no_claimant_id(self) -> None:
-        """Auto mode with executor_claimant but no claimant_id returns reader."""
-        config = E2EConfig(
-            enabled=True,
-            role="auto",
-            executor_claimant="e2e-server",
-        )
-        assert get_e2e_role(config, claimant_id=None) == "reader"
-
-    def test_auto_no_executor_claimant_single_instance(self) -> None:
-        """Auto mode without executor_claimant, single instance is executor."""
+    def test_auto_single_instance(self) -> None:
+        """Auto mode, single instance is executor."""
         config = E2EConfig(enabled=True, role="auto")
         # No instance_id means single-instance mode
         assert get_e2e_role(config, instance_id=None) == "executor"
 
-    def test_auto_no_executor_claimant_first_instance(self) -> None:
-        """Auto mode without executor_claimant, orchestrator-1 is executor."""
+    def test_auto_first_instance(self) -> None:
+        """Auto mode, orchestrator-1 is executor."""
         config = E2EConfig(enabled=True, role="auto")
         assert get_e2e_role(config, instance_id="orchestrator-1") == "executor"
 
-    def test_auto_no_executor_claimant_other_instance(self) -> None:
-        """Auto mode without executor_claimant, orchestrator-2+ are readers."""
+    def test_auto_other_instances(self) -> None:
+        """Auto mode, orchestrator-2+ are readers."""
         config = E2EConfig(enabled=True, role="auto")
         assert get_e2e_role(config, instance_id="orchestrator-2") == "reader"
         assert get_e2e_role(config, instance_id="orchestrator-3") == "reader"
@@ -74,15 +47,12 @@ class TestGetE2ERole:
         # Even orchestrator-2 gets executor if explicitly set
         assert get_e2e_role(config, instance_id="orchestrator-2") == "executor"
 
-    def test_explicit_role_ignores_executor_claimant(self) -> None:
-        """Explicit role is used regardless of executor_claimant match."""
-        config = E2EConfig(
-            enabled=True,
-            role="reader",
-            executor_claimant="e2e-server",
-        )
-        # Even matching claimant_id gets reader if role is explicit
-        assert get_e2e_role(config, claimant_id="e2e-server") == "reader"
+    def test_explicit_reader_for_all_instances(self) -> None:
+        """Explicit reader role applies to all instances."""
+        config = E2EConfig(enabled=True, role="reader")
+        assert get_e2e_role(config, instance_id=None) == "reader"
+        assert get_e2e_role(config, instance_id="orchestrator-1") == "reader"
+        assert get_e2e_role(config, instance_id="orchestrator-2") == "reader"
 
 
 class TestE2EConfigRoleParsing:
@@ -92,8 +62,3 @@ class TestE2EConfigRoleParsing:
         """Default role should be 'auto'."""
         config = E2EConfig()
         assert config.role == "auto"
-
-    def test_default_executor_claimant_is_none(self) -> None:
-        """Default executor_claimant should be None."""
-        config = E2EConfig()
-        assert config.executor_claimant is None

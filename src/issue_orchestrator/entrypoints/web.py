@@ -612,8 +612,7 @@ async def get_status() -> JSONResponse:
 
     # Determine E2E role for this instance
     instance_id = os.environ.get("INSTANCE_ID")
-    claimant_id = config.claims.claimant_id if config.claims else None
-    e2e_role = get_e2e_role(config.e2e, instance_id=instance_id, claimant_id=claimant_id)
+    e2e_role = get_e2e_role(config.e2e, instance_id=instance_id)
 
     return JSONResponse({
         "paused": state.paused,

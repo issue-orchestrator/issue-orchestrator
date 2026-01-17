@@ -363,12 +363,14 @@ class E2EConfig:
     - "disabled": E2E functionality completely off
 
     In "auto" mode:
-    - If executor_claimant is set, only that claimant_id is executor
-    - Otherwise, orchestrator-1 (or single instance) is executor
+    - orchestrator-1 (or single instance) is executor
+    - Other instances become readers
+
+    For multi-machine setups, use explicit role with env var:
+        role: ${E2E_ROLE}  # Set E2E_ROLE=executor on designated machine
     """
     enabled: bool = False  # Whether E2E runner is active
     role: str = "auto"  # auto | executor | reader | disabled
-    executor_claimant: Optional[str] = None  # Which claimant_id is the executor (for auto mode)
     auto_run_interval_minutes: int = 30  # Min interval between auto runs (0 = disable auto)
     pytest_args: list[str] = field(default_factory=lambda: ["tests/e2e", "-v"])
     allow_retry_once: bool = True  # Retry failing tests once to reduce flakiness
@@ -415,7 +417,6 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
     return E2EConfig(
         enabled=data.get("enabled", False),
         role=role,
-        executor_claimant=data.get("executor_claimant"),
         auto_run_interval_minutes=data.get("auto_run_interval_minutes", 30),
         pytest_args=list(pytest_args),
         allow_retry_once=data.get("allow_retry_once", True),
