@@ -472,8 +472,10 @@
         /* Blocked Issues Modal */
         .blocked-modal { max-width: 700px; }
         .blocked-modal .modal-body { padding: 0; }
-        .blocked-item-actions { display: flex; gap: 8px; margin-left: auto; }
-        .blocked-item-actions .diagnose-btn {
+        .blocked-item-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+        .blocked-item-actions .diagnose-btn,
+        .blocked-item-actions .copy-path-btn,
+        .blocked-item-actions .resume-btn {
             font-size: 11px;
             padding: 2px 8px;
             background: var(--accent-bg);
@@ -482,8 +484,40 @@
             cursor: pointer;
             color: var(--fg);
         }
-        .blocked-item-actions .diagnose-btn:hover {
+        .blocked-item-actions .diagnose-btn:hover,
+        .blocked-item-actions .copy-path-btn:hover {
             background: var(--border);
+        }
+        .blocked-item-actions .resume-btn {
+            background: #238636;
+            border-color: #238636;
+            color: white;
+        }
+        .blocked-item-actions .resume-btn:hover {
+            background: #2ea043;
+        }
+        .blocked-item-actions .resume-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .blocked-item-actions .debug-btn {
+            background: #1f6feb;
+            border-color: #1f6feb;
+            color: white;
+        }
+        .blocked-item-actions .debug-btn:hover {
+            background: #388bfd;
+        }
+        .blocked-item-actions .debug-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .blocked-item-worktree {
+            font-size: 11px;
+            color: var(--dim);
+            margin-top: 4px;
+            font-family: monospace;
+            word-break: break-all;
         }
         .diagnosis-panel {
             background: var(--dim-bg);
@@ -2947,6 +2981,8 @@
             for (const issue of blockedIssuesData) {
                 const labelClass = issue.needs_human ? 'needs-human' : '';
                 const reason = issue.failure_reason || issue.blocking_label;
+                const hasWorktree = !!issue.worktree_path;
+                const hasCompletion = issue.has_completion;
                 html += `
                     <div class="blocked-item-container" id="blocked-container-${issue.issue_number}">
                         <div class="blocked-item">
@@ -2963,8 +2999,12 @@
                                 </div>
                                 <div class="blocked-item-title">${escapeHtml(issue.title)}</div>
                                 ${reason ? `<div class="blocked-item-reason">${escapeHtml(reason)}</div>` : ''}
+                                ${hasWorktree ? `<div class="blocked-item-worktree">${escapeHtml(issue.worktree_path)}</div>` : ''}
                             </div>
                             <div class="blocked-item-actions">
+                                ${hasWorktree ? `<button class="copy-path-btn" onclick="copyWorktreePath('${escapeHtml(issue.worktree_path)}', event)" title="Copy worktree path">Copy Path</button>` : ''}
+                                ${hasWorktree ? `<button class="debug-btn" onclick="launchDebugSession(${issue.issue_number}, event)" title="Launch interactive debug session">Launch Debug</button>` : ''}
+                                ${hasCompletion ? `<button class="resume-btn" onclick="resumeIssue(${issue.issue_number}, event)" title="Process completion and continue flow">Resume</button>` : ''}
                                 <button class="diagnose-btn" onclick="toggleDiagnosis(${issue.issue_number}, event)">Diagnose</button>
                             </div>
                         </div>
@@ -3101,6 +3141,92 @@
             }
 
             updateBlockedButton();
+        }
+
+        // Copy worktree path to clipboard
+        async function copyWorktreePath(path, event) {
+            event.stopPropagation();
+            try {
+                await navigator.clipboard.writeText(path);
+                showToast('Worktree path copied to clipboard');
+            } catch (err) {
+                // Fallback for older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = path;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                showToast('Worktree path copied to clipboard');
+            }
+        }
+
+        // Resume processing for a blocked issue with completion.json
+        async function resumeIssue(issueNumber, event) {
+            event.stopPropagation();
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Resuming...';
+
+            try {
+                const res = await fetch(`/api/issues/${issueNumber}/resume`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showToast(`Issue #${issueNumber} resumed successfully${data.pr_url ? ' - PR created' : ''}`);
+                    closeBlockedModal();
+                    // Reload to show updated state
+                    setTimeout(() => location.reload(), 500);
+                } else {
+                    showToast(`Failed to resume: ${data.error || 'Unknown error'}`, 'error');
+                    btn.disabled = false;
+                    btn.textContent = originalText;
+                }
+            } catch (err) {
+                console.error('Failed to resume issue:', err);
+                showToast('Failed to resume issue', 'error');
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        }
+
+        // Launch interactive debug session for a blocked issue
+        async function launchDebugSession(issueNumber, event) {
+            event.stopPropagation();
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Launching...';
+
+            try {
+                const res = await fetch(`/api/issues/${issueNumber}/debug-session`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showToast(`Debug session launched for #${issueNumber}. Use 'agent-done --resume' when done.`);
+                    closeBlockedModal();
+                    // Reload to show updated state
+                    setTimeout(() => location.reload(), 500);
+                } else {
+                    showToast(`Failed to launch: ${data.error || 'Unknown error'}`, 'error');
+                    btn.disabled = false;
+                    btn.textContent = originalText;
+                }
+            } catch (err) {
+                console.error('Failed to launch debug session:', err);
+                showToast('Failed to launch debug session', 'error');
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
         }
 
         // Diagnosis functionality

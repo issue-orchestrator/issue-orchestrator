@@ -1696,11 +1696,13 @@ async def get_blocked_issues() -> JSONResponse:
     """Get all blocked issues with their blocking labels and context.
 
     Returns detailed information for the "Manage Blocked Issues" modal.
+    Includes worktree path and completion status for debug session support.
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     from ..infra import labels as label_module
+    from ..control.worktree_manager import get_worktree_path
 
     state = _orchestrator.state
     config = _orchestrator.config
@@ -1727,6 +1729,14 @@ async def get_blocked_issues() -> JSONResponse:
                     failure_reason = getattr(entry, 'status_reason', None) or entry.status
                     break
 
+            # Get worktree info for debug session support
+            worktree_path = get_worktree_path(config, issue.number)
+            worktree_exists = worktree_path.exists()
+            has_completion = False
+            if worktree_exists:
+                completion_path = worktree_path / ".issue-orchestrator" / "completion.json"
+                has_completion = completion_path.exists()
+
             blocked_issues.append({
                 "issue_number": issue.number,
                 "title": issue.title,
@@ -1736,6 +1746,8 @@ async def get_blocked_issues() -> JSONResponse:
                 "needs_human": needs_human,
                 "failure_reason": failure_reason,
                 "issue_url": make_issue_url(issue.number),
+                "worktree_path": str(worktree_path) if worktree_exists else None,
+                "has_completion": has_completion,
             })
 
     return JSONResponse({"blocked_issues": blocked_issues})
