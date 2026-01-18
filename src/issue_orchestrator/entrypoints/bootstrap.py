@@ -20,6 +20,7 @@ import os
 from typing import TYPE_CHECKING
 
 from ..infra.config import Config
+from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
 from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner, IssueTracker
 from ..control.orchestrator_deps import OrchestratorDeps
@@ -106,7 +107,7 @@ def build_orchestrator(
     install_gh_guard()
 
     # Make repo root visible to terminal plugins.
-    os.environ["ORCHESTRATOR_REPO_ROOT"] = str(config.repo_root)
+    os.environ[f"{ENV_PREFIX}REPO_ROOT"] = str(config.repo_root)
 
     # Create the pluggy plugin manager (knows about terminal backend)
     pm = create_plugin_manager(

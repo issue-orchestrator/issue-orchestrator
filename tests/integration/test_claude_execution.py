@@ -10,6 +10,8 @@ import subprocess
 import shutil
 from pathlib import Path
 
+from issue_orchestrator.infra.env import ENV_PREFIX
+
 
 def is_claude_available() -> bool:
     """Check if claude CLI is available in PATH."""
@@ -411,7 +413,7 @@ class TestClaudeViaAdapterPath:
         (worktree / ".git").mkdir()
         (worktree / ".issue-orchestrator").mkdir()
 
-        monkeypatch.setenv("ORCHESTRATOR_REPO_ROOT", str(repo_root))
+        monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
 
         verify_file = worktree / "claude_subprocess_verified.txt"
         claude_cmd = (
@@ -529,7 +531,7 @@ class TestAgentDoneInvocation:
         import os
         env = dict(os.environ)
         env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
-        env["ORCHESTRATOR_COMPLETION_PATH"] = str(completion_dir / "completion.json")
+        env[f"{ENV_PREFIX}COMPLETION_PATH"] = str(completion_dir / "completion.json")
 
         # Run Claude with -p asking it to invoke agent-done
         prompt = (
@@ -646,12 +648,12 @@ class TestAgentDoneInvocation:
         scripts_dir = repo_root / "src" / "issue_orchestrator" / "scripts"
 
         # Build environment like orchestrator does
-        # NOTE: We do NOT set ORCHESTRATOR_COMPLETION_PATH - agent-done uses cwd!
+        # NOTE: We do NOT set ISSUE_ORCHESTRATOR_COMPLETION_PATH - agent-done uses cwd!
         import os
         env = dict(os.environ)
         env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
         # Clear any existing path to test cwd behavior
-        env.pop("ORCHESTRATOR_COMPLETION_PATH", None)
+        env.pop(f"{ENV_PREFIX}COMPLETION_PATH", None)
 
         # The key test: we cd to worktree, then run agent-done
         # This simulates what _setup_and_run does with the cd fix
@@ -715,7 +717,7 @@ class TestAgentDoneInvocation:
         import os
         env = dict(os.environ)
         env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
-        env.pop("ORCHESTRATOR_COMPLETION_PATH", None)
+        env.pop(f"{ENV_PREFIX}COMPLETION_PATH", None)
 
         # NO cd - simulates the bug
         cmd = 'agent-done completed --implementation "test" --problems "none"'

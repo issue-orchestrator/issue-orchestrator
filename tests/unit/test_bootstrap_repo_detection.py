@@ -13,6 +13,7 @@ from issue_orchestrator.entrypoints.bootstrap import (
     _check_github_token_scopes,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.ports import NullEventSink, NullSessionRunner
 
 
@@ -546,9 +547,9 @@ class TestBuildOrchestrator:
                                 mock_get_repo.assert_called_once()
 
     def test_build_orchestrator_sets_repo_root_env_var(self, minimal_config: Config) -> None:
-        """Sets ORCHESTRATOR_REPO_ROOT environment variable."""
+        """Sets f"{ENV_PREFIX}REPO_ROOT" environment variable."""
         repo_root = minimal_config.repo_root
-        original_env = os.environ.get("ORCHESTRATOR_REPO_ROOT")
+        original_env = os.environ.get(f"{ENV_PREFIX}REPO_ROOT")
 
         try:
             with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
@@ -561,13 +562,13 @@ class TestBuildOrchestrator:
                                 pass  # Expected to fail later
 
                             # Check that env var was set
-                            assert os.environ.get("ORCHESTRATOR_REPO_ROOT") == str(repo_root)
+                            assert os.environ.get(f"{ENV_PREFIX}REPO_ROOT") == str(repo_root)
         finally:
             # Restore original env
             if original_env is None:
-                os.environ.pop("ORCHESTRATOR_REPO_ROOT", None)
+                os.environ.pop(f"{ENV_PREFIX}REPO_ROOT", None)
             else:
-                os.environ["ORCHESTRATOR_REPO_ROOT"] = original_env
+                os.environ[f"{ENV_PREFIX}REPO_ROOT"] = original_env
 
     def test_build_orchestrator_enables_sse_by_default(self, minimal_config: Config) -> None:
         """Registers SSE plugin when enable_sse=True (default)."""

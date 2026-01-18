@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.infra.env import ENV_PREFIX
+
 
 def is_codex_available() -> bool:
     """Check if codex CLI is available in PATH."""
@@ -219,7 +221,7 @@ class TestCodexAgentDoneInvocation:
         # - Set completion path
         env = dict(os.environ)
         env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
-        env["ORCHESTRATOR_COMPLETION_PATH"] = str(completion_dir / "completion.json")
+        env[f"{ENV_PREFIX}COMPLETION_PATH"] = str(completion_dir / "completion.json")
 
         # Run Codex with exec asking it to invoke agent-done
         prompt = (
@@ -379,7 +381,7 @@ class TestCodexWithAgentRunnerFullPath:
             output_dir=output_dir,
             env_overrides={
                 "PATH": f"{scripts_dir}:{os.environ.get('PATH', '')}",
-                "ORCHESTRATOR_COMPLETION_PATH": str(io_dir / "completion.json"),
+                f"{ENV_PREFIX}COMPLETION_PATH": str(io_dir / "completion.json"),
             },
         )
 

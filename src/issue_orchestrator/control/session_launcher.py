@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from ..ports.claim_manager import ClaimManager
 
 from ..infra.config import Config
+from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
@@ -521,10 +522,10 @@ class SessionLauncher:
             {"completion_path": completion_path},
         )
         # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        env_exports += f" ORCHESTRATOR_AGENT_LABEL='{issue.agent_type}'"
-        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue.number}'"
-        env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
+        env_exports = f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
+        env_exports += f" {ENV_PREFIX}AGENT_LABEL='{issue.agent_type}'"
+        env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue.number}'"
+        env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -770,10 +771,10 @@ class SessionLauncher:
             {"completion_path": completion_path},
         )
         # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_label}'"
-        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{review.issue_number}'"
-        env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
+        env_exports = f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
+        env_exports += f" {ENV_PREFIX}AGENT_LABEL='{agent_label}'"
+        env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{review.issue_number}'"
+        env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -1007,10 +1008,10 @@ class SessionLauncher:
             {"completion_path": completion_path},
         )
         # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export ORCHESTRATOR_COMPLETION_PATH='{completion_path}'"
-        env_exports += f" ORCHESTRATOR_AGENT_LABEL='{rework.agent_type}'"
-        env_exports += f" ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
-        env_exports += f" ORCHESTRATOR_API_PORT='{self.config.web_port}'"
+        env_exports = f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
+        env_exports += f" {ENV_PREFIX}AGENT_LABEL='{rework.agent_type}'"
+        env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
+        env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).

@@ -128,8 +128,8 @@ def main() -> int:
         )
 
     env = os.environ.copy()
-    env["ORCHESTRATOR_COMPLETION_PATH"] = args.completion_path
-    env["ORCHESTRATOR_CLAUDE_PROMPT_MODE"] = args.prompt_mode
+    env["ISSUE_ORCHESTRATOR_COMPLETION_PATH"] = args.completion_path
+    env["ISSUE_ORCHESTRATOR_CLAUDE_PROMPT_MODE"] = args.prompt_mode
     env["PATH"] = f"{worktree / '.venv' / 'bin'}:{worktree / 'scripts'}:{env.get('PATH', '')}"
 
     full_cmd = f'cd "{worktree}" && {command}'
