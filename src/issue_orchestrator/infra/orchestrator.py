@@ -346,8 +346,8 @@ class Orchestrator:
         self._refresh_requested = False
         self._last_issue_fetch, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, refresh_to_process, self._inflight_stable_ids, self.observer, self.deps.claim_manager)
 
-    def _clear_discovered_facts(self) -> None: self._plan_applier._clear_discovered_facts()
-    def _emit_heartbeat_if_needed(self) -> None: self._plan_applier._emit_heartbeat_if_needed()
+    def _clear_discovered_facts(self) -> None: self._plan_applier.clear_discovered_facts()
+    def _emit_heartbeat_if_needed(self) -> None: self._plan_applier.emit_heartbeat_if_needed()
 
     async def run_loop(self) -> None:
         logger.info("Starting orchestration loop")
@@ -489,7 +489,7 @@ class Orchestrator:
         return diagnosis.to_dict()
 
     def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None: pause_issue_for_reconciliation(self.deps.events, self.deps.action_applier, self._event_context, issue_number, reason)
-    def _apply_plan(self, plan: "Plan") -> None: self._plan_applier._apply_plan(plan, self._pause_issue_for_reconciliation)
+    def _apply_plan(self, plan: "Plan") -> None: self._plan_applier.apply_plan(plan, self._pause_issue_for_reconciliation)
     def _fetch_all_issues(self, required_stable_ids: set[str] | None = None) -> list[Issue]: return self._github_workflow.fetch_all_issues(self._get_milestone_filter(), required_stable_ids)
     def update_queue_cache(self) -> None: self._plan_applier.update_queue_cache()
     def _update_dependency_problems(self, dep_blocked: list[tuple["Issue", str]]) -> None: self._github_workflow.update_dependency_problems(self.state, dep_blocked)
@@ -498,7 +498,7 @@ class Orchestrator:
     def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def _launch_triage_session(self, triage: PendingTriageReview) -> None: _launch_triage_session(triage, self.config, self.launch_session)
     def process_deferred_cleanups(self) -> None: self.state.pending_cleanups = self._github_workflow.process_deferred_cleanups(self.state.pending_cleanups, self._cleanup_manager)
-    def _recover_orphaned_cleanups(self) -> None: self._plan_applier._recover_orphaned_cleanups()
+    def _recover_orphaned_cleanups(self) -> None: self._plan_applier.recover_orphaned_cleanups()
     def scan_needs_code_review_prs(self) -> None: self._github_workflow.scan_needs_code_review_prs(self.state)
     def scan_needs_rework_prs(self) -> None: self._github_workflow.scan_needs_rework_prs(self.state)
     def reconcile_orphaned_pr_labels(self) -> int: return self._github_workflow.reconcile_orphaned_pr_labels(ORCHESTRATOR_PR_MARKER)

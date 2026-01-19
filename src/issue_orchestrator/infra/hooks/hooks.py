@@ -209,178 +209,120 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
     def agent_type(self) -> MetaAgentType:
         return MetaAgentType.CLAUDE_CODE
 
-    def install_hooks(self, project_root: Path) -> list[Path]:
-        """Install Claude Code PreToolUse hooks."""
-        files_created = []
+    def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+        """Copy a hook file and make it executable."""
+        if not src.exists():
+            raise FileNotFoundError(f"Template not found: {src}")
+        shutil.copy(src, target)
+        target.chmod(0o755)
+        files_created.append(target)
+        logger.info(f"Installed {target}")
 
-        # Create .claude/hooks directory
-        hooks_dir = project_root / ".claude" / "hooks"
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy block-no-verify.sh template
-        template = TEMPLATES_DIR / "claude" / "block-no-verify.sh"
-        target = hooks_dir / "block-no-verify.sh"
-
-        if template.exists():
-            shutil.copy(template, target)
-            target.chmod(0o755)  # Make executable
-            files_created.append(target)
-            logger.info(f"Installed {target}")
-        else:
-            raise FileNotFoundError(f"Template not found: {template}")
-
-        # Copy allow_git_push.py helper into hooks directory
-        allow_src = TEMPLATES_DIR / "claude" / "allow_git_push.py"
-        allow_target = hooks_dir / "allow_git_push.py"
-        if allow_src.exists():
-            shutil.copy(allow_src, allow_target)
-            allow_target.chmod(0o755)
-            files_created.append(allow_target)
-            logger.info(f"Installed {allow_target}")
-        else:
-            raise FileNotFoundError(f"Hook helper not found: {allow_src}")
-
-        # Update or create settings.json
-        settings_path = project_root / ".claude" / "settings.json"
+    def _update_settings_json(self, settings_path: Path, files_created: list[Path]) -> None:
+        """Update settings.json with hook configuration."""
         settings = {}
-
         if settings_path.exists():
             try:
                 settings = json.loads(settings_path.read_text())
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON in {settings_path}, will overwrite")
 
-        # Merge our hook config
-        if "hooks" not in settings:
-            settings["hooks"] = {}
-        if "PreToolUse" not in settings["hooks"]:
-            settings["hooks"]["PreToolUse"] = []
+        settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
+        our_cmd = ".claude/hooks/block-no-verify.sh"
 
-        # Check if our hook is already configured
-        our_hook = {
-            "matcher": "Bash",
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": ".claude/hooks/block-no-verify.sh"
-                }
-            ]
-        }
-
-        # Find existing Bash matcher or add new one
-        bash_matcher_idx = None
-        for i, hook in enumerate(settings["hooks"]["PreToolUse"]):
-            if hook.get("matcher") == "Bash":
-                bash_matcher_idx = i
-                break
-
-        if bash_matcher_idx is not None:
-            # Check if our command is already in there
-            existing_hooks = settings["hooks"]["PreToolUse"][bash_matcher_idx].get("hooks", [])
-            our_cmd = ".claude/hooks/block-no-verify.sh"
-            has_our_hook = any(
-                h.get("type") == "command" and h.get("command") == our_cmd
-                for h in existing_hooks
-            )
-            if not has_our_hook:
+        # Find existing Bash matcher
+        bash_matcher = next((h for h in settings["hooks"]["PreToolUse"] if h.get("matcher") == "Bash"), None)
+        if bash_matcher:
+            existing_hooks = bash_matcher.get("hooks", [])
+            if not any(h.get("type") == "command" and h.get("command") == our_cmd for h in existing_hooks):
                 existing_hooks.append({"type": "command", "command": our_cmd})
-                settings["hooks"]["PreToolUse"][bash_matcher_idx]["hooks"] = existing_hooks
+                bash_matcher["hooks"] = existing_hooks
         else:
-            settings["hooks"]["PreToolUse"].append(our_hook)
+            settings["hooks"]["PreToolUse"].append({
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": our_cmd}]
+            })
 
         settings_path.write_text(json.dumps(settings, indent=2) + "\n")
         files_created.append(settings_path)
         logger.info(f"Updated {settings_path}")
 
+    def install_hooks(self, project_root: Path) -> list[Path]:
+        """Install Claude Code PreToolUse hooks."""
+        files_created = []
+        hooks_dir = project_root / ".claude" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy hook scripts
+        self._copy_hook_file(TEMPLATES_DIR / "claude" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
+        self._copy_hook_file(TEMPLATES_DIR / "claude" / "allow_git_push.py", hooks_dir / "allow_git_push.py", files_created)
+
+        # Update settings.json
+        self._update_settings_json(project_root / ".claude" / "settings.json", files_created)
+
         return files_created
 
-    def verify_hooks(self, project_root: Path) -> VerificationResult:
-        """Verify Claude Code hooks are working.
+    def _verify_settings_json(self, settings_path: Path, checks_passed: list, checks_failed: list) -> None:
+        """Verify settings.json configuration."""
+        if not settings_path.exists():
+            checks_failed.append("settings_json_configured: settings.json not found")
+            return
 
-        Tests:
-        1. Hook script exists and is executable
-        2. settings.json has correct configuration
-        3. Hook script correctly blocks --no-verify commands
-        4. Hook script allows normal commands
-        """
+        try:
+            settings = json.loads(settings_path.read_text())
+            pre_tool_use = settings.get("hooks", {}).get("PreToolUse", [])
+            found_hook = any(
+                hook.get("command") == ".claude/hooks/block-no-verify.sh"
+                for matcher in pre_tool_use if matcher.get("matcher") == "Bash"
+                for hook in matcher.get("hooks", [])
+            )
+            if found_hook:
+                checks_passed.append("settings_json_configured")
+            else:
+                checks_failed.append("settings_json_configured: hook not in PreToolUse")
+        except json.JSONDecodeError as e:
+            checks_failed.append(f"settings_json_configured: invalid JSON - {e}")
+
+    def _run_hook_test_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+        """Run hook test cases and record results."""
+        test_cases = [
+            ("git push --no-verify", True), ("git commit --no-verify -m 'test'", True),
+            ("git push origin main --no-verify", True), ("git --no-verify push", True),
+            ("git commit -n -m 'test'", True), ("git -c core.hooksPath=/dev/null push", True),
+            ("gh pr merge 123", True), ("gh pr merge 123 --squash", True),
+            ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
+            ("git push origin main", False), ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False), ("gh pr view 123", False), ("ls -la", False),
+        ]
+
+        for cmd, should_block in test_cases:
+            blocked = self._test_hook_blocks(hook_script, cmd)
+            label = cmd[:30]
+            if should_block == blocked:
+                checks_passed.append(f"{'blocks' if should_block else 'allows'}:{label}")
+            else:
+                checks_failed.append(f"{'should_block' if should_block else 'wrongly_blocks'}:{label}")
+
+    def verify_hooks(self, project_root: Path) -> VerificationResult:
+        """Verify Claude Code hooks are working."""
         checks_passed = []
         checks_failed = []
 
         hook_script = project_root / ".claude" / "hooks" / "block-no-verify.sh"
         settings_path = project_root / ".claude" / "settings.json"
 
-        # Check 1: Hook script exists
-        if hook_script.exists():
-            checks_passed.append("hook_script_exists")
-        else:
+        if not hook_script.exists():
             checks_failed.append("hook_script_exists: not found")
-            return VerificationResult(
-                success=False,
-                meta_agent=self.agent_type,
-                checks_passed=checks_passed,
-                checks_failed=checks_failed,
-            )
+            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+        checks_passed.append("hook_script_exists")
 
-        # Check 2: Hook script is executable
         if os.access(hook_script, os.X_OK):
             checks_passed.append("hook_script_executable")
         else:
             checks_failed.append("hook_script_executable: not executable")
 
-        # Check 3: settings.json exists and has hook configured
-        if settings_path.exists():
-            try:
-                settings = json.loads(settings_path.read_text())
-                pre_tool_use = settings.get("hooks", {}).get("PreToolUse", [])
-
-                # Look for our hook
-                found_hook = False
-                for matcher in pre_tool_use:
-                    if matcher.get("matcher") == "Bash":
-                        for hook in matcher.get("hooks", []):
-                            if hook.get("command") == ".claude/hooks/block-no-verify.sh":
-                                found_hook = True
-                                break
-
-                if found_hook:
-                    checks_passed.append("settings_json_configured")
-                else:
-                    checks_failed.append("settings_json_configured: hook not in PreToolUse")
-            except json.JSONDecodeError as e:
-                checks_failed.append(f"settings_json_configured: invalid JSON - {e}")
-        else:
-            checks_failed.append("settings_json_configured: settings.json not found")
-
-        # Check 4: Hook blocks --no-verify commands
-        test_cases = [
-            # (input_command, should_block)
-            ("git push --no-verify", True),
-            ("git commit --no-verify -m 'test'", True),
-            ("git push origin main --no-verify", True),
-            ("git --no-verify push", True),
-            ("git commit -n -m 'test'", True),  # -n is shorthand for --no-verify
-            ("git -c core.hooksPath=/dev/null push", True),
-            ("gh pr merge 123", True),  # Agents cannot merge PRs
-            ("gh pr merge 123 --squash", True),
-            ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
-            ("git push origin main", False),  # Normal push should be allowed
-            ("git commit -m 'test'", False),
-            ("gh pr create --title 'test'", False),  # Creating PRs is allowed
-            ("gh pr view 123", False),  # Viewing PRs is allowed
-            ("ls -la", False),
-        ]
-
-        for cmd, should_block in test_cases:
-            blocked = self._test_hook_blocks(hook_script, cmd)
-
-            if should_block and blocked:
-                checks_passed.append(f"blocks:{cmd[:30]}")
-            elif should_block and not blocked:
-                checks_failed.append(f"should_block:{cmd[:30]}")
-            elif not should_block and not blocked:
-                checks_passed.append(f"allows:{cmd[:30]}")
-            elif not should_block and blocked:
-                checks_failed.append(f"wrongly_blocks:{cmd[:30]}")
+        self._verify_settings_json(settings_path, checks_passed, checks_failed)
+        self._run_hook_test_cases(hook_script, checks_passed, checks_failed)
 
         return VerificationResult(
             success=len(checks_failed) == 0,

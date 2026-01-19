@@ -232,8 +232,8 @@ class TestUnknownFieldsValidator:
     def _make_config(self, raw_data=None, raw_agents=None, strict=False):
         """Create a mock config with raw YAML data."""
         config = MagicMock()
-        config._raw_data = raw_data or {}
-        config._raw_agents = raw_agents or {}
+        config.raw_data = raw_data or {}
+        config.raw_agents = raw_agents or {}
         config.config_strict = strict
         return config
 
@@ -296,7 +296,7 @@ class TestAgentValidator:
         config = MagicMock()
         config.agents = agents or {}
         config.default_agent = default_agent
-        config._raw_agents = raw_agents or {}
+        config.raw_agents = raw_agents or {}
         return config
 
     def _make_agent(

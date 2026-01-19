@@ -84,6 +84,38 @@ class ContextFormatter(logging.Formatter):
         return super().format(record)
 
 
+def _determine_log_file(log_file: Path | None, repo_root: Path | str) -> Path:
+    """Determine the target log file path."""
+    env_log_file = os.environ.get("ORCHESTRATOR_LOG_FILE")
+    if log_file is not None:
+        return log_file
+    if env_log_file:
+        return Path(env_log_file)
+    return get_repo_log_path(repo_root)
+
+
+def _create_file_handler(
+    log_file: Path, log_retention_days: int
+) -> tuple[TimedRotatingFileHandler | None, Path, bool]:
+    """Create file handler with fallback. Returns (handler, final_path, fallback_used)."""
+    try:
+        handler = TimedRotatingFileHandler(
+            str(log_file), when="midnight", interval=1,
+            backupCount=log_retention_days, encoding="utf-8",
+        )
+        return handler, log_file, False
+    except OSError:
+        fallback_path = Path("/tmp/issue-orchestrator.log")
+        try:
+            handler = TimedRotatingFileHandler(
+                str(fallback_path), when="midnight", interval=1,
+                backupCount=log_retention_days, encoding="utf-8",
+            )
+            return handler, fallback_path, True
+        except OSError:
+            return None, log_file, False
+
+
 def setup_logging(
     repo_root: Path | str,
     level: str = "INFO",
@@ -92,39 +124,14 @@ def setup_logging(
     json_format: bool = False,
     log_retention_days: int = 7,
 ) -> Path | None:
-    """Configure logging for the application.
-
-    This function is idempotent - calling it multiple times will not
-    duplicate handlers.
-
-    Args:
-        repo_root: Repository root (REQUIRED). Logs go to
-            {repo_root}/.issue-orchestrator/state/logs/orchestrator.log
-        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        console_output: If True, also log to stderr
-        log_file: Path to log file (overrides repo_root-based path)
-        json_format: If True, use JSON format (for structured log aggregation)
-        log_retention_days: Days to keep rotated log files (default 7)
-
-    Returns:
-        Path to the log file being used, or None if file logging failed
-    """
+    """Configure logging for the application."""
     global _logging_configured, _current_log_file
 
-    # Determine target log file
-    env_log_file = os.environ.get("ORCHESTRATOR_LOG_FILE")
-    if log_file is not None:
-        target_log_file = log_file
-    elif env_log_file:
-        target_log_file = Path(env_log_file)
-    else:
-        target_log_file = get_repo_log_path(repo_root)
+    target_log_file = _determine_log_file(log_file, repo_root)
 
-    # Idempotent - if already configured with same file, return early
     if _logging_configured and _current_log_file == target_log_file:
         return _current_log_file
 
-    # If already configured but switching log files (shouldn't happen), reset first
     if _logging_configured and _current_log_file != target_log_file:
         logging.warning("Unexpected log file switch from %s to %s", _current_log_file, target_log_file)
         reset_logging()
@@ -132,44 +139,16 @@ def setup_logging(
     log_file = target_log_file
     log_level = getattr(logging, level.upper(), logging.INFO)
 
-    # Get root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
-    # Remove any existing handlers (in case of test isolation issues)
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # Human-readable format with context
     human_format = "%(asctime)s [%(process)d] %(name)s %(levelname)s:%(context)s %(message)s"
-    # Simpler format for stderr
     stderr_format = "[%(process)d] %(name)s: %(message)s"
 
-    # File handler with daily rotation - preferred but can fall back if not writable
-    file_handler = None
-    fallback_used = False
-    try:
-        file_handler = TimedRotatingFileHandler(
-            str(log_file),  # TimedRotatingFileHandler requires string path
-            when="midnight",
-            interval=1,
-            backupCount=log_retention_days,
-            encoding="utf-8",
-        )
-    except OSError:
-        fallback_path = Path("/tmp/issue-orchestrator.log")
-        try:
-            file_handler = TimedRotatingFileHandler(
-                str(fallback_path),  # TimedRotatingFileHandler requires string path
-                when="midnight",
-                interval=1,
-                backupCount=log_retention_days,
-                encoding="utf-8",
-            )
-            log_file = fallback_path
-            fallback_used = True
-        except OSError:
-            file_handler = None
+    file_handler, log_file, fallback_used = _create_file_handler(log_file, log_retention_days)
 
     if file_handler:
         file_handler.setLevel(log_level)

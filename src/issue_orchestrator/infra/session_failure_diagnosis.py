@@ -52,24 +52,38 @@ class SessionFailureDiagnosis:
         }
 
 
+def _search_worktree_in_base(
+    base: Path, repo_name: str, issue_number: int
+) -> Path | None:
+    """Search for worktree matching issue in a single base directory."""
+    # Try direct match first
+    candidate = base / f"{repo_name}-{issue_number}"
+    if candidate.exists() and candidate.is_dir():
+        return candidate
+
+    # Search all worktrees in this base
+    for worktree_path in base.glob(f"{repo_name}-*"):
+        if not worktree_path.is_dir():
+            continue
+        sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
+        if not sessions_dir.exists():
+            continue
+        # Look for session dirs matching this issue
+        for session_dir in sessions_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+            name = session_dir.name
+            if any(x in name for x in [f"issue-{issue_number}", f"review-{issue_number}", f"rework-{issue_number}"]):
+                return worktree_path
+    return None
+
+
 def _find_worktree_for_issue(
     worktree_bases: list[Path],
     repo_name: str,
     issue_number: int,
 ) -> Path | None:
-    """Find the worktree path for an issue.
-
-    Searches worktree bases for a directory matching the naming convention.
-    This is a simplified version that doesn't depend on execution layer.
-
-    Args:
-        worktree_bases: List of directories to search
-        repo_name: Repository name for naming convention
-        issue_number: Issue number to find
-
-    Returns:
-        Worktree path if found, None otherwise
-    """
+    """Find the worktree path for an issue."""
     seen: set[Path] = set()
 
     for base in worktree_bases:
@@ -80,27 +94,78 @@ def _find_worktree_for_issue(
             continue
         seen.add(base)
 
-        # Try direct match first
-        candidate = base / f"{repo_name}-{issue_number}"
-        if candidate.exists() and candidate.is_dir():
-            return candidate
-
-        # Search all worktrees in this base
-        for worktree_path in base.glob(f"{repo_name}-*"):
-            if not worktree_path.is_dir():
-                continue
-            # Check if this worktree has a session for this issue
-            sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
-            if sessions_dir.exists():
-                # Look for session dirs matching this issue
-                for session_dir in sessions_dir.iterdir():
-                    if not session_dir.is_dir():
-                        continue
-                    name = session_dir.name
-                    if f"issue-{issue_number}" in name or f"review-{issue_number}" in name or f"rework-{issue_number}" in name:
-                        return worktree_path
+        result = _search_worktree_in_base(base, repo_name, issue_number)
+        if result:
+            return result
 
     return None
+
+
+def _find_session_from_history(session_history: list, issue_number: int):
+    """Find history entry for issue."""
+    for entry in reversed(session_history):
+        if entry.issue_number == issue_number:
+            return entry
+    return None
+
+
+def _find_worktree_from_active_sessions(active_sessions: list, issue_number: int):
+    """Find worktree and agent config from active sessions. Returns (path, config)."""
+    for session in active_sessions:
+        if session.issue.number == issue_number:
+            return session.worktree_path, session.agent_config
+    return None, None
+
+
+def _build_worktree_bases(config: "Config") -> list[Path]:
+    """Build list of worktree bases to search."""
+    bases: list[Path] = []
+    if config.worktree_base:
+        bases.append(Path(config.worktree_base))
+    for agent in config.agents.values():
+        agent_base = getattr(agent, "worktree_base", None)
+        if agent_base:
+            bases.append(Path(agent_base))
+    bases.append(config.repo_root.parent)
+    return bases
+
+
+def _detect_ai_system_and_mode(agent_config, history_entry, agents):
+    """Detect AI system and permission mode. Returns (ai_system, permission_mode)."""
+    from ..ports.session_log import detect_ai_system_from_command
+
+    if agent_config:
+        ai_system = detect_ai_system_from_command(agent_config.command) or "claude-code"
+        return ai_system, agent_config.permission_mode
+
+    if history_entry:
+        agent_label = history_entry.agent_type
+        if agent_label in agents:
+            cfg = agents[agent_label]
+            ai_system = detect_ai_system_from_command(cfg.command) or "claude-code"
+            return ai_system, cfg.permission_mode
+
+    return "claude-code", "unknown"
+
+
+def _build_warnings_and_suggestions(permission_mode: str, log_path: Path | None, log_context: str | None, worktree_path) -> tuple[list[str], list[str]]:
+    """Build warnings and suggestions lists."""
+    warnings: list[str] = []
+    suggestions: list[str] = []
+
+    if permission_mode == "default":
+        warnings.append("permission_mode is 'default' - Claude prompts for permissions in non-interactive mode")
+        suggestions.append("Add 'permission_mode: bypassPermissions' to your agent config in YAML")
+
+    if not log_path or not log_path.exists():
+        warnings.append("No AI session log found for this issue")
+        suggestions.append(f"Check ~/.claude/projects/ for logs related to {worktree_path}")
+
+    if log_context and "permission" in log_context.lower():
+        warnings.append("Permission-related errors detected in log")
+        suggestions.append("Consider using 'permission_mode: bypassPermissions' for non-interactive sessions")
+
+    return warnings, suggestions
 
 
 def create_session_failure_diagnosis(
@@ -110,73 +175,20 @@ def create_session_failure_diagnosis(
     config: "Config",
     agents: dict,
 ) -> SessionFailureDiagnosis:
-    """Create a failure diagnosis for a session.
-
-    This extracts the diagnosis logic that was in web.py's get_failure_diagnosis
-    endpoint, allowing it to be called from the orchestrator.
-
-    Args:
-        issue_number: The issue number to diagnose
-        session_history: List of SessionHistoryEntry from orchestrator state
-        active_sessions: List of active Sessions from orchestrator state
-        config: Orchestrator config
-        agents: Dict of agent configs
-
-    Returns:
-        SessionFailureDiagnosis with all diagnostic info
-    """
+    """Create a failure diagnosis for a session."""
     from ..adapters.session_log.registry import get_log_provider
-    from ..ports.session_log import detect_ai_system_from_command
 
-    # Find the session history entry for this issue
-    history_entry = None
-    for entry in reversed(session_history):
-        if entry.issue_number == issue_number:
-            history_entry = entry
-            break
+    history_entry = _find_session_from_history(session_history, issue_number)
+    worktree_path, agent_config = _find_worktree_from_active_sessions(active_sessions, issue_number)
 
-    # Find worktree path - check active sessions, history, or construct it
-    worktree_path: Path | None = None
-    agent_config = None
-
-    # Check active sessions first
-    for session in active_sessions:
-        if session.issue.number == issue_number:
-            worktree_path = session.worktree_path
-            agent_config = session.agent_config
-            break
-
-    # If not found, try to locate a recent session output
     if not worktree_path:
-        bases: list[Path] = []
-        if config.worktree_base:
-            bases.append(Path(config.worktree_base))
-        for agent in config.agents.values():
-            agent_base = getattr(agent, "worktree_base", None)
-            if agent_base:
-                bases.append(Path(agent_base))
-        bases.append(config.repo_root.parent)
-
+        bases = _build_worktree_bases(config)
         repo_name = config.repo.split("/")[-1] if config.repo else config.repo_root.name
         worktree_path = _find_worktree_for_issue(bases, repo_name, issue_number)
 
-    # Detect AI system and get provider
-    ai_system = "claude-code"  # default
-    permission_mode = "unknown"
-    if agent_config:
-        ai_system = detect_ai_system_from_command(agent_config.command) or "claude-code"
-        permission_mode = agent_config.permission_mode
-    elif history_entry:
-        # Try to get agent config from history
-        agent_label = history_entry.agent_type
-        if agent_label in agents:
-            cfg = agents[agent_label]
-            ai_system = detect_ai_system_from_command(cfg.command) or "claude-code"
-            permission_mode = cfg.permission_mode
-
+    ai_system, permission_mode = _detect_ai_system_and_mode(agent_config, history_entry, agents)
     provider = get_log_provider(ai_system)
 
-    # Get log path and context
     log_path: Path | None = None
     log_context: str | None = None
     if provider and worktree_path:
@@ -184,29 +196,7 @@ def create_session_failure_diagnosis(
         if log_path:
             log_context = provider.get_failure_context(log_path)
 
-    # Build warnings and suggestions
-    warnings: list[str] = []
-    suggestions: list[str] = []
-
-    if permission_mode == "default":
-        warnings.append(
-            "permission_mode is 'default' - Claude prompts for permissions in non-interactive mode"
-        )
-        suggestions.append(
-            "Add 'permission_mode: bypassPermissions' to your agent config in YAML"
-        )
-
-    if not log_path or not (log_path and log_path.exists()):
-        warnings.append("No AI session log found for this issue")
-        suggestions.append(
-            f"Check ~/.claude/projects/ for logs related to {worktree_path}"
-        )
-
-    if log_context and "permission" in log_context.lower():
-        warnings.append("Permission-related errors detected in log")
-        suggestions.append(
-            "Consider using 'permission_mode: bypassPermissions' for non-interactive sessions"
-        )
+    warnings, suggestions = _build_warnings_and_suggestions(permission_mode, log_path, log_context, worktree_path)
 
     return SessionFailureDiagnosis(
         issue_number=issue_number,

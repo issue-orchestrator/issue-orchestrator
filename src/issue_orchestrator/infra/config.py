@@ -494,6 +494,292 @@ def _parse_filtering_config(data: dict) -> FilteringConfig:
     )
 
 
+def _load_repo_section(config: "Config", repo_section: dict, github_section: dict) -> None:
+    """Load repo and GitHub settings into config."""
+    config.repo = repo_section.get("name")
+    config.github_token = github_section.get("token")
+    config.github_token_env = github_section.get("token_env")
+    config.github_api_url = github_section.get("api_url", "https://api.github.com")
+    config.github_http_timeout_seconds = github_section.get("http_timeout_seconds", 20.0)
+    config.github_cache_ttl_seconds = github_section.get("cache_ttl_seconds", 300)
+    required_scopes = github_section.get("required_scopes", []) or []
+    allowed_scopes = github_section.get("allowed_scopes", []) or []
+    if isinstance(required_scopes, str):
+        required_scopes = [s.strip() for s in required_scopes.split(",") if s.strip()]
+    if isinstance(allowed_scopes, str):
+        allowed_scopes = [s.strip() for s in allowed_scopes.split(",") if s.strip()]
+    config.github_required_scopes = list(required_scopes)
+    config.github_allowed_scopes = list(allowed_scopes)
+
+
+def _load_github_write_verify(config: "Config", github_section: dict) -> None:
+    """Load GitHub write verification and rate limit settings."""
+    write_verify = github_section.get("write_verify", {})
+    config.gh_write_verify_timeout_seconds = write_verify.get("timeout_seconds", 20)
+    config.gh_write_verify_initial_delay_ms = write_verify.get("initial_delay_ms", 250)
+    config.gh_write_verify_max_delay_ms = write_verify.get("max_delay_ms", 2000)
+    config.gh_write_verify_backoff = write_verify.get("backoff", 1.5)
+    config.gh_write_verify_jitter_ms = write_verify.get("jitter_ms", 0)
+
+    rate_limit = github_section.get("rate_limit", {})
+    config.gh_rate_limit_startup = rate_limit.get("startup", True)
+    config.gh_rate_limit_every_calls = rate_limit.get("every_calls", 500)
+    config.gh_rate_limit_warn_fraction = rate_limit.get("warn_fraction", 0.1)
+    config.gh_rate_limit_warn_remaining = rate_limit.get("warn_remaining", 100)
+
+    audit = github_section.get("audit", {})
+    config.gh_audit_enabled = audit.get("enabled", False)
+    config.gh_audit_events = audit.get("events", False)
+    config.gh_audit_file = audit.get("file")
+
+
+def _load_labels_section(config: "Config", labels_section: dict) -> None:
+    """Load label configuration."""
+    config.label_in_progress = labels_section.get("in_progress", "in-progress")
+    config.label_blocked = labels_section.get("blocked", "blocked")
+    config.label_needs_human = labels_section.get("needs_human", "needs-human")
+    config.label_needs_rework = labels_section.get("needs_rework", "needs-rework")
+    config.label_validation_failed = labels_section.get("validation_failed", "validation-failed")
+    config.label_prefix = labels_section.get("prefix")
+
+
+def _load_review_section(config: "Config", review_section: dict) -> None:
+    """Load review workflow configuration."""
+    config.review_enabled = review_section.get("enabled", False)
+    config.code_review_agent = review_section.get("default")
+    config.code_review_label = review_section.get("code_review_label", "needs-code-review")
+    config.code_reviewed_label = review_section.get("code_reviewed_label", "code-reviewed")
+    config.triage_review_agent = review_section.get("triage_review_agent")
+    config.triage_review_label = review_section.get("triage_review_label")
+    config.triage_reviewed_label = review_section.get("triage_reviewed_label", "triage-reviewed")
+    config.triage_review_threshold = review_section.get("triage_review_threshold", 0)
+    config.triage_review_on_failure = review_section.get("triage_review_on_failure", True)
+    config.max_rework_cycles = review_section.get("max_rework_cycles", 2)
+
+
+def _load_cleanup_section(config: "Config", cleanup_section: dict) -> None:
+    """Load cleanup configuration."""
+    if cleanup_section:
+        with_triage_data = cleanup_section.get("with_triage", {})
+        without_triage_data = cleanup_section.get("without_triage", {})
+
+        config.cleanup = CleanupConfig(
+            with_triage=CleanupWithTriage(
+                close_ai_session_tabs=with_triage_data.get("close_ai_session_tabs", True),
+                remove_worktrees=with_triage_data.get("remove_worktrees", False),
+            ),
+            without_triage=CleanupWithoutTriage(
+                wait_for_code_review=without_triage_data.get("wait_for_code_review", True),
+                close_ai_session_tabs=without_triage_data.get("close_ai_session_tabs", True),
+                remove_worktrees=without_triage_data.get("remove_worktrees", False),
+            ),
+        )
+
+
+def _load_worktrees_section(
+    config: "Config",
+    worktrees_section: dict,
+    repo_root: Path,
+    config_path: Path,
+) -> None:
+    """Load worktree configuration."""
+    worktree_base_raw = worktrees_section.get("base")
+    if worktree_base_raw is None:
+        config.worktree_base = repo_root.parent
+    else:
+        config.worktree_base = resolve_relative_path(worktree_base_raw, repo_root)
+
+    # Validate worktree_base is usable
+    try:
+        config.worktree_base.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise ValueError(
+            f"worktrees.base '{config.worktree_base}' cannot be created: {e}. "
+            "Specify an absolute path in your config under worktrees.base"
+        )
+
+    config.setup_worktree = worktrees_section.get("setup", [])
+    config.reuse_push_preflight = worktrees_section.get("reuse_push_preflight", True)
+    config.allow_no_verify_dry_run_preflight = worktrees_section.get(
+        "allow_no_verify_dry_run_preflight", True
+    )
+    config.worktree_branch_on_recreate = worktrees_section.get(
+        "worktree_branch_on_recreate", "delete"
+    )
+
+    remediation_section = _get_section(worktrees_section, "remediation", config_path)
+    config.worktree_remediation_pr_collision = remediation_section.get(
+        "pr_collision", "new_branch"
+    )
+    config.worktree_remediation_push_rebase_retry = remediation_section.get(
+        "push_rebase_retry", True
+    )
+
+
+def _load_execution_section(config: "Config", execution_section: dict, repo_root: Path, config_path: Path) -> None:
+    """Load execution and terminal configuration."""
+    # Concurrency
+    concurrency = _get_section(execution_section, "concurrency", config_path)
+    config.max_concurrent_sessions = concurrency.get("max_concurrent_sessions", 3)
+    config.session_timeout_minutes = concurrency.get("session_timeout_minutes", 45)
+
+    # Terminal adapter
+    config.terminal_adapter = execution_section.get("terminal_adapter")
+    if execution_section.get("tmux_session_mode"):
+        config.tmux_session_mode = str(execution_section["tmux_session_mode"])
+
+    if execution_section.get("tmuxp"):
+        config.tmuxp_config = resolve_relative_path(execution_section["tmuxp"], repo_root)
+
+    if "tmux_bindings" in execution_section:
+        bindings = execution_section["tmux_bindings"]
+        if bindings is None:
+            config.tmux_bindings = []
+        elif isinstance(bindings, list):
+            config.tmux_bindings = bindings
+        else:
+            config.tmux_bindings = [str(bindings)]
+
+    # Isolation
+    isolation_data = execution_section.get("isolation", {})
+    if isolation_data:
+        config.isolation = IsolationConfig(mode=isolation_data.get("mode", "standard"))
+
+
+def _load_ui_section(config: "Config", ui_section: dict) -> None:
+    """Load UI configuration."""
+    config.ui_mode = ui_section.get("mode", "web")
+    config.web_port = ui_section.get("web_port", 8080)
+    config.control_api_port = ui_section.get("control_api_port", 19080)
+    config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
+    config.instances = ui_section.get("instances", 1)
+
+
+def _load_observability_section(config: "Config", observability_section: dict) -> None:
+    """Load observability configuration."""
+    config.session_no_output_seconds = observability_section.get("session_no_output_seconds", 120)
+    config.session_no_output_tail_lines = observability_section.get("session_no_output_tail_lines", 50)
+    config.session_no_output_max_bytes = observability_section.get("session_no_output_max_bytes", 10000)
+    config.session_no_output_repeat_seconds = observability_section.get("session_no_output_repeat_seconds", 120)
+    config.session_output_retention_runs = observability_section.get("session_output_retention_runs", 7)
+    config.stale_escalation_ticks = observability_section.get("stale_escalation_ticks", 0)
+
+    # Comment headings
+    headings_data = observability_section.get("comment_headings", {})
+    if headings_data:
+        config.comment_headings = CommentHeadings(
+            implementation=headings_data.get("implementation", "## Implementation"),
+            problems=headings_data.get("problems", "## Problems Encountered"),
+            pr_link=headings_data.get("pr_link", "## Pull Request"),
+            blocked=headings_data.get("blocked", "## Blocked"),
+            needs_human=headings_data.get("needs_human", "## Needs Human Input"),
+        )
+
+
+def _load_security_section(config: "Config", security_section: dict, repo_root: Path) -> None:
+    """Load security configuration."""
+    config.enforce_hooks = security_section.get("enforce_hooks", True)
+    if security_section.get("pre_push_hook"):
+        config.pre_push_hook = resolve_relative_path(security_section["pre_push_hook"], repo_root)
+
+    dangerous_data = security_section.get("dangerous", {})
+    if dangerous_data:
+        config.dangerous = DangerousConfig(
+            allow_unsupported_agents=dangerous_data.get("allow_unsupported_agents", False),
+        )
+
+
+def _load_validation_section(config: "Config", validation_section: dict) -> None:
+    """Load validation configuration."""
+    if validation_section:
+        config.validation = ValidationConfig(
+            cmd=validation_section.get("cmd"),
+            timeout_seconds=validation_section.get("timeout_seconds", 300),
+        )
+
+
+def _load_retry_section(config: "Config", data: dict) -> None:
+    """Load retry configuration."""
+    retry_data = data.get("retry", {})
+    if retry_data:
+        config.retry = RetryConfig(
+            max_validation_retries=retry_data.get("max_validation_retries", 3),
+            validation_error_file=retry_data.get("validation_error_file", "validation-errors.txt"),
+            retry_prompt_template=retry_data.get("retry_prompt_template"),
+        )
+
+
+def _load_agents_section(
+    config: "Config",
+    agents_section: dict,
+    repo_root: Path,
+) -> None:
+    """Load agent configurations."""
+    for label, agent_data in agents_section.items():
+        prompt_relative = agent_data["prompt"]
+        prompt_path = resolve_relative_path(prompt_relative, repo_root)
+
+        # Inherit provider from default_agent if not specified
+        provider = agent_data.get("provider")
+        if provider is None and config.default_agent:
+            provider = config.default_agent.provider
+
+        # Inherit model from default_agent if not specified
+        model = agent_data.get("model")
+        if model is None and config.default_agent and config.default_agent.model:
+            model = config.default_agent.model
+        if model is None:
+            model = "sonnet"  # Fallback default
+
+        # Merge provider_args
+        provider_args = {}
+        if config.default_agent and config.default_agent.provider_args:
+            provider_args.update(config.default_agent.provider_args)
+        if agent_data.get("provider_args"):
+            provider_args.update(agent_data["provider_args"])
+
+        agent_kwargs = {
+            "prompt_path": prompt_path,
+            "prompt_relative": prompt_relative,
+            "provider": provider,
+            "model": model,
+            "timeout_minutes": agent_data.get("timeout_minutes", 45),
+            "provider_args": provider_args,
+            "permission_mode": agent_data.get("permission_mode", "default"),
+            "skip_review": agent_data.get("skip_review", False),
+            "reviewer": agent_data.get("reviewer"),
+            "meta_agent": agent_data.get("meta_agent"),
+            "ai_system": agent_data.get("ai_system"),
+            "retry_prompt_template": agent_data.get("retry_prompt_template"),
+        }
+        if "command" in agent_data:
+            agent_kwargs["command"] = agent_data["command"]
+        if "initial_prompt" in agent_data:
+            agent_kwargs["initial_prompt"] = agent_data["initial_prompt"]
+        config.agents[label] = AgentConfig(**agent_kwargs)
+
+
+_TOP_LEVEL_SECTION_KEYS = (
+    "agents", "labels", "review", "cleanup", "worktrees", "execution",
+    "validation", "ui", "observability", "security", "filtering",
+    "triage", "e2e", "milestones", "state", "config", "claims",
+)
+
+
+def _extract_config_sections(data: dict, config_path: Path) -> dict:  # noqa: C901
+    """Extract all sections from config data.
+
+    Note: The noqa is needed because extracting 17+ config sections
+    in a loop counts as high complexity, but this is the simplest
+    possible implementation for reading config sections by name.
+    """
+    repo_section = _get_section(data, "repo", config_path)
+    sections = {key: _get_section(data, key, config_path) for key in _TOP_LEVEL_SECTION_KEYS}
+    sections["repo"] = repo_section
+    sections["github"] = _get_section(repo_section, "github", config_path)
+    return sections
+
+
 @dataclass
 class Config:
     """Orchestrator configuration."""
@@ -659,8 +945,8 @@ class Config:
     config_path: Optional[Path] = None
 
     # Raw YAML data for unknown field validation (set during load)
-    _raw_data: dict = field(default_factory=dict)
-    _raw_agents: dict = field(default_factory=dict)
+    raw_data: dict = field(default_factory=dict)
+    raw_agents: dict = field(default_factory=dict)
 
     @property
     def orchestrator_id(self) -> str:
@@ -940,63 +1226,24 @@ class Config:
         config = cls()
         config.config_path = config_path.resolve()
 
-        # Extract all sections with validation for clear error messages
-        # (YAML quirk: `section:` with only comments becomes None, not {})
-        repo_section = _get_section(data, "repo", config_path)
-        github_section = _get_section(repo_section, "github", config_path)
-        agents_section = _get_section(data, "agents", config_path)
-        labels_section = _get_section(data, "labels", config_path)
-        review_section = _get_section(data, "review", config_path)
-        cleanup_section = _get_section(data, "cleanup", config_path)
-        worktrees_section = _get_section(data, "worktrees", config_path)
-        execution_section = _get_section(data, "execution", config_path)
-        validation_section = _get_section(data, "validation", config_path)
-        ui_section = _get_section(data, "ui", config_path)
-        observability_section = _get_section(data, "observability", config_path)
-        security_section = _get_section(data, "security", config_path)
-        filtering_section = _get_section(data, "filtering", config_path)
-        triage_section = _get_section(data, "triage", config_path)
-        e2e_section = _get_section(data, "e2e", config_path)
-        milestones_section = _get_section(data, "milestones", config_path)
-        state_section = _get_section(data, "state", config_path)
-        config_section = _get_section(data, "config", config_path)
-        claims_section = _get_section(data, "claims", config_path)
-
-        # Determine repo root using centralized helper
+        # Extract all sections with validation
+        sections = _extract_config_sections(data, config_path)
         repo_root = repo_root_from_config_path(config_path)
 
-        # Default repo_root to detected repo root
-        # (can be overridden by YAML settings)
+        # Set repo root
         config.repo_root = repo_root
-        if repo_section.get("root"):
-            config.repo_root = resolve_relative_path(repo_section["root"], repo_root)
+        if sections["repo"].get("root"):
+            config.repo_root = resolve_relative_path(sections["repo"]["root"], repo_root)
             config.repo_root_from_yaml = True
 
-        # Parse worktrees.base (applies to all agents)
-        # Default: parent directory of repo (worktrees become siblings like {repo}-33)
-        worktree_base_raw = worktrees_section.get("base")
-        if worktree_base_raw is None:
-            config.worktree_base = repo_root.parent
-        else:
-            config.worktree_base = resolve_relative_path(worktree_base_raw, repo_root)
-
-        # Validate worktree_base is usable (create if needed, fail fast if not)
-        try:
-            config.worktree_base.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            raise ValueError(
-                f"worktrees.base '{config.worktree_base}' cannot be created: {e}. "
-                "Specify an absolute path in your config under worktrees.base"
-            )
-        config.config_strict = config_section.get("strict", False)
-        if state_section.get("file"):
-            config.state_file = resolve_relative_path(state_section["file"], repo_root)
-
         # Store raw data for unknown field validation
-        config._raw_data = data
-        config._raw_agents = agents_section
+        config.raw_data = data
+        config.raw_agents = sections["agents"]
+        config.config_strict = sections["config"].get("strict", False)
+        if sections["state"].get("file"):
+            config.state_file = resolve_relative_path(sections["state"]["file"], repo_root)
 
-        # Parse default_agent section (inherited by agents without explicit provider)
+        # Parse default_agent section
         default_agent_section = data.get("default_agent", {})
         if default_agent_section:
             config.default_agent = DefaultAgentConfig(
@@ -1005,267 +1252,35 @@ class Config:
                 provider_args=default_agent_section.get("provider_args", {}),
             )
 
-        # Parse agents
-        # All relative paths in agent configs are resolved relative to repo_root
+        # Load all sections using helper functions
+        _load_worktrees_section(config, sections["worktrees"], repo_root, config_path)
+        _load_agents_section(config, sections["agents"], repo_root)
+        _load_execution_section(config, sections["execution"], repo_root, config_path)
+        _load_labels_section(config, sections["labels"])
+        _load_repo_section(config, sections["repo"], sections["github"])
+        _load_github_write_verify(config, sections["github"])
+        _load_ui_section(config, sections["ui"])
+        _load_observability_section(config, sections["observability"])
+        _load_security_section(config, sections["security"], repo_root)
+        _load_review_section(config, sections["review"])
+        _load_cleanup_section(config, sections["cleanup"])
+        _load_validation_section(config, sections["validation"])
+        _load_retry_section(config, data)
 
-        for label, agent_data in agents_section.items():
-            # Resolve prompt path relative to repo_root (for validation)
-            # Keep original relative path for command templates (agents read from worktree)
-            prompt_relative = agent_data["prompt"]
-            prompt_path = resolve_relative_path(prompt_relative, repo_root)
+        # Simple direct assignments
+        config.e2e_pr_labels = sections["e2e"].get("pr_labels", [])
+        config.filtering = _parse_filtering_config(sections["filtering"])
+        config.milestone_sort = sections["milestones"].get("sort", "due_date")
+        config.milestone_sort_config = sections["milestones"].get("sort_config", {})
+        config.foundation_milestone = sections["milestones"].get("foundation", "M0")
 
-            # Inherit provider from default_agent if not specified
-            provider = agent_data.get("provider")
-            if provider is None and config.default_agent:
-                provider = config.default_agent.provider
-
-            # Inherit model from default_agent if not specified
-            model = agent_data.get("model")
-            if model is None and config.default_agent and config.default_agent.model:
-                model = config.default_agent.model
-            if model is None:
-                model = "sonnet"  # Fallback default
-
-            # Merge provider_args: default_agent provides base, agent-specific overrides
-            provider_args = {}
-            if config.default_agent and config.default_agent.provider_args:
-                provider_args.update(config.default_agent.provider_args)
-            if agent_data.get("provider_args"):
-                provider_args.update(agent_data["provider_args"])
-
-            agent_kwargs = {
-                "prompt_path": prompt_path,
-                "prompt_relative": prompt_relative,
-                "provider": provider,
-                "model": model,
-                "timeout_minutes": agent_data.get("timeout_minutes", 45),
-                "provider_args": provider_args,
-                "permission_mode": agent_data.get("permission_mode", "default"),
-                "skip_review": agent_data.get("skip_review", False),
-                "reviewer": agent_data.get("reviewer"),  # Per-agent reviewer override
-                "meta_agent": agent_data.get("meta_agent"),
-                "ai_system": agent_data.get("ai_system"),  # Explicit AI system override
-                "retry_prompt_template": agent_data.get("retry_prompt_template"),  # Per-agent retry template
-            }
-            if "command" in agent_data:
-                agent_kwargs["command"] = agent_data["command"]
-            if "initial_prompt" in agent_data:
-                agent_kwargs["initial_prompt"] = agent_data["initial_prompt"]
-            config.agents[label] = AgentConfig(**agent_kwargs)
-
-        # Parse concurrency
-        concurrency = _get_section(execution_section, "concurrency", config_path)
-        config.max_concurrent_sessions = concurrency.get("max_concurrent_sessions", 3)
-        config.session_timeout_minutes = concurrency.get("session_timeout_minutes", 45)
-
-        # Parse labels
-        labels = labels_section
-        config.label_in_progress = labels.get("in_progress", "in-progress")
-        config.label_blocked = labels.get("blocked", "blocked")
-        config.label_needs_human = labels.get("needs_human", "needs-human")
-        config.label_needs_rework = labels.get("needs_rework", "needs-rework")
-        config.label_validation_failed = labels.get("validation_failed", "validation-failed")
-        config.label_prefix = labels.get("prefix")
-
-        # Repo + GitHub settings
-        config.repo = repo_section.get("name")
-        config.github_token = github_section.get("token")
-        config.github_token_env = github_section.get("token_env")
-        config.github_api_url = github_section.get("api_url", "https://api.github.com")
-        config.github_http_timeout_seconds = github_section.get("http_timeout_seconds", 20.0)
-        config.github_cache_ttl_seconds = github_section.get("cache_ttl_seconds", 300)
-        required_scopes = github_section.get("required_scopes", []) or []
-        allowed_scopes = github_section.get("allowed_scopes", []) or []
-        if isinstance(required_scopes, str):
-            required_scopes = [s.strip() for s in required_scopes.split(",") if s.strip()]
-        if isinstance(allowed_scopes, str):
-            allowed_scopes = [s.strip() for s in allowed_scopes.split(",") if s.strip()]
-        config.github_required_scopes = list(required_scopes)
-        config.github_allowed_scopes = list(allowed_scopes)
-        config.e2e_pr_labels = e2e_section.get("pr_labels", [])
-
-        # Parse filtering section
-        filtering_data = filtering_section
-        config.filtering = _parse_filtering_config(filtering_data)
-
-        # UI mode
-        config.ui_mode = ui_section.get("mode", "web")
-        config.web_port = ui_section.get("web_port", 8080)
-        config.control_api_port = ui_section.get("control_api_port", 19080)
-        config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
-        config.instances = ui_section.get("instances", 1)
-
-        # Observability / session reporting
-        config.session_no_output_seconds = observability_section.get("session_no_output_seconds", 120)
-        config.session_no_output_tail_lines = observability_section.get("session_no_output_tail_lines", 50)
-        config.session_no_output_max_bytes = observability_section.get("session_no_output_max_bytes", 10000)
-        config.session_no_output_repeat_seconds = observability_section.get("session_no_output_repeat_seconds", 120)
-        config.session_output_retention_runs = observability_section.get("session_output_retention_runs", 7)
-        config.stale_escalation_ticks = observability_section.get("stale_escalation_ticks", 0)
-
-        # GitHub write verification + rate limits + audit
-        write_verify = github_section.get("write_verify", {})
-        config.gh_write_verify_timeout_seconds = write_verify.get("timeout_seconds", 20)
-        config.gh_write_verify_initial_delay_ms = write_verify.get("initial_delay_ms", 250)
-        config.gh_write_verify_max_delay_ms = write_verify.get("max_delay_ms", 2000)
-        config.gh_write_verify_backoff = write_verify.get("backoff", 1.5)
-        config.gh_write_verify_jitter_ms = write_verify.get("jitter_ms", 0)
-
-        rate_limit = github_section.get("rate_limit", {})
-        config.gh_rate_limit_startup = rate_limit.get("startup", True)
-        config.gh_rate_limit_every_calls = rate_limit.get("every_calls", 500)
-        config.gh_rate_limit_warn_fraction = rate_limit.get("warn_fraction", 0.1)
-        config.gh_rate_limit_warn_remaining = rate_limit.get("warn_remaining", 100)
-
-        audit = github_section.get("audit", {})
-        config.gh_audit_enabled = audit.get("enabled", False)
-        config.gh_audit_events = audit.get("events", False)
-        config.gh_audit_file = audit.get("file")
-
-        # Terminal adapter (overrides ui_mode if set)
-        config.terminal_adapter = execution_section.get("terminal_adapter")
-        if execution_section.get("tmux_session_mode"):
-            config.tmux_session_mode = str(execution_section["tmux_session_mode"])
-
-        # Custom tmuxp config for tmux layout
-        if execution_section.get("tmuxp"):
-            config.tmuxp_config = resolve_relative_path(execution_section["tmuxp"], repo_root)
-
-        # Tmux key bindings (default: double-click to zoom)
-        if "tmux_bindings" in execution_section:
-            bindings = execution_section["tmux_bindings"]
-            if bindings is None:
-                config.tmux_bindings = []  # Explicitly disable bindings
-            elif isinstance(bindings, list):
-                config.tmux_bindings = bindings
-            else:
-                config.tmux_bindings = [str(bindings)]
-
-        # Milestone sorting strategy
-        config.milestone_sort = milestones_section.get("sort", "due_date")
-        config.milestone_sort_config = milestones_section.get("sort_config", {})
-        config.foundation_milestone = milestones_section.get("foundation", "M0")
-
-        # Enforcement options
-        config.enforce_hooks = security_section.get("enforce_hooks", True)
-        if security_section.get("pre_push_hook"):
-            config.pre_push_hook = resolve_relative_path(security_section["pre_push_hook"], repo_root)
-
-        # Worktree setup + reuse behavior
-        config.setup_worktree = worktrees_section.get("setup", [])
-        config.reuse_push_preflight = worktrees_section.get("reuse_push_preflight", True)
-        config.allow_no_verify_dry_run_preflight = worktrees_section.get(
-            "allow_no_verify_dry_run_preflight",
-            True,
-        )
-        config.worktree_branch_on_recreate = worktrees_section.get(
-            "worktree_branch_on_recreate",
-            "delete",
-        )
-        remediation_section = _get_section(worktrees_section, "remediation", config_path)
-        config.worktree_remediation_pr_collision = remediation_section.get(
-            "pr_collision",
-            "new_branch",
-        )
-        config.worktree_remediation_push_rebase_retry = remediation_section.get(
-            "push_rebase_retry",
-            True,
-        )
-
-        # Review workflow
-        review_config = review_section
-
-        # Code review (per-PR, immediate)
-        # "enabled" explicitly toggles code review on/off
-        config.review_enabled = review_config.get("enabled", False)
-        config.code_review_agent = review_config.get("default")
-        config.code_review_label = review_config.get("code_review_label", "needs-code-review")
-        config.code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
-
-        # Triage review (batch)
-        config.triage_review_agent = review_config.get("triage_review_agent")
-        config.triage_review_label = review_config.get("triage_review_label")
-        config.triage_reviewed_label = review_config.get("triage_reviewed_label", "triage-reviewed")
-        config.triage_review_threshold = review_config.get("triage_review_threshold", 0)
-        config.triage_review_on_failure = review_config.get("triage_review_on_failure", True)
-
-        # Rework cycle limit
-        config.max_rework_cycles = review_config.get("max_rework_cycles", 2)
-
-        # Parse cleanup config
-        cleanup_data = cleanup_section
-        if cleanup_data:
-            with_triage_data = cleanup_data.get("with_triage", {})
-            without_triage_data = cleanup_data.get("without_triage", {})
-
-            config.cleanup = CleanupConfig(
-                with_triage=CleanupWithTriage(
-                    close_ai_session_tabs=with_triage_data.get("close_ai_session_tabs", True),
-                    remove_worktrees=with_triage_data.get("remove_worktrees", False),
-                ),
-                without_triage=CleanupWithoutTriage(
-                    wait_for_code_review=without_triage_data.get("wait_for_code_review", True),
-                    close_ai_session_tabs=without_triage_data.get("close_ai_session_tabs", True),
-                    remove_worktrees=without_triage_data.get("remove_worktrees", False),
-                ),
-            )
-
-        # Parse comment headings
-        headings_data = observability_section.get("comment_headings", {})
-        if headings_data:
-            config.comment_headings = CommentHeadings(
-                implementation=headings_data.get("implementation", "## Implementation"),
-                problems=headings_data.get("problems", "## Problems Encountered"),
-                pr_link=headings_data.get("pr_link", "## Pull Request"),
-                blocked=headings_data.get("blocked", "## Blocked"),
-                needs_human=headings_data.get("needs_human", "## Needs Human Input"),
-            )
-
-        # Parse dangerous config
-        dangerous_data = security_section.get("dangerous", {})
-        if dangerous_data:
-            config.dangerous = DangerousConfig(
-                allow_unsupported_agents=dangerous_data.get("allow_unsupported_agents", False),
-            )
-
-        # Parse validation config - single command runs everywhere
-        validation_data = validation_section
-        if validation_data:
-            config.validation = ValidationConfig(
-                cmd=validation_data.get("cmd"),
-                timeout_seconds=validation_data.get("timeout_seconds", 300),
-            )
-
-        # Parse retry config - validation retry with error injection
-        retry_data = data.get("retry", {})
-        if retry_data:
-            config.retry = RetryConfig(
-                max_validation_retries=retry_data.get("max_validation_retries", 3),
-                validation_error_file=retry_data.get("validation_error_file", "validation-errors.txt"),
-                retry_prompt_template=retry_data.get("retry_prompt_template"),  # Default for all agents
-            )
-
-        # Parse isolation config
-        isolation_data = execution_section.get("isolation", {})
-        if isolation_data:
-            config.isolation = IsolationConfig(
-                mode=isolation_data.get("mode", "standard"),
-            )
-
-        # Parse triage config
-        triage_data = triage_section
-        if triage_data:
-            config.triage = _parse_triage_config(triage_data)
-
-        # Parse e2e config
-        e2e_data = e2e_section
-        if e2e_data:
-            config.e2e = _parse_e2e_config(e2e_data)
-
-        # Parse claims config
-        claims_data = claims_section
-        if claims_data:
-            config.claims = _parse_claims_config(claims_data)
+        # Parse complex configs
+        if sections["triage"]:
+            config.triage = _parse_triage_config(sections["triage"])
+        if sections["e2e"]:
+            config.e2e = _parse_e2e_config(sections["e2e"])
+        if sections["claims"]:
+            config.claims = _parse_claims_config(sections["claims"])
 
         return config
 
@@ -1336,12 +1351,12 @@ class Config:
         unknown = []
 
         # Check top-level fields
-        for key in self._raw_data.keys():
+        for key in self.raw_data.keys():
             if key not in ALLOWED_TOP_LEVEL_FIELDS:
                 unknown.append((key, "top"))
 
         # Check per-agent fields
-        for agent_name, agent_data in self._raw_agents.items():
+        for agent_name, agent_data in self.raw_agents.items():
             if isinstance(agent_data, dict):
                 for key in agent_data.keys():
                     if key not in ALLOWED_AGENT_FIELDS:

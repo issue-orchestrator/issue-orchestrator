@@ -68,72 +68,68 @@ def check_hook_dependencies(repo_root: Path) -> list[Check]:
     return checks
 
 
+def _check_agent_scripts(config: Config) -> Check:
+    """Check if agent scripts are available."""
+    missing_scripts = []
+    for name, agent_cfg in config.agents.items():
+        cmd_parts = agent_cfg.command.split()
+        script = None
+        for part in cmd_parts:
+            if "=" not in part or part.startswith("{"):
+                script = part
+                break
+        if script and not shutil.which(script) and not Path(script).exists():
+            missing_scripts.append(f"{name}: {script}")
+
+    if missing_scripts:
+        return Check(
+            name="Agent Scripts",
+            status="error",
+            detail=f"Missing: {', '.join(missing_scripts[:3])}" + ("..." if len(missing_scripts) > 3 else ""),
+        )
+    return Check(name="Agent Scripts", status="ok", detail="All found")
+
+
+def _check_retry_templates(config: Config) -> Check | None:
+    """Check if retry templates exist. Returns None if no templates configured."""
+    repo_root = Path.cwd()
+    missing_templates = []
+
+    if config.retry and config.retry.retry_prompt_template:
+        template_path = repo_root / config.retry.retry_prompt_template
+        if not template_path.exists():
+            missing_templates.append(f"retry: {config.retry.retry_prompt_template}")
+
+    for name, agent_cfg in config.agents.items():
+        if agent_cfg.retry_prompt_template:
+            template_path = repo_root / agent_cfg.retry_prompt_template
+            if not template_path.exists():
+                missing_templates.append(f"{name}: {agent_cfg.retry_prompt_template}")
+
+    if missing_templates:
+        return Check(
+            name="Retry Templates",
+            status="error",
+            detail=f"Missing: {', '.join(missing_templates[:3])}" + ("..." if len(missing_templates) > 3 else ""),
+        )
+    if config.retry and config.retry.retry_prompt_template:
+        return Check(name="Retry Templates", status="ok", detail="All found")
+    return None
+
+
 def check_agents(config: Config) -> list[Check]:
     checks: list[Check] = []
-
     agent_count = len(config.agents)
-    if agent_count > 0:
-        checks.append(Check(
-            name="Agents",
-            status="ok",
-            detail=f"{agent_count} configured",
-        ))
 
-        missing_scripts = []
-        for name, agent_cfg in config.agents.items():
-            cmd_parts = agent_cfg.command.split()
-            script = None
-            for part in cmd_parts:
-                if "=" not in part or part.startswith("{"):
-                    script = part
-                    break
-            if script and not shutil.which(script) and not Path(script).exists():
-                missing_scripts.append(f"{name}: {script}")
+    if agent_count == 0:
+        checks.append(Check(name="Agents", status="warning", detail="None configured"))
+        return checks
 
-        if missing_scripts:
-            checks.append(Check(
-                name="Agent Scripts",
-                status="error",
-                detail=f"Missing: {', '.join(missing_scripts[:3])}" + ("..." if len(missing_scripts) > 3 else ""),
-            ))
-        else:
-            checks.append(Check(
-                name="Agent Scripts",
-                status="ok",
-                detail="All found",
-            ))
+    checks.append(Check(name="Agents", status="ok", detail=f"{agent_count} configured"))
+    checks.append(_check_agent_scripts(config))
 
-        repo_root = Path.cwd()
-        missing_templates = []
-
-        if config.retry and config.retry.retry_prompt_template:
-            template_path = repo_root / config.retry.retry_prompt_template
-            if not template_path.exists():
-                missing_templates.append(f"retry: {config.retry.retry_prompt_template}")
-
-        for name, agent_cfg in config.agents.items():
-            if agent_cfg.retry_prompt_template:
-                template_path = repo_root / agent_cfg.retry_prompt_template
-                if not template_path.exists():
-                    missing_templates.append(f"{name}: {agent_cfg.retry_prompt_template}")
-
-        if missing_templates:
-            checks.append(Check(
-                name="Retry Templates",
-                status="error",
-                detail=f"Missing: {', '.join(missing_templates[:3])}" + ("..." if len(missing_templates) > 3 else ""),
-            ))
-        elif config.retry and config.retry.retry_prompt_template:
-            checks.append(Check(
-                name="Retry Templates",
-                status="ok",
-                detail="All found",
-            ))
-    else:
-        checks.append(Check(
-            name="Agents",
-            status="warning",
-            detail="None configured",
-        ))
+    template_check = _check_retry_templates(config)
+    if template_check:
+        checks.append(template_check)
 
     return checks

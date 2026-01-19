@@ -105,32 +105,56 @@ def _ensure_log_dir(repo_root: Path, instance_id: str | None = None) -> Path:
     return log_dir / "orchestrator.log"
 
 
+def _check_and_cleanup_stale_lock(repo_root: Path, instance_id: str | None) -> None:
+    """Check for existing lock and clean up if stale. Raises AlreadyRunning if alive."""
+    if not is_locked(repo_root, instance_id):
+        return
+
+    info = read_lock(repo_root, instance_id)
+    if not info:
+        return
+
+    try:
+        os.kill(info.pid, 0)
+        raise AlreadyRunning(
+            pid=info.pid, repo_root=repo_root,
+            port=info.http_port, instance_id=instance_id,
+        )
+    except OSError:
+        logger.info(
+            "Cleaning up stale lock for %s instance=%s (pid %d not running)",
+            repo_root, instance_id or "default", info.pid,
+        )
+        release_lock(repo_root, info.pid, instance_id)
+
+
+def _extract_error_from_log(log_file: Path) -> str:
+    """Extract error hint from log file."""
+    if not log_file.exists():
+        return ""
+    try:
+        lines = log_file.read_text().splitlines()
+        error_lines = [l for l in lines if "ERROR" in l or "Traceback" in l or "ValueError" in l]
+        if error_lines:
+            return f"\n\nError from log:\n  {error_lines[-1]}"
+        for line in reversed(lines):
+            if line.strip():
+                return f"\n\nLast log entry:\n  {line}"
+    except Exception:
+        pass
+    return ""
+
+
 def start(
     repo_root: Path | str,
     config_name: str = "default.yaml",
     instance_id: str | None = None,
     port: int | None = None,
 ) -> LockInfo:
-    """Start an orchestrator for the given repository (or specific instance).
-
-    Args:
-        repo_root: Repository root path
-        config_name: Name of config file in .issue-orchestrator/config/ (default: default.yaml)
-        instance_id: Optional instance ID for multi-instance deployments
-        port: Optional port override (auto-detected from config if not provided)
-
-    Returns:
-        LockInfo for the started orchestrator
-
-    Raises:
-        AlreadyRunning: If an orchestrator is already running for this repo/instance
-        FileNotFoundError: If config file not found
-    """
+    """Start an orchestrator for the given repository."""
     from .config import Config, get_config_path
 
     repo_root = normalize_repo_root(repo_root)
-
-    # Load config to get port (if not overridden)
     config_path = get_config_path(repo_root, config_name)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -139,30 +163,7 @@ def start(
     if port is None:
         port = config.web_port
 
-    # Check for existing running orchestrator (for this instance if specified)
-    # If lock exists but process is dead, clean up the stale lock
-    if is_locked(repo_root, instance_id):
-        info = read_lock(repo_root, instance_id)
-        if info:
-            # Verify the process is actually running
-            try:
-                os.kill(info.pid, 0)
-                # Process is alive - can't start another
-                raise AlreadyRunning(
-                    pid=info.pid,
-                    repo_root=repo_root,
-                    port=info.http_port,
-                    instance_id=instance_id,
-                )
-            except OSError:
-                # Process is dead - clean up stale lock and continue
-                logger.info(
-                    "Cleaning up stale lock for %s instance=%s (pid %d not running)",
-                    repo_root,
-                    instance_id or "default",
-                    info.pid,
-                )
-                release_lock(repo_root, info.pid, instance_id)
+    _check_and_cleanup_stale_lock(repo_root, instance_id)
 
     # Prepare log file
     log_file = _ensure_log_dir(repo_root, instance_id)
@@ -207,37 +208,17 @@ def start(
 
     logger.info("Orchestrator started with PID %d", process.pid)
 
-    # Wait a moment for the process to create its lock file
-    # The child process will acquire the lock with its own PID
+    # Wait for the process to create its lock file
     import time
-
     for _ in range(50):  # Wait up to 5 seconds
         info = read_lock(repo_root, instance_id)
         if info is not None and info.pid == process.pid:
             return info
         time.sleep(0.1)
 
-    # Check if process is still alive
     poll = process.poll()
     if poll is not None:
-        # Process exited - try to extract error from log
-        error_hint = ""
-        if log_file.exists():
-            try:
-                lines = log_file.read_text().splitlines()
-                # Find ERROR lines or last few lines
-                error_lines = [l for l in lines if "ERROR" in l or "Traceback" in l or "ValueError" in l]
-                if error_lines:
-                    error_hint = f"\n\nError from log:\n  {error_lines[-1]}"
-                elif lines:
-                    # Show last non-empty line as hint
-                    for line in reversed(lines):
-                        if line.strip():
-                            error_hint = f"\n\nLast log entry:\n  {line}"
-                            break
-            except Exception:
-                pass  # Don't fail if we can't read logs
-
+        error_hint = _extract_error_from_log(log_file)
         raise RuntimeError(
             f"Orchestrator process exited immediately with code {poll}.{error_hint}\n\n"
             f"Full logs at: {log_file}"
@@ -371,109 +352,87 @@ def stop_by_port(port: int, force: bool = False) -> bool:
     return False
 
 
-def stop(
-    repo_root: Path | str,
-    force: bool = False,
-    instance_id: str | None = None,
-) -> bool:
-    """Stop the orchestrator for the given repository (or specific instance).
-
-    Args:
-        repo_root: Repository root path
-        force: If True, use SIGKILL instead of SIGTERM
-        instance_id: Optional instance ID for multi-instance deployments
-
-    Returns:
-        True if orchestrator is stopped (or was already stopped/dead)
-        False only if the kill operation truly failed (process still running)
-    """
-    repo_root = normalize_repo_root(repo_root)
-
-    info = read_lock(repo_root, instance_id)
-    if info is None:
-        instance_str = f" instance={instance_id}" if instance_id else ""
-        logger.debug("No lock file found for %s%s (already stopped)", repo_root, instance_str)
-        # Return True - no running orchestrator means the stop goal is achieved
-        return True
-
-    pid = info.pid
-    port = info.http_port
-
-    # Check if process is alive
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        # Process not running, clean up stale lock
-        release_lock(repo_root, pid, instance_id)
-        logger.info("Cleaned up stale lock for %s (pid %d not running)", repo_root, pid)
-        # Return True - the process IS stopped (which is what the caller wanted)
-        # even if it died before we could kill it ourselves
-        return True
-
-    # Try graceful shutdown via HTTP first (unless force kill requested)
-    # This gives the orchestrator a chance to show "Stopping..." in its UI
-    if not force and port:
-        if _try_graceful_shutdown(port, pid):
-            release_lock(repo_root, pid, instance_id)
+def _wait_for_process_exit(pid: int, timeout_iterations: int) -> bool:
+    """Wait for process to exit. Returns True if exited."""
+    import time
+    for _ in range(timeout_iterations):
+        try:
+            os.kill(pid, 0)
+            time.sleep(0.1)
+        except OSError:
             return True
+    return False
 
-    # Fall back to signals
-    # Send signal to the process group (negative PID) to kill all children too.
-    # The process was started with start_new_session=True, making it the leader
-    # of a new process group where PGID == PID.
+
+def _send_kill_signal(pid: int, force: bool) -> None:
+    """Send kill signal to process or process group."""
     sig = signal.SIGKILL if force else signal.SIGTERM
     logger.info("Sending %s to orchestrator process group %d", sig.name, pid)
-
     try:
-        # Kill the entire process group
         os.killpg(pid, sig)
     except OSError as e:
-        # Fallback to killing just the process if killpg fails
         logger.warning("Failed to kill process group %d: %s, trying single process", pid, e)
         try:
             os.kill(pid, sig)
         except OSError as e2:
             logger.warning("Failed to send signal to pid %d: %s", pid, e2)
 
-    # Wait for process to exit (with timeout)
-    import time
 
-    for _ in range(30):  # Wait up to 3 seconds
-        try:
-            os.kill(pid, 0)
-            time.sleep(0.1)
-        except OSError:
-            # Process exited
-            release_lock(repo_root, pid, instance_id)
-            logger.info("Orchestrator stopped (pid %d)", pid)
-            return True
+def stop(
+    repo_root: Path | str,
+    force: bool = False,
+    instance_id: str | None = None,
+) -> bool:
+    """Stop the orchestrator for the given repository."""
+    repo_root = normalize_repo_root(repo_root)
 
-    # Process didn't die - try killing by port as fallback
+    info = read_lock(repo_root, instance_id)
+    if info is None:
+        logger.debug("No lock file found for %s (already stopped)", repo_root)
+        return True
+
+    pid, port = info.pid, info.http_port
+
+    # Check if process is alive
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        release_lock(repo_root, pid, instance_id)
+        logger.info("Cleaned up stale lock for %s (pid %d not running)", repo_root, pid)
+        return True
+
+    # Try graceful shutdown
+    if not force and port and _try_graceful_shutdown(port, pid):
+        release_lock(repo_root, pid, instance_id)
+        return True
+
+    # Fall back to signals
+    _send_kill_signal(pid, force)
+
+    if _wait_for_process_exit(pid, 30):
+        release_lock(repo_root, pid, instance_id)
+        logger.info("Orchestrator stopped (pid %d)", pid)
+        return True
+
+    # Try killing by port
     if port:
         logger.warning("Process group kill failed, trying to kill by port %d", port)
         _kill_by_port(port, use_sigkill=force)
-
-        # Wait again
-        for _ in range(20):  # Wait up to 2 seconds
-            try:
-                os.kill(pid, 0)
-                time.sleep(0.1)
-            except OSError:
-                release_lock(repo_root, pid, instance_id)
-                logger.info("Orchestrator stopped via port kill (pid %d)", pid)
-                return True
+        if _wait_for_process_exit(pid, 20):
+            release_lock(repo_root, pid, instance_id)
+            logger.info("Orchestrator stopped via port kill (pid %d)", pid)
+            return True
 
     if not force:
-        # Try force kill
         logger.warning("Orchestrator did not stop gracefully, forcing with SIGKILL")
         return stop(repo_root, force=True, instance_id=instance_id)
 
     # Last resort - force kill by port
+    import time
     if port:
         logger.warning("Force killing by port %d", port)
         _kill_by_port(port, use_sigkill=True)
         time.sleep(0.5)
-
         try:
             os.kill(pid, 0)
         except OSError:
