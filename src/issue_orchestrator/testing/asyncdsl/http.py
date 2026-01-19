@@ -8,7 +8,10 @@ import time
 import urllib.request
 import urllib.error
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+if TYPE_CHECKING:
+    from http.client import HTTPResponse
 
 from .contracts import Event
 
@@ -56,6 +59,67 @@ class SSEEventStream:
             except RuntimeError:
                 pass
 
+    def _emit_event(self, event: dict[str, Any]) -> None:
+        """Thread-safe emit of a parsed event to the queue."""
+        if self._loop and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
+
+    def _emit_close(self) -> None:
+        """Thread-safe emit of close sentinel to the queue."""
+        if self._loop and not self._loop.is_closed():
+            try:
+                self._loop.call_soon_threadsafe(self._queue.put_nowait, {"type": "__close__"})
+            except RuntimeError:
+                pass
+
+    def _parse_sse_line(self, line: str, buffer: dict[str, list[str]]) -> bool:
+        """Parse a single SSE line into the buffer.
+
+        Returns True if an event was emitted, False otherwise.
+        """
+        if not line:
+            # Empty line = end of event
+            data_lines = buffer.get("data")
+            if data_lines:
+                payload = "\n".join(data_lines)
+                try:
+                    event = json.loads(payload)
+                    # The control API sends complete event structure in data:
+                    # {"event_id": N, "type": "...", "issue_key": "...", "payload": {...}}
+                    self._emit_event(event)
+                except json.JSONDecodeError:
+                    pass
+            buffer.clear()
+            return True
+        if line.startswith(":"):
+            return False  # Comment line
+        if line.startswith("data:"):
+            buffer.setdefault("data", []).append(line[5:].lstrip())
+        return False
+
+    def _process_stream(self, resp: "HTTPResponse") -> None:
+        """Process SSE lines from an open response stream."""
+        buffer: dict[str, list[str]] = {}
+        for raw in resp:
+            if self._stop.is_set():
+                break
+            line = raw.decode("utf-8").rstrip("\r\n")
+            self._parse_sse_line(line, buffer)
+
+    def _handle_connection_error(self, exc: Exception | None, reason: str) -> bool:
+        """Handle connection errors during SSE streaming.
+
+        Returns True if we should break out of the main loop.
+        """
+        if self._stop.is_set():
+            return True
+        self._emit_reconnect(reason)
+        if reason == "timeout":
+            logger.info("[SSE] Stream idle timeout, reconnecting")
+        elif reason == "error":
+            logger.exception("[SSE] Stream error, reconnecting")
+        return False
+
     def _run(self) -> None:
         if self._loop is None:
             return
@@ -64,48 +128,17 @@ class SSEEventStream:
                 try:
                     logger.info("[SSE] Connecting to %s", self.url)
                     with urllib.request.urlopen(self.url, timeout=self.timeout_s) as resp:
-                        buffer: dict[str, list[str]] = {}
-                        for raw in resp:
-                            if self._stop.is_set():
-                                break
-                            line = raw.decode("utf-8").rstrip("\r\n")
-                            if not line:
-                                data_lines = buffer.get("data")
-                                if data_lines:
-                                    payload = "\n".join(data_lines)
-                                    try:
-                                        event = json.loads(payload)
-                                    except json.JSONDecodeError:
-                                        buffer = {}
-                                        continue
-                                    # The control API sends complete event structure in data:
-                                    # {"event_id": N, "type": "...", "issue_key": "...", "payload": {...}}
-                                    self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
-                                buffer = {}
-                                continue
-                            if line.startswith(":"):
-                                continue
-                            if line.startswith("data:"):
-                                buffer.setdefault("data", []).append(line[5:].lstrip())
+                        self._process_stream(resp)
                     self._emit_reconnect("closed")
                     logger.warning("[SSE] Stream closed, reconnecting")
                 except TimeoutError:
-                    # SSE streams can be idle; retry to keep the stream alive.
-                    self._emit_reconnect("timeout")
-                    logger.info("[SSE] Stream idle timeout, reconnecting")
-                    continue
-                except Exception:
-                    # Transient network errors - retry unless stopping.
-                    if self._stop.is_set():
+                    if self._handle_connection_error(None, "timeout"):
                         break
-                    self._emit_reconnect("error")
-                    logger.exception("[SSE] Stream error, reconnecting")
+                except Exception:
+                    if self._handle_connection_error(None, "error"):
+                        break
         finally:
-            if self._loop and not self._loop.is_closed():
-                try:
-                    self._loop.call_soon_threadsafe(self._queue.put_nowait, {"type": "__close__"})
-                except RuntimeError:
-                    pass
+            self._emit_close()
 
 
 @dataclass

@@ -77,6 +77,97 @@ class MaterializedView:
         self._push_event({"event_id": self.last_event_id, "type": "snapshot_applied"})
         self._mark_progress()
 
+    def _handle_orchestrator_idle(self) -> None:
+        """Handle orchestrator.idle event."""
+        self.orchestrator.idle = True
+        self._mark_progress()
+
+    def _handle_tick_completed(self, payload: dict[str, Any]) -> None:
+        """Handle tick.completed event."""
+        self.orchestrator.last_tick_id = payload.get("tick_id", self.orchestrator.last_tick_id)
+        if "idle" in payload:
+            self.orchestrator.idle = bool(payload.get("idle"))
+        # Ticks indicate the orchestrator is alive even if no issue events fire yet.
+        self._mark_progress()
+
+    def _update_issue_labels(self, iv: IssueView, payload: dict[str, Any]) -> None:
+        """Update issue labels from payload."""
+        if "labels" in payload:
+            iv.labels = set(payload.get("labels") or [])
+        if "added" in payload or "removed" in payload:
+            added = set(payload.get("added") or [])
+            removed = set(payload.get("removed") or [])
+            iv.labels = (iv.labels | added) - removed
+        if "state" in payload:
+            iv.state = payload.get("state")
+        if "updated_at" in payload:
+            iv.updated_at = payload.get("updated_at")
+
+    def _update_pr_from_nested(self, iv: IssueView, pr_raw: dict[str, Any]) -> None:
+        """Update PR view from nested pr object in payload."""
+        iv.pr.number = pr_raw.get("number", iv.pr.number)
+        iv.pr.draft = pr_raw.get("draft", iv.pr.draft)
+        if "labels" in pr_raw:
+            iv.pr.labels = set(pr_raw.get("labels") or [])
+
+    def _update_pr_from_flat(
+        self, iv: IssueView, payload: dict[str, Any], etype: str
+    ) -> None:
+        """Update PR view from flat payload fields."""
+        if "pr_number" in payload:
+            iv.pr.number = payload.get("pr_number")
+        if "draft" in payload:
+            iv.pr.draft = payload.get("draft")
+        if "pr_labels" in payload:
+            iv.pr.labels = set(payload.get("pr_labels") or [])
+        if "labels" in payload and etype == EventName.PR_VIEW_CHANGED.value:
+            iv.pr.labels = set(payload.get("labels") or [])
+        if "added" in payload or "removed" in payload:
+            added = set(payload.get("added") or [])
+            removed = set(payload.get("removed") or [])
+            iv.pr.labels = (iv.pr.labels | added) - removed
+
+    def _handle_labels_or_pr_changed(
+        self, etype: str, issue_key: str | None, payload: dict[str, Any]
+    ) -> bool:
+        """Handle issue.labels.changed or pr.view.changed events.
+
+        Returns True if event was handled.
+        """
+        if not issue_key:
+            return False
+        iv = self.issues.get(issue_key) or IssueView(issue_key=issue_key)
+        self.issues[issue_key] = iv
+
+        self._update_issue_labels(iv, payload)
+
+        pr_raw = payload.get("pr")
+        if pr_raw is not None:
+            self._update_pr_from_nested(iv, pr_raw)
+        else:
+            self._update_pr_from_flat(iv, payload, etype)
+
+        self._mark_progress()
+        return True
+
+    def _handle_queue_changed(self, payload: dict[str, Any]) -> None:
+        """Handle queue.changed event."""
+        # Handle new issues discovered during refresh
+        for added in payload.get("added", []):
+            num = added.get("number")
+            if num is not None:
+                # Create issue key in expected format (just the number as string)
+                ik = str(num)
+                if ik not in self.issues:
+                    self.issues[ik] = IssueView(issue_key=ik)
+        # Remove issues that are no longer in queue
+        for removed in payload.get("removed", []):
+            num = removed.get("number")
+            if num is not None:
+                ik = str(num)
+                self.issues.pop(ik, None)
+        self._mark_progress()
+
     def apply_event(self, event: dict[str, Any], *, gap_check: bool = True) -> None:
         eid = _ensure_int(event.get("event_id"))
         if gap_check and eid != self.last_event_id + 1 and eid > self.last_event_id:
@@ -96,58 +187,17 @@ class MaterializedView:
 
         # Orchestrator idle state - only idle event exists, no explicit "active" event
         if etype == EventName.ORCHESTRATOR_IDLE.value:
-            self.orchestrator.idle = True
-            self._mark_progress()
+            self._handle_orchestrator_idle()
             return
 
         # Tick completion - canonical dot notation
         if etype == EventName.TICK_COMPLETED.value:
-            self.orchestrator.last_tick_id = payload.get("tick_id", self.orchestrator.last_tick_id)
-            if "idle" in payload:
-                self.orchestrator.idle = bool(payload.get("idle"))
-            # Ticks indicate the orchestrator is alive even if no issue events fire yet.
-            self._mark_progress()
+            self._handle_tick_completed(payload)
             return
 
         # Issue and PR view updates - use canonical EventName values
         if etype in (EventName.ISSUE_LABELS_CHANGED.value, EventName.PR_VIEW_CHANGED.value):
-            if not issue_key:
-                return
-            iv = self.issues.get(issue_key) or IssueView(issue_key=issue_key)
-            self.issues[issue_key] = iv
-
-            if "labels" in payload:
-                iv.labels = set(payload.get("labels") or [])
-            if "added" in payload or "removed" in payload:
-                added = set(payload.get("added") or [])
-                removed = set(payload.get("removed") or [])
-                iv.labels = (iv.labels | added) - removed
-            if "state" in payload:
-                iv.state = payload.get("state")
-            if "updated_at" in payload:
-                iv.updated_at = payload.get("updated_at")
-
-            pr_raw = payload.get("pr")
-            if pr_raw is not None:
-                iv.pr.number = pr_raw.get("number", iv.pr.number)
-                iv.pr.draft = pr_raw.get("draft", iv.pr.draft)
-                if "labels" in pr_raw:
-                    iv.pr.labels = set(pr_raw.get("labels") or [])
-            else:
-                if "pr_number" in payload:
-                    iv.pr.number = payload.get("pr_number")
-                if "draft" in payload:
-                    iv.pr.draft = payload.get("draft")
-                if "pr_labels" in payload:
-                    iv.pr.labels = set(payload.get("pr_labels") or [])
-                if "labels" in payload and etype == EventName.PR_VIEW_CHANGED.value:
-                    iv.pr.labels = set(payload.get("labels") or [])
-                if "added" in payload or "removed" in payload:
-                    added = set(payload.get("added") or [])
-                    removed = set(payload.get("removed") or [])
-                    iv.pr.labels = (iv.pr.labels | added) - removed
-
-            self._mark_progress()
+            self._handle_labels_or_pr_changed(etype, issue_key, payload)
             return
 
         # Note: "apply_attempted" event doesn't exist - apply_attempts is tracked locally
@@ -165,21 +215,7 @@ class MaterializedView:
             return
 
         if etype == EventName.QUEUE_CHANGED.value:
-            # Handle new issues discovered during refresh
-            for added in payload.get("added", []):
-                num = added.get("number")
-                if num is not None:
-                    # Create issue key in expected format (just the number as string)
-                    ik = str(num)
-                    if ik not in self.issues:
-                        self.issues[ik] = IssueView(issue_key=ik)
-            # Remove issues that are no longer in queue
-            for removed in payload.get("removed", []):
-                num = removed.get("number")
-                if num is not None:
-                    ik = str(num)
-                    self.issues.pop(ik, None)
-            self._mark_progress()
+            self._handle_queue_changed(payload)
             return
 
         if payload.get("progress", False):
