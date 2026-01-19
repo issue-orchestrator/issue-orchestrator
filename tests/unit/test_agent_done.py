@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 import pytest
 
+from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     AgentStatus,
     REQUIRED_FIELDS,
@@ -558,7 +559,7 @@ class TestWriteCompletionRecord:
 
         # Change to tmp_path and write
         original_cwd = Path.cwd()
-        original_completion_path = os.environ.pop("ORCHESTRATOR_COMPLETION_PATH", None)
+        original_completion_path = os.environ.pop(f"{ENV_PREFIX}COMPLETION_PATH", None)
         try:
             os.chdir(tmp_path)
             output_path = write_completion_record(record)
@@ -574,7 +575,7 @@ class TestWriteCompletionRecord:
         finally:
             os.chdir(original_cwd)
             if original_completion_path is not None:
-                os.environ["ORCHESTRATOR_COMPLETION_PATH"] = original_completion_path
+                os.environ[f"{ENV_PREFIX}COMPLETION_PATH"] = original_completion_path
 
     def test_write_completion_record_creates_directory(self, tmp_path):
         """Test that write_completion_record creates .issue-orchestrator directory."""
@@ -590,7 +591,7 @@ class TestWriteCompletionRecord:
         )
 
         original_cwd = Path.cwd()
-        original_completion_path = os.environ.pop("ORCHESTRATOR_COMPLETION_PATH", None)
+        original_completion_path = os.environ.pop(f"{ENV_PREFIX}COMPLETION_PATH", None)
         try:
             os.chdir(tmp_path)
             write_completion_record(record)
@@ -600,7 +601,7 @@ class TestWriteCompletionRecord:
         finally:
             os.chdir(original_cwd)
             if original_completion_path is not None:
-                os.environ["ORCHESTRATOR_COMPLETION_PATH"] = original_completion_path
+                os.environ[f"{ENV_PREFIX}COMPLETION_PATH"] = original_completion_path
 
 
 class TestWriteMarkerFile:
@@ -736,7 +737,7 @@ class TestMain:
         git_dir.mkdir()
 
         original_cwd = Path.cwd()
-        original_completion_path = os.environ.pop("ORCHESTRATOR_COMPLETION_PATH", None)
+        original_completion_path = os.environ.pop(f"{ENV_PREFIX}COMPLETION_PATH", None)
         try:
             os.chdir(tmp_path)
 
@@ -760,7 +761,7 @@ class TestMain:
         finally:
             os.chdir(original_cwd)
             if original_completion_path is not None:
-                os.environ["ORCHESTRATOR_COMPLETION_PATH"] = original_completion_path
+                os.environ[f"{ENV_PREFIX}COMPLETION_PATH"] = original_completion_path
 
     def test_main_writes_marker_file(self, tmp_path):
         """Test that main writes marker file."""

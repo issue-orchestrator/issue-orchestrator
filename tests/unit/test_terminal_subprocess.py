@@ -6,13 +6,14 @@ from pathlib import Path
 import json
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _SessionRecord, _SubprocessRegistry
+from issue_orchestrator.infra.env import ENV_PREFIX
 
 
 def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     worktree = repo_root / "wt"
     worktree.mkdir(parents=True)
-    monkeypatch.setenv("ORCHESTRATOR_REPO_ROOT", str(repo_root))
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
 
     plugin = SubprocessPlugin()
     created = plugin.create_session(
