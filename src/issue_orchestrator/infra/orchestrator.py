@@ -205,11 +205,6 @@ class Orchestrator:
 
     def _get_milestone_filter(self) -> str | None: return self.config.filtering.milestone
 
-    @property
-    def shutdown_requested(self) -> bool:
-        """Return whether shutdown has been requested."""
-        return self._shutdown_requested
-
     @cached_property
     def _startup_manager(self) -> StartupManager:
         return StartupManager(
