@@ -82,240 +82,153 @@ class DependencyEvaluator:
         issue_body: str,
         source_milestone: str | None = None,
     ) -> DependencyReport:
-        """Evaluate dependencies for an issue.
-
-        Args:
-            issue_number: The issue being evaluated
-            issue_body: The issue body text (contains Depends-on: lines)
-            source_milestone: Milestone of the source issue (for cross-milestone validation)
-
-        Returns:
-            DependencyReport with runnable decision and dependency details
-        """
-        # Parse dependencies from body (supports both #123 and M1-010)
+        """Evaluate dependencies for an issue."""
         dep_refs = parse_dependency_refs(issue_body)
-
         if not dep_refs:
             return DependencyReport(issue_number=issue_number)
 
         # Check each dependency
-        satisfied: list[Dependency] = []
-        unsatisfied: list[Dependency] = []
-        missing: list[Dependency] = []
-        unknown: list[Dependency] = []
-        cross_milestone: list[Dependency] = []
-
-        # If source issue has no milestone but declares dependencies, all deps are cross-milestone
-        if source_milestone is None:
-            for ref in dep_refs:
-                dep = Dependency(
-                    issue_number=ref.issue_number,
-                    external_id=ref.external_id,
-                    repository=ref.repository,
-                    state=DependencyState.CROSS_MILESTONE,
-                    error="Source issue has no milestone but declares dependencies",
-                )
-                cross_milestone.append(dep)
-                logger.warning(
-                    "Issue #%d has no milestone but declares dependency %s",
-                    issue_number,
-                    dep.display_ref,
-                )
-        else:
-            for ref in dep_refs:
-                dep = self._check_dependency_ref(ref, source_milestone)
-
-                if dep.state == DependencyState.SATISFIED:
-                    satisfied.append(dep)
-                elif dep.state == DependencyState.UNSATISFIED:
-                    unsatisfied.append(dep)
-                elif dep.state == DependencyState.MISSING:
-                    missing.append(dep)
-                elif dep.state == DependencyState.CROSS_MILESTONE:
-                    cross_milestone.append(dep)
-                else:
-                    unknown.append(dep)
+        dep_lists = self._check_all_dependencies(dep_refs, source_milestone, issue_number)
 
         report = DependencyReport(
             issue_number=issue_number,
-            satisfied=tuple(satisfied),
-            unsatisfied=tuple(unsatisfied),
-            missing=tuple(missing),
-            unknown=tuple(unknown),
-            cross_milestone=tuple(cross_milestone),
+            satisfied=tuple(dep_lists["satisfied"]),
+            unsatisfied=tuple(dep_lists["unsatisfied"]),
+            missing=tuple(dep_lists["missing"]),
+            unknown=tuple(dep_lists["unknown"]),
+            cross_milestone=tuple(dep_lists["cross_milestone"]),
         )
 
-        # Emit trace event
         self._emit_event(report)
-
-        # Log warnings for missing/unknown/cross-milestone
-        if report.has_warnings:
-            for dep in report.missing:
-                logger.warning(
-                    "Issue #%d has missing dependency %s: %s",
-                    issue_number,
-                    dep.display_ref,
-                    dep.error,
-                )
-            for dep in report.unknown:
-                logger.warning(
-                    "Issue #%d has unknown dependency %s: %s",
-                    issue_number,
-                    dep.display_ref,
-                    dep.error,
-                )
-            for dep in report.cross_milestone:
-                logger.warning(
-                    "Issue #%d has cross-milestone dependency %s: %s",
-                    issue_number,
-                    dep.display_ref,
-                    dep.error,
-                )
-
+        self._log_dependency_warnings(report, issue_number)
         return report
+
+    def _check_all_dependencies(
+        self,
+        dep_refs: list[ParsedDependencyRef],
+        source_milestone: str | None,
+        issue_number: int,
+    ) -> dict[str, list[Dependency]]:
+        """Check all dependencies and categorize them."""
+        result = {"satisfied": [], "unsatisfied": [], "missing": [], "unknown": [], "cross_milestone": []}
+
+        if source_milestone is None:
+            # Source has no milestone - all deps are cross-milestone
+            for ref in dep_refs:
+                dep = Dependency(
+                    issue_number=ref.issue_number, external_id=ref.external_id, repository=ref.repository,
+                    state=DependencyState.CROSS_MILESTONE, error="Source issue has no milestone but declares dependencies",
+                )
+                result["cross_milestone"].append(dep)
+                logger.warning("Issue #%d has no milestone but declares dependency %s", issue_number, dep.display_ref)
+            return result
+
+        state_to_key = {
+            DependencyState.SATISFIED: "satisfied",
+            DependencyState.UNSATISFIED: "unsatisfied",
+            DependencyState.MISSING: "missing",
+            DependencyState.CROSS_MILESTONE: "cross_milestone",
+        }
+
+        for ref in dep_refs:
+            dep = self._check_dependency_ref(ref, source_milestone)
+            key = state_to_key.get(dep.state, "unknown")
+            result[key].append(dep)
+
+        return result
+
+    def _log_dependency_warnings(self, report: DependencyReport, issue_number: int) -> None:
+        """Log warnings for problematic dependencies."""
+        if not report.has_warnings:
+            return
+        for dep in report.missing:
+            logger.warning("Issue #%d has missing dependency %s: %s", issue_number, dep.display_ref, dep.error)
+        for dep in report.unknown:
+            logger.warning("Issue #%d has unknown dependency %s: %s", issue_number, dep.display_ref, dep.error)
+        for dep in report.cross_milestone:
+            logger.warning("Issue #%d has cross-milestone dependency %s: %s", issue_number, dep.display_ref, dep.error)
 
     def _check_dependency_ref(
         self,
         ref: ParsedDependencyRef,
         source_milestone: str,
     ) -> Dependency:
-        """Check the state of a parsed dependency reference.
+        """Check the state of a parsed dependency reference."""
+        issue_number, external_id, repo = ref.issue_number, ref.external_id, ref.repository
 
-        Handles both issue number refs (#123) and external ID refs (M1-010).
-        External IDs are resolved to issue numbers via IssueResolver.
-        Also validates milestone scope (same milestone or foundation).
-
-        Args:
-            ref: The parsed dependency reference
-            source_milestone: Milestone of the source issue
-
-        Returns:
-            Dependency with resolved state.
-        """
-        # Resolve external ID to issue number if needed
-        issue_number = ref.issue_number
-        external_id = ref.external_id
-        repo = ref.repository
-
+        # Resolve external ID if needed
         if external_id and issue_number is None:
-            # Need to resolve external ID
-            if self.issue_resolver is None or self.repo is None:
-                logger.warning(
-                    "External ID dependency %s cannot be resolved - no resolver configured",
-                    external_id,
-                )
-                return Dependency(
-                    issue_number=None,
-                    external_id=external_id,
-                    state=DependencyState.UNKNOWN,
-                    error="No resolver configured for external ID references",
-                )
+            result = self._resolve_external_id(external_id)
+            if result.error:
+                assert result.dependency is not None  # error=True implies dependency is set
+                return result.dependency
+            issue_number = result.issue_number
 
-            # Resolve via IssueResolver
-            key = GitHubIssueKey(repo=self.repo, external_id=external_id)
-            handle = self.issue_resolver.resolve(key)
-
-            # For GitHub, handle is always int or None
-            if handle is None:
-                return Dependency(
-                    issue_number=None,
-                    external_id=external_id,
-                    state=DependencyState.MISSING,
-                    error=f"Could not resolve external ID {external_id} to issue number",
-                )
-
-            # GitHub resolver returns int handles
-            if isinstance(handle, int):
-                issue_number = handle
-            else:
-                # Non-int handle from non-GitHub resolver - not supported here
-                return Dependency(
-                    issue_number=None,
-                    external_id=external_id,
-                    state=DependencyState.UNKNOWN,
-                    error=f"Resolver returned non-int handle: {type(handle).__name__}",
-                )
-
-        # Now check the state (issue_number should be set)
         if issue_number is None:
-            return Dependency(
-                issue_number=None,
-                external_id=external_id,
-                repository=repo,
-                state=DependencyState.UNKNOWN,
-                error="No issue number to check",
-            )
+            return Dependency(issue_number=None, external_id=external_id, repository=repo, state=DependencyState.UNKNOWN, error="No issue number to check")
 
+        return self._check_issue_state(issue_number, external_id, repo, source_milestone, ref)
+
+    class _ExternalIdResult:
+        """Result of resolving an external ID."""
+        def __init__(self, issue_number: int | None = None, error: bool = False, dependency: "Dependency | None" = None):
+            self.issue_number = issue_number
+            self.error = error
+            self.dependency = dependency
+
+    def _resolve_external_id(self, external_id: str) -> "_ExternalIdResult":
+        """Resolve external ID to issue number."""
+        if self.issue_resolver is None or self.repo is None:
+            logger.warning("External ID dependency %s cannot be resolved - no resolver configured", external_id)
+            return self._ExternalIdResult(error=True, dependency=Dependency(issue_number=None, external_id=external_id, state=DependencyState.UNKNOWN, error="No resolver configured for external ID references"))
+
+        key = GitHubIssueKey(repo=self.repo, external_id=external_id)
+        handle = self.issue_resolver.resolve(key)
+
+        if handle is None:
+            return self._ExternalIdResult(error=True, dependency=Dependency(issue_number=None, external_id=external_id, state=DependencyState.MISSING, error=f"Could not resolve external ID {external_id} to issue number"))
+
+        if isinstance(handle, int):
+            return self._ExternalIdResult(issue_number=handle)
+
+        return self._ExternalIdResult(error=True, dependency=Dependency(issue_number=None, external_id=external_id, state=DependencyState.UNKNOWN, error=f"Resolver returned non-int handle: {type(handle).__name__}"))
+
+    def _check_issue_state(
+        self,
+        issue_number: int,
+        external_id: str | None,
+        repo: str | None,
+        source_milestone: str,
+        ref: ParsedDependencyRef,
+    ) -> Dependency:
+        """Check the state of a dependency issue."""
         try:
             state = self.issue_checker.get_issue_state(issue_number, repo)
             dep_milestone = self.issue_checker.get_issue_milestone(issue_number, repo)
 
             if state is None:
-                return Dependency(
-                    issue_number=issue_number,
-                    external_id=external_id,
-                    repository=repo,
-                    state=DependencyState.MISSING,
-                    error="Issue not found or inaccessible",
-                    milestone=dep_milestone,
-                )
+                return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.MISSING, error="Issue not found or inaccessible", milestone=dep_milestone)
 
-            # Check milestone scope before checking state
-            # Dependencies must be: same milestone OR foundation milestone
-            if dep_milestone is None:
-                # Dependency has no milestone - treat as cross-milestone violation
-                return Dependency(
-                    issue_number=issue_number,
-                    external_id=external_id,
-                    repository=repo,
-                    state=DependencyState.CROSS_MILESTONE,
-                    error=f"Dependency has no milestone (source is in {source_milestone})",
-                    milestone=dep_milestone,
-                )
-            is_same_milestone = dep_milestone == source_milestone
-            is_foundation = dep_milestone == self.foundation_milestone
-            if not is_same_milestone and not is_foundation:
-                return Dependency(
-                    issue_number=issue_number,
-                    external_id=external_id,
-                    repository=repo,
-                    state=DependencyState.CROSS_MILESTONE,
-                    error=f"Dependency in {dep_milestone}, not in {source_milestone} or {self.foundation_milestone}",
-                    milestone=dep_milestone,
-                )
+            # Check milestone scope
+            milestone_error = self._check_milestone_scope(dep_milestone, source_milestone)
+            if milestone_error:
+                return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.CROSS_MILESTONE, error=milestone_error, milestone=dep_milestone)
 
             # Check open/closed state
-            if state.lower() == "closed":
-                return Dependency(
-                    issue_number=issue_number,
-                    external_id=external_id,
-                    repository=repo,
-                    state=DependencyState.SATISFIED,
-                    milestone=dep_milestone,
-                )
-            else:
-                return Dependency(
-                    issue_number=issue_number,
-                    external_id=external_id,
-                    repository=repo,
-                    state=DependencyState.UNSATISFIED,
-                    milestone=dep_milestone,
-                )
+            dep_state = DependencyState.SATISFIED if state.lower() == "closed" else DependencyState.UNSATISFIED
+            return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=dep_state, milestone=dep_milestone)
 
         except Exception as e:
-            # Transient errors (network, rate limit, etc.)
-            logger.debug(
-                "Error checking dependency %s: %s",
-                ref.external_id or f"#{issue_number}",
-                e,
-            )
-            return Dependency(
-                issue_number=issue_number,
-                external_id=external_id,
-                repository=repo,
-                state=DependencyState.UNKNOWN,
-                error=str(e),
-            )
+            logger.debug("Error checking dependency %s: %s", ref.external_id or f"#{issue_number}", e)
+            return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.UNKNOWN, error=str(e))
+
+    def _check_milestone_scope(self, dep_milestone: str | None, source_milestone: str) -> str | None:
+        """Check if dependency is in valid milestone scope. Returns error message or None."""
+        if dep_milestone is None:
+            return f"Dependency has no milestone (source is in {source_milestone})"
+        if dep_milestone != source_milestone and dep_milestone != self.foundation_milestone:
+            return f"Dependency in {dep_milestone}, not in {source_milestone} or {self.foundation_milestone}"
+        return None
 
     def _emit_event(self, report: DependencyReport) -> None:
         """Emit trace event for dependency evaluation."""

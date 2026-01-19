@@ -25,6 +25,7 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .completion_processor import CompletionProcessor, ProcessingResult
     from ..ports.command_runner import CommandRunner
+    from ..domain.models import CompletionRecord
 
 from ..events import EventName
 from ..domain.models import SessionStatus
@@ -127,285 +128,44 @@ class SessionController:
         """Decide the outcome of a session based on observation + completion.json.
 
         This is the core decision logic. For ANY non-running session, we check
-        completion.json to determine the true outcome. This handles cases where:
-        - Agent completed but didn't exit (timeout with completion.json)
-        - Agent crashed after writing completion.json
-        - Agent exited cleanly with completion.json
-
-        Args:
-            observation: What we observed about the session
-            worktree_path: Path to the worktree (for reading completion.json)
-            issue_number: The issue number for logging/events
-            issue_title: The issue title for PR creation
-            session_name: Session name for logging
-            completion_path: Optional path to completion.json (default: .issue-orchestrator/completion.json)
-            validation_retry_count: Current validation retry count (for determining if more retries allowed)
-
-        Returns:
-            SessionDecision with the determined status and any processing results
+        completion.json to determine the true outcome.
         """
         # If still running, nothing to decide
         if observation.observation == SessionObservation.RUNNING:
-            logger.debug(
-                issue_log(issue_number, "Session still running: session=%s"),
-                session_name,
-            )
-            return SessionDecision(
-                status=SessionStatus.RUNNING,
-                reason="Session still running",
-            )
+            logger.debug(issue_log(issue_number, "Session still running: session=%s"), session_name)
+            return SessionDecision(status=SessionStatus.RUNNING, reason="Session still running")
 
-        # Session is not running - check completion.json
-        # This is the source of truth for agent intent
-        # Each agent writes to its own file (based on completion_path)
-        full_path = (worktree_path / completion_path).resolve() if completion_path else (worktree_path / ".issue-orchestrator/completion.json").resolve()
-        logger.info(
-            issue_log(issue_number, "Session not running: session=%s observation=%s checking_completion=%s"),
-            session_name,
-            observation.observation.value,
-            completion_path or ".issue-orchestrator/completion.json",
-        )
-        self._emit_event(EventName.COMPLETION_LOOKUP, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "worktree_path": str(worktree_path.resolve()),
-            "completion_path": completion_path,
-            "full_path": str(full_path),
-            "file_exists": full_path.exists(),
-        })
-        exists = full_path.exists()
-        size = None
-        if exists:
-            try:
-                size = full_path.stat().st_size
-            except OSError:
-                size = None
-        logger.info(
-            issue_log(issue_number, "Completion lookup: exists=%s size=%s path=%s"),
-            exists,
-            size,
-            full_path,
-        )
+        # Log and look up completion record
+        self._log_completion_lookup(worktree_path, issue_number, session_name, completion_path)
         record = self.completion_processor.read_completion_record(worktree_path, completion_path)
 
         if record is None:
-            # No completion record - agent died without calling agent-done
-            # Try to capture session log for diagnostics
-            session_log = ""
-            log_path = self.session_output.get_log_path(worktree_path, session_name)
-            if log_path and log_path.exists():
-                try:
-                    # Get last 50 lines of session log
-                    content = log_path.read_text()
-                    lines = content.strip().split("\n")
-                    session_log = "\n".join(lines[-50:])
-                except Exception as e:
-                    logger.debug("Could not read session log: %s", e)
+            return self._handle_no_completion_record(observation, worktree_path, issue_number, session_name)
 
-            self._emit_event(EventName.SESSION_NO_COMPLETION_RECORD, {
-                "issue_number": issue_number,
-                "session_name": session_name,
-                "observation": observation.observation.value,
-                "last_output": session_log[-500:] if session_log else "",
-            })
-
-            if observation.observation == SessionObservation.TIMED_OUT:
-                logger.warning(
-                    issue_log(issue_number, "SESSION COMPLETE: status=TIMED_OUT outcome=none reason=no_completion_record session=%s"),
-                    session_name,
-                )
-                if session_log:
-                    logger.warning(
-                        issue_log(issue_number, "LAST OUTPUT:\n%s"),
-                        session_log,
-                    )
-                return SessionDecision(
-                    status=SessionStatus.TIMED_OUT,
-                    reason="Timed out without completion record",
-                )
-            else:
-                logger.error(
-                    issue_log(issue_number, "SESSION COMPLETE: status=FAILED outcome=none reason=no_completion_record session=%s"),
-                    session_name,
-                )
-                if session_log:
-                    logger.error(
-                        issue_log(issue_number, "LAST OUTPUT:\n%s"),
-                        session_log,
-                    )
-                return SessionDecision(
-                    status=SessionStatus.FAILED,
-                    reason="Terminated without completion record",
-                )
-
-        # Completion record exists - process it
-        # This is true regardless of whether session timed out or exited
+        # Process completion record
         recovered = observation.observation == SessionObservation.TIMED_OUT
-
         if recovered:
-            logger.info(
-                issue_log(issue_number, "Session timed out but has completion.json - recovering work: outcome=%s"),
-                record.outcome.value,
-            )
-            self._emit_event(EventName.SESSION_TIMEOUT_RECOVERED, {
-                "issue_number": issue_number,
-                "session_name": session_name,
-                "outcome": record.outcome.value,
-            })
+            self._log_timeout_recovery(issue_number, session_name, record)
 
-        # For review sessions, extract PR number from session name (review-{pr_number})
-        # Label operations need to target the PR, not the original issue
-        pr_number = None
-        if session_name.startswith("review-"):
-            try:
-                pr_number = int(session_name.replace("review-", ""))
-                logger.debug(f"Review session detected, PR number: {pr_number}")
-            except ValueError:
-                logger.warning(f"Could not parse PR number from session name: {session_name}")
-
-        # Process the completion record (push, create PR, etc.)
+        pr_number = self._extract_pr_number_from_session_name(session_name)
         result = self.completion_processor.process(
-            worktree_path,
-            issue_number,
-            issue_title,
-            pr_number=pr_number,
-            completion_path=completion_path,
+            worktree_path, issue_number, issue_title, pr_number=pr_number, completion_path=completion_path,
         )
+        self._emit_processing_completed_event(issue_number, session_name, result)
 
-        # Emit event for observability (tests can subscribe to see what happened)
-        self._emit_event(EventName.SESSION_PROCESSING_COMPLETED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "success": result.success,
-            "message": result.message,
-            "actions_taken": result.actions_taken,
-            "errors": result.errors,
-            "pr_url": result.pr_url,
-        })
+        # Map outcome to status
+        status = self._map_outcome_to_status(record)
 
-        # Map completion outcome to session status
-        from ..domain.models import CompletionOutcome
-        outcome_to_status = {
-            CompletionOutcome.COMPLETED: SessionStatus.COMPLETED,
-            CompletionOutcome.BLOCKED: SessionStatus.BLOCKED,
-            CompletionOutcome.NEEDS_HUMAN: SessionStatus.NEEDS_HUMAN,
-            CompletionOutcome.REVIEW_APPROVED: SessionStatus.COMPLETED,
-            CompletionOutcome.REVIEW_CHANGES_REQUESTED: SessionStatus.COMPLETED,
-        }
-        status = outcome_to_status.get(record.outcome, SessionStatus.FAILED)
-
-        # Run validation gate if configured and outcome is COMPLETED
-        validation_passed: Optional[bool] = None
-        validation_error: Optional[str] = None
-        validation_error_file: Optional[Path] = None
-
-        if (
-            status == SessionStatus.COMPLETED
-            and self._validation_cmd
-            and self._command_runner
-        ):
-            logger.info(
-                issue_log(issue_number, "Running validation gate: cmd=%s timeout=%ds"),
-                self._validation_cmd,
-                self._validation_timeout,
+        # Run validation if configured
+        validation_passed, validation_error, validation_error_file = None, None, None
+        if status == SessionStatus.COMPLETED and self._validation_cmd and self._command_runner:
+            status, validation_passed, validation_error, validation_error_file = self._run_validation_gate(
+                worktree_path, session_name, issue_number, issue_title, validation_retry_count,
+                original_prompt, retry_prompt_template, repo_root,
             )
-            validation_passed, validation_error, validation_error_file = self._run_validation(
-                worktree_path, session_name, issue_number
-            )
-            # Get run_dir for storing validation artifacts
-            run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
 
-            if not validation_passed:
-                # Check if retries are remaining
-                retries_remaining = validation_retry_count < self._max_validation_retries
-                if retries_remaining:
-                    status = SessionStatus.NEEDS_VALIDATION_RETRY
-                    logger.warning(
-                        issue_log(issue_number, "Validation gate FAILED (retry %d/%d): error=%s error_file=%s"),
-                        validation_retry_count + 1,
-                        self._max_validation_retries,
-                        validation_error[:200] if validation_error else "none",
-                        validation_error_file,
-                    )
-                    # Write validation state for crash recovery
-                    state = ValidationState(
-                        retry_count=validation_retry_count + 1,
-                        max_retries=self._max_validation_retries,
-                        validation_cmd=self._validation_cmd,
-                        last_error=validation_error[:2000] if validation_error else None,
-                        last_error_file=str(validation_error_file) if validation_error_file else None,
-                    )
-                    self.session_output.write_validation_state(run_dir, state)
-                    # Write retry prompt for the agent
-                    task_prompt = original_prompt or issue_title
-                    retry_prompt_content = self._render_retry_prompt(
-                        task_prompt=task_prompt,
-                        validation_error=validation_error or "Unknown error",
-                        validation_error_file=validation_error_file,
-                        retry_count=validation_retry_count,
-                        max_retries=self._max_validation_retries,
-                        template_path=retry_prompt_template,
-                        repo_root=repo_root,
-                    )
-                    self.session_output.write_retry_prompt(run_dir, retry_prompt_content)
-                    self._emit_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
-                        "issue_number": issue_number,
-                        "session_name": session_name,
-                        "validation_cmd": self._validation_cmd,
-                        "error_file": str(validation_error_file) if validation_error_file else None,
-                        "retry_count": validation_retry_count,
-                        "max_retries": self._max_validation_retries,
-                    })
-                else:
-                    status = SessionStatus.VALIDATION_FAILED
-                    logger.warning(
-                        issue_log(issue_number, "Validation gate FAILED (max retries %d exhausted): error=%s error_file=%s"),
-                        self._max_validation_retries,
-                        validation_error[:200] if validation_error else "none",
-                        validation_error_file,
-                    )
-                    # Clear validation state since we're done retrying
-                    self.session_output.clear_retry_state(run_dir)
-                    self._emit_event(EventName.SESSION_VALIDATION_FAILED, {
-                        "issue_number": issue_number,
-                        "session_name": session_name,
-                        "validation_cmd": self._validation_cmd,
-                        "error_file": str(validation_error_file) if validation_error_file else None,
-                        "retry_count": validation_retry_count,
-                    })
-            else:
-                logger.info(
-                    issue_log(issue_number, "Validation gate PASSED"),
-                )
-                # Clear validation state on success
-                self.session_output.clear_retry_state(run_dir)
-                self._emit_event(EventName.SESSION_VALIDATION_PASSED, {
-                    "issue_number": issue_number,
-                    "session_name": session_name,
-                    "validation_cmd": self._validation_cmd,
-                })
-
-        # Log the session completion summary
-        pr_url = result.pr_url or "none"
-        if result.success:
-            logger.info(
-                issue_log(issue_number, "SESSION COMPLETE: status=%s outcome=%s pr=%s recovered=%s session=%s"),
-                status.value,
-                record.outcome.value,
-                pr_url,
-                recovered,
-                session_name,
-            )
-        else:
-            logger.error(
-                issue_log(issue_number, "SESSION COMPLETE: status=%s outcome=%s pr=%s recovered=%s errors=%s session=%s"),
-                status.value,
-                record.outcome.value,
-                pr_url,
-                recovered,
-                result.errors,
-                session_name,
-            )
+        # Log completion summary
+        self._log_session_completion(issue_number, session_name, status, record, result, recovered)
 
         return SessionDecision(
             status=status,
@@ -417,6 +177,230 @@ class SessionController:
             validation_error=validation_error,
             validation_error_file=validation_error_file,
         )
+
+    def _log_completion_lookup(
+        self,
+        worktree_path: Path,
+        issue_number: int,
+        session_name: str,
+        completion_path: str | None,
+    ) -> None:
+        """Log completion record lookup details."""
+        full_path = (worktree_path / completion_path).resolve() if completion_path else (worktree_path / ".issue-orchestrator/completion.json").resolve()
+        logger.info(
+            issue_log(issue_number, "Session not running: session=%s checking_completion=%s"),
+            session_name, completion_path or ".issue-orchestrator/completion.json",
+        )
+        self._emit_event(EventName.COMPLETION_LOOKUP, {
+            "issue_number": issue_number, "session_name": session_name,
+            "worktree_path": str(worktree_path.resolve()), "completion_path": completion_path,
+            "full_path": str(full_path), "file_exists": full_path.exists(),
+        })
+        exists = full_path.exists()
+        size = full_path.stat().st_size if exists else None
+        logger.info(issue_log(issue_number, "Completion lookup: exists=%s size=%s path=%s"), exists, size, full_path)
+
+    def _handle_no_completion_record(
+        self,
+        observation: SessionObservationResult,
+        worktree_path: Path,
+        issue_number: int,
+        session_name: str,
+    ) -> SessionDecision:
+        """Handle case where no completion record exists."""
+        session_log = self._get_session_log_tail(worktree_path, session_name)
+
+        self._emit_event(EventName.SESSION_NO_COMPLETION_RECORD, {
+            "issue_number": issue_number, "session_name": session_name,
+            "observation": observation.observation.value,
+            "last_output": session_log[-500:] if session_log else "",
+        })
+
+        if observation.observation == SessionObservation.TIMED_OUT:
+            logger.warning(issue_log(issue_number, "SESSION COMPLETE: status=TIMED_OUT outcome=none reason=no_completion_record session=%s"), session_name)
+            if session_log:
+                logger.warning(issue_log(issue_number, "LAST OUTPUT:\n%s"), session_log)
+            return SessionDecision(status=SessionStatus.TIMED_OUT, reason="Timed out without completion record")
+
+        logger.error(issue_log(issue_number, "SESSION COMPLETE: status=FAILED outcome=none reason=no_completion_record session=%s"), session_name)
+        if session_log:
+            logger.error(issue_log(issue_number, "LAST OUTPUT:\n%s"), session_log)
+        return SessionDecision(status=SessionStatus.FAILED, reason="Terminated without completion record")
+
+    def _get_session_log_tail(self, worktree_path: Path, session_name: str) -> str:
+        """Get last 50 lines of session log for diagnostics."""
+        log_path = self.session_output.get_log_path(worktree_path, session_name)
+        if not (log_path and log_path.exists()):
+            return ""
+        try:
+            content = log_path.read_text()
+            lines = content.strip().split("\n")
+            return "\n".join(lines[-50:])
+        except Exception as e:
+            logger.debug("Could not read session log: %s", e)
+            return ""
+
+    def _log_timeout_recovery(self, issue_number: int, session_name: str, record: "CompletionRecord") -> None:
+        """Log and emit event for timeout recovery."""
+        logger.info(issue_log(issue_number, "Session timed out but has completion.json - recovering work: outcome=%s"), record.outcome.value)
+        self._emit_event(EventName.SESSION_TIMEOUT_RECOVERED, {
+            "issue_number": issue_number, "session_name": session_name, "outcome": record.outcome.value,
+        })
+
+    def _extract_pr_number_from_session_name(self, session_name: str) -> int | None:
+        """Extract PR number from review session name."""
+        if not session_name.startswith("review-"):
+            return None
+        try:
+            pr_number = int(session_name.replace("review-", ""))
+            logger.debug(f"Review session detected, PR number: {pr_number}")
+            return pr_number
+        except ValueError:
+            logger.warning(f"Could not parse PR number from session name: {session_name}")
+            return None
+
+    def _emit_processing_completed_event(self, issue_number: int, session_name: str, result: "ProcessingResult") -> None:
+        """Emit session processing completed event."""
+        self._emit_event(EventName.SESSION_PROCESSING_COMPLETED, {
+            "issue_number": issue_number, "session_name": session_name,
+            "success": result.success, "message": result.message,
+            "actions_taken": result.actions_taken, "errors": result.errors, "pr_url": result.pr_url,
+        })
+
+    def _map_outcome_to_status(self, record: "CompletionRecord") -> SessionStatus:
+        """Map completion outcome to session status."""
+        from ..domain.models import CompletionOutcome
+        outcome_to_status = {
+            CompletionOutcome.COMPLETED: SessionStatus.COMPLETED,
+            CompletionOutcome.BLOCKED: SessionStatus.BLOCKED,
+            CompletionOutcome.NEEDS_HUMAN: SessionStatus.NEEDS_HUMAN,
+            CompletionOutcome.REVIEW_APPROVED: SessionStatus.COMPLETED,
+            CompletionOutcome.REVIEW_CHANGES_REQUESTED: SessionStatus.COMPLETED,
+        }
+        return outcome_to_status.get(record.outcome, SessionStatus.FAILED)
+
+    def _run_validation_gate(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        issue_number: int,
+        issue_title: str,
+        validation_retry_count: int,
+        original_prompt: str | None,
+        retry_prompt_template: str | None,
+        repo_root: Path | None,
+    ) -> tuple[SessionStatus, Optional[bool], Optional[str], Optional[Path]]:
+        """Run validation gate and return updated status."""
+        logger.info(issue_log(issue_number, "Running validation gate: cmd=%s timeout=%ds"), self._validation_cmd, self._validation_timeout)
+        validation_passed, validation_error, validation_error_file = self._run_validation(worktree_path, session_name, issue_number)
+        run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
+
+        if validation_passed:
+            logger.info(issue_log(issue_number, "Validation gate PASSED"))
+            self.session_output.clear_retry_state(run_dir)
+            self._emit_event(EventName.SESSION_VALIDATION_PASSED, {"issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd})
+            return SessionStatus.COMPLETED, validation_passed, validation_error, validation_error_file
+
+        # Validation failed - validation_passed is False in both retry and exhausted cases
+        retries_remaining = validation_retry_count < self._max_validation_retries
+        if retries_remaining:
+            return self._handle_validation_retry(
+                worktree_path, run_dir, session_name, issue_number, issue_title,
+                validation_retry_count, validation_error, validation_error_file,
+                original_prompt, retry_prompt_template, repo_root,
+            ), False, validation_error, validation_error_file
+
+        # Max retries exhausted
+        return self._handle_validation_exhausted(
+            run_dir, session_name, issue_number, validation_retry_count, validation_error, validation_error_file,
+        ), False, validation_error, validation_error_file
+
+    def _handle_validation_retry(
+        self,
+        worktree_path: Path,
+        run_dir: Path,
+        session_name: str,
+        issue_number: int,
+        issue_title: str,
+        validation_retry_count: int,
+        validation_error: Optional[str],
+        validation_error_file: Optional[Path],
+        original_prompt: str | None,
+        retry_prompt_template: str | None,
+        repo_root: Path | None,
+    ) -> SessionStatus:
+        """Handle validation failure with retries remaining."""
+        logger.warning(
+            issue_log(issue_number, "Validation gate FAILED (retry %d/%d): error=%s error_file=%s"),
+            validation_retry_count + 1, self._max_validation_retries,
+            validation_error[:200] if validation_error else "none", validation_error_file,
+        )
+        state = ValidationState(
+            retry_count=validation_retry_count + 1, max_retries=self._max_validation_retries,
+            validation_cmd=self._validation_cmd,
+            last_error=validation_error[:2000] if validation_error else None,
+            last_error_file=str(validation_error_file) if validation_error_file else None,
+        )
+        self.session_output.write_validation_state(run_dir, state)
+
+        task_prompt = original_prompt or issue_title
+        retry_prompt_content = self._render_retry_prompt(
+            task_prompt=task_prompt, validation_error=validation_error or "Unknown error",
+            validation_error_file=validation_error_file, retry_count=validation_retry_count,
+            max_retries=self._max_validation_retries, template_path=retry_prompt_template, repo_root=repo_root,
+        )
+        self.session_output.write_retry_prompt(run_dir, retry_prompt_content)
+
+        self._emit_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
+            "issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd,
+            "error_file": str(validation_error_file) if validation_error_file else None,
+            "retry_count": validation_retry_count, "max_retries": self._max_validation_retries,
+        })
+        return SessionStatus.NEEDS_VALIDATION_RETRY
+
+    def _handle_validation_exhausted(
+        self,
+        run_dir: Path,
+        session_name: str,
+        issue_number: int,
+        validation_retry_count: int,
+        validation_error: Optional[str],
+        validation_error_file: Optional[Path],
+    ) -> SessionStatus:
+        """Handle validation failure with max retries exhausted."""
+        logger.warning(
+            issue_log(issue_number, "Validation gate FAILED (max retries %d exhausted): error=%s error_file=%s"),
+            self._max_validation_retries, validation_error[:200] if validation_error else "none", validation_error_file,
+        )
+        self.session_output.clear_retry_state(run_dir)
+        self._emit_event(EventName.SESSION_VALIDATION_FAILED, {
+            "issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd,
+            "error_file": str(validation_error_file) if validation_error_file else None,
+            "retry_count": validation_retry_count,
+        })
+        return SessionStatus.VALIDATION_FAILED
+
+    def _log_session_completion(
+        self,
+        issue_number: int,
+        session_name: str,
+        status: SessionStatus,
+        record: "CompletionRecord",
+        result: "ProcessingResult",
+        recovered: bool,
+    ) -> None:
+        """Log session completion summary."""
+        pr_url = result.pr_url or "none"
+        if result.success:
+            logger.info(
+                issue_log(issue_number, "SESSION COMPLETE: status=%s outcome=%s pr=%s recovered=%s session=%s"),
+                status.value, record.outcome.value, pr_url, recovered, session_name,
+            )
+        else:
+            logger.error(
+                issue_log(issue_number, "SESSION COMPLETE: status=%s outcome=%s pr=%s recovered=%s errors=%s session=%s"),
+                status.value, record.outcome.value, pr_url, recovered, result.errors, session_name,
+            )
 
     def _run_validation(
         self,

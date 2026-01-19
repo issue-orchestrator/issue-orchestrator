@@ -368,28 +368,14 @@ class CompletionProcessor:
         errors: list[str] = []
         error_details: list[dict[str, Any]] = []  # Full diagnostic info per error
         pr_url: str | None = None
-        branch: str | None = None
 
-        # Read the completion record
-        record = self.read_completion_record(worktree, completion_path)
-        if not record:
-            return ProcessingResult(
-                success=False,
-                message="No completion record found",
-                errors=["Completion record not found or invalid"],
-            )
-
-        session_name = self.session_output.session_name_from_path(completion_path) or record.session_id
-        if record.validation_record_path and session_name:
-            self._attach_validation_artifacts(
-                worktree,
-                session_name,
-                record_path=Path(record.validation_record_path),
-            )
-        if session_name:
-            run_dir = self.session_output.find_run_dir(worktree, session_name)
-            if run_dir:
-                self.session_output.attach_claude_log(run_dir)
+        # Read and validate completion record
+        record, session_name, error_result = self._read_and_validate_record(
+            worktree, completion_path
+        )
+        if error_result:
+            return error_result
+        assert record is not None  # Guaranteed if error_result is None
 
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)
@@ -401,74 +387,11 @@ class CompletionProcessor:
             )
 
         # Check publish gate if actions require it
-        if self._requires_publish_gate(record):
-            # Get session output dir for validation to write directly there
-            if not session_name:
-                return ProcessingResult(
-                    success=False,
-                    message="Publish gate requires session output but no session name available",
-                    errors=["session_name is required for publish gate"],
-                )
-            session_output_dir = self.session_output.find_run_dir(worktree, session_name)
-            if session_output_dir is None:
-                return ProcessingResult(
-                    success=False,
-                    message=f"Publish gate requires session output but run dir not found for {session_name}",
-                    errors=[f"Session output directory not found for {session_name}"],
-                )
-
-            gate_passed, gate_reason, gate_record = self._check_publish_gate(
-                worktree, session_output_dir=session_output_dir
-            )
-            if not gate_passed:
-                if gate_record and session_name:
-                    record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
-                    # Note: validation output already written to session_output_dir by publish_gate
-                    self._attach_validation_artifacts(
-                        worktree,
-                        session_name,
-                        record=gate_record,
-                        record_path=record_path,
-                    )
-                # Add validation-failed label so user knows why issue is stuck
-                validation_failed_label = self._get_label("validation_failed")
-                try:
-                    self.label_adapter.add_label(issue_number, validation_failed_label)
-                    logger.info(
-                        "Added '%s' label to issue #%d due to validation failure",
-                        validation_failed_label,
-                        issue_number,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to add validation-failed label to issue #%d: %s",
-                        issue_number,
-                        e,
-                    )
-
-                self._emit(
-                    SessionEvent.FAILED,
-                    issue_number,
-                    {
-                        "outcome": record.outcome.value,
-                        "gate_failure": gate_reason,
-                    },
-                )
-                return ProcessingResult(
-                    success=False,
-                    message=f"Validation failed: {gate_reason}",
-                    errors=[f"Validation: {gate_reason}"],
-                )
-            else:
-                # Attach validation artifacts even on success so output is always available
-                if gate_record and session_name:
-                    record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
-                    self._attach_validation_artifacts(
-                        worktree,
-                        session_name,
-                        record=gate_record,
-                        record_path=record_path,
-                    )
+        gate_error = self._check_publish_gate_if_required(
+            worktree, record, session_name, issue_number
+        )
+        if gate_error:
+            return gate_error
 
         # Get branch name for PR operations
         branch = self.git_adapter.get_current_branch(worktree)
@@ -488,179 +411,210 @@ class CompletionProcessor:
         )
 
         # Execute requested actions in order
+        branch, pr_url = self._execute_actions(
+            worktree=worktree,
+            record=record,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            label_target=label_target,
+            branch=branch,
+            actions_taken=actions_taken,
+            errors=errors,
+            error_details=error_details,
+        )
+
+        # Build and return result
+        total_duration = time.monotonic() - start_time
+        return self._build_processing_result(
+            worktree=worktree,
+            record=record,
+            session_name=session_name,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            branch=branch,
+            pr_url=pr_url,
+            actions_taken=actions_taken,
+            errors=errors,
+            error_details=error_details,
+            total_duration=total_duration,
+            completion_path=completion_path,
+        )
+
+    def _read_and_validate_record(
+        self,
+        worktree: Path,
+        completion_path: str | None,
+    ) -> tuple[CompletionRecord | None, str | None, ProcessingResult | None]:
+        """Read completion record and attach validation artifacts.
+
+        Returns:
+            Tuple of (record, session_name, error_result).
+            If error_result is not None, caller should return it immediately.
+        """
+        record = self.read_completion_record(worktree, completion_path)
+        if not record:
+            return None, None, ProcessingResult(
+                success=False,
+                message="No completion record found",
+                errors=["Completion record not found or invalid"],
+            )
+
+        session_name = self.session_output.session_name_from_path(completion_path) or record.session_id
+        if record.validation_record_path and session_name:
+            self._attach_validation_artifacts(
+                worktree,
+                session_name,
+                record_path=Path(record.validation_record_path),
+            )
+        if session_name:
+            run_dir = self.session_output.find_run_dir(worktree, session_name)
+            if run_dir:
+                self.session_output.attach_claude_log(run_dir)
+
+        return record, session_name, None
+
+    def _check_publish_gate_if_required(
+        self,
+        worktree: Path,
+        record: CompletionRecord,
+        session_name: str | None,
+        issue_number: int,
+    ) -> ProcessingResult | None:
+        """Check publish gate if actions require it.
+
+        Returns:
+            ProcessingResult if gate check failed, None if passed or not required.
+        """
+        if not self._requires_publish_gate(record):
+            return None
+
+        # Get session output dir for validation to write directly there
+        if not session_name:
+            return ProcessingResult(
+                success=False,
+                message="Publish gate requires session output but no session name available",
+                errors=["session_name is required for publish gate"],
+            )
+        session_output_dir = self.session_output.find_run_dir(worktree, session_name)
+        if session_output_dir is None:
+            return ProcessingResult(
+                success=False,
+                message=f"Publish gate requires session output but run dir not found for {session_name}",
+                errors=[f"Session output directory not found for {session_name}"],
+            )
+
+        gate_passed, gate_reason, gate_record = self._check_publish_gate(
+            worktree, session_output_dir=session_output_dir
+        )
+        if not gate_passed:
+            return self._handle_gate_failure(
+                worktree, record, session_name, issue_number, gate_reason, gate_record
+            )
+        else:
+            # Attach validation artifacts even on success
+            if gate_record and session_name:
+                record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
+                self._attach_validation_artifacts(
+                    worktree,
+                    session_name,
+                    record=gate_record,
+                    record_path=record_path,
+                )
+        return None
+
+    def _handle_gate_failure(
+        self,
+        worktree: Path,
+        record: CompletionRecord,
+        session_name: str | None,
+        issue_number: int,
+        gate_reason: str,
+        gate_record: ValidationRecord | None,
+    ) -> ProcessingResult:
+        """Handle publish gate failure."""
+        if gate_record and session_name:
+            record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
+            self._attach_validation_artifacts(
+                worktree,
+                session_name,
+                record=gate_record,
+                record_path=record_path,
+            )
+        # Add validation-failed label so user knows why issue is stuck
+        validation_failed_label = self._get_label("validation_failed")
+        try:
+            self.label_adapter.add_label(issue_number, validation_failed_label)
+            logger.info(
+                "Added '%s' label to issue #%d due to validation failure",
+                validation_failed_label,
+                issue_number,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to add validation-failed label to issue #%d: %s",
+                issue_number,
+                e,
+            )
+
+        self._emit(
+            SessionEvent.FAILED,
+            issue_number,
+            {
+                "outcome": record.outcome.value,
+                "gate_failure": gate_reason,
+            },
+        )
+        return ProcessingResult(
+            success=False,
+            message=f"Validation failed: {gate_reason}",
+            errors=[f"Validation: {gate_reason}"],
+        )
+
+    def _execute_actions(
+        self,
+        *,
+        worktree: Path,
+        record: CompletionRecord,
+        issue_number: int,
+        issue_title: str,
+        label_target: int,
+        branch: str | None,
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+    ) -> tuple[str | None, str | None]:
+        """Execute all requested actions from completion record.
+
+        Returns:
+            Tuple of (final_branch, pr_url).
+        """
+        pr_url: str | None = None
         halt_actions = False
+
         for action in record.requested_actions:
             action_start = time.monotonic()
             logger.info("Executing action: %s for issue #%d", action.value, issue_number)
             try:
-                if action == RequestedAction.PUSH_BRANCH:
-                    # E2E tests can skip pre-push hooks since test scripts create trivial changes
-                    skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
-                    result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
-                    if result.success:
-                        actions_taken.append(f"Pushed branch to remote")
-                        logger.info("Push succeeded for #%d", issue_number)
-                    else:
-                        retry_result: PushResult | None = None
-                        if self._push_rebase_retry and self._is_non_fast_forward(result.message):
-                            if self.git_adapter.has_uncommitted_changes(worktree):
-                                logger.warning(
-                                    "Push retry skipped due to uncommitted changes: issue=%s",
-                                    issue_number,
-                                )
-                            else:
-                                rebase_result = self.git_adapter.rebase_on_branch(worktree, "origin/main")
-                                if rebase_result.success:
-                                    actions_taken.append("Rebased onto origin/main")
-                                    retry_result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
-                                else:
-                                    errors.append(f"{ERROR_PREFIX_PUSH}: Rebase failed: {rebase_result.message}")
-                                    error_details.append({
-                                        "action": action.value,
-                                        "error": rebase_result.message,
-                                        "stage": "rebase",
-                                        "conflicts": rebase_result.conflicts,
-                                        "aborted": rebase_result.aborted,
-                                    })
-
-                        if retry_result and retry_result.success:
-                            actions_taken.append("Pushed branch to remote after rebase")
-                            logger.info(
-                                "Push succeeded after rebase for #%d",
-                                issue_number,
-                            )
-                        else:
-                            errors.append(f"{ERROR_PREFIX_PUSH}: Push failed: {result.message}")
-                            error_details.append({
-                                "action": action.value,
-                                "error": result.message,
-                                "retryable": result.retryable,
-                                "branch": result.branch,
-                                "remote": result.remote,
-                            })
-                            logger.error("Push failed for #%d: %s", issue_number, result.message)
-                            halt_actions = True
-
-                elif action == RequestedAction.CREATE_PR:
-                    if not branch:
-                        errors.append(f"{ERROR_PREFIX_CREATE_PR}: Cannot create PR - no branch")
-                        logger.error("Cannot create PR for #%d: no branch", issue_number)
-                        continue
-
-                    skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
-
-                    # Build PR title and body
-                    pr_title = f"#{issue_number}: {issue_title}"
-                    pr_body = self._build_pr_body(record, issue_number)
-
-                    if self._pr_collision_strategy in {"reuse_open", "new_branch"}:
-                        existing_pr = self._get_open_pr_for_issue(issue_number)
-                        if existing_pr:
-                            pr_url = existing_pr.url
-                            actions_taken.append(f"Reused PR #{existing_pr.number}")
-                            logger.info(
-                                "Reused existing PR #%d for issue #%d: %s",
-                                existing_pr.number,
-                                issue_number,
-                                pr_url,
-                            )
-                            continue
-
-                    if self._pr_collision_strategy == "new_branch":
-                        branch = self._maybe_switch_branch_for_pr_collision(
-                            worktree=worktree,
-                            branch=branch,
-                            issue_number=issue_number,
-                            actions_taken=actions_taken,
-                            skip_hooks=skip_hooks,
-                        )
-
-                    logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
-                    try:
-                        pr = self.pr_adapter.create_pr(
-                            title=pr_title,
-                            body=pr_body,
-                            head=branch,
-                            base="main",
-                            draft=True,
-                        )
-                    except Exception as e:
-                        if self._pr_collision_strategy == "new_branch" and self._is_pr_collision_error(e):
-                            branch = self._switch_to_suffixed_branch(
-                                worktree=worktree,
-                                branch=branch,
-                                issue_number=issue_number,
-                                actions_taken=actions_taken,
-                                skip_hooks=skip_hooks,
-                            )
-                            pr = self.pr_adapter.create_pr(
-                                title=pr_title,
-                                body=pr_body,
-                                head=branch,
-                                base="main",
-                                draft=True,
-                            )
-                        elif self._is_no_commits_error(e):
-                            # Branch is identical to main - let human figure out why
-                            raise RuntimeError(
-                                f"Cannot create PR: no commits between main and {branch}. "
-                                f"Possible causes: (1) agent didn't make any changes, "
-                                f"(2) work already merged via another PR, "
-                                f"(3) commits lost during rebase. "
-                                f"Human review required."
-                            )
-                        else:
-                            raise
-
-                    if pr:
-                        pr_url = pr.url
-                        actions_taken.append(f"Created PR #{pr.number}")
-                        logger.info("Created PR #%d for issue #%d: %s", pr.number, issue_number, pr_url)
-
-                        # Apply extra labels to the PR if specified
-                        # Skip for fake/dry-run PRs (numbers 90000-99999)
-                        is_dry_run_pr = 90000 <= pr.number <= 99999
-                        if record.pr_labels and not is_dry_run_pr:
-                            for label in record.pr_labels:
-                                self.label_adapter.add_label(pr.number, label)
-                                logger.info("Added label '%s' to PR #%d", label, pr.number)
-                            actions_taken.append(f"Added labels to PR: {record.pr_labels}")
-                        elif record.pr_labels and is_dry_run_pr:
-                            logger.info("[E2E_DRY_RUN] Skipping PR label addition for fake PR #%d", pr.number)
-
-                elif action == RequestedAction.POST_COMMENT:
-                    if record.comment_body:
-                        # Use label_target (PR for reviews, issue otherwise)
-                        self.pr_adapter.add_comment(label_target, record.comment_body)
-                        actions_taken.append(f"Posted comment to #{label_target}")
-
-                elif action == RequestedAction.ADD_BLOCKED_LABEL:
-                    label = self._get_label("blocked")
-                    self.label_adapter.add_label(issue_number, label)
-                    actions_taken.append(f"Added '{label}' label")
-
-                elif action == RequestedAction.ADD_NEEDS_HUMAN_LABEL:
-                    label = self._get_label("needs_human")
-                    self.label_adapter.add_label(issue_number, label)
-                    actions_taken.append(f"Added '{label}' label")
-
-                elif action == RequestedAction.ADD_CODE_REVIEWED_LABEL:
-                    label = self._get_label("code_reviewed")
-                    # Use label_target (PR number for reviews, issue number otherwise)
-                    self.label_adapter.add_label(label_target, label)
-                    actions_taken.append(f"Added '{label}' label to #{label_target}")
-
-                elif action == RequestedAction.ADD_NEEDS_REWORK_LABEL:
-                    label = self._get_label("needs_rework")
-                    # Use label_target (PR number for reviews, issue number otherwise)
-                    self.label_adapter.add_label(label_target, label)
-                    actions_taken.append(f"Added '{label}' label to #{label_target}")
-
-                elif action == RequestedAction.REMOVE_CODE_REVIEW_LABEL:
-                    label = self._get_label("code_review")
-                    # Use label_target (PR number for reviews, issue number otherwise)
-                    self.label_adapter.remove_label(label_target, label)
-                    actions_taken.append(f"Removed '{label}' label from #{label_target}")
+                result = self._execute_single_action(
+                    action=action,
+                    worktree=worktree,
+                    record=record,
+                    issue_number=issue_number,
+                    issue_title=issue_title,
+                    label_target=label_target,
+                    branch=branch,
+                    actions_taken=actions_taken,
+                    errors=errors,
+                    error_details=error_details,
+                )
+                if result.halt:
+                    halt_actions = True
+                if result.branch:
+                    branch = result.branch
+                if result.pr_url:
+                    pr_url = result.pr_url
+                if result.skip_remaining:
+                    continue
 
             except Exception as e:
                 logger.exception(
@@ -691,6 +645,293 @@ class CompletionProcessor:
                 )
                 break
 
+        return branch, pr_url
+
+    @dataclass
+    class _ActionResult:
+        """Result of executing a single action."""
+
+        halt: bool = False  # Stop processing remaining actions
+        skip_remaining: bool = False  # Skip to next action (used by continue)
+        branch: str | None = None  # Updated branch name
+        pr_url: str | None = None  # PR URL if created
+
+    def _execute_single_action(
+        self,
+        *,
+        action: RequestedAction,
+        worktree: Path,
+        record: CompletionRecord,
+        issue_number: int,
+        issue_title: str,
+        label_target: int,
+        branch: str | None,
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+    ) -> "_ActionResult":
+        """Execute a single action and return the result."""
+        if action == RequestedAction.PUSH_BRANCH:
+            return self._execute_push_action(
+                worktree, issue_number, action, actions_taken, errors, error_details
+            )
+        elif action == RequestedAction.CREATE_PR:
+            return self._execute_create_pr_action(
+                worktree=worktree,
+                record=record,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                branch=branch,
+                actions_taken=actions_taken,
+                errors=errors,
+            )
+        elif action == RequestedAction.POST_COMMENT:
+            if record.comment_body:
+                self.pr_adapter.add_comment(label_target, record.comment_body)
+                actions_taken.append(f"Posted comment to #{label_target}")
+        elif action == RequestedAction.ADD_BLOCKED_LABEL:
+            label = self._get_label("blocked")
+            self.label_adapter.add_label(issue_number, label)
+            actions_taken.append(f"Added '{label}' label")
+        elif action == RequestedAction.ADD_NEEDS_HUMAN_LABEL:
+            label = self._get_label("needs_human")
+            self.label_adapter.add_label(issue_number, label)
+            actions_taken.append(f"Added '{label}' label")
+        elif action == RequestedAction.ADD_CODE_REVIEWED_LABEL:
+            label = self._get_label("code_reviewed")
+            self.label_adapter.add_label(label_target, label)
+            actions_taken.append(f"Added '{label}' label to #{label_target}")
+        elif action == RequestedAction.ADD_NEEDS_REWORK_LABEL:
+            label = self._get_label("needs_rework")
+            self.label_adapter.add_label(label_target, label)
+            actions_taken.append(f"Added '{label}' label to #{label_target}")
+        elif action == RequestedAction.REMOVE_CODE_REVIEW_LABEL:
+            label = self._get_label("code_review")
+            self.label_adapter.remove_label(label_target, label)
+            actions_taken.append(f"Removed '{label}' label from #{label_target}")
+
+        return self._ActionResult()
+
+    def _execute_push_action(
+        self,
+        worktree: Path,
+        issue_number: int,
+        action: RequestedAction,
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+    ) -> "_ActionResult":
+        """Execute push branch action."""
+        skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
+        result = self.git_adapter.push(worktree, skip_hooks=skip_hooks)
+        if result.success:
+            actions_taken.append("Pushed branch to remote")
+            logger.info("Push succeeded for #%d", issue_number)
+            return self._ActionResult()
+
+        # Handle push failure with potential rebase retry
+        retry_result: PushResult | None = None
+        if self._push_rebase_retry and self._is_non_fast_forward(result.message):
+            retry_result = self._attempt_rebase_and_retry_push(
+                worktree, issue_number, action, actions_taken, errors, error_details, skip_hooks
+            )
+
+        if retry_result and retry_result.success:
+            actions_taken.append("Pushed branch to remote after rebase")
+            logger.info("Push succeeded after rebase for #%d", issue_number)
+            return self._ActionResult()
+
+        # Push failed
+        errors.append(f"{ERROR_PREFIX_PUSH}: Push failed: {result.message}")
+        error_details.append({
+            "action": action.value,
+            "error": result.message,
+            "retryable": result.retryable,
+            "branch": result.branch,
+            "remote": result.remote,
+        })
+        logger.error("Push failed for #%d: %s", issue_number, result.message)
+        return self._ActionResult(halt=True)
+
+    def _attempt_rebase_and_retry_push(
+        self,
+        worktree: Path,
+        issue_number: int,
+        action: RequestedAction,
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+        skip_hooks: bool,
+    ) -> PushResult | None:
+        """Attempt to rebase and retry push after non-fast-forward failure."""
+        if self.git_adapter.has_uncommitted_changes(worktree):
+            logger.warning(
+                "Push retry skipped due to uncommitted changes: issue=%s",
+                issue_number,
+            )
+            return None
+
+        rebase_result = self.git_adapter.rebase_on_branch(worktree, "origin/main")
+        if rebase_result.success:
+            actions_taken.append("Rebased onto origin/main")
+            return self.git_adapter.push(worktree, skip_hooks=skip_hooks)
+
+        errors.append(f"{ERROR_PREFIX_PUSH}: Rebase failed: {rebase_result.message}")
+        error_details.append({
+            "action": action.value,
+            "error": rebase_result.message,
+            "stage": "rebase",
+            "conflicts": rebase_result.conflicts,
+            "aborted": rebase_result.aborted,
+        })
+        return None
+
+    def _execute_create_pr_action(
+        self,
+        *,
+        worktree: Path,
+        record: CompletionRecord,
+        issue_number: int,
+        issue_title: str,
+        branch: str | None,
+        actions_taken: list[str],
+        errors: list[str],
+    ) -> "_ActionResult":
+        """Execute create PR action."""
+        if not branch:
+            errors.append(f"{ERROR_PREFIX_CREATE_PR}: Cannot create PR - no branch")
+            logger.error("Cannot create PR for #%d: no branch", issue_number)
+            return self._ActionResult(skip_remaining=True)
+
+        skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
+        pr_title = f"#{issue_number}: {issue_title}"
+        pr_body = self._build_pr_body(record, issue_number)
+
+        # Check for existing PR to reuse
+        if self._pr_collision_strategy in {"reuse_open", "new_branch"}:
+            existing_pr = self._get_open_pr_for_issue(issue_number)
+            if existing_pr:
+                actions_taken.append(f"Reused PR #{existing_pr.number}")
+                logger.info(
+                    "Reused existing PR #%d for issue #%d: %s",
+                    existing_pr.number,
+                    issue_number,
+                    existing_pr.url,
+                )
+                return self._ActionResult(pr_url=existing_pr.url, skip_remaining=True)
+
+        # Maybe switch branch for PR collision
+        if self._pr_collision_strategy == "new_branch":
+            branch = self._maybe_switch_branch_for_pr_collision(
+                worktree=worktree,
+                branch=branch,
+                issue_number=issue_number,
+                actions_taken=actions_taken,
+                skip_hooks=skip_hooks,
+            )
+
+        # Create the PR
+        logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
+        pr = self._create_pr_with_collision_handling(
+            worktree=worktree,
+            pr_title=pr_title,
+            pr_body=pr_body,
+            branch=branch,
+            issue_number=issue_number,
+            actions_taken=actions_taken,
+            skip_hooks=skip_hooks,
+        )
+
+        if pr:
+            self._apply_pr_labels(pr, record, actions_taken)
+            return self._ActionResult(branch=branch, pr_url=pr.url)
+
+        return self._ActionResult(branch=branch)
+
+    def _create_pr_with_collision_handling(
+        self,
+        *,
+        worktree: Path,
+        pr_title: str,
+        pr_body: str,
+        branch: str,
+        issue_number: int,
+        actions_taken: list[str],
+        skip_hooks: bool,
+    ) -> PRInfo | None:
+        """Create PR with collision handling."""
+        try:
+            return self.pr_adapter.create_pr(
+                title=pr_title,
+                body=pr_body,
+                head=branch,
+                base="main",
+                draft=True,
+            )
+        except Exception as e:
+            if self._pr_collision_strategy == "new_branch" and self._is_pr_collision_error(e):
+                new_branch = self._switch_to_suffixed_branch(
+                    worktree=worktree,
+                    branch=branch,
+                    issue_number=issue_number,
+                    actions_taken=actions_taken,
+                    skip_hooks=skip_hooks,
+                )
+                return self.pr_adapter.create_pr(
+                    title=pr_title,
+                    body=pr_body,
+                    head=new_branch,
+                    base="main",
+                    draft=True,
+                )
+            elif self._is_no_commits_error(e):
+                raise RuntimeError(
+                    f"Cannot create PR: no commits between main and {branch}. "
+                    f"Possible causes: (1) agent didn't make any changes, "
+                    f"(2) work already merged via another PR, "
+                    f"(3) commits lost during rebase. "
+                    f"Human review required."
+                )
+            else:
+                raise
+
+    def _apply_pr_labels(
+        self,
+        pr: PRInfo,
+        record: CompletionRecord,
+        actions_taken: list[str],
+    ) -> None:
+        """Apply extra labels to PR if specified."""
+        actions_taken.append(f"Created PR #{pr.number}")
+        logger.info("Created PR #%d: %s", pr.number, pr.url)
+
+        # Skip for fake/dry-run PRs (numbers 90000-99999)
+        is_dry_run_pr = 90000 <= pr.number <= 99999
+        if record.pr_labels and not is_dry_run_pr:
+            for label in record.pr_labels:
+                self.label_adapter.add_label(pr.number, label)
+                logger.info("Added label '%s' to PR #%d", label, pr.number)
+            actions_taken.append(f"Added labels to PR: {record.pr_labels}")
+        elif record.pr_labels and is_dry_run_pr:
+            logger.info("[E2E_DRY_RUN] Skipping PR label addition for fake PR #%d", pr.number)
+
+    def _build_processing_result(
+        self,
+        *,
+        worktree: Path,
+        record: CompletionRecord,
+        session_name: str | None,
+        issue_number: int,
+        issue_title: str,
+        branch: str | None,
+        pr_url: str | None,
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+        total_duration: float,
+        completion_path: str | None,
+    ) -> ProcessingResult:
+        """Build final processing result and handle cleanup."""
         # Determine overall success
         success = len(errors) == 0 or (
             # Partial success if we at least completed the main work
@@ -705,7 +946,6 @@ class CompletionProcessor:
             errors,
             pr_url,
         )
-        total_duration = time.monotonic() - start_time
         logger.info(
             "Completion processing duration: issue=%s elapsed=%.2fs",
             issue_number,
@@ -752,15 +992,7 @@ class CompletionProcessor:
             )
 
         # Clean up the completion record after processing to prevent re-processing
-        # This is critical because review sessions reuse the same worktree
-        record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
-        existed_before = record_path.exists()
-        cleanup_ok = self.cleanup_record(worktree, completion_path)
-        exists_after = record_path.exists()
-        logger.warning("CLEANUP: issue=%d path=%s existed_before=%s exists_after=%s",
-                      issue_number, record_path, existed_before, exists_after)
-        if existed_before and exists_after and not cleanup_ok:
-            self._report_cleanup_failure(issue_number, worktree, record_path)
+        self._cleanup_completion_record(worktree, completion_path, issue_number)
 
         return ProcessingResult(
             success=success,
@@ -770,6 +1002,22 @@ class CompletionProcessor:
             diagnostic_path=diagnostic_path,
             errors=errors if errors else None,
         )
+
+    def _cleanup_completion_record(
+        self,
+        worktree: Path,
+        completion_path: str | None,
+        issue_number: int,
+    ) -> None:
+        """Clean up the completion record after processing."""
+        record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
+        existed_before = record_path.exists()
+        cleanup_ok = self.cleanup_record(worktree, completion_path)
+        exists_after = record_path.exists()
+        logger.warning("CLEANUP: issue=%d path=%s existed_before=%s exists_after=%s",
+                      issue_number, record_path, existed_before, exists_after)
+        if existed_before and exists_after and not cleanup_ok:
+            self._report_cleanup_failure(issue_number, worktree, record_path)
 
     def _build_pr_body(self, record: CompletionRecord, issue_number: int) -> str:
         """Build the PR body from the completion record.

@@ -724,71 +724,60 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             return ActionResult.fail(action, str(e))
 
     def _apply_cleanup_session(self, action: Action) -> ActionResult:
-        """Clean up a completed session.
-
-        Closes terminal tab and removes worktree as configured.
-        """
+        """Clean up a completed session."""
         assert isinstance(action, CleanupSessionAction)
 
         errors = []
+        self._cleanup_terminal_session(action, errors)
+        self._cleanup_worktree(action, errors)
 
-        # Close terminal session if configured
-        if action.close_tabs and action.terminal_session_name:
-            try:
-                # Use sessions manager to stop the session
-                # First determine session type from name
-                session_type = SessionType.ISSUE
-                if action.terminal_session_name.startswith("review-"):
-                    session_type = SessionType.REVIEW
-                elif action.terminal_session_name.startswith("rework-"):
-                    session_type = SessionType.REWORK
-                elif action.terminal_session_name.startswith("triage-"):
-                    session_type = SessionType.TRIAGE
-
-                ref = SessionRef(session_type=session_type, number=action.issue_number)
-                if self.sessions.exists(ref):
-                    self.sessions.stop(ref)
-                    logger.info(
-                        issue_log(action.issue_number, "Closed terminal session"),
-                    )
-            except Exception as e:
-                errors.append(f"close session: {e}")
-                logger.warning(
-                    issue_log(action.issue_number, "Failed to close session: %s"),
-                    e,
-                )
-
-        # Remove worktree if configured
-        if action.remove_worktrees and action.worktree_path:
-            if self.worktree_manager:
-                try:
-                    self.worktree_manager.remove(Path(action.worktree_path))
-                    logger.info(
-                        issue_log(action.issue_number, "Removed worktree: %s"),
-                        action.worktree_path,
-                    )
-                except Exception as e:
-                    errors.append(f"remove worktree: {e}")
-                    logger.warning(
-                        issue_log(action.issue_number, "Failed to remove worktree: %s"),
-                        e,
-                    )
-            else:
-                errors.append("no worktree_manager configured")
-
-        self.events.publish(TraceEvent(EventName.CLEANUP_COMPLETED, {
-            "issue_number": action.issue_number,
-            "pr_number": action.pr_number,
-        }))
+        self.events.publish(TraceEvent(EventName.CLEANUP_COMPLETED, {"issue_number": action.issue_number, "pr_number": action.pr_number}))
 
         if errors:
             return ActionResult.fail(action, "; ".join(errors))
 
-        return ActionResult.ok(
-            action,
-            issue_number=action.issue_number,
-            pr_number=action.pr_number,
-        )
+        return ActionResult.ok(action, issue_number=action.issue_number, pr_number=action.pr_number)
+
+    def _cleanup_terminal_session(self, action: "CleanupSessionAction", errors: list[str]) -> None:
+        """Close terminal session if configured."""
+        if not (action.close_tabs and action.terminal_session_name):
+            return
+
+        try:
+            session_type = self._determine_session_type(action.terminal_session_name)
+            ref = SessionRef(session_type=session_type, number=action.issue_number)
+            if self.sessions.exists(ref):
+                self.sessions.stop(ref)
+                logger.info(issue_log(action.issue_number, "Closed terminal session"))
+        except Exception as e:
+            errors.append(f"close session: {e}")
+            logger.warning(issue_log(action.issue_number, "Failed to close session: %s"), e)
+
+    def _determine_session_type(self, session_name: str) -> SessionType:
+        """Determine session type from session name."""
+        if session_name.startswith("review-"):
+            return SessionType.REVIEW
+        if session_name.startswith("rework-"):
+            return SessionType.REWORK
+        if session_name.startswith("triage-"):
+            return SessionType.TRIAGE
+        return SessionType.ISSUE
+
+    def _cleanup_worktree(self, action: "CleanupSessionAction", errors: list[str]) -> None:
+        """Remove worktree if configured."""
+        if not (action.remove_worktrees and action.worktree_path):
+            return
+
+        if not self.worktree_manager:
+            errors.append("no worktree_manager configured")
+            return
+
+        try:
+            self.worktree_manager.remove(Path(action.worktree_path))
+            logger.info(issue_log(action.issue_number, "Removed worktree: %s"), action.worktree_path)
+        except Exception as e:
+            errors.append(f"remove worktree: {e}")
+            logger.warning(issue_log(action.issue_number, "Failed to remove worktree: %s"), e)
 
     def _apply_remove_worktree(self, action: Action) -> ActionResult:
         """Remove a git worktree."""

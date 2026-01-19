@@ -455,7 +455,6 @@ class CompletionHandler:
 
     def _update_review_machine(self, session: Session) -> None:
         """Update the review state machine for a completed review session."""
-        # Extract PR number from review session name (e.g., "review-123")
         match = re.match(r"review-(\d+)", session.terminal_id)
         if not match:
             return
@@ -467,65 +466,53 @@ class CompletionHandler:
             return
 
         logger.debug(f"[STATE_MACHINE] Found review machine for PR #{pr_number_review}")
-        # Check PR labels to determine outcome via adapter (no subprocess)
-        # The agent-done script adds either code-reviewed or needs-rework label
         try:
             pr_info = self.repository_host.get_pr(pr_number_review)
             if pr_info:
-                self._emit_pr_view_changed(
-                    pr_info,
-                    issue_key=session.key.issue.stable_id(),
-                    issue_number=session.issue.number,
-                )
-                labels = pr_info.labels
-                if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
-                    # Review was approved
-                    logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: IN_REVIEW -> APPROVED")
-                    if getattr(pr_info, "draft", None) is True:
-                        try:
-                            self.repository_host.set_pr_draft(pr_number_review, False)
-                            logger.info("[STATE_MACHINE] PR #%d marked ready for review", pr_number_review)
-                        except Exception as e:
-                            logger.warning("Failed to mark PR #%d ready for review: %s", pr_number_review, e)
-                    if review_machine.can_transition("approve"):
-                        review_machine.approve()  # type: ignore[attr-defined]
-                    else:
-                        logger.warning(
-                            "[STATE_MACHINE] PR #%d approve ignored (state=%s)",
-                            pr_number_review,
-                            review_machine.get_state().value,
-                        )
-                elif self.config.get_label_needs_rework() in labels:
-                    # Changes requested
-                    logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: IN_REVIEW -> CHANGES_REQUESTED")
-                    if review_machine.can_transition("request_changes"):
-                        review_machine.request_changes()  # type: ignore[attr-defined]
-                    else:
-                        logger.warning(
-                            "[STATE_MACHINE] PR #%d request_changes ignored (state=%s)",
-                            pr_number_review,
-                            review_machine.get_state().value,
-                        )
-                    if review_machine.can_transition("queue_rework"):
-                        logger.info(f"[STATE_MACHINE] PR #{pr_number_review}: CHANGES_REQUESTED -> REWORK_PENDING")
-                        review_machine.queue_rework()  # type: ignore[attr-defined]
-                    else:
-                        logger.warning(
-                            "[STATE_MACHINE] PR #%d queue_rework ignored (state=%s)",
-                            pr_number_review,
-                            review_machine.get_state().value,
-                        )
+                self._emit_pr_view_changed(pr_info, issue_key=session.key.issue.stable_id(), issue_number=session.issue.number)
+                self._process_review_outcome(pr_info, pr_number_review, review_machine)
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
-            self.events.publish(TraceEvent(
-                EventName.APPLY_FAILED,
-                {
-                    "step_type": "review_outcome_check",
-                    "pr_number": pr_number_review,
-                    "issue_number": session.issue.number,
-                    "error": str(e),
-                },
-            ))
+            self.events.publish(TraceEvent(EventName.APPLY_FAILED, {
+                "step_type": "review_outcome_check", "pr_number": pr_number_review,
+                "issue_number": session.issue.number, "error": str(e),
+            }))
+
+    def _process_review_outcome(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
+        """Process review outcome based on PR labels."""
+        labels = pr_info.labels
+        if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
+            self._handle_review_approved(pr_info, pr_number, review_machine)
+        elif self.config.get_label_needs_rework() in labels:
+            self._handle_changes_requested(pr_number, review_machine)
+
+    def _handle_review_approved(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
+        """Handle approved review outcome."""
+        logger.info(f"[STATE_MACHINE] PR #{pr_number}: IN_REVIEW -> APPROVED")
+        if getattr(pr_info, "draft", None) is True:
+            try:
+                self.repository_host.set_pr_draft(pr_number, False)
+                logger.info("[STATE_MACHINE] PR #%d marked ready for review", pr_number)
+            except Exception as e:
+                logger.warning("Failed to mark PR #%d ready for review: %s", pr_number, e)
+        self._try_transition(review_machine, "approve", pr_number)
+
+    def _handle_changes_requested(self, pr_number: int, review_machine: Any) -> None:
+        """Handle changes requested review outcome."""
+        logger.info(f"[STATE_MACHINE] PR #{pr_number}: IN_REVIEW -> CHANGES_REQUESTED")
+        self._try_transition(review_machine, "request_changes", pr_number)
+        if review_machine.can_transition("queue_rework"):
+            logger.info(f"[STATE_MACHINE] PR #{pr_number}: CHANGES_REQUESTED -> REWORK_PENDING")
+            review_machine.queue_rework()  # type: ignore[attr-defined]
+        else:
+            logger.warning("[STATE_MACHINE] PR #%d queue_rework ignored (state=%s)", pr_number, review_machine.get_state().value)
+
+    def _try_transition(self, machine: Any, transition: str, pr_number: int) -> None:
+        """Try to perform a state machine transition."""
+        if machine.can_transition(transition):
+            getattr(machine, transition)()
+        else:
+            logger.warning("[STATE_MACHINE] PR #%d %s ignored (state=%s)", pr_number, transition, machine.get_state().value)
 
     def _emit_pr_view_changed(
         self,
