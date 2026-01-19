@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
 
 from ..domain import ProcessState
+from ..domain.process_state import ProcessExitInfo
 from ..infra.config import Config
 from ..infra import labels
 from ..infra.logging_config import issue_log
@@ -126,6 +127,247 @@ class SessionObserver:
             return []
         return self._fresh_issue_reader.read_issue_labels(issue_number)
 
+    def _get_runtime_and_timeout(
+        self, session: Session
+    ) -> tuple[Optional[float], Optional[int]]:
+        """Get runtime and timeout values from machine or session."""
+        machine = self.session_machines.get(session.terminal_id)
+        if machine:
+            return machine.get_runtime_minutes(), machine.timeout_minutes
+        return session.runtime_minutes, session.agent_config.timeout_minutes
+
+    def _is_timeout_exceeded(
+        self, session: Session, runtime: Optional[float]
+    ) -> bool:
+        """Check if the session has exceeded its timeout."""
+        machine = self.session_machines.get(session.terminal_id)
+        if machine and machine.timeout_minutes:
+            if runtime and runtime > machine.timeout_minutes:
+                return True
+        elif session.is_timed_out:
+            return True
+        return False
+
+    def _check_process_state(
+        self, session: Session
+    ) -> tuple[bool | None, bool, ProcessExitInfo | None]:
+        """Check process state via terminal observer.
+
+        Returns:
+            Tuple of (process_alive, detection_authoritative, exit_info)
+            - process_alive: True/False/None if can't determine
+            - detection_authoritative: True if pane_dead gave definitive answer
+            - exit_info: Exit info if process exited
+        """
+        process_alive: bool | None = None
+        detection_authoritative = False
+        exit_info = None
+
+        if self._terminal_observer:
+            process_state = self._terminal_observer.get_process_state(
+                session.terminal_id
+            )
+            if process_state == ProcessState.RUNNING:
+                process_alive = True
+                detection_authoritative = True
+            elif process_state in (ProcessState.EXITED, ProcessState.SIGNALED):
+                process_alive = False
+                detection_authoritative = True
+                exit_info = self._terminal_observer.get_exit_info(session.terminal_id)
+                if exit_info:
+                    logger.info(
+                        issue_log(session.issue.number, "Process exited (pane_dead): %s"),
+                        exit_info,
+                    )
+
+        return process_alive, detection_authoritative, exit_info
+
+    def _check_completion_json(
+        self, session: Session, exists: bool, runtime: Optional[float]
+    ) -> SessionObservationResult | None:
+        """Check for valid completion.json and return result if found.
+
+        Returns:
+            SessionObservationResult.terminated() if valid completion found, None otherwise
+        """
+        import json
+
+        completion_path = session.worktree_path / session.completion_path
+        if not completion_path.exists():
+            return None
+
+        try:
+            with open(completion_path) as f:
+                data = json.load(f)
+            required_fields = ["session_id", "timestamp", "outcome", "summary"]
+            if all(k in data for k in required_fields):
+                logger.info(
+                    issue_log(
+                        session.issue.number, "Valid completion.json detected: outcome=%s"
+                    ),
+                    data.get("outcome"),
+                )
+                self.events.publish(
+                    TraceEvent(
+                        EventName.OBSERVATION_COMPLETION_DETECTED,
+                        {
+                            "issue_number": session.issue.number,
+                            "session_name": session.terminal_id,
+                            "outcome": data.get("outcome"),
+                            "session_exists": exists,
+                        },
+                    )
+                )
+                return SessionObservationResult.terminated(runtime_minutes=runtime)
+            else:
+                logger.debug(
+                    "completion.json missing required fields, treating as incomplete"
+                )
+        except (json.JSONDecodeError, OSError) as e:
+            logger.debug(f"completion.json not yet valid (partial write?): {e}")
+
+        return None
+
+    def _try_send_exit_if_has_pr(self, session: Session) -> None:
+        """Send /exit to session if it has an open PR but is still running."""
+        if session.exit_sent:
+            return
+        try:
+            prs = self._get_open_prs_for_branch(session.branch_name)
+            if prs:
+                logger.info(
+                    issue_log(
+                        session.issue.number, "Has PR but still running - sending /exit"
+                    ),
+                )
+                if self._send_exit_to_session_by_name(session.terminal_id):
+                    session.exit_sent = True
+        except Exception as e:
+            logger.warning(
+                issue_log(session.issue.number, "Could not check for PRs: %s"), e
+            )
+            self.events.publish(
+                TraceEvent(
+                    EventName.APPLY_FAILED,
+                    {
+                        "step_type": "observer_pr_check",
+                        "issue_number": session.issue.number,
+                        "branch": session.branch_name,
+                        "error": str(e),
+                    },
+                )
+            )
+
+    def _check_grace_period(
+        self, session: Session, runtime: Optional[float]
+    ) -> SessionObservationResult | None:
+        """Check if session should be kept alive via grace period.
+
+        Returns:
+            SessionObservationResult.running() if grace period applies, None otherwise
+        """
+        grace_period = self.config.session_grace_period_seconds
+        log_activity_threshold = self.config.session_log_activity_seconds
+        session_age = (datetime.now() - session.started_at).total_seconds()
+
+        log_path = (
+            self._session_output.get_log_path(
+                session.worktree_path, session.terminal_id
+            )
+            if self._session_output
+            else None
+        )
+        log_is_progressing = False
+        log_age = float("inf")
+        if log_path and log_path.exists():
+            try:
+                log_mtime = log_path.stat().st_mtime
+                log_age = time.time() - log_mtime
+                log_is_progressing = log_age < log_activity_threshold
+            except OSError:
+                pass
+
+        if session_age < grace_period:
+            logger.info(
+                issue_log(
+                    session.issue.number,
+                    "GRACE_PERIOD: session only %.0fs old (< %ds grace) - treating as running",
+                ),
+                session_age,
+                grace_period,
+            )
+            return SessionObservationResult.running(runtime_minutes=runtime)
+
+        if log_is_progressing:
+            logger.info(
+                issue_log(
+                    session.issue.number,
+                    "LOG_ACTIVE: log modified %.0fs ago (< %ds threshold) - treating as running",
+                ),
+                log_age,
+                log_activity_threshold,
+            )
+            return SessionObservationResult.running(runtime_minutes=runtime)
+
+        return None
+
+    def _capture_terminal_output_on_termination(self, session: Session) -> None:
+        """Capture terminal output when session terminates without completion."""
+        completion_path = session.worktree_path / session.completion_path
+        if completion_path.exists() or not self._session_runner:
+            return
+
+        try:
+            terminal_output = self._session_runner.get_session_output(
+                session.issue.number,
+                lines=100,
+                session_name=session.terminal_id,
+            )
+            if terminal_output:
+                truncated = (
+                    terminal_output[-2000:]
+                    if len(terminal_output) > 2000
+                    else terminal_output
+                )
+                logger.warning(
+                    issue_log(
+                        session.issue.number,
+                        "Terminated without completion. Terminal output:\n%s",
+                    ),
+                    truncated,
+                )
+        except Exception as e:
+            logger.debug(
+                issue_log(session.issue.number, "Could not capture terminal output: %s"),
+                e,
+            )
+
+    def _emit_observation_event(
+        self,
+        session: Session,
+        result: SessionObservationResult,
+        exit_info: ProcessExitInfo | None,
+    ) -> None:
+        """Emit observation result event for debugging."""
+        if result.observation == SessionObservation.RUNNING:
+            return
+
+        completion_path = session.worktree_path / session.completion_path
+        event_data = {
+            "issue_number": session.issue.number,
+            "session_name": session.terminal_id,
+            "observation": result.observation.value,
+            "session_exists": result.session_exists,
+            "runtime_minutes": result.runtime_minutes,
+            "timeout_minutes": result.timeout_minutes,
+            "worktree_path": str(session.worktree_path),
+            "completion_json_exists": completion_path.exists(),
+        }
+        if exit_info:
+            event_data["exit_code"] = exit_info.exit_code
+            event_data["exit_signal"] = exit_info.signal
+        self.events.publish(TraceEvent(EventName.OBSERVATION_RESULT, event_data))
+
     def observe_session(self, session: Session) -> SessionObservationResult:
         """Observe a session and return facts about its state.
 
@@ -145,207 +387,68 @@ class SessionObserver:
             - TERMINATED: Session no longer exists
             - TIMED_OUT: Session exceeded timeout (may or may not exist)
         """
-        # Get runtime info
-        machine = self.session_machines.get(session.terminal_id)
-        if machine:
-            runtime = machine._get_runtime_minutes()
-            timeout = machine.timeout_minutes
-        else:
-            runtime = session.runtime_minutes
-            timeout = session.agent_config.timeout_minutes
-
-        # Check timeout first
-        timeout_exceeded = False
-        if machine and machine.timeout_minutes:
-            if runtime and runtime > machine.timeout_minutes:
-                timeout_exceeded = True
-        elif session.is_timed_out:
-            timeout_exceeded = True
-
-        # PRIMARY: Check process state via terminal observer (pane_dead)
-        # This is the most authoritative signal for whether the process is alive
-        process_alive: bool | None = None  # None means we don't know (fallback needed)
-        detection_authoritative = False  # True when pane_dead gives definitive answer
-        exit_info = None
-        if self._terminal_observer:
-            process_state = self._terminal_observer.get_process_state(session.terminal_id)
-            if process_state == ProcessState.RUNNING:
-                process_alive = True
-                detection_authoritative = True  # pane_dead says running - trust it
-            elif process_state in (ProcessState.EXITED, ProcessState.SIGNALED):
-                process_alive = False
-                detection_authoritative = True  # pane_dead says dead - trust it
-                exit_info = self._terminal_observer.get_exit_info(session.terminal_id)
-                if exit_info:
-                    logger.info(
-                        issue_log(session.issue.number, "Process exited (pane_dead): %s"),
-                        exit_info,
-                    )
-            # ProcessState.UNKNOWN means we can't determine - fall back to window check
+        runtime, timeout = self._get_runtime_and_timeout(session)
+        timeout_exceeded = self._is_timeout_exceeded(session, runtime)
+        process_alive, detection_authoritative, exit_info = self._check_process_state(
+            session
+        )
 
         # FALLBACK: Check if window exists (for terminals without pane_dead support)
-        # Also used when TerminalObserver is not available
         exists = self._session_exists_by_name(session.terminal_id)
         if process_alive is None:
-            # No process state available - use window existence as signal
             process_alive = exists
 
-        # Check for completion.json - this is the source of truth for agent completion
-        # If it exists AND is valid JSON, the agent called agent-done and work is done
-        # Use session.completion_path which is agent-specific (e.g., completion-agent_e2e-test.json)
-        completion_path = session.worktree_path / session.completion_path
-        if completion_path.exists():
-            # Validate the JSON is complete (not partially written)
-            import json
-            try:
-                with open(completion_path) as f:
-                    data = json.load(f)
-                # Check for required terminator fields
-                if all(k in data for k in ["session_id", "timestamp", "outcome", "summary"]):
-                    logger.info(
-                        issue_log(session.issue.number, "Valid completion.json detected: outcome=%s"),
-                        data.get("outcome"),
-                    )
-                    # Emit event for observability
-                    self.events.publish(TraceEvent(
-                        EventName.OBSERVATION_COMPLETION_DETECTED,
-                        {
-                            "issue_number": session.issue.number,
-                            "session_name": session.terminal_id,
-                            "outcome": data.get("outcome"),
-                            "session_exists": exists,
-                        },
-                    ))
-                    # Don't kill session yet - let controller handle cleanup after processing
-                    # This allows inspection of what happened in the terminal
-                    # Return TERMINATED so controller processes completion.json
-                    return SessionObservationResult.terminated(runtime_minutes=runtime)
-                else:
-                    logger.debug(f"completion.json missing required fields, treating as incomplete")
-            except (json.JSONDecodeError, OSError) as e:
-                logger.debug(f"completion.json not yet valid (partial write?): {e}")
+        # Check for completion.json
+        completion_result = self._check_completion_json(session, exists, runtime)
+        if completion_result:
+            return completion_result
 
-        # If session is running and has PR, try to send /exit (side effect)
-        # This helps sessions that completed but forgot to exit
-        if process_alive and not session.exit_sent:
-            try:
-                prs = self._get_open_prs_for_branch(session.branch_name)
-                if prs:
-                    logger.info(
-                        issue_log(session.issue.number, "Has PR but still running - sending /exit"),
-                    )
-                    if self._send_exit_to_session_by_name(session.terminal_id):
-                        session.exit_sent = True
-            except Exception as e:
-                logger.warning(issue_log(session.issue.number, "Could not check for PRs: %s"), e)
-                self.events.publish(TraceEvent(
-                    EventName.APPLY_FAILED,
-                    {
-                        "step_type": "observer_pr_check",
-                        "issue_number": session.issue.number,
-                        "branch": session.branch_name,
-                        "error": str(e),
-                    },
-                ))
+        # If session is running and has PR, try to send /exit
+        if process_alive:
+            self._try_send_exit_if_has_pr(session)
 
         # Build observation result
+        result = self._build_observation_result(
+            session, runtime, timeout, timeout_exceeded, process_alive,
+            detection_authoritative, exists
+        )
+
+        self._emit_observation_event(session, result, exit_info)
+        return result
+
+    def _build_observation_result(
+        self,
+        session: Session,
+        runtime: Optional[float],
+        timeout: Optional[int],
+        timeout_exceeded: bool,
+        process_alive: bool,
+        detection_authoritative: bool,
+        exists: bool,
+    ) -> SessionObservationResult:
+        """Build the observation result based on gathered facts."""
         if timeout_exceeded:
-            # Timeout takes priority as it requires action (kill session)
-            result = SessionObservationResult.timed_out(
+            return SessionObservationResult.timed_out(
                 runtime_minutes=runtime,
                 timeout_minutes=timeout,
                 session_exists=exists,
             )
-        elif process_alive:
+
+        if process_alive:
             self._emit_no_output_if_stale(session)
-            result = SessionObservationResult.running(runtime_minutes=runtime)
-        else:
-            # process_alive is False - process appears to be dead
-            # Apply grace period heuristics ONLY when detection is uncertain
-            # (i.e., falling back to window check because pane_dead wasn't available)
-            # When pane_dead authoritatively says dead, trust it immediately
-            apply_grace_period = not detection_authoritative
+            return SessionObservationResult.running(runtime_minutes=runtime)
 
-            if apply_grace_period:
-                # Check if session should be kept alive despite detection failure
-                # Two signals indicate the session may still be running:
-                # 1. Session is new - terminal detection may be unreliable during startup
-                # 2. Log file is progressing - Claude is clearly active
-                # These thresholds are configurable via YAML to allow tuning
-                grace_period = self.config.session_grace_period_seconds
-                log_activity_threshold = self.config.session_log_activity_seconds
-                session_age = (datetime.now() - session.started_at).total_seconds()
+        # Process appears dead - check grace period if detection is uncertain
+        if not detection_authoritative:
+            grace_result = self._check_grace_period(session, runtime)
+            if grace_result:
+                return grace_result
 
-                # Check log file activity - if log was modified recently, session is active
-                log_path = (
-                    self._session_output.get_log_path(session.worktree_path, session.terminal_id)
-                    if self._session_output else None
-                )
-                log_is_progressing = False
-                log_age = float("inf")  # Default to "very old" if we can't read
-                if log_path and log_path.exists():
-                    try:
-                        log_mtime = log_path.stat().st_mtime
-                        log_age = time.time() - log_mtime
-                        log_is_progressing = log_age < log_activity_threshold
-                    except OSError:
-                        pass
+        # Authoritative detection says dead, or grace period didn't apply
+        if detection_authoritative:
+            self._capture_terminal_output_on_termination(session)
 
-                if session_age < grace_period:
-                    logger.info(
-                        issue_log(session.issue.number, "GRACE_PERIOD: session only %.0fs old (< %ds grace) - treating as running"),
-                        session_age,
-                        grace_period,
-                    )
-                    result = SessionObservationResult.running(runtime_minutes=runtime)
-                elif log_is_progressing:
-                    logger.info(
-                        issue_log(session.issue.number, "LOG_ACTIVE: log modified %.0fs ago (< %ds threshold) - treating as running"),
-                        log_age,
-                        log_activity_threshold,
-                    )
-                    result = SessionObservationResult.running(runtime_minutes=runtime)
-                else:
-                    result = SessionObservationResult.terminated(runtime_minutes=runtime)
-            else:
-                # Authoritative detection (pane_dead) says process is dead - trust it
-                result = SessionObservationResult.terminated(runtime_minutes=runtime)
-                # Capture terminal output for failed sessions (before tab closes)
-                # This helps debug immediate failures like permission prompts
-                if not completion_path.exists() and self._session_runner:
-                    try:
-                        terminal_output = self._session_runner.get_session_output(
-                            session.issue.number,
-                            lines=100,
-                            session_name=session.terminal_id,
-                        )
-                        if terminal_output:
-                            logger.warning(
-                                issue_log(session.issue.number, "Terminated without completion. Terminal output:\n%s"),
-                                terminal_output[-2000:] if len(terminal_output) > 2000 else terminal_output,
-                            )
-                    except Exception as e:
-                        logger.debug(issue_log(session.issue.number, "Could not capture terminal output: %s"), e)
-
-        # Emit observation result for debugging (only for non-running sessions)
-        if result.observation != SessionObservation.RUNNING:
-            event_data = {
-                "issue_number": session.issue.number,
-                "session_name": session.terminal_id,
-                "observation": result.observation.value,
-                "session_exists": result.session_exists,
-                "runtime_minutes": result.runtime_minutes,
-                "timeout_minutes": result.timeout_minutes,
-                "worktree_path": str(session.worktree_path),
-                "completion_json_exists": completion_path.exists(),
-            }
-            # Include exit info if available (from pane_dead detection)
-            if exit_info:
-                event_data["exit_code"] = exit_info.exit_code
-                event_data["exit_signal"] = exit_info.signal
-            self.events.publish(TraceEvent(EventName.OBSERVATION_RESULT, event_data))
-
-        return result
+        return SessionObservationResult.terminated(runtime_minutes=runtime)
 
     def _emit_no_output_if_stale(self, session: Session) -> None:
         """Emit a session_no_output event if the session log is idle too long."""
@@ -415,6 +518,121 @@ class SessionObserver:
             tail = tail.encode("utf-8")[-max_bytes:].decode("utf-8", errors="replace")
         return tail
 
+    def _check_timeout_status(self, session: Session) -> SessionStatus | None:
+        """Check if session has timed out.
+
+        Returns:
+            SessionStatus.TIMED_OUT if timed out, None otherwise
+        """
+        machine = self.session_machines.get(session.terminal_id)
+        if machine and machine.check_timeout():
+            logger.info(
+                issue_log(
+                    session.issue.number,
+                    "Session timed out (state_machine): runtime=%.1fm timeout=%dm",
+                ),
+                machine.get_runtime_minutes(),
+                machine.timeout_minutes,
+            )
+            return SessionStatus.TIMED_OUT
+
+        if session.is_timed_out:
+            logger.info(
+                issue_log(
+                    session.issue.number,
+                    "Session timed out: runtime=%sm timeout=%sm",
+                ),
+                session.runtime_minutes,
+                session.agent_config.timeout_minutes,
+            )
+            return SessionStatus.TIMED_OUT
+
+        return None
+
+    def _handle_running_session(self, session: Session) -> SessionStatus:
+        """Handle a running session, possibly sending /exit if PR exists.
+
+        Returns:
+            SessionStatus.RUNNING
+        """
+        self._try_send_exit_if_has_pr(session)
+        logger.debug(
+            issue_log(session.issue.number, "Still running: session=%s"),
+            session.terminal_id,
+        )
+        return SessionStatus.RUNNING
+
+    def _determine_exited_session_outcome(self, session: Session) -> SessionStatus:
+        """Determine the outcome for a session that has exited.
+
+        Returns:
+            SessionStatus (COMPLETED, BLOCKED, NEEDS_HUMAN, or FAILED)
+        """
+        logger.debug(
+            issue_log(session.issue.number, "Session exited, checking completion status"),
+        )
+
+        # Check if PR exists for the branch
+        try:
+            prs = self._get_open_prs_for_branch(session.branch_name)
+            if prs:
+                logger.info(
+                    issue_log(
+                        session.issue.number,
+                        "Found %d open PR(s) for branch %s - COMPLETED",
+                    ),
+                    len(prs),
+                    session.branch_name,
+                )
+                return SessionStatus.COMPLETED
+        except Exception as e:
+            logger.warning(
+                issue_log(
+                    session.issue.number,
+                    "Failed to check for open PRs on branch %s: %s",
+                ),
+                session.branch_name,
+                e,
+            )
+
+        return self._determine_outcome_from_labels(session)
+
+    def _determine_outcome_from_labels(self, session: Session) -> SessionStatus:
+        """Determine outcome by checking issue labels.
+
+        Returns:
+            SessionStatus (BLOCKED, NEEDS_HUMAN, or FAILED)
+        """
+        try:
+            current_labels = self._get_issue_labels(session.issue.number)
+            logger.debug(
+                issue_log(session.issue.number, "Fresh labels: %s"), current_labels
+            )
+        except Exception as e:
+            logger.warning(
+                issue_log(session.issue.number, "Failed to fetch labels: %s"), e
+            )
+            current_labels = session.issue.labels
+
+        if self.config.get_label_blocked() in current_labels:
+            logger.info(
+                issue_log(session.issue.number, "Has '%s' label - BLOCKED"),
+                self.config.get_label_blocked(),
+            )
+            return SessionStatus.BLOCKED
+
+        if self.config.get_label_needs_human() in current_labels:
+            logger.info(
+                issue_log(session.issue.number, "Has '%s' label - NEEDS_HUMAN"),
+                self.config.get_label_needs_human(),
+            )
+            return SessionStatus.NEEDS_HUMAN
+
+        logger.info(
+            issue_log(session.issue.number, "Ended without completion markers - FAILED"),
+        )
+        return SessionStatus.FAILED
+
     def check_session(self, session: Session) -> SessionStatus:
         """Check the status of a session.
 
@@ -435,99 +653,14 @@ class SessionObserver:
         Returns:
             SessionStatus indicating the current state of the session
         """
-        # Check timeout using state machine if available (primary method)
-        machine = self.session_machines.get(session.terminal_id)
-        if machine and machine.check_timeout():
-            logger.info(
-                issue_log(session.issue.number, "Session timed out (state_machine): runtime=%.1fm timeout=%dm"),
-                machine._get_runtime_minutes(),
-                machine.timeout_minutes,
-            )
-            return SessionStatus.TIMED_OUT
+        timeout_status = self._check_timeout_status(session)
+        if timeout_status:
+            return timeout_status
 
-        # Fallback to session-level timeout check (for sessions without state machines)
-        if session.is_timed_out:
-            logger.info(
-                issue_log(session.issue.number, "Session timed out: runtime=%sm timeout=%sm"),
-                session.runtime_minutes,
-                session.agent_config.timeout_minutes,
-            )
-            return SessionStatus.TIMED_OUT
-
-        # Check if session is still running - use session name, not issue number
-        # (review sessions use PR number, not issue number)
         if self._session_exists_by_name(session.terminal_id):
-            # Session still running - but check if it has a PR (meaning it's done but didn't exit)
-            # Only send /exit once to avoid spamming
-            if not session.exit_sent:
-                try:
-                    prs = self._get_open_prs_for_branch(session.branch_name)
-                    if prs:
-                        logger.info(
-                            issue_log(session.issue.number, "Has PR but still running - sending /exit"),
-                        )
-                        if self._send_exit_to_session_by_name(session.terminal_id):
-                            session.exit_sent = True
-                except Exception as e:
-                    logger.debug(issue_log(session.issue.number, "Could not check for PRs: %s"), e)
+            return self._handle_running_session(session)
 
-            logger.debug(
-                issue_log(session.issue.number, "Still running: session=%s"),
-                session.terminal_id,
-            )
-            return SessionStatus.RUNNING
-
-        # Session has exited, determine the outcome
-        logger.debug(
-            issue_log(session.issue.number, "Session exited, checking completion status"),
-        )
-
-        # Check if PR exists for the branch
-        try:
-            prs = self._get_open_prs_for_branch(session.branch_name)
-            if prs:
-                logger.info(
-                    issue_log(session.issue.number, "Found %d open PR(s) for branch %s - COMPLETED"),
-                    len(prs),
-                    session.branch_name,
-                )
-                return SessionStatus.COMPLETED
-        except Exception as e:
-            logger.warning(
-                issue_log(session.issue.number, "Failed to check for open PRs on branch %s: %s"),
-                session.branch_name,
-                e,
-            )
-
-        # Fetch fresh labels from GitHub (session.issue.labels is stale from launch time)
-        try:
-            current_labels = self._get_issue_labels(session.issue.number)
-            logger.debug(issue_log(session.issue.number, "Fresh labels: %s"), current_labels)
-        except Exception as e:
-            logger.warning(issue_log(session.issue.number, "Failed to fetch labels: %s"), e)
-            current_labels = session.issue.labels  # Fall back to stale labels
-
-        # Check if issue has 'blocked' label
-        if self.config.get_label_blocked() in current_labels:
-            logger.info(
-                issue_log(session.issue.number, "Has '%s' label - BLOCKED"),
-                self.config.get_label_blocked(),
-            )
-            return SessionStatus.BLOCKED
-
-        # Check if issue has 'needs-human' label
-        if self.config.get_label_needs_human() in current_labels:
-            logger.info(
-                issue_log(session.issue.number, "Has '%s' label - NEEDS_HUMAN"),
-                self.config.get_label_needs_human(),
-            )
-            return SessionStatus.NEEDS_HUMAN
-
-        # No success indicators found
-        logger.info(
-            issue_log(session.issue.number, "Ended without completion markers - FAILED"),
-        )
-        return SessionStatus.FAILED
+        return self._determine_exited_session_outcome(session)
 
     def check_all_sessions(self, sessions: list[Session]) -> dict[int, SessionStatus]:
         """Check all sessions and return their statuses.
