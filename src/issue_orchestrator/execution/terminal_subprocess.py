@@ -228,40 +228,39 @@ class SubprocessPlugin:
         run_dir = session_output.ensure_run_dir(working_dir, session_name)
         return run_dir / "session.log"
 
-    def _start_process(self, command: str, working_dir: Path, session_name: str) -> subprocess.Popen[bytes]:
+    def _build_process_command(self, command: str, working_dir: Path) -> str:
+        """Build the full command with path and isolation prefix."""
         wrapper_dir = self._repo_root / "scripts"
         venv_bin = working_dir / ".venv" / "bin"
         path_prefix = f"{venv_bin}:{wrapper_dir}:{os.environ.get('PATH', '')}"
         isolation_prefix = build_isolation_prefix(working_dir, scrub_env=True, isolate_home=False)
-        full_cmd = f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command}'
+        return f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command}'
 
-        log_path = self._session_log_path(working_dir, session_name)
-
-        # Use PTY to force line-buffered output from the child process.
-        # Without a PTY, output is fully buffered and only appears when process exits.
-        master_fd, slave_fd = pty.openpty()
-
-        proc = subprocess.Popen(
-            ["/bin/bash", "-lc", full_cmd],
-            cwd=str(working_dir),
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            start_new_session=True,
-            close_fds=True,
-        )
-        os.close(slave_fd)  # Close slave in parent
-
-        # Duplicate master_fd: one for reading output, one for writing stdin
+    def _setup_pty_master(self, session_name: str, master_fd: int) -> int:
+        """Set up PTY master fd and return read fd."""
         read_fd = os.dup(master_fd)
-
-        # Store master_fd for stdin writes (if enabled)
         if self._allow_stdin:
             self._pty_masters[session_name] = master_fd
         else:
             os.close(master_fd)
+        return read_fd
 
-        # Start a thread to read from PTY and write to log file
+    def _drain_remaining_output(self, read_fd: int, log_file) -> None:
+        """Drain any remaining output after process exits."""
+        while True:
+            ready, _, _ = select.select([read_fd], [], [], 0.1)
+            if not ready:
+                break
+            data = os.read(read_fd, 4096)
+            if not data:
+                break
+            log_file.write(data)
+
+    def _start_output_copier(
+        self, read_fd: int, log_path: Path, proc: subprocess.Popen[bytes]
+    ) -> None:
+        """Start a thread to copy PTY output to log file."""
+
         def _copy_output():
             try:
                 with open(log_path, "ab", buffering=0) as log_file:
@@ -273,17 +272,8 @@ class SubprocessPlugin:
                                 if not data:
                                     break
                                 log_file.write(data)
-                            # Check if process has exited
                             if proc.poll() is not None:
-                                # Drain any remaining output
-                                while True:
-                                    ready, _, _ = select.select([read_fd], [], [], 0.1)
-                                    if not ready:
-                                        break
-                                    data = os.read(read_fd, 4096)
-                                    if not data:
-                                        break
-                                    log_file.write(data)
+                                self._drain_remaining_output(read_fd, log_file)
                                 break
                         except OSError:
                             break
@@ -295,6 +285,27 @@ class SubprocessPlugin:
 
         thread = threading.Thread(target=_copy_output, daemon=True)
         thread.start()
+
+    def _start_process(self, command: str, working_dir: Path, session_name: str) -> subprocess.Popen[bytes]:
+        full_cmd = self._build_process_command(command, working_dir)
+        log_path = self._session_log_path(working_dir, session_name)
+
+        # Use PTY to force line-buffered output from the child process.
+        master_fd, slave_fd = pty.openpty()
+
+        proc = subprocess.Popen(
+            ["/bin/bash", "-lc", full_cmd],
+            cwd=str(working_dir),
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+
+        read_fd = self._setup_pty_master(session_name, master_fd)
+        self._start_output_copier(read_fd, log_path, proc)
 
         self._processes[session_name] = proc
         return proc
