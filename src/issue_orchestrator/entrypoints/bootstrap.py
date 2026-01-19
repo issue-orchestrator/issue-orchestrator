@@ -61,8 +61,267 @@ from ..domain.lease_config import LeaseConfig
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
+    from ..control.pr_scanner import PRScanner
+    from ..control.session_restorer import SessionRestorer
+    from ..control.completion_processor import CompletionProcessor
+    from ..control.session_controller import SessionController
+    from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_repo(config: Config) -> str | None:
+    """Resolve repo name from config or auto-detect from git remote."""
+    repo = config.repo
+    if not repo:
+        try:
+            repo = get_repo_from_git()
+            logger.info("Auto-detected repository from git remote: %s", repo)
+            config.repo = repo
+        except GitRepoError as e:
+            logger.warning("Could not auto-detect repository: %s", e)
+            repo = None
+    return repo
+
+
+def _create_github_adapter(repo: str, config: Config) -> GitHubAdapter:
+    """Create GitHub adapter with cache and verification service."""
+    cache_ttl = float(max(0, getattr(config, "queue_refresh_seconds", 0)))
+    github_cache = GitHubCache(default_ttl=cache_ttl)
+
+    default_budget = VerificationBudget(
+        timeout_seconds=config.gh_write_verify_timeout_seconds,
+        max_attempts=20,
+        initial_delay_ms=config.gh_write_verify_initial_delay_ms,
+        max_delay_ms=config.gh_write_verify_max_delay_ms,
+        backoff_factor=config.gh_write_verify_backoff,
+        jitter_ms=config.gh_write_verify_jitter_ms,
+    )
+    verification_service = DefaultVerificationService(default_budget=default_budget)
+
+    return GitHubAdapter(
+        repo,
+        config=config,
+        cache=github_cache,
+        verification_service=verification_service,
+    )
+
+
+def _setup_event_sinks(
+    base_events: PluggyEventSink,
+    github: GitHubAdapter | None,
+) -> tuple[EventSink, EventHub | None]:
+    """Set up event sinks and event hub."""
+    event_hub = EventHub() if github else None
+    if event_hub:
+        events = CompositeEventSink(base_events, event_hub)
+    else:
+        events = base_events
+    events = SequencedEventSink(events)
+    return events, event_hub
+
+
+def _configure_gh_audit(
+    config: Config,
+    events: EventSink,
+    github: GitHubAdapter | None,
+) -> None:
+    """Configure GitHub audit logging."""
+    gh_audit.set_event_sink(events)
+    if github:
+        gh_audit.set_rate_limit_fetcher(github.get_rate_limit_snapshot)
+    gh_audit.configure(
+        enabled=config.gh_audit_enabled,
+        include_events=config.gh_audit_events,
+        audit_path=config.gh_audit_file,
+    )
+    gh_audit.configure_rate_limit(
+        every_calls=config.gh_rate_limit_every_calls,
+        warn_fraction=config.gh_rate_limit_warn_fraction,
+        warn_remaining=config.gh_rate_limit_warn_remaining,
+    )
+    if config.gh_rate_limit_startup:
+        gh_audit.check_rate_limit("startup")
+
+
+def _create_claim_components(
+    config: Config,
+    github: GitHubAdapter | None,
+    events: EventSink,
+) -> tuple[ClaimGate, LeaseRenewer, LeaseConfig, NullClaimManager | GitHubClaimAdapter]:
+    """Create claim management components."""
+    if github and config.claims.enabled:
+        lease_config = LeaseConfig(
+            lease_seconds=config.claims.lease_seconds,
+            renew_interval_seconds=config.claims.renew_before_expiry_seconds,
+            convergence_timeout_seconds=config.claims.convergence_timeout_seconds,
+            convergence_poll_min_ms=config.claims.convergence_poll_min_ms,
+            convergence_poll_max_ms=config.claims.convergence_poll_max_ms,
+            convergence_required_wins=config.claims.convergence_required_wins,
+        )
+        claimant_id = config.claims.claimant_id or f"orchestrator-{os.getpid()}"
+        claim_manager = GitHubClaimAdapter(
+            client=github.http_client,
+            claimant_id=claimant_id,
+            config=lease_config,
+            events=events,
+            label_adapter=github,
+        )
+        logger.info("Claims enabled: claimant_id=%s, lease=%ds", claimant_id, lease_config.lease_seconds)
+    else:
+        lease_config = LeaseConfig()
+        claim_manager = NullClaimManager()
+
+    claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
+    lease_renewer = LeaseRenewer(
+        claim_manager=claim_manager,
+        events=events,
+        config=lease_config,
+    )
+    return claim_gate, lease_renewer, lease_config, claim_manager
+
+
+def _create_planner(
+    config: Config,
+    github: GitHubAdapter | None,
+    events: EventSink,
+) -> tuple[Planner, Scheduler, DependencyEvaluator | None, LabelSync | None]:
+    """Create planner and supporting control plane components."""
+    scheduler = Scheduler(config=config)
+
+    issue_resolver = None
+    if github and config.repo:
+        issue_resolver = GitHubIssueResolver(
+            repo=config.repo,
+            issue_tracker=github,
+            events=events,
+        )
+
+    dependency_evaluator = DependencyEvaluator(
+        issue_checker=github,
+        events=events,
+        issue_resolver=issue_resolver,
+        repo=config.repo,
+        foundation_milestone=config.foundation_milestone,
+    ) if github else None
+
+    label_sync = LabelSync(labels=github, events=events, pr_tracker=github) if github else None
+
+    review_workflow = ReviewWorkflow(config=config, events=events)
+    rework_workflow = ReworkWorkflow(config=config, events=events)
+    triage_workflow = TriageWorkflow(config=config, events=events)
+
+    planner = Planner(
+        config=config,
+        scheduler=scheduler,
+        dependency_evaluator=dependency_evaluator,
+        review_workflow=review_workflow,
+        rework_workflow=rework_workflow,
+        triage_workflow=triage_workflow,
+    )
+    return planner, scheduler, dependency_evaluator, label_sync
+
+
+def _create_io_adapters() -> tuple[
+    GitWorktreeManager,
+    GitWorkingCopy,
+    LocalCommandRunner,
+    FileSystemSessionOutput,
+]:
+    """Create IO adapter instances."""
+    return (
+        GitWorktreeManager(),
+        GitWorkingCopy(),
+        LocalCommandRunner(),
+        FileSystemSessionOutput(),
+    )
+
+
+def _create_completion_components(
+    config: Config,
+    github: GitHubAdapter | None,
+    events: EventSink,
+    working_copy: GitWorkingCopy,
+    session_output: FileSystemSessionOutput,
+    command_runner: LocalCommandRunner,
+) -> tuple["CompletionProcessor | None", "SessionController | None"]:
+    """Create completion processor and session controller."""
+    from ..control.completion_processor import CompletionProcessor
+    from ..control.session_controller import SessionController
+
+    completion_processor = CompletionProcessor(
+        label_adapter=github,
+        pr_adapter=github,
+        git_adapter=working_copy,
+        session_output=session_output,
+        event_bus=None,
+        label_config={
+            "blocked": config.get_label_blocked(),
+            "needs_human": config.get_label_needs_human(),
+            "code_reviewed": config.code_reviewed_label or "code-reviewed",
+            "needs_rework": config.get_label_needs_rework(),
+            "code_review": config.code_review_label or "needs-code-review",
+            "in_progress": config.get_label_in_progress(),
+        },
+        config=config,
+    ) if github else None
+
+    session_controller_instance = SessionController(
+        completion_processor=completion_processor,
+        events=events,
+        session_output=session_output,
+        command_runner=command_runner if config.validation and config.validation.cmd else None,
+        validation_cmd=config.validation.cmd if config.validation else None,
+        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+    ) if completion_processor else None
+
+    return completion_processor, session_controller_instance
+
+
+def _validate_required_deps(
+    github: GitHubAdapter | None,
+    event_hub: EventHub | None,
+    planner: Planner | None,
+    session_manager: SessionManager | None,
+    label_sync: LabelSync | None,
+    action_applier: ActionApplier | None,
+    fact_gatherer: FactGatherer | None,
+    pr_scanner: "PRScanner | None",
+    session_restorer: "SessionRestorer | None",
+    completion_processor: "CompletionProcessor | None",
+    session_controller_instance: "SessionController | None",
+    fresh_issue_reader: "GitHubFreshIssueReader | None",
+) -> None:
+    """Validate all required dependencies are present."""
+    # GitHub requires special error message
+    if github is None:
+        raise ValueError(
+            "Could not determine GitHub repository.\n\n"
+            "Either:\n"
+            "  1. Set 'repo.name' in your config file:\n"
+            "       repo:\n"
+            "         name: owner/repo-name\n\n"
+            "  2. Or ensure you're running from a git repo with a GitHub remote:\n"
+            "       git remote get-url origin\n"
+            "       # Should show: https://github.com/owner/repo.git"
+        )
+    # Check all other required deps with a data-driven approach
+    deps_to_check = [
+        (event_hub, "EventHub"),
+        (planner, "Planner"),
+        (session_manager, "SessionManager"),
+        (label_sync, "LabelSync"),
+        (action_applier, "ActionApplier"),
+        (fact_gatherer, "FactGatherer"),
+        (pr_scanner, "PRScanner"),
+        (session_restorer, "SessionRestorer"),
+        (completion_processor, "CompletionProcessor"),
+        (session_controller_instance, "SessionController"),
+        (fresh_issue_reader, "FreshIssueReader"),
+    ]
+    for dep, name in deps_to_check:
+        if dep is None:
+            raise ValueError(f"{name} is required")
 
 
 class Dependencies:
@@ -101,25 +360,26 @@ def build_orchestrator(
     Returns:
         Fully configured Orchestrator instance
     """
-    # Import here to avoid circular imports
     from ..infra.orchestrator import Orchestrator
+    from ..control.pr_scanner import PRScanner
+    from ..control.session_restorer import SessionRestorer
+    from ..control.state_machine_manager import StateMachineManager
+    from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
+    from ..execution.hook_verifier import ExecutionHookVerifier
 
     install_gh_guard()
 
     # Make repo root visible to terminal plugins.
     os.environ[f"{ENV_PREFIX}REPO_ROOT"] = str(config.repo_root)
 
-    # Create the pluggy plugin manager (knows about terminal backend)
+    # Create the pluggy plugin manager and register SSE plugin
     pm = create_plugin_manager(
         terminal_plugin=config.terminal_adapter,
         ui_mode=config.ui_mode,
     )
-
-    # Register lifecycle plugins for event broadcasting
     if enable_sse:
         try:
-            sse_plugin = LifecycleSSEPlugin()
-            pm.register(sse_plugin, name="lifecycle_sse")
+            pm.register(LifecycleSSEPlugin(), name="lifecycle_sse")
             logger.info("SSE lifecycle plugin registered")
         except Exception as e:
             logger.warning("Failed to register SSE plugin: %s", e)
@@ -128,151 +388,34 @@ def build_orchestrator(
     base_events = PluggyEventSink(pm)
     runner = PluggySessionRunner(pm)
 
-    # Resolve repo: use config, or auto-detect from git remote
-    repo = config.repo
-    if not repo:
-        try:
-            repo = get_repo_from_git()
-            logger.info("Auto-detected repository from git remote: %s", repo)
-            # Update config so other components see the auto-detected repo
-            config.repo = repo
-        except GitRepoError as e:
-            logger.warning("Could not auto-detect repository: %s", e)
-            repo = None
+    # Resolve repo and create GitHub adapter
+    repo = _resolve_repo(config)
+    github = _create_github_adapter(repo, config) if repo else None
 
-    # Create GitHub adapter if repo is available
-    github = None
-    github_cache = None
-    verification_service = None
-    if repo:
-        # Create cache with TTL from config
-        cache_ttl = float(max(0, getattr(config, "queue_refresh_seconds", 0)))
-        github_cache = GitHubCache(default_ttl=cache_ttl)
+    # Set up event sinks
+    events, event_hub = _setup_event_sinks(base_events, github)
 
-        # Create verification service with config-based budget
-        # The service maintains circuit breaker state across calls
-        default_budget = VerificationBudget(
-            timeout_seconds=config.gh_write_verify_timeout_seconds,
-            max_attempts=20,
-            initial_delay_ms=config.gh_write_verify_initial_delay_ms,
-            max_delay_ms=config.gh_write_verify_max_delay_ms,
-            backoff_factor=config.gh_write_verify_backoff,
-            jitter_ms=config.gh_write_verify_jitter_ms,
-        )
-        verification_service = DefaultVerificationService(default_budget=default_budget)
-
-        github = GitHubAdapter(
-            repo,
-            config=config,
-            cache=github_cache,
-            verification_service=verification_service,
-        )
-
-    event_hub = EventHub() if github else None
-    if event_hub:
-        events = CompositeEventSink(base_events, event_hub)
-    else:
-        events = base_events
-    events = SequencedEventSink(events)
-    gh_audit.set_event_sink(events)
-    if github:
-        gh_audit.set_rate_limit_fetcher(github.get_rate_limit_snapshot)
-    gh_audit.configure(
-        enabled=config.gh_audit_enabled,
-        include_events=config.gh_audit_events,
-        audit_path=config.gh_audit_file,
-    )
-    gh_audit.configure_rate_limit(
-        every_calls=config.gh_rate_limit_every_calls,
-        warn_fraction=config.gh_rate_limit_warn_fraction,
-        warn_remaining=config.gh_rate_limit_warn_remaining,
-    )
-    if config.gh_rate_limit_startup:
-        gh_audit.check_rate_limit("startup")
+    # Configure GitHub audit logging
+    _configure_gh_audit(config, events, github)
     if github:
         _check_github_token_scopes(config, github)
 
     # Create claim management components
-    # Use GitHubClaimAdapter for multi-orchestrator coordination when enabled
-    if github and config.claims.enabled:
-        # Build LeaseConfig from claims config settings
-        lease_config = LeaseConfig(
-            lease_seconds=config.claims.lease_seconds,
-            renew_interval_seconds=config.claims.renew_before_expiry_seconds,
-            convergence_timeout_seconds=config.claims.convergence_timeout_seconds,
-            convergence_poll_min_ms=config.claims.convergence_poll_min_ms,
-            convergence_poll_max_ms=config.claims.convergence_poll_max_ms,
-            convergence_required_wins=config.claims.convergence_required_wins,
-        )
-        claimant_id = config.claims.claimant_id or f"orchestrator-{os.getpid()}"
-        claim_manager = GitHubClaimAdapter(
-            client=github.http_client,
-            claimant_id=claimant_id,
-            config=lease_config,
-            events=events,
-            label_adapter=github,
-        )
-        logger.info("Claims enabled: claimant_id=%s, lease=%ds", claimant_id, lease_config.lease_seconds)
-    else:
-        # Use NullClaimManager for single-orchestrator mode
-        lease_config = LeaseConfig()
-        claim_manager = NullClaimManager()
-
-    claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
-    lease_renewer = LeaseRenewer(
-        claim_manager=claim_manager,
-        events=events,
-        config=lease_config,
+    claim_gate, lease_renewer, _lease_config, claim_manager = _create_claim_components(
+        config, github, events
     )
 
-    # Create control plane components
-    scheduler = Scheduler(config=config)
-
-    # Create issue resolver for external ID dependencies (M1-010 style)
-    issue_resolver = None
-    if github and config.repo:
-        issue_resolver = GitHubIssueResolver(
-            repo=config.repo,
-            issue_tracker=github,
-            events=events,
-        )
-
-    dependency_evaluator = DependencyEvaluator(
-        issue_checker=github,
-        events=events,
-        issue_resolver=issue_resolver,
-        repo=config.repo,
-        foundation_milestone=config.foundation_milestone,
-    ) if github else None
+    # Create planner and control plane components
+    planner, _scheduler, _dependency_evaluator, label_sync = _create_planner(config, github, events)
     session_manager = SessionManager(runner=runner, events=events, config=config)
-    label_sync = LabelSync(labels=github, events=events, pr_tracker=github) if github else None
 
-    # Create workflow instances
-    review_workflow = ReviewWorkflow(config=config, events=events)
-    rework_workflow = ReworkWorkflow(config=config, events=events)
-    triage_workflow = TriageWorkflow(config=config, events=events)
+    # Create IO adapters
+    worktree_manager, working_copy, command_runner, session_output = _create_io_adapters()
 
-    # Create the planner with all dependencies
-    planner = Planner(
-        config=config,
-        scheduler=scheduler,
-        dependency_evaluator=dependency_evaluator,
-        review_workflow=review_workflow,
-        rework_workflow=rework_workflow,
-        triage_workflow=triage_workflow,
-    )
-
-    # Create adapters for IO operations
-    worktree_manager = GitWorktreeManager()
-    working_copy = GitWorkingCopy()
-    command_runner = LocalCommandRunner()
-    session_output = FileSystemSessionOutput()
-
-    # Create FreshIssueReader (cache-bypassing reads)
-    from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
+    # Create cache-bypassing reader
     fresh_issue_reader = GitHubFreshIssueReader(repo=config.repo, config=config) if github else None
 
-    # Create ActionApplier (IO boundary)
+    # Create action applier (IO boundary)
     action_applier = ActionApplier(
         labels=github,
         sessions=session_manager,
@@ -283,111 +426,54 @@ def build_orchestrator(
         reconcile=True,
     ) if github else None
 
-    # Create FactGatherer (read-only snapshot creation)
+    # Create fact gatherer (read-only snapshot creation)
     fact_gatherer = FactGatherer(
         config=config,
         repository_host=github,
         events=events,
     ) if github else None
 
-    # Create PRScanner (for orphaned review/rework discovery)
-    from ..control.pr_scanner import PRScanner
-    pr_scanner = PRScanner(
-        config=config,
-        repository=github,
-        events=events,
-    ) if github else None
-
-    # Create SessionRestorer (for session recovery after restart)
-    from ..control.session_restorer import SessionRestorer
+    # Create PR scanner and session restorer
+    pr_scanner = PRScanner(config=config, repository=github, events=events) if github else None
     session_restorer = SessionRestorer(
-        config=config,
-        repository_host=github,
-        working_copy=working_copy,
+        config=config, repository_host=github, working_copy=working_copy
     ) if github else None
 
-    # Create StateMachineManager (centralized state machine management)
-    from ..control.state_machine_manager import StateMachineManager
-    state_machine_manager = StateMachineManager(
-        config=config,
-        events=events,
+    # Create state machine manager
+    state_machine_manager = StateMachineManager(config=config, events=events)
+
+    # Create completion components
+    completion_processor, session_controller_instance = _create_completion_components(
+        config, github, events, working_copy, session_output, command_runner
     )
 
-    # Create CompletionProcessor (processes session completion files)
-    from ..control.completion_processor import CompletionProcessor
-    completion_processor = CompletionProcessor(
-        label_adapter=github,
-        pr_adapter=github,
-        git_adapter=working_copy,
-        session_output=session_output,
-        event_bus=None,  # EventBus removed
-        label_config={
-            "blocked": config.get_label_blocked(),
-            "needs_human": config.get_label_needs_human(),
-            "code_reviewed": config.code_reviewed_label or "code-reviewed",
-            "needs_rework": config.get_label_needs_rework(),
-            "code_review": config.code_review_label or "needs-code-review",
-            "in_progress": config.get_label_in_progress(),
-        },
-        config=config,
-    ) if github else None
-
-    # Create SessionController (decides session outcomes)
-    # Includes optional validation gate for post-completion validation
-    from ..control.session_controller import SessionController
-    session_controller_instance = SessionController(
-        completion_processor=completion_processor,
-        events=events,
-        session_output=session_output,
-        command_runner=command_runner if config.validation and config.validation.cmd else None,
-        validation_cmd=config.validation.cmd if config.validation else None,
-        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
-    ) if completion_processor else None
-
-    # Build the orchestrator with injected dependencies
-    from ..execution.hook_verifier import ExecutionHookVerifier
+    # Create hook verifier and health gate
     hook_verifier = ExecutionHookVerifier(config)
-
-    # Create HealthGate for system health checks (capacity, rate limits, etc.)
     health_gate = HealthGate(
         max_concurrent_sessions=config.max_concurrent_sessions,
         rate_limit_threshold=getattr(config, "rate_limit_warn_remaining", 100),
     )
 
-    # Validate all dependencies are present (required for OrchestratorDeps)
-    if github is None:
-        raise ValueError(
-            "Could not determine GitHub repository.\n\n"
-            "Either:\n"
-            "  1. Set 'repo.name' in your config file:\n"
-            "       repo:\n"
-            "         name: owner/repo-name\n\n"
-            "  2. Or ensure you're running from a git repo with a GitHub remote:\n"
-            "       git remote get-url origin\n"
-            "       # Should show: https://github.com/owner/repo.git"
-        )
-    if event_hub is None:
-        raise ValueError("EventHub is required")
-    if planner is None:
-        raise ValueError("Planner is required")
-    if session_manager is None:
-        raise ValueError("SessionManager is required")
-    if label_sync is None:
-        raise ValueError("LabelSync is required")
-    if action_applier is None:
-        raise ValueError("ActionApplier is required")
-    if fact_gatherer is None:
-        raise ValueError("FactGatherer is required")
-    if pr_scanner is None:
-        raise ValueError("PRScanner is required")
-    if session_restorer is None:
-        raise ValueError("SessionRestorer is required")
-    if completion_processor is None:
-        raise ValueError("CompletionProcessor is required")
-    if session_controller_instance is None:
-        raise ValueError("SessionController is required")
-    if fresh_issue_reader is None:
-        raise ValueError("FreshIssueReader is required")
+    # Validate all dependencies are present
+    _validate_required_deps(
+        github, event_hub, planner, session_manager, label_sync,
+        action_applier, fact_gatherer, pr_scanner, session_restorer,
+        completion_processor, session_controller_instance, fresh_issue_reader,
+    )
+
+    # Type assertions after validation (validation raises if any are None)
+    assert github is not None
+    assert event_hub is not None
+    assert planner is not None
+    assert session_manager is not None
+    assert label_sync is not None
+    assert action_applier is not None
+    assert fact_gatherer is not None
+    assert pr_scanner is not None
+    assert session_restorer is not None
+    assert completion_processor is not None
+    assert session_controller_instance is not None
+    assert fresh_issue_reader is not None
 
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(

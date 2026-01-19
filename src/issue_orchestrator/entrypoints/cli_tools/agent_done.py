@@ -123,7 +123,7 @@ def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     return (False, None)
 
 
-def _record_validation_artifacts(
+def _record_validation_artifacts(  # noqa: C901
     worktree_root: Path,
     session_id: str | None,
     validation_result: AgentGateResult,
@@ -221,7 +221,7 @@ def validate_fields(status: str, args: argparse.Namespace) -> None:
         die(f"Status '{status}' requires: {', '.join(missing)}")
 
 
-def format_comment_body(status: str, args: argparse.Namespace) -> str:
+def format_comment_body(status: str, args: argparse.Namespace) -> str:  # noqa: C901
     """Format the comment body based on status and args."""
     if status == AgentStatus.COMPLETED:
         return f"""## Implementation
@@ -595,7 +595,7 @@ def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[boo
         return True, None, None
 
 
-def main() -> None:
+def main() -> None:  # noqa: C901, PLR0912
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description="Complete agent work with structured status reporting.",

@@ -59,6 +59,15 @@ class MockOrchestratorForWeb:
     def event_hub(self) -> EventHub:
         return self._event_hub
 
+    @property
+    def shutdown_requested(self) -> bool:
+        """Public property for shutdown_requested."""
+        return self._shutdown_requested
+
+    @shutdown_requested.setter
+    def shutdown_requested(self, value: bool) -> None:
+        self._shutdown_requested = value
+
     def _create_mock_config(self) -> Config:
         config = Config()
         config.repo = "test/repo"

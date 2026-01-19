@@ -209,7 +209,7 @@ class DashboardApp(App):
                 self.query_one("#queue", QueueTable).update_table()
 
                 # Check if orchestrator requested shutdown
-                if self.orchestrator._shutdown_requested:
+                if self.orchestrator.shutdown_requested:
                     self.exit()
                     return
 
@@ -360,7 +360,7 @@ async def run_with_dashboard(orchestrator: "Orchestrator", ui_mode: str = "tmux"
         await dashboard.run()
     finally:
         # When dashboard exits, stop orchestrator
-        orchestrator._shutdown_requested = True
+        orchestrator.shutdown_requested = True
         orchestrator_task.cancel()
         try:
             await orchestrator_task

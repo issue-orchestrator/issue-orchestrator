@@ -117,6 +117,30 @@ class Orchestrator:
         """Access the session runner for terminal operations."""
         return self.deps.runner
 
+    @property
+    def shutdown_requested(self) -> bool:
+        """Check if shutdown has been requested."""
+        return self._shutdown_requested
+
+    @shutdown_requested.setter
+    def shutdown_requested(self, value: bool) -> None:
+        """Set shutdown requested flag (use request_shutdown() for proper event emission)."""
+        self._shutdown_requested = value
+
+    @property
+    def event_context(self) -> EventContext:
+        """Access the event context for tick and event metadata."""
+        return self._event_context
+
+    @property
+    def last_tick_time(self) -> float:
+        """Get the timestamp of the last tick."""
+        return self._last_tick_time
+
+    def kill_session(self, name: str) -> None:
+        """Kill a session by terminal ID (public wrapper)."""
+        self._kill_session(name)
+
     @cached_property
     def _cleanup_manager(self) -> CleanupManager:
         return CleanupManager(
@@ -180,11 +204,6 @@ class Orchestrator:
     def _build_labels(self, *labels: str) -> list[str]: return self._github_workflow.build_labels(*labels)
 
     def _get_milestone_filter(self) -> str | None: return self.config.filtering.milestone
-
-    @property
-    def shutdown_requested(self) -> bool:
-        """Return whether shutdown has been requested."""
-        return self._shutdown_requested
 
     @cached_property
     def _startup_manager(self) -> StartupManager:

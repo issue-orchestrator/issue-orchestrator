@@ -165,7 +165,7 @@ def _run_retry(
     return passed_on_retry
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901, PLR0912
     """Main entry point for e2e worker."""
     parser = argparse.ArgumentParser(description="E2E test worker")
     parser.add_argument(

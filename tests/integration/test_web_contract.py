@@ -33,7 +33,7 @@ class TestOrchestratorWebContract:
         """Verify required attributes exist on real orchestrator."""
         assert hasattr(sample_orchestrator, "state")
         assert hasattr(sample_orchestrator, "config")
-        assert hasattr(sample_orchestrator, "_shutdown_requested")
+        assert hasattr(sample_orchestrator, "shutdown_requested")  # Public property
         assert callable(getattr(sample_orchestrator, "pause", None))
         assert callable(getattr(sample_orchestrator, "resume", None))
         assert callable(getattr(sample_orchestrator, "request_shutdown", None))
@@ -46,7 +46,7 @@ class TestOrchestratorWebContract:
         mock = MockOrchestratorForWeb()
         assert hasattr(mock, "state")
         assert hasattr(mock, "config")
-        assert hasattr(mock, "_shutdown_requested")
+        assert hasattr(mock, "shutdown_requested")  # Public property
         assert callable(getattr(mock, "pause", None))
         assert callable(getattr(mock, "resume", None))
         assert callable(getattr(mock, "request_shutdown", None))
