@@ -14,9 +14,137 @@ Guidelines for refactoring code to reduce complexity (C901, PLR0912) without int
 - Extracting helper functions from large functions
 - Restructuring code while preserving exact behavior
 
-## The Golden Rule
+## The Two Golden Rules
 
-**Refactoring changes structure, not behavior.** If tests pass before and after but behavior changed, your tests have gaps.
+### 1. Refactoring changes structure, not behavior
+
+If tests pass before and after but behavior changed, your tests have gaps.
+
+### 2. Extract meaningful phases, not arbitrary splits
+
+Helpers should represent **real phases a human would describe**, not arbitrary code chunks that happen to reduce measured complexity.
+
+---
+
+## Meaningful Extraction vs Metric-Driven Splitting
+
+### The Wrong Approach: Splitting to Satisfy Metrics
+
+```python
+# BAD - Arbitrary extraction just to reduce complexity
+def _validate_part_1(self, issue):
+    if issue.agent_type is None:
+        return LaunchResult(None, False, "no agent type")
+    return None
+
+def _validate_part_2(self, issue):
+    if not self.config.agents.get(issue.agent_type):
+        return LaunchResult(None, False, "no config")
+    return None
+
+def launch(self, issue):
+    if result := self._validate_part_1(issue):
+        return result
+    if result := self._validate_part_2(issue):
+        return result
+    # ... more arbitrary splits
+```
+
+Problems:
+- Helper names describe *mechanics* ("part_1") not *purpose*
+- `Optional` and `None` returns proliferate
+- The coordinator becomes a chain of "if result" checks
+- A reader can't understand the function from its outline
+
+### The Right Approach: Phase-Based Extraction
+
+First, identify the **distinct phases** a human would describe:
+
+| Phase | Purpose |
+|-------|---------|
+| Validate preconditions | Check config, conflicts, permissions |
+| Verify dependencies | CAS check that dependencies still satisfied |
+| Acquire resources | Claims, locks, reservations |
+| Prepare environment | Worktrees, directories, metadata |
+| Execute action | The actual work |
+| Report outcome | Events, state transitions |
+
+Then extract helpers that map to these phases:
+
+```python
+# GOOD - Phases a human would describe
+def launch_issue_session(self, issue, active_sessions) -> LaunchResult:
+    # Validate prerequisites
+    if result := self._check_launch_preconditions(issue, active_sessions):
+        return result
+
+    # Verify dependencies haven't changed since scheduling
+    if result := self._verify_dependencies_fresh(issue):
+        return result
+
+    # Acquire distributed claim
+    claim = self._acquire_claim_for_issue(issue)
+    if not claim.success:
+        return claim.as_result()
+
+    # Prepare worktree and session environment
+    ctx = self._prepare_session_environment(issue, session_name, ...)
+    if ctx.error:
+        self._release_claim(issue, claim)
+        return LaunchResult(None, False, f"Worktree failed: {ctx.error}")
+
+    # Launch the terminal session
+    return self._start_session_terminal(issue, ctx, claim)
+```
+
+Benefits:
+- The coordinator reads like a **table of contents**
+- Each helper has a **meaningful name** describing a phase
+- Error handling remains **visible** at the top level
+- Domain-relevant types, not `Optional` proliferation
+
+### When to Use Strategic `noqa`
+
+Some functions are **inherently complex coordinators**. If extraction would:
+- Create meaningless helpers (e.g., `_handle_step_3`)
+- Scatter related error handling across multiple functions
+- Make the code harder to understand despite lower metrics
+
+Then consider strategic `noqa`:
+
+```python
+def orchestrate_complex_workflow(self, ...):  # noqa: C901, PLR0912
+    """Coordinates X, Y, and Z phases.
+
+    Complexity is inherent - this is a multi-step coordinator with
+    distinct failure modes at each step. Extracting arbitrary helpers
+    would obscure the flow.
+    """
+    # Phase 1: ...
+    # Phase 2: ...
+```
+
+**Use `noqa` when:**
+- The complexity is inherent to the coordination, not incidental
+- Extraction would create helpers that just split code, not represent phases
+- The function is already well-organized with clear phase comments
+- Tests adequately cover the behavior
+
+**Don't use `noqa` when:**
+- You can identify 3+ meaningful phases worth naming
+- Error handling is scattered and confusing
+- The function mixes multiple concerns that should be separate
+
+### The Litmus Test
+
+Before extracting a helper, ask:
+
+> "If I were explaining this function to a colleague, would I naturally describe this as a distinct step?"
+
+- **Yes** → Extract it as a named phase
+- **No** → Keep it inline or consider `noqa`
+
+---
 
 ## Before You Start
 
@@ -150,10 +278,19 @@ After extracting `_helper()` from `main()`, verify:
 
 Before submitting refactored code:
 
+**Meaningful extraction:**
+- [ ] Each helper represents a phase I'd describe to a colleague
+- [ ] Helper names describe *purpose*, not mechanics ("validate_preconditions" not "check_part_1")
+- [ ] Coordinator reads like a table of contents
+- [ ] Considered `noqa` for inherently complex coordinators
+
+**Data flow preservation:**
 - [ ] Mapped all data flows including failure paths
 - [ ] Return types preserve all original semantics
 - [ ] Failure reasons/context still available to callers
 - [ ] No variables lost that were used downstream
+
+**Verification:**
 - [ ] Characterization tests added for edge cases
 - [ ] Existing tests still pass
 - [ ] Manually verified failure path behavior unchanged

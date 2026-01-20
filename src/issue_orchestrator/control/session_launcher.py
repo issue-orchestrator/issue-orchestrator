@@ -147,6 +147,25 @@ class LaunchResult:
     keep_queued: bool = False  # If True, don't remove from pending queue (terminal already running)
 
 
+@dataclass
+class ClaimAcquisitionResult:
+    """Result of attempting to acquire a distributed claim for an issue.
+
+    Used to track claim state through the launch process so cleanup
+    can release claims on failure.
+    """
+
+    success: bool
+    lease_id: str | None = None
+    lease_acquired_at: datetime | None = None
+    lease_expires_at: datetime | None = None
+    error: str | None = None
+
+    def as_launch_failure(self) -> LaunchResult:
+        """Convert a failed claim to a LaunchResult."""
+        return LaunchResult(None, False, self.error or "Claim acquisition failed")
+
+
 class SessionLauncher:
     """Launches agent sessions for issues, reviews, and reworks.
 
@@ -222,12 +241,166 @@ class SessionLauncher:
                 )
         return all_ok
 
-    def launch_issue_session(
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase helpers for launch_issue_session
+    # These represent distinct phases a human would describe when explaining
+    # the launch process. See .claude/skills/refactoring/SKILL.md
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _check_launch_preconditions(
+        self,
+        issue: "IssueProtocol",
+        active_sessions: list[Session],
+        session_name: str,
+    ) -> LaunchResult | None:
+        """Validate config and check for conflicts before launching.
+
+        Returns LaunchResult on failure, None if preconditions pass.
+        """
+        if issue.agent_type is None:
+            return LaunchResult(None, False, f"Issue #{issue.number} has no agent type label")
+
+        if not self.config.agents.get(issue.agent_type):
+            return LaunchResult(None, False, f"No agent config for {issue.agent_type}")
+
+        if not self.config.repo:
+            return LaunchResult(None, False, "No repo configured")
+
+        if any(s.issue.number == issue.number for s in active_sessions):
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
+            return LaunchResult(None, False, "Already in active sessions")
+
+        if self._session_exists(session_name):
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "terminal session already running")
+            return LaunchResult(None, False, "Terminal session already running")
+
+        return None
+
+    def _verify_dependencies_fresh(self, issue: "IssueProtocol") -> LaunchResult | None:
+        """CAS check: verify dependencies haven't changed since scheduling.
+
+        Returns LaunchResult on failure, None if dependencies still satisfied.
+        """
+        if not self._dependency_evaluator or not self._refresh_issue:
+            return None
+
+        fresh_issue = self._refresh_issue(issue.number)
+        if not fresh_issue or not fresh_issue.body:
+            return None
+
+        report = self._dependency_evaluator.evaluate(
+            issue_number=issue.number,
+            issue_body=fresh_issue.body,
+            source_milestone=fresh_issue.milestone,
+        )
+        if not report.runnable:
+            log_transition(
+                "issue", issue.number, "AVAILABLE", "SKIP",
+                f"dependencies changed: {report.summary()}"
+            )
+            self.events.publish(TraceEvent(
+                EventName.ISSUE_DEPENDENCY_BLOCKED,
+                {
+                    "issue_number": issue.number,
+                    "issue_title": issue.title,
+                    "reason": report.summary(),
+                },
+            ))
+            return LaunchResult(None, False, f"Dependencies not satisfied: {report.summary()}")
+
+        return None
+
+    def _acquire_issue_claim(self, issue: "IssueProtocol") -> ClaimAcquisitionResult:
+        """Acquire distributed claim for an issue if claim manager is configured.
+
+        Handles the claim attempt and convergence check. On success, returns
+        claim info for passing to Session. On failure, returns error for
+        early exit.
+        """
+        if not self._claim_manager:
+            return ClaimAcquisitionResult(success=True)  # No claim needed
+
+        logger.info(issue_log(issue.number, "Acquiring claim..."))
+        claim_result = self._claim_manager.attempt_claim(issue.number)
+
+        if not claim_result.success:
+            log_transition(
+                "issue", issue.number, "LAUNCHING", "CLAIM_FAILED",
+                f"claim attempt failed: {claim_result.error}"
+            )
+            self.events.publish(TraceEvent(
+                EventName.CLAIM_CONTESTED,
+                {
+                    "issue_number": issue.number,
+                    "issue_title": issue.title,
+                    "error": claim_result.error,
+                },
+            ))
+            return ClaimAcquisitionResult(
+                success=False,
+                error=f"Failed to claim issue: {claim_result.error}"
+            )
+
+        # Run convergence to confirm ownership
+        logger.info(issue_log(issue.number, "Running claim convergence..."))
+        converged = self._claim_manager.run_convergence(issue.number, claim_result.lease_id or "")
+
+        if not converged:
+            log_transition(
+                "issue", issue.number, "LAUNCHING", "CLAIM_LOST",
+                "convergence failed - another claimant won"
+            )
+            self._claim_manager.release_claim(issue.number, claim_result.lease_id or "")
+            self.events.publish(TraceEvent(
+                EventName.CLAIM_LOST,
+                {
+                    "issue_number": issue.number,
+                    "issue_title": issue.title,
+                    "lease_id": claim_result.lease_id,
+                    "reason": "convergence_failed",
+                },
+            ))
+            return ClaimAcquisitionResult(
+                success=False,
+                error="Claim convergence failed - another orchestrator won"
+            )
+
+        # Claim acquired successfully
+        lease_seconds = self.config.claim_lease_seconds if hasattr(self.config, 'claim_lease_seconds') else 900
+        acquired_at = datetime.now()
+        logger.info(issue_log(issue.number, "Claim acquired: lease_id=%s"), claim_result.lease_id)
+        self.events.publish(TraceEvent(
+            EventName.CLAIM_ACQUIRED,
+            {
+                "issue_number": issue.number,
+                "lease_id": claim_result.lease_id,
+            },
+        ))
+        return ClaimAcquisitionResult(
+            success=True,
+            lease_id=claim_result.lease_id,
+            lease_acquired_at=acquired_at,
+            lease_expires_at=acquired_at + timedelta(seconds=lease_seconds),
+        )
+
+    def _release_claim_if_held(self, issue_number: int, claim: ClaimAcquisitionResult) -> None:
+        """Release claim if one was acquired. Used for cleanup on failure."""
+        if self._claim_manager and claim.lease_id:
+            self._claim_manager.release_claim(issue_number, claim.lease_id)
+            logger.info(issue_log(issue_number, "Released claim: lease_id=%s"), claim.lease_id)
+
+    def launch_issue_session(  # noqa: C901, PLR0912
         self,
         issue: "IssueProtocol",
         active_sessions: list[Session],
     ) -> LaunchResult:
         """Launch a session for an issue.
+
+        This is a coordinator function that orchestrates the multi-step launch process.
+        Meaningful phases are extracted as helpers (_check_launch_preconditions,
+        _verify_dependencies_fresh, _acquire_issue_claim). Remaining complexity is
+        error handling for worktree/label/session failures - these belong inline
+        with their operations rather than scattered across separate functions.
 
         Args:
             issue: The issue to work on
@@ -237,29 +410,20 @@ class SessionLauncher:
             LaunchResult with session if successful
         """
         launch_start = time.time()
+        session_name = f"issue-{issue.number}"
         logger.info(issue_log(issue.number, "Session starting: type=code title=%s"), issue.title)
 
-        if issue.agent_type is None:
-            return LaunchResult(None, False, f"Issue #{issue.number} has no agent type label")
+        # Phase 1: Validate preconditions
+        if result := self._check_launch_preconditions(issue, active_sessions, session_name):
+            return result
 
+        # Safe to access after precondition check - issue.agent_type and agent_config
+        # are guaranteed non-None by _check_launch_preconditions
+        assert issue.agent_type is not None  # Validated in preconditions
         agent_config = self.config.agents.get(issue.agent_type)
-        if not agent_config:
-            return LaunchResult(None, False, f"No agent config for {issue.agent_type}")
-
-        if not self.config.repo:
-            return LaunchResult(None, False, "No repo configured")
+        assert agent_config is not None  # Validated in preconditions
         issue_key = issue.key
         session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
-
-        # Check for conflicts
-        session_name = f"issue-{issue.number}"
-        if any(s.issue.number == issue.number for s in active_sessions):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
-
-        if self._session_exists(session_name):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running")
 
         logger.info(
             "[launch] Issue session identity: issue=%s issue_key=%s agent=%s task=%s session=%s",
@@ -278,90 +442,21 @@ class SessionLauncher:
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
         )
 
-        # CAS check: Re-verify dependencies before launching
-        if self._dependency_evaluator and self._refresh_issue:
-            fresh_issue = self._refresh_issue(issue.number)
-            if fresh_issue and fresh_issue.body:
-                report = self._dependency_evaluator.evaluate(
-                    issue_number=issue.number,
-                    issue_body=fresh_issue.body,
-                    source_milestone=fresh_issue.milestone,
-                )
-                if not report.runnable:
-                    log_transition(
-                        "issue", issue.number, "AVAILABLE", "SKIP",
-                        f"dependencies changed: {report.summary()}"
-                    )
-                    self.events.publish(TraceEvent(
-                        EventName.ISSUE_DEPENDENCY_BLOCKED,
-                        {
-                            "issue_number": issue.number,
-                            "issue_title": issue.title,
-                            "reason": report.summary(),
-                        },
-                    ))
-                    return LaunchResult(None, False, f"Dependencies not satisfied: {report.summary()}")
+        # Phase 2: Verify dependencies haven't changed (CAS check)
+        if result := self._verify_dependencies_fresh(issue):
+            return result
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
 
-        # Acquire claim if claim manager is configured
-        lease_id: str | None = None
-        lease_acquired_at: datetime | None = None
-        lease_expires_at: datetime | None = None
+        # Phase 3: Acquire distributed claim
+        claim = self._acquire_issue_claim(issue)
+        if not claim.success:
+            return claim.as_launch_failure()
 
-        if self._claim_manager:
-            logger.info(issue_log(issue.number, "Acquiring claim..."))
-            claim_result = self._claim_manager.attempt_claim(issue.number)
-
-            if not claim_result.success:
-                log_transition("issue", issue.number, "LAUNCHING", "CLAIM_FAILED", f"claim attempt failed: {claim_result.error}")
-                self.events.publish(TraceEvent(
-                    EventName.CLAIM_CONTESTED,
-                    {
-                        "issue_number": issue.number,
-                        "issue_title": issue.title,
-                        "error": claim_result.error,
-                    },
-                ))
-                return LaunchResult(None, False, f"Failed to claim issue: {claim_result.error}")
-
-            # Run convergence to confirm ownership
-            logger.info(issue_log(issue.number, "Running claim convergence..."))
-            converged = self._claim_manager.run_convergence(issue.number, claim_result.lease_id or "")
-
-            if not converged:
-                log_transition("issue", issue.number, "LAUNCHING", "CLAIM_LOST", "convergence failed - another claimant won")
-                self._claim_manager.release_claim(issue.number, claim_result.lease_id or "")
-                self.events.publish(TraceEvent(
-                    EventName.CLAIM_LOST,
-                    {
-                        "issue_number": issue.number,
-                        "issue_title": issue.title,
-                        "lease_id": claim_result.lease_id,
-                        "reason": "convergence_failed",
-                    },
-                ))
-                return LaunchResult(None, False, "Claim convergence failed - another orchestrator won")
-
-            # Claim acquired successfully
-            lease_id = claim_result.lease_id
-            lease_acquired_at = datetime.now()
-            lease_expires_at = lease_acquired_at + timedelta(seconds=self.config.claim_lease_seconds if hasattr(self.config, 'claim_lease_seconds') else 900)
-            logger.info(issue_log(issue.number, "Claim acquired: lease_id=%s"), lease_id)
-            self.events.publish(TraceEvent(
-                EventName.CLAIM_ACQUIRED,
-                {
-                    "issue_number": issue.number,
-                    "lease_id": lease_id,
-                },
-            ))
-
-        # Create and prepare worktree using WorktreeContext
+        # Phase 4: Prepare worktree
         step_start = time.time()
         logger.info(issue_log(issue.number, "Creating worktree..."))
-
-        # Initial coding session is always attempt 1
-        phase_name = "coding-1"
+        phase_name = "coding-1"  # Initial coding session is always attempt 1
         ctx = WorktreeContext.create(
             worktree_manager=self._worktree_manager,
             config=self.config,
@@ -377,7 +472,6 @@ class SessionLauncher:
             phase_name=phase_name,
         )
 
-        # Handle worktree preparation errors
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
@@ -403,10 +497,7 @@ class SessionLauncher:
                     "reason": str(ctx.error),
                 },
             ))
-            # Release claim if we acquired one
-            if self._claim_manager and lease_id:
-                self._claim_manager.release_claim(issue.number, lease_id)
-                logger.info(issue_log(issue.number, "Released claim after worktree failure: lease_id=%s"), lease_id)
+            self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
         # Extract values from context for local use
@@ -481,10 +572,7 @@ class SessionLauncher:
                 logger.info(issue_log(issue.number, "Cleaned up worktree after launch failure: %s"), worktree_path)
             except Exception as e:
                 logger.warning(issue_log(issue.number, "Failed to remove worktree after launch failure: %s"), e)
-            # Release claim if we acquired one
-            if self._claim_manager and lease_id:
-                self._claim_manager.release_claim(issue.number, lease_id)
-                logger.info(issue_log(issue.number, "Released claim after label failure: lease_id=%s"), lease_id)
+            self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, "Failed to add in-progress label")
         label_time = time.time() - step_start
         logger.info("[launch] Label added in %.1fs", label_time)
@@ -564,10 +652,7 @@ class SessionLauncher:
                     reason="session creation failed",
                 ),
             ], context="launch_session_creation_failed")
-            # Release claim if we acquired one
-            if self._claim_manager and lease_id:
-                self._claim_manager.release_claim(issue.number, lease_id)
-                logger.info(issue_log(issue.number, "Released claim after session creation failure: lease_id=%s"), lease_id)
+            self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, "Failed to create terminal session")
 
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
@@ -582,9 +667,9 @@ class SessionLauncher:
             branch_name=branch_name,
             completion_path=completion_path,
             agent_label=issue.agent_type,
-            lease_id=lease_id,
-            lease_acquired_at=lease_acquired_at,
-            lease_expires_at=lease_expires_at,
+            lease_id=claim.lease_id,
+            lease_acquired_at=claim.lease_acquired_at,
+            lease_expires_at=claim.lease_expires_at,
         )
 
         total_time = time.time() - launch_start
@@ -1169,7 +1254,7 @@ class SessionLauncher:
         }))
 
 
-def handle_session_completion(
+def handle_session_completion(  # noqa: C901, PLR0912
     session: Session,
     status: SessionStatus,
     state: "OrchestratorState",
@@ -1189,6 +1274,10 @@ def handle_session_completion(
     events: Optional[EventSink] = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
+
+    Complexity is inherent - this processes validation retries, completion,
+    actions, observer cleanup, claim release, history, and failure tracking.
+    These are sequential steps that share the session context.
 
     Args:
         session: The completed session
