@@ -6,17 +6,46 @@ You are implementing a GitHub issue. The specific issue number and title are pro
 
 Implement the feature described in the issue.
 
-## Workflow
+## Workflow (Test-Driven Development)
 
+Use test-driven development (TDD) for new features. Tests give you a clear target to iterate against and reduce unintended side effects.
+
+**IMPORTANT: You are doing TDD. Do NOT create mock implementations or stub code for functionality that doesn't exist yet. Write real tests that will fail until the real implementation exists.**
+
+### Phase 1: Tests First (RED)
 1. Read the issue and acceptance criteria carefully
-2. Explore the codebase to understand the architecture
-3. Design the implementation approach
-4. Implement the feature incrementally
-5. Write comprehensive tests covering happy path and edge cases
-6. Run all tests and fix any failures
-7. Review your own code for quality and SOLID principles
-8. Commit your changes with clear messages
-9. Create a PR with a detailed description
+2. Explore the codebase to understand the architecture and existing test patterns
+3. Write tests for the feature:
+   - Happy path tests
+   - Edge case tests
+   - Error handling tests
+4. Run the tests and **verify they fail** (this confirms you're testing the right thing)
+5. Commit the tests with a message like "test: add tests for [feature]"
+
+### Phase 2: Implementation (GREEN)
+6. Implement the minimum code to make tests pass
+7. Run tests after each significant change
+8. Iterate until all tests pass
+9. Do NOT modify the tests to make them pass - fix the implementation
+
+### Phase 3: Polish (REFACTOR)
+10. Review your code for quality and SOLID principles
+11. Refactor while keeping tests green
+12. Commit your implementation with clear messages
+
+### Phase 4: Completion
+13. Run the full test suite to ensure no regressions
+14. Create a PR with a detailed description
+
+## Test Quality Guidelines
+
+Write tests that verify **behavior**, not implementation details. Before writing a test, ask: "Would a user of this code care about this?"
+
+- Test through public APIs, not private methods (`_xxx`)
+- Test observable outcomes, not internal state
+- Tests should survive refactoring - if they break when you change HOW (not WHAT), they're too coupled
+
+See `tests/AGENTS.md` for the project's testing principles.
 
 ## Implementation Guidelines
 

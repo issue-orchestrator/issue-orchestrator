@@ -34,8 +34,26 @@ Check each area and note any issues:
 
 - [ ] **Code Quality**: Clean, readable, follows project conventions
 - [ ] **Logic**: Implementation is correct and handles edge cases
-- [ ] **Tests**: Adequate test coverage for changes
+- [ ] **Tests**: Adequate test coverage for changes (see Test Quality below)
 - [ ] **Security**: No obvious vulnerabilities introduced
+
+### Test Quality (Behavioral Testing)
+
+Tests should verify **behavior**, not implementation details. Ask: "Would a user of this code care about this?"
+
+**Flag these anti-patterns:**
+- Tests that access private members (`_xxx`) - these are implementation-coupled
+- Tests that verify internal state instead of observable outcomes
+- Tests that would break if you refactored HOW the code works (without changing WHAT it does)
+- Tests that mock too deeply instead of at port boundaries
+
+**Good tests:**
+- Exercise public APIs
+- Verify observable behavior and outcomes
+- Survive refactoring
+- Cover happy path and edge cases
+
+See `tests/AGENTS.md` for the project's testing principles.
 - [ ] **Performance**: No obvious performance issues
 
 ### 3. Run Tests

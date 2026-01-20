@@ -30,35 +30,35 @@ repo:
 
 agents:
   "agent:backend":
-    prompt: ".issue-orchestrator/prompts/backend.md"
+    prompt: ".prompts/backend.md"
     model: "sonnet"
     timeout_minutes: 45
     # command: "claude --model {model} '{initial_prompt}'"  # Custom command
 
   "agent:frontend":
-    prompt: ".issue-orchestrator/prompts/frontend.md"
+    prompt: ".prompts/frontend.md"
     model: "sonnet"
     timeout_minutes: 45
     reviewer: "agent:web-reviewer"
 
   "agent:domain-expert":
-    prompt: ".issue-orchestrator/prompts/domain-expert.md"
+    prompt: ".prompts/domain-expert.md"
     model: "sonnet"
     timeout_minutes: 30
     skip_review: true
 
   "agent:reviewer":
-    prompt: ".issue-orchestrator/prompts/code-review.md"
+    prompt: ".prompts/code-review.md"
     model: "sonnet"
     timeout_minutes: 10
 
   "agent:web-reviewer":
-    prompt: ".issue-orchestrator/prompts/code-review-web.md"
+    prompt: ".prompts/code-review-web.md"
     model: "sonnet"
     timeout_minutes: 10
 
   "agent:triage":
-    prompt: ".issue-orchestrator/prompts/triage-review.md"
+    prompt: ".prompts/triage-review.md"
     model: "sonnet"
     timeout_minutes: 30
 

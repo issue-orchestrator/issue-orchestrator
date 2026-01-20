@@ -69,11 +69,34 @@ grep -r "keyword" src/
 find . -name "*.py" | head -20
 ```
 
-### 3. Implement the Solution
+### 3. Implement the Solution (Test-Driven Development)
 
-- Follow existing code patterns and conventions
-- Write clean, readable code
-- Add tests if applicable
+Choose your approach based on the task:
+
+**For new features:**
+1. Write tests first (TDD) - verify they fail before implementing
+2. Implement the minimum code to make tests pass
+3. Refactor while keeping tests green
+
+**For bug fixes with known behavior:**
+1. Write a failing test that reproduces the bug
+2. Fix the bug
+3. Verify the test passes
+
+**For investigative/exploratory work:**
+1. Investigate to understand the problem
+2. Once you understand the fix, write a regression test
+3. Apply the fix
+
+**Test Quality Guidelines:**
+
+Write tests that verify **behavior**, not implementation details. Ask: "Would a user of this code care about this?"
+
+- Test through public APIs, not private methods (`_xxx`)
+- Test observable outcomes, not internal state
+- Tests should survive refactoring - if they break when you change HOW (not WHAT), they're too coupled
+
+See `tests/AGENTS.md` for the project's testing principles.
 
 ### 4. Validate Your Changes
 
