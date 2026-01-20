@@ -1451,12 +1451,8 @@
                 <button class="e2e-btn danger" id="e2eStopBtn" onclick="stopE2E()" style="display: none;">Stop</button>
                 <button class="e2e-btn primary" id="e2eStartBtn" onclick="startE2E()">Run E2E</button>
                 {% endif %}
-                {% if e2e_status.last_run %}
-                <button class="e2e-btn" onclick="showE2EFailures()">Details</button>
-                {% endif %}
-                {% if e2e_status.last_run and e2e_status.last_run.log_path %}
-                <button class="e2e-btn" onclick="showE2ELogs()">Logs</button>
-                {% endif %}
+                <button class="e2e-btn" id="e2eDetailsBtn" onclick="showE2EFailures()" style="{% if not e2e_status.last_run %}display: none;{% endif %}">Details</button>
+                <button class="e2e-btn" id="e2eLogsBtn" onclick="showE2ELogs()" style="{% if not (e2e_status.last_run and e2e_status.last_run.log_path) %}display: none;{% endif %}">Logs</button>
             </div>
         </div>
         {% endif %}
@@ -3915,6 +3911,9 @@
         // E2E Test Functions
         const REPO_ROOT = '{{ repo_root }}';
 
+        // Mutable state for E2E - updated by polling
+        let e2eLastRun = {{ e2e_status.last_run|tojson if e2e_status.last_run else 'null' }};
+
         // E2E Progress Polling
         let e2ePollingInterval = null;
 
@@ -3936,24 +3935,31 @@
                 const res = await fetch(`/control/e2e/status?repo_root=${encodeURIComponent(REPO_ROOT)}`);
                 const data = await res.json();
 
+                // Update mutable last run state
+                if (data.last_run) {
+                    e2eLastRun = data.last_run;
+                }
+
                 const progress = document.getElementById('e2eProgress');
                 const progressFill = document.getElementById('e2eProgressFill');
                 const progressText = document.getElementById('e2eProgressText');
                 const currentTest = document.getElementById('e2eCurrentTest');
                 const currentTestName = document.getElementById('e2eCurrentTestName');
                 const badge = document.getElementById('e2eBadge');
-                const lastRun = document.getElementById('e2eLastRun');
+                const lastRunEl = document.getElementById('e2eLastRun');
                 const nextRun = document.getElementById('e2eNextRun');
                 const startBtn = document.getElementById('e2eStartBtn');
                 const stopBtn = document.getElementById('e2eStopBtn');
                 const failures = document.getElementById('e2eFailures');
                 const failCount = document.getElementById('e2eFailCount');
+                const detailsBtn = document.getElementById('e2eDetailsBtn');
+                const logsBtn = document.getElementById('e2eLogsBtn');
 
                 if (data.running && data.progress) {
                     // Show progress UI
                     progress.style.display = 'flex';
                     currentTest.style.display = 'block';
-                    lastRun.style.display = 'none';
+                    lastRunEl.style.display = 'none';
                     nextRun.style.display = 'none';
                     startBtn.style.display = 'none';
                     stopBtn.style.display = 'inline-block';
@@ -3990,7 +3996,7 @@
                     stopE2EPolling();
                     progress.style.display = 'none';
                     currentTest.style.display = 'none';
-                    lastRun.style.display = 'inline';
+                    lastRunEl.style.display = 'inline';
                     nextRun.style.display = 'inline';
                     startBtn.style.display = 'inline-block';
                     stopBtn.style.display = 'none';
@@ -3999,6 +4005,15 @@
                     if (data.last_run) {
                         const status = data.last_run.status;
                         badge.innerHTML = `<span class="${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span>`;
+
+                        // Show Details button when we have run data
+                        if (detailsBtn) {
+                            detailsBtn.style.display = 'inline-block';
+                        }
+                        // Show Logs button when we have a log_path
+                        if (logsBtn && data.last_run.log_path) {
+                            logsBtn.style.display = 'inline-block';
+                        }
                     }
                     if (nextRun) {
                         nextRun.textContent = formatNextRun(data.next_run);
@@ -4084,11 +4099,17 @@
         {% endif %}
 
         async function showE2ELogs() {
-            const lastRun = {{ e2e_status.last_run|tojson if e2e_status.last_run else 'null' }};
-            if (!lastRun) return;
+            if (!e2eLastRun) {
+                showToast('No E2E run data available', true);
+                return;
+            }
+            if (!e2eLastRun.log_path) {
+                showToast('No log file for this run', true);
+                return;
+            }
 
             try {
-                const res = await fetch(`/control/e2e/logs/${lastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}&tail=200`);
+                const res = await fetch(`/control/e2e/logs/${e2eLastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}&tail=200`);
                 const data = await res.json();
                 if (res.ok) {
                     const content = data.content || 'No logs available';
@@ -4137,14 +4158,13 @@
         }
 
         async function showE2EFailures() {
-            const lastRun = {{ e2e_status.last_run|tojson if e2e_status.last_run else 'null' }};
-            if (!lastRun) {
-                showToast('No E2E run data available');
+            if (!e2eLastRun) {
+                showToast('No E2E run data available', true);
                 return;
             }
 
             try {
-                const res = await fetch(`/control/e2e/summary/${lastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`);
+                const res = await fetch(`/control/e2e/summary/${e2eLastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`);
                 const summary = await res.json();
 
                 if (!res.ok) {
@@ -4153,7 +4173,7 @@
                 }
 
                 const counts = summary.counts;
-                let message = `E2E Test Summary (Run #${lastRun.id})\n`;
+                let message = `E2E Test Summary (Run #${e2eLastRun.id})\n`;
                 message += `${'='.repeat(40)}\n\n`;
                 message += `Total: ${counts.total} tests\n`;
                 message += `  ✓ Passed: ${counts.passed}\n`;

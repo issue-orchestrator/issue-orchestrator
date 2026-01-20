@@ -1730,3 +1730,313 @@ class TestDebugSessionEndpoint:
         assert response.status_code == 200
         # GitHub should not have been called since issue was in cache
         mock_orch.deps.repository_host.get_issue.assert_not_called()
+
+
+# --- Test: E2E Logs Endpoint ---
+
+
+class TestE2ELogsEndpoint:
+    """Test the /control/e2e/logs/{run_id} endpoint."""
+
+    @pytest.fixture
+    def e2e_client(self):
+        """Create a test client for E2E endpoints (no orchestrator needed)."""
+        return TestClient(control_app)
+
+    def test_logs_returns_400_for_invalid_repo_root(self, e2e_client):
+        """Invalid repo_root should return 400."""
+        response = e2e_client.get(
+            "/control/e2e/logs/1",
+            params={"repo_root": "../invalid/path"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_logs_returns_404_when_db_not_found(self, e2e_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = e2e_client.get(
+            "/control/e2e/logs/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+        assert "E2E database not found" in response.json()["detail"]
+
+    def test_logs_returns_404_when_run_not_found(self, e2e_client, tmp_path):
+        """Non-existent run_id should return 404."""
+        # Create the .issue-orchestrator directory and an empty DB
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+
+        # Create a minimal valid database
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS e2e_runs (
+                id INTEGER PRIMARY KEY,
+                repo_root TEXT NOT NULL,
+                orchestrator_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                exit_code INTEGER,
+                pytest_args TEXT NOT NULL DEFAULT '[]',
+                commit_sha TEXT,
+                branch TEXT,
+                retry_of INTEGER,
+                is_retry_run INTEGER DEFAULT 0,
+                duration_seconds REAL,
+                note TEXT,
+                log_path TEXT,
+                artifacts_dir TEXT,
+                worker_pid INTEGER,
+                total_tests INTEGER,
+                current_test TEXT
+            )
+        """)
+        conn.close()
+
+        response = e2e_client.get(
+            "/control/e2e/logs/999",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+        assert "Run 999 not found" in response.json()["detail"]
+
+    def test_logs_returns_404_when_no_log_path(self, e2e_client, tmp_path):
+        """Run without log_path should return 404."""
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS e2e_runs (
+                id INTEGER PRIMARY KEY,
+                repo_root TEXT NOT NULL,
+                orchestrator_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                exit_code INTEGER,
+                pytest_args TEXT NOT NULL DEFAULT '[]',
+                commit_sha TEXT,
+                branch TEXT,
+                retry_of INTEGER,
+                is_retry_run INTEGER DEFAULT 0,
+                duration_seconds REAL,
+                note TEXT,
+                log_path TEXT,
+                artifacts_dir TEXT,
+                worker_pid INTEGER,
+                total_tests INTEGER,
+                current_test TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS e2e_test_results (
+                id INTEGER PRIMARY KEY,
+                run_id INTEGER NOT NULL,
+                nodeid TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                duration_seconds REAL,
+                longrepr TEXT,
+                retry_outcome TEXT,
+                is_quarantined INTEGER DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        # Insert a run without log_path
+        conn.execute("""
+            INSERT INTO e2e_runs (repo_root, orchestrator_id, started_at, status, pytest_args, log_path)
+            VALUES (?, 'test-orch', '2024-01-01T00:00:00', 'completed', '[]', NULL)
+        """, (str(tmp_path),))
+        conn.commit()
+        conn.close()
+
+        response = e2e_client.get(
+            "/control/e2e/logs/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "no_logs"
+
+    def test_logs_returns_content_successfully(self, e2e_client, tmp_path):
+        """Valid run with log file should return content."""
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+
+        # Create a log file
+        log_file = tmp_path / "test.log"
+        log_file.write_text("Line 1\nLine 2\nLine 3\n")
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS e2e_runs (
+                id INTEGER PRIMARY KEY,
+                repo_root TEXT NOT NULL,
+                orchestrator_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                exit_code INTEGER,
+                pytest_args TEXT NOT NULL DEFAULT '[]',
+                commit_sha TEXT,
+                branch TEXT,
+                retry_of INTEGER,
+                is_retry_run INTEGER DEFAULT 0,
+                duration_seconds REAL,
+                note TEXT,
+                log_path TEXT,
+                artifacts_dir TEXT,
+                worker_pid INTEGER,
+                total_tests INTEGER,
+                current_test TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS e2e_test_results (
+                id INTEGER PRIMARY KEY,
+                run_id INTEGER NOT NULL,
+                nodeid TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                duration_seconds REAL,
+                longrepr TEXT,
+                retry_outcome TEXT,
+                is_quarantined INTEGER DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            INSERT INTO e2e_runs (repo_root, orchestrator_id, started_at, status, pytest_args, log_path)
+            VALUES (?, 'test-orch', '2024-01-01T00:00:00', 'completed', '[]', ?)
+        """, (str(tmp_path), str(log_file)))
+        conn.commit()
+        conn.close()
+
+        response = e2e_client.get(
+            "/control/e2e/logs/1",
+            params={"repo_root": str(tmp_path), "tail": 10}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_lines"] == 3
+        assert data["returned_lines"] == 3
+        assert "Line 1" in data["content"]
+        assert "Line 3" in data["content"]
+
+
+# --- Test: E2E Summary Endpoint ---
+
+
+class TestE2ESummaryEndpoint:
+    """Test the /control/e2e/summary/{run_id} endpoint."""
+
+    @pytest.fixture
+    def e2e_client(self):
+        """Create a test client for E2E endpoints (no orchestrator needed)."""
+        return TestClient(control_app)
+
+    def test_summary_returns_400_for_invalid_repo_root(self, e2e_client):
+        """Invalid repo_root should return 400."""
+        response = e2e_client.get(
+            "/control/e2e/summary/1",
+            params={"repo_root": "../invalid/path"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_summary_returns_404_when_db_not_found(self, e2e_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = e2e_client.get(
+            "/control/e2e/summary/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+
+    def test_summary_returns_test_counts(self, e2e_client, tmp_path):
+        """Valid run should return test summary with counts."""
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS e2e_runs (
+                id INTEGER PRIMARY KEY,
+                repo_root TEXT NOT NULL,
+                orchestrator_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                exit_code INTEGER,
+                pytest_args TEXT NOT NULL DEFAULT '[]',
+                commit_sha TEXT,
+                branch TEXT,
+                retry_of INTEGER,
+                is_retry_run INTEGER DEFAULT 0,
+                duration_seconds REAL,
+                note TEXT,
+                log_path TEXT,
+                artifacts_dir TEXT,
+                worker_pid INTEGER,
+                total_tests INTEGER,
+                current_test TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS e2e_test_results (
+                id INTEGER PRIMARY KEY,
+                run_id INTEGER NOT NULL,
+                nodeid TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                duration_seconds REAL,
+                longrepr TEXT,
+                retry_outcome TEXT,
+                is_quarantined INTEGER DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        # Insert a run
+        conn.execute("""
+            INSERT INTO e2e_runs (repo_root, orchestrator_id, started_at, status, pytest_args)
+            VALUES (?, 'test-orch', '2024-01-01T00:00:00', 'completed', '[]')
+        """, (str(tmp_path),))
+        # Insert test results
+        conn.execute("""
+            INSERT INTO e2e_test_results (run_id, nodeid, outcome, updated_at)
+            VALUES (1, 'test_a.py::test_pass', 'passed', '2024-01-01T00:00:00')
+        """)
+        conn.execute("""
+            INSERT INTO e2e_test_results (run_id, nodeid, outcome, longrepr, updated_at)
+            VALUES (1, 'test_b.py::test_fail', 'failed', 'AssertionError', '2024-01-01T00:00:00')
+        """)
+        conn.execute("""
+            INSERT INTO e2e_test_results (run_id, nodeid, outcome, updated_at)
+            VALUES (1, 'test_c.py::test_skip', 'skipped', '2024-01-01T00:00:00')
+        """)
+        conn.commit()
+        conn.close()
+
+        response = e2e_client.get(
+            "/control/e2e/summary/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "counts" in data
+        counts = data["counts"]
+        assert counts["passed"] == 1
+        assert counts["failed"] == 1
+        assert counts["skipped"] == 1
+        assert counts["total"] == 3
+        # Check failed tests list
+        assert len(data["failed"]) == 1
+        assert data["failed"][0]["nodeid"] == "test_b.py::test_fail"
