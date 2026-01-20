@@ -61,12 +61,13 @@ class UnknownFieldsValidator(ConfigValidator):
         unknown = []
 
         # Check top-level fields
-        for key in config.raw_data.keys():
+        # Note: Validators are internal to config loading and need raw YAML access
+        for key in config._raw_data.keys():  # noqa: SLF001
             if key not in allowed_top_level:
                 unknown.append((key, "top"))
 
         # Check per-agent fields
-        for agent_name, agent_data in config.raw_agents.items():
+        for agent_name, agent_data in config._raw_agents.items():  # noqa: SLF001
             if isinstance(agent_data, dict):
                 for key in agent_data.keys():
                     if key not in allowed_agent:

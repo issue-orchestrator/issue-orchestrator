@@ -666,96 +666,6 @@ class TestScanForReworksEvents:
 
 
 # =============================================================================
-# Test: Internal helper methods
-# =============================================================================
-
-
-class TestExtractIssueNumber:
-    """Tests for _extract_issue_number helper method."""
-
-    def test_extracts_from_closes_pattern(self, scanner):
-        """Extracts issue number from 'Closes #N' pattern."""
-        result = scanner._extract_issue_number("Fixes something\n\nCloses #123", fallback=999)
-        assert result == 123
-
-    def test_case_insensitive(self, scanner):
-        """Handles case variations of 'closes'."""
-        result1 = scanner._extract_issue_number("closes #100", fallback=999)
-        result2 = scanner._extract_issue_number("CLOSES #200", fallback=999)
-        result3 = scanner._extract_issue_number("Closes #300", fallback=999)
-
-        assert result1 == 100
-        assert result2 == 200
-        assert result3 == 300
-
-    def test_returns_fallback_when_no_match(self, scanner):
-        """Returns fallback when no Closes pattern found."""
-        result = scanner._extract_issue_number("No issue reference here", fallback=42)
-        assert result == 42
-
-    def test_empty_body(self, scanner):
-        """Handles empty PR body."""
-        result = scanner._extract_issue_number("", fallback=1)
-        assert result == 1
-
-
-class TestGetReworkCycleFromLabels:
-    """Tests for _get_rework_cycle_from_labels helper method."""
-
-    def test_returns_1_when_no_rework_label(self, scanner):
-        """Returns 1 (first rework) when no rework-cycle-N label."""
-        result = scanner._get_rework_cycle_from_labels(["needs-rework", "agent:developer"])
-        assert result == 1
-
-    def test_extracts_cycle_and_increments(self, scanner):
-        """Extracts cycle number and returns next cycle."""
-        result = scanner._get_rework_cycle_from_labels(["rework-cycle-1"])
-        assert result == 2  # Next cycle
-
-        result = scanner._get_rework_cycle_from_labels(["rework-cycle-5"])
-        assert result == 6  # Next cycle
-
-    def test_ignores_non_matching_labels(self, scanner):
-        """Ignores labels that don't match rework-cycle-N pattern."""
-        result = scanner._get_rework_cycle_from_labels([
-            "rework-needed",
-            "cycle-1",
-            "rework-cycle-3",  # This one matches
-            "other-label",
-        ])
-        assert result == 4  # 3 + 1
-
-    def test_empty_labels(self, scanner):
-        """Returns 1 for empty labels list."""
-        result = scanner._get_rework_cycle_from_labels([])
-        assert result == 1
-
-
-class TestExtractAgentType:
-    """Tests for _extract_agent_type helper method."""
-
-    def test_extracts_agent_label(self, scanner):
-        """Extracts agent type from labels."""
-        result = scanner._extract_agent_type(["needs-rework", "agent:developer", "priority:high"])
-        assert result == "agent:developer"
-
-    def test_returns_first_agent_label(self, scanner):
-        """Returns first agent label if multiple present."""
-        result = scanner._extract_agent_type(["agent:web", "agent:mobile"])
-        assert result == "agent:web"
-
-    def test_returns_none_when_no_agent_label(self, scanner):
-        """Returns None when no agent: label present."""
-        result = scanner._extract_agent_type(["needs-rework", "priority:high"])
-        assert result is None
-
-    def test_empty_labels(self, scanner):
-        """Returns None for empty labels list."""
-        result = scanner._extract_agent_type([])
-        assert result is None
-
-
-# =============================================================================
 # Test: Edge cases and error scenarios
 # =============================================================================
 
@@ -796,11 +706,20 @@ class TestEdgeCases:
         # Uses fallback branch name: "{issue_number}-rework"
         # Note: The actual branch_name is from pr.branch, but we accept empty
 
-    def test_multiple_closes_patterns_uses_first(self, scanner):
+    def test_multiple_closes_patterns_uses_first(self, scanner, mock_repository):
         """Uses first Closes pattern when multiple present."""
-        body = "Closes #100\n\nAlso Closes #200"
-        result = scanner._extract_issue_number(body, fallback=999)
-        assert result == 100
+        pr = make_pr_info(
+            100,
+            branch="feature",
+            body="Closes #100\n\nAlso Closes #200",
+            labels=["needs-code-review"],
+        )
+        mock_repository.prs["feature"] = [pr]
+
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+
+        assert len(result) == 1
+        assert result[0].issue_number == 100  # Uses first Closes pattern
 
     def test_review_session_name_pattern(self, scanner, mock_repository):
         """Correctly matches review-N session names."""

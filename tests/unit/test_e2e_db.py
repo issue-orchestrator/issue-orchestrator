@@ -18,13 +18,19 @@ class TestE2EDB:
         return E2EDB(db_path)
 
     def test_db_creation(self, db: E2EDB):
-        """Test that DB is created with proper schema."""
-        # Verify tables exist by querying them
-        with db._connect() as conn:
-            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = {row[0] for row in cursor.fetchall()}
-        assert "e2e_runs" in tables
-        assert "e2e_test_results" in tables
+        """Test that DB is created and usable."""
+        # Verify DB is ready by successfully starting and querying a run
+        run_id = db.start_run(
+            repo_root="/test/repo",
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        assert run_id >= 1
+
+        # Verify we can query the run back
+        runs = db.list_runs(orchestrator_id="test-orch", limit=10)
+        assert len(runs) == 1
+        assert runs[0].id == run_id
 
     def test_start_run(self, db: E2EDB):
         """Test starting a new E2E run."""

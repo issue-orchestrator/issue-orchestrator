@@ -940,8 +940,9 @@ class Config:
     config_path: Optional[Path] = None
 
     # Raw YAML data for unknown field validation (set during load)
-    raw_data: dict = field(default_factory=dict)
-    raw_agents: dict = field(default_factory=dict)
+    # Internal: Raw YAML data preserved for validation (checking unknown fields)
+    _raw_data: dict = field(default_factory=dict)
+    _raw_agents: dict = field(default_factory=dict)
 
     @property
     def orchestrator_id(self) -> str:
@@ -1232,8 +1233,8 @@ class Config:
             config.repo_root_from_yaml = True
 
         # Store raw data for unknown field validation
-        config.raw_data = data
-        config.raw_agents = sections["agents"]
+        config._raw_data = data
+        config._raw_agents = sections["agents"]
         config.config_strict = sections["config"].get("strict", False)
         if sections["state"].get("file"):
             config.state_file = resolve_relative_path(sections["state"]["file"], repo_root)
@@ -1346,12 +1347,12 @@ class Config:
         unknown = []
 
         # Check top-level fields
-        for key in self.raw_data.keys():
+        for key in self._raw_data.keys():
             if key not in ALLOWED_TOP_LEVEL_FIELDS:
                 unknown.append((key, "top"))
 
         # Check per-agent fields
-        for agent_name, agent_data in self.raw_agents.items():
+        for agent_name, agent_data in self._raw_agents.items():
             if isinstance(agent_data, dict):
                 for key in agent_data.keys():
                     if key not in ALLOWED_AGENT_FIELDS:

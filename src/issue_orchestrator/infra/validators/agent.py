@@ -64,7 +64,8 @@ class AgentValidator(ConfigValidator):
             )
 
         # Provider must be set (from agent or default_agent) or command overridden
-        has_custom_command = "command" in config.raw_agents.get(label, {})
+        # Note: Validators are internal to config loading and need raw YAML access
+        has_custom_command = "command" in config._raw_agents.get(label, {})  # noqa: SLF001
         if agent.provider is None and not has_custom_command:
             errors.append(
                 f"Agent '{label}': no provider specified and no default_agent.provider set. "
