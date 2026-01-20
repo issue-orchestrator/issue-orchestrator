@@ -17,6 +17,42 @@ Prescriptive workflow for investigating failed issues/sessions.
 
 ---
 
+## Session Output Directory Structure
+
+All session artifacts are now centralized in a single run directory per session:
+
+```
+<worktree>/.issue-orchestrator/sessions/
+├── <run_id>__<session_name>/     # e.g., 20260120-143052Z__issue-42
+│   ├── manifest.json             # Session metadata (start time, paths, outcome)
+│   ├── session.log               # Terminal output from the session
+│   ├── validation-record.json    # Validation pass/fail result
+│   ├── validation-stdout.log     # Validation command stdout
+│   ├── validation-stderr.log     # Validation command stderr
+│   ├── validation-errors.txt     # Human-readable validation errors
+│   ├── validation-state.json     # Retry flow state (retry_count, etc.)
+│   ├── retry-prompt.md           # Prompt for retry session
+│   ├── failure-diagnostic-*.json # Failure diagnostics
+│   ├── worktree.json             # Worktree metadata
+│   ├── orchestrator-tail.log     # Filtered orchestrator log for this session
+│   ├── claude-session.path       # Path to Claude log
+│   └── claude-session.jsonl      # Symlink to Claude session log
+├── <session_name>                # Symlink to latest run for this session
+├── latest.json                   # Pointer to most recent run
+└── index.json                    # List of all runs
+```
+
+**Quick navigation:**
+```bash
+# Go to the latest run for a session
+cd $WORKTREE/.issue-orchestrator/sessions/<session_name>
+
+# Or use find_run_dir pattern
+ls -la $WORKTREE/.issue-orchestrator/sessions/*__issue-<N>
+```
+
+---
+
 ## Step 1: Get the Trace
 
 **Always start here.** Run the trace command for the issue:
@@ -60,20 +96,34 @@ The agent session terminated without calling `agent-done`. Common causes:
 - Agent was rate-limited
 - Permission prompt blocked agent
 
-### Check Claude Session Logs
+### Check the Session Run Directory
 
 ```bash
-# Find the worktree
-WORKTREE="/Users/brucegordon/dev/issue-orchestrator-<ISSUE_NUMBER>"
+WORKTREE="/path/to/worktree"  # e.g., /Users/brucegordon/dev/repo-42
 
-# Convert to Claude project path
-ESCAPED=$(echo "$WORKTREE" | sed 's|^/|-|' | tr '/' '-')
+# Find the latest run directory
+RUN_DIR=$(ls -td $WORKTREE/.issue-orchestrator/sessions/*__issue-* 2>/dev/null | head -1)
 
-# List sessions (most recent first)
-ls -lt ~/.claude/projects/$ESCAPED/*.jsonl | head -3
+# Check what's in it
+ls -la $RUN_DIR
+
+# View the manifest for session metadata
+cat $RUN_DIR/manifest.json | jq
+```
+
+### Check Claude Session Logs
+
+The manifest contains the Claude log path, or use the attached log:
+
+```bash
+# From manifest
+cat $RUN_DIR/manifest.json | jq -r '.claude_log_path'
+
+# Or check the attached symlink
+ls -la $RUN_DIR/claude-session.jsonl
 
 # Check session length
-wc -l ~/.claude/projects/$ESCAPED/<latest-session>.jsonl
+wc -l $RUN_DIR/claude-session.jsonl
 ```
 
 **Interpret the session length:**
@@ -85,20 +135,20 @@ wc -l ~/.claude/projects/$ESCAPED/<latest-session>.jsonl
 
 ```bash
 # Did the agent ever call agent-done?
-grep "agent-done" ~/.claude/projects/$ESCAPED/<session>.jsonl
+grep "agent-done" $RUN_DIR/claude-session.jsonl
 
 # If found, check the result
-grep -A5 "agent-done" ~/.claude/projects/$ESCAPED/<session>.jsonl | grep "tool_result"
+grep -A5 "agent-done" $RUN_DIR/claude-session.jsonl | grep "tool_result"
 ```
 
 ### Check for errors in session
 
 ```bash
 # Look for errors
-grep -i "error" ~/.claude/projects/$ESCAPED/<session>.jsonl | head -10
+grep -i "error" $RUN_DIR/claude-session.jsonl | head -10
 
 # Look for rate limiting
-grep -i "limit\|rate\|quota" ~/.claude/projects/$ESCAPED/<session>.jsonl
+grep -i "limit\|rate\|quota" $RUN_DIR/claude-session.jsonl
 ```
 
 **Common findings:**
@@ -115,16 +165,30 @@ The agent called `agent-done completed` but validation (tests/lint) failed.
 ### Check validation output
 
 ```bash
-# Find validation records
-ls -la $WORKTREE/.issue-orchestrator/validation/
+# View validation record
+cat $RUN_DIR/validation-record.json | jq
 
-# View latest validation result
-cat $WORKTREE/.issue-orchestrator/validation/*.json | jq
+# View human-readable errors
+cat $RUN_DIR/validation-errors.txt
+
+# View full stdout/stderr
+cat $RUN_DIR/validation-stdout.log
+cat $RUN_DIR/validation-stderr.log
+```
+
+### Check retry state
+
+```bash
+# See if retries were attempted
+cat $RUN_DIR/validation-state.json | jq
+
+# View retry prompt if it exists
+cat $RUN_DIR/retry-prompt.md
 ```
 
 ### Check what failed
 
-Look for in the trace:
+Look for in the trace or validation output:
 ```
 STDERR: FAILED tests/unit/test_foo.py::test_something
 ```
@@ -155,6 +219,9 @@ Git push to remote failed.
 # Find large files in worktree
 find $WORKTREE -type f -size +10M -exec ls -lh {} \;
 
+# Check session log size specifically
+ls -lh $RUN_DIR/session.log
+
 # Check .gitignore
 cat $WORKTREE/.gitignore | grep -E "session\.log|\.log"
 ```
@@ -168,6 +235,9 @@ Session exceeded the configured time limit.
 ### Check session duration
 
 ```bash
+# View timing from manifest
+cat $RUN_DIR/manifest.json | jq '{started_at, ended_at}'
+
 # From trace output, look for timing
 grep -E "runtime|duration|timeout" in trace output
 ```
@@ -186,7 +256,10 @@ The agent successfully called `agent-done blocked`.
 ### Check why agent blocked
 
 ```bash
-# View completion record
+# View manifest for outcome and reason
+cat $RUN_DIR/manifest.json | jq '{outcome, blocked_reason}'
+
+# Check completion file (still in worktree root for now)
 cat $WORKTREE/.issue-orchestrator/completion*.json | jq '.blocked_reason'
 ```
 
@@ -196,14 +269,20 @@ cat $WORKTREE/.issue-orchestrator/completion*.json | jq '.blocked_reason'
 
 ## Quick Reference
 
-### Key Files
+### Session Run Directory Files
 
-| Location | Purpose |
-|----------|---------|
-| `.issue-orchestrator/completion*.json` | Agent's completion record |
-| `.issue-orchestrator/validation/*.json` | Validation results |
-| `.issue-orchestrator/session.log` | Session output (may be large) |
-| `~/.claude/projects/<escaped-path>/*.jsonl` | Claude session logs |
+| File | Purpose |
+|------|---------|
+| `manifest.json` | Session metadata: times, paths, outcome, validation status |
+| `session.log` | Terminal output from the agent session |
+| `validation-record.json` | Structured validation result (passed, exit_code, command) |
+| `validation-stdout.log` | Raw stdout from validation command |
+| `validation-stderr.log` | Raw stderr from validation command |
+| `validation-errors.txt` | Human-readable error summary |
+| `validation-state.json` | Retry flow state (retry_count, max_retries) |
+| `orchestrator-tail.log` | Filtered orchestrator log for this session |
+| `claude-session.jsonl` | Symlink to Claude session log |
+| `failure-diagnostic-*.json` | Detailed failure analysis |
 
 ### Key Commands
 
@@ -217,8 +296,14 @@ issue-orchestrator status
 # View session output
 issue-orchestrator output <ISSUE_NUMBER>
 
-# Check if completion file exists
-ls -la $WORKTREE/.issue-orchestrator/completion*.json
+# Find latest run directory for an issue
+ls -td $WORKTREE/.issue-orchestrator/sessions/*__issue-<N> | head -1
+
+# List all runs in a worktree
+cat $WORKTREE/.issue-orchestrator/sessions/index.json | jq '.runs'
+
+# Get latest run info
+cat $WORKTREE/.issue-orchestrator/sessions/latest.json | jq
 ```
 
 ---
@@ -227,14 +312,19 @@ ls -la $WORKTREE/.issue-orchestrator/completion*.json
 
 If you can't determine the cause from the above:
 
-1. Check the full orchestrator log:
+1. Check the session-specific orchestrator tail:
+   ```bash
+   cat $RUN_DIR/orchestrator-tail.log | tail -100
+   ```
+
+2. Check the full orchestrator log:
    ```bash
    grep "\[issue-<N>\]" .issue-orchestrator/state/logs/orchestrator.log | tail -100
    ```
 
-2. Look for [FAILURE_CONTEXT] automatic analysis:
+3. Look for [FAILURE_CONTEXT] automatic analysis:
    ```bash
    grep "\[FAILURE_CONTEXT\]" .issue-orchestrator/state/logs/orchestrator.log | tail -20
    ```
 
-3. Check for infrastructure issues (use `troubleshooting` skill for hooks, locks, performance)
+4. Check for infrastructure issues (use `troubleshooting` skill for hooks, locks, performance)

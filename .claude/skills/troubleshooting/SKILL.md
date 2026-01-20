@@ -19,6 +19,37 @@ General diagnostics for orchestrator infrastructure issues.
 
 ---
 
+## Session Output Directory Structure
+
+All session artifacts are centralized in a run directory per session:
+
+```
+<worktree>/.issue-orchestrator/sessions/
+├── <run_id>__<session_name>/     # e.g., 20260120-143052Z__issue-42
+│   ├── manifest.json             # Session metadata
+│   ├── session.log               # Terminal output
+│   ├── validation-*.{json,log}   # Validation artifacts
+│   ├── orchestrator-tail.log     # Filtered orch log for this session
+│   └── claude-session.jsonl      # Symlink to Claude log
+├── <session_name>                # Symlink to latest run
+├── latest.json                   # Pointer to most recent run
+└── index.json                    # List of all runs
+```
+
+**Quick access:**
+```bash
+# Latest run for any session
+cat $WORKTREE/.issue-orchestrator/sessions/latest.json | jq
+
+# List all runs
+cat $WORKTREE/.issue-orchestrator/sessions/index.json | jq '.runs'
+
+# Find run for specific issue
+ls -td $WORKTREE/.issue-orchestrator/sessions/*__issue-<N> | head -1
+```
+
+---
+
 ## Quick Diagnostics
 
 ```bash
@@ -45,6 +76,24 @@ tmux list-windows -t orchestrator
 curl -s http://localhost:8080/api/status | jq
 ```
 
+### Quick Session Inspection
+
+```bash
+WORKTREE="/path/to/worktree"
+
+# Find the latest session run
+RUN_DIR=$(ls -td $WORKTREE/.issue-orchestrator/sessions/*__* 2>/dev/null | head -1)
+
+# Check manifest for session metadata
+cat $RUN_DIR/manifest.json | jq '{session_name, started_at, ended_at, outcome}'
+
+# Check session log
+tail -100 $RUN_DIR/session.log
+
+# Check orchestrator-filtered log for this session
+cat $RUN_DIR/orchestrator-tail.log | tail -50
+```
+
 ---
 
 ## Common Issues
@@ -58,6 +107,7 @@ curl -s http://localhost:8080/api/status | jq
 | iTerm tabs exit immediately | Sandbox check failing | Check `_iterm2.py` sandbox_check |
 | Orchestrator won't start | Lock file exists | Check `.issue-orchestrator/state/orchestrator.lock` |
 | GitHub API errors | Rate limiting | Check `gh api rate_limit` |
+| Session artifacts missing | Run dir not created | Check manifest.json exists in run dir |
 
 ---
 
@@ -157,6 +207,22 @@ cat /path/to/worktree/.issue-orchestrator/completion*.json | jq '.timestamp'
 
 **Fix:** `Worktree.prepare_for_session()` in `control/worktree.py` should delete stale files.
 
+### Session Run Directory Issues
+
+If session artifacts are missing or incomplete:
+
+```bash
+# Check if run directory was created
+ls -la $WORKTREE/.issue-orchestrator/sessions/
+
+# Check manifest for this run
+RUN_DIR=$(ls -td $WORKTREE/.issue-orchestrator/sessions/*__* | head -1)
+cat $RUN_DIR/manifest.json | jq
+
+# Check if symlink is correct
+ls -la $WORKTREE/.issue-orchestrator/sessions/<session_name>
+```
+
 ---
 
 ## Performance Issues
@@ -223,6 +289,32 @@ pkill -f "e2e_worker"
 
 ---
 
+## Claude Session Logs
+
+Claude Code session logs are useful for understanding agent behavior:
+
+**Log Locations:**
+```
+~/.claude/
+├── projects/<escaped-path>/     # Per-project session history
+│   └── <session-id>.jsonl       # Conversation history
+├── debug/<session-id>.txt       # Debug logs
+└── todos/<session-id>-*.json    # Todo lists per session
+```
+
+**Path Escaping:** `/Users/bruce/dev/myproject` -> `-Users-bruce-dev-myproject`
+
+**Quick access via run directory:**
+```bash
+# The run directory has a symlink to the Claude log
+ls -la $RUN_DIR/claude-session.jsonl
+
+# Or get the path from manifest
+cat $RUN_DIR/manifest.json | jq -r '.claude_log_path'
+```
+
+---
+
 ## Key Files Reference
 
 | File | Purpose |
@@ -231,5 +323,10 @@ pkill -f "e2e_worker"
 | `.issue-orchestrator/state/sessions.json` | Current session state |
 | `.issue-orchestrator/state/orchestrator.lock` | Lock file |
 | `.issue-orchestrator/config/*.yaml` | Configuration files |
+| `.issue-orchestrator/sessions/latest.json` | Pointer to most recent session run |
+| `.issue-orchestrator/sessions/index.json` | List of all session runs |
+| `.issue-orchestrator/sessions/<run>/manifest.json` | Session metadata |
+| `.issue-orchestrator/sessions/<run>/session.log` | Terminal output |
+| `.issue-orchestrator/sessions/<run>/orchestrator-tail.log` | Filtered orch log |
 | `adapters/terminal/_iterm2.py` | iTerm2 adapter (sandbox check) |
 | `control/session_launcher.py` | Session launch/completion handling |
