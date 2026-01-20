@@ -389,7 +389,7 @@ class SessionLauncher:
             self._claim_manager.release_claim(issue_number, claim.lease_id)
             logger.info(issue_log(issue_number, "Released claim: lease_id=%s"), claim.lease_id)
 
-    def launch_issue_session(  # noqa: C901, PLR0912
+    def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,
         issue: "IssueProtocol",
         active_sessions: list[Session],
@@ -1254,7 +1254,7 @@ class SessionLauncher:
         }))
 
 
-def handle_session_completion(  # noqa: C901, PLR0912
+def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history
     session: Session,
     status: SessionStatus,
     state: "OrchestratorState",

@@ -316,7 +316,7 @@ def scan_existing_repo(path: Path | None = None) -> DetectedState:
     return state
 
 
-def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR0912
+def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR0912 - interactive wizard with branches for each config option
     """Walk through new project setup."""
     config: dict[str, Any] = {"agents": {}}
 
@@ -601,7 +601,7 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     return config
 
 
-def wizard_existing_project(  # noqa: C901, PLR0912
+def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with branches for detected state and config options
     state: DetectedState, prompter: Prompter
 ) -> tuple[dict[str, Any], Optional[Path]]:
     """Walk through existing project onboarding.
@@ -1355,7 +1355,7 @@ def setup_ai_providers(prompter: Prompter) -> None:
             prompter.print("  Skipped (no key provided)\n")
 
 
-def run_wizard(  # noqa: C901, PLR0912
+def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisite checks, mode selection, and confirmation flow
     target_path: Path | None = None,
     prompter: Prompter | None = None,
     dry_run: bool = False,

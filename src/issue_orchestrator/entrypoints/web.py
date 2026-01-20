@@ -268,7 +268,7 @@ def _get_e2e_status(config) -> dict:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(  # noqa: C901, PLR0912
+async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data sections with conditional formatting
     request: Request,
     orchestrator=Depends(get_orchestrator)
 ) -> HTMLResponse:
@@ -827,7 +827,7 @@ async def open_in_finder(issue_number: int) -> JSONResponse:
 
 
 @app.get("/api/log/{issue_number}")
-async def get_session_log(issue_number: int) -> JSONResponse:  # noqa: C901
+async def get_session_log(issue_number: int) -> JSONResponse:  # noqa: C901 - log retrieval with multiple fallback paths
     """Get Claude session log for an issue.
 
     Finds the most recent session log from ~/.claude/projects/<worktree-path>/
@@ -919,7 +919,7 @@ async def get_session_log(issue_number: int) -> JSONResponse:  # noqa: C901
 
 
 @app.get("/api/log/local/{issue_number}")
-async def get_agent_ui_log(  # noqa: C901, PLR0912
+async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format detection and streaming
     issue_number: int, offset: int = 0, limit: int = 200
 ) -> JSONResponse:
     """Get the local agent UI log for an issue.
@@ -1015,7 +1015,7 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912
 
 
 @app.get("/api/session/manifest/{issue_number}")
-async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912
+async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912 - manifest lookup with multiple path strategies
     """Get the session manifest for an issue."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -1105,7 +1105,7 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
 
 
 @app.get("/api/session/phases/{issue_number}")
-async def get_session_phases(issue_number: int) -> JSONResponse:  # noqa: C901
+async def get_session_phases(issue_number: int) -> JSONResponse:  # noqa: C901 - phase data extraction with fallback sources
     """Get the linear phase history for an issue.
 
     Returns the sequence of phases (coding-1, review-1, coding-2, etc.)
@@ -1201,7 +1201,7 @@ def _phase_status_icon(status: str) -> str:
 
 
 @app.get("/api/session/orchestrator-log/{issue_number}")
-async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912
+async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912 - log filtering with pattern matching
     """Generate and return a filtered orchestrator log for an issue.
 
     This generates the log on demand, filtering to entries relevant to the issue.
@@ -1287,7 +1287,7 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # n
 
 
 @app.get("/api/session/claude-log/{issue_number}")
-async def get_claude_log_content(  # noqa: C901, PLR0912
+async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval with multiple format handling
     issue_number: int, limit: int = 200
 ) -> JSONResponse:
     """Fetch and parse Claude session log for viewing in the dashboard.
@@ -1817,7 +1817,7 @@ async def open_file(request: Request) -> JSONResponse:
 
 
 @app.post("/api/unblock-retry")
-async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901
+async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - multi-step unblock with state transitions
     """Remove blocking labels from issues and trigger a refresh.
 
     JSON body:
