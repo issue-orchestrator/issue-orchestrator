@@ -147,6 +147,21 @@ class LaunchResult:
     keep_queued: bool = False  # If True, don't remove from pending queue (terminal already running)
 
 
+@dataclass
+class _ClaimInfo:
+    """Info about an acquired claim."""
+
+    lease_id: str
+    lease_acquired_at: datetime
+    lease_expires_at: datetime
+
+
+# Need to import AgentConfig and IssueKey for type hints
+if TYPE_CHECKING:
+    from ..infra.config import AgentConfig
+    from ..domain.models import IssueKey
+
+
 class SessionLauncher:
     """Launches agent sessions for issues, reviews, and reworks.
 
@@ -222,6 +237,241 @@ class SessionLauncher:
                 )
         return all_ok
 
+    def _check_issue_conflicts(
+        self,
+        issue: "IssueProtocol",
+        active_sessions: list[Session],
+        session_name: str,
+    ) -> Optional[LaunchResult]:
+        """Check for conflicts that prevent launching. Returns LaunchResult on conflict."""
+        if any(s.issue.number == issue.number for s in active_sessions):
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
+            return LaunchResult(None, False, "Already in active sessions")
+
+        if self._session_exists(session_name):
+            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "terminal session already running")
+            return LaunchResult(None, False, "Terminal session already running")
+
+        return None
+
+    def _check_dependencies_before_launch(
+        self,
+        issue: "IssueProtocol",
+    ) -> Optional[LaunchResult]:
+        """CAS check: Re-verify dependencies before launching. Returns LaunchResult if blocked."""
+        if not self._dependency_evaluator or not self._refresh_issue:
+            return None
+
+        fresh_issue = self._refresh_issue(issue.number)
+        if not fresh_issue or not fresh_issue.body:
+            return None
+
+        report = self._dependency_evaluator.evaluate(
+            issue_number=issue.number,
+            issue_body=fresh_issue.body,
+            source_milestone=fresh_issue.milestone,
+        )
+        if not report.runnable:
+            log_transition(
+                "issue", issue.number, "AVAILABLE", "SKIP",
+                f"dependencies changed: {report.summary()}"
+            )
+            self.events.publish(TraceEvent(
+                EventName.ISSUE_DEPENDENCY_BLOCKED,
+                {
+                    "issue_number": issue.number,
+                    "issue_title": issue.title,
+                    "reason": report.summary(),
+                },
+            ))
+            return LaunchResult(None, False, f"Dependencies not satisfied: {report.summary()}")
+
+        return None
+
+    def _acquire_claim(
+        self,
+        issue: "IssueProtocol",
+    ) -> tuple[Optional[_ClaimInfo], Optional[LaunchResult]]:
+        """Acquire claim if claim manager is configured.
+
+        Returns:
+            (claim_info, None) on success or no claim manager
+            (None, LaunchResult) on failure
+        """
+        if not self._claim_manager:
+            return None, None
+
+        logger.info(issue_log(issue.number, "Acquiring claim..."))
+        claim_result = self._claim_manager.attempt_claim(issue.number)
+
+        if not claim_result.success:
+            log_transition("issue", issue.number, "LAUNCHING", "CLAIM_FAILED", f"claim attempt failed: {claim_result.error}")
+            self.events.publish(TraceEvent(
+                EventName.CLAIM_CONTESTED,
+                {
+                    "issue_number": issue.number,
+                    "issue_title": issue.title,
+                    "error": claim_result.error,
+                },
+            ))
+            return None, LaunchResult(None, False, f"Failed to claim issue: {claim_result.error}")
+
+        # Run convergence to confirm ownership
+        logger.info(issue_log(issue.number, "Running claim convergence..."))
+        converged = self._claim_manager.run_convergence(issue.number, claim_result.lease_id or "")
+
+        if not converged:
+            log_transition("issue", issue.number, "LAUNCHING", "CLAIM_LOST", "convergence failed - another claimant won")
+            self._claim_manager.release_claim(issue.number, claim_result.lease_id or "")
+            self.events.publish(TraceEvent(
+                EventName.CLAIM_LOST,
+                {
+                    "issue_number": issue.number,
+                    "issue_title": issue.title,
+                    "lease_id": claim_result.lease_id,
+                    "reason": "convergence_failed",
+                },
+            ))
+            return None, LaunchResult(None, False, "Claim convergence failed - another orchestrator won")
+
+        # Claim acquired successfully
+        lease_id = claim_result.lease_id or ""
+        lease_acquired_at = datetime.now()
+        lease_expires_at = lease_acquired_at + timedelta(seconds=self.config.claim_lease_seconds if hasattr(self.config, 'claim_lease_seconds') else 900)
+        logger.info(issue_log(issue.number, "Claim acquired: lease_id=%s"), lease_id)
+        self.events.publish(TraceEvent(
+            EventName.CLAIM_ACQUIRED,
+            {
+                "issue_number": issue.number,
+                "lease_id": lease_id,
+            },
+        ))
+
+        return _ClaimInfo(lease_id=lease_id, lease_acquired_at=lease_acquired_at, lease_expires_at=lease_expires_at), None
+
+    def _release_claim_on_failure(self, issue_number: int, claim_info: Optional[_ClaimInfo]) -> None:
+        """Release claim if we acquired one."""
+        if self._claim_manager and claim_info:
+            self._claim_manager.release_claim(issue_number, claim_info.lease_id)
+            logger.info(issue_log(issue_number, "Released claim after failure: lease_id=%s"), claim_info.lease_id)
+
+    def _handle_worktree_error(
+        self,
+        issue: "IssueProtocol",
+        error: WorktreePreparationError,
+        claim_info: Optional[_ClaimInfo],
+    ) -> LaunchResult:
+        """Handle worktree preparation failure. Always returns a failure LaunchResult."""
+        log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
+        logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), error)
+        _write_worktree_diagnostic(error)
+        needs_human_label = self.config.get_label_needs_human()
+        self._apply_actions([
+            AddLabelAction(
+                issue_number=issue.number,
+                label=needs_human_label,
+                reason="worktree preparation failed",
+            ),
+            AddCommentAction(
+                number=issue.number,
+                comment=_build_worktree_error_comment(error),
+                reason="worktree preparation failed",
+            ),
+        ], context="worktree_prepare_issue")
+        self.events.publish(TraceEvent(
+            EventName.ISSUE_NEEDS_HUMAN,
+            {
+                "issue_number": issue.number,
+                "issue_title": issue.title,
+                "reason": str(error),
+            },
+        ))
+        self._release_claim_on_failure(issue.number, claim_info)
+        return LaunchResult(None, False, f"Worktree preparation failed: {error}")
+
+    def _apply_in_progress_label(
+        self,
+        issue: "IssueProtocol",
+        session_name: str,
+        worktree_path: Path,
+        claim_info: Optional[_ClaimInfo],
+    ) -> Optional[LaunchResult]:
+        """Add in-progress label. Returns LaunchResult on failure."""
+        in_progress_label = self.config.get_label_in_progress()
+        label_ok = self._apply_actions([
+            AddLabelAction(
+                issue_number=issue.number,
+                label=in_progress_label,
+                reason="session launched",
+            ),
+        ], context="launch_in_progress_label")
+
+        if not label_ok:
+            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
+            logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
+            self.events.publish(TraceEvent(
+                EventName.SESSION_START_FAILED,
+                {
+                    "issue_number": issue.number,
+                    "session_name": session_name,
+                    "reason": "in_progress_label_failed",
+                },
+            ))
+            try:
+                self._worktree_manager.remove(worktree_path)
+                logger.info(issue_log(issue.number, "Cleaned up worktree after launch failure: %s"), worktree_path)
+            except Exception as e:
+                logger.warning(issue_log(issue.number, "Failed to remove worktree after launch failure: %s"), e)
+            self._release_claim_on_failure(issue.number, claim_info)
+            return LaunchResult(None, False, "Failed to add in-progress label")
+
+        return None
+
+    def _build_existing_work_context(
+        self,
+        worktree_path: Path,
+        rebase_failed: bool,
+    ) -> Optional[str]:
+        """Build context string for existing work and merge conflicts."""
+        existing_work = detect_existing_work(worktree_path, self._working_copy)
+        if existing_work:
+            logger.info("[launch] Found existing work - agent will evaluate before starting fresh")
+
+        # Add merge conflict warning if rebase failed
+        if rebase_failed:
+            conflict_warning = (
+                "WARNING: This branch could not be rebased onto main due to merge conflicts. "
+                "The code is out of date. You should resolve the conflicts by running: "
+                "git fetch origin main && git rebase origin/main. "
+                "If conflicts occur, resolve them and continue with: git rebase --continue. "
+                "This is critical to ensure tests pass with the latest code."
+            )
+            if existing_work:
+                existing_work = f"{existing_work}\n\n{conflict_warning}"
+            else:
+                existing_work = conflict_warning
+            logger.warning("[launch] Rebase failed - agent will need to resolve merge conflicts")
+
+        return existing_work
+
+    def _handle_session_creation_failure(
+        self,
+        issue: "IssueProtocol",
+        claim_info: Optional[_ClaimInfo],
+    ) -> LaunchResult:
+        """Handle terminal session creation failure. Always returns a failure LaunchResult."""
+        log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
+        logger.error(issue_log(issue.number, "FAILED: session creation failed"))
+        self._apply_actions([
+            RemoveLabelAction(
+                issue_number=issue.number,
+                label=self.config.get_label_in_progress(),
+                reason="session creation failed",
+            ),
+        ], context="launch_session_creation_failed")
+        self._release_claim_on_failure(issue.number, claim_info)
+        return LaunchResult(None, False, "Failed to create terminal session")
+
     def launch_issue_session(
         self,
         issue: "IssueProtocol",
@@ -239,28 +489,61 @@ class SessionLauncher:
         launch_start = time.time()
         logger.info(issue_log(issue.number, "Session starting: type=code title=%s"), issue.title)
 
+        # Early validation
         if issue.agent_type is None:
             return LaunchResult(None, False, f"Issue #{issue.number} has no agent type label")
-
         agent_config = self.config.agents.get(issue.agent_type)
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {issue.agent_type}")
-
         if not self.config.repo:
             return LaunchResult(None, False, "No repo configured")
+
         issue_key = issue.key
         session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        session_name = f"issue-{issue.number}"
 
         # Check for conflicts
-        session_name = f"issue-{issue.number}"
-        if any(s.issue.number == issue.number for s in active_sessions):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
+        conflict_result = self._check_issue_conflicts(issue, active_sessions, session_name)
+        if conflict_result:
+            return conflict_result
 
-        if self._session_exists(session_name):
-            log_transition("issue", issue.number, "AVAILABLE", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running")
+        self._log_issue_session_identity(issue, issue_key, session_key, session_name)
 
+        # CAS check: Re-verify dependencies before launching
+        dep_result = self._check_dependencies_before_launch(issue)
+        if dep_result:
+            return dep_result
+
+        log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
+
+        # Acquire claim if claim manager is configured
+        claim_info, claim_failure = self._acquire_claim(issue)
+        if claim_failure:
+            return claim_failure
+
+        # Create and prepare worktree
+        ctx, worktree_failure = self._prepare_worktree_for_issue(issue, session_name, claim_info)
+        if worktree_failure:
+            return worktree_failure
+
+        # Apply in-progress label
+        label_failure = self._apply_in_progress_label(issue, session_name, ctx.worktree_path, claim_info)
+        if label_failure:
+            return label_failure
+
+        # Build and execute session
+        return self._create_and_start_issue_session(
+            issue, session_name, issue_key, session_key, agent_config, ctx, claim_info, launch_start
+        )
+
+    def _log_issue_session_identity(
+        self,
+        issue: "IssueProtocol",
+        issue_key: "IssueKey",
+        session_key: SessionKey,
+        session_name: str,
+    ) -> None:
+        """Log session identity information."""
         logger.info(
             "[launch] Issue session identity: issue=%s issue_key=%s agent=%s task=%s session=%s",
             issue.number,
@@ -278,90 +561,20 @@ class SessionLauncher:
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
         )
 
-        # CAS check: Re-verify dependencies before launching
-        if self._dependency_evaluator and self._refresh_issue:
-            fresh_issue = self._refresh_issue(issue.number)
-            if fresh_issue and fresh_issue.body:
-                report = self._dependency_evaluator.evaluate(
-                    issue_number=issue.number,
-                    issue_body=fresh_issue.body,
-                    source_milestone=fresh_issue.milestone,
-                )
-                if not report.runnable:
-                    log_transition(
-                        "issue", issue.number, "AVAILABLE", "SKIP",
-                        f"dependencies changed: {report.summary()}"
-                    )
-                    self.events.publish(TraceEvent(
-                        EventName.ISSUE_DEPENDENCY_BLOCKED,
-                        {
-                            "issue_number": issue.number,
-                            "issue_title": issue.title,
-                            "reason": report.summary(),
-                        },
-                    ))
-                    return LaunchResult(None, False, f"Dependencies not satisfied: {report.summary()}")
-
-        log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
-
-        # Acquire claim if claim manager is configured
-        lease_id: str | None = None
-        lease_acquired_at: datetime | None = None
-        lease_expires_at: datetime | None = None
-
-        if self._claim_manager:
-            logger.info(issue_log(issue.number, "Acquiring claim..."))
-            claim_result = self._claim_manager.attempt_claim(issue.number)
-
-            if not claim_result.success:
-                log_transition("issue", issue.number, "LAUNCHING", "CLAIM_FAILED", f"claim attempt failed: {claim_result.error}")
-                self.events.publish(TraceEvent(
-                    EventName.CLAIM_CONTESTED,
-                    {
-                        "issue_number": issue.number,
-                        "issue_title": issue.title,
-                        "error": claim_result.error,
-                    },
-                ))
-                return LaunchResult(None, False, f"Failed to claim issue: {claim_result.error}")
-
-            # Run convergence to confirm ownership
-            logger.info(issue_log(issue.number, "Running claim convergence..."))
-            converged = self._claim_manager.run_convergence(issue.number, claim_result.lease_id or "")
-
-            if not converged:
-                log_transition("issue", issue.number, "LAUNCHING", "CLAIM_LOST", "convergence failed - another claimant won")
-                self._claim_manager.release_claim(issue.number, claim_result.lease_id or "")
-                self.events.publish(TraceEvent(
-                    EventName.CLAIM_LOST,
-                    {
-                        "issue_number": issue.number,
-                        "issue_title": issue.title,
-                        "lease_id": claim_result.lease_id,
-                        "reason": "convergence_failed",
-                    },
-                ))
-                return LaunchResult(None, False, "Claim convergence failed - another orchestrator won")
-
-            # Claim acquired successfully
-            lease_id = claim_result.lease_id
-            lease_acquired_at = datetime.now()
-            lease_expires_at = lease_acquired_at + timedelta(seconds=self.config.claim_lease_seconds if hasattr(self.config, 'claim_lease_seconds') else 900)
-            logger.info(issue_log(issue.number, "Claim acquired: lease_id=%s"), lease_id)
-            self.events.publish(TraceEvent(
-                EventName.CLAIM_ACQUIRED,
-                {
-                    "issue_number": issue.number,
-                    "lease_id": lease_id,
-                },
-            ))
-
-        # Create and prepare worktree using WorktreeContext
+    def _prepare_worktree_for_issue(
+        self,
+        issue: "IssueProtocol",
+        session_name: str,
+        claim_info: Optional[_ClaimInfo],
+    ) -> tuple["WorktreeContext", Optional[LaunchResult]]:
+        """Create and prepare worktree. Returns (context, None) on success or (context, LaunchResult) on failure."""
         step_start = time.time()
         logger.info(issue_log(issue.number, "Creating worktree..."))
 
         # Initial coding session is always attempt 1
         phase_name = "coding-1"
+        # agent_type is validated as non-None in launch_issue_session before calling this
+        agent_label = issue.agent_type or ""
         ctx = WorktreeContext.create(
             worktree_manager=self._worktree_manager,
             config=self.config,
@@ -370,53 +583,35 @@ class SessionLauncher:
             issue_number=issue.number,
             issue_title=issue.title,
             session_name=session_name,
-            agent_label=issue.agent_type,
+            agent_label=agent_label,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(),
             phase_name=phase_name,
         )
 
-        # Handle worktree preparation errors
         if ctx.error:
-            log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
-            logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
-            _write_worktree_diagnostic(ctx.error)
-            needs_human_label = self.config.get_label_needs_human()
-            self._apply_actions([
-                AddLabelAction(
-                    issue_number=issue.number,
-                    label=needs_human_label,
-                    reason="worktree preparation failed",
-                ),
-                AddCommentAction(
-                    number=issue.number,
-                    comment=_build_worktree_error_comment(ctx.error),
-                    reason="worktree preparation failed",
-                ),
-            ], context="worktree_prepare_issue")
-            self.events.publish(TraceEvent(
-                EventName.ISSUE_NEEDS_HUMAN,
-                {
-                    "issue_number": issue.number,
-                    "issue_title": issue.title,
-                    "reason": str(ctx.error),
-                },
-            ))
-            # Release claim if we acquired one
-            if self._claim_manager and lease_id:
-                self._claim_manager.release_claim(issue.number, lease_id)
-                logger.info(issue_log(issue.number, "Released claim after worktree failure: lease_id=%s"), lease_id)
-            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
+            return ctx, self._handle_worktree_error(issue, ctx.error, claim_info)
 
-        # Extract values from context for local use
-        worktree_path = ctx.worktree_path
-        branch_name = ctx.branch_name
-        worktree_info = ctx.worktree_info
-        run = ctx.run
-        claude_project_dir = ctx.claude_project_dir
+        self._log_worktree_ready(issue, session_name, ctx, step_start)
 
-        # Write session metadata
+        # Run setup commands
+        if self.config.setup_worktree:
+            self._run_setup_commands(ctx.worktree_path)
+
+        return ctx, None
+
+    def _log_worktree_ready(
+        self,
+        issue: "IssueProtocol",
+        session_name: str,
+        ctx: "WorktreeContext",
+        step_start: float,
+    ) -> None:
+        """Log worktree ready information and write session metadata."""
+        issue_key = issue.key
+        session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+
         ctx.write_worktree_note()
         ctx.write_session_identity({
             "task": TaskKind.CODE.value,
@@ -427,7 +622,7 @@ class SessionLauncher:
 
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
-            run.run_id,
+            ctx.run.run_id,
             session_name,
             issue.number,
             extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
@@ -435,79 +630,41 @@ class SessionLauncher:
         logger.info(
             "[launch] Issue session paths: issue=%s worktree=%s branch=%s",
             issue.number,
-            worktree_path,
-            branch_name,
+            ctx.worktree_path,
+            ctx.branch_name,
         )
         logger.info(
             "[launch] Claude project dir: session=%s path=%s exists=%s",
             session_name,
-            claude_project_dir,
-            claude_project_dir.exists(),
+            ctx.claude_project_dir,
+            ctx.claude_project_dir.exists(),
         )
 
         worktree_time = time.time() - step_start
         logger.info(
             issue_log(issue.number, "Worktree ready: path=%s branch=%s rebase_status=%s time=%.1fs"),
-            worktree_path, branch_name, "CONFLICT" if worktree_info.rebase_failed else "ok", worktree_time
+            ctx.worktree_path, ctx.branch_name,
+            "CONFLICT" if ctx.worktree_info.rebase_failed else "ok", worktree_time
         )
 
-        # Run setup commands
-        if self.config.setup_worktree:
-            self._run_setup_commands(worktree_path)
+    def _create_and_start_issue_session(
+        self,
+        issue: "IssueProtocol",
+        session_name: str,
+        issue_key: "IssueKey",
+        session_key: SessionKey,
+        agent_config: "AgentConfig",
+        ctx: "WorktreeContext",
+        claim_info: Optional[_ClaimInfo],
+        launch_start: float,
+    ) -> LaunchResult:
+        """Build command, create terminal session, and return result."""
+        worktree_path = ctx.worktree_path
+        branch_name = ctx.branch_name
+        run = ctx.run
 
-        # Add in-progress label
-        step_start = time.time()
-        in_progress_label = self.config.get_label_in_progress()
-        label_ok = self._apply_actions([
-            AddLabelAction(
-                issue_number=issue.number,
-                label=in_progress_label,
-                reason="session launched",
-            ),
-        ], context="launch_in_progress_label")
-        if not label_ok:
-            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
-            logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
-            self.events.publish(TraceEvent(
-                EventName.SESSION_START_FAILED,
-                {
-                    "issue_number": issue.number,
-                    "session_name": session_name,
-                    "reason": "in_progress_label_failed",
-                },
-            ))
-            try:
-                self._worktree_manager.remove(worktree_path)
-                logger.info(issue_log(issue.number, "Cleaned up worktree after launch failure: %s"), worktree_path)
-            except Exception as e:
-                logger.warning(issue_log(issue.number, "Failed to remove worktree after launch failure: %s"), e)
-            # Release claim if we acquired one
-            if self._claim_manager and lease_id:
-                self._claim_manager.release_claim(issue.number, lease_id)
-                logger.info(issue_log(issue.number, "Released claim after label failure: lease_id=%s"), lease_id)
-            return LaunchResult(None, False, "Failed to add in-progress label")
-        label_time = time.time() - step_start
-        logger.info("[launch] Label added in %.1fs", label_time)
-
-        # Check for existing work and rebase status
-        existing_work = detect_existing_work(worktree_path, self._working_copy)
-        if existing_work:
-            logger.info("[launch] Found existing work - agent will evaluate before starting fresh")
-
-        # Add merge conflict warning if rebase failed
-        if worktree_info.rebase_failed:
-            conflict_warning = (
-                "WARNING: This branch could not be rebased onto main due to merge conflicts. "
-                "The code is out of date. You should resolve the conflicts by running: "
-                "git fetch origin main && git rebase origin/main. "
-                "If conflicts occur, resolve them and continue with: git rebase --continue. "
-                "This is critical to ensure tests pass with the latest code."
-            )
-            if existing_work:
-                existing_work = f"{existing_work}\n\n{conflict_warning}"
-            else:
-                existing_work = conflict_warning
-            logger.warning("[launch] Rebase failed - agent will need to resolve merge conflicts")
+        # Build existing work context
+        existing_work = self._build_existing_work_context(worktree_path, ctx.worktree_info.rebase_failed)
 
         # Build command
         base_command = agent_config.get_command(
@@ -516,59 +673,27 @@ class SessionLauncher:
             worktree=worktree_path,
             existing_work=existing_work,
         )
-        completion_path = get_completion_path(issue.agent_type, session_name=session_name)
+        completion_path = get_completion_path(issue.agent_type or "", session_name=session_name)
         self._session_output.update_manifest(
             run.run_dir,
             {"completion_path": completion_path},
         )
-        # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
-        env_exports += f" {ENV_PREFIX}AGENT_LABEL='{issue.agent_type}'"
-        env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue.number}'"
-        env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
-        # NOTE: Validation config is NOT passed via env var.
-        # agent-done reads validation config from the worktree's config file.
-        # This ensures tests are deterministic (no env var leakage).
 
-        if self.config.e2e_pr_labels:
-            labels_str = ",".join(self.config.e2e_pr_labels)
-            env_exports += f" E2E_PR_LABELS='{labels_str}'"
-        command = f"{env_exports} && {base_command}"
+        command = self._build_env_command(issue, completion_path, base_command)
         logger.info(
             "[launch] Issue session command: issue=%s session=%s worktree=%s completion=%s command=%s",
-            issue.number,
-            session_name,
-            worktree_path,
-            completion_path,
-            command,
+            issue.number, session_name, worktree_path, completion_path, command,
         )
 
         # Create terminal session
-        step_start = time.time()
         session_created = self._create_session(session_name, command, worktree_path, issue.title)
         logger.info(
             "[launch] Issue session create result: issue=%s session=%s created=%s",
-            issue.number,
-            session_name,
-            session_created,
+            issue.number, session_name, session_created,
         )
-        _session_time = time.time() - step_start
 
         if not session_created:
-            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
-            logger.error(issue_log(issue.number, "FAILED: session creation failed"))
-            self._apply_actions([
-                RemoveLabelAction(
-                    issue_number=issue.number,
-                    label=self.config.get_label_in_progress(),
-                    reason="session creation failed",
-                ),
-            ], context="launch_session_creation_failed")
-            # Release claim if we acquired one
-            if self._claim_manager and lease_id:
-                self._claim_manager.release_claim(issue.number, lease_id)
-                logger.info(issue_log(issue.number, "Released claim after session creation failure: lease_id=%s"), lease_id)
-            return LaunchResult(None, False, "Failed to create terminal session")
+            return self._handle_session_creation_failure(issue, claim_info)
 
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
 
@@ -582,9 +707,9 @@ class SessionLauncher:
             branch_name=branch_name,
             completion_path=completion_path,
             agent_label=issue.agent_type,
-            lease_id=lease_id,
-            lease_acquired_at=lease_acquired_at,
-            lease_expires_at=lease_expires_at,
+            lease_id=claim_info.lease_id if claim_info else None,
+            lease_acquired_at=claim_info.lease_acquired_at if claim_info else None,
+            lease_expires_at=claim_info.lease_expires_at if claim_info else None,
         )
 
         total_time = time.time() - launch_start
@@ -608,6 +733,27 @@ class SessionLauncher:
         self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)
 
         return LaunchResult(session, True)
+
+    def _build_env_command(
+        self,
+        issue: "IssueProtocol",
+        completion_path: str,
+        base_command: str,
+    ) -> str:
+        """Build command with environment variable exports."""
+        env_exports = f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
+        env_exports += f" {ENV_PREFIX}AGENT_LABEL='{issue.agent_type}'"
+        env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue.number}'"
+        env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
+        # NOTE: Validation config is NOT passed via env var.
+        # agent-done reads validation config from the worktree's config file.
+        # This ensures tests are deterministic (no env var leakage).
+
+        if self.config.e2e_pr_labels:
+            labels_str = ",".join(self.config.e2e_pr_labels)
+            env_exports += f" E2E_PR_LABELS='{labels_str}'"
+
+        return f"{env_exports} && {base_command}"
 
     def launch_review_session(
         self,
@@ -1169,6 +1315,120 @@ class SessionLauncher:
         }))
 
 
+def _handle_validation_retry(
+    session: Session,
+    state: "OrchestratorState",
+    config: Config,
+    kill_session_fn: Callable[[str], None],
+    validation_error: Optional[str],
+    validation_error_file: Optional[str],
+) -> bool:
+    """Handle validation retry case. Returns True if handled (caller should return early)."""
+    from ..domain.models import PendingValidationRetry
+
+    logger.info(
+        "[COMPLETION] Issue #%d needs validation retry (attempt %d), queueing for re-launch",
+        session.issue.number,
+        session.validation_retry_count + 1,
+    )
+    state.pending_validation_retries.append(PendingValidationRetry(
+        issue_number=session.issue.number,
+        issue_title=session.issue.title,
+        agent_label=session.agent_label or "",
+        worktree_path=str(session.worktree_path),
+        branch_name=session.branch_name,
+        original_prompt=session.original_prompt,
+        validation_error=validation_error or "",
+        validation_error_file=validation_error_file,
+        retry_count=session.validation_retry_count,
+        validation_cmd=config.validation_cmd if hasattr(config, 'validation_cmd') else None,
+    ))
+    # Kill the terminal session but don't cleanup worktree (agent will continue there)
+    kill_session_fn(session.terminal_id)
+    return True
+
+
+def _release_session_claim(
+    session: Session,
+    status: SessionStatus,
+    claim_manager: Optional["ClaimManager"],
+    events: Optional[EventSink],
+) -> None:
+    """Release claim if session had one."""
+    if not claim_manager or not session.lease_id:
+        return
+
+    try:
+        claim_manager.release_claim(session.issue.number, session.lease_id)
+        logger.info(
+            "[COMPLETION] Released claim for issue #%d: lease_id=%s",
+            session.issue.number,
+            session.lease_id,
+        )
+        if events:
+            events.publish(TraceEvent(
+                EventName.CLAIM_RELEASED,
+                {
+                    "issue_number": session.issue.number,
+                    "lease_id": session.lease_id,
+                    "status": status.value,
+                },
+            ))
+    except Exception as e:
+        logger.warning(
+            "[COMPLETION] Failed to release claim for issue #%d: %s",
+            session.issue.number,
+            e,
+        )
+
+
+def _update_completion_state(
+    session: Session,
+    status: SessionStatus,
+    state: "OrchestratorState",
+    result: "CompletionResult",
+) -> None:
+    """Update state with completion results (history, cleanups, reviews, failures)."""
+    from ..domain.models import DiscoveredReview, DiscoveredFailure, ImmediateCleanup
+
+    state.session_history.append(result.history_entry)
+
+    # Handle cleanup scheduling
+    if result.should_defer_cleanup and result.pending_cleanup:
+        state.pending_cleanups.append(result.pending_cleanup)
+    else:
+        state.immediate_cleanups.append(ImmediateCleanup(
+            issue_number=session.issue.number,
+            terminal_id=session.terminal_id,
+            worktree_path=str(session.worktree_path),
+            reason=status.value,
+        ))
+
+    # Queue review if applicable
+    if result.should_queue_review and result.pr_url and result.pr_number:
+        state.discovered_reviews.append(DiscoveredReview(
+            session.issue.number, result.pr_number, result.pr_url, session.branch_name,
+            agent_label=session.agent_label
+        ))
+
+    # Handle failures
+    if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
+        state.discovered_failures.append(DiscoveredFailure(
+            session.issue.number, session.issue.title, status.value
+        ))
+        state.failed_this_cycle.add(session.issue.number)
+        logger.info(
+            "[COMPLETION] Issue #%d added to failed_this_cycle (prevents retry until cache refresh)",
+            session.issue.number,
+        )
+        _surface_failure_context(session, status)
+
+
+# Import CompletionResult for type hint
+if TYPE_CHECKING:
+    from .completion_handler import CompletionResult
+
+
 def handle_session_completion(
     session: Session,
     status: SessionStatus,
@@ -1209,8 +1469,6 @@ def handle_session_completion(
         claim_manager: Optional ClaimManager for releasing claims on completion
         events: Optional EventSink for emitting claim events
     """
-    from ..domain.models import DiscoveredReview, DiscoveredFailure, PendingValidationRetry
-
     name = session.terminal_id
     entity = "review" if name.startswith("review-") else ("rework" if name.startswith("rework-") else "issue")
     log_transition(entity, session.issue.number, "ACTIVE", status.value.upper(), f"runtime={session.runtime_minutes}min")
@@ -1220,45 +1478,57 @@ def handle_session_completion(
 
     # Handle validation retry - queue for re-launch instead of normal completion
     if status == SessionStatus.NEEDS_VALIDATION_RETRY:
-        logger.info(
-            "[COMPLETION] Issue #%d needs validation retry (attempt %d), queueing for re-launch",
-            session.issue.number,
-            session.validation_retry_count + 1,
-        )
-        state.pending_validation_retries.append(PendingValidationRetry(
-            issue_number=session.issue.number,
-            issue_title=session.issue.title,
-            agent_label=session.agent_label or "",
-            worktree_path=str(session.worktree_path),
-            branch_name=session.branch_name,
-            original_prompt=session.original_prompt,
-            validation_error=validation_error or "",
-            validation_error_file=validation_error_file,
-            retry_count=session.validation_retry_count,
-            validation_cmd=config.validation_cmd if hasattr(config, 'validation_cmd') else None,
-        ))
-        # Kill the terminal session but don't cleanup worktree (agent will continue there)
-        kill_session_fn(session.terminal_id)
-        return  # Skip normal completion processing
+        _handle_validation_retry(session, state, config, kill_session_fn, validation_error, validation_error_file)
+        return
 
-    # Process completion through CompletionHandler (includes policy decisions)
+    # Track completed sessions
     if status == SessionStatus.COMPLETED:
         state.completed_today.append(session.issue.number)
+
+    # Process completion through CompletionHandler (includes policy decisions)
     result = completion_handler.process_completion(
         session, status, pr_url_hint=pr_url_hint,
         processing_errors=processing_errors, diagnostic_path=diagnostic_path
     )
-    if session.worktree_path:
-        run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
-        if run_dir:
-            session_output.attach_claude_log(run_dir)
-        else:
-            logger.warning(
-                "[%s] No session output dir found - Claude log won't be attached",
-                session.terminal_id,
-            )
+
+    # Attach Claude log if available
+    _attach_session_log(session, session_output)
 
     # Apply completion actions (from CompletionHandler policy)
+    _apply_completion_actions(session, status, result, action_applier)
+
+    # Observer handles session-level cleanup (kill sessions, close tabs)
+    observer.handle_completion(session, status)
+
+    # Release claim if session had one
+    _release_session_claim(session, status, claim_manager, events)
+
+    # Update state with completion results
+    _update_completion_state(session, status, state, result)
+
+
+def _attach_session_log(session: Session, session_output: SessionOutput) -> None:
+    """Attach Claude log to session output if available."""
+    if not session.worktree_path:
+        return
+
+    run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
+    if run_dir:
+        session_output.attach_claude_log(run_dir)
+    else:
+        logger.warning(
+            "[%s] No session output dir found - Claude log won't be attached",
+            session.terminal_id,
+        )
+
+
+def _apply_completion_actions(
+    session: Session,
+    status: SessionStatus,
+    result: "CompletionResult",
+    action_applier: "ActionApplier",
+) -> None:
+    """Apply completion actions from CompletionHandler policy."""
     if result.actions:
         logger.info(
             "[COMPLETION] Applying %d actions for issue #%d status=%s: %s",
@@ -1274,64 +1544,6 @@ def handle_session_completion(
             session.issue.number,
             status.value,
         )
-
-    # Observer handles session-level cleanup (kill sessions, close tabs)
-    observer.handle_completion(session, status)
-
-    # Release claim if session had one
-    if claim_manager and session.lease_id:
-        try:
-            claim_manager.release_claim(session.issue.number, session.lease_id)
-            logger.info(
-                "[COMPLETION] Released claim for issue #%d: lease_id=%s",
-                session.issue.number,
-                session.lease_id,
-            )
-            if events:
-                events.publish(TraceEvent(
-                    EventName.CLAIM_RELEASED,
-                    {
-                        "issue_number": session.issue.number,
-                        "lease_id": session.lease_id,
-                        "status": status.value,
-                    },
-                ))
-        except Exception as e:
-            logger.warning(
-                "[COMPLETION] Failed to release claim for issue #%d: %s",
-                session.issue.number,
-                e,
-            )
-
-    state.session_history.append(result.history_entry)
-    if result.should_defer_cleanup and result.pending_cleanup:
-        state.pending_cleanups.append(result.pending_cleanup)
-    else:
-        # Record immediate cleanup as a fact for the Planner to handle
-        from ..domain.models import ImmediateCleanup
-        state.immediate_cleanups.append(ImmediateCleanup(
-            issue_number=session.issue.number,
-            terminal_id=session.terminal_id,
-            worktree_path=str(session.worktree_path),
-            reason=status.value,
-        ))
-
-    if result.should_queue_review and result.pr_url and result.pr_number:
-        state.discovered_reviews.append(DiscoveredReview(
-            session.issue.number, result.pr_number, result.pr_url, session.branch_name,
-            agent_label=session.agent_label
-        ))
-    if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
-        state.discovered_failures.append(DiscoveredFailure(session.issue.number, session.issue.title, status.value))
-        # Track failed issues to prevent immediate retry (cleared on cache refresh)
-        state.failed_this_cycle.add(session.issue.number)
-        logger.info(
-            "[COMPLETION] Issue #%d added to failed_this_cycle (prevents retry until cache refresh)",
-            session.issue.number,
-        )
-
-        # Surface AI session logs for debugging
-        _surface_failure_context(session, status)
 
 
 def _surface_failure_context(session: Session, status: SessionStatus) -> None:
