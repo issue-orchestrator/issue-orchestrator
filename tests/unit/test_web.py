@@ -6,6 +6,20 @@ from unittest.mock import MagicMock, patch, Mock, AsyncMock
 from fastapi.testclient import TestClient
 
 from issue_orchestrator.entrypoints.web import app, get_orchestrator, set_orchestrator, set_server
+
+
+@pytest.fixture(autouse=True)
+def prevent_os_exit():
+    """Prevent shutdown_manager.exit() from calling os._exit().
+
+    This is needed for pytest-xdist parallel test execution. The web module's
+    shutdown_manager.exit() calls os._exit() which would crash the test worker
+    and cause unrelated tests to be marked as failed.
+    """
+    with patch("issue_orchestrator.entrypoints.web.shutdown_manager.exit"):
+        yield
+
+
 from issue_orchestrator.domain.models import (
     Issue,
     Session,

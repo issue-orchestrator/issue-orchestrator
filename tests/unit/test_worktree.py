@@ -1472,6 +1472,7 @@ class TestUpdateWorktreeOntoMain:
 # =============================================================================
 
 from issue_orchestrator.control.worktree import Worktree, WorktreePreparationError
+from issue_orchestrator.ports.session_output import SessionOutput
 import json
 
 
@@ -1486,9 +1487,15 @@ def worktree_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def worktree(worktree_dir: Path) -> Worktree:
+def mock_session_output() -> MagicMock:
+    """Create a mock SessionOutput for testing."""
+    return MagicMock(spec=SessionOutput)
+
+
+@pytest.fixture
+def worktree(worktree_dir: Path, mock_session_output: MagicMock) -> Worktree:
     """Create a Worktree instance for testing."""
-    return Worktree(worktree_dir, issue_number=123)
+    return Worktree(worktree_dir, issue_number=123, session_output=mock_session_output)
 
 
 class TestWorktreePrepareForSession:
@@ -1550,34 +1557,21 @@ class TestWorktreePrepareForSession:
         worktree.prepare_for_session("new-session")
         assert pane_log.exists()
 
-    def test_no_error_when_orchestrator_dir_missing(self, tmp_path: Path):
+    def test_no_error_when_orchestrator_dir_missing(self, tmp_path: Path, mock_session_output: MagicMock):
         """No error when .issue-orchestrator dir doesn't exist."""
-        worktree = Worktree(tmp_path, issue_number=123)
+        worktree = Worktree(tmp_path, issue_number=123, session_output=mock_session_output)
         worktree.prepare_for_session("new-session")  # Should not raise
 
-    def test_prunes_old_session_runs(self, tmp_path: Path):
-        """Prunes older session runs beyond retention limit."""
-        sessions_dir = tmp_path / ".issue-orchestrator" / "sessions"
-        sessions_dir.mkdir(parents=True, exist_ok=True)
-        run_names = [
-            "20260101-000000Z__issue-1",
-            "20260102-000000Z__issue-1",
-            "20260103-000000Z__issue-1",
-        ]
-        for idx, name in enumerate(run_names):
-            run_dir = sessions_dir / name
-            run_dir.mkdir()
-            (run_dir / "session.log").write_text(f"log {idx}")
-            stamp = 1700000000 + idx
-            os.utime(run_dir, (stamp, stamp))
+    def test_prunes_old_session_runs(self, tmp_path: Path, mock_session_output: MagicMock):
+        """Calls session_output.prune_runs with correct arguments."""
+        # Configure mock to return empty list (no pruning needed)
+        mock_session_output.prune_runs.return_value = []
 
-        worktree = Worktree(tmp_path, issue_number=123, retain_runs=2)
+        worktree = Worktree(tmp_path, issue_number=123, retain_runs=2, session_output=mock_session_output)
         worktree.prepare_for_session("issue-1")
 
-        remaining = sorted([p.name for p in sessions_dir.iterdir() if p.is_dir() and not p.is_symlink()])
-        assert "20260101-000000Z__issue-1" not in remaining
-        assert "20260102-000000Z__issue-1" in remaining
-        assert "20260103-000000Z__issue-1" in remaining
+        # Verify prune_runs was called with correct path and retention
+        mock_session_output.prune_runs.assert_called_once_with(tmp_path, 2)
 
     def test_raises_worktree_preparation_error_on_delete_failure(
         self, worktree: Worktree, worktree_dir: Path, monkeypatch
