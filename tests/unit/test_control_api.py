@@ -2039,3 +2039,158 @@ class TestE2ESummaryEndpoint:
         # Check failed tests list
         assert len(data["failed"]) == 1
         assert data["failed"][0]["nodeid"] == "test_b.py::test_fail"
+
+
+# --- Test: Retry Issue Endpoint ---
+
+
+class TestRetryIssueEndpoint:
+    """Test the POST /api/issues/{issue_number}/retry endpoint."""
+
+    def test_retry_returns_503_when_orchestrator_not_initialized(
+        self, client_without_orchestrator
+    ):
+        """Returns 503 when orchestrator is None."""
+        response = client_without_orchestrator.post("/api/issues/123/retry")
+
+        assert response.status_code == 503
+        assert response.json()["error"] == "Orchestrator not initialized"
+
+    def test_retry_removes_blocked_labels(self, client_with_orchestrator):
+        """Retry removes blocked-related labels from the issue."""
+        client, mock_orch = client_with_orchestrator
+
+        # Mock the repository_host to track remove_label calls
+        removed_labels = []
+
+        def track_remove_label(issue_number: int, label: str):
+            removed_labels.append((issue_number, label))
+
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.remove_label = MagicMock(
+            side_effect=track_remove_label
+        )
+
+        response = client.post("/api/issues/123/retry")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert "retry" in data["message"].lower()
+
+        # Verify correct labels were targeted for removal
+        removed_issue_numbers = [num for num, _ in removed_labels]
+        assert all(num == 123 for num in removed_issue_numbers)
+        # Should attempt to remove blocked, blocked-needs-human, blocked-failed
+        assert len(removed_labels) == 3
+
+    def test_retry_handles_label_removal_failure_gracefully(
+        self, client_with_orchestrator
+    ):
+        """Retry continues even when label removal fails (label may not exist)."""
+        client, mock_orch = client_with_orchestrator
+
+        # Mock the repository_host to raise exception on label removal
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.remove_label = MagicMock(
+            side_effect=Exception("Label not found")
+        )
+
+        response = client.post("/api/issues/123/retry")
+
+        # Should still succeed (silent exception handling is acceptable for missing labels)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+
+
+# --- Test: Dismiss Issue Endpoint ---
+
+
+class TestDismissIssueEndpoint:
+    """Test the POST /api/issues/{issue_number}/dismiss endpoint."""
+
+    def test_dismiss_returns_503_when_orchestrator_not_initialized(
+        self, client_without_orchestrator
+    ):
+        """Returns 503 when orchestrator is None."""
+        response = client_without_orchestrator.post("/api/issues/123/dismiss")
+
+        assert response.status_code == 503
+        assert response.json()["error"] == "Orchestrator not initialized"
+
+    def test_dismiss_removes_labels_and_session_history(self, client_with_orchestrator):
+        """Dismiss removes blocked and in-progress labels, plus session history entry."""
+        client, mock_orch = client_with_orchestrator
+
+        # Set up session history with an entry for issue 123
+        from issue_orchestrator.domain.models import SessionHistoryEntry
+
+        history_entry = SessionHistoryEntry(
+            issue_number=123,
+            title="Test Issue",
+            agent_type="agent:claude",
+            status="needs_human",
+            runtime_minutes=10,
+        )
+        mock_orch.state.session_history = [history_entry]
+
+        # Mock the repository_host
+        removed_labels = []
+
+        def track_remove_label(issue_number: int, label: str):
+            removed_labels.append((issue_number, label))
+
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.remove_label = MagicMock(
+            side_effect=track_remove_label
+        )
+
+        response = client.post("/api/issues/123/dismiss")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert "dismiss" in data["message"].lower()
+
+        # Verify labels were targeted for removal (blocked, blocked-needs-human, blocked-failed, in-progress)
+        removed_issue_numbers = [num for num, _ in removed_labels]
+        assert all(num == 123 for num in removed_issue_numbers)
+        assert len(removed_labels) == 4  # blocked, blocked-needs-human, blocked-failed, in-progress
+
+        # Verify session history entry was removed
+        assert len(mock_orch.state.session_history) == 0
+
+    def test_dismiss_handles_missing_session_history(self, client_with_orchestrator):
+        """Dismiss succeeds even when issue not in session history."""
+        client, mock_orch = client_with_orchestrator
+
+        # Empty session history
+        mock_orch.state.session_history = []
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.remove_label = MagicMock()
+
+        response = client.post("/api/issues/456/dismiss")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+
+    def test_dismiss_handles_label_removal_failure_gracefully(
+        self, client_with_orchestrator
+    ):
+        """Dismiss continues even when label removal fails (label may not exist)."""
+        client, mock_orch = client_with_orchestrator
+
+        mock_orch.state.session_history = []
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.remove_label = MagicMock(
+            side_effect=Exception("Label not found")
+        )
+
+        response = client.post("/api/issues/123/dismiss")
+
+        # Should still succeed (silent exception handling is acceptable for missing labels)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True

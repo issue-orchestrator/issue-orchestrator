@@ -1696,7 +1696,7 @@
                     role="tab"
                     aria-selected="{% if active_tab == 'queue' %}true{% else %}false{% endif %}"
                     aria-controls="issueList"
-                    tabindex="{% if active_tab == 'queue' %}-1{% else %}-1{% endif %}">
+                    tabindex="{% if active_tab == 'queue' %}0{% else %}-1{% endif %}">
                 Queue
                 <span class="tab-badge {% if queue_count == 0 %}empty{% endif %}" aria-label="{{ queue_count }} queued issues">{{ queue_count }}</span>
             </button>
