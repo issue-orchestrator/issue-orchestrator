@@ -102,6 +102,10 @@ class ActionApplier:
     claim_gate: Optional[ClaimGate] = None
     # Callback to look up lease_id for an issue from active sessions
     lease_id_lookup: Optional[LeaseIdLookup] = None
+    # Callback for worktree removal notifications
+    # Used by async completion processing to mark jobs as WORKTREE_GONE
+    # Returns the number of jobs marked as worktree_gone
+    on_worktree_removed: Optional[Callable[[str], int]] = None
 
     def apply(self, action: Action) -> ActionResult:
         """Apply a single action.
@@ -775,6 +779,9 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         try:
             self.worktree_manager.remove(Path(action.worktree_path))
             logger.info(issue_log(action.issue_number, "Removed worktree: %s"), action.worktree_path)
+            # Notify async completion processing that worktree is gone
+            if self.on_worktree_removed:
+                self.on_worktree_removed(action.worktree_path)
         except Exception as e:
             errors.append(f"remove worktree: {e}")
             logger.warning(issue_log(action.issue_number, "Failed to remove worktree: %s"), e)
@@ -790,6 +797,9 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
 
         try:
             self.worktree_manager.remove(Path(action.worktree_path))
+            # Notify async completion processing that worktree is gone
+            if self.on_worktree_removed:
+                self.on_worktree_removed(action.worktree_path)
             return ActionResult.ok(action, worktree_path=action.worktree_path)
         except Exception as e:
             return ActionResult.fail(action, str(e))

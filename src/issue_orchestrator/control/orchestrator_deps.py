@@ -36,6 +36,8 @@ if TYPE_CHECKING:
     from .session_restorer import SessionRestorer
     from .state_machine_manager import StateMachineManager
     from .completion_processor import CompletionProcessor
+    from .completion_observer import CompletionObserver
+    from .publish_executor import PublishJobExecutor
     from .session_controller import SessionController
     from .health_gate import HealthGate
     from .claim_gate import ClaimGate
@@ -77,6 +79,8 @@ class OrchestratorDeps:
         claim_manager: Manages issue claims for multi-orchestrator coordination
         claim_gate: Verifies claims before write operations
         lease_renewer: Renews leases for long-running sessions
+        completion_observer: Observes session completions (fast, no execution)
+        publish_executor: Executes publish jobs in background threads
     """
 
     # Core event/runtime ports
@@ -114,3 +118,7 @@ class OrchestratorDeps:
     claim_manager: "ClaimManager"
     claim_gate: "ClaimGate"
     lease_renewer: "LeaseRenewer"
+
+    # Async completion processing
+    completion_observer: "CompletionObserver"
+    publish_executor: "PublishJobExecutor"

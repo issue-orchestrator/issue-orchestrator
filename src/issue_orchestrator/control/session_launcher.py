@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from .dependency_evaluator import DependencyEvaluator
     from .completion_handler import CompletionHandler
+    from .completion_observer import CompletionObserver
     from .action_applier import ActionApplier
     from .session_manager import SessionType
     from .session_controller import SessionController
@@ -1581,6 +1582,9 @@ def process_active_sessions(
 ) -> None:
     """Process active sessions - moved from Orchestrator per method table.
 
+    DEPRECATED: Use observe_active_sessions() for the new async completion flow.
+    This function is kept for backwards compatibility during migration.
+
     Args:
         state: Orchestrator state (active_sessions)
         observer: Session observer for checking session status
@@ -1634,6 +1638,135 @@ def process_active_sessions(
                 session.terminal_id,
                 session.issue.number,
                 obs.observation.value,
+            )
+
+
+def observe_active_sessions(
+    state: "OrchestratorState",
+    observer: "SessionObserver",
+    completion_observer: "CompletionObserver",
+    kill_session_fn: Callable[[str], None],
+    claim_manager: Optional["ClaimManager"] = None,
+    events: Optional[EventSink] = None,
+) -> None:
+    """Observe active sessions and collect completion facts (fast, no I/O-heavy operations).
+
+    This is Phase 1 of the async completion flow:
+    1. Observe each session to detect termination
+    2. For terminated sessions, use CompletionObserver to read completion.json
+    3. Collect ObservedCompletion facts into state.observed_completions
+    4. Remove sessions from active tracking and kill terminals
+
+    The Planner will see observed_completions and:
+    - Plan immediate label updates (remove in-progress, add pr-pending/blocked)
+    - Create PublishJobs for background execution
+
+    Args:
+        state: Orchestrator state (active_sessions, observed_completions)
+        observer: Session observer for checking session status
+        completion_observer: For reading completion.json (no execution)
+        kill_session_fn: Function to kill terminal session
+        claim_manager: Optional ClaimManager for releasing claims
+        events: Optional EventSink for emitting events
+    """
+    import time
+    from ..observation.observation import SessionObservation
+
+    for session in list(state.active_sessions):
+        obs_start = time.monotonic()
+
+        # Check if session is still running
+        obs = observer.observe_session(session)
+        if obs.observation == SessionObservation.RUNNING:
+            continue
+
+        # Session has terminated - observe completion (fast, no execution)
+        decision = completion_observer.observe_completion(session, obs)
+
+        logger.info(
+            "[OBSERVE] Session completed: session=%s issue=%d status=%s has_completion=%s",
+            session.terminal_id,
+            session.issue.number,
+            decision.status.value,
+            decision.observed is not None,
+        )
+
+        # Emit observation event
+        if events:
+            events.publish(TraceEvent(EventName.OBSERVATION_RESULT, {
+                "issue_number": session.issue.number,
+                "session_name": session.terminal_id,
+                "status": decision.status.value,
+                "has_completion": decision.observed is not None,
+                "recovered_from_timeout": decision.recovered_from_timeout,
+            }))
+
+        # Remove from active sessions immediately
+        state.active_sessions = [s for s in state.active_sessions if s.terminal_id != session.terminal_id]
+
+        # Kill terminal session immediately (free resources)
+        try:
+            kill_session_fn(session.terminal_id)
+            logger.debug("[OBSERVE] Killed terminal: %s", session.terminal_id)
+        except Exception as e:
+            logger.warning("[OBSERVE] Failed to kill terminal %s: %s", session.terminal_id, e)
+
+        # Release claim immediately if session had one
+        if claim_manager and session.lease_id:
+            try:
+                claim_manager.release_claim(session.issue.number, session.lease_id)
+                logger.info(
+                    "[OBSERVE] Released claim for issue #%d: lease_id=%s",
+                    session.issue.number,
+                    session.lease_id,
+                )
+                if events:
+                    events.publish(TraceEvent(
+                        EventName.CLAIM_RELEASED,
+                        {
+                            "issue_number": session.issue.number,
+                            "lease_id": session.lease_id,
+                            "status": decision.status.value,
+                        },
+                    ))
+            except Exception as e:
+                logger.warning(
+                    "[OBSERVE] Failed to release claim for issue #%d: %s",
+                    session.issue.number,
+                    e,
+                )
+
+        # Collect observed completion for planner
+        if decision.observed:
+            state.observed_completions.append(decision.observed)
+            logger.info(
+                "[OBSERVE] Collected completion: issue=%d outcome=%s needs_publish=%s",
+                session.issue.number,
+                decision.observed.outcome,
+                decision.observed.needs_publish,
+            )
+        else:
+            # No completion.json - track as failure
+            from ..domain.models import DiscoveredFailure
+            state.discovered_failures.append(DiscoveredFailure(
+                session.issue.number,
+                session.issue.title,
+                decision.status.value,
+            ))
+            state.failed_this_cycle.add(session.issue.number)
+            logger.warning(
+                "[OBSERVE] No completion record for issue #%d, status=%s",
+                session.issue.number,
+                decision.status.value,
+            )
+
+        obs_elapsed = time.monotonic() - obs_start
+        if obs_elapsed > 1.0:  # Warn if observation takes more than 1s (should be fast)
+            logger.warning(
+                "[OBSERVE] Session observation took %.1fs (session=%s issue=%s) - should be <1s",
+                obs_elapsed,
+                session.terminal_id,
+                session.issue.number,
             )
 
 

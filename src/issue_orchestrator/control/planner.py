@@ -38,6 +38,7 @@ from ..domain.models import (
     DiscoveredFailure,
     TriageFacts,
     CleanupFacts,
+    ObservedCompletion,
 )
 
 if TYPE_CHECKING:
@@ -104,6 +105,8 @@ class OrchestratorSnapshot:
     failed_this_cycle: frozenset[int] = field(default_factory=frozenset)
     # Issues that completed this session (have session_history entries)
     session_history_issue_numbers: frozenset[int] = field(default_factory=frozenset)
+    # Observed completions pending publish job submission (async completion processing)
+    observed_completions: tuple["ObservedCompletion", ...] = field(default_factory=tuple)
 
     @property
     def active_count(self) -> int:
@@ -129,6 +132,7 @@ class OrchestratorSnapshot:
         cleanup_facts: Optional[CleanupFacts] = None,
         stale_in_progress_issues: Sequence[Issue] = (),
         stale_claim_issues: Sequence[Issue] = (),
+        observed_completions: Sequence[ObservedCompletion] = (),
     ) -> "OrchestratorSnapshot":
         """Create snapshot from mutable state.
 
@@ -144,6 +148,7 @@ class OrchestratorSnapshot:
             cleanup_facts: Facts about pending cleanups and their review status
             stale_in_progress_issues: Issues with stale in-progress labels
             stale_claim_issues: Issues with stale/expired claims
+            observed_completions: Completions observed this tick (for immediate label projection)
         """
         return cls(
             issues=tuple(issues),
@@ -164,6 +169,7 @@ class OrchestratorSnapshot:
             stale_in_progress_issues=tuple(stale_in_progress_issues),
             stale_claim_issues=tuple(stale_claim_issues),
             failed_this_cycle=frozenset(state.failed_this_cycle),
+            observed_completions=tuple(observed_completions),
         )
 
 
@@ -286,6 +292,11 @@ class Planner:
         stale_claim_actions = self._plan_stale_claim_cleanup(snapshot)
         actions.extend(stale_claim_actions)
 
+        # 1a-3. Immediate label projection for observed completions (async processing)
+        # This runs BEFORE discovered_reviews so labels are applied immediately
+        completion_label_actions = self._plan_observed_completion_labels(snapshot)
+        actions.extend(completion_label_actions)
+
         # 1b. Queue discovered reviews from session completions/scans
         queue_actions = self._plan_discovered_reviews(snapshot)
         actions.extend(queue_actions)
@@ -407,6 +418,81 @@ class Planner:
                     logger.debug("Planner: no code_review_agent - skipping review queue for PR #%d", review.pr_number)
             else:
                 logger.debug("Planner: PR #%d already queued, skipping", review.pr_number)
+
+        return actions
+
+    def _plan_observed_completion_labels(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+        """Plan immediate label updates for observed completions.
+
+        This is the "immediate label projection" phase of async completion processing.
+        When a session completes, we:
+        1. Remove in-progress label immediately (don't wait for publish job)
+        2. Add pr-pending label if outcome is COMPLETED (anticipating PR creation)
+        3. Add blocked label if outcome is BLOCKED
+        4. Add needs-human label if outcome is NEEDS_HUMAN
+
+        The actual publish work (git push, PR creation) happens in background
+        via the PublishJobExecutor.
+
+        Returns:
+            List of label actions to apply immediately
+        """
+        actions: list[Action] = []
+
+        if not snapshot.observed_completions:
+            return actions
+
+        for observed in snapshot.observed_completions:
+            issue_number = observed.issue_number
+
+            # Always remove in-progress label when session completes
+            actions.append(RemoveLabelAction(
+                issue_number=issue_number,
+                label=labels.IN_PROGRESS,
+                reason=f"session completed with outcome={observed.outcome}",
+                expected=build_expected_for_mutation(),
+            ))
+
+            # Add outcome-specific label immediately
+            if observed.outcome == "completed":
+                # Session completed successfully - will create PR
+                # Add pr-pending immediately (don't wait for publish job)
+                if observed.needs_publish:
+                    actions.append(AddLabelAction(
+                        issue_number=issue_number,
+                        label=labels.PR_PENDING,
+                        reason="session completed - publish job pending",
+                        expected=build_expected_for_mutation(),
+                    ))
+                    logger.debug(
+                        "Planner: projecting pr-pending label for issue #%d (publish job pending)",
+                        issue_number,
+                    )
+            elif observed.outcome == "blocked":
+                # Session blocked - add blocked label
+                actions.append(AddLabelAction(
+                    issue_number=issue_number,
+                    label=labels.BLOCKED,
+                    reason=f"session blocked: {observed.blocked_reason or 'unknown'}",
+                    expected=build_expected_for_mutation(),
+                ))
+                logger.debug("Planner: adding blocked label for issue #%d", issue_number)
+            elif observed.outcome == "needs_human":
+                # Session needs human intervention - use BLOCKED_NEEDS_HUMAN
+                actions.append(AddLabelAction(
+                    issue_number=issue_number,
+                    label=labels.BLOCKED_NEEDS_HUMAN,
+                    reason="session needs human intervention",
+                    expected=build_expected_for_mutation(),
+                ))
+                logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
+            elif observed.outcome in ("review_approved", "review_changes_requested"):
+                # Review session completed - labels handled by review workflow
+                logger.debug(
+                    "Planner: review session completed for issue #%d, outcome=%s",
+                    issue_number,
+                    observed.outcome,
+                )
 
         return actions
 
@@ -755,9 +841,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     issue_number=issue.number,
                     label=labels.BLOCKED_CROSS_MILESTONE,
                     reason=f"dependency violates milestone scope: {reason}",
-                    expected=self._build_expected_for_mutation(
-                        issue.number, snapshot, reason="add cross-milestone label"
-                    ),
+                    expected=build_expected_for_mutation(),
                 ))
 
         # Filter out issues already being worked on, just completed, or failed this cycle

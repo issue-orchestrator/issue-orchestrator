@@ -724,6 +724,233 @@ class PendingValidationRetry:
 PendingCTOReview = PendingTriageReview
 
 
+# =============================================================================
+# Publish Job Models (Async Completion Processing)
+# =============================================================================
+
+
+class PublishJobStatus(Enum):
+    """Status of a publish job in the background queue."""
+    QUEUED = "queued"      # Job created, waiting for worker
+    RUNNING = "running"    # Worker is executing
+    SUCCEEDED = "succeeded"  # Job completed successfully
+    FAILED = "failed"      # Job failed (may be retryable)
+
+
+@dataclass(frozen=True)
+class ObservedCompletion:
+    """Facts observed from a completed session.
+
+    This is produced by the observation phase (fast) and consumed by:
+    1. The planner (to project labels immediately)
+    2. The job queue (to enqueue background publish work)
+
+    Immutable to ensure it's a pure fact, not mutated during processing.
+    """
+    # Session identity
+    issue_number: int
+    issue_title: str
+    session_key: str  # e.g., "code:123" or "review:456"
+    terminal_id: str
+
+    # Worktree info
+    worktree_path: str  # String for immutability
+    branch_name: str
+    completion_path: str  # Relative path to completion.json
+
+    # Completion record data
+    outcome: str  # CompletionOutcome.value
+    requested_actions: tuple[str, ...]  # Tuple of RequestedAction.value
+    summary: str
+
+    # For review sessions
+    pr_number: int | None = None
+
+    # Agent info (for per-agent reviewer)
+    agent_label: str | None = None
+
+    # Additional completion record fields
+    implementation: str | None = None
+    problems: str | None = None
+    blocked_reason: str | None = None
+    review_summary: str | None = None
+    review_issues: str | None = None
+    comment_body: str | None = None
+    pr_labels: tuple[str, ...] | None = None
+
+    # Validation state (for sessions with validation configured)
+    validation_retry_count: int = 0
+    original_prompt: str | None = None
+
+    @property
+    def needs_publish(self) -> bool:
+        """Check if this completion requires publishing (git push + PR)."""
+        return "push_branch" in self.requested_actions
+
+    @property
+    def is_code_session(self) -> bool:
+        """Check if this is a code (issue) session vs review session."""
+        return self.pr_number is None
+
+
+@dataclass
+class PublishJob:
+    """A background job to publish completion work (git push, PR, validation).
+
+    Created from an ObservedCompletion when the planner decides to queue it.
+    Executed by the PublishJobExecutor in a background thread.
+    """
+    # Job identity (unique constraint: issue_number + session_key)
+    job_id: str  # UUID
+    issue_number: int
+    session_key: str
+
+    # Job state
+    status: PublishJobStatus = PublishJobStatus.QUEUED
+    created_at: float = 0.0  # time.monotonic() when created
+    started_at: float | None = None  # time.monotonic() when worker started
+    finished_at: float | None = None  # time.monotonic() when completed
+
+    # Work data (from ObservedCompletion)
+    worktree_path: str = ""
+    branch_name: str = ""
+    completion_path: str = ""
+    issue_title: str = ""
+    pr_number: int | None = None  # For review sessions
+    agent_label: str | None = None
+
+    # Completion record data (needed for PR body, labels, etc.)
+    outcome: str = ""
+    requested_actions: tuple[str, ...] = field(default_factory=tuple)
+    implementation: str | None = None
+    problems: str | None = None
+    comment_body: str | None = None
+    pr_labels: tuple[str, ...] | None = None
+
+    # Validation config (passed through for post-publish validation)
+    run_validation: bool = False
+    validation_retry_count: int = 0
+    original_prompt: str | None = None
+
+    # Result (populated by worker)
+    result_success: bool | None = None
+    result_pr_url: str | None = None
+    result_pr_number: int | None = None
+    result_message: str | None = None
+    result_errors: tuple[str, ...] | None = None
+    result_diagnostic_path: str | None = None
+
+    # Retry tracking
+    attempt_count: int = 0
+    last_error: str | None = None
+
+    @classmethod
+    def from_observed_completion(
+        cls,
+        observed: ObservedCompletion,
+        job_id: str,
+        run_validation: bool = False,
+    ) -> "PublishJob":
+        """Create a publish job from an observed completion."""
+        import time
+        return cls(
+            job_id=job_id,
+            issue_number=observed.issue_number,
+            session_key=observed.session_key,
+            created_at=time.monotonic(),
+            worktree_path=observed.worktree_path,
+            branch_name=observed.branch_name,
+            completion_path=observed.completion_path,
+            issue_title=observed.issue_title,
+            pr_number=observed.pr_number,
+            agent_label=observed.agent_label,
+            outcome=observed.outcome,
+            requested_actions=observed.requested_actions,
+            implementation=observed.implementation,
+            problems=observed.problems,
+            comment_body=observed.comment_body,
+            pr_labels=observed.pr_labels,
+            run_validation=run_validation,
+            validation_retry_count=observed.validation_retry_count,
+            original_prompt=observed.original_prompt,
+        )
+
+    def mark_started(self) -> None:
+        """Mark job as started by worker."""
+        import time
+        self.status = PublishJobStatus.RUNNING
+        self.started_at = time.monotonic()
+        self.attempt_count += 1
+
+    def mark_succeeded(
+        self,
+        pr_url: str | None = None,
+        pr_number: int | None = None,
+        message: str = "",
+    ) -> None:
+        """Mark job as successfully completed."""
+        import time
+        self.status = PublishJobStatus.SUCCEEDED
+        self.finished_at = time.monotonic()
+        self.result_success = True
+        self.result_pr_url = pr_url
+        self.result_pr_number = pr_number
+        self.result_message = message
+
+    def mark_failed(
+        self,
+        error: str,
+        errors: list[str] | None = None,
+        diagnostic_path: str | None = None,
+    ) -> None:
+        """Mark job as failed."""
+        import time
+        self.status = PublishJobStatus.FAILED
+        self.finished_at = time.monotonic()
+        self.result_success = False
+        self.result_message = error
+        self.last_error = error
+        if errors:
+            self.result_errors = tuple(errors)
+        self.result_diagnostic_path = diagnostic_path
+
+    @property
+    def duration_seconds(self) -> float | None:
+        """Duration of job execution in seconds."""
+        if self.started_at is None or self.finished_at is None:
+            return None
+        return self.finished_at - self.started_at
+
+    @property
+    def is_terminal(self) -> bool:
+        """Check if job is in a terminal state."""
+        return self.status in (PublishJobStatus.SUCCEEDED, PublishJobStatus.FAILED)
+
+
+@dataclass(frozen=True)
+class PublishJobResult:
+    """Result of a completed publish job, for consumption by orchestrator.
+
+    Immutable snapshot returned by job executor when polled.
+    """
+    job_id: str
+    issue_number: int
+    session_key: str
+    success: bool
+    pr_url: str | None = None
+    pr_number: int | None = None
+    message: str = ""
+    errors: tuple[str, ...] | None = None
+    diagnostic_path: str | None = None
+    duration_seconds: float | None = None
+
+    # Validation results (if validation was run)
+    validation_passed: bool | None = None
+    validation_error: str | None = None
+    validation_error_file: str | None = None
+    needs_validation_retry: bool = False
+
+
 @dataclass
 class DependencyProblem:
     """A dependency problem for an issue (for web UI display)."""
@@ -761,6 +988,10 @@ class OrchestratorState:
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)
     # Stale in-progress tracking: issue_number -> consecutive ticks with stale in-progress
     stale_issue_ticks: dict[int, int] = field(default_factory=dict)
+    # Async completion processing (publish jobs)
+    observed_completions: list["ObservedCompletion"] = field(default_factory=list)  # Completions detected this tick
+    pending_publish_jobs: dict[str, "PublishJob"] = field(default_factory=dict)  # job_id -> job (queued)
+    running_publish_jobs: dict[str, "PublishJob"] = field(default_factory=dict)  # job_id -> job (in progress)
 
 
 @dataclass

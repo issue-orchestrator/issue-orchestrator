@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from ...infra.logging_config import issue_log
@@ -15,6 +16,9 @@ from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
 from ...ports.worktree_manager import WorktreeReuseOptions
 from ..git.git_cli import GitCLI, SubprocessCommandRunner
+
+# Marker file name for worktree identity (must match job_store.py)
+WORKTREE_ID_MARKER = ".issue-orchestrator/worktree-id"
 
 
 @dataclass
@@ -370,6 +374,47 @@ def sync_cli_tools(worktree_path: Path, repo_root: Path) -> None:
             logger.warning("Failed to sync cli tool %s: %s", src_file.name, e)
 
     logger.info("Synced cli_tools from main repo to worktree")
+
+
+def _install_worktree_identity(worktree_path: Path) -> str:
+    """
+    Install a unique identity marker in the worktree.
+
+    This identity is used to detect path reuse - if a worktree is deleted
+    and recreated at the same path, it gets a new identity. Jobs store
+    the worktree_id and can detect when their worktree has been replaced.
+
+    The identity is only created once - subsequent calls are idempotent.
+
+    Args:
+        worktree_path: Path to the worktree
+
+    Returns:
+        The worktree identity (existing or newly created)
+    """
+    marker_path = worktree_path / WORKTREE_ID_MARKER
+
+    # Check for existing identity
+    if marker_path.exists():
+        try:
+            existing_id = marker_path.read_text().strip()
+            if existing_id:
+                logger.debug("Worktree identity exists: %s", existing_id)
+                return existing_id
+        except Exception:
+            pass
+
+    # Generate new identity
+    worktree_id = f"wt-{uuid.uuid4().hex[:12]}"
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(worktree_id)
+        logger.info("Installed worktree identity: %s", worktree_id)
+    except Exception as e:
+        logger.warning("Failed to install worktree identity: %s", e)
+        # Return the ID anyway - identity is best-effort
+
+    return worktree_id
 
 
 def install_claude_settings(worktree_path: Path) -> None:
@@ -880,13 +925,14 @@ def _finalize_worktree(
     pre_push_hook: Path | None,
     allow_no_verify_dry_run_preflight: bool,
 ) -> None:
-    """Install hooks, settings, venv, and cli_tools on a worktree."""
+    """Install hooks, settings, venv, cli_tools, and identity marker on a worktree."""
     if enforce_hooks:
         install_hooks(worktree_path, pre_push_hook)
     install_claude_settings(worktree_path)
     _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
     install_venv_symlink(worktree_path, repo_root)
     sync_cli_tools(worktree_path, repo_root)
+    _install_worktree_identity(worktree_path)
 
 
 def _try_reuse_worktree(

@@ -64,6 +64,8 @@ if TYPE_CHECKING:
     from ..control.pr_scanner import PRScanner
     from ..control.session_restorer import SessionRestorer
     from ..control.completion_processor import CompletionProcessor
+    from ..control.completion_observer import CompletionObserver
+    from ..control.publish_executor import PublishJobExecutor
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
 
@@ -278,6 +280,64 @@ def _create_completion_components(
     return completion_processor, session_controller_instance
 
 
+def _create_async_completion_components(
+    completion_processor: "CompletionProcessor",
+    events: EventSink,
+    session_output: FileSystemSessionOutput,
+    command_runner: LocalCommandRunner,
+    config: Config,
+    enable_persistence: bool = True,
+) -> tuple["CompletionObserver", "PublishJobExecutor"]:
+    """Create async completion processing components.
+
+    These components enable non-blocking completion handling:
+    - CompletionObserver: Fast observation of completions (no I/O)
+    - PublishJobExecutor: Background execution of publish jobs
+    - JobStore: SQLite persistence for crash recovery (optional)
+
+    Args:
+        completion_processor: For executing publish actions
+        events: Event sink for job lifecycle events
+        session_output: For reading session logs
+        command_runner: For running validation commands
+        config: Application configuration
+        enable_persistence: Whether to enable SQLite job persistence
+
+    Returns:
+        Tuple of (CompletionObserver, PublishJobExecutor)
+    """
+    from ..control.completion_observer import CompletionObserver
+    from ..control.publish_executor import PublishJobExecutor, ExecutorConfig
+    from ..control.job_store import JobStore, get_default_db_path
+
+    completion_observer = CompletionObserver(session_output=session_output)
+
+    executor_config = ExecutorConfig(
+        max_workers=2,  # Max concurrent publish jobs
+        job_timeout_seconds=600,  # 10 minutes max per job
+        enable_validation=config.validation.cmd is not None if config.validation else False,
+        validation_cmd=config.validation.cmd if config.validation else None,
+        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+    )
+
+    # Create job store for persistence (crash recovery)
+    job_store = None
+    if enable_persistence:
+        db_path = get_default_db_path(config.repo_root)
+        job_store = JobStore(db_path)
+        logger.info("[BOOTSTRAP] Job store enabled: %s", db_path)
+
+    publish_executor = PublishJobExecutor(
+        completion_processor=completion_processor,
+        events=events,
+        config=executor_config,
+        command_runner=command_runner if config.validation and config.validation.cmd else None,
+        job_store=job_store,
+    )
+
+    return completion_observer, publish_executor
+
+
 def _validate_required_deps(
     github: GitHubAdapter | None,
     event_hub: EventHub | None,
@@ -447,6 +507,11 @@ def build_orchestrator(
         config, github, events, working_copy, session_output, command_runner
     )
 
+    # Create async completion components (observer + executor)
+    completion_observer, publish_executor = _create_async_completion_components(
+        completion_processor, events, session_output, command_runner, config
+    ) if completion_processor else (None, None)
+
     # Create hook verifier and health gate
     hook_verifier = ExecutionHookVerifier(config)
     health_gate = HealthGate(
@@ -474,6 +539,12 @@ def build_orchestrator(
     assert completion_processor is not None
     assert session_controller_instance is not None
     assert fresh_issue_reader is not None
+    assert completion_observer is not None
+    assert publish_executor is not None
+
+    # Wire up worktree removal callback for async completion job tracking
+    # When a worktree is removed, mark associated jobs as WORKTREE_GONE
+    action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
 
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(
@@ -501,6 +572,8 @@ def build_orchestrator(
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
+        completion_observer=completion_observer,
+        publish_executor=publish_executor,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -695,6 +768,15 @@ def build_orchestrator_for_testing(
         config=lease_config,
     )
 
+    # Create async completion components for testing (persistence disabled by default)
+    completion_observer, publish_executor = _create_async_completion_components(
+        completion_processor, events, session_output, command_runner, config,
+        enable_persistence=False,  # Disable SQLite in tests to avoid file I/O
+    )
+
+    # Wire up worktree removal callback for async completion job tracking
+    action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
+
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(
         events=events,
@@ -721,6 +803,8 @@ def build_orchestrator_for_testing(
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
+        completion_observer=completion_observer,
+        publish_executor=publish_executor,
     )
 
     return Orchestrator(config=config, deps=deps)

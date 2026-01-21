@@ -238,6 +238,19 @@ class EventName(str, Enum):
     OBSERVATION_RESULT = "observation.result"
 
     # =========================================================================
+    # Publish Jobs (async completion processing)
+    # =========================================================================
+    PUBLISH_JOB_QUEUED = "publish_job.queued"  # Job added to queue
+    PUBLISH_JOB_STARTED = "publish_job.started"  # Worker started executing
+    PUBLISH_JOB_PUSH_STARTED = "publish_job.push_started"  # Git push started
+    PUBLISH_JOB_PUSH_COMPLETED = "publish_job.push_completed"  # Git push finished
+    PUBLISH_JOB_PR_CREATED = "publish_job.pr_created"  # PR created
+    PUBLISH_JOB_VALIDATION_STARTED = "publish_job.validation_started"  # Validation started
+    PUBLISH_JOB_VALIDATION_COMPLETED = "publish_job.validation_completed"  # Validation finished
+    PUBLISH_JOB_SUCCEEDED = "publish_job.succeeded"  # Job completed successfully
+    PUBLISH_JOB_FAILED = "publish_job.failed"  # Job failed
+
+    # =========================================================================
     # Resolver (identity resolution)
     # =========================================================================
     RESOLVER_DUPLICATE_EXTERNAL_ID = "resolver.duplicate_external_id"
