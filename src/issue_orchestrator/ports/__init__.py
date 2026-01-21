@@ -32,7 +32,7 @@ from issue_orchestrator.ports.issue import Issue
 from issue_orchestrator.ports.issue_tracker import IssueTracker, IssueRepository
 from issue_orchestrator.ports.fresh_issue_reader import FreshIssueReader
 from issue_orchestrator.ports.label_set import LabelSet, LabelManager
-from issue_orchestrator.ports.pull_request_tracker import PRInfo, PullRequestTracker, PRRepository
+from issue_orchestrator.ports.pull_request_tracker import PRInfo, PullRequestTracker, PRRepository, ReviewState
 from issue_orchestrator.ports.session_store import SessionStore
 from issue_orchestrator.ports.working_copy import (
     WorkingCopy,
@@ -66,6 +66,7 @@ __all__ = [
     "LabelSet",
     "PRInfo",
     "PullRequestTracker",
+    "ReviewState",
     # Combined interface
     "RepositoryHost",
     # Identity resolution

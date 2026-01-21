@@ -555,6 +555,7 @@ def _load_review_section(config: "Config", review_section: dict) -> None:
     config.triage_review_threshold = review_section.get("triage_review_threshold", 0)
     config.triage_review_on_failure = review_section.get("triage_review_on_failure", True)
     config.max_rework_cycles = review_section.get("max_rework_cycles", 2)
+    config.reviewer_feedback_cache_minutes = review_section.get("reviewer_feedback_cache_minutes", 5)
 
 
 def _load_cleanup_section(config: "Config", cleanup_section: dict) -> None:
@@ -911,6 +912,11 @@ class Config:
     # Rework cycle limit (when reviewer requests changes)
     max_rework_cycles: int = 2  # Max times to re-queue work agent before escalating to needs-human
 
+    # Reviewer feedback cache: write feedback locally on review completion and use it
+    # for rework sessions within this time window (avoids GitHub eventual consistency issues)
+    # -1 = disabled, 0+ = minutes to trust local file over GitHub API
+    reviewer_feedback_cache_minutes: int = 5  # Default: 5 minutes
+
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
 
@@ -1138,6 +1144,7 @@ class Config:
                     "on_failure": self.triage_review_on_failure,
                 },
                 "max_rework_cycles": self.max_rework_cycles,
+                "reviewer_feedback_cache_minutes": self.reviewer_feedback_cache_minutes,
             },
             "cleanup": {
                 "with_triage": {

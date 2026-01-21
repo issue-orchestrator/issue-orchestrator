@@ -423,6 +423,13 @@ class CompletionProcessor:
             error_details=error_details,
         )
 
+        # Write reviewer feedback to session run directory for rework sessions to use
+        # This is only relevant for review sessions (pr_number provided) with feedback
+        if pr_number and record.review_issues and session_name:
+            run_dir = self.session_output.find_run_dir(worktree, session_name)
+            if run_dir:
+                self._write_reviewer_feedback_file(run_dir, pr_number, record.review_issues)
+
         # Build and return result
         total_duration = time.monotonic() - start_time
         return self._build_processing_result(
@@ -1158,6 +1165,53 @@ class CompletionProcessor:
             new_branch,
         )
         return new_branch
+
+    def _write_reviewer_feedback_file(
+        self,
+        run_dir: Path,
+        pr_number: int,
+        review_issues: str,
+    ) -> Path | None:
+        """Write reviewer feedback to the review session's run directory.
+
+        This enables the "local cache" pattern: when a rework session starts shortly
+        after a review completes, it can read the feedback from the review session's
+        run directory instead of fetching from GitHub (which may have eventual
+        consistency delays).
+
+        The file is written to: {run_dir}/reviewer-feedback.json
+
+        Args:
+            run_dir: Path to the review session's run directory.
+            pr_number: The PR number being reviewed.
+            review_issues: The reviewer's feedback text (from agent-done --issues).
+
+        Returns:
+            Path to the written file, or None if writing failed.
+        """
+        feedback_file = run_dir / "reviewer-feedback.json"
+
+        feedback_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "pr_number": pr_number,
+            "review_issues": review_issues,
+        }
+
+        try:
+            feedback_file.write_text(json.dumps(feedback_data, indent=2))
+            logger.info(
+                "[REVIEW_FEEDBACK] Wrote reviewer feedback for PR #%d: %s",
+                pr_number,
+                feedback_file,
+            )
+            return feedback_file
+        except Exception as e:
+            logger.warning(
+                "[REVIEW_FEEDBACK] Failed to write feedback file for PR #%d: %s",
+                pr_number,
+                e,
+            )
+            return None
 
     def cleanup_record(self, worktree: Path, completion_path: str | None = None) -> bool:
         """Remove the completion record after processing.

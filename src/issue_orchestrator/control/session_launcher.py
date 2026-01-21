@@ -48,6 +48,7 @@ from .worktree_context import WorktreeContext
 from ..ports import (
     EventSink,
     TraceEvent,
+    ReviewState,
     RepositoryHost,
     Issue as IssueProtocol,
     WorkingCopy,
@@ -1080,6 +1081,19 @@ class SessionLauncher:
             )
             logger.warning("[launch] Rebase failed for rework - agent will need to resolve merge conflicts")
 
+        # Copy reviewer feedback from review session to rework session (for local cache)
+        self._copy_review_feedback_to_rework(worktree_path, pr_number, run.run_dir)
+
+        # Add reviewer feedback to the prompt so agent knows what to fix
+        # Checks local file first (within cache window), falls back to GitHub API
+        reviewer_feedback = self._format_reviewer_feedback(pr_number, run_dir=run.run_dir)
+        if reviewer_feedback:
+            if existing_work:
+                existing_work = f"{existing_work}\n\n{reviewer_feedback}"
+            else:
+                existing_work = reviewer_feedback
+            logger.info("[launch] Including reviewer feedback in rework session prompt")
+
         # Build command
         base_command = agent_config.get_command(
             issue_number=issue_number,
@@ -1175,6 +1189,212 @@ class SessionLauncher:
         }))
 
         return LaunchResult(session, True)
+
+    def _find_review_feedback_file(
+        self,
+        worktree_path: Path,
+        pr_number: int,
+    ) -> Path | None:
+        """Find the reviewer feedback file from the most recent review session.
+
+        Looks for review-{pr_number}__* directories and returns the path to
+        reviewer-feedback.json from the most recent one (if it exists).
+
+        Args:
+            worktree_path: Path to the worktree.
+            pr_number: The PR number to find feedback for.
+
+        Returns:
+            Path to the feedback file, or None if not found.
+        """
+        sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
+        if not sessions_dir.exists():
+            return None
+
+        # Find all review session directories for this PR
+        review_prefix = f"review-{pr_number}__"
+        review_dirs = sorted(
+            [d for d in sessions_dir.iterdir() if d.is_dir() and d.name.startswith(review_prefix)],
+            key=lambda d: d.name,
+            reverse=True,  # Most recent first (timestamp suffix)
+        )
+
+        for review_dir in review_dirs:
+            feedback_file = review_dir / "reviewer-feedback.json"
+            if feedback_file.exists():
+                return feedback_file
+
+        return None
+
+    def _copy_review_feedback_to_rework(
+        self,
+        worktree_path: Path,
+        pr_number: int,
+        rework_run_dir: Path,
+    ) -> Path | None:
+        """Copy reviewer feedback from review session to rework session.
+
+        Finds the most recent review session's feedback file and copies it
+        to the rework session's run directory.
+
+        Args:
+            worktree_path: Path to the worktree.
+            pr_number: The PR number to find feedback for.
+            rework_run_dir: Path to the rework session's run directory.
+
+        Returns:
+            Path to the copied feedback file, or None if not found/failed.
+        """
+        source_file = self._find_review_feedback_file(worktree_path, pr_number)
+        if not source_file:
+            logger.debug(
+                "[launch] No review feedback file found for PR #%s in worktree %s",
+                pr_number, worktree_path
+            )
+            return None
+
+        dest_file = rework_run_dir / "reviewer-feedback.json"
+        try:
+            import shutil
+            shutil.copy2(source_file, dest_file)
+            logger.info(
+                "[launch] Copied reviewer feedback for PR #%s: %s -> %s",
+                pr_number, source_file, dest_file
+            )
+            return dest_file
+        except Exception as e:
+            logger.warning(
+                "[launch] Failed to copy reviewer feedback for PR #%s: %s",
+                pr_number, e
+            )
+            return None
+
+    def _read_local_reviewer_feedback(self, run_dir: Path) -> str | None:
+        """Read reviewer feedback from local file if within cache window.
+
+        Args:
+            run_dir: Path to the session's run directory.
+
+        Returns:
+            The review_issues text if found and within cache window, None otherwise.
+        """
+        feedback_file = run_dir / "reviewer-feedback.json"
+        if not feedback_file.exists():
+            return None
+
+        try:
+            import json
+            from datetime import datetime, timezone
+            data = json.loads(feedback_file.read_text())
+            timestamp_str = data.get("timestamp")
+            review_issues = data.get("review_issues")
+
+            if not timestamp_str or not review_issues:
+                return None
+
+            # Check if within cache window
+            cache_minutes = self.config.reviewer_feedback_cache_minutes
+            if cache_minutes < 0:
+                # Cache disabled
+                return None
+
+            feedback_time = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            age_minutes = (datetime.now(timezone.utc) - feedback_time).total_seconds() / 60
+
+            if age_minutes <= cache_minutes:
+                logger.info(
+                    "[launch] Using local reviewer feedback (age: %.1f min, cache window: %d min)",
+                    age_minutes, cache_minutes
+                )
+                return review_issues
+            else:
+                logger.debug(
+                    "[launch] Local feedback too old (age: %.1f min, cache window: %d min), will fetch from GitHub",
+                    age_minutes, cache_minutes
+                )
+                return None
+
+        except Exception as e:
+            logger.warning("[launch] Failed to read local reviewer feedback: %s", e)
+            return None
+
+    def _format_reviewer_feedback(
+        self,
+        pr_number: int,
+        run_dir: Path | None = None,
+    ) -> str | None:
+        """Extract and format reviewer feedback for rework prompt.
+
+        First checks for local feedback file (if run_dir provided and within
+        cache window), then falls back to fetching from GitHub API.
+
+        Uses retry with backoff when fetching from GitHub to handle eventual
+        consistency - since we're in a rework flow, we expect reviews to exist.
+
+        Args:
+            pr_number: The PR number to get reviews for.
+            run_dir: Optional path to the session's run directory for local cache.
+
+        Returns:
+            Formatted feedback string, or None if no actionable feedback found.
+        """
+        # Try local file first (if run_dir provided)
+        if run_dir:
+            local_feedback = self._read_local_reviewer_feedback(run_dir)
+            if local_feedback:
+                # Format local feedback
+                return f"REVIEWER FEEDBACK (address these issues):\n\n{local_feedback}"
+
+        # Fall back to GitHub API with retry for eventual consistency
+        backoff_delays = [1.0, 2.0, 4.0]
+        feedback_reviews = []
+
+        for attempt, delay in enumerate(backoff_delays):
+            try:
+                reviews = self.repository_host.get_pr_reviews(pr_number)
+            except Exception as e:
+                logger.warning("Failed to fetch PR reviews for PR #%s: %s", pr_number, e)
+                return None
+
+            # Filter to reviews with actionable feedback
+            feedback_reviews = [
+                r for r in reviews
+                if r.get("state") in (ReviewState.CHANGES_REQUESTED.value, ReviewState.COMMENTED.value)
+                and r.get("body", "").strip()
+            ]
+
+            if feedback_reviews:
+                if attempt > 0:
+                    logger.info(
+                        "[launch] Found reviewer feedback after %d retry attempt(s) for PR #%s",
+                        attempt, pr_number
+                    )
+                break
+
+            # No feedback found yet - wait and retry for eventual consistency
+            if attempt < len(backoff_delays) - 1:
+                logger.debug(
+                    "[launch] No reviewer feedback found for PR #%s, retrying in %.1fs (attempt %d/%d)",
+                    pr_number, delay, attempt + 1, len(backoff_delays)
+                )
+                time.sleep(delay)
+
+        if not feedback_reviews:
+            logger.info(
+                "[launch] No reviewer feedback found for PR #%s after %d attempts",
+                pr_number, len(backoff_delays)
+            )
+            return None
+
+        lines = ["REVIEWER FEEDBACK (address these issues):"]
+        for review in feedback_reviews:
+            reviewer = review.get("user", {}).get("login", "reviewer")
+            state = review.get("state", "")
+            body = review.get("body", "").strip()
+            lines.append(f"\n[{reviewer} - {state}]")
+            lines.append(body)
+
+        return "\n".join(lines)
 
     def _run_setup_commands(self, worktree_path: Path) -> None:
         """Run setup commands in worktree."""
