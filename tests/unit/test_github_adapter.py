@@ -783,6 +783,20 @@ class TestPROperations:
         mock_http_client.close_pr.assert_called_once_with(10)
         mock_verification_service.verify_condition.assert_called_once()
 
+    def test_get_pr_reviews_delegates_to_client(self, adapter, mock_http_client):
+        """Test getting PR reviews delegates to HTTP client."""
+        mock_http_client.get_pr_reviews.return_value = [
+            {"id": 1, "state": "CHANGES_REQUESTED", "body": "Add tests", "user": {"login": "alice"}},
+            {"id": 2, "state": "APPROVED", "body": "LGTM", "user": {"login": "bob"}},
+        ]
+
+        reviews = adapter.get_pr_reviews(42)
+
+        mock_http_client.get_pr_reviews.assert_called_once_with(42)
+        assert len(reviews) == 2
+        assert reviews[0]["state"] == "CHANGES_REQUESTED"
+        assert reviews[1]["state"] == "APPROVED"
+
     def test_invalidate_pr_cache(self, adapter, cache):
         """Test invalidating PR cache by issue and branch."""
         pr_data = {

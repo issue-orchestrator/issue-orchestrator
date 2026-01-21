@@ -1339,6 +1339,17 @@ class GitHubAdapter:
         """
         return self._client.get_issue_comments(issue_number)
 
+    def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
+        """Get all reviews on a pull request.
+
+        Args:
+            pr_number: The PR number to get reviews for.
+
+        Returns:
+            List of review dicts with 'state', 'body', 'user' etc.
+        """
+        return self._client.get_pr_reviews(pr_number)
+
     def list_labels(self) -> list[dict[str, Any]]:
         """List all labels in the repository.
 

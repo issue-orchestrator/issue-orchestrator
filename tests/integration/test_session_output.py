@@ -198,3 +198,131 @@ def test_session_output_selects_claude_log(tmp_path: Path) -> None:
     assert manifest["claude_log_path"] == str(newer)
     assert manifest["claude_session_id"] == "newer"
     assert (run.run_dir / "claude-session.jsonl").is_symlink()
+
+
+def test_review_completion_writes_feedback_file(tmp_path: Path) -> None:
+    """Integration test: review with changes_requested writes feedback to run directory."""
+    session_name = "review-issue-1-pr-42"
+    session_output = SessionOutputManager()
+    run = session_output.start_run(
+        worktree_path=tmp_path,
+        session_name=session_name,
+        issue_number=1,
+        agent_label="agent:reviewer",
+        backend="subprocess",
+    )
+
+    # Write a review completion with changes_requested
+    completion_path = get_completion_path(agent_name="agent:reviewer", session_name=session_name)
+    record = CompletionRecord(
+        session_id=session_name,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        outcome=CompletionOutcome.REVIEW_CHANGES_REQUESTED,
+        summary="needs work",
+        review_issues="Missing unit tests for edge cases\nError handling incomplete",
+    )
+    _write_completion(tmp_path / completion_path, record)
+
+    processor = CompletionProcessor(
+        label_adapter=DummyLabelAdapter(),
+        pr_adapter=DummyPRAdapter(),
+        git_adapter=DummyGitAdapter(),
+        event_bus=None,
+        session_output=session_output,
+    )
+    result = processor.process(
+        worktree=tmp_path,
+        issue_number=1,
+        issue_title="Test Issue",
+        completion_path=completion_path,
+        pr_number=42,
+    )
+    assert result.success is True
+
+    # Verify the feedback file was written
+    feedback_file = run.run_dir / "reviewer-feedback.json"
+    assert feedback_file.exists(), "Feedback file should be created for changes_requested"
+
+    feedback_data = json.loads(feedback_file.read_text())
+    assert feedback_data["pr_number"] == 42
+    assert "Missing unit tests" in feedback_data["review_issues"]
+    assert "timestamp" in feedback_data
+
+
+def test_feedback_file_not_written_for_approved(tmp_path: Path) -> None:
+    """Integration test: approved review does not write feedback file."""
+    session_name = "review-issue-2-pr-99"
+    session_output = SessionOutputManager()
+    run = session_output.start_run(
+        worktree_path=tmp_path,
+        session_name=session_name,
+        issue_number=2,
+        agent_label="agent:reviewer",
+        backend="subprocess",
+    )
+
+    completion_path = get_completion_path(agent_name="agent:reviewer", session_name=session_name)
+    record = CompletionRecord(
+        session_id=session_name,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        outcome=CompletionOutcome.REVIEW_APPROVED,
+        summary="LGTM",
+    )
+    _write_completion(tmp_path / completion_path, record)
+
+    processor = CompletionProcessor(
+        label_adapter=DummyLabelAdapter(),
+        pr_adapter=DummyPRAdapter(),
+        git_adapter=DummyGitAdapter(),
+        event_bus=None,
+        session_output=session_output,
+    )
+    result = processor.process(
+        worktree=tmp_path,
+        issue_number=2,
+        issue_title="Test Issue",
+        completion_path=completion_path,
+        pr_number=99,
+    )
+    assert result.success is True
+
+    # Verify no feedback file was written
+    feedback_file = run.run_dir / "reviewer-feedback.json"
+    assert not feedback_file.exists(), "No feedback file for approved reviews"
+
+
+def test_feedback_file_found_across_review_runs(tmp_path: Path) -> None:
+    """Integration test: feedback file can be located from later rework session."""
+    session_output = SessionOutputManager()
+
+    # First: review session writes feedback
+    review_session = "review-issue-3-pr-50"
+    review_run = session_output.start_run(
+        worktree_path=tmp_path,
+        session_name=review_session,
+        issue_number=3,
+    )
+    feedback_file = review_run.run_dir / "reviewer-feedback.json"
+    feedback_file.write_text(json.dumps({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "pr_number": 50,
+        "review_issues": "Add integration tests",
+    }))
+
+    # Second: rework session starts later
+    rework_session = "rework-issue-3-pr-50-c1"
+    _ = session_output.start_run(
+        worktree_path=tmp_path,
+        session_name=rework_session,
+        issue_number=3,
+    )
+
+    # Verify we can find the review session's feedback
+    found = session_output.find_run_dir(tmp_path, review_session)
+    assert found is not None
+    assert (found / "reviewer-feedback.json").exists()
+
+    # The feedback content is accessible
+    feedback = json.loads((found / "reviewer-feedback.json").read_text())
+    assert feedback["pr_number"] == 50
+    assert "integration tests" in feedback["review_issues"]

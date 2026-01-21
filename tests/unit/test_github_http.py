@@ -474,3 +474,44 @@ def test_set_pr_draft_raises_on_pr_not_found() -> None:
         client.set_pr_draft(9999, draft=False)
 
     assert "PR #9999 not found" in str(exc_info.value)
+
+
+def test_get_pr_reviews_returns_list() -> None:
+    """Verify get_pr_reviews() returns list of reviews."""
+    reviews = [
+        {
+            "id": 1,
+            "state": "CHANGES_REQUESTED",
+            "body": "Please add tests",
+            "user": {"login": "reviewer1"},
+        },
+        {
+            "id": 2,
+            "state": "APPROVED",
+            "body": "LGTM",
+            "user": {"login": "reviewer2"},
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "/pulls/123/reviews" in request.url.path
+        return httpx.Response(200, json=reviews)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    result = client.get_pr_reviews(123)
+
+    assert len(result) == 2
+    assert result[0]["state"] == "CHANGES_REQUESTED"
+    assert result[0]["body"] == "Please add tests"
+    assert result[1]["state"] == "APPROVED"
+
+
+def test_get_pr_reviews_returns_empty_list_on_non_list_response() -> None:
+    """Verify get_pr_reviews() returns empty list if response is not a list."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": "unexpected"})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    result = client.get_pr_reviews(123)
+
+    assert result == []

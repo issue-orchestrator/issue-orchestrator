@@ -97,6 +97,7 @@ class MockRepositoryHost:
     def __init__(self):
         self.labels: dict[int, set[str]] = {}
         self.prs: dict[int, list[PRInfo]] = {}  # issue_number -> PRs
+        self.pr_reviews: dict[int, list[dict]] = {}  # pr_number -> reviews
         self.add_label_calls: list[tuple[int, str]] = []
         self.remove_label_calls: list[tuple[int, str]] = []
 
@@ -110,6 +111,9 @@ class MockRepositoryHost:
 
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         return self.prs.get(issue_number, [])
+
+    def get_pr_reviews(self, pr_number: int) -> list[dict]:
+        return self.pr_reviews.get(pr_number, [])
 
     def create_issue_key(self, issue_number: int) -> GitHubIssueKey:
         return GitHubIssueKey(repo="test/repo", external_id=str(issue_number))
@@ -950,6 +954,256 @@ class TestLaunchReworkSession:
         # Should remove needs-rework label
         actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
         assert any(isinstance(a, RemoveLabelAction) and a.label == "needs-rework" for a in actions)
+
+    def test_includes_reviewer_feedback_in_prompt(self, launcher_bundle, mock_repo_host):
+        """Verify reviewer feedback is included in the agent prompt."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        mock_repo_host.pr_reviews[456] = [
+            {"state": "CHANGES_REQUESTED", "body": "Please add unit tests", "user": {"login": "reviewer1"}},
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        assert len(launcher_bundle.create_session_calls) == 1
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "REVIEWER FEEDBACK" in command
+        assert "Please add unit tests" in command
+        assert "reviewer1" in command
+
+    def test_excludes_approved_reviews_from_feedback(self, launcher_bundle, mock_repo_host):
+        """Verify APPROVED reviews are not included in feedback."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        mock_repo_host.pr_reviews[456] = [
+            {"state": "CHANGES_REQUESTED", "body": "Fix the bug", "user": {"login": "alice"}},
+            {"state": "APPROVED", "body": "LGTM", "user": {"login": "bob"}},
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "Fix the bug" in command
+        assert "alice" in command
+        # APPROVED review should not be included
+        assert "LGTM" not in command
+        assert "bob" not in command
+
+    def test_excludes_reviews_with_empty_body(self, launcher_bundle, mock_repo_host):
+        """Verify reviews with empty bodies are excluded."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        mock_repo_host.pr_reviews[456] = [
+            {"state": "CHANGES_REQUESTED", "body": "", "user": {"login": "reviewer"}},
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        # No feedback should be included (empty body)
+        assert "REVIEWER FEEDBACK" not in command
+
+    def test_no_feedback_when_no_reviews(self, launcher_bundle, mock_repo_host):
+        """Verify no feedback section when there are no reviews."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        mock_repo_host.pr_reviews[456] = []
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "REVIEWER FEEDBACK" not in command
+
+    def test_escapes_quotes_in_feedback(self, launcher_bundle, mock_repo_host):
+        """Verify quotes in reviewer feedback don't break the command."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        mock_repo_host.pr_reviews[456] = [
+            {"state": "CHANGES_REQUESTED", "body": "Don't use 'eval' here", "user": {"login": "reviewer"}},
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        # Command should not break - the eval text should still be present
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "eval" in command
+
+    def test_includes_commented_reviews_with_body(self, launcher_bundle, mock_repo_host):
+        """Verify COMMENTED reviews with body text are included."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        mock_repo_host.pr_reviews[456] = [
+            {"state": "COMMENTED", "body": "Consider using a helper function here", "user": {"login": "reviewer"}},
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "REVIEWER FEEDBACK" in command
+        assert "Consider using a helper function here" in command
+
+    def test_uses_local_feedback_file_within_cache_window(self, launcher_bundle, mock_repo_host, mock_worktree_manager):
+        """Verify local feedback file is used when within cache window."""
+        import json
+        from datetime import datetime, timezone
+
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        # Don't set pr_reviews - we want to test local file is used instead
+
+        # Create local feedback file in review session's run directory
+        # Issue number is 123, so worktree is at tmp_path / "worktree-123"
+        worktree_path = mock_worktree_manager.tmp_path / "worktree-123"
+        worktree_path.mkdir(parents=True, exist_ok=True)
+        sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
+        review_run_dir = sessions_dir / "review-456__20240115-120000"
+        review_run_dir.mkdir(parents=True, exist_ok=True)
+
+        feedback_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "pr_number": 456,
+            "review_issues": "Local feedback: please add tests",
+        }
+        (review_run_dir / "reviewer-feedback.json").write_text(json.dumps(feedback_data))
+
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "REVIEWER FEEDBACK" in command
+        assert "Local feedback: please add tests" in command
+
+    def test_falls_back_to_github_when_local_file_too_old(self, launcher_bundle, mock_repo_host, mock_worktree_manager):
+        """Verify GitHub API is used when local file is outside cache window."""
+        import json
+        from datetime import datetime, timezone, timedelta
+
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        mock_repo_host.pr_reviews[456] = [
+            {"state": "CHANGES_REQUESTED", "body": "GitHub API feedback", "user": {"login": "reviewer"}},
+        ]
+
+        # Create old local feedback file (outside cache window)
+        worktree_path = mock_worktree_manager.tmp_path / "worktree-123"
+        worktree_path.mkdir(parents=True, exist_ok=True)
+        sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
+        review_run_dir = sessions_dir / "review-456__20240115-120000"
+        review_run_dir.mkdir(parents=True, exist_ok=True)
+
+        old_timestamp = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        feedback_data = {
+            "timestamp": old_timestamp,
+            "pr_number": 456,
+            "review_issues": "Old local feedback",
+        }
+        (review_run_dir / "reviewer-feedback.json").write_text(json.dumps(feedback_data))
+
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        # Should use GitHub API feedback, not old local file
+        assert "GitHub API feedback" in command
+        assert "Old local feedback" not in command
+
+    def test_copies_feedback_from_review_to_rework_run_dir(self, launcher_bundle, mock_repo_host, mock_worktree_manager):
+        """Verify feedback is copied from review session's run dir to rework's run dir."""
+        import json
+        from datetime import datetime, timezone
+
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+
+        # Create local feedback file in review session's run directory
+        worktree_path = mock_worktree_manager.tmp_path / "worktree-123"
+        worktree_path.mkdir(parents=True, exist_ok=True)
+        sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
+        review_run_dir = sessions_dir / "review-456__20240115-120000"
+        review_run_dir.mkdir(parents=True, exist_ok=True)
+
+        feedback_data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "pr_number": 456,
+            "review_issues": "Copied feedback content",
+        }
+        (review_run_dir / "reviewer-feedback.json").write_text(json.dumps(feedback_data))
+
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        # Find the rework session's run directory
+        rework_dirs = [d for d in sessions_dir.iterdir() if d.name.startswith("rework-") or d.name.startswith("20")]
+        # Filter to the coding session (rework creates a coding-N directory)
+        coding_dirs = [d for d in rework_dirs if "coding" in d.name]
+        assert len(coding_dirs) > 0, "Rework coding session directory should exist"
+        rework_feedback = coding_dirs[0] / "reviewer-feedback.json"
+        assert rework_feedback.exists(), "Feedback should be copied to rework run dir"
+        copied_data = json.loads(rework_feedback.read_text())
+        assert copied_data["review_issues"] == "Copied feedback content"
 
 
 # Note: TestRunSetupCommands class deleted - tested private _run_setup_commands method.

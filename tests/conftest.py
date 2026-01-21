@@ -56,6 +56,7 @@ class MockGitHubAdapter:
         self.labels: dict[int, set[str]] = {}  # issue_number -> labels
         self.prs: dict[str, list[PRInfo]] = {}  # branch -> PRs
         self.comments: list[dict] = []
+        self.pr_reviews: dict[int, list[dict]] = {}  # pr_number -> reviews
 
         # Call tracking for assertions
         self.add_label_calls: list[tuple] = []
@@ -179,6 +180,10 @@ class MockGitHubAdapter:
         """Add a comment (mock)."""
         self.comments.append({"number": issue_or_pr_number, "body": body})
         return f"https://github.com/test/repo/issues/{issue_or_pr_number}#comment"
+
+    def get_pr_reviews(self, pr_number: int) -> list[dict]:
+        """Get reviews for a PR (mock)."""
+        return self.pr_reviews.get(pr_number, [])
 
     def create_issue(
         self,

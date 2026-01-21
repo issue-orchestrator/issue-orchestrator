@@ -159,7 +159,10 @@ review:
   triage_review_threshold: 0
   triage_review_on_failure: true
   max_rework_cycles: 2
+  reviewer_feedback_cache_minutes: 5
 ```
+
+- `reviewer_feedback_cache_minutes`: When a reviewer requests changes, the feedback is saved locally. Rework sessions started within this time window read feedback from the local file instead of fetching from GitHub API (which may have eventual consistency delays). Set to `-1` to disable local caching and always fetch from GitHub. Default: `5` minutes.
 
 ### cleanup
 

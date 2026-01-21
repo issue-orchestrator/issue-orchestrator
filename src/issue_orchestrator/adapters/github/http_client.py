@@ -755,6 +755,23 @@ class GitHubHttpClient:
         )
         return _search_items(payload)
 
+    def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
+        """Get all reviews on a pull request.
+
+        Args:
+            pr_number: The PR number to get reviews for.
+
+        Returns:
+            List of review dicts with 'state', 'body', 'user' etc.
+        """
+        payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/pulls/{pr_number}/reviews",
+            params={"per_page": 100},
+            caller="get_pr_reviews",
+        )
+        return payload if isinstance(payload, list) else []
+
     def create_pr(
         self,
         title: str,

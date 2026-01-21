@@ -8,7 +8,18 @@ This is an execution-layer interface.
 """
 
 from dataclasses import dataclass
-from typing import Protocol
+from enum import Enum
+from typing import Any, Protocol
+
+
+class ReviewState(Enum):
+    """GitHub PR review states."""
+
+    APPROVED = "APPROVED"
+    CHANGES_REQUESTED = "CHANGES_REQUESTED"
+    COMMENTED = "COMMENTED"
+    DISMISSED = "DISMISSED"
+    PENDING = "PENDING"
 
 
 @dataclass
@@ -180,6 +191,21 @@ class PullRequestTracker(Protocol):
             RepositoryError: If there's an error adding the comment.
             IssueNotFoundError: If the issue/PR doesn't exist.
             ValidationError: If the comment body is empty or invalid.
+        """
+        ...
+
+    def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
+        """Get all reviews on a pull request.
+
+        Args:
+            pr_number: The PR number to get reviews for.
+
+        Returns:
+            List of review dicts with 'state', 'body', 'user' etc.
+            Returns empty list if no reviews found.
+
+        Raises:
+            RepositoryError: If there's an error accessing the data source.
         """
         ...
 

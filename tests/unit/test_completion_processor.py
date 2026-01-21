@@ -257,6 +257,67 @@ class TestCompletionProcessorLabelActions:
         mock_label_adapter.add_label.assert_called_once_with(42, "needs-rework")
         mock_label_adapter.remove_label.assert_called_once_with(42, "needs-code-review")
 
+    def test_review_changes_requested_writes_feedback_file(
+        self, processor, worktree_with_completion
+    ):
+        """Changes requested with review_issues should write feedback file to run dir."""
+        record = make_record(
+            outcome=CompletionOutcome.REVIEW_CHANGES_REQUESTED,
+            requested_actions=[
+                RequestedAction.ADD_NEEDS_REWORK_LABEL,
+                RequestedAction.REMOVE_CODE_REVIEW_LABEL,
+            ],
+            summary="Need fixes",
+            review_issues="Missing error handling and unit tests",
+        )
+        worktree = worktree_with_completion(record)
+
+        # Process with pr_number to indicate review session
+        result = processor.process(
+            worktree, issue_number=42, issue_title="Fix bug", pr_number=456
+        )
+
+        assert result.success
+        # Verify feedback file was written to session run directory
+        sessions_dir = worktree / ".issue-orchestrator" / "sessions"
+        # Find the session directory (may have timestamp suffix)
+        session_dirs = list(sessions_dir.iterdir()) if sessions_dir.exists() else []
+        assert len(session_dirs) > 0, "Session directory should exist"
+        feedback_file = session_dirs[0] / "reviewer-feedback.json"
+        assert feedback_file.exists(), "Feedback file should be written"
+        # Verify content
+        feedback_data = json.loads(feedback_file.read_text())
+        assert feedback_data["pr_number"] == 456
+        assert feedback_data["review_issues"] == "Missing error handling and unit tests"
+        assert "timestamp" in feedback_data
+
+    def test_review_without_issues_does_not_write_feedback_file(
+        self, processor, worktree_with_completion
+    ):
+        """Review without review_issues should not write feedback file."""
+        record = make_record(
+            outcome=CompletionOutcome.REVIEW_APPROVED,
+            requested_actions=[
+                RequestedAction.ADD_CODE_REVIEWED_LABEL,
+                RequestedAction.REMOVE_CODE_REVIEW_LABEL,
+            ],
+            summary="Looks good",
+            review_issues=None,  # No issues
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(
+            worktree, issue_number=42, issue_title="Fix bug", pr_number=456
+        )
+
+        assert result.success
+        # Feedback file should NOT exist
+        sessions_dir = worktree / ".issue-orchestrator" / "sessions"
+        if sessions_dir.exists():
+            for session_dir in sessions_dir.iterdir():
+                feedback_file = session_dir / "reviewer-feedback.json"
+                assert not feedback_file.exists(), "Feedback file should not be written for approved reviews"
+
 
 class TestCompletionProcessorPRActions:
     """Tests for PR-related actions from completion records."""
