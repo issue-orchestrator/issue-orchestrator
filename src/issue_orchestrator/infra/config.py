@@ -554,6 +554,7 @@ def _load_review_section(config: "Config", review_section: dict) -> None:
     config.triage_review_agent = review_section.get("triage_review_agent")
     config.triage_review_label = review_section.get("triage_review_label")
     config.triage_reviewed_label = review_section.get("triage_reviewed_label", "triage-reviewed")
+    config.triage_failed_label = review_section.get("triage_failed_label", "triage-failed")
     config.triage_review_threshold = review_section.get("triage_review_threshold", 0)
     config.triage_review_on_failure = review_section.get("triage_review_on_failure", True)
     config.max_rework_cycles = review_section.get("max_rework_cycles", 2)
@@ -889,6 +890,7 @@ class Config:
     triage_review_agent: Optional[str] = None  # Agent that does batch reviews (e.g., "agent:triage")
     triage_review_label: Optional[str] = None  # Label for PRs awaiting triage review (uses code_reviewed_label if not set)
     triage_reviewed_label: Optional[str] = None  # Label after triage review (e.g., "triage-reviewed")
+    triage_failed_label: Optional[str] = None  # Label when triage fails (e.g., "triage-failed")
     triage_review_threshold: int = 0  # Trigger triage review after N PRs (0 = manual only)
     triage_review_on_failure: bool = True  # Trigger triage to investigate when sessions fail
 

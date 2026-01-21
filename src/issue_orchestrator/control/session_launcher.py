@@ -45,6 +45,9 @@ from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
 from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
+from .triage_manifest import TriageManifest
+from .triage_manifest_builder import TriageManifestBuilder
+from .triage_downloader import TriageDownloader
 from ..ports import (
     EventSink,
     TraceEvent,
@@ -391,6 +394,66 @@ class SessionLauncher:
             self._claim_manager.release_claim(issue_number, claim.lease_id)
             logger.info(issue_log(issue_number, "Released claim: lease_id=%s"), claim.lease_id)
 
+    def _is_triage_session(self, agent_type: str | None) -> bool:
+        """Check if this agent type is the triage review agent."""
+        return bool(
+            self.config.triage_review_agent
+            and agent_type == self.config.triage_review_agent
+        )
+
+    def _prepare_triage_manifest(
+        self,
+        worktree_path: Path,
+        run_dir: Path,
+    ) -> TriageManifest | None:
+        """Build and download triage manifest for a triage session.
+
+        Creates a manifest listing PRs that need triage review, downloads
+        their diffs and metadata to the session directory.
+
+        Args:
+            worktree_path: Path to the worktree
+            run_dir: Path to the session run directory
+
+        Returns:
+            The populated manifest, or None if no PRs need triage
+        """
+        # Build manifest with PRs needing triage
+        builder = TriageManifestBuilder(
+            repository_host=self.repository_host,
+            code_reviewed_label=self.config.code_reviewed_label or "code-reviewed",
+            triage_reviewed_label=self.config.triage_reviewed_label or "triage-reviewed",
+            triage_failed_label=self.config.triage_failed_label or "triage-failed",
+        )
+
+        # Data goes in session run directory
+        data_dir = f".issue-orchestrator/sessions/{run_dir.name}/triage-data"
+        manifest = builder.build(data_dir)
+
+        if not manifest.prs:
+            logger.info("[triage] No PRs need triage review")
+            return None
+
+        # Download diffs and metadata
+        downloader = TriageDownloader(
+            repository_host=self.repository_host,
+            command_runner=self._command_runner,
+            worktree_path=worktree_path,
+        )
+        manifest = downloader.download(manifest)
+
+        # Write manifest to session directory
+        manifest_path = worktree_path / data_dir / "manifest.json"
+        manifest.write(manifest_path)
+
+        logger.info(
+            "[triage] Prepared manifest with %d PRs: %s",
+            len(manifest.prs),
+            manifest_path,
+        )
+
+        return manifest
+
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,
         issue: "IssueProtocol",
@@ -517,6 +580,14 @@ class SessionLauncher:
             "session_key": session_key.stable_id(),
             "agent": issue.agent_type,
         })
+
+        # For triage sessions, prepare manifest with PRs to review
+        triage_manifest: TriageManifest | None = None
+        if self._is_triage_session(issue.agent_type):
+            triage_manifest = self._prepare_triage_manifest(worktree_path, run.run_dir)
+            if triage_manifest:
+                # Store manifest path in session for completion handling
+                ctx.update_manifest({"triage_manifest": str(run.run_dir / "triage-data" / "manifest.json")})
 
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
