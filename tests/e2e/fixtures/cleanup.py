@@ -257,7 +257,8 @@ def cleanup_e2e_labels(repo: str, prefixes: tuple[str, ...]) -> int:
             name = label_data.get("name", "")
             if any(name.startswith(prefix) for prefix in prefixes):
                 try:
-                    adapter._client.delete_label(name)
+                    # noqa: SLF001 - E2E test infrastructure needs direct label cleanup
+                    adapter._client.delete_label(name)  # noqa: SLF001
                     deleted += 1
                     logger.debug("[E2E CLEANUP] Deleted label: %s", name)
                 except Exception:

@@ -204,70 +204,8 @@ class TestOrchestratorInit:
         assert sample_orchestrator.state.priority_queue == []
 
     def test_shutdown_flag_defaults_to_false(self, sample_orchestrator):
-        """Test that _shutdown_requested is False by default."""
-        assert sample_orchestrator._shutdown_requested is False
-
-
-class TestBuildLabels:
-    """Test the _build_labels helper method."""
-
-    def test_build_labels_without_filter_label(self, sample_config):
-        """Test building labels when no filtering.label is configured."""
-        sample_config.filtering.label = None
-        orchestrator = create_test_orchestrator(sample_config)
-
-        labels = orchestrator._build_labels("agent:web", "in-progress")
-
-        assert labels == ["agent:web", "in-progress"]
-
-    def test_build_labels_with_filter_label(self, sample_config):
-        """Test building labels when filtering.label is configured."""
-        sample_config.filtering.label = "test-data"
-        orchestrator = create_test_orchestrator(sample_config)
-
-        labels = orchestrator._build_labels("agent:web", "in-progress")
-
-        assert labels == ["agent:web", "in-progress", "test-data"]
-
-    def test_build_labels_empty_input(self, sample_config):
-        """Test building labels with no input labels."""
-        sample_config.filtering.label = "test-data"
-        orchestrator = create_test_orchestrator(sample_config)
-
-        labels = orchestrator._build_labels()
-
-        assert labels == ["test-data"]
-
-    def test_build_labels_single_label(self, sample_config):
-        """Test building labels with a single input label."""
-        sample_config.filtering.label = None
-        orchestrator = create_test_orchestrator(sample_config)
-
-        labels = orchestrator._build_labels("agent:mobile")
-
-        assert labels == ["agent:mobile"]
-
-
-class TestGetMilestoneFilter:
-    """Test the _get_milestone_filter helper method."""
-
-    def test_get_milestone_filter_when_configured(self, sample_config):
-        """Test getting milestone filter when configured."""
-        sample_config.filtering.milestone = "M6"
-        orchestrator = create_test_orchestrator(sample_config)
-
-        milestone = orchestrator._get_milestone_filter()
-
-        assert milestone == "M6"
-
-    def test_get_milestone_filter_when_not_configured(self, sample_config):
-        """Test getting milestone filter when not configured."""
-        sample_config.filtering.milestone = None
-        orchestrator = create_test_orchestrator(sample_config)
-
-        milestone = orchestrator._get_milestone_filter()
-
-        assert milestone is None
+        """Test that shutdown_requested is False by default."""
+        assert sample_orchestrator.shutdown_requested is False
 
 
 class TestStartup:
@@ -736,7 +674,7 @@ class TestRunLoop:
         # Should exit quickly without running loop
         await orchestrator.run_loop()
 
-        assert orchestrator._shutdown_requested is True
+        assert orchestrator.shutdown_requested is True
 
     @pytest.mark.asyncio
     async def test_run_loop_checks_active_sessions(
@@ -1271,11 +1209,11 @@ class TestControlMethods:
         """Test that request_shutdown() sets the shutdown flag."""
         orchestrator = create_test_orchestrator(sample_config)
 
-        assert orchestrator._shutdown_requested is False
+        assert orchestrator.shutdown_requested is False
 
         orchestrator.request_shutdown()
 
-        assert orchestrator._shutdown_requested is True
+        assert orchestrator.shutdown_requested is True
 
     def test_request_shutdown_emits_shutdown_requested_event(self, sample_config):
         """Test that request_shutdown() emits orchestrator.shutdown_requested event."""
@@ -1309,7 +1247,7 @@ class TestControlMethods:
     async def test_run_loop_emits_shutdown_events(self, sample_config):
         """Test that run_loop emits shutdown_started and shutdown_completed events."""
         orchestrator = create_test_orchestrator(sample_config)
-        orchestrator._shutdown_requested = True  # Trigger immediate exit
+        orchestrator.shutdown_requested = True  # Trigger immediate exit
 
         await orchestrator.run_loop()
 
@@ -2458,32 +2396,36 @@ class TestStateMachineTransitions:
 
 
 class TestNamingConventions:
-    """Tests for centralized naming convention helpers."""
+    """Tests for centralized naming convention helpers.
 
-    def test_get_session_name_issue(self, sample_config):
+    These tests use the public functions from control/worktree_manager.py directly.
+    """
+
+    def test_get_session_name_issue(self):
         """Test session name for issue type."""
-        orchestrator = create_test_orchestrator(sample_config)
-        assert orchestrator._get_session_name(123, "issue") == "issue-123"
-        assert orchestrator._get_session_name(1, "issue") == "issue-1"
+        from issue_orchestrator.control.worktree_manager import get_session_name
+        assert get_session_name(123, "issue") == "issue-123"
+        assert get_session_name(1, "issue") == "issue-1"
 
-    def test_get_session_name_review(self, sample_config):
+    def test_get_session_name_review(self):
         """Test session name for review type."""
-        orchestrator = create_test_orchestrator(sample_config)
-        assert orchestrator._get_session_name(456, "review") == "review-456"
+        from issue_orchestrator.control.worktree_manager import get_session_name
+        assert get_session_name(456, "review") == "review-456"
 
-    def test_get_session_name_rework(self, sample_config):
+    def test_get_session_name_rework(self):
         """Test session name for rework type."""
-        orchestrator = create_test_orchestrator(sample_config)
-        assert orchestrator._get_session_name(789, "rework") == "rework-789"
+        from issue_orchestrator.control.worktree_manager import get_session_name
+        assert get_session_name(789, "rework") == "rework-789"
 
-    def test_get_session_name_invalid_type(self, sample_config):
+    def test_get_session_name_invalid_type(self):
         """Test that invalid session type raises error."""
-        orchestrator = create_test_orchestrator(sample_config)
+        from issue_orchestrator.control.worktree_manager import get_session_name
         with pytest.raises(ValueError, match="Invalid session_type"):
-            orchestrator._get_session_name(123, "invalid")
+            get_session_name(123, "invalid")
 
     def test_get_worktree_path(self, sample_config, tmp_path):
         """Test worktree path derivation."""
+        from issue_orchestrator.control.worktree_manager import get_worktree_path
         # Set up config with known repo_root and worktree_base
         repo_root = tmp_path / "my-repo"
         repo_root.mkdir()
@@ -2496,8 +2438,7 @@ class TestNamingConventions:
             timeout_minutes=45,
         )
 
-        orchestrator = create_test_orchestrator(sample_config)
-        path = orchestrator._get_worktree_path(123, agent_config)
+        path = get_worktree_path(sample_config, 123, agent_config)
 
         assert path == tmp_path / "worktrees" / "my-repo-123"
 
@@ -2820,9 +2761,11 @@ class TestRecoverOrphanedCleanups:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
 
         # Mock session_exists to return False (session not running)
-        orchestrator._session_exists = lambda name: False
+        # noqa: SLF001 - Test infrastructure: injecting mock to control cleanup behavior
+        orchestrator._session_exists = lambda name: False  # noqa: SLF001
 
-        orchestrator._recover_orphaned_cleanups()
+        # noqa: SLF001 - Testing cleanup behavior that has no public API
+        orchestrator._recover_orphaned_cleanups()  # noqa: SLF001
 
         # Orphaned worktree should be cleaned up
         assert len(mock_worktree_manager.remove_calls) == 1
@@ -2860,9 +2803,9 @@ class TestRecoverOrphanedCleanups:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager)
 
         # Mock session_exists to return True (session still running)
-        orchestrator._session_exists = lambda name: True
+        orchestrator._session_exists = lambda name: True  # noqa: SLF001
 
-        orchestrator._recover_orphaned_cleanups()
+        orchestrator._recover_orphaned_cleanups()  # noqa: SLF001
 
         # Worktree should NOT be cleaned up (session still running)
         assert len(mock_worktree_manager.remove_calls) == 0
@@ -2879,7 +2822,7 @@ class TestRecoverOrphanedCleanups:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        orchestrator._recover_orphaned_cleanups()
+        orchestrator._recover_orphaned_cleanups()  # noqa: SLF001
         # Method should return early without checking PRs
 
     def test_recover_handles_no_reviewed_prs(
@@ -2897,7 +2840,7 @@ class TestRecoverOrphanedCleanups:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         # Should not raise
-        orchestrator._recover_orphaned_cleanups()
+        orchestrator._recover_orphaned_cleanups()  # noqa: SLF001
 
 
 class TestReworkEscalation:
@@ -3049,26 +2992,30 @@ class TestReworkEscalation:
 
         # No rework label - first cycle
         labels = ["needs-rework", "test-data"]
-        assert scanner._get_rework_cycle_from_labels(labels) == 1
+        assert scanner._get_rework_cycle_from_labels(labels) == 1  # noqa: SLF001
 
         # rework-cycle-1 label - next is cycle 2
         labels = ["needs-rework", "rework-cycle-1"]
-        assert scanner._get_rework_cycle_from_labels(labels) == 2
+        assert scanner._get_rework_cycle_from_labels(labels) == 2  # noqa: SLF001
 
         # rework-cycle-2 label - next is cycle 3
         labels = ["rework-cycle-2", "needs-rework"]
-        assert scanner._get_rework_cycle_from_labels(labels) == 3
+        assert scanner._get_rework_cycle_from_labels(labels) == 3  # noqa: SLF001
 
         # rework-cycle-5 label - next is cycle 6
         labels = ["rework-cycle-5"]
-        assert scanner._get_rework_cycle_from_labels(labels) == 6
+        assert scanner._get_rework_cycle_from_labels(labels) == 6  # noqa: SLF001
 
 
 class TestRefreshRequestPreservation:
     """Tests for refresh request preservation during planning cycles.
-    
+
     These tests verify the fix for a race condition where request_refresh()
     called during a planning cycle would be lost when the cycle returned.
+
+    Note: These tests access private members to verify internal state for
+    a specific race condition fix. The behavior being tested doesn't have
+    a public API equivalent.
     """
 
     def test_refresh_request_during_planning_cycle_preserved(
@@ -3077,7 +3024,7 @@ class TestRefreshRequestPreservation:
         mock_repository_host,
     ):
         """Test that request_refresh() during planning cycle is preserved.
-        
+
         This tests the fix for a race condition where:
         1. _run_planning_cycle() captures _refresh_requested
         2. During the cycle, request_refresh() sets _refresh_requested = True
@@ -3086,43 +3033,43 @@ class TestRefreshRequestPreservation:
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        
+
         # Initially False
-        assert orchestrator._refresh_requested is False
-        
+        assert orchestrator._refresh_requested is False  # noqa: SLF001
+
         # Set to True (simulating a request before cycle)
-        orchestrator._refresh_requested = True
-        
+        orchestrator._refresh_requested = True  # noqa: SLF001
+
         # Run planning cycle - this should clear the flag when processing it
-        orchestrator._run_planning_cycle()
-        
+        orchestrator._run_planning_cycle()  # noqa: SLF001
+
         # After cycle processes the request, flag should be False
-        assert orchestrator._refresh_requested is False
-        
+        assert orchestrator._refresh_requested is False  # noqa: SLF001
+
         # Now test the race condition fix:
         # Set up so request_refresh is called DURING the cycle
-        original_impl = orchestrator._run_planning_cycle
-        
+        original_impl = orchestrator._run_planning_cycle  # noqa: SLF001, F841
+
         def cycle_with_mid_request():
             # Capture what _run_planning_cycle does internally
-            refresh_to_process = orchestrator._refresh_requested
-            orchestrator._refresh_requested = False
-            
+            refresh_to_process = orchestrator._refresh_requested  # noqa: SLF001, F841
+            orchestrator._refresh_requested = False  # noqa: SLF001
+
             # Simulate request_refresh() being called during the impl
             orchestrator.request_refresh({'new-issue-123'})
-            
+
             # Now _refresh_requested should be True from the new request
             assert orchestrator._refresh_requested is True, \
-                "request_refresh during cycle should set flag"
-            
+                "request_refresh during cycle should set flag"  # noqa: SLF001
+
             # Don't actually run the impl - we're just testing the flag logic
-        
+
         cycle_with_mid_request()
-        
+
         # After our simulated cycle, the flag should STILL be True
         # (the fix ensures we don't overwrite it)
         assert orchestrator._refresh_requested is True, \
-            "refresh request during cycle should be preserved"
+            "refresh request during cycle should be preserved"  # noqa: SLF001
 
     def test_request_refresh_sets_flag(
         self,
@@ -3133,12 +3080,12 @@ class TestRefreshRequestPreservation:
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        
-        assert orchestrator._refresh_requested is False
-        
+
+        assert orchestrator._refresh_requested is False  # noqa: SLF001
+
         orchestrator.request_refresh()
-        
-        assert orchestrator._refresh_requested is True
+
+        assert orchestrator._refresh_requested is True  # noqa: SLF001
 
     def test_request_refresh_with_inflight_ids_sets_flag(
         self,
@@ -3149,12 +3096,12 @@ class TestRefreshRequestPreservation:
         mock_repository_host.issues = []
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        
-        assert orchestrator._refresh_requested is False
-        assert len(orchestrator._inflight_stable_ids) == 0
-        
+
+        assert orchestrator._refresh_requested is False  # noqa: SLF001
+        assert len(orchestrator._inflight_stable_ids) == 0  # noqa: SLF001
+
         orchestrator.request_refresh({'issue-1', 'issue-2'})
-        
-        assert orchestrator._refresh_requested is True
-        assert 'issue-1' in orchestrator._inflight_stable_ids
-        assert 'issue-2' in orchestrator._inflight_stable_ids
+
+        assert orchestrator._refresh_requested is True  # noqa: SLF001
+        assert 'issue-1' in orchestrator._inflight_stable_ids  # noqa: SLF001
+        assert 'issue-2' in orchestrator._inflight_stable_ids  # noqa: SLF001

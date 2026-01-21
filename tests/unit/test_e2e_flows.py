@@ -60,7 +60,8 @@ def test_flow_update_issue_calls_inflight_update(monkeypatch):
 
     # Mock watcher with snapshot provider URL containing port
     mock_watcher = Mock()
-    mock_watcher._snapshot_provider = Mock(url="http://localhost:19080/api/snapshot")
+    # noqa: SLF001 - Mock must match internal watcher structure for port extraction test
+    mock_watcher._snapshot_provider = Mock(url="http://localhost:19080/api/snapshot")  # noqa: SLF001
 
     issue = Mock(stable_id=lambda: "123")
     flow = flows.E2EFlow(repo="owner/repo", watcher=mock_watcher)
@@ -111,7 +112,7 @@ async def test_flow_issue_event_delegates_to_issue_watch():
     issue_watch.event = AsyncMock()
     mock_watcher = Mock()
     mock_watcher.issue.return_value = issue_watch
-    mock_watcher._snapshot_provider = Mock(url="http://localhost:19080/api/snapshot")
+    mock_watcher._snapshot_provider = Mock(url="http://localhost:19080/api/snapshot")  # noqa: SLF001
 
     flow = flows.E2EFlow(repo="owner/repo", watcher=mock_watcher)
     issue = Mock(stable_id=lambda: "123")

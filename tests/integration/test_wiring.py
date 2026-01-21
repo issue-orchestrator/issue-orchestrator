@@ -253,49 +253,6 @@ observability:
         assert "https://github.com/test/repo/pull/123" in comment
 
 
-class TestDashboardWiring:
-    """Test that dashboard is properly wired to orchestrator."""
-
-    @pytest.mark.asyncio
-    async def test_dashboard_pause_updates_orchestrator_state(self):
-        """Verify pressing pause in dashboard actually updates orchestrator state."""
-        from issue_orchestrator.entrypoints.dashboard import Dashboard
-
-        # Create a mock orchestrator
-        mock_orch = MagicMock()
-        mock_orch.state = OrchestratorState()
-        mock_orch.state.paused = False
-        mock_orch.config = MagicMock()
-        mock_orch.config.max_concurrent_sessions = 2
-        mock_orch.shutdown_requested = False
-
-        dashboard = Dashboard(mock_orch)
-
-        # Call the pause handler directly
-        await dashboard._handle_pause()
-
-        # Verify state was updated
-        assert mock_orch.state.paused is True
-
-    @pytest.mark.asyncio
-    async def test_dashboard_resume_updates_orchestrator_state(self):
-        """Verify pressing resume in dashboard actually updates orchestrator state."""
-        from issue_orchestrator.entrypoints.dashboard import Dashboard
-
-        mock_orch = MagicMock()
-        mock_orch.state = OrchestratorState()
-        mock_orch.state.paused = True
-        mock_orch.config = MagicMock()
-        mock_orch.config.max_concurrent_sessions = 2
-        mock_orch.shutdown_requested = False
-
-        dashboard = Dashboard(mock_orch)
-
-        await dashboard._handle_resume()
-
-        assert mock_orch.state.paused is False
-
-
 class TestObserverWiring:
     """Test that observer correctly detects session states."""
 

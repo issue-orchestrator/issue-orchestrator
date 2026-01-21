@@ -281,7 +281,8 @@ class TestTimingRaceConditions:
 
         # Should end up in SHUTTING_DOWN state
         assert fresh_manager.state == ShutdownState.SHUTTING_DOWN
-        assert fresh_manager._cleanup_done is True
+        # noqa: SLF001 - Verifying cleanup occurs exactly once during race
+        assert fresh_manager._cleanup_done is True  # noqa: SLF001
 
     def test_timer_vs_direct_exit_race(self, fresh_manager: ShutdownManager):
         """Simulate the race between timer-based exit and direct exit.
@@ -310,4 +311,4 @@ class TestTimingRaceConditions:
         # Both paths tried to exit, but cleanup only happened once
         # (os._exit was called, but that's mocked)
         # The important thing is no exception was raised
-        assert fresh_manager._cleanup_done is True
+        assert fresh_manager._cleanup_done is True  # noqa: SLF001

@@ -85,10 +85,11 @@ async def wait_for_issue_seen(
         if issue_view:
             return
         try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+            # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)  # noqa: SLF001
         except asyncio.TimeoutError:
             pass
-        watcher._notify.clear()
+        watcher._notify.clear()  # noqa: SLF001
     raise TimeoutError(f"Timed out waiting for issue {issue_key} to appear in snapshot")
 
 
@@ -108,10 +109,11 @@ async def wait_for_session_started(
             if "in-progress" in issue_view.labels or issue_view.pr.number is not None:
                 return
         try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+            # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)  # noqa: SLF001
         except asyncio.TimeoutError:
             pass
-        watcher._notify.clear()
+        watcher._notify.clear()  # noqa: SLF001
     raise TimeoutError(f"Timed out waiting for session start or PR for {issue_key}")
 
 
@@ -131,10 +133,11 @@ async def wait_for_issue_label_snapshot(
         if issue_view and label in issue_view.labels:
             return
         try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+            # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)  # noqa: SLF001
         except asyncio.TimeoutError:
             pass
-        watcher._notify.clear()
+        watcher._notify.clear()  # noqa: SLF001
     raise TimeoutError(f"Timed out waiting for label {label} on {issue_key}")
 
 
@@ -186,10 +189,11 @@ async def wait_for_session_completed(
                     return event
 
         try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=2.0)
+            # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
+            await asyncio.wait_for(watcher._notify.wait(), timeout=2.0)  # noqa: SLF001
         except asyncio.TimeoutError:
             pass
-        watcher._notify.clear()
+        watcher._notify.clear()  # noqa: SLF001
 
     # Build diagnostic info
     all_event_types = [e.get("type") for e in watcher.view.global_events]

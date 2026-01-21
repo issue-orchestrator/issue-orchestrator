@@ -60,6 +60,8 @@ class GitHubAdapter:
         config: Config | None = None,
         cache: GitHubCache | None = None,
         verification_service: VerificationService | None = None,
+        http_client: "GitHubHttpClient | None" = None,
+        verify_writes: bool = True,
     ):
         """Initialize the GitHub adapter.
 
@@ -69,6 +71,9 @@ class GitHubAdapter:
             cache: GitHubCache instance for caching API responses. If None, one is created.
             verification_service: VerificationService for write-verify patterns. If None, one is created.
                                   The service should be injected to preserve circuit breaker state.
+            http_client: GitHubHttpClient instance. If None, one is created.
+                         Inject for testing to avoid real API calls.
+            verify_writes: Whether to verify writes. Defaults to True.
         """
         if repo:
             self.repo = repo
@@ -81,15 +86,18 @@ class GitHubAdapter:
             configured_token=getattr(config, "github_token", None) if config else None,
             configured_env=getattr(config, "github_token_env", None) if config else None,
         )
-        self._client = GitHubHttpClient(
-            GitHubHttpConfig(
-                repo=self.repo,
-                token=token,
-                base_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
-                timeout_seconds=float(getattr(config, "github_http_timeout_seconds", 20.0)) if config else 20.0,
+        if http_client is not None:
+            self._client = http_client
+        else:
+            self._client = GitHubHttpClient(
+                GitHubHttpConfig(
+                    repo=self.repo,
+                    token=token,
+                    base_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
+                    timeout_seconds=float(getattr(config, "github_http_timeout_seconds", 20.0)) if config else 20.0,
+                )
             )
-        )
-        self._verify_writes = True
+        self._verify_writes = verify_writes
         self._verify_timeout_seconds = config.gh_write_verify_timeout_seconds if config else 20
         self._verify_initial_delay_ms = config.gh_write_verify_initial_delay_ms if config else 250
         self._verify_max_delay_ms = config.gh_write_verify_max_delay_ms if config else 2000

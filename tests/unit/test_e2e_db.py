@@ -290,7 +290,8 @@ class TestE2EDB:
 
         # Create and interrupt a run
         run1 = db.start_run("/test/repo", "test-orch", ["tests/e2e"])
-        with db._connect() as conn:
+        # noqa: SLF001 - Direct DB access needed to simulate interrupted state
+        with db._connect() as conn:  # noqa: SLF001
             conn.execute(
                 "UPDATE e2e_runs SET status = 'interrupted' WHERE id = ?",
                 (run1,),
@@ -305,7 +306,7 @@ class TestE2EDB:
         """Test resuming an interrupted run."""
         # Create and interrupt a run
         run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], worker_pid=11111)
-        with db._connect() as conn:
+        with db._connect() as conn:  # noqa: SLF001
             conn.execute(
                 "UPDATE e2e_runs SET status = 'interrupted' WHERE id = ?",
                 (run_id,),

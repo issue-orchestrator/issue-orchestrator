@@ -87,6 +87,12 @@ def get_orchestrator():
     return _orchestrator
 
 
+def set_orchestrator(orchestrator) -> None:
+    """Set the orchestrator instance. Used by tests and application startup."""
+    global _orchestrator
+    _orchestrator = orchestrator
+
+
 def _collect_worktree_bases(config) -> list[Path]:
     bases: list[Path] = []
     if config.worktree_base:
@@ -116,6 +122,12 @@ def trigger_server_shutdown():
     if _server:
         _server.should_exit = True
         _server.force_exit = True  # Don't wait for graceful shutdown
+
+
+def set_server(server) -> None:
+    """Set the server instance. Used by tests and application startup."""
+    global _server
+    _server = server
 
 
 # Template directory (templates are in parent package, not entrypoints)

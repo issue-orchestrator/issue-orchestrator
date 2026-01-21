@@ -209,8 +209,9 @@ def web_server(mock_orchestrator: MockOrchestratorForWeb):
     port = find_free_port()
 
     # Set the global orchestrator reference (used by endpoints like /api/pause)
-    original_orchestrator = web_module._orchestrator
-    web_module._orchestrator = mock_orchestrator
+    # noqa: SLF001 - Test fixture setup needs to inject mock orchestrator
+    original_orchestrator = web_module._orchestrator  # noqa: SLF001
+    web_module._orchestrator = mock_orchestrator  # noqa: SLF001
 
     # Start server
     server = UvicornTestServer(app, "127.0.0.1", port)
@@ -224,7 +225,7 @@ def web_server(mock_orchestrator: MockOrchestratorForWeb):
 
     # Cleanup
     server.stop()
-    web_module._orchestrator = original_orchestrator
+    web_module._orchestrator = original_orchestrator  # noqa: SLF001
 
 
 # Note: pytest-playwright provides --headed option automatically

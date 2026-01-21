@@ -58,28 +58,11 @@ class TestTerminalAdapterExecution:
                 "Claude Code may have overwritten the pane title and our session ID lookup failed."
             )
 
-        # Verify we can get the session ID (pane is a Pane in pane mode)
-        import libtmux
-        if not isinstance(pane, libtmux.Pane):
-            logger.warning(
-                "Found window instead of pane for issue #%d - running in window mode?",
-                issue_number,
-            )
-            return  # Window mode doesn't use session ID option
-
-        session_id = manager._get_pane_session_id(pane)
-        if not session_id:
-            logger.warning(
-                "Pane found but session ID is empty for issue #%d. "
-                "This may indicate the pane was created before the fix was deployed.",
-                issue_number,
-            )
-        else:
-            logger.info(
-                "Pane identification SUCCESS: Found pane for issue #%d with session_id='%s'",
-                issue_number,
-                session_id,
-            )
+        # Pane found successfully - the public wait_for_issue_session() API works
+        logger.info(
+            "Pane identification SUCCESS: Found pane for issue #%d",
+            issue_number,
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)

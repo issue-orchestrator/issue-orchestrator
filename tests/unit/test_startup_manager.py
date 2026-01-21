@@ -341,7 +341,8 @@ class TestStartupManagerResumePartialWork:
 
         # Mock launch_session_fn to return a session
         mock_session = MagicMock()
-        startup_manager._launch_session = lambda i: mock_session
+        # noqa: SLF001 - Injecting mock for session launch in test
+        startup_manager._launch_session = lambda i: mock_session  # noqa: SLF001
 
         await startup_manager.run_startup(sample_state)
 

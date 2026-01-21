@@ -431,7 +431,8 @@ class TestOrchestratorReconciliationCatch:
         except ReconciliationRequired as rr:
             paused = True
             # Orchestrator would apply pause label here
-            fresh_reader.set_labels(rr.entity_id, fresh_reader._labels_by_issue.get(rr.entity_id, []) + [get_pause_label()])
+            # noqa: SLF001 - Test mock internal state for simulating orchestrator behavior
+            fresh_reader.set_labels(rr.entity_id, fresh_reader._labels_by_issue.get(rr.entity_id, []) + [get_pause_label()])  # noqa: SLF001
             # Emit pause event
             event_sink.publish(TraceEvent(
                 EventName.ISSUE_PAUSED_RECONCILE,
@@ -441,7 +442,8 @@ class TestOrchestratorReconciliationCatch:
         assert paused, "ReconciliationRequired should have been raised"
 
         # Verify pause label was applied
-        assert get_pause_label() in fresh_reader._labels_by_issue.get(42, [])
+        # noqa: SLF001 - Test mock internal state for verification
+        assert get_pause_label() in fresh_reader._labels_by_issue.get(42, [])  # noqa: SLF001
 
         # Verify pause event was emitted
         pause_events = [

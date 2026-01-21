@@ -27,62 +27,21 @@ def git_error(*_args, **kwargs) -> GitError:
 
 
 @pytest.fixture
-def git_wc():
-    """Create a GitWorkingCopy instance."""
-    return GitWorkingCopy()
+def mock_git():
+    """Create a mock Git client for injection."""
+    return MagicMock()
+
+
+@pytest.fixture
+def git_wc(mock_git):
+    """Create a GitWorkingCopy instance with injected mock Git client."""
+    return GitWorkingCopy(git=mock_git)
 
 
 @pytest.fixture
 def worktree_path(tmp_path):
     """Create a temporary worktree path."""
     return tmp_path / "worktree"
-
-
-class TestRunGit:
-    """Tests for the _run_git internal helper."""
-
-    def test_run_git_success(self, git_wc, worktree_path):
-        """Test successful git command execution."""
-        with patch.object(git_wc._git, "run") as mock_run:
-            mock_run.return_value = git_result(stdout="output")
-
-            result = git_wc._run_git(worktree_path, ["status"])
-
-            mock_run.assert_called_once_with(
-                worktree_path,
-                ["status"],
-                check=True,
-                timeout_s=None,
-            )
-            assert result.stdout == "output"
-
-    def test_run_git_with_check_false(self, git_wc, worktree_path):
-        """Test git command with check=False."""
-        with patch.object(git_wc._git, "run") as mock_run:
-            mock_run.return_value = git_result(returncode=1)
-
-            git_wc._run_git(worktree_path, ["status"], check=False)
-
-            mock_run.assert_called_once_with(
-                worktree_path,
-                ["status"],
-                check=False,
-                timeout_s=None,
-            )
-
-    def test_run_git_with_timeout(self, git_wc, worktree_path):
-        """Test git command with a timeout override."""
-        with patch.object(git_wc._git, "run") as mock_run:
-            mock_run.return_value = git_result()
-
-            git_wc._run_git(worktree_path, ["status"], timeout_s=5)
-
-            mock_run.assert_called_once_with(
-                worktree_path,
-                ["status"],
-                check=True,
-                timeout_s=5,
-            )
 
 
 class TestGetCurrentBranch:
@@ -621,82 +580,66 @@ class TestGetLastCommitDate:
 class TestRebaseOnBranch:
     """Tests for rebase_on_branch method."""
 
-    def test_rebase_success(self, git_wc, worktree_path):
+    def test_rebase_success(self, git_wc, mock_git, worktree_path):
         """Test successful rebase."""
-        with patch.object(git_wc._git, "rebase") as mock_rebase:
-            mock_rebase.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_git.rebase.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-            result = git_wc.rebase_on_branch(worktree_path)
+        result = git_wc.rebase_on_branch(worktree_path)
 
-            assert result.success is True
-            assert "origin/main" in result.message
-            assert result.conflicts is None
-            assert result.aborted is False
+        assert result.success is True
+        assert "origin/main" in result.message
+        assert result.conflicts is None
+        assert result.aborted is False
 
-    def test_rebase_custom_target(self, git_wc, worktree_path):
+    def test_rebase_custom_target(self, git_wc, mock_git, worktree_path):
         """Test rebase with custom target."""
-        with patch.object(git_wc._git, "rebase") as mock_rebase:
-            mock_rebase.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_git.rebase.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-            result = git_wc.rebase_on_branch(worktree_path, target="origin/develop")
+        result = git_wc.rebase_on_branch(worktree_path, target="origin/develop")
 
-            assert result.success is True
-            assert "origin/develop" in result.message
-            mock_rebase.assert_called_once_with(worktree_path, "origin/develop")
+        assert result.success is True
+        assert "origin/develop" in result.message
+        mock_git.rebase.assert_called_once_with(worktree_path, "origin/develop")
 
-    def test_rebase_with_conflicts(self, git_wc, worktree_path):
+    def test_rebase_with_conflicts(self, git_wc, mock_git, worktree_path):
         """Test rebase failure with conflicts."""
-        with (
-            patch.object(git_wc._git, "rebase") as mock_rebase,
-            patch.object(git_wc, "_run_git") as mock_run,
-            patch.object(git_wc._git, "rebase_abort") as mock_abort,
-        ):
-            mock_rebase.side_effect = git_error(
-                1, "git", stderr="CONFLICT (content): Merge conflict"
-            )
-            mock_run.return_value = MagicMock(
-                returncode=0,
-                stdout="UU conflicted_file.py\nUU another_conflict.txt\n",
-                stderr="",
-            )
-            mock_abort.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_git.rebase.side_effect = git_error(
+            1, "git", stderr="CONFLICT (content): Merge conflict"
+        )
+        mock_git.run.return_value = MagicMock(
+            returncode=0,
+            stdout="UU conflicted_file.py\nUU another_conflict.txt\n",
+            stderr="",
+        )
+        mock_git.rebase_abort.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-            result = git_wc.rebase_on_branch(worktree_path)
+        result = git_wc.rebase_on_branch(worktree_path)
 
-            assert result.success is False
-            assert "conflicts" in result.message.lower()
-            assert result.conflicts == ["conflicted_file.py", "another_conflict.txt"]
-            assert result.aborted is True
+        assert result.success is False
+        assert "conflicts" in result.message.lower()
+        assert result.conflicts == ["conflicted_file.py", "another_conflict.txt"]
+        assert result.aborted is True
 
-    def test_rebase_abort_fails(self, git_wc, worktree_path):
+    def test_rebase_abort_fails(self, git_wc, mock_git, worktree_path):
         """Test rebase failure where abort also fails."""
-        with (
-            patch.object(git_wc._git, "rebase") as mock_rebase,
-            patch.object(git_wc, "_run_git") as mock_run,
-            patch.object(git_wc._git, "rebase_abort") as mock_abort,
-        ):
-            mock_rebase.side_effect = git_error(1, "git", stderr="CONFLICT")
-            mock_run.return_value = MagicMock(returncode=0, stdout="UU file.py\n", stderr="")
-            mock_abort.side_effect = git_error(1, "git", stderr="abort failed")
+        mock_git.rebase.side_effect = git_error(1, "git", stderr="CONFLICT")
+        mock_git.run.return_value = MagicMock(returncode=0, stdout="UU file.py\n", stderr="")
+        mock_git.rebase_abort.side_effect = git_error(1, "git", stderr="abort failed")
 
-            result = git_wc.rebase_on_branch(worktree_path)
+        result = git_wc.rebase_on_branch(worktree_path)
 
-            assert result.success is False
-            assert result.aborted is False
+        assert result.success is False
+        assert result.aborted is False
 
-    def test_rebase_error_no_conflicts(self, git_wc, worktree_path):
+    def test_rebase_error_no_conflicts(self, git_wc, mock_git, worktree_path):
         """Test rebase failure without conflicts."""
-        with (
-            patch.object(git_wc._git, "rebase") as mock_rebase,
-            patch.object(git_wc, "_run_git") as mock_run,
-        ):
-            mock_rebase.side_effect = git_error(1, "git", stderr="fatal: some error")
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_git.rebase.side_effect = git_error(1, "git", stderr="fatal: some error")
+        mock_git.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-            result = git_wc.rebase_on_branch(worktree_path)
+        result = git_wc.rebase_on_branch(worktree_path)
 
-            assert result.success is False
-            assert result.conflicts is None or result.conflicts == []
+        assert result.success is False
+        assert result.conflicts is None or result.conflicts == []
 
 
 class TestPush:

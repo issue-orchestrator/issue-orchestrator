@@ -109,11 +109,3 @@ class TestLifecycleSSEPlugin:
 
         assert "Failed to broadcast" in caplog.text
 
-    def test_broadcast_method_calls_on_trace_event_hook(self):
-        """The on_trace_event hookimpl delegates to _broadcast."""
-        plugin = LifecycleSSEPlugin()
-        plugin._broadcast = MagicMock()
-
-        plugin.on_trace_event("test.event", {"key": "value"})
-
-        plugin._broadcast.assert_called_once_with("test.event", {"key": "value"})

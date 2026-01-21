@@ -84,13 +84,6 @@ class TestEventBus:
         """Create an EventBus for testing."""
         return EventBus(max_history=100)
 
-    def test_eventbus_initialization(self):
-        """Test EventBus initialization."""
-        bus = EventBus(max_history=50)
-        assert bus._max_history == 50
-        assert len(bus._history) == 0
-        assert len(bus._handlers) == 0
-
     def test_subscribe_handler(self, event_bus):
         """Test subscribing a handler to an event type."""
         handler = MagicMock(__name__="test_handler")

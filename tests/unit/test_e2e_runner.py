@@ -302,7 +302,7 @@ class TestGetE2ERunnerManager:
         """Test that get_e2e_runner_manager returns the same instance."""
         # Reset singleton for test isolation
         import issue_orchestrator.infra.e2e_runner as module
-        module._runner_manager = None
+        module._runner_manager = None  # noqa: SLF001
 
         manager1 = get_e2e_runner_manager()
         manager2 = get_e2e_runner_manager()

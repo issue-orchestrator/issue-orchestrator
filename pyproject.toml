@@ -212,6 +212,5 @@ target-version = "py311"
 select = ["C901", "PLR0912", "SLF001"]
 
 [tool.ruff.lint.per-file-ignores]
-# Tests often need to access private members for setup, state verification, or testing specific behaviors.
-# Complexity rules are enforced for production code clarity, not test infrastructure.
-"tests/**/*.py" = ["SLF001", "C901", "PLR0912"]
+# Complexity rules (C901, PLR0912) are enforced for production code clarity, not test infrastructure.
+"tests/**/*.py" = ["C901", "PLR0912"]
