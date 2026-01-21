@@ -584,6 +584,18 @@ def build_test_orchestrator_deps(
         config=lease_config,
     )
 
+    # Create async completion components for testing
+    from issue_orchestrator.control.completion_observer import CompletionObserver
+    from issue_orchestrator.control.publish_executor import PublishJobExecutor, ExecutorConfig
+
+    completion_observer = CompletionObserver(session_output=session_output)
+    executor_config = ExecutorConfig(max_workers=1)
+    publish_executor = PublishJobExecutor(
+        completion_processor=completion_processor,
+        events=events,
+        config=executor_config,
+    )
+
     return OrchestratorDeps(
         events=events,
         runner=runner,
@@ -609,6 +621,8 @@ def build_test_orchestrator_deps(
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
+        completion_observer=completion_observer,
+        publish_executor=publish_executor,
     )
 
 

@@ -40,6 +40,7 @@ from ..control.session_launcher import (
     SessionLauncher,
     handle_session_completion as _handle_session_completion,
     process_active_sessions as _process_active_sessions,
+    observe_active_sessions as _observe_active_sessions,
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_rework_session as _launch_rework_session,
     launch_triage_session as _launch_triage_session,
@@ -52,6 +53,7 @@ from ..control.session_launcher import (
     orchestrator_launch_session as _launch_session,
     get_session_machine as _sl_get_session_machine,
 )
+from ..control.publish_executor import create_publish_job
 from ..control.cleanup_manager import CleanupManager
 from ..control.completion_handler import (
     CompletionHandler,
@@ -294,6 +296,101 @@ class Orchestrator:
         # Check lease renewals for active sessions
         self._check_lease_renewals()
 
+    def _observe_active_sessions_async(self) -> None:
+        """Observe active sessions and collect completion facts (async flow).
+
+        This is the new async-aware version that:
+        1. Observes sessions using CompletionObserver (fast, no I/O)
+        2. Collects ObservedCompletion facts for the planner
+        3. The planner will plan label updates and create publish jobs
+        4. Jobs are submitted to PublishJobExecutor for background execution
+        """
+        _observe_active_sessions(
+            self.state,
+            self.observer,
+            self.deps.completion_observer,
+            self._kill_session,
+            claim_manager=self.deps.claim_manager,
+            events=self.deps.events,
+        )
+        # Check lease renewals for active sessions
+        self._check_lease_renewals()
+
+    def _submit_publish_jobs(self) -> None:
+        """Submit publish jobs for observed completions.
+
+        Called after planning to submit jobs to the background executor.
+        """
+        # Process observed completions and create jobs
+        for observed in list(self.state.observed_completions):
+            if observed.needs_publish:
+                job = create_publish_job(observed, run_validation=False)
+                submitted = self.deps.publish_executor.submit(job)
+                if submitted:
+                    self.state.pending_publish_jobs[job.job_id] = job
+                    logger.info(
+                        "[ASYNC] Submitted publish job: job_id=%s issue=%d",
+                        job.job_id,
+                        observed.issue_number,
+                    )
+
+        # Clear observed completions after processing
+        self.state.observed_completions = []
+
+    def _poll_job_results(self) -> None:
+        """Poll for completed publish jobs and handle results.
+
+        Called at the start of each tick to check for background job completion.
+        """
+        results = self.deps.publish_executor.poll_results()
+
+        for result in results:
+            logger.info(
+                "[ASYNC] Job completed: job_id=%s issue=%d success=%s pr_url=%s",
+                result.job_id,
+                result.issue_number,
+                result.success,
+                result.pr_url,
+            )
+
+            # Remove from pending
+            self.state.pending_publish_jobs.pop(result.job_id, None)
+
+            # Handle job result - queue review if successful
+            if result.success and result.pr_url and result.pr_number:
+                from ..domain.models import DiscoveredReview
+                # Queue for code review
+                # We need to look up the branch_name from the job or session
+                # For now, we'll construct it from the issue number
+                branch_name = f"issue-{result.issue_number}"  # Default pattern
+                self.state.discovered_reviews.append(DiscoveredReview(
+                    result.issue_number,
+                    result.pr_number,
+                    result.pr_url,
+                    branch_name,
+                    agent_label=None,  # TODO: track agent label in job
+                ))
+                self.state.completed_today.append(result.issue_number)
+            elif not result.success:
+                # Track failure
+                from ..domain.models import DiscoveredFailure
+                self.state.discovered_failures.append(DiscoveredFailure(
+                    result.issue_number,
+                    f"Issue #{result.issue_number}",
+                    "publish_failed",
+                ))
+                self.state.failed_this_cycle.add(result.issue_number)
+
+    def start_publish_executor(self) -> None:
+        """Start the background publish executor. Call during orchestrator startup."""
+        self.deps.publish_executor.start()
+        logger.info("[ASYNC] Publish executor started")
+
+    def shutdown_publish_executor(self, wait: bool = True, timeout: float | None = None) -> None:
+        """Shutdown the background publish executor. Call during orchestrator shutdown."""
+        self.deps.publish_executor.shutdown(wait=wait, timeout=timeout)
+        logger.info("[ASYNC] Publish executor shutdown")
+
     def _check_lease_renewals(self) -> None:
         """Check and renew leases for active sessions.
 
@@ -441,6 +538,11 @@ class Orchestrator:
 
         # Clean up E2E runner if active
         self._cleanup_e2e_runner()
+
+        # Shutdown publish executor gracefully - wait for running jobs to complete
+        # In-flight jobs will be saved to SQLite for recovery on next startup
+        logger.info("[SHUTDOWN] Waiting for background publish jobs to complete...")
+        self.shutdown_publish_executor(wait=True, timeout=60.0)
 
         # Clean up terminal backend (kills tmux session - atomic cleanup of all windows)
         self.deps.runner.on_orchestrator_shutdown()
