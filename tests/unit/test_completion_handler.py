@@ -1037,17 +1037,41 @@ class TestLabelActionGeneration:
         assert isinstance(remove_label, RemoveLabelAction)
         assert remove_label.label == config.get_label_in_progress()
 
-    def test_blocked_does_not_generate_actions(
+    def test_blocked_generates_blocked_label_and_removes_in_progress(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        """Blocked session does not generate label actions (keeps in-progress)."""
+        """Blocked session adds blocked label and removes in-progress."""
         issue = make_issue()
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
         result = handler.process_completion(session, SessionStatus.BLOCKED)
 
-        # BLOCKED maintains ownership via in-progress label - no actions generated
+        # BLOCKED adds blocked label and releases in-progress claim
+        assert len(result.actions) == 2
+
+        add_label = result.actions[0]
+        assert isinstance(add_label, AddLabelAction)
+        assert add_label.label == labels.BLOCKED
+
+        remove_label = result.actions[1]
+        assert isinstance(remove_label, RemoveLabelAction)
+        assert remove_label.label == config.get_label_in_progress()
+
+    def test_blocked_review_session_does_not_generate_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Blocked review session does not generate label actions."""
+        issue = make_issue()
+        # Create a review session (terminal_id starts with "review-")
+        session = create_test_session(
+            issue, agent_config, tmp_worktree, terminal_id="review-1"
+        )
+        handler = make_handler(config)
+
+        result = handler.process_completion(session, SessionStatus.BLOCKED)
+
+        # Review sessions don't get blocking labels - they just fail silently
         assert len(result.actions) == 0
 
     def test_needs_human_does_not_generate_actions(
@@ -1077,6 +1101,330 @@ class TestLabelActionGeneration:
         remove_label = result.actions[0]
         assert isinstance(remove_label, RemoveLabelAction)
         assert remove_label.label == "bot:in-progress"
+
+    def test_timeout_review_session_adds_comment_only(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Review timeout should not add blocking labels, only a comment."""
+        issue = make_issue(number=123)
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="review-456",
+            task_kind=TaskKind.REVIEW,
+        )
+        handler = make_handler(config)
+
+        result = handler.process_completion(session, SessionStatus.TIMED_OUT)
+
+        actions = result.actions
+        # Review sessions only get a comment, no labels
+        assert len(actions) == 1
+        assert isinstance(actions[0], AddCommentAction)
+        assert "Timed Out" in actions[0].comment
+        assert "review" in actions[0].comment.lower()
+        # No blocked labels for review sessions
+        assert not any(isinstance(a, AddLabelAction) for a in actions)
+        assert not any(isinstance(a, RemoveLabelAction) for a in actions)
+
+    def test_timeout_rework_session_adds_comment_only(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Rework timeout should not add blocking labels, only a comment."""
+        issue = make_issue(number=123)
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="rework-789",
+            task_kind=TaskKind.REWORK,
+        )
+        handler = make_handler(config)
+
+        result = handler.process_completion(session, SessionStatus.TIMED_OUT)
+
+        actions = result.actions
+        assert len(actions) == 1
+        assert isinstance(actions[0], AddCommentAction)
+        assert "Timed Out" in actions[0].comment
+        assert "rework" in actions[0].comment.lower()
+
+    def test_blocked_with_label_prefix(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Blocked session applies label prefix to blocked label."""
+        config.label_prefix = "bot"
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        result = handler.process_completion(session, SessionStatus.BLOCKED)
+
+        # Should have 2 actions: add blocked label, remove in-progress
+        assert len(result.actions) == 2
+
+        add_label = result.actions[0]
+        assert isinstance(add_label, AddLabelAction)
+        # Note: blocked label is NOT prefixed (only in-progress is)
+        assert add_label.label == labels.BLOCKED
+
+        remove_label = result.actions[1]
+        assert isinstance(remove_label, RemoveLabelAction)
+        assert remove_label.label == "bot:in-progress"
+
+    def test_needs_human_review_session_does_not_generate_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Needs-human review session does not generate label actions."""
+        issue = make_issue()
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="review-123",
+            task_kind=TaskKind.REVIEW,
+        )
+        handler = make_handler(config)
+
+        result = handler.process_completion(session, SessionStatus.NEEDS_HUMAN)
+
+        # No actions for review sessions
+        assert len(result.actions) == 0
+
+
+# =============================================================================
+# Test: Comprehensive Status × Session Type Coverage Matrix
+# =============================================================================
+
+
+class TestStatusSessionTypeMatrix:
+    """Comprehensive tests covering all SessionStatus × session type combinations.
+
+    This ensures we have coverage for every permutation of:
+    - SessionStatus: COMPLETED, BLOCKED, NEEDS_HUMAN, FAILED, TIMED_OUT
+    - Session types: issue, review, rework
+
+    Each test verifies:
+    - Correct labels are added/removed
+    - Comments are posted when expected
+    - No unexpected actions are generated
+    """
+
+    # --- COMPLETED Status ---
+
+    def test_completed_issue_session_removes_in_progress(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """COMPLETED issue session: removes in-progress, no labels added."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.COMPLETED)
+
+        assert len(result.actions) == 1
+        assert isinstance(result.actions[0], RemoveLabelAction)
+        assert result.actions[0].label == config.get_label_in_progress()
+
+    def test_completed_review_session_removes_in_progress(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """COMPLETED review session: removes in-progress, no labels added."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.COMPLETED)
+
+        # Review sessions don't have in-progress to remove, but the action is still generated
+        assert len(result.actions) == 1
+        assert isinstance(result.actions[0], RemoveLabelAction)
+
+    def test_completed_rework_session_removes_in_progress(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """COMPLETED rework session: removes in-progress, no labels added."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.COMPLETED)
+
+        assert len(result.actions) == 1
+        assert isinstance(result.actions[0], RemoveLabelAction)
+
+    # --- BLOCKED Status ---
+
+    def test_blocked_issue_session_adds_blocked_removes_in_progress(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """BLOCKED issue session: adds blocked label, removes in-progress."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.BLOCKED)
+
+        assert len(result.actions) == 2
+        add_label = result.actions[0]
+        assert isinstance(add_label, AddLabelAction)
+        assert add_label.label == labels.BLOCKED
+
+        remove_label = result.actions[1]
+        assert isinstance(remove_label, RemoveLabelAction)
+        assert remove_label.label == config.get_label_in_progress()
+
+    def test_blocked_review_session_no_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """BLOCKED review session: no actions (doesn't affect issue labels)."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.BLOCKED)
+
+        assert len(result.actions) == 0
+
+    def test_blocked_rework_session_no_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """BLOCKED rework session: no actions (doesn't affect issue labels)."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.BLOCKED)
+
+        assert len(result.actions) == 0
+
+    # --- NEEDS_HUMAN Status ---
+
+    def test_needs_human_issue_session_no_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """NEEDS_HUMAN issue session: no actions (keeps in-progress for ownership)."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.NEEDS_HUMAN)
+
+        assert len(result.actions) == 0
+
+    def test_needs_human_review_session_no_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """NEEDS_HUMAN review session: no actions."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.NEEDS_HUMAN)
+
+        assert len(result.actions) == 0
+
+    def test_needs_human_rework_session_no_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """NEEDS_HUMAN rework session: no actions."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.NEEDS_HUMAN)
+
+        assert len(result.actions) == 0
+
+    # --- FAILED Status ---
+
+    def test_failed_issue_session_adds_blocked_needs_human(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """FAILED issue session: adds blocked-needs-human, comment, removes in-progress."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.FAILED)
+
+        assert len(result.actions) == 3
+        add_label = next(a for a in result.actions if isinstance(a, AddLabelAction))
+        assert add_label.label == labels.BLOCKED_NEEDS_HUMAN
+
+        comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
+        assert "Investigation" in comment.comment
+
+        remove_label = next(a for a in result.actions if isinstance(a, RemoveLabelAction))
+        assert remove_label.label == config.get_label_in_progress()
+
+    def test_failed_review_session_adds_comment_only(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """FAILED review session: only adds comment, no labels."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.FAILED)
+
+        assert len(result.actions) == 1
+        assert isinstance(result.actions[0], AddCommentAction)
+        assert "Investigation" in result.actions[0].comment
+        assert "review" in result.actions[0].comment.lower()
+
+    def test_failed_rework_session_adds_comment_only(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """FAILED rework session: only adds comment, no labels."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.FAILED)
+
+        assert len(result.actions) == 1
+        assert isinstance(result.actions[0], AddCommentAction)
+        assert "Investigation" in result.actions[0].comment
+        assert "rework" in result.actions[0].comment.lower()
+
+    # --- TIMED_OUT Status ---
+
+    def test_timed_out_issue_session_adds_blocked_failed(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """TIMED_OUT issue session: adds blocked-failed, comment, removes in-progress."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.TIMED_OUT)
+
+        assert len(result.actions) == 3
+        add_label = next(a for a in result.actions if isinstance(a, AddLabelAction))
+        assert add_label.label == labels.BLOCKED_FAILED
+
+        comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
+        assert "Timed Out" in comment.comment
+
+        remove_label = next(a for a in result.actions if isinstance(a, RemoveLabelAction))
+        assert remove_label.label == config.get_label_in_progress()
+
+    def test_timed_out_review_session_adds_comment_only(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """TIMED_OUT review session: only adds comment, no labels."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.TIMED_OUT)
+
+        assert len(result.actions) == 1
+        assert isinstance(result.actions[0], AddCommentAction)
+        assert "Timed Out" in result.actions[0].comment
+        assert "review" in result.actions[0].comment.lower()
+
+    def test_timed_out_rework_session_adds_comment_only(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """TIMED_OUT rework session: only adds comment, no labels."""
+        session = create_test_session(
+            make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
+        )
+        result = make_handler(config).process_completion(session, SessionStatus.TIMED_OUT)
+
+        assert len(result.actions) == 1
+        assert isinstance(result.actions[0], AddCommentAction)
+        assert "Timed Out" in result.actions[0].comment
+        assert "rework" in result.actions[0].comment.lower()
 
 
 # =============================================================================
