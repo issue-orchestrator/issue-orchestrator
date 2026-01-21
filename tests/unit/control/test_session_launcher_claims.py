@@ -18,28 +18,28 @@ class MockClaimManager:
         self.attempt_claim_calls: list[int] = []
         self.run_convergence_calls: list[tuple[int, str]] = []
         self.release_claim_calls: list[tuple[int, str]] = []
-        self._claim_result = ClaimResult(
+        self.claim_result = ClaimResult(
             success=True,
             lease_id="test-lease-123",
             state=ClaimState.CLAIMING,
         )
-        self._convergence_result = True
+        self.convergence_result = True
 
     def configure_claim_failure(self, error: str = "Claim failed"):
         """Configure claim to fail."""
-        self._claim_result = ClaimResult.failed(error)
+        self.claim_result = ClaimResult.failed(error)
 
     def configure_convergence_failure(self):
         """Configure convergence to fail."""
-        self._convergence_result = False
+        self.convergence_result = False
 
     def attempt_claim(self, issue_number: int) -> ClaimResult:
         self.attempt_claim_calls.append(issue_number)
-        return self._claim_result
+        return self.claim_result
 
     def run_convergence(self, issue_number: int, lease_id: str) -> bool:
         self.run_convergence_calls.append((issue_number, lease_id))
-        return self._convergence_result
+        return self.convergence_result
 
     def release_claim(self, issue_number: int, lease_id: str) -> None:
         self.release_claim_calls.append((issue_number, lease_id))
@@ -94,11 +94,11 @@ class TestSessionLauncherClaimAcquisition:
 
         def track_claim(issue_number):
             operations.append(("claim", issue_number))
-            return mock_claim_manager._claim_result
+            return mock_claim_manager.claim_result
 
         def track_convergence(issue_number, lease_id):
             operations.append(("convergence", issue_number, lease_id))
-            return mock_claim_manager._convergence_result
+            return mock_claim_manager.convergence_result
 
         mock_claim_manager.attempt_claim = track_claim
         mock_claim_manager.run_convergence = track_convergence

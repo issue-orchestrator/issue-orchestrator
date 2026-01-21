@@ -210,3 +210,7 @@ target-version = "py311"
 # PLR0912: too many branches (default max: 12)
 # SLF001: private member access (access to _private members from outside class)
 select = ["C901", "PLR0912", "SLF001"]
+
+[tool.ruff.lint.per-file-ignores]
+# Complexity rules (C901, PLR0912) are enforced for production code clarity, not test infrastructure.
+"tests/**/*.py" = ["C901", "PLR0912"]

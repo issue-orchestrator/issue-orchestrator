@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, Mock, AsyncMock
 from fastapi.testclient import TestClient
 
-from issue_orchestrator.entrypoints.web import app, get_orchestrator
+from issue_orchestrator.entrypoints.web import app, get_orchestrator, set_orchestrator, set_server
 from issue_orchestrator.domain.models import (
     Issue,
     Session,
@@ -103,7 +103,7 @@ class TestDashboardEndpoint:
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/")
@@ -111,7 +111,7 @@ class TestDashboardEndpoint:
             assert response.status_code == 200
             assert "text/html" in response.headers["content-type"]
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_dashboard_with_active_sessions(self):
         """Test dashboard displays active sessions."""
@@ -123,7 +123,7 @@ class TestDashboardEndpoint:
         session = create_session(issue)
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/")
@@ -132,7 +132,7 @@ class TestDashboardEndpoint:
             assert "Active Issue" in response.text
             assert "#1" in response.text
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_dashboard_with_queue_pagination(self):
         """Test dashboard queue pagination."""
@@ -145,7 +145,7 @@ class TestDashboardEndpoint:
         # Set cached queue issues (dashboard uses cache instead of calling API)
         mock_orch.state.cached_queue_issues = issues
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
 
@@ -159,7 +159,7 @@ class TestDashboardEndpoint:
             assert response.status_code == 200
             assert "Queue Issue 21" in response.text
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_dashboard_when_paused(self):
         """Test dashboard shows paused state."""
@@ -167,7 +167,7 @@ class TestDashboardEndpoint:
         mock_orch = create_mock_orchestrator()
         mock_orch.state.paused = True
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/")
@@ -176,7 +176,7 @@ class TestDashboardEndpoint:
             # The template should handle paused state
             assert response.status_code == 200
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_dashboard_with_session_history(self):
         """Test dashboard displays session history on the History tab."""
@@ -194,7 +194,7 @@ class TestDashboardEndpoint:
         )
         mock_orch.state.session_history = [history_entry]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             # History now lives on the History tab, not the Work tab
@@ -203,7 +203,7 @@ class TestDashboardEndpoint:
             assert response.status_code == 200
             assert "Completed Issue" in response.text
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
 
 class TestApiStatusEndpoint:
@@ -213,20 +213,20 @@ class TestApiStatusEndpoint:
         """Test that status endpoint returns JSON."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.get("/api/status")
 
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/json"
-        web._orchestrator = None
+        set_orchestrator(None)
 
     def test_status_includes_basic_info(self):
         """Test status includes basic orchestrator info."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.get("/api/status")
@@ -238,7 +238,7 @@ class TestApiStatusEndpoint:
         assert "completed_today" in data
         assert data["paused"] is False
         assert data["max_sessions"] == 3
-        web._orchestrator = None
+        set_orchestrator(None)
 
     def test_status_with_active_sessions(self):
         """Test status includes active session details."""
@@ -249,7 +249,7 @@ class TestApiStatusEndpoint:
         session = create_session(issue, branch_name="feature/issue-1")
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.get("/api/status")
@@ -259,12 +259,12 @@ class TestApiStatusEndpoint:
         assert data["active_sessions"][0]["issue_number"] == 1
         assert data["active_sessions"][0]["title"] == "Test Issue"
         assert data["active_sessions"][0]["branch"] == "feature/issue-1"
-        web._orchestrator = None
+        set_orchestrator(None)
 
     def test_status_when_orchestrator_not_running(self):
         """Test status returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.get("/api/status")
@@ -280,7 +280,7 @@ class TestPauseResumeEndpoints:
         """Test pause endpoint calls orchestrator.pause()."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/pause")
@@ -293,7 +293,7 @@ class TestPauseResumeEndpoints:
         """Test resume endpoint calls orchestrator.resume()."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/resume")
@@ -305,7 +305,7 @@ class TestPauseResumeEndpoints:
     def test_pause_when_orchestrator_not_running(self):
         """Test pause returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.post("/api/pause")
@@ -316,7 +316,7 @@ class TestPauseResumeEndpoints:
     def test_resume_when_orchestrator_not_running(self):
         """Test resume returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.post("/api/resume")
@@ -339,7 +339,7 @@ class TestFocusSessionEndpoint:
 
         # Mock session_runner.focus_session
         mock_orch.session_runner.focus_session.return_value = True
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/focus/1")
@@ -361,7 +361,7 @@ class TestFocusSessionEndpoint:
 
         # Mock session_runner.focus_session returning False (failed to focus)
         mock_orch.session_runner.focus_session.return_value = False
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/focus/1")
@@ -375,7 +375,7 @@ class TestFocusSessionEndpoint:
         """Test focus returns 404 when session not found."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/focus/999")
@@ -396,7 +396,7 @@ class TestFinderEndpoint:
         session = create_session(issue, worktree_path=str(worktree_path))
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         with patch("os.uname") as mock_uname:
             with patch("subprocess.run") as mock_run:
@@ -419,7 +419,7 @@ class TestFinderEndpoint:
         """Test Finder open returns 404 when session not found."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/finder/999")
@@ -436,7 +436,7 @@ class TestFinderEndpoint:
         session = create_session(issue)
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         # Mock the path exists check to return False
         session.worktree_path = MagicMock()
@@ -457,7 +457,7 @@ class TestFinderEndpoint:
         session = create_session(issue)
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         with patch("os.uname") as mock_uname:
             mock_uname.return_value = Mock(sysname="Linux")
@@ -479,7 +479,7 @@ class TestPromptEndpoint:
         """Test successful prompt file opening."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         # Ensure prompt path exists in mock
         prompt_path = MagicMock()
@@ -504,7 +504,7 @@ class TestPromptEndpoint:
         """Test opening prompt with 'agent:' prefix."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         prompt_path = MagicMock()
         prompt_path.exists.return_value = True
@@ -525,7 +525,7 @@ class TestPromptEndpoint:
         """Test opening prompt for unknown agent type."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/prompt/unknown")
@@ -537,7 +537,7 @@ class TestPromptEndpoint:
         """Test opening prompt when file doesn't exist."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         # Mock prompt_path to not exist
         prompt_path = MagicMock()
@@ -559,7 +559,7 @@ class TestShutdownEndpoint:
         """Test successful shutdown request."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/shutdown")
@@ -571,7 +571,7 @@ class TestShutdownEndpoint:
     def test_shutdown_when_orchestrator_not_running(self):
         """Test shutdown returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.post("/api/shutdown")
@@ -594,7 +594,7 @@ class TestInfoEndpoint:
         mock_orch.state.active_sessions = [session]
         mock_orch.state.completed_today = [1, 2, 3]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.get("/api/info")
@@ -610,7 +610,7 @@ class TestInfoEndpoint:
     def test_get_info_when_orchestrator_not_running(self):
         """Test info returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.get("/api/info")
@@ -634,7 +634,7 @@ class TestConfigEndpoint:
                 mock_exists.return_value = True
                 mock_read.return_value = config_content
 
-                web._orchestrator = mock_orch
+                set_orchestrator(mock_orch)
 
                 client = TestClient(app)
                 response = client.get("/api/config")
@@ -648,7 +648,7 @@ class TestConfigEndpoint:
         mock_orch = create_mock_orchestrator()
         mock_orch.config.config_path = None
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.get("/api/config")
@@ -683,7 +683,7 @@ class TestHistoryEndpoints:
         mock_orch.state.session_history = [entry1, entry2]
         mock_orch.state.completed_today = [1, 2]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/history/clear")
@@ -715,7 +715,7 @@ class TestHistoryEndpoints:
         mock_orch.state.session_history = [entry1, entry2]
         mock_orch.state.completed_today = [1, 2]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/history/dismiss/1")
@@ -741,7 +741,7 @@ class TestHistoryEndpoints:
         mock_orch.state.session_history = [entry]
         mock_orch.state.completed_today = [1]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/retry/1")
@@ -759,7 +759,7 @@ class TestDebugEndpoint:
         """Test successful debug info retrieval."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.get("/api/debug")
@@ -776,7 +776,7 @@ class TestDebugEndpoint:
         """Test debug endpoint includes agent configuration."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.get("/api/debug")
@@ -793,7 +793,7 @@ class TestTestDataEndpoints:
         """Test creating test issues."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         with patch("issue_orchestrator.testing.support.test_data.create_test_issues") as mock_create:
             mock_create.return_value = [
@@ -814,7 +814,7 @@ class TestTestDataEndpoints:
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         mock_orch.config.repo = None
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post("/api/test/create")
@@ -837,7 +837,7 @@ class TestTestDataEndpoints:
         )
         mock_orch.state.session_history = [entry]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         with patch("issue_orchestrator.testing.support.test_data.cleanup_test_issues") as mock_cleanup:
             mock_cleanup.return_value = 2
@@ -872,7 +872,7 @@ class TestTestDataEndpoints:
         )
         mock_orch.state.session_history = [test_entry, normal_entry]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         with patch("issue_orchestrator.testing.support.test_data.cleanup_test_issues") as mock_cleanup:
             mock_cleanup.return_value = 1
@@ -892,7 +892,7 @@ class TestOrchestratorNotInitialized:
     def test_endpoints_return_503_when_orchestrator_none(self):
         """Test that all endpoints return 503 when orchestrator is None."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
 
@@ -1083,7 +1083,7 @@ class TestRefreshEndpoint:
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         mock_orch.request_refresh = MagicMock()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1093,14 +1093,14 @@ class TestRefreshEndpoint:
             assert response.json()["status"] == "refresh_requested"
             mock_orch.request_refresh.assert_called_once()
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_refresh_with_inflight_stable_ids(self):
         """Test refresh with inflight_stable_ids parameter."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         mock_orch.request_refresh = MagicMock()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1114,14 +1114,14 @@ class TestRefreshEndpoint:
             call_args = mock_orch.request_refresh.call_args
             assert call_args.kwargs["inflight_stable_ids"] == {"issue-1", "issue-2"}
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_refresh_with_empty_inflight_ids(self):
         """Test refresh with empty inflight_stable_ids list."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         mock_orch.request_refresh = MagicMock()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1134,14 +1134,14 @@ class TestRefreshEndpoint:
             call_args = mock_orch.request_refresh.call_args
             assert call_args.kwargs["inflight_stable_ids"] == set()
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_refresh_ignores_malformed_json(self):
         """Test refresh ignores malformed JSON."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         mock_orch.request_refresh = MagicMock()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1154,12 +1154,12 @@ class TestRefreshEndpoint:
             assert response.status_code == 200
             mock_orch.request_refresh.assert_called_once()
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_refresh_when_orchestrator_not_running(self):
         """Test refresh returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.post("/api/refresh")
@@ -1181,7 +1181,7 @@ class TestKillSessionEndpoint:
         mock_orch.state.active_sessions = [session]
         mock_orch.kill_session = MagicMock()
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1196,13 +1196,13 @@ class TestKillSessionEndpoint:
             # Session should be removed from active sessions
             assert len(mock_orch.state.active_sessions) == 0
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_kill_session_not_found(self):
         """Test kill returns 404 when session not found."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1211,7 +1211,7 @@ class TestKillSessionEndpoint:
             assert response.status_code == 404
             assert "error" in response.json()
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_kill_session_failure(self):
         """Test kill returns 500 when kill operation fails."""
@@ -1223,7 +1223,7 @@ class TestKillSessionEndpoint:
         mock_orch.state.active_sessions = [session]
         mock_orch.kill_session = MagicMock(side_effect=Exception("Kill failed"))
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1233,12 +1233,12 @@ class TestKillSessionEndpoint:
             assert "error" in response.json()
             assert "Kill failed" in response.json()["error"]
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_kill_session_when_orchestrator_not_running(self):
         """Test kill returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.post("/api/kill/1")
@@ -1260,7 +1260,7 @@ class TestGetSessionLogEndpoint:
         session = create_session(issue, worktree_path=str(worktree_path))
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             # Mock the Claude project directory structure
@@ -1289,13 +1289,13 @@ class TestGetSessionLogEndpoint:
                 assert data["truncated"] is False
                 assert len(data["lines"]) == 3
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_get_session_log_no_worktree_path(self):
         """Test log returns 404 when no worktree path found."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1304,7 +1304,7 @@ class TestGetSessionLogEndpoint:
             assert response.status_code == 404
             assert "error" in response.json()
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_get_session_log_truncates_large_logs(self):
         """Test log truncates to last 100 lines."""
@@ -1316,7 +1316,7 @@ class TestGetSessionLogEndpoint:
         session = create_session(issue, worktree_path=str(worktree_path))
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             with patch("issue_orchestrator.entrypoints.web.Path.home") as mock_home:
@@ -1343,12 +1343,12 @@ class TestGetSessionLogEndpoint:
                 assert data["truncated"] is True
                 assert len(data["lines"]) == 100
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_get_session_log_when_orchestrator_not_running(self):
         """Test log returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.get("/api/log/1")  # GET not POST
@@ -1367,7 +1367,7 @@ class TestDependencyProblemsEndpoint:
 
         mock_orch = create_mock_orchestrator()
         mock_orch.state.dependency_problems = {}
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1377,7 +1377,7 @@ class TestDependencyProblemsEndpoint:
             data = response.json()
             assert data["problems"] == {}
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_get_dependency_problems_with_problems(self):
         """Test getting dependency problems when some exist."""
@@ -1393,7 +1393,7 @@ class TestDependencyProblemsEndpoint:
             summary="Waiting for #2 to be merged",
         )
         mock_orch.state.dependency_problems = {1: problem}
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
@@ -1408,12 +1408,12 @@ class TestDependencyProblemsEndpoint:
             assert problem_data["issue_title"] == "Blocked Issue"
             assert problem_data["summary"] == "Waiting for #2 to be merged"
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_get_dependency_problems_when_orchestrator_not_running(self):
         """Test dependency-problems returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.get("/api/dependency-problems")
@@ -1433,7 +1433,7 @@ class TestSessionPhasesEndpoint:
         mock_orch.state.active_sessions = []
         mock_orch.state.session_history = []
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/api/session/phases/999")
@@ -1444,12 +1444,12 @@ class TestSessionPhasesEndpoint:
             assert data["current_phase"] is None
             assert "error" in data or data.get("issue_number") == 999
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_phases_returns_503_when_orchestrator_not_running(self):
         """Test phases endpoint returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
-        web._orchestrator = None
+        set_orchestrator(None)
 
         client = TestClient(app)
         response = client.get("/api/session/phases/123")
@@ -1496,7 +1496,7 @@ class TestSessionPhasesEndpoint:
         session = create_session(issue, worktree_path=str(tmp_path))
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/api/session/phases/123")
@@ -1509,7 +1509,7 @@ class TestSessionPhasesEndpoint:
             assert data["phases"][0]["status"] == "completed"
             assert data["issue_number"] == 123
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_phases_formats_phase_names_correctly(self, tmp_path):
         """Test that phase names are formatted correctly for display."""
@@ -1552,7 +1552,7 @@ class TestSessionPhasesEndpoint:
         session = create_session(issue, worktree_path=str(tmp_path))
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/api/session/phases/123")
@@ -1564,7 +1564,7 @@ class TestSessionPhasesEndpoint:
             assert data["phases"][1]["display_name"] == "Review 1"
             assert data["phases"][2]["display_name"] == "Coding 2"
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_phases_identifies_current_in_progress_phase(self, tmp_path):
         """Test that current_phase is set for in_progress phases."""
@@ -1607,7 +1607,7 @@ class TestSessionPhasesEndpoint:
         session = create_session(issue, worktree_path=str(tmp_path))
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/api/session/phases/123")
@@ -1617,7 +1617,7 @@ class TestSessionPhasesEndpoint:
             assert data["current_phase"] == "review-1"
             assert data["phases"][1]["status"] == "in_progress"
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
 
 def _get_available_port() -> int:
@@ -1700,19 +1700,19 @@ class TestGetOrchestrator:
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
 
         try:
             result = web.get_orchestrator()
             assert result is mock_orch
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_get_orchestrator_returns_none(self):
         """Test get_orchestrator returns None when not set."""
         from issue_orchestrator.entrypoints import web
 
-        web._orchestrator = None
+        set_orchestrator(None)
         result = web.get_orchestrator()
         assert result is None
 
@@ -1725,19 +1725,19 @@ class TestTriggerServerShutdown:
         from issue_orchestrator.entrypoints import web
 
         mock_server = MagicMock()
-        web._server = mock_server
+        set_server(mock_server)
 
         try:
             web.trigger_server_shutdown()
             assert mock_server.should_exit is True
         finally:
-            web._server = None
+            set_server(None)
 
     def test_trigger_server_shutdown_when_no_server(self):
         """Test trigger_server_shutdown handles None server gracefully."""
         from issue_orchestrator.entrypoints import web
 
-        web._server = None
+        set_server(None)
         # Should not raise
         web.trigger_server_shutdown()
 
@@ -1760,7 +1760,7 @@ class TestDashboardWithProblems:
         )
         mock_orch.state.session_history = [failed_entry]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/?tab=history")
@@ -1768,7 +1768,7 @@ class TestDashboardWithProblems:
             assert response.status_code == 200
             assert "Failed Issue" in response.text
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_dashboard_with_blocked_session(self):
         """Test dashboard displays blocked sessions in history tab."""
@@ -1784,7 +1784,7 @@ class TestDashboardWithProblems:
         )
         mock_orch.state.session_history = [blocked_entry]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/?tab=history")
@@ -1792,7 +1792,7 @@ class TestDashboardWithProblems:
             assert response.status_code == 200
             assert "Blocked Issue" in response.text
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_dashboard_with_timed_out_session(self):
         """Test dashboard displays timed out sessions in history tab."""
@@ -1808,7 +1808,7 @@ class TestDashboardWithProblems:
         )
         mock_orch.state.session_history = [timeout_entry]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/?tab=history")
@@ -1816,7 +1816,7 @@ class TestDashboardWithProblems:
             assert response.status_code == 200
             assert "Timeout Issue" in response.text
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_dashboard_with_needs_human_session(self):
         """Test dashboard displays needs_human sessions in history tab."""
@@ -1832,7 +1832,7 @@ class TestDashboardWithProblems:
         )
         mock_orch.state.session_history = [needs_human_entry]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/?tab=history")
@@ -1840,7 +1840,7 @@ class TestDashboardWithProblems:
             assert response.status_code == 200
             assert "Needs Human Issue" in response.text
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
 
 class TestDashboardStartupStatus:
@@ -1853,7 +1853,7 @@ class TestDashboardStartupStatus:
         mock_orch.state.startup_status = "pending"
         mock_orch.state.startup_message = "Initializing..."
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/")
@@ -1861,7 +1861,7 @@ class TestDashboardStartupStatus:
             assert response.status_code == 200
             # Should render but not show queue (startup incomplete)
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
     def test_dashboard_with_startup_in_progress(self):
         """Test dashboard when startup is in progress."""
@@ -1870,14 +1870,14 @@ class TestDashboardStartupStatus:
         mock_orch.state.startup_status = "in_progress"
         mock_orch.state.startup_message = "Fetching issues..."
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/")
 
             assert response.status_code == 200
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
 
 class TestDashboardWithPendingReviews:
@@ -1902,7 +1902,7 @@ class TestDashboardWithPendingReviews:
         )
         mock_orch.state.pending_reviews = [review]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/api/status")
@@ -1913,7 +1913,7 @@ class TestDashboardWithPendingReviews:
             assert data["pending_reviews"][0]["issue_number"] == 1
             assert data["pending_reviews"][0]["pr_number"] == 10
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
 
 class TestDashboardWithSlowSessions:
@@ -1932,7 +1932,7 @@ class TestDashboardWithSlowSessions:
         session.start_time = datetime.now() - timedelta(minutes=60)
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/")
@@ -1940,7 +1940,7 @@ class TestDashboardWithSlowSessions:
             assert response.status_code == 200
             # Should render the slow session
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
 
 class TestDashboardReviewPhase:
@@ -1957,7 +1957,7 @@ class TestDashboardReviewPhase:
         session.terminal_id = "review-1"
         mock_orch.state.active_sessions = [session]
 
-        web._orchestrator = mock_orch
+        set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/")
@@ -1965,7 +1965,7 @@ class TestDashboardReviewPhase:
             assert response.status_code == 200
             # Should show "Reviewing" phase
         finally:
-            web._orchestrator = None
+            set_orchestrator(None)
 
 
 class TestRunWebDashboard:
@@ -1994,7 +1994,7 @@ class TestRunWebDashboard:
                     await asyncio.sleep(0.1)
 
                     # Check orchestrator was set
-                    assert web._orchestrator is mock_orch
+                    assert get_orchestrator() is mock_orch
 
                     # Cancel the task
                     task.cancel()
@@ -2004,8 +2004,8 @@ class TestRunWebDashboard:
                         pass
 
                     # Clean up
-                    web._orchestrator = None
-                    web._server = None
+                    set_orchestrator(None)
+                    set_server(None)
 
     @pytest.mark.asyncio
     async def test_run_web_dashboard_opens_browser(self):
@@ -2037,8 +2037,8 @@ class TestRunWebDashboard:
                     except asyncio.CancelledError:
                         pass
 
-                    web._orchestrator = None
-                    web._server = None
+                    set_orchestrator(None)
+                    set_server(None)
 
 
 class TestRunWithWebDashboard:
@@ -2076,8 +2076,8 @@ class TestRunWithWebDashboard:
                     except asyncio.CancelledError:
                         pass
 
-                    web._orchestrator = None
-                    web._server = None
+                    set_orchestrator(None)
+                    set_server(None)
 
 
 class TestStripAnsiCodes:

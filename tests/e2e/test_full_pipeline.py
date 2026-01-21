@@ -49,7 +49,8 @@ async def _wait_for_pr_and_fetch(
         predicate=lambda e: e.get("payload", {}).get("pr_number") is not None,
         timeout_s=timeout_s,
     )
-    issue_watch = e2e_flow._watcher().issue(issue.stable_id())
+    # noqa: SLF001 - E2E test infrastructure accesses internal watcher for issue tracking
+    issue_watch = e2e_flow._watcher().issue(issue.stable_id())  # noqa: SLF001
     pr_number = issue_watch.pr_number()
     if pr_number is None:
         raise AssertionError("PR number not found after PR_VIEW_CHANGED event")

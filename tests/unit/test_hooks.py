@@ -3,12 +3,47 @@
 import json
 import shutil
 import os
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
+
+
+def run_hook_test(
+    hook_script: Path,
+    command: str,
+    *,
+    env: dict[str, str] | None = None,
+    return_stderr: bool = False,
+) -> bool | tuple[bool, str]:
+    """Test helper: run a hook script and check if it blocks a command.
+
+    Simulates what Claude Code sends to PreToolUse hooks.
+    Returns True if blocked (exit code 2), False if allowed.
+    """
+    test_input = json.dumps({"tool_input": {"command": command}})
+    project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
+    try:
+        result = subprocess.run(
+            [str(hook_script)],
+            input=test_input,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(project_root) if project_root else None,
+            env=env,
+        )
+        blocked = result.returncode == 2
+        if return_stderr:
+            return blocked, result.stderr
+        return blocked
+    except subprocess.TimeoutExpired:
+        return (False, "") if return_stderr else False
+    except Exception:
+        return (True, "") if return_stderr else True
 
 from issue_orchestrator.infra.hooks.hooks import (
     MetaAgentType,
@@ -219,7 +254,7 @@ class TestClaudeCodeAdapter:
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
         # Test that --no-verify is blocked
-        blocked = adapter._test_hook_blocks(hook_script, "git push --no-verify")
+        blocked = run_hook_test(hook_script, "git push --no-verify")
         assert blocked
 
     def test_hook_allows_normal_push(self, adapter, temp_project):
@@ -227,7 +262,7 @@ class TestClaudeCodeAdapter:
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
         # Test that normal push is allowed
-        blocked = adapter._test_hook_blocks(hook_script, "git push origin main")
+        blocked = run_hook_test(hook_script, "git push origin main")
         assert not blocked
 
     def test_hook_allows_dry_run_no_verify_with_flag(self, adapter, temp_project):
@@ -238,14 +273,14 @@ class TestClaudeCodeAdapter:
         flag_path.parent.mkdir(parents=True, exist_ok=True)
         flag_path.write_text("allow\n")
 
-        blocked = adapter._test_hook_blocks(hook_script, "git push --dry-run --no-verify")
+        blocked = run_hook_test(hook_script, "git push --dry-run --no-verify")
         assert not blocked
 
     def test_hook_blocks_dry_run_no_verify_without_flag(self, adapter, temp_project):
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
-        blocked = adapter._test_hook_blocks(hook_script, "git push --dry-run --no-verify")
+        blocked = run_hook_test(hook_script, "git push --dry-run --no-verify")
         assert blocked
 
     def test_hook_blocks_when_python_missing(self, adapter, temp_project):
@@ -269,7 +304,7 @@ class TestClaudeCodeAdapter:
         (bin_dir / "dirname").symlink_to(dirname_bin)
         (bin_dir / "cat").symlink_to(cat_bin)
 
-        blocked, stderr = adapter._test_hook_blocks(
+        blocked, stderr = run_hook_test(
             hook_script,
             "git push --dry-run --no-verify",
             env={"PATH": str(bin_dir)},
@@ -285,7 +320,7 @@ class TestClaudeCodeAdapter:
 
         allow_script.unlink()
 
-        blocked, stderr = adapter._test_hook_blocks(
+        blocked, stderr = run_hook_test(
             hook_script,
             "git push --dry-run --no-verify",
             return_stderr=True,
@@ -297,14 +332,14 @@ class TestClaudeCodeAdapter:
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
-        blocked = adapter._test_hook_blocks(hook_script, "git commit --no-verify -m 'test'")
+        blocked = run_hook_test(hook_script, "git commit --no-verify -m 'test'")
         assert blocked
 
     def test_hook_blocks_hooks_path_disable(self, adapter, temp_project):
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
-        blocked = adapter._test_hook_blocks(hook_script, "git -c core.hooksPath=/dev/null push")
+        blocked = run_hook_test(hook_script, "git -c core.hooksPath=/dev/null push")
         assert blocked
 
     def test_hook_blocks_gh_pr_merge(self, adapter, temp_project):
@@ -312,7 +347,7 @@ class TestClaudeCodeAdapter:
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
-        blocked = adapter._test_hook_blocks(hook_script, "gh pr merge 123")
+        blocked = run_hook_test(hook_script, "gh pr merge 123")
         assert blocked
 
     def test_hook_blocks_gh_pr_merge_with_flags(self, adapter, temp_project):
@@ -320,7 +355,7 @@ class TestClaudeCodeAdapter:
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
-        blocked = adapter._test_hook_blocks(hook_script, "gh pr merge 123 --squash")
+        blocked = run_hook_test(hook_script, "gh pr merge 123 --squash")
         assert blocked
 
     def test_hook_blocks_gh_api_merge(self, adapter, temp_project):
@@ -328,7 +363,7 @@ class TestClaudeCodeAdapter:
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
-        blocked = adapter._test_hook_blocks(hook_script, "gh api repos/owner/repo/pulls/123/merge -X PUT")
+        blocked = run_hook_test(hook_script, "gh api repos/owner/repo/pulls/123/merge -X PUT")
         assert blocked
 
     def test_hook_allows_gh_pr_create(self, adapter, temp_project):
@@ -336,7 +371,7 @@ class TestClaudeCodeAdapter:
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
-        blocked = adapter._test_hook_blocks(hook_script, "gh pr create --title 'test'")
+        blocked = run_hook_test(hook_script, "gh pr create --title 'test'")
         assert not blocked
 
     def test_hook_allows_gh_pr_view(self, adapter, temp_project):
@@ -344,7 +379,7 @@ class TestClaudeCodeAdapter:
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
-        blocked = adapter._test_hook_blocks(hook_script, "gh pr view 123")
+        blocked = run_hook_test(hook_script, "gh pr view 123")
         assert not blocked
 
 

@@ -85,10 +85,10 @@ lint-arch:
 	$(PYTHON) tools/check_arch_guardrails.py src
 	scripts/check_agents_md.sh
 
-# Complexity checks - reporting only (doesn't fail build)
+# Ruff guardrails - blocks on violations (C901 complexity, PLR0912 branches, SLF001 private access)
 lint-complexity:
 	@echo "Checking code complexity (C901) and branch count (PLR0912)..."
-	$(RUFF) check src packages/agent_runner/src --exit-zero --output-format=concise
+	$(RUFF) check src packages/agent_runner/src --output-format=concise
 
 test-unit:
 	$(PYTEST) tests/unit -x -q --tb=short

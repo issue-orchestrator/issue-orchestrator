@@ -43,7 +43,8 @@ def get_issue_labels(repo: str, issue_number: int) -> list[str]:
 def get_pr_uncached(repo: str, pr_number: int) -> dict:
     """Fetch a PR bypassing the HTTP cache (boundary verification)."""
     adapter = _github_adapter(repo)
-    payload = adapter._client._request_json(
+    # noqa: SLF001 - E2E test infrastructure needs cache bypass for boundary verification
+    payload = adapter._client._request_json(  # noqa: SLF001
         "GET",
         f"/repos/{adapter.repo}/pulls/{pr_number}",
         use_cache=False,

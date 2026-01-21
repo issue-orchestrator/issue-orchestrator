@@ -54,18 +54,22 @@ def mock_verification_service():
 
 
 @pytest.fixture
-def adapter(mock_config, mock_http_client, mock_verification_service):
+def cache():
+    """Create a cache for testing."""
+    return GitHubCache(default_ttl=60.0)
+
+
+@pytest.fixture
+def adapter(mock_config, mock_http_client, mock_verification_service, cache):
     """Create an adapter with mocked dependencies."""
-    cache = GitHubCache(default_ttl=60.0)
-    adapter = GitHubAdapter(
+    return GitHubAdapter(
         repo="owner/repo",
         config=mock_config,
         cache=cache,
         verification_service=mock_verification_service,
+        http_client=mock_http_client,
+        verify_writes=True,
     )
-    adapter._client = mock_http_client
-    adapter._verify_writes = True
-    return adapter
 
 
 class TestInitialization:
@@ -84,26 +88,22 @@ class TestInitialization:
             assert adapter.repo == "owner/inferred-repo"
             mock_get_repo.assert_called_once()
 
-    def test_init_cache_enabled_when_refresh_seconds_positive(self, mock_config):
-        """Test cache is enabled when github_cache_ttl_seconds > 0."""
-        mock_config.github_cache_ttl_seconds = 60
-        adapter = GitHubAdapter(repo="owner/repo", config=mock_config)
-        assert adapter._cache_enabled is True
+    # Note: Tests for cache_enabled internal state were removed.
+    # Cache behavior is tested through observable API call patterns in TestCaching.
 
-    def test_init_cache_disabled_when_refresh_seconds_zero(self, mock_config):
-        """Test cache is disabled when github_cache_ttl_seconds = 0."""
-        mock_config.github_cache_ttl_seconds = 0
-        adapter = GitHubAdapter(repo="owner/repo", config=mock_config)
-        assert adapter._cache_enabled is False
-
-    def test_init_verification_service_injected(self, mock_config, mock_verification_service):
-        """Test that injected verification service is used."""
+    def test_init_verification_service_is_used(self, mock_config, mock_verification_service, mock_http_client):
+        """Test that injected verification service is used for write verification."""
         adapter = GitHubAdapter(
             repo="owner/repo",
             config=mock_config,
             verification_service=mock_verification_service,
+            http_client=mock_http_client,
         )
-        assert adapter._verification_service is mock_verification_service
+        mock_http_client.get_issue_labels.return_value = ["bug"]
+        # Exercise a write operation that triggers verification
+        adapter.add_label(42, "bug")
+        # Verify that the injected service was used
+        mock_verification_service.verify_condition.assert_called()
 
 
 class TestIssueOperations:
@@ -316,19 +316,25 @@ class TestIssueOperations:
 class TestLabelOperations:
     """Test label-related operations."""
 
-    def test_get_issue_labels_from_cache(self, adapter):
+    def test_get_issue_labels_from_cache(self, adapter, cache, mock_http_client):
         """Test getting labels from cache when available."""
-        adapter._cache.set_issue_labels(42, ["bug", "feature"])
+        cache.set_issue_labels(42, ["bug", "feature"])
 
         labels = adapter.get_issue_labels(42)
 
         assert labels == ["bug", "feature"]
         # Should not call HTTP client
-        adapter._client.get_issue_labels.assert_not_called()
+        mock_http_client.get_issue_labels.assert_not_called()
 
-    def test_get_issue_labels_from_api_when_cache_disabled(self, adapter, mock_http_client):
+    def test_get_issue_labels_from_api_when_cache_disabled(self, mock_config, mock_http_client, mock_verification_service):
         """Test getting labels from API when cache is disabled."""
-        adapter._cache_enabled = False
+        mock_config.github_cache_ttl_seconds = 0  # Disable cache via config
+        adapter = GitHubAdapter(
+            repo="owner/repo",
+            config=mock_config,
+            http_client=mock_http_client,
+            verification_service=mock_verification_service,
+        )
         mock_http_client.get_issue_labels.return_value = ["bug"]
 
         labels = adapter.get_issue_labels(42)
@@ -336,7 +342,7 @@ class TestLabelOperations:
         assert labels == ["bug"]
         mock_http_client.get_issue_labels.assert_called_once_with(42, use_cache=True)
 
-    def test_get_issue_labels_updates_cache(self, adapter, mock_http_client):
+    def test_get_issue_labels_updates_cache(self, adapter, mock_http_client, cache):
         """Test that fetching labels updates the cache."""
         mock_http_client.get_issue_labels.return_value = ["bug", "feature"]
 
@@ -344,19 +350,19 @@ class TestLabelOperations:
 
         assert labels == ["bug", "feature"]
         # Cache should be updated
-        cached = adapter._cache.get_issue_labels(42)
+        cached = cache.get_issue_labels(42)
         assert cached == ["bug", "feature"]
 
-    def test_get_issue_labels_fresh_bypasses_cache(self, adapter, mock_http_client):
+    def test_get_issue_labels_fresh_bypasses_cache(self, adapter, mock_http_client, cache):
         """Test that fresh label reads bypass adapter/ETag caches."""
-        adapter._cache.set_issue_labels(42, ["stale"])
+        cache.set_issue_labels(42, ["stale"])
         mock_http_client.get_issue_labels.return_value = ["fresh"]
 
         labels = adapter.get_issue_labels_fresh(42)
 
         assert labels == ["fresh"]
         mock_http_client.get_issue_labels.assert_called_once_with(42, use_cache=False)
-        assert adapter._cache.get_issue_labels(42) == ["fresh"]
+        assert cache.get_issue_labels(42) == ["fresh"]
     def test_get_issue_labels_error_returns_empty_list(self, adapter, mock_http_client):
         """Test get_issue_labels returns empty list on error."""
         mock_http_client.get_issue_labels.side_effect = GitHubHttpError("API error")
@@ -389,18 +395,18 @@ class TestLabelOperations:
 
         mock_http_client.get_issue_labels.assert_any_call(42, use_cache=False)
 
-    def test_add_label_invalidates_cache(self, adapter, mock_http_client, mock_verification_service):
+    def test_add_label_invalidates_cache(self, adapter, mock_http_client, mock_verification_service, cache):
         """Test that adding a label invalidates the cache."""
         # Pre-populate cache
-        adapter._cache.set_issue_labels(42, ["old-label"])
+        cache.set_issue_labels(42, ["old-label"])
         mock_http_client.get_issue_labels.return_value = ["old-label", "new-label"]
 
         adapter.add_label(42, "new-label")
 
         # Cache should be invalidated (empty after invalidation)
-        assert adapter._cache.get_issue_labels(42) is None
+        assert cache.get_issue_labels(42) is None
 
-    def test_add_label_updates_pr_cache_labels(self, adapter, mock_http_client, mock_verification_service):
+    def test_add_label_updates_pr_cache_labels(self, adapter, mock_http_client, mock_verification_service, cache):
         """Test that adding a label updates PR cache labels."""
         # Pre-populate PR cache
         pr_data = {
@@ -413,13 +419,13 @@ class TestLabelOperations:
             "labels": ["old-label"],
             "issue_number": 42,
         }
-        adapter._cache.set_pr_by_issue(42, pr_data, branch="42-test")
+        cache.set_pr_by_issue(42, pr_data, branch="42-test")
         mock_http_client.get_issue_labels.return_value = ["old-label", "new-label"]
 
         adapter.add_label(42, "new-label")
 
         # Cache should be invalidated
-        assert adapter._cache.get_issue_labels(42) is None
+        assert cache.get_issue_labels(42) is None
 
     def test_add_label_verification_failure_raises(self, adapter, mock_http_client, mock_verification_service):
         """Test that add_label raises on verification failure."""
@@ -440,14 +446,14 @@ class TestLabelOperations:
         mock_http_client.remove_label.assert_called_once_with(42, "bug")
         mock_verification_service.verify_condition.assert_called_once()
 
-    def test_remove_label_invalidates_cache(self, adapter, mock_http_client, mock_verification_service):
+    def test_remove_label_invalidates_cache(self, adapter, mock_http_client, mock_verification_service, cache):
         """Test that removing a label invalidates the cache."""
-        adapter._cache.set_issue_labels(42, ["bug"])
+        cache.set_issue_labels(42, ["bug"])
         mock_http_client.get_issue_labels.return_value = []
 
         adapter.remove_label(42, "bug")
 
-        assert adapter._cache.get_issue_labels(42) is None
+        assert cache.get_issue_labels(42) is None
 
     def test_has_label_true(self, adapter, mock_http_client):
         """Test has_label returns True when label exists."""
@@ -467,7 +473,7 @@ class TestLabelOperations:
 
         assert adapter.has_label(42, "bug") is False
 
-    def test_update_label_cache(self, adapter):
+    def test_update_label_cache(self, adapter, cache):
         """Test update_label_cache updates both issue and PR caches."""
         # Pre-populate PR cache
         pr_data = {
@@ -476,23 +482,23 @@ class TestLabelOperations:
             "labels": ["old"],
             "issue_number": 42,
         }
-        adapter._cache.set_pr_by_issue(42, pr_data, branch="42-test")
+        cache.set_pr_by_issue(42, pr_data, branch="42-test")
 
         adapter.update_label_cache(42, ["new"])
 
         # Issue labels should be updated
-        assert adapter._cache.get_issue_labels(42) == ["new"]
+        assert cache.get_issue_labels(42) == ["new"]
         # PR labels should also be updated
-        cached_pr = adapter._cache.get_pr_by_issue(42)
+        cached_pr = cache.get_pr_by_issue(42)
         assert cached_pr["labels"] == ["new"]
 
-    def test_invalidate_label_cache(self, adapter):
+    def test_invalidate_label_cache(self, adapter, cache):
         """Test invalidate_label_cache removes cached labels."""
-        adapter._cache.set_issue_labels(42, ["bug"])
+        cache.set_issue_labels(42, ["bug"])
 
         adapter.invalidate_label_cache(42)
 
-        assert adapter._cache.get_issue_labels(42) is None
+        assert cache.get_issue_labels(42) is None
 
 
 class TestPROperations:
@@ -566,7 +572,7 @@ class TestPROperations:
 
         assert prs == []
 
-    def test_get_prs_for_branch_from_cache(self, adapter, mock_http_client):
+    def test_get_prs_for_branch_from_cache(self, adapter, mock_http_client, cache):
         """Test getting PRs for branch from cache."""
         pr_data = {
             "number": 10,
@@ -577,7 +583,7 @@ class TestPROperations:
             "state": "open",
             "labels": [],
         }
-        adapter._cache.set_pr_by_branch("feature", pr_data)
+        cache.set_pr_by_branch("feature", pr_data)
 
         prs = adapter.get_prs_for_branch("feature")
 
@@ -606,7 +612,7 @@ class TestPROperations:
         assert prs[0].branch == "feature"
         mock_http_client.get_prs_for_branch.assert_called_once_with("feature", state="open")
 
-    def test_get_prs_for_issue_from_cache(self, adapter):
+    def test_get_prs_for_issue_from_cache(self, adapter, cache):
         """Test getting PRs for issue from cache."""
         pr_data = {
             "number": 10,
@@ -618,7 +624,7 @@ class TestPROperations:
             "labels": [],
             "issue_number": 42,
         }
-        adapter._cache.set_pr_by_issue(42, pr_data, branch="42-feature")
+        cache.set_pr_by_issue(42, pr_data, branch="42-feature")
 
         prs = adapter.get_prs_for_issue(42)
 
@@ -726,19 +732,10 @@ class TestPROperations:
         # Should verify PR creation
         mock_verification_service.verify_condition.assert_called_once()
 
-    def test_create_pr_returns_existing_if_present(self, adapter, mock_http_client):
+    def test_create_pr_returns_existing_if_present(self, adapter, mock_http_client, cache):
         """Test create_pr returns existing PR if one exists for the branch."""
-        existing_pr = PRInfo(
-            number=10,
-            title="Existing PR",
-            url="https://github.com/owner/repo/pull/10",
-            branch="feature",
-            body="",
-            state="open",
-            labels=[],
-        )
-        # Mock get_prs_for_branch to return existing PR
-        adapter._cache.set_pr_by_branch("feature", {
+        # Mock get_prs_for_branch to return existing PR via cache
+        cache.set_pr_by_branch("feature", {
             "number": 10,
             "title": "Existing PR",
             "url": "https://github.com/owner/repo/pull/10",
@@ -786,35 +783,39 @@ class TestPROperations:
         mock_http_client.close_pr.assert_called_once_with(10)
         mock_verification_service.verify_condition.assert_called_once()
 
-    def test_invalidate_pr_cache(self, adapter):
+    def test_invalidate_pr_cache(self, adapter, cache):
         """Test invalidating PR cache by issue and branch."""
         pr_data = {
             "number": 10,
             "branch": "feature",
             "issue_number": 42,
         }
-        adapter._cache.set_pr_by_issue(42, pr_data, branch="feature")
+        cache.set_pr_by_issue(42, pr_data, branch="feature")
 
         adapter.invalidate_pr_cache(issue_number=42)
 
-        assert adapter._cache.get_pr_by_issue(42) is None
+        assert cache.get_pr_by_issue(42) is None
 
-    def test_cache_pr_info_with_issue_number(self, adapter):
-        """Test caching PR info with extracted issue number."""
-        pr_info = PRInfo(
-            number=10,
-            title="#42: Test",
-            url="https://github.com/owner/repo/pull/10",
-            branch="42-feature",
-            body="",
-            state="open",
-            labels=["bug"],
-        )
+    def test_pr_caching_through_public_api(self, adapter, cache, mock_http_client):
+        """Test that PR info gets cached when fetched through public API."""
+        mock_http_client.get_prs_for_branch.return_value = [{
+            "number": 10,
+            "title": "#42: Test",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "42-feature"},
+            "body": "",
+            "state": "open",
+            "labels": [{"name": "bug"}],
+        }]
 
-        adapter._cache_pr_info(pr_info)
+        # Fetch through public API
+        prs = adapter.get_prs_for_branch("42-feature")
 
-        # Should be cached by issue number (extracted from branch)
-        cached = adapter._cache.get_pr_by_issue(42)
+        assert len(prs) == 1
+        assert prs[0].number == 10
+
+        # PR should be cached (extracted issue number from branch "42-feature")
+        cached = cache.get_pr_by_issue(42)
         assert cached is not None
         assert cached["number"] == 10
 
@@ -822,11 +823,15 @@ class TestPROperations:
 class TestCacheBehavior:
     """Test caching behavior."""
 
-    def test_cache_disabled_no_caching(self, mock_config, mock_http_client):
+    def test_cache_disabled_no_caching(self, mock_config, mock_http_client, mock_verification_service):
         """Test that cache is bypassed when disabled."""
         mock_config.github_cache_ttl_seconds = 0
-        adapter = GitHubAdapter(repo="owner/repo", config=mock_config)
-        adapter._client = mock_http_client
+        adapter = GitHubAdapter(
+            repo="owner/repo",
+            config=mock_config,
+            http_client=mock_http_client,
+            verification_service=mock_verification_service,
+        )
         mock_http_client.get_issue_labels.return_value = ["bug"]
 
         # First call
@@ -838,8 +843,9 @@ class TestCacheBehavior:
         assert mock_http_client.get_issue_labels.call_count == 2
         assert labels1 == labels2
 
-    def test_pr_info_from_cache_conversion(self, adapter):
-        """Test converting cached PR data to PRInfo."""
+    def test_pr_info_from_cache_via_get_prs_for_branch(self, adapter, cache):
+        """Test that cached PR data is correctly converted when fetching PRs."""
+        # Pre-populate cache with PR data
         cached = {
             "number": 10,
             "title": "Test PR",
@@ -849,87 +855,138 @@ class TestCacheBehavior:
             "state": "open",
             "labels": ["bug", "feature"],
         }
+        cache.set_pr_by_branch("feature", cached)
 
-        pr_info = adapter._pr_info_from_cache(cached)
+        # Fetch through public API - should use cache
+        prs = adapter.get_prs_for_branch("feature")
 
+        assert len(prs) == 1
+        pr_info = prs[0]
         assert pr_info.number == 10
         assert pr_info.title == "Test PR"
         assert pr_info.branch == "feature"
         assert pr_info.labels == ["bug", "feature"]
 
-    def test_pr_info_from_cache_returns_none_on_empty(self, adapter):
-        """Test _pr_info_from_cache returns None for empty dict."""
-        assert adapter._pr_info_from_cache({}) is None
-        assert adapter._pr_info_from_cache(None) is None
+    def test_empty_cache_returns_no_prs(self, adapter, mock_http_client):
+        """Test that empty cache falls through to API."""
+        mock_http_client.get_prs_for_branch.return_value = []
 
-    def test_extract_issue_number_from_branch(self, adapter):
-        """Test extracting issue number from branch name."""
-        assert adapter._extract_issue_number("42-feature", None) == 42
-        assert adapter._extract_issue_number("123-bugfix", None) == 123
+        prs = adapter.get_prs_for_branch("nonexistent")
 
-    def test_extract_issue_number_from_title(self, adapter):
-        """Test extracting issue number from PR title."""
-        assert adapter._extract_issue_number(None, "#42: Fix bug") == 42
-        assert adapter._extract_issue_number(None, "#123: Feature") == 123
+        assert prs == []
+        mock_http_client.get_prs_for_branch.assert_called_once()
 
-    def test_extract_issue_number_returns_none_when_not_found(self, adapter):
-        """Test extract returns None when no pattern matches."""
-        assert adapter._extract_issue_number("feature", "Test PR") is None
+    def test_issue_number_extraction_from_branch(self, adapter, cache, mock_http_client):
+        """Test that issue number is extracted from branch name for caching."""
+        # When a PR with branch "42-feature" is fetched, it should be cached by issue 42
+        mock_http_client.get_prs_for_branch.return_value = [{
+            "number": 10,
+            "title": "Test PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "42-feature"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+        }]
+
+        adapter.get_prs_for_branch("42-feature")
+
+        # Should be cached by issue 42
+        cached = cache.get_pr_by_issue(42)
+        assert cached is not None
+        assert cached["number"] == 10
+
+    def test_issue_number_extraction_from_title(self, adapter, cache, mock_http_client):
+        """Test that issue number is extracted from PR title for caching."""
+        # When a PR with title "#123: Feature" is fetched, it should be cached by issue 123
+        mock_http_client.get_prs_for_branch.return_value = [{
+            "number": 20,
+            "title": "#123: Feature",
+            "html_url": "https://github.com/owner/repo/pull/20",
+            "head": {"ref": "feature-branch"},  # No issue number in branch
+            "body": "",
+            "state": "open",
+            "labels": [],
+        }]
+
+        adapter.get_prs_for_branch("feature-branch")
+
+        # Should be cached by issue 123 (from title)
+        cached = cache.get_pr_by_issue(123)
+        assert cached is not None
+        assert cached["number"] == 20
+
+    def test_no_issue_number_caches_by_branch(self, adapter, cache, mock_http_client):
+        """Test that PRs without issue number are cached by branch only."""
+        mock_http_client.get_prs_for_branch.return_value = [{
+            "number": 30,
+            "title": "Random PR",
+            "html_url": "https://github.com/owner/repo/pull/30",
+            "head": {"ref": "random-branch"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+        }]
+
+        adapter.get_prs_for_branch("random-branch")
+
+        # Should be cached by branch since no issue number found
+        cached = cache.get_pr_by_branch("random-branch")
+        assert cached is not None
+        assert cached["number"] == 30
 
 
 class TestWriteVerification:
-    """Test write verification behavior."""
+    """Test write verification behavior through public API."""
 
-    def test_verify_write_disabled_skips_verification(self, adapter, mock_verification_service):
-        """Test that verification is skipped when disabled."""
-        adapter._verify_writes = False
+    def test_verification_disabled_skips_check(self, mock_config, mock_http_client, mock_verification_service, cache):
+        """Test that verification is skipped when disabled via constructor."""
+        adapter = GitHubAdapter(
+            repo="owner/repo",
+            config=mock_config,
+            cache=cache,
+            verification_service=mock_verification_service,
+            http_client=mock_http_client,
+            verify_writes=False,
+        )
+        mock_http_client.get_issue_labels.return_value = ["bug"]
 
-        adapter._verify_write("test", lambda: True)
+        # Perform a write operation
+        adapter.add_label(42, "bug")
 
+        # Verification should not be called
         mock_verification_service.verify_condition.assert_not_called()
 
-    def test_verify_write_success(self, adapter, mock_verification_service):
-        """Test successful write verification."""
+    def test_verification_success_completes_normally(self, adapter, mock_verification_service, mock_http_client):
+        """Test successful write verification completes without error."""
         mock_verification_service.verify_condition.return_value = (VerificationResult.SUCCESS, None)
+        mock_http_client.get_issue_labels.return_value = ["bug"]
 
         # Should not raise
-        adapter._verify_write("test operation", lambda: True)
+        adapter.add_label(42, "bug")
 
         mock_verification_service.verify_condition.assert_called_once()
 
-    def test_verify_write_timeout_raises_systemic_error(self, adapter, mock_verification_service):
-        """Test that timeout raises systemic error."""
+    def test_verification_timeout_raises_systemic_error(self, adapter, mock_verification_service, mock_http_client):
+        """Test that timeout raises systemic error on write operations."""
         mock_verification_service.verify_condition.return_value = (VerificationResult.TIMED_OUT, None)
 
         with pytest.raises(GitHubHttpError) as exc_info:
-            adapter._verify_write("test operation", lambda: True)
+            adapter.add_label(42, "bug")
 
         assert exc_info.value.is_systemic()
         assert "Timed out verifying write" in str(exc_info.value)
 
-    def test_verify_write_failed_raises_issue_local_error(self, adapter, mock_verification_service):
+    def test_verification_failed_raises_issue_local_error(self, adapter, mock_verification_service, mock_http_client):
         """Test that verification failure raises issue-local error."""
         mock_verification_service.verify_condition.return_value = (VerificationResult.FAILED_FATAL, "state")
 
         with pytest.raises(GitHubHttpError) as exc_info:
-            adapter._verify_write("test operation", lambda: False, issue_number=42)
+            adapter.add_label(42, "bug")
 
         assert exc_info.value.is_issue_local()
         assert exc_info.value.issue_number == 42
         assert "Failed to verify write" in str(exc_info.value)
-
-    def test_verify_write_with_detail_function(self, adapter, mock_verification_service):
-        """Test verification with detail function for debugging."""
-        mock_verification_service.verify_condition.return_value = (VerificationResult.FAILED_FATAL, {"state": "open"})
-
-        with pytest.raises(GitHubHttpError):
-            adapter._verify_write(
-                "test",
-                lambda: False,
-                detail_fn=lambda: {"current": "state"},
-            )
-
-        # Detail function should be used for logging
 
 
 class TestRepositoryOperations:
@@ -1157,11 +1214,11 @@ class TestRepositoryOperations:
 
 
 class TestEdgeCases:
-    """Test edge cases and error handling."""
+    """Test edge cases and error handling through public API."""
 
-    def test_pr_info_from_api_missing_number(self, adapter):
-        """Test _pr_info_from_api handles missing number."""
-        pr_data = {
+    def test_get_pr_handles_missing_number(self, adapter, mock_http_client):
+        """Test get_pr handles API response with missing number."""
+        mock_http_client.get_pr.return_value = {
             "number": None,
             "title": "Test",
             "html_url": "https://github.com/owner/repo/pull/0",
@@ -1171,13 +1228,13 @@ class TestEdgeCases:
             "labels": [],
         }
 
-        pr_info = adapter._pr_info_from_api(pr_data)
+        pr_info = adapter.get_pr(0)
 
         assert pr_info.number == 0
 
-    def test_pr_info_from_api_invalid_number(self, adapter):
-        """Test _pr_info_from_api handles invalid number."""
-        pr_data = {
+    def test_get_pr_handles_invalid_number(self, adapter, mock_http_client):
+        """Test get_pr handles API response with invalid number type."""
+        mock_http_client.get_pr.return_value = {
             "number": "not-a-number",
             "title": "Test",
             "html_url": "https://github.com/owner/repo/pull/0",
@@ -1187,13 +1244,13 @@ class TestEdgeCases:
             "labels": [],
         }
 
-        pr_info = adapter._pr_info_from_api(pr_data)
+        pr_info = adapter.get_pr(0)
 
         assert pr_info.number == 0
 
-    def test_pr_info_from_api_handles_missing_labels(self, adapter):
-        """Test _pr_info_from_api handles missing or invalid labels."""
-        pr_data = {
+    def test_get_pr_handles_invalid_labels(self, adapter, mock_http_client):
+        """Test get_pr handles API response with invalid labels."""
+        mock_http_client.get_pr.return_value = {
             "number": 10,
             "title": "Test",
             "html_url": "https://github.com/owner/repo/pull/10",
@@ -1207,14 +1264,14 @@ class TestEdgeCases:
             ],
         }
 
-        pr_info = adapter._pr_info_from_api(pr_data)
+        pr_info = adapter.get_pr(10)
 
         # Should only include valid labels
         assert pr_info.labels == ["bug"]
 
-    def test_pr_info_from_api_uses_headRefName_fallback(self, adapter):
-        """Test _pr_info_from_api uses headRefName when head.ref not available."""
-        pr_data = {
+    def test_get_pr_uses_headRefName_fallback(self, adapter, mock_http_client):
+        """Test get_pr uses headRefName when head.ref not available."""
+        mock_http_client.get_pr.return_value = {
             "number": 10,
             "title": "Test",
             "html_url": "https://github.com/owner/repo/pull/10",
@@ -1225,24 +1282,44 @@ class TestEdgeCases:
             "labels": [],
         }
 
-        pr_info = adapter._pr_info_from_api(pr_data)
+        pr_info = adapter.get_pr(10)
 
         assert pr_info.branch == "fallback-branch"
 
-    def test_fetch_pr_info_from_search_invalid_data(self, adapter):
-        """Test _fetch_pr_info_from_search handles invalid data."""
-        # Not a dict
-        assert adapter._fetch_pr_info_from_search("not-a-dict") is None
-        # Missing number
-        assert adapter._fetch_pr_info_from_search({}) is None
+    def test_get_prs_with_label_handles_invalid_search_results(self, adapter, mock_http_client):
+        """Test get_prs_with_label handles invalid search result items."""
+        # Return mix of valid and invalid items
+        mock_http_client.get_prs_with_label.return_value = [
+            "not-a-dict",  # Invalid - not a dict
+            {},  # Invalid - missing number
+            {"number": 10},  # Valid - has number
+        ]
+        # Mock get_pr for the valid item
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Test",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature"},
+            "body": "",
+            "state": "open",
+            "labels": [{"name": "bug"}],
+        }
 
-    def test_fetch_pr_info_from_search_full_fetch_fails(self, adapter, mock_http_client):
-        """Test _fetch_pr_info_from_search when full fetch fails."""
-        mock_http_client.get_pr.return_value = None
+        prs = adapter.get_prs_with_label("bug")
 
-        result = adapter._fetch_pr_info_from_search({"number": 10})
+        # Should only include the valid PR
+        assert len(prs) == 1
+        assert prs[0].number == 10
 
-        assert result is None
+    def test_get_prs_with_label_handles_fetch_failure(self, adapter, mock_http_client):
+        """Test get_prs_with_label handles failure when fetching full PR data."""
+        mock_http_client.get_prs_with_label.return_value = [{"number": 10}]
+        mock_http_client.get_pr.return_value = None  # Full fetch fails
+
+        prs = adapter.get_prs_with_label("bug")
+
+        # Should return empty list when full fetch fails
+        assert prs == []
 
     def test_list_issues_filters_invalid_items(self, adapter, mock_http_client):
         """Test list_issues filters out non-dict items."""

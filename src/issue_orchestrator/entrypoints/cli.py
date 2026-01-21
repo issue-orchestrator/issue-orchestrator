@@ -61,7 +61,7 @@ def _build_action_applier(config: "Config", adapter: "RepositoryHost"):
     )
 
 
-def _run_test_setup(config: "Config") -> bool:  # noqa: C901
+def _run_test_setup(config: "Config") -> bool:  # noqa: C901 - inherent complexity from multi-step setup with graceful error handling
     """Run test teardown and setup. Returns True on success."""
     adapter = _get_repository_host(config)
     if adapter is None:
@@ -141,7 +141,7 @@ def _run_test_setup(config: "Config") -> bool:  # noqa: C901
     return True
 
 
-def _apply_cli_overrides(args: argparse.Namespace, config: "Config") -> None:  # noqa: C901, PLR0912
+def _apply_cli_overrides(args: argparse.Namespace, config: "Config") -> None:  # noqa: C901, PLR0912 - one branch per CLI override, inherent to config mapping
     """Apply CLI argument overrides to config."""
     # Handle milestone override
     if hasattr(args, "milestones") and args.milestones:
@@ -471,7 +471,7 @@ async def _run_tui_dashboard(orchestrator, config: "Config", api_port: int | Non
             await control_api.stop()
 
 
-def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
+def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI entry point with config/logging/validation/startup phases
     """Start the orchestrator."""
     debug = getattr(args, 'debug', False)
     no_dashboard = getattr(args, 'no_dashboard', False)
@@ -1011,7 +1011,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912
+def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-step verification: config, git, GitHub, tmux, agents
     """Verify the orchestrator setup works correctly."""
     console.print("[bold cyan]Orchestrator Setup Verification[/bold cyan]\n")
 
@@ -1464,7 +1464,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 0
 
 
-def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901
+def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901 - demo flow with dry-run/live modes and feature showcases
     """Demonstrate orchestrator features with mock data.
 
     Behavior per DEMO_CONTRACT.md:
@@ -1675,7 +1675,7 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901
     return 0
 
 
-def cmd_trace(args: argparse.Namespace) -> int:  # noqa: C901
+def cmd_trace(args: argparse.Namespace) -> int:  # noqa: C901 - log parsing with pattern matching and filtering logic
     """Trace log entries for a specific issue."""
     import re
 

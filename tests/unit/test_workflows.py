@@ -431,7 +431,8 @@ class TestTriageWorkflow:
     def test_should_not_trigger_during_cooldown(self, workflow):
         """Test batch triage respects cooldown."""
         now = datetime.now()
-        workflow._last_batch_triage = now - timedelta(minutes=15)  # 15 mins ago
+        # Simulate a triage that happened 15 mins ago via public API
+        workflow.record_batch_triage_started(now - timedelta(minutes=15))
 
         decision = workflow.should_trigger_batch_triage(failure_count=5, now=now)
 
@@ -442,15 +443,19 @@ class TestTriageWorkflow:
     def test_should_trigger_after_cooldown(self, workflow):
         """Test batch triage triggers after cooldown."""
         now = datetime.now()
-        workflow._last_batch_triage = now - timedelta(minutes=60)  # 60 mins ago
+        # Simulate a triage that happened 60 mins ago via public API
+        workflow.record_batch_triage_started(now - timedelta(minutes=60))
 
         decision = workflow.should_trigger_batch_triage(failure_count=5, now=now)
 
         assert decision.should_trigger
 
-    def test_record_batch_triage_started(self, workflow):
-        """Test recording batch triage start time."""
+    def test_record_batch_triage_started_puts_system_in_cooldown(self, workflow):
+        """Test recording batch triage start time affects subsequent decisions."""
         now = datetime(2024, 1, 1, 12, 0, 0)
         workflow.record_batch_triage_started(now)
 
-        assert workflow._last_batch_triage == now
+        # Verify observable behavior: system should now be in cooldown
+        decision = workflow.should_trigger_batch_triage(failure_count=5, now=now)
+        assert not decision.should_trigger
+        assert decision.cooldown_remaining is not None

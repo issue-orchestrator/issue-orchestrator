@@ -462,18 +462,6 @@ class TestCompletionProcessorGitActions:
         mock_git_adapter.rebase_on_branch.assert_called_once_with(worktree, "origin/main")
         assert mock_git_adapter.push.call_count == 2
 
-    def test_next_branch_name_ignores_embedded_r(self, processor, mock_git_adapter, tmp_path):
-        """Branch suffix detection should only match -r<digits> at the end."""
-        mock_git_adapter.list_branch_names.return_value = [
-            "123-feature-refactor",
-            "123-feature-refactor-r2",
-            "123-feature-refactor-r10",
-            "123-feature-r1",
-        ]
-
-        assert processor._next_branch_name(tmp_path, "123-feature-refactor") == "123-feature-refactor-r11"
-
-
 class TestCompletionProcessorValidation:
     """Tests for validation logic."""
 

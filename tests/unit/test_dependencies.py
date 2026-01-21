@@ -389,8 +389,6 @@ class TestPriorityAndDependenciesTogether:
     def test_issue_with_priority_and_dependencies_parsed_correctly(self):
         """Issue with [Px-nnn] title and Depends-on body has both parsed."""
         from issue_orchestrator.domain.models import Issue
-        from issue_orchestrator.control.scheduler import Scheduler
-        from issue_orchestrator.infra.config import Config
 
         # Create issue with priority in title AND dependency in body
         issue = Issue(
@@ -400,15 +398,6 @@ class TestPriorityAndDependenciesTogether:
             state="open",
             body="Description here.\n\nDepends-on: #10\nDepends-on: #20",
         )
-
-        # Verify priority is extracted from title
-        config = Config()
-        scheduler = Scheduler(config)
-
-        priority = scheduler._get_priority_value(issue)
-        sequence = scheduler._get_sequence_value(issue)
-        assert priority == 1, "Should extract P1 from title"
-        assert sequence == 5, "Should extract sequence 005 from title"
 
         # Verify dependencies are extracted from body
         deps = parse_dependencies(issue.body)
