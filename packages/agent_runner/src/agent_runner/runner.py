@@ -11,8 +11,6 @@ It handles:
 import logging
 import subprocess
 import time
-from pathlib import Path
-
 from .env_filter import build_filtered_env
 from .ports import RunResult, RunSpec
 
