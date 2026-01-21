@@ -18,7 +18,6 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from ..control.isolation import build_isolation_prefix
 from ..infra.env import get_env
@@ -220,9 +219,6 @@ class SubprocessPlugin:
         allow_stdin_val = get_env("SUBPROCESS_ALLOW_STDIN") or ""
         self._allow_stdin = allow_stdin_val.lower() in {"1", "true", "yes"}
 
-    def _session_name(self, session_id: int, session_name: Optional[str]) -> str:
-        return session_name or f"issue-{session_id}"
-
     def _session_log_path(self, working_dir: Path, session_name: str) -> Path:
         session_output = FileSystemSessionOutput()
         run_dir = session_output.ensure_run_dir(working_dir, session_name)
@@ -338,30 +334,34 @@ class SubprocessPlugin:
         command: str,
         working_dir: str,
         title: str | None,
-        session_name: str | None = None,
+        session_name: str,  # Required - caller must provide explicit name
     ) -> bool | None:
-        name = self._session_name(session_id, session_name)
+        logger.info(
+            "[subprocess] create_session called: session_id=%s session_name=%r",
+            session_id,
+            session_name,
+        )
         worktree = Path(working_dir)
-        if self.session_exists(session_id, name):
+        if self.session_exists(session_id, session_name):
             return False
 
-        proc = self._start_process(command, worktree, name)
-        is_review = name.startswith("review-")
-        tab_name = title or name
+        proc = self._start_process(command, worktree, session_name)
+        is_review = session_name.startswith("review-")
+        tab_name = title or session_name
         if is_review:
             try:
-                pr_num = int(name.replace("review-", ""))
+                pr_num = int(session_name.replace("review-", ""))
                 tab_name = f"Review PR #{pr_num}"
             except ValueError:
-                tab_name = name
+                tab_name = session_name
 
         record = _SessionRecord(
-            session_name=name,
+            session_name=session_name,
             issue_number=session_id,
             worktree_path=str(worktree.resolve()),
             pid=proc.pid,
             started_at=datetime.now().isoformat(),
-            log_path=str(self._session_log_path(worktree, name)),
+            log_path=str(self._session_log_path(worktree, session_name)),
             tab_name=tab_name,
             is_review=is_review,
         )
@@ -369,16 +369,15 @@ class SubprocessPlugin:
         return True
 
     @hookimpl
-    def session_exists(self, session_id: int, session_name: str | None = None) -> bool | None:
-        name = self._session_name(session_id, session_name)
+    def session_exists(self, session_id: int, session_name: str) -> bool | None:
         records = self._registry.load()
-        record = records.get(name)
+        record = records.get(session_name)
         if not record:
             return False
-        if self._process_alive(record.pid, name):
+        if self._process_alive(record.pid, session_name):
             return True
-        self._registry.remove(name)
-        self._processes.pop(name, None)
+        self._registry.remove(session_name)
+        self._processes.pop(session_name, None)
         return False
 
     @hookimpl
@@ -386,15 +385,14 @@ class SubprocessPlugin:
         return self.session_exists(0, session_name)
 
     @hookimpl
-    def kill_session(self, session_id: int, session_name: str | None = None) -> bool | None:
-        name = self._session_name(session_id, session_name)
+    def kill_session(self, session_id: int, session_name: str) -> bool | None:
         records = self._registry.load()
-        record = records.get(name)
+        record = records.get(session_name)
         if not record:
             return False
         self._kill_process(record.pid)
-        self._registry.remove(name)
-        self._processes.pop(name, None)
+        self._registry.remove(session_name)
+        self._processes.pop(session_name, None)
         return True
 
     @hookimpl
@@ -425,9 +423,8 @@ class SubprocessPlugin:
         return cleaned
 
     @hookimpl
-    def get_session_output(self, session_id: int, lines: int, session_name: str | None = None) -> str | None:
-        name = self._session_name(session_id, session_name)
-        record = self._registry.load().get(name)
+    def get_session_output(self, session_id: int, lines: int, session_name: str) -> str | None:
+        record = self._registry.load().get(session_name)
         if not record:
             return None
         log_path = Path(record.log_path)
@@ -441,12 +438,11 @@ class SubprocessPlugin:
         return "\n".join(output_lines[-lines:]) if output_lines else ""
 
     @hookimpl
-    def send_to_session(self, session_id: int, text: str, session_name: str | None = None) -> bool | None:
+    def send_to_session(self, session_id: int, text: str, session_name: str) -> bool | None:
         if not self._allow_stdin:
             return False
-        name = self._session_name(session_id, session_name)
-        proc = self._processes.get(name)
-        master_fd = self._pty_masters.get(name)
+        proc = self._processes.get(session_name)
+        master_fd = self._pty_masters.get(session_name)
         if not proc or master_fd is None:
             return False
         try:
@@ -460,7 +456,7 @@ class SubprocessPlugin:
         return self.send_to_session(0, text, session_name)
 
     @hookimpl
-    def focus_session(self, session_id: int, session_name: str | None = None) -> bool | None:
+    def focus_session(self, session_id: int, session_name: str) -> bool | None:
         return False
 
     @hookimpl

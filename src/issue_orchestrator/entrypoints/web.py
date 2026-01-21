@@ -801,7 +801,7 @@ async def focus_session(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
 
     # Use session_runner protocol to focus the terminal session
-    if _orchestrator.session_runner.focus_session(issue_number):
+    if _orchestrator.session_runner.focus_session(issue_number, session.terminal_id):
         return JSONResponse({"status": "focused", "issue_number": issue_number})
     else:
         return JSONResponse({"error": f"Could not focus session #{issue_number}"}, status_code=500)
@@ -1482,7 +1482,7 @@ async def send_input(issue_number: int, request: Request) -> JSONResponse:
     if not session:
         return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
 
-    ok = _orchestrator.session_runner.send_to_session(issue_number, text)
+    ok = _orchestrator.session_runner.send_to_session(issue_number, text, session.terminal_id)
     if not ok:
         return JSONResponse({"error": f"Failed to send input to #{issue_number}"}, status_code=500)
 

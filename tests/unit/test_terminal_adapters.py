@@ -45,6 +45,7 @@ class TestPluggySessionRunner:
                 command="claude --prompt issue.md",
                 working_dir="/tmp/worktree",
                 title="Fix the bug",
+                session_name="issue-42",
             )
 
         assert result is True
@@ -53,7 +54,7 @@ class TestPluggySessionRunner:
             command="claude --prompt issue.md",
             working_dir="/tmp/worktree",
             title="Fix the bug",
-            session_name=None,
+            session_name="issue-42",
         )
         assert "Creating session via terminal hook" in caplog.text
         assert "id=42" in caplog.text
@@ -67,6 +68,7 @@ class TestPluggySessionRunner:
             command="claude",
             working_dir="/tmp/worktree",
             title=None,
+            session_name="issue-42",
         )
 
         assert result is False
@@ -80,6 +82,7 @@ class TestPluggySessionRunner:
             command="claude",
             working_dir="/tmp/worktree",
             title=None,
+            session_name="issue-42",
         )
 
         assert result is False
@@ -88,16 +91,16 @@ class TestPluggySessionRunner:
         """session_exists returns True when hook returns True."""
         mock_plugin_manager.hook.session_exists.return_value = True
 
-        result = session_runner.session_exists(session_id=42)
+        result = session_runner.session_exists(session_id=42, session_name="issue-42")
 
         assert result is True
-        mock_plugin_manager.hook.session_exists.assert_called_once_with(session_id=42, session_name=None)
+        mock_plugin_manager.hook.session_exists.assert_called_once_with(session_id=42, session_name="issue-42")
 
     def test_session_exists_false(self, session_runner, mock_plugin_manager):
         """session_exists returns False when hook returns False."""
         mock_plugin_manager.hook.session_exists.return_value = False
 
-        result = session_runner.session_exists(session_id=42)
+        result = session_runner.session_exists(session_id=42, session_name="issue-42")
 
         assert result is False
 
@@ -105,15 +108,15 @@ class TestPluggySessionRunner:
         """session_exists returns False when hook returns None."""
         mock_plugin_manager.hook.session_exists.return_value = None
 
-        result = session_runner.session_exists(session_id=42)
+        result = session_runner.session_exists(session_id=42, session_name="issue-42")
 
         assert result is False
 
     def test_kill_session(self, session_runner, mock_plugin_manager):
         """kill_session delegates to pluggy hook."""
-        session_runner.kill_session(session_id=42)
+        session_runner.kill_session(session_id=42, session_name="issue-42")
 
-        mock_plugin_manager.hook.kill_session.assert_called_once_with(session_id=42, session_name=None)
+        mock_plugin_manager.hook.kill_session.assert_called_once_with(session_id=42, session_name="issue-42")
 
     def test_discover_running_sessions_with_results(self, session_runner, mock_plugin_manager):
         """discover_running_sessions returns list from hook."""
@@ -155,47 +158,47 @@ class TestPluggySessionRunner:
         """get_session_output returns output from hook."""
         mock_plugin_manager.hook.get_session_output.return_value = "foo\nbar\nbaz"
 
-        result = session_runner.get_session_output(session_id=42, lines=50)
+        result = session_runner.get_session_output(session_id=42, lines=50, session_name="issue-42")
 
         assert result == "foo\nbar\nbaz"
         mock_plugin_manager.hook.get_session_output.assert_called_once_with(
-            session_id=42, lines=50, session_name=None
+            session_id=42, lines=50, session_name="issue-42"
         )
 
     def test_get_session_output_none(self, session_runner, mock_plugin_manager):
         """get_session_output returns None when hook returns None."""
         mock_plugin_manager.hook.get_session_output.return_value = None
 
-        result = session_runner.get_session_output(session_id=42, lines=20)
+        result = session_runner.get_session_output(session_id=42, lines=20, session_name="issue-42")
 
         assert result is None
 
-    def test_get_session_output_default_lines(self, session_runner, mock_plugin_manager):
-        """get_session_output uses default lines=50."""
+    def test_get_session_output_custom_lines(self, session_runner, mock_plugin_manager):
+        """get_session_output passes lines parameter correctly."""
         mock_plugin_manager.hook.get_session_output.return_value = "output"
 
-        session_runner.get_session_output(session_id=42)
+        session_runner.get_session_output(session_id=42, lines=100, session_name="issue-42")
 
         mock_plugin_manager.hook.get_session_output.assert_called_once_with(
-            session_id=42, lines=50, session_name=None
+            session_id=42, lines=100, session_name="issue-42"
         )
 
     def test_send_to_session_success(self, session_runner, mock_plugin_manager):
         """send_to_session returns True when hook returns True."""
         mock_plugin_manager.hook.send_to_session.return_value = True
 
-        result = session_runner.send_to_session(session_id=42, text="/exit")
+        result = session_runner.send_to_session(session_id=42, text="/exit", session_name="issue-42")
 
         assert result is True
         mock_plugin_manager.hook.send_to_session.assert_called_once_with(
-            session_id=42, text="/exit", session_name=None
+            session_id=42, text="/exit", session_name="issue-42"
         )
 
     def test_send_to_session_failure(self, session_runner, mock_plugin_manager):
         """send_to_session returns False when hook returns False."""
         mock_plugin_manager.hook.send_to_session.return_value = False
 
-        result = session_runner.send_to_session(session_id=42, text="/exit")
+        result = session_runner.send_to_session(session_id=42, text="/exit", session_name="issue-42")
 
         assert result is False
 
@@ -203,7 +206,7 @@ class TestPluggySessionRunner:
         """send_to_session returns False when hook returns None."""
         mock_plugin_manager.hook.send_to_session.return_value = None
 
-        result = session_runner.send_to_session(session_id=42, text="/exit")
+        result = session_runner.send_to_session(session_id=42, text="/exit", session_name="issue-42")
 
         assert result is False
 

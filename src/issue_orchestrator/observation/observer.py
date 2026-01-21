@@ -91,23 +91,11 @@ class SessionObserver:
         else:
             raise ValueError(f"Unknown session name format: {session_name}")
 
-    def _session_exists(self, session_id: int) -> bool:
-        """Check if a session exists using the session runner."""
-        if self._session_runner is None:
-            return False
-        return self._session_runner.session_exists(session_id)
-
     def _session_exists_by_name(self, session_name: str) -> bool:
         """Check if a session exists by its full name (e.g., 'review-456')."""
         if self._session_runner is None:
             return False
         return self._session_runner.session_exists_by_name(session_name)
-
-    def _send_exit_to_session(self, session_id: int) -> bool:
-        """Send /exit command to a session."""
-        if self._session_runner is None:
-            return False
-        return self._session_runner.send_to_session(session_id, "/exit")
 
     def _send_exit_to_session_by_name(self, session_name: str) -> bool:
         """Send /exit command to a session by name."""
