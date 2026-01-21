@@ -1,4 +1,4 @@
-.PHONY: help venv install typecheck lint-arch lint-complexity test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv install typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -57,11 +57,13 @@ venv:
 	.venv/bin/pip install -e "packages/agent_runner"
 	@echo "Installing main package with dev dependencies..."
 	.venv/bin/pip install -e ".[dev]"
+	@touch .venv/.deps-synced
 	@echo ""
 	@echo "Done! Activate with: source .venv/bin/activate"
 
 install:
 	pip install -e ".[dev]"
+	@touch .venv/.deps-synced
 	@echo ""
 	@echo "NOTE: On macOS, install GNU make for parallel validation:"
 	@echo "  brew install make"
@@ -94,7 +96,27 @@ lint-complexity:
 # Use PARALLEL=0 to disable: make test-unit PARALLEL=0
 PARALLEL ?= auto
 
-test-unit:
+# Python interpreter for dependency checks
+PYTHON ?= .venv/bin/python
+
+# Marker file for tracking when deps were last synced
+DEPS_MARKER ?= .venv/.deps-synced
+
+# Auto-sync dependencies if pyproject.toml is newer than last sync
+# This prevents cryptic errors like "unrecognized arguments: -n" when pytest-xdist is missing
+sync-deps:
+	@if [ ! -f $(DEPS_MARKER) ] || [ pyproject.toml -nt $(DEPS_MARKER) ]; then \
+		echo ""; \
+		echo "================================================================"; \
+		echo "[sync-deps] pyproject.toml changed since last install"; \
+		echo "[sync-deps] Auto-syncing dependencies on your behalf..."; \
+		echo "================================================================"; \
+		pip install -q -e ".[dev]" && touch $(DEPS_MARKER) && \
+		echo "[sync-deps] Done. Continuing with original command..."; \
+		echo ""; \
+	fi
+
+test-unit: sync-deps
 ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/unit -x -q --tb=short
 else
@@ -108,7 +130,7 @@ test-unit-cov-html:
 	$(PYTEST) tests/unit --cov=src/issue_orchestrator --cov-report=html -x -q --tb=short
 	@echo "Coverage report: open htmlcov/index.html"
 
-test-integration:
+test-integration: sync-deps
 ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short
 else
@@ -117,7 +139,7 @@ endif
 
 # Integration tests excluding those that require external infrastructure (GitHub token, etc.)
 # Used in pre-push validation where full infra may not be available
-test-integration-no-infra:
+test-integration-no-infra: sync-deps
 ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra"
 else
@@ -125,7 +147,7 @@ else
 endif
 
 # Full integration tests including infrastructure-dependent ones (run in CI)
-test-integration-full:
+test-integration-full: sync-deps
 ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short
 else
