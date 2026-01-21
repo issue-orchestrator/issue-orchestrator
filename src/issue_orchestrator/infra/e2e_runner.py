@@ -80,6 +80,7 @@ class E2ERunnerManager:
         pytest_args: list[str],
         allow_retry_once: bool = True,
         quarantine_file: str = "tests/e2e/quarantine.txt",
+        stop_on_first_failure: bool = False,
     ) -> dict:
         """Start an E2E worker subprocess.
 
@@ -89,6 +90,7 @@ class E2ERunnerManager:
             pytest_args: Arguments to pass to pytest
             allow_retry_once: Whether to retry failed tests once
             quarantine_file: Path to quarantine file (relative to repo root)
+            stop_on_first_failure: If True, add -x flag to stop on first failure
 
         Returns:
             Dict with 'pid' and 'log_path'
@@ -110,6 +112,11 @@ class E2ERunnerManager:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         log_path = log_dir / f"run_{timestamp}.log"
 
+        # Build effective pytest args (add -x if stop_on_first_failure)
+        effective_pytest_args = list(pytest_args)
+        if stop_on_first_failure and "-x" not in effective_pytest_args:
+            effective_pytest_args.append("-x")
+
         # Build command
         cmd = [
             sys.executable,
@@ -122,7 +129,7 @@ class E2ERunnerManager:
             "--orchestrator-id",
             orchestrator_id,
             "--pytest-args-json",
-            json.dumps(pytest_args),
+            json.dumps(effective_pytest_args),
             "--quarantine-file",
             quarantine_file,
             "--log-file",
@@ -138,16 +145,18 @@ class E2ERunnerManager:
             " ".join(cmd[:6]) + "...",
         )
 
-        # Start subprocess
+        # Start subprocess with output captured to log file
         # Use start_new_session to detach from parent's process group
         # This prevents signals from propagating to the worker
+        log_file_handle = open(log_path, "w")
         proc = subprocess.Popen(
             cmd,
             cwd=repo_root,
-            stdout=subprocess.DEVNULL,  # Output goes to log file
+            stdout=log_file_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        # Note: log_file_handle stays open - subprocess inherits it and will close on exit
 
         self._processes[orchestrator_id] = proc
 
@@ -173,6 +182,7 @@ class E2ERunnerManager:
         pytest_args: list[str],
         allow_retry_once: bool = True,
         quarantine_file: str = "tests/e2e/quarantine.txt",
+        stop_on_first_failure: bool = False,
     ) -> dict:
         """Start a new E2E run, or resume an interrupted one.
 
@@ -184,6 +194,7 @@ class E2ERunnerManager:
             pytest_args: Arguments to pass to pytest (for new runs)
             allow_retry_once: Whether to retry failed tests once
             quarantine_file: Path to quarantine file (relative to repo root)
+            stop_on_first_failure: If True, add -x flag to stop on first failure
 
         Returns:
             Dict with 'pid', 'log_path', 'resumed', 'run_id', 'skipped_tests'
@@ -217,6 +228,7 @@ class E2ERunnerManager:
                     passed_nodeids=passed_nodeids,
                     allow_retry_once=allow_retry_once,
                     quarantine_file=quarantine_file,
+                    stop_on_first_failure=stop_on_first_failure,
                     db=db,
                 )
             else:
@@ -234,6 +246,7 @@ class E2ERunnerManager:
             pytest_args=pytest_args,
             allow_retry_once=allow_retry_once,
             quarantine_file=quarantine_file,
+            stop_on_first_failure=stop_on_first_failure,
         )
         result["resumed"] = False
         result["run_id"] = None
@@ -249,6 +262,7 @@ class E2ERunnerManager:
         passed_nodeids: set[str],
         allow_retry_once: bool,
         quarantine_file: str,
+        stop_on_first_failure: bool,
         db: E2EDB,
     ) -> dict:
         """Resume an interrupted run by starting worker with --deselect for passed tests."""
@@ -257,6 +271,11 @@ class E2ERunnerManager:
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         log_path = log_dir / f"run_{run_id}_resume_{timestamp}.log"
+
+        # Build effective pytest args (add -x if stop_on_first_failure)
+        effective_pytest_args = list(pytest_args)
+        if stop_on_first_failure and "-x" not in effective_pytest_args:
+            effective_pytest_args.append("-x")
 
         # Build command with --deselect for passed tests
         cmd = [
@@ -270,7 +289,7 @@ class E2ERunnerManager:
             "--orchestrator-id",
             orchestrator_id,
             "--pytest-args-json",
-            json.dumps(pytest_args),
+            json.dumps(effective_pytest_args),
             "--quarantine-file",
             quarantine_file,
             "--log-file",
@@ -293,14 +312,16 @@ class E2ERunnerManager:
             len(passed_nodeids),
         )
 
-        # Start subprocess
+        # Start subprocess with output captured to log file
+        log_file_handle = open(log_path, "w")
         proc = subprocess.Popen(
             cmd,
             cwd=repo_root,
-            stdout=subprocess.DEVNULL,
+            stdout=log_file_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        # Note: log_file_handle stays open - subprocess inherits it and will close on exit
 
         self._processes[orchestrator_id] = proc
 
@@ -538,6 +559,7 @@ def maybe_trigger_e2e(
             pytest_args=config.e2e.pytest_args,
             allow_retry_once=config.e2e.allow_retry_once,
             quarantine_file=config.e2e.quarantine_file,
+            stop_on_first_failure=config.e2e.stop_on_first_failure,
         )
         if result.get("resumed"):
             logger.info(

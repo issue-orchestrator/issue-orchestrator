@@ -172,6 +172,7 @@ e2e:
   allow_retry_once: true
   quarantine_file: "tests/e2e/quarantine.txt"
   survive_restart: true
+  stop_on_first_failure: false        # If true, stop on first test failure (-x flag)
   pr_labels: ["io-e2e-test-data"]
 
 state:

@@ -308,3 +308,152 @@ class TestGetE2ERunnerManager:
         manager2 = get_e2e_runner_manager()
 
         assert manager1 is manager2
+
+
+class TestStopOnFirstFailure:
+    """Tests for the stop_on_first_failure configuration."""
+
+    @pytest.fixture
+    def manager(self) -> E2ERunnerManager:
+        """Create a fresh manager for each test."""
+        return E2ERunnerManager()
+
+    @pytest.fixture
+    def mock_popen(self):
+        """Mock subprocess.Popen for testing."""
+        with patch("subprocess.Popen") as mock:
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            mock.return_value = proc
+            yield mock, proc
+
+    def test_start_adds_x_flag_when_stop_on_first_failure_true(
+        self, manager: E2ERunnerManager, mock_popen, tmp_path: Path
+    ):
+        """Test that -x flag is added to pytest_args when stop_on_first_failure=True."""
+        popen_mock, proc = mock_popen
+
+        with patch("builtins.open", MagicMock()):
+            manager.start(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e", "-v"],
+                stop_on_first_failure=True,
+            )
+
+        # Extract the pytest-args-json from the command
+        call_args = popen_mock.call_args
+        cmd = call_args[0][0]
+
+        # Find the pytest args in the command
+        pytest_args_idx = cmd.index("--pytest-args-json") + 1
+        import json
+        pytest_args = json.loads(cmd[pytest_args_idx])
+
+        assert "-x" in pytest_args
+
+    def test_start_no_x_flag_when_stop_on_first_failure_false(
+        self, manager: E2ERunnerManager, mock_popen, tmp_path: Path
+    ):
+        """Test that -x flag is NOT added when stop_on_first_failure=False."""
+        popen_mock, proc = mock_popen
+
+        with patch("builtins.open", MagicMock()):
+            manager.start(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e", "-v"],
+                stop_on_first_failure=False,
+            )
+
+        call_args = popen_mock.call_args
+        cmd = call_args[0][0]
+
+        pytest_args_idx = cmd.index("--pytest-args-json") + 1
+        import json
+        pytest_args = json.loads(cmd[pytest_args_idx])
+
+        assert "-x" not in pytest_args
+
+    def test_start_no_duplicate_x_flag(
+        self, manager: E2ERunnerManager, mock_popen, tmp_path: Path
+    ):
+        """Test that -x flag is not duplicated if already in pytest_args."""
+        popen_mock, proc = mock_popen
+
+        with patch("builtins.open", MagicMock()):
+            manager.start(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e", "-v", "-x"],  # Already has -x
+                stop_on_first_failure=True,
+            )
+
+        call_args = popen_mock.call_args
+        cmd = call_args[0][0]
+
+        pytest_args_idx = cmd.index("--pytest-args-json") + 1
+        import json
+        pytest_args = json.loads(cmd[pytest_args_idx])
+
+        # Should only have one -x
+        assert pytest_args.count("-x") == 1
+
+
+class TestLogFileCapture:
+    """Tests for log file output capture."""
+
+    @pytest.fixture
+    def manager(self) -> E2ERunnerManager:
+        """Create a fresh manager for each test."""
+        return E2ERunnerManager()
+
+    def test_start_opens_log_file_for_writing(
+        self, manager: E2ERunnerManager, tmp_path: Path
+    ):
+        """Test that start() opens log file and passes it to Popen."""
+        mock_file = MagicMock()
+
+        with patch("subprocess.Popen") as popen_mock, \
+             patch("builtins.open", return_value=mock_file) as open_mock:
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            popen_mock.return_value = proc
+
+            result = manager.start(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e"],
+            )
+
+            # Verify open was called with write mode
+            open_mock.assert_called_once()
+            call_args = open_mock.call_args
+            assert call_args[0][1] == "w"  # Write mode
+
+            # Verify log file handle was passed to Popen as stdout
+            popen_call = popen_mock.call_args
+            assert popen_call.kwargs["stdout"] == mock_file
+
+    def test_start_returns_log_path(
+        self, manager: E2ERunnerManager, tmp_path: Path
+    ):
+        """Test that start() returns the log path in the result."""
+        with patch("subprocess.Popen") as popen_mock, \
+             patch("builtins.open", MagicMock()):
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            popen_mock.return_value = proc
+
+            result = manager.start(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e"],
+            )
+
+            assert "log_path" in result
+            assert result["log_path"].endswith(".log")
+            assert "e2e" in result["log_path"]
