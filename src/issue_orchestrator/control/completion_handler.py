@@ -30,7 +30,7 @@ from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
 from ..ports.session_output import SessionOutput
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
 from .completion_processor import ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR
-from .reconciliation import build_expected_for_mutation
+from .reconciliation import build_expected_for_mutation, ExpectedState
 from ..infra import labels
 
 logger = logging.getLogger(__name__)
@@ -618,6 +618,193 @@ class CompletionHandler:
 
         return False
 
+    def _generate_processing_failure_actions(
+        self,
+        session: Session,
+        critical_errors: list[str],
+        diagnostic_path: Optional[str],
+        expected: ExpectedState,
+    ) -> list[Action]:
+        """Generate actions when agent said completed but push/PR creation failed."""
+        from pathlib import Path
+
+        issue_number = session.issue.number
+        in_progress_label = self.config.get_label_in_progress()
+
+        # Brief error hint for comment (not full details - those are in diagnostic file)
+        first_error = critical_errors[0][:100] if critical_errors else "Unknown error"
+        if len(first_error) == 100:
+            first_error += "..."
+
+        # Build diagnostic location info
+        diagnostic_info = ""
+        if diagnostic_path and session.worktree_path:
+            worktree_name = Path(session.worktree_path).name
+            diagnostic_info = f"\n**Diagnostic file:** `{worktree_name}/{diagnostic_path}`\n"
+
+        return [
+            AddLabelAction(
+                issue_number=issue_number,
+                label=labels.BLOCKED_FAILED,
+                reason="Processing failed after agent completion (push/PR creation failed)",
+                expected=expected,
+            ),
+            AddCommentAction(
+                number=issue_number,
+                comment=f"❌ **Processing Failed**\n\n"
+                        f"The agent completed its work, but the orchestrator could not push or create a PR.\n\n"
+                        f"**Error:** {first_error}\n"
+                        f"{diagnostic_info}\n"
+                        f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                        f"- Session: `{session.terminal_id}`\n\n"
+                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                        f"Remove the label to retry.",
+                reason="Notify about processing failure",
+                expected=expected,
+            ),
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=in_progress_label,
+                reason="Processing failed - releasing claim",
+                expected=expected,
+            ),
+        ]
+
+    def _generate_timeout_actions(
+        self,
+        session: Session,
+        expected: ExpectedState,
+    ) -> list[Action]:
+        """Generate actions when session timed out."""
+        issue_number = session.issue.number
+        in_progress_label = self.config.get_label_in_progress()
+        is_issue_session = session.terminal_id.startswith("issue-")
+        session_kind = session.terminal_id.split("-", 1)[0]
+
+        if is_issue_session:
+            timeout_mins = session.agent_config.timeout_minutes if session.agent_config else "unknown"
+            return [
+                AddLabelAction(
+                    issue_number=issue_number,
+                    label=labels.BLOCKED_FAILED,
+                    reason=f"Session timed out after {session.runtime_minutes} minutes",
+                    expected=expected,
+                ),
+                AddCommentAction(
+                    number=issue_number,
+                    comment=f"⏱️ **Session Timed Out**\n\n"
+                            f"The agent session exceeded the {timeout_mins} minute timeout limit.\n\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n\n"
+                            f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                            f"Remove the label to allow reprocessing.",
+                    reason="Notify about session timeout",
+                    expected=expected,
+                ),
+                RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=in_progress_label,
+                    reason="Session timed out - releasing claim",
+                    expected=expected,
+                ),
+            ]
+        else:
+            return [
+                AddCommentAction(
+                    number=issue_number,
+                    comment=f"⏱️ **{session_kind.capitalize()} Session Timed Out**\n\n"
+                            f"The {session_kind} session exceeded its timeout and did not produce an outcome.\n\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n\n"
+                            f"The PR remains pending; review will be retried automatically.",
+                    reason=f"Notify about {session_kind} session timeout",
+                    expected=expected,
+                ),
+            ]
+
+    def _generate_failure_actions(
+        self,
+        session: Session,
+        expected: ExpectedState,
+    ) -> list[Action]:
+        """Generate actions when session failed without agent-done."""
+        issue_number = session.issue.number
+        in_progress_label = self.config.get_label_in_progress()
+        is_issue_session = session.terminal_id.startswith("issue-")
+        session_kind = session.terminal_id.split("-", 1)[0]
+
+        if is_issue_session:
+            return [
+                AddLabelAction(
+                    issue_number=issue_number,
+                    label=labels.BLOCKED_NEEDS_HUMAN,
+                    reason="Session terminated without calling agent-done (mandatory)",
+                    expected=expected,
+                ),
+                AddCommentAction(
+                    number=issue_number,
+                    comment=f"🔍 **Session Needs Investigation**\n\n"
+                            f"The agent session terminated without calling `agent-done`.\n\n"
+                            f"**This is unexpected** - `agent-done` is mandatory and must be called "
+                            f"to complete any session (completed, blocked, or needs_human).\n\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n\n"
+                            f"**Possible causes:**\n"
+                            f"- Agent crashed or was interrupted\n"
+                            f"- Agent ignored the mandatory `agent-done` requirement\n"
+                            f"- Infrastructure issue prevented completion\n\n"
+                            f"This issue has been marked as `{labels.BLOCKED_NEEDS_HUMAN}` for investigation.\n"
+                            f"Remove the label after investigating to allow reprocessing.",
+                    reason="Notify about session needing human investigation",
+                    expected=expected,
+                ),
+                RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=in_progress_label,
+                    reason="Session failed - releasing claim",
+                    expected=expected,
+                ),
+            ]
+        else:
+            return [
+                AddCommentAction(
+                    number=issue_number,
+                    comment=f"🔍 **{session_kind.capitalize()} Session Needs Investigation**\n\n"
+                            f"The {session_kind} session terminated without calling `agent-done`.\n\n"
+                            f"**This is unexpected** - `agent-done` is mandatory.\n\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n\n"
+                            f"The PR remains pending; please investigate what happened.",
+                    reason=f"Notify about {session_kind} session needing investigation",
+                    expected=expected,
+                ),
+            ]
+
+    def _generate_blocked_actions(
+        self,
+        session: Session,
+        expected: ExpectedState,
+    ) -> list[Action]:
+        """Generate actions when agent explicitly reported blocked."""
+        is_issue_session = session.terminal_id.startswith("issue-")
+
+        if is_issue_session:
+            return [
+                AddLabelAction(
+                    issue_number=session.issue.number,
+                    label=labels.BLOCKED,
+                    reason="Agent reported issue as blocked",
+                    expected=expected,
+                ),
+                RemoveLabelAction(
+                    issue_number=session.issue.number,
+                    label=self.config.get_label_in_progress(),
+                    reason="Session blocked - releasing claim",
+                    expected=expected,
+                ),
+            ]
+        return []
+
     def generate_completion_actions(
         self,
         session: Session,
@@ -639,168 +826,46 @@ class CompletionHandler:
         Returns:
             Tuple of actions to apply
         """
-        actions: list[Action] = []
-        issue_number = session.issue.number
-        in_progress_label = self.config.get_label_in_progress()
         expected = build_expected_for_mutation()
-        is_issue_session = session.terminal_id.startswith("issue-")
-        session_kind = session.terminal_id.split("-", 1)[0]
 
-        # If agent said "completed" but critical processing failed (push/PR creation),
-        # treat as blocked-failed. Non-critical failures (like comment timeouts)
-        # should not block the issue.
-        critical_errors = []
-        if processing_errors:
-            critical_errors = [
-                error for error in processing_errors
-                if error.startswith(ERROR_PREFIX_PUSH) or error.startswith(ERROR_PREFIX_CREATE_PR)
-            ]
+        # Check for critical processing errors (push/PR creation failures)
+        critical_errors = [
+            error for error in (processing_errors or [])
+            if error.startswith(ERROR_PREFIX_PUSH) or error.startswith(ERROR_PREFIX_CREATE_PR)
+        ]
+
+        # If agent said "completed" but critical processing failed, treat as blocked-failed
         if status == SessionStatus.COMPLETED and critical_errors:
             logger.info(
                 "[COMPLETION] Agent said completed but processing failed: issue=%d errors=%s",
-                issue_number, critical_errors
+                session.issue.number, critical_errors
             )
-            # Brief error hint for comment (not full details - those are in diagnostic file)
-            first_error = critical_errors[0][:100] if critical_errors else "Unknown error"
-            if len(first_error) == 100:
-                first_error += "..."
-
-            # Build diagnostic location info
-            diagnostic_info = ""
-            if diagnostic_path and session.worktree_path:
-                # Show sanitized relative path (worktree folder name + diagnostic path)
-                from pathlib import Path
-                worktree_name = Path(session.worktree_path).name
-                diagnostic_info = (
-                    f"\n**Diagnostic file:** `{worktree_name}/{diagnostic_path}`\n"
-                )
-
-            actions.append(AddLabelAction(
-                issue_number=issue_number,
-                label=labels.BLOCKED_FAILED,
-                reason="Processing failed after agent completion (push/PR creation failed)",
-                expected=expected,
+            return tuple(self._generate_processing_failure_actions(
+                session, critical_errors, diagnostic_path, expected
             ))
-            actions.append(AddCommentAction(
-                number=issue_number,
-                comment=f"❌ **Processing Failed**\n\n"
-                        f"The agent completed its work, but the orchestrator could not push or create a PR.\n\n"
-                        f"**Error:** {first_error}\n"
-                        f"{diagnostic_info}\n"
-                        f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
-                        f"- Session: `{session.terminal_id}`\n\n"
-                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
-                        f"Remove the label to retry.",
-                reason="Notify about processing failure",
-                expected=expected,
-            ))
-            actions.append(RemoveLabelAction(
-                issue_number=issue_number,
-                label=in_progress_label,
-                reason="Processing failed - releasing claim",
-                expected=expected,
-            ))
-            return tuple(actions)
 
+        # Dispatch to status-specific action generators
         if status == SessionStatus.TIMED_OUT:
-            # POLICY: Timeout → blocked-failed + comment + release claim
-            if is_issue_session:
-                actions.append(AddLabelAction(
-                    issue_number=issue_number,
-                    label=labels.BLOCKED_FAILED,
-                    reason=f"Session timed out after {session.runtime_minutes} minutes",
-                    expected=expected,
-                ))
-                timeout_mins = session.agent_config.timeout_minutes if session.agent_config else "unknown"
-                actions.append(AddCommentAction(
-                    number=issue_number,
-                    comment=f"⏱️ **Session Timed Out**\n\n"
-                            f"The agent session exceeded the {timeout_mins} minute timeout limit.\n\n"
-                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
-                            f"- Session: `{session.terminal_id}`\n\n"
-                            f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
-                            f"Remove the label to allow reprocessing.",
-                    reason="Notify about session timeout",
-                    expected=expected,
-                ))
-                actions.append(RemoveLabelAction(
-                    issue_number=issue_number,
-                    label=in_progress_label,
-                    reason="Session timed out - releasing claim",
-                    expected=expected,
-                ))
-            else:
-                actions.append(AddCommentAction(
-                    number=issue_number,
-                    comment=f"⏱️ **{session_kind.capitalize()} Session Timed Out**\n\n"
-                            f"The {session_kind} session exceeded its timeout and did not produce an outcome.\n\n"
-                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
-                            f"- Session: `{session.terminal_id}`\n\n"
-                            f"The PR remains pending; review will be retried automatically.",
-                    reason=f"Notify about {session_kind} session timeout",
-                    expected=expected,
-                ))
+            return tuple(self._generate_timeout_actions(session, expected))
 
-        elif status == SessionStatus.FAILED:
-            # POLICY: Failure (no completion record) → blocked-needs-human + comment + release claim
-            # This requires human investigation - agent-done is MANDATORY but was not called
-            if is_issue_session:
-                actions.append(AddLabelAction(
-                    issue_number=issue_number,
-                    label=labels.BLOCKED_NEEDS_HUMAN,
-                    reason="Session terminated without calling agent-done (mandatory)",
-                    expected=expected,
-                ))
-                actions.append(AddCommentAction(
-                    number=issue_number,
-                    comment=f"🔍 **Session Needs Investigation**\n\n"
-                            f"The agent session terminated without calling `agent-done`.\n\n"
-                            f"**This is unexpected** - `agent-done` is mandatory and must be called "
-                            f"to complete any session (completed, blocked, or needs_human).\n\n"
-                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
-                            f"- Session: `{session.terminal_id}`\n\n"
-                            f"**Possible causes:**\n"
-                            f"- Agent crashed or was interrupted\n"
-                            f"- Agent ignored the mandatory `agent-done` requirement\n"
-                            f"- Infrastructure issue prevented completion\n\n"
-                            f"This issue has been marked as `{labels.BLOCKED_NEEDS_HUMAN}` for investigation.\n"
-                            f"Remove the label after investigating to allow reprocessing.",
-                    reason="Notify about session needing human investigation",
-                    expected=expected,
-                ))
-                actions.append(RemoveLabelAction(
-                    issue_number=issue_number,
-                    label=in_progress_label,
-                    reason="Session failed - releasing claim",
-                    expected=expected,
-                ))
-            else:
-                # Review/rework session failed - needs human to check what happened
-                actions.append(AddCommentAction(
-                    number=issue_number,
-                    comment=f"🔍 **{session_kind.capitalize()} Session Needs Investigation**\n\n"
-                            f"The {session_kind} session terminated without calling `agent-done`.\n\n"
-                            f"**This is unexpected** - `agent-done` is mandatory.\n\n"
-                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
-                            f"- Session: `{session.terminal_id}`\n\n"
-                            f"The PR remains pending; please investigate what happened.",
-                    reason=f"Notify about {session_kind} session needing investigation",
-                    expected=expected,
-                ))
+        if status == SessionStatus.FAILED:
+            return tuple(self._generate_failure_actions(session, expected))
 
-        elif status == SessionStatus.COMPLETED:
+        if status == SessionStatus.BLOCKED:
+            return tuple(self._generate_blocked_actions(session, expected))
+
+        if status == SessionStatus.COMPLETED:
             # POLICY: Completion → release in-progress (claim maintained via pr-pending)
-            actions.append(RemoveLabelAction(
-                issue_number=issue_number,
-                label=in_progress_label,
+            return (RemoveLabelAction(
+                issue_number=session.issue.number,
+                label=self.config.get_label_in_progress(),
                 reason="Session completed successfully",
                 expected=expected,
-            ))
+            ),)
 
-        # Note: BLOCKED and NEEDS_HUMAN keep in-progress label to maintain ownership claim
+        # Note: NEEDS_HUMAN keeps in-progress label to maintain ownership claim
         # This is intentional policy - the issue is still being worked on
-
-        return tuple(actions)
+        return ()
 
 
 def launch_review_by_number(
