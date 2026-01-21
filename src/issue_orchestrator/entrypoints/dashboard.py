@@ -263,7 +263,7 @@ class DashboardApp(App):
                 else:
                     # Use session_runner protocol to focus the terminal session
                     logger.debug("Using session_runner.focus_session")
-                    if self.orchestrator.session_runner.focus_session(session.issue.number):
+                    if self.orchestrator.session_runner.focus_session(session.issue.number, session.terminal_id):
                         logger.debug("focus_session succeeded")
                         self.notify(f"Switched to #{session.issue.number}")
                         # In tmux mode, exit dashboard to show the session
@@ -303,8 +303,17 @@ class Dashboard:
 
     async def _handle_attach(self, issue_number: int) -> None:
         """Handle attach - select window/tab and mark for attachment after exit."""
+        # Find the session to get terminal_id
+        session = next(
+            (s for s in self.orchestrator.state.active_sessions if s.issue.number == issue_number),
+            None
+        )
+        if not session:
+            if self._app:
+                self._app.notify(f"Session #{issue_number} not found", severity="warning")
+            return
         # Use session_runner protocol to focus the terminal session
-        if self.orchestrator.session_runner.focus_session(issue_number):
+        if self.orchestrator.session_runner.focus_session(issue_number, session.terminal_id):
             if self._app:
                 self._app.notify(f"Switched to #{issue_number}")
             # For tmux mode, exit dashboard after focusing

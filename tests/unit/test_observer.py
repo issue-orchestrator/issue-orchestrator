@@ -160,9 +160,9 @@ class TestSessionObserverInit:
 class TestSessionObserverBackends:
     """Test backend delegation methods."""
 
-    def test_session_exists_uses_runner(self, mock_config, mock_session_output, mock_session_runner, mock_repository_host):
-        """Test _session_exists delegates to session runner."""
-        mock_session_runner.session_exists.return_value = True
+    def test_session_exists_by_name_uses_runner(self, mock_config, mock_session_output, mock_session_runner, mock_repository_host):
+        """Test _session_exists_by_name delegates to session runner."""
+        mock_session_runner.session_exists_by_name.return_value = True
         monitor = SessionObserver(
             mock_config,
             mock_session_output,
@@ -170,22 +170,14 @@ class TestSessionObserverBackends:
             repository_host=mock_repository_host,
         )
 
-        result = monitor._session_exists(123)
+        result = monitor._session_exists_by_name("issue-123")
 
         assert result is True
-        mock_session_runner.session_exists.assert_called_once_with(123)
+        mock_session_runner.session_exists_by_name.assert_called_once_with("issue-123")
 
-    def test_session_exists_returns_false_without_runner(self, mock_config):
-        """Test _session_exists returns False when no runner."""
-        monitor = SessionObserver(mock_config, mock_session_output)
-
-        result = monitor._session_exists(123)
-
-        assert result is False
-
-    def test_send_exit_to_session_uses_runner(self, mock_config, mock_session_output, mock_session_runner, mock_repository_host):
-        """Test _send_exit_to_session delegates to session runner."""
-        mock_session_runner.send_to_session.return_value = True
+    def test_send_exit_to_session_by_name_uses_runner(self, mock_config, mock_session_output, mock_session_runner, mock_repository_host):
+        """Test _send_exit_to_session_by_name delegates to session runner."""
+        mock_session_runner.send_to_session_by_name.return_value = True
         monitor = SessionObserver(
             mock_config,
             mock_session_output,
@@ -193,18 +185,10 @@ class TestSessionObserverBackends:
             repository_host=mock_repository_host,
         )
 
-        result = monitor._send_exit_to_session(789)
+        result = monitor._send_exit_to_session_by_name("review-789")
 
         assert result is True
-        mock_session_runner.send_to_session.assert_called_once_with(789, "/exit")
-
-    def test_send_exit_to_session_returns_false_without_runner(self, mock_config):
-        """Test _send_exit_to_session returns False when no runner."""
-        monitor = SessionObserver(mock_config, mock_session_output)
-
-        result = monitor._send_exit_to_session(123)
-
-        assert result is False
+        mock_session_runner.send_to_session_by_name.assert_called_once_with("review-789", "/exit")
 
 
 class TestCheckSession:

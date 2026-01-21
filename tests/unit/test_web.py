@@ -348,7 +348,7 @@ class TestFocusSessionEndpoint:
         data = response.json()
         assert data["status"] == "focused"
         assert data["issue_number"] == 1
-        mock_orch.session_runner.focus_session.assert_called_once_with(1)
+        mock_orch.session_runner.focus_session.assert_called_once_with(1, "issue-1")
 
     def test_focus_session_failure(self):
         """Test focus returns error when focus_session fails."""
@@ -369,7 +369,7 @@ class TestFocusSessionEndpoint:
         assert response.status_code == 500
         data = response.json()
         assert "error" in data
-        mock_orch.session_runner.focus_session.assert_called_once_with(1)
+        mock_orch.session_runner.focus_session.assert_called_once_with(1, "issue-1")
 
     def test_focus_session_not_found(self):
         """Test focus returns 404 when session not found."""

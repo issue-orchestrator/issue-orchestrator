@@ -23,6 +23,9 @@ class SessionRunner(Protocol):
 
     Implementations may use tmux or other terminal multiplexers.
     The orchestrator doesn't know or care about the specific backend.
+
+    Note: session_name is required - callers must compute the name explicitly
+    (e.g., "issue-123" or "review-456"). No fallback logic in implementations.
     """
 
     def create_session(
@@ -30,8 +33,8 @@ class SessionRunner(Protocol):
         session_id: int,
         command: str,
         working_dir: str,
-        title: str | None = None,
-        session_name: str | None = None,
+        title: str | None,
+        session_name: str,  # Required - caller must provide explicit name
     ) -> bool:
         """Create a new terminal session for an agent.
 
@@ -40,31 +43,31 @@ class SessionRunner(Protocol):
             command: Shell command to execute
             working_dir: Working directory path
             title: Optional human-readable title
-            session_name: Optional full session name (e.g., "review-123")
+            session_name: Full session name (e.g., "issue-123", "review-456")
 
         Returns:
             True if created successfully, False otherwise.
         """
         ...
 
-    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
+    def session_exists(self, session_id: int, session_name: str) -> bool:
         """Check if a session exists and is running.
 
         Args:
             session_id: Numeric ID to check
-            session_name: Optional full session name
+            session_name: Full session name (e.g., "issue-123", "review-456")
 
         Returns:
             True if session exists and is running.
         """
         ...
 
-    def kill_session(self, session_id: int, session_name: str | None = None) -> None:
+    def kill_session(self, session_id: int, session_name: str) -> None:
         """Kill/close a terminal session.
 
         Args:
             session_id: Numeric ID to kill
-            session_name: Optional full session name
+            session_name: Full session name (e.g., "issue-123", "review-456")
         """
         ...
 
@@ -87,28 +90,28 @@ class SessionRunner(Protocol):
     def get_session_output(
         self,
         session_id: int,
-        lines: int = 50,
-        session_name: str | None = None,
+        lines: int,
+        session_name: str,  # Required - caller must provide explicit name
     ) -> str | None:
         """Get recent output from a session.
 
         Args:
             session_id: Numeric ID
             lines: Number of lines to retrieve
-            session_name: Optional full session name
+            session_name: Full session name (e.g., "issue-123", "review-456")
 
         Returns:
             Terminal output string, or None if not available.
         """
         ...
 
-    def send_to_session(self, session_id: int, text: str, session_name: str | None = None) -> bool:
+    def send_to_session(self, session_id: int, text: str, session_name: str) -> bool:
         """Send text to a running session.
 
         Args:
             session_id: Numeric ID
             text: Text to send (e.g., "/exit")
-            session_name: Optional full session name
+            session_name: Full session name (e.g., "issue-123", "review-456")
 
         Returns:
             True if sent successfully, False otherwise.
@@ -138,12 +141,12 @@ class SessionRunner(Protocol):
         """
         ...
 
-    def focus_session(self, session_id: int, session_name: str | None = None) -> bool:
+    def focus_session(self, session_id: int, session_name: str) -> bool:
         """Focus/select a terminal session to bring it to the foreground.
 
         Args:
             session_id: Numeric ID (typically issue number)
-            session_name: Optional full session name
+            session_name: Full session name (e.g., "issue-123", "review-456")
 
         Returns:
             True if focused successfully, False otherwise.
@@ -186,15 +189,15 @@ class NullSessionRunner:
         session_id: int,
         command: str,
         working_dir: str,
-        title: str | None = None,
-        session_name: str | None = None,
+        title: str | None,
+        session_name: str,
     ) -> bool:
         return True
 
-    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
+    def session_exists(self, session_id: int, session_name: str) -> bool:
         return False
 
-    def kill_session(self, session_id: int, session_name: str | None = None) -> None:
+    def kill_session(self, session_id: int, session_name: str) -> None:
         pass
 
     def discover_running_sessions(self) -> list[DiscoveredSession]:
@@ -206,12 +209,12 @@ class NullSessionRunner:
     def get_session_output(
         self,
         session_id: int,
-        lines: int = 50,
-        session_name: str | None = None,
+        lines: int,
+        session_name: str,
     ) -> str | None:
         return None
 
-    def send_to_session(self, session_id: int, text: str, session_name: str | None = None) -> bool:
+    def send_to_session(self, session_id: int, text: str, session_name: str) -> bool:
         return False
 
     def session_exists_by_name(self, session_name: str) -> bool:
@@ -220,7 +223,7 @@ class NullSessionRunner:
     def send_to_session_by_name(self, session_name: str, text: str) -> bool:
         return False
 
-    def focus_session(self, session_id: int, session_name: str | None = None) -> bool:
+    def focus_session(self, session_id: int, session_name: str) -> bool:
         return False
 
     def on_orchestrator_startup(self) -> None:

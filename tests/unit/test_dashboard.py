@@ -524,6 +524,7 @@ class TestDashboardApp:
 
         session1 = MagicMock()
         session1.issue = issue1
+        session1.terminal_id = "issue-1"
 
         orchestrator.state.active_sessions = [session1]
         orchestrator.config.ui_mode = "web"
@@ -535,7 +536,7 @@ class TestDashboardApp:
         with patch.object(app, 'notify') as mock_notify:
             await app.action_attach(1)
 
-            orchestrator.session_runner.focus_session.assert_called_once_with(1)
+            orchestrator.session_runner.focus_session.assert_called_once_with(1, "issue-1")
             mock_notify.assert_called_once()
             assert "Switched to #1" in mock_notify.call_args[0][0]
 
@@ -547,6 +548,7 @@ class TestDashboardApp:
 
         session1 = MagicMock()
         session1.issue = issue1
+        session1.terminal_id = "issue-1"
 
         orchestrator.state.active_sessions = [session1]
         orchestrator.config.ui_mode = "tmux"
@@ -558,7 +560,7 @@ class TestDashboardApp:
         with patch.object(app, 'exit') as mock_exit:
             await app.action_attach(1)
 
-            orchestrator.session_runner.focus_session.assert_called_once_with(1)
+            orchestrator.session_runner.focus_session.assert_called_once_with(1, "issue-1")
             mock_exit.assert_called_once()
 
     @pytest.mark.asyncio
@@ -569,6 +571,7 @@ class TestDashboardApp:
 
         session1 = MagicMock()
         session1.issue = issue1
+        session1.terminal_id = "issue-1"
 
         orchestrator.state.active_sessions = [session1]
         orchestrator.config.ui_mode = "tmux"
@@ -630,6 +633,12 @@ class TestDashboard:
     async def test_handle_attach_tmux_mode(self):
         """Test attach handler in tmux mode."""
         orchestrator = create_orchestrator()
+        # Create a session for issue 42
+        issue42 = create_issue(42)
+        session42 = MagicMock()
+        session42.issue = issue42
+        session42.terminal_id = "issue-42"
+        orchestrator.state.active_sessions = [session42]
         # Mock session_runner.focus_session
         orchestrator.session_runner.focus_session.return_value = True
 
@@ -639,7 +648,7 @@ class TestDashboard:
 
         await dashboard._handle_attach(42)
 
-        orchestrator.session_runner.focus_session.assert_called_once_with(42)
+        orchestrator.session_runner.focus_session.assert_called_once_with(42, "issue-42")
         assert dashboard.attach_after_exit is True
         dashboard._app.exit.assert_called_once()
 
@@ -647,6 +656,12 @@ class TestDashboard:
     async def test_handle_attach_web_mode(self):
         """Test attach handler in web mode (browser-based dashboard stays open)."""
         orchestrator = create_orchestrator()
+        # Create a session for issue 42
+        issue42 = create_issue(42)
+        session42 = MagicMock()
+        session42.issue = issue42
+        session42.terminal_id = "issue-42"
+        orchestrator.state.active_sessions = [session42]
         # Mock session_runner.focus_session
         orchestrator.session_runner.focus_session.return_value = True
 
@@ -656,16 +671,16 @@ class TestDashboard:
 
         await dashboard._handle_attach(42)
 
-        orchestrator.session_runner.focus_session.assert_called_once_with(42)
+        orchestrator.session_runner.focus_session.assert_called_once_with(42, "issue-42")
         dashboard._app.notify.assert_called_once()
         assert "Switched to #42" in dashboard._app.notify.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_handle_attach_session_not_found(self):
-        """Test attach handler when session is not found."""
+        """Test attach handler when session is not found in active sessions."""
         orchestrator = create_orchestrator()
-        # Mock session_runner.focus_session returning False (session not found)
-        orchestrator.session_runner.focus_session.return_value = False
+        # No sessions in active_sessions, so lookup will fail
+        orchestrator.state.active_sessions = []
 
         dashboard = Dashboard(orchestrator, ui_mode="web")
         dashboard._app = MagicMock()

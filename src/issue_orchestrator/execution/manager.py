@@ -131,8 +131,8 @@ class PluginManager:
         session_id: int,
         command: str,
         working_dir: str,
-        title: str | None = None,
-        session_name: str | None = None,
+        title: str | None,
+        session_name: str,  # Required - caller must provide explicit name
     ) -> bool:
         """Create a terminal session."""
         result = self._pm.hook.create_session(
@@ -144,12 +144,12 @@ class PluginManager:
         )
         return result if result is not None else False
 
-    def session_exists(self, session_id: int, session_name: str | None = None) -> bool:
+    def session_exists(self, session_id: int, session_name: str) -> bool:
         """Check if a session exists."""
         result = self._pm.hook.session_exists(session_id=session_id, session_name=session_name)
         return result if result is not None else False
 
-    def kill_session(self, session_id: int, session_name: str | None = None) -> None:
+    def kill_session(self, session_id: int, session_name: str) -> None:
         """Kill a session."""
         self._pm.hook.kill_session(session_id=session_id, session_name=session_name)
 
@@ -163,7 +163,7 @@ class PluginManager:
         result = self._pm.hook.cleanup_idle_sessions()
         return result if result is not None else 0
 
-    def get_session_output(self, session_id: int, lines: int = 50, session_name: str | None = None) -> str | None:
+    def get_session_output(self, session_id: int, lines: int, session_name: str) -> str | None:
         """Get session output."""
         return self._pm.hook.get_session_output(
             session_id=session_id,
