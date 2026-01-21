@@ -174,13 +174,13 @@ class TestDashboardEndpoint:
         try:
             client = TestClient(app)
 
-            # Test first page
-            response = client.get("/?page=1")
+            # Test first page - use queue tab to see queue issues
+            response = client.get("/?tab=queue&page=1")
             assert response.status_code == 200
             assert "Queue Issue 1" in response.text
 
             # Test second page
-            response = client.get("/?page=2")
+            response = client.get("/?tab=queue&page=2")
             assert response.status_code == 200
             assert "Queue Issue 21" in response.text
         finally:
@@ -1844,7 +1844,7 @@ class TestDashboardWithProblems:
             set_orchestrator(None)
 
     def test_dashboard_with_needs_human_session(self):
-        """Test dashboard displays needs_human sessions in history tab."""
+        """Test dashboard displays needs_human sessions in blocked tab."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -1860,7 +1860,7 @@ class TestDashboardWithProblems:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.get("/?tab=history")
+            response = client.get("/?tab=blocked")
 
             assert response.status_code == 200
             assert "Needs Human Issue" in response.text

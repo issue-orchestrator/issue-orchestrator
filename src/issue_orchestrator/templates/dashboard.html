@@ -135,6 +135,34 @@
             background: #30363d;
             color: #8b949e;
         }
+        /* Blocked tab styling - more prominent when items need attention */
+        .tab.blocked-tab {
+            color: #f85149;
+        }
+        .tab.blocked-tab .blocked-badge {
+            background: #f85149;
+            color: #fff;
+            animation: pulse-badge 2s ease-in-out infinite;
+        }
+        .tab.blocked-tab.active {
+            border-bottom-color: #f85149;
+        }
+        @keyframes pulse-badge {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        /* Focus styles for accessibility */
+        .tab:focus {
+            outline: 2px solid #58a6ff;
+            outline-offset: 2px;
+        }
+        .tab:focus:not(:focus-visible) {
+            outline: none;
+        }
+        .tab:focus-visible {
+            outline: 2px solid #58a6ff;
+            outline-offset: 2px;
+        }
 
         /* Issue List */
         .issue-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
@@ -364,6 +392,45 @@
         .issue-diagnose-btn:focus-visible {
             color: #58a6ff;
             background: rgba(88, 166, 255, 0.15);
+        }
+        /* Blocked tab action buttons */
+        .issue-action-btn {
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            border: 1px solid;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .issue-action-btn:focus-visible {
+            outline: 2px solid #58a6ff;
+            outline-offset: 2px;
+        }
+        .issue-action-btn.debug-btn {
+            background: #1f6feb;
+            border-color: #1f6feb;
+            color: #fff;
+        }
+        .issue-action-btn.debug-btn:hover {
+            background: #388bfd;
+        }
+        .issue-action-btn.retry-btn {
+            background: #238636;
+            border-color: #238636;
+            color: #fff;
+        }
+        .issue-action-btn.retry-btn:hover {
+            background: #2ea043;
+        }
+        .issue-action-btn.dismiss-btn {
+            background: transparent;
+            border-color: #f85149;
+            color: #f85149;
+        }
+        .issue-action-btn.dismiss-btn:hover {
+            background: rgba(248, 81, 73, 0.15);
         }
 
         /* Empty State */
@@ -1613,23 +1680,49 @@
         {% endif %}
 
         <div class="tab-bar" role="tablist" aria-label="Dashboard sections">
-            <button class="tab {% if active_tab == 'work' %}active{% endif %}" onclick="switchTab('work')" role="tab" aria-selected="{% if active_tab == 'work' %}true{% else %}false{% endif %}" aria-controls="issueList">
-                Work
+            <button class="tab {% if active_tab == 'active' %}active{% endif %}"
+                    id="tab-active"
+                    onclick="switchTab('active')"
+                    role="tab"
+                    aria-selected="{% if active_tab == 'active' %}true{% else %}false{% endif %}"
+                    aria-controls="issueList"
+                    tabindex="{% if active_tab == 'active' %}0{% else %}-1{% endif %}">
+                Active
+                <span class="tab-badge {% if active_count == 0 %}empty{% endif %}" aria-label="{{ active_count }} active sessions">{{ active_count }}</span>
             </button>
-            <button class="tab {% if active_tab == 'attention' %}active{% endif %}" onclick="switchTab('attention')" role="tab" aria-selected="{% if active_tab == 'attention' %}true{% else %}false{% endif %}" aria-controls="issueList">
-                Needs Attention
-                <span class="tab-badge {% if attention_count == 0 %}empty{% endif %}" aria-label="{{ attention_count }} items need attention">{{ attention_count }}</span>
+            <button class="tab {% if active_tab == 'queue' %}active{% endif %}"
+                    id="tab-queue"
+                    onclick="switchTab('queue')"
+                    role="tab"
+                    aria-selected="{% if active_tab == 'queue' %}true{% else %}false{% endif %}"
+                    aria-controls="issueList"
+                    tabindex="{% if active_tab == 'queue' %}-1{% else %}-1{% endif %}">
+                Queue
+                <span class="tab-badge {% if queue_count == 0 %}empty{% endif %}" aria-label="{{ queue_count }} queued issues">{{ queue_count }}</span>
             </button>
-            {% if attention_count > 0 %}
-            <button class="manage-blocked-btn" onclick="openBlockedModal()" title="Manage blocked issues">
-                Manage Blocked
+            <button class="tab {% if active_tab == 'blocked' %}active{% endif %} {% if blocked_count > 0 %}blocked-tab{% endif %}"
+                    id="tab-blocked"
+                    onclick="switchTab('blocked')"
+                    role="tab"
+                    aria-selected="{% if active_tab == 'blocked' %}true{% else %}false{% endif %}"
+                    aria-controls="issueList"
+                    tabindex="{% if active_tab == 'blocked' %}0{% else %}-1{% endif %}"
+                    {% if blocked_count > 0 %}aria-live="polite"{% endif %}>
+                Blocked
+                <span class="tab-badge blocked-badge {% if blocked_count == 0 %}empty{% endif %}" aria-label="{{ blocked_count }} blocked issues needing attention">{{ blocked_count }}</span>
             </button>
-            {% endif %}
-            <button class="excluded-toggle" id="excludedToggle" onclick="toggleExcluded()" title="Show issues excluded from scheduling">
+            <button class="excluded-toggle" id="excludedToggle" onclick="toggleExcluded()" title="Show issues excluded from scheduling" aria-label="Toggle excluded issues panel">
                 Excluded
             </button>
-            <button class="tab {% if active_tab == 'history' %}active{% endif %}" onclick="switchTab('history')" role="tab" aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}" aria-controls="issueList">
+            <button class="tab {% if active_tab == 'history' %}active{% endif %}"
+                    id="tab-history"
+                    onclick="switchTab('history')"
+                    role="tab"
+                    aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}"
+                    aria-controls="issueList"
+                    tabindex="{% if active_tab == 'history' %}0{% else %}-1{% endif %}">
                 History
+                <span class="tab-badge {% if history_count == 0 %}empty{% endif %}" aria-label="{{ history_count }} completed sessions">{{ history_count }}</span>
             </button>
         </div>
 
@@ -1708,6 +1801,21 @@
                 </span>
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
                 <span class="issue-actions">
+                    {% if active_tab == 'blocked' %}
+                    {# Blocked tab actions: Debug, Retry, Dismiss #}
+                    {% if issue.worktree_path %}
+                    <button class="issue-action-btn debug-btn" onclick="launchDebugSession({{ issue.issue_number }}, event)" aria-label="Launch debug session for issue #{{ issue.issue_number }}" title="Launch Debug">
+                        <span aria-hidden="true">▶</span> Debug
+                    </button>
+                    {% endif %}
+                    <button class="issue-action-btn retry-btn" onclick="retryIssue({{ issue.issue_number }}, event)" aria-label="Retry issue #{{ issue.issue_number }}" title="Retry">
+                        <span aria-hidden="true">🔄</span> Retry
+                    </button>
+                    <button class="issue-action-btn dismiss-btn" onclick="dismissIssue({{ issue.issue_number }}, event)" aria-label="Dismiss issue #{{ issue.issue_number }}" title="Dismiss">
+                        <span aria-hidden="true">✕</span>
+                    </button>
+                    {% else %}
+                    {# Default actions for other tabs #}
                     <span class="issue-action" title="{{ issue.action_hint }}">
                         {% if issue.action == 'focus' %}
                         <span>👁</span><span class="action-arrow">→</span>
@@ -1715,6 +1823,7 @@
                         <span>🔗</span><span class="action-arrow">↗</span>
                         {% endif %}
                     </span>
+                    {% endif %}
                     <button class="issue-diagnose-btn" onclick="openSessionManifest({{ issue.issue_number }}); event.stopPropagation();" aria-label="Open diagnostics for issue #{{ issue.issue_number }}" title="Diagnostics">
                         🧾
                     </button>
@@ -2344,6 +2453,43 @@
             url.searchParams.set('page', '1');  // Reset to page 1 when switching tabs
             window.location.href = url.toString();
         }
+
+        // Keyboard navigation for tabs (accessibility)
+        const tabOrder = ['active', 'queue', 'blocked', 'history'];
+        document.querySelectorAll('.tab-bar .tab').forEach(tabBtn => {
+            tabBtn.addEventListener('keydown', (e) => {
+                const currentTab = tabBtn.id.replace('tab-', '');
+                const currentIndex = tabOrder.indexOf(currentTab);
+                let newIndex = currentIndex;
+
+                if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    newIndex = (currentIndex + 1) % tabOrder.length;
+                } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    newIndex = (currentIndex - 1 + tabOrder.length) % tabOrder.length;
+                } else if (e.key === 'Home') {
+                    e.preventDefault();
+                    newIndex = 0;
+                } else if (e.key === 'End') {
+                    e.preventDefault();
+                    newIndex = tabOrder.length - 1;
+                }
+
+                if (newIndex !== currentIndex) {
+                    const newTabBtn = document.getElementById('tab-' + tabOrder[newIndex]);
+                    if (newTabBtn) {
+                        newTabBtn.focus();
+                    }
+                }
+
+                // Enter or Space activates the tab
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    switchTab(currentTab);
+                }
+            });
+        });
 
         // Pagination (preserves current tab)
         function goToPage(page) {
@@ -3405,6 +3551,74 @@
                 showToast('Failed to launch debug session', 'error');
                 btn.disabled = false;
                 btn.textContent = originalText;
+            }
+        }
+
+        // Retry a blocked issue (removes blocked label and re-queues)
+        async function retryIssue(issueNumber, event) {
+            event.stopPropagation();
+            const btn = event.target.closest('.issue-action-btn') || event.target;
+            const originalHTML = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span aria-hidden="true">⏳</span> Retrying...';
+
+            try {
+                const res = await fetch(`/api/issues/${issueNumber}/retry`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showToast(`Issue #${issueNumber} queued for retry`);
+                    setTimeout(() => location.reload(), 500);
+                } else {
+                    showToast(`Failed to retry: ${data.error || 'Unknown error'}`, 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = originalHTML;
+                }
+            } catch (err) {
+                console.error('Failed to retry issue:', err);
+                showToast('Failed to retry issue', 'error');
+                btn.disabled = false;
+                btn.innerHTML = originalHTML;
+            }
+        }
+
+        // Dismiss a blocked issue (removes from blocked list without retrying)
+        async function dismissIssue(issueNumber, event) {
+            event.stopPropagation();
+            if (!confirm(`Dismiss issue #${issueNumber}? This will remove the blocked label but not retry.`)) {
+                return;
+            }
+
+            const btn = event.target.closest('.issue-action-btn') || event.target;
+            const originalHTML = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '⏳';
+
+            try {
+                const res = await fetch(`/api/issues/${issueNumber}/dismiss`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    showToast(`Issue #${issueNumber} dismissed`);
+                    setTimeout(() => location.reload(), 500);
+                } else {
+                    showToast(`Failed to dismiss: ${data.error || 'Unknown error'}`, 'error');
+                    btn.disabled = false;
+                    btn.innerHTML = originalHTML;
+                }
+            } catch (err) {
+                console.error('Failed to dismiss issue:', err);
+                showToast('Failed to dismiss issue', 'error');
+                btn.disabled = false;
+                btn.innerHTML = originalHTML;
             }
         }
 

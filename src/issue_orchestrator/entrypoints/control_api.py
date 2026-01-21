@@ -586,6 +586,122 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
     })
 
 
+@control_app.post("/api/issues/{issue_number}/retry")
+async def retry_issue(issue_number: int) -> JSONResponse:
+    """Retry a blocked issue by removing the blocked label and re-queueing.
+
+    This removes the 'blocked' and 'needs-human' labels from the issue,
+    allowing it to be picked up by the orchestrator again.
+
+    Args:
+        issue_number: The issue number to retry
+
+    Returns:
+        JSON with:
+        - success: bool - Whether the operation succeeded
+        - message: str - Status message
+    """
+    if _orchestrator is None:
+        return JSONResponse(
+            {"success": False, "error": "Orchestrator not initialized"},
+            status_code=503
+        )
+
+    try:
+        from ..infra import labels as label_module
+
+        # Remove blocked-related labels
+        labels_to_remove = [
+            label_module.BLOCKED,
+            label_module.BLOCKED_NEEDS_HUMAN,
+            label_module.BLOCKED_FAILED,
+        ]
+
+        removed = []
+        for label in labels_to_remove:
+            try:
+                _orchestrator.repository_host.remove_label(issue_number, label)
+                removed.append(label)
+            except Exception:
+                pass  # Label might not exist, that's fine
+
+        logger.info("[retry] Issue #%d retried, removed labels: %s", issue_number, removed)
+        return JSONResponse({
+            "success": True,
+            "message": f"Issue #{issue_number} queued for retry",
+            "removed_labels": removed,
+        })
+
+    except Exception as e:
+        logger.exception("Error retrying issue #%d: %s", issue_number, e)
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=500)
+
+
+@control_app.post("/api/issues/{issue_number}/dismiss")
+async def dismiss_issue(issue_number: int) -> JSONResponse:
+    """Dismiss a blocked issue without retrying.
+
+    This removes the issue from the blocked list by removing blocking labels,
+    but also removes in-progress labels so the issue won't be picked up again
+    unless it has the agent label restored.
+
+    Args:
+        issue_number: The issue number to dismiss
+
+    Returns:
+        JSON with:
+        - success: bool - Whether the operation succeeded
+        - message: str - Status message
+    """
+    if _orchestrator is None:
+        return JSONResponse(
+            {"success": False, "error": "Orchestrator not initialized"},
+            status_code=503
+        )
+
+    try:
+        from ..infra import labels as label_module
+
+        # Remove all orchestrator-managed labels to fully dismiss
+        labels_to_remove = [
+            label_module.BLOCKED,
+            label_module.BLOCKED_NEEDS_HUMAN,
+            label_module.BLOCKED_FAILED,
+            label_module.IN_PROGRESS,
+        ]
+
+        removed = []
+        for label in labels_to_remove:
+            try:
+                _orchestrator.repository_host.remove_label(issue_number, label)
+                removed.append(label)
+            except Exception:
+                pass  # Label might not exist, that's fine
+
+        # Remove from session history if present
+        _orchestrator.state.session_history = [
+            entry for entry in _orchestrator.state.session_history
+            if entry.issue_number != issue_number
+        ]
+
+        logger.info("[dismiss] Issue #%d dismissed, removed labels: %s", issue_number, removed)
+        return JSONResponse({
+            "success": True,
+            "message": f"Issue #{issue_number} dismissed",
+            "removed_labels": removed,
+        })
+
+    except Exception as e:
+        logger.exception("Error dismissing issue #%d: %s", issue_number, e)
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=500)
+
+
 @control_app.post("/control/shutdown")
 async def shutdown_control_center(request: Request) -> JSONResponse:
     """Shutdown the control center server.
