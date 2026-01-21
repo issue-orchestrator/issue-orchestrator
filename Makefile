@@ -90,8 +90,16 @@ lint-complexity:
 	@echo "Checking code complexity (C901) and branch count (PLR0912)..."
 	$(RUFF) check src packages/agent_runner/src --output-format=concise
 
+# Parallel test execution with pytest-xdist (-n auto uses all CPU cores)
+# Use PARALLEL=0 to disable: make test-unit PARALLEL=0
+PARALLEL ?= auto
+
 test-unit:
+ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/unit -x -q --tb=short
+else
+	$(PYTEST) tests/unit -x -q --tb=short -n $(PARALLEL)
+endif
 
 test-unit-cov:
 	$(PYTEST) tests/unit --cov=src/issue_orchestrator --cov-report=term-missing -x -q --tb=short
@@ -101,16 +109,28 @@ test-unit-cov-html:
 	@echo "Coverage report: open htmlcov/index.html"
 
 test-integration:
+ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short
+else
+	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL)
+endif
 
 # Integration tests excluding those that require external infrastructure (GitHub token, etc.)
 # Used in pre-push validation where full infra may not be available
 test-integration-no-infra:
+ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra"
+else
+	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(PARALLEL)
+endif
 
 # Full integration tests including infrastructure-dependent ones (run in CI)
 test-integration-full:
+ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short
+else
+	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL)
+endif
 
 # E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
 # Usage: make test-e2e        (stops on first failure)
