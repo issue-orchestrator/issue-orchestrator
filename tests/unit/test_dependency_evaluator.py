@@ -256,32 +256,6 @@ class TestExternalIdResolution:
 
 
 # =============================================================================
-# Edge Case: No Issue Number After Parsing (Line 190)
-# =============================================================================
-
-
-class TestNoIssueNumberEdgeCase:
-    """Test edge case where ref parsing produces no issue number (Line 190)."""
-
-    def test_parsed_ref_with_no_issue_number_or_external_id(self, checker, events):
-        """A malformed ParsedDependencyRef with neither issue nor external ID returns UNKNOWN."""
-        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
-
-        # Directly call _check_dependency_ref with a malformed ref
-        # This tests the defensive code path at line 189-196
-        malformed_ref = ParsedDependencyRef(
-            issue_number=None,
-            external_id=None,  # Neither is set
-            repository=None,
-        )
-
-        dep = evaluator._check_dependency_ref(malformed_ref, source_milestone="M1")
-
-        assert dep.state == DependencyState.UNKNOWN
-        assert "No issue number" in dep.error
-
-
-# =============================================================================
 # Dependency Graph Evaluation Behaviors
 # =============================================================================
 

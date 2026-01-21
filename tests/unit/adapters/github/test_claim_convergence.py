@@ -154,7 +154,8 @@ priority: {higher_priority}
         our_lease_id = result.lease_id
 
         # Track fetch calls and inject/remove competing claims
-        original_fetch = adapter._fetch_all_claims
+        # noqa: SLF001 - Wrapping private method to simulate concurrent claims in test
+        original_fetch = adapter._fetch_all_claims  # noqa: SLF001
         fetch_count = [0]
 
         def controlled_fetch(issue_number):
@@ -182,7 +183,7 @@ priority: {higher_priority}
 
             return original_fetch(issue_number)
 
-        adapter._fetch_all_claims = controlled_fetch
+        adapter._fetch_all_claims = controlled_fetch  # noqa: SLF001
 
         converged = adapter.run_convergence(issue_number=42, lease_id=our_lease_id)
 

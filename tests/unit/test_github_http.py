@@ -21,7 +21,8 @@ def _client_with_transport(transport: httpx.BaseTransport) -> GitHubHttpClient:
     client = GitHubHttpClient(
         GitHubHttpConfig(repo="owner/repo", token="token", base_url="https://api.github.com")
     )
-    client._client = httpx.Client(transport=transport, base_url="https://api.github.com")
+    # noqa: SLF001 - Injecting mock transport for HTTP testing
+    client._client = httpx.Client(transport=transport, base_url="https://api.github.com")  # noqa: SLF001
     return client
 
 
@@ -340,7 +341,8 @@ def test_graphql_successful_query() -> None:
         })
 
     client = _client_with_transport(httpx.MockTransport(handler))
-    result = client._graphql(
+    # noqa: SLF001 - Testing internal GraphQL method error handling
+    result = client._graphql(  # noqa: SLF001
         "query($owner: String!) { repository(owner: $owner) { id } }",
         {"owner": "test"},
     )
@@ -364,7 +366,7 @@ def test_graphql_raises_on_graphql_errors() -> None:
     client = _client_with_transport(httpx.MockTransport(handler))
 
     with pytest.raises(GitHubHttpError) as exc_info:
-        client._graphql("query { foo }")
+        client._graphql("query { foo }")  # noqa: SLF001
 
     assert "Field 'foo' not found" in str(exc_info.value)
 
@@ -377,7 +379,7 @@ def test_graphql_raises_on_http_error() -> None:
     client = _client_with_transport(httpx.MockTransport(handler))
 
     with pytest.raises(GitHubHttpError) as exc_info:
-        client._graphql("query { viewer { login } }")
+        client._graphql("query { viewer { login } }")  # noqa: SLF001
 
     assert exc_info.value.status_code == 401
 

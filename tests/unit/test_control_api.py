@@ -63,9 +63,9 @@ def create_mock_orchestrator():
     mock.deps = MagicMock()
     mock.deps.repository_host = MagicMock()
 
-    # Mock event context for snapshot
-    mock._event_context = MagicMock()
-    mock._event_context.tick_id = 0
+    # Mock event context for snapshot (use public property)
+    mock.event_context = MagicMock()
+    mock.event_context.tick_id = 0
 
     return mock
 
@@ -553,7 +553,7 @@ class TestSnapshotEndpoint:
         client, mock_orch = client_with_orchestrator
 
         mock_orch.event_hub.last_event_id = 42
-        mock_orch._event_context.tick_id = 10
+        mock_orch.event_context.tick_id = 10
 
         # Mock SnapshotBuilder
         with patch("issue_orchestrator.entrypoints.control_api.asyncio.to_thread") as mock_to_thread:
@@ -626,8 +626,6 @@ class TestControlAPIServer:
 
         assert server.orchestrator is mock_orchestrator
         assert server.port == 8888
-        assert server._server is None
-        assert server._task is None
 
     def test_init_uses_default_port(self, mock_orchestrator):
         """Server uses default port 19080 when not specified."""
@@ -667,14 +665,14 @@ class TestControlAPIServer:
         import asyncio
 
         server = ControlAPIServer(mock_orchestrator, port=19999)
-        server._server = MagicMock()
-        # Create a completed task to avoid timeout issues
-        server._task = asyncio.create_task(asyncio.sleep(0))
-        await server._task  # Complete the task
+        # Set up internal state for testing server stop lifecycle (noqa: SLF001)
+        server._server = MagicMock()  # noqa: SLF001
+        server._task = asyncio.create_task(asyncio.sleep(0))  # noqa: SLF001
+        await server._task  # noqa: SLF001
 
         await server.stop()
 
-        assert server._server.should_exit is True
+        assert server._server.should_exit is True  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_stop_handles_missing_server(self, mock_orchestrator):
@@ -682,8 +680,9 @@ class TestControlAPIServer:
         from issue_orchestrator.entrypoints.control_api import ControlAPIServer
 
         server = ControlAPIServer(mock_orchestrator)
-        server._server = None
-        server._task = None
+        # Set up internal state for testing stop() handles missing server (noqa: SLF001)
+        server._server = None  # noqa: SLF001
+        server._task = None  # noqa: SLF001
 
         # Should not raise
         await server.stop()

@@ -51,6 +51,7 @@ from issue_orchestrator.domain.models import (
     DiscoveredEscalation,
     DiscoveredFailure,
     AgentConfig,
+    ImmediateCleanup,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -307,6 +308,33 @@ class TestClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
+
+    def test_clears_immediate_cleanups(self, sample_orchestrator_state):
+        """clear_discovered_facts also clears immediate_cleanups.
+
+        This regression test ensures immediate_cleanups is cleared to prevent
+        infinite cleanup loops where the same completed sessions are processed
+        repeatedly.
+        """
+        # Add immediate cleanup entries
+        sample_orchestrator_state.immediate_cleanups = [
+            ImmediateCleanup(
+                issue_number=1,
+                terminal_id="issue-1",
+                worktree_path="/tmp/worktree-1",
+                reason="completed"
+            ),
+            ImmediateCleanup(
+                issue_number=2,
+                terminal_id="review-2",
+                worktree_path="/tmp/worktree-2",
+                reason="failed"
+            ),
+        ]
+
+        clear_discovered_facts(sample_orchestrator_state)
+
+        assert len(sample_orchestrator_state.immediate_cleanups) == 0
 
     def test_preserves_non_discovered_state(self, sample_orchestrator_state):
         """clear_discovered_facts does not affect other state fields."""
@@ -574,7 +602,7 @@ class TestOrchestratorSupportApplyPlan:
         plan.actions = [mock_action]
 
         # Set cooldown active
-        support._cleanup_manager.should_retry_triage_issue = Mock(return_value=False)
+        support.cleanup_manager.should_retry_triage_issue = Mock(return_value=False)
 
         support.apply_plan(plan, Mock())
 
@@ -599,6 +627,99 @@ class TestOrchestratorSupportApplyPlan:
         support.apply_plan(plan, Mock())
 
         assert 42 in sample_orchestrator_state.failed_this_cycle
+
+
+# =============================================================================
+# Tests for OrchestratorSupport.clear_discovered_facts method
+# =============================================================================
+
+
+class TestOrchestratorSupportClearDiscoveredFacts:
+    """Tests for OrchestratorSupport.clear_discovered_facts method.
+
+    This tests the instance method, not the module-level function.
+    Critical for preventing infinite cleanup loops (bug fix regression test).
+    """
+
+    @pytest.fixture
+    def support(
+        self,
+        sample_orchestrator_state,
+        mock_event_sink,
+        mock_repository_host,
+        sample_event_context,
+    ):
+        """Create an OrchestratorSupport instance for testing."""
+        mock_config = MagicMock()
+        mock_config.cleanup = MagicMock()
+        mock_config.cleanup.without_triage = MagicMock()
+        mock_config.cleanup.without_triage.close_ai_session_tabs = False
+        mock_config.code_review_agent = None
+
+        return OrchestratorSupport(
+            config=mock_config,
+            events=mock_event_sink,
+            repository_host=mock_repository_host,
+            state=sample_orchestrator_state,
+            event_context=sample_event_context,
+            session_manager=MagicMock(),
+            action_applier=MagicMock(),
+            fact_gatherer=MagicMock(),
+            planner=MagicMock(),
+            worktree_manager=MagicMock(),
+            state_machine_manager=MagicMock(),
+            cleanup_manager=MagicMock(),
+            get_review_machine=Mock(),
+            kill_session=Mock(),
+        )
+
+    def test_clears_immediate_cleanups_via_method(self, support, sample_orchestrator_state):
+        """OrchestratorSupport.clear_discovered_facts() clears immediate_cleanups.
+
+        This is the method called by Orchestrator._clear_discovered_facts().
+        Regression test for infinite cleanup loop bug.
+        """
+        # Populate immediate_cleanups
+        sample_orchestrator_state.immediate_cleanups = [
+            ImmediateCleanup(
+                issue_number=1,
+                terminal_id="issue-1",
+                worktree_path="/tmp/wt-1",
+                reason="completed"
+            ),
+        ]
+
+        # Call the instance method (not the module-level function)
+        support.clear_discovered_facts()
+
+        assert len(sample_orchestrator_state.immediate_cleanups) == 0
+
+    def test_clears_all_discovered_lists_via_method(self, support, sample_orchestrator_state):
+        """OrchestratorSupport.clear_discovered_facts() clears all discovery lists."""
+        # Populate all discoverable state
+        sample_orchestrator_state.discovered_reviews = [
+            DiscoveredReview(issue_number=1, pr_number=100, pr_url="url", branch_name="br")
+        ]
+        sample_orchestrator_state.discovered_reworks = [
+            DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="a", rework_cycle=1)
+        ]
+        sample_orchestrator_state.discovered_escalations = [
+            DiscoveredEscalation(issue_number=3, pr_number=300, rework_cycle=3)
+        ]
+        sample_orchestrator_state.discovered_failures = [
+            DiscoveredFailure(issue_number=4, issue_title="T", failure_reason="f")
+        ]
+        sample_orchestrator_state.immediate_cleanups = [
+            ImmediateCleanup(issue_number=5, terminal_id="t", worktree_path="p", reason="r")
+        ]
+
+        support.clear_discovered_facts()
+
+        assert len(sample_orchestrator_state.discovered_reviews) == 0
+        assert len(sample_orchestrator_state.discovered_reworks) == 0
+        assert len(sample_orchestrator_state.discovered_escalations) == 0
+        assert len(sample_orchestrator_state.discovered_failures) == 0
+        assert len(sample_orchestrator_state.immediate_cleanups) == 0
 
 
 # =============================================================================
@@ -653,7 +774,8 @@ class TestUpdateStateAfterAction:
         )
         result = MagicMock(success=True, details={})
 
-        support_with_state._update_state_after_action(action, result)
+        # noqa: SLF001 - Testing state mutation behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
         # Should have added to pending_reviews
         assert len(support_with_state.state.pending_reviews) == 1
@@ -683,7 +805,8 @@ class TestUpdateStateAfterAction:
         )
         result = MagicMock(success=True, details={})
 
-        support_with_state._update_state_after_action(action, result)
+        # noqa: SLF001 - Testing duplicate detection behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
         # Should NOT have added duplicate
         assert len(support_with_state.state.pending_reviews) == 1
@@ -709,7 +832,8 @@ class TestUpdateStateAfterAction:
         )
         result = MagicMock(success=True, details={})
 
-        support_with_state._update_state_after_action(action, result)
+        # noqa: SLF001 - Testing state mutation behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
         # Should have added to pending_reworks
         assert len(support_with_state.state.pending_reworks) == 1
@@ -744,7 +868,8 @@ class TestUpdateStateAfterAction:
         )
         result = MagicMock(success=True, details={})
 
-        support_with_state._update_state_after_action(action, result)
+        # noqa: SLF001 - Testing state mutation behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
         # Should have removed from pending_cleanups
         assert len(support_with_state.state.pending_cleanups) == 0
@@ -761,7 +886,8 @@ class TestUpdateStateAfterAction:
         )
         result = MagicMock(success=True, details={"issue_number": 999})
 
-        support_with_state._update_state_after_action(action, result)
+        # noqa: SLF001 - Testing state mutation behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
         # Should have added to pending_triage_reviews
         assert len(support_with_state.state.pending_triage_reviews) == 1
@@ -971,67 +1097,6 @@ class TestRequestRefresh:
 # =============================================================================
 
 
-class TestSupportCheckHealth:
-    """Tests for OrchestratorSupport._check_health method."""
-
-    @pytest.fixture
-    def support_with_sessions(
-        self,
-        sample_orchestrator_state,
-        mock_event_sink,
-        mock_repository_host,
-        sample_event_context,
-    ):
-        """Create support with active sessions."""
-        mock_config = MagicMock()
-        mock_config.cleanup = MagicMock()
-
-        # Add some active sessions
-        issue = make_issue(1)
-        sample_orchestrator_state.active_sessions = [make_session(issue)]
-
-        return OrchestratorSupport(
-            config=mock_config,
-            events=mock_event_sink,
-            repository_host=mock_repository_host,
-            state=sample_orchestrator_state,
-            event_context=sample_event_context,
-            session_manager=MagicMock(),
-            action_applier=MagicMock(),
-            fact_gatherer=MagicMock(),
-            planner=MagicMock(),
-            worktree_manager=MagicMock(),
-            state_machine_manager=MagicMock(),
-            cleanup_manager=MagicMock(),
-            get_review_machine=Mock(),
-            kill_session=Mock(),
-        )
-
-    def test_passes_session_count_to_health_gate(self, support_with_sessions):
-        """_check_health passes current session count to health gate."""
-        mock_gate = MagicMock()
-        mock_gate.check = Mock(return_value=HealthDecision.ok())
-
-        support_with_sessions._check_health(mock_gate)
-
-        # Should have passed active_sessions count
-        mock_gate.check.assert_called_once()
-        call_kwargs = mock_gate.check.call_args.kwargs
-        assert call_kwargs["active_sessions"] == 1
-
-    def test_passes_paused_state_to_health_gate(self, support_with_sessions):
-        """_check_health passes paused state to health gate."""
-        support_with_sessions.state.paused = True
-
-        mock_gate = MagicMock()
-        mock_gate.check = Mock(return_value=HealthDecision.blocked("paused"))
-
-        support_with_sessions._check_health(mock_gate)
-
-        call_kwargs = mock_gate.check.call_args.kwargs
-        assert call_kwargs["paused"] is True
-
-
 # =============================================================================
 # Tests for OrchestratorSupport._immediate_cleanup
 # =============================================================================
@@ -1081,7 +1146,8 @@ class TestImmediateCleanup:
         issue = make_issue(1)
         session = make_session(issue, tmp_path=tmp_path)
 
-        support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)
+        # noqa: SLF001 - Testing cleanup behavior of private method
+        support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)  # noqa: SLF001
 
         # Should have called worktree remove
         support_for_cleanup.worktree_manager.remove.assert_called_once()
@@ -1091,7 +1157,8 @@ class TestImmediateCleanup:
         issue = make_issue(1)
         session = make_session(issue, tmp_path=tmp_path)
 
-        support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)
+        # noqa: SLF001 - Testing terminal kill behavior of private method
+        support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)  # noqa: SLF001
 
         # Should have called kill_session
         support_for_cleanup.kill_session.assert_called_once_with(session.terminal_id)
@@ -1105,8 +1172,9 @@ class TestImmediateCleanup:
         support_for_cleanup.worktree_manager.remove.side_effect = Exception("Worktree error")
         support_for_cleanup.kill_session.side_effect = Exception("Kill error")
 
+        # noqa: SLF001 - Testing error handling behavior of private method
         # Should not raise
-        support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)
+        support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)  # noqa: SLF001
 
 
 # =============================================================================

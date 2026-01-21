@@ -766,13 +766,8 @@ _TOP_LEVEL_SECTION_KEYS = (
 )
 
 
-def _extract_config_sections(data: dict, config_path: Path) -> dict:  # noqa: C901
-    """Extract all sections from config data.
-
-    Note: The noqa is needed because extracting 17+ config sections
-    in a loop counts as high complexity, but this is the simplest
-    possible implementation for reading config sections by name.
-    """
+def _extract_config_sections(data: dict, config_path: Path) -> dict:  # noqa: C901 - extracts 17+ config sections via _get_section calls
+    """Extract all sections from config data."""
     repo_section = _get_section(data, "repo", config_path)
     sections = {key: _get_section(data, key, config_path) for key in _TOP_LEVEL_SECTION_KEYS}
     sections["repo"] = repo_section

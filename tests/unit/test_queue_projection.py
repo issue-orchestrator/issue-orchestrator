@@ -128,7 +128,8 @@ class TestComputeQueue:
             mock_get_queue.assert_called_once()
             # Verify it was called with the right arguments
             call_args = mock_get_queue.call_args
-            assert call_args[0][0] == queue_projection._config
+            # noqa: SLF001 - Verifying correct config was passed to auditor
+            assert call_args[0][0] == queue_projection._config  # noqa: SLF001
             assert call_args[0][1] == state
             assert call_args[1]["issue_tracker"] == mock_repository_host
 

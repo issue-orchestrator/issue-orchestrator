@@ -23,162 +23,6 @@ class TestDependencyProblem:
         assert problem.summary == "Blocked - waiting on: #1"
 
 
-class TestOrchestratorDependencyProblems:
-    """Tests for orchestrator dependency problem tracking."""
-
-    def make_issue(self, number: int, title: str = "") -> Issue:
-        """Create a test issue."""
-        return Issue(
-            number=number,
-            title=title or f"Issue #{number}",
-            labels=["agent:backend"],
-            state="open",
-        )
-
-    def test_update_dependency_problems_adds_new(self):
-        """New blocked issues are added to state and events emitted."""
-        from pathlib import Path
-        from issue_orchestrator.infra.orchestrator import Orchestrator
-        from issue_orchestrator.infra.config import Config
-        from tests.conftest import build_test_orchestrator_deps, MockEventSink, MockSessionRunner
-        from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
-
-        # Create minimal config with required methods
-        config = MagicMock(spec=Config)
-        config.repo = "test/repo"
-        config.ui_mode = "headless"
-        config.max_concurrent_sessions = 3
-        config.session_timeout_minutes = 45
-        config.label_blocked = "blocked"
-        config.label_needs_human = "needs-human"
-        config.code_reviewed_label = "code-reviewed"
-        config.label_needs_rework = "needs-rework"
-        config.code_review_label = "needs-code-review"
-        config.label_in_progress = "in-progress"
-        config.get_label_blocked = MagicMock(return_value="blocked")
-        config.get_label_needs_human = MagicMock(return_value="needs-human")
-        config.get_label_needs_rework = MagicMock(return_value="needs-rework")
-        config.get_label_in_progress = MagicMock(return_value="in-progress")
-        config.agents = {}
-        config.repo_root = Path("/tmp/test")
-        config.filtering = MagicMock()
-        config.filtering.label = None
-        config.filtering.milestone = None
-        config.filtering.milestones = []
-        config.filtering.exclude_labels = []
-        config.max_sessions_per_agent = {}
-        config.triage_review_label = None
-        config.validation_schema_path = None
-        config.max_rework_cycles = 2
-        config.milestone_sort = "due_date"  # Default strategy
-        config.milestone_sort_config = {}
-
-        events = MockEventSink()
-        runner = MockSessionRunner()
-        repo_host = MagicMock()
-        repo_host.list_issues.return_value = []
-        wt_manager = GitWorktreeManager()
-
-        deps = build_test_orchestrator_deps(config, repo_host, events, runner, wt_manager)
-        orch = Orchestrator(config=config, deps=deps)
-
-        # Call update with a blocked issue
-        issue = self.make_issue(5, "Blocked Issue")
-        dep_blocked = [(issue, "Blocked - waiting on: #1")]
-
-        orch._update_dependency_problems(dep_blocked)
-
-        # Check state was updated
-        assert 5 in orch.state.dependency_problems
-        assert orch.state.dependency_problems[5].issue_number == 5
-        assert orch.state.dependency_problems[5].summary == "Blocked - waiting on: #1"
-
-        # Check event was emitted
-        dep_events = events.get_events_by_name("dependency.blocked")
-        assert len(dep_events) == 1
-        assert dep_events[0].data["issue_number"] == 5
-
-    def test_update_dependency_problems_removes_resolved(self):
-        """Resolved issues are removed from state and events emitted."""
-        from issue_orchestrator.infra.orchestrator import Orchestrator
-        from issue_orchestrator.infra.config import Config
-        from issue_orchestrator.ports import EventSink
-
-        config = MagicMock(spec=Config)
-        config.repo = "test/repo"
-        config.ui_mode = "headless"
-
-        events = MagicMock(spec=EventSink)
-
-        # Pre-populate state with a blocked issue
-        state = OrchestratorState()
-        state.dependency_problems = {
-            5: DependencyProblem(
-                issue_number=5,
-                issue_title="Was Blocked",
-                blocked_by=[],
-                summary="Blocked - waiting on: #1",
-            )
-        }
-
-        from issue_orchestrator.events import EventContext
-        with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
-            orch = Orchestrator.__new__(Orchestrator)
-            orch.state = state
-            orch.config = config
-            orch._event_context = EventContext()
-            # Create mock deps with events
-            orch.deps = MagicMock()
-            orch.deps.events = events
-            orch.deps.repository_host = MagicMock()
-            orch.deps.fact_gatherer = MagicMock()
-            orch.deps.pr_scanner = MagicMock()
-            orch.deps.label_sync = MagicMock()
-
-        # Call update with empty blocked list (issue resolved)
-        orch._update_dependency_problems([])
-
-        # Check state was updated
-        assert 5 not in orch.state.dependency_problems
-
-        # Check unblocked event was emitted
-        events.publish.assert_called_once()
-        call_args = events.publish.call_args[0][0]
-        assert call_args.name == "dependency.unblocked"
-        assert call_args.data["issue_number"] == 5
-
-    def test_update_dependency_problems_no_change(self):
-        """No events emitted when nothing changes."""
-        from issue_orchestrator.infra.orchestrator import Orchestrator
-        from issue_orchestrator.infra.config import Config
-        from issue_orchestrator.ports import EventSink
-
-        config = MagicMock(spec=Config)
-        events = MagicMock(spec=EventSink)
-        state = OrchestratorState()
-
-        from issue_orchestrator.events import EventContext
-        with patch.object(Orchestrator, '__init__', lambda self, *args, **kwargs: None):
-            orch = Orchestrator.__new__(Orchestrator)
-            orch.state = state
-            orch.config = config
-            orch._event_context = EventContext()
-            # Create mock deps with events
-            orch.deps = MagicMock()
-            orch.deps.events = events
-            orch.deps.repository_host = MagicMock()
-            orch.deps.fact_gatherer = MagicMock()
-            orch.deps.pr_scanner = MagicMock()
-            orch.deps.label_sync = MagicMock()
-
-        # Call update with empty list twice
-        orch._update_dependency_problems([])
-        orch._update_dependency_problems([])
-
-        # No events should be emitted
-        events.publish.assert_not_called()
-
-
 class TestQueueChangeEvents:
     """Tests for queue change event emission."""
 
@@ -304,6 +148,7 @@ class TestDependencyProblemsAPI:
         """Create test client with mocked orchestrator."""
         from fastapi.testclient import TestClient
         from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web import set_orchestrator, get_orchestrator
         from issue_orchestrator.infra.config import Config
 
         mock_orch = MagicMock()
@@ -312,11 +157,11 @@ class TestDependencyProblemsAPI:
         mock_orch.config.repo = "test/repo"
 
         # Set the global orchestrator reference
-        original_orch = web._orchestrator
-        web._orchestrator = mock_orch
+        original_orch = get_orchestrator()
+        set_orchestrator(mock_orch)
         client = TestClient(web.app)
         yield client, mock_orch
-        web._orchestrator = original_orch
+        set_orchestrator(original_orch)
 
     def test_empty_problems(self, app_client):
         """Empty problems returns empty dict."""

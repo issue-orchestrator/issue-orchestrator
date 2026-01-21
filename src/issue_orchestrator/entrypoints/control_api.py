@@ -448,7 +448,7 @@ async def resume_issue(issue_number: int) -> JSONResponse:
 
 
 @control_app.post("/api/issues/{issue_number}/debug-session")
-async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
+async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901 - debug session with validation and setup phases
     """Launch an interactive debug session for a blocked issue.
 
     This endpoint creates a terminal session in the issue's existing worktree,
@@ -805,7 +805,7 @@ def _is_shutdown_complete(port: int | None) -> bool:
 
 
 @control_app.post("/control/orchestrator/start")
-async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR0912
+async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR0912 - orchestrator startup with config validation and initialization
     """Start an orchestrator for a repository.
 
     JSON body:
@@ -1378,7 +1378,7 @@ async def control_log_tail(
 # These endpoints manage the repo registry for multi-repo supervision.
 
 
-def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912
+def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - multi-repo status with state aggregation
     """Build status data for all registered repos.
 
     Shared by both the REST endpoint and SSE stream.
@@ -1898,7 +1898,7 @@ async def get_repo_config(
 
 
 @control_app.get("/control/repos/discover")
-async def discover_repos_endpoint(  # noqa: C901
+async def discover_repos_endpoint(  # noqa: C901 - recursive directory scanning with filtering
     search_paths: str = Query(
         default="",
         description="Comma-separated paths to search (default: ~/dev, ~/projects, ~/code, ~/repos)",
@@ -1939,7 +1939,7 @@ async def discover_repos_endpoint(  # noqa: C901
 
     discovered = []
 
-    def scan_directory(base: Path, depth: int) -> None:  # noqa: C901
+    def scan_directory(base: Path, depth: int) -> None:  # noqa: C901 - recursive scan with ignore patterns
         if depth > max_depth:
             return
         if not base.exists() or not base.is_dir():
@@ -2050,7 +2050,7 @@ async def setup_prereqs() -> JSONResponse:
 
 
 @control_app.get("/control/setup/detect")
-async def setup_detect(repo_root: str = Query(...)) -> JSONResponse:  # noqa: C901, PLR0912
+async def setup_detect(repo_root: str = Query(...)) -> JSONResponse:  # noqa: C901, PLR0912 - repo detection with multiple heuristics
     """Detect repository state for setup wizard.
 
     Query params:
@@ -2193,7 +2193,7 @@ async def setup_preview(request: Request) -> JSONResponse:
 
 
 @control_app.post("/control/setup/save")
-async def setup_save(request: Request) -> JSONResponse:  # noqa: C901, PLR0912
+async def setup_save(request: Request) -> JSONResponse:  # noqa: C901, PLR0912 - config save with validation and file creation
     """Save the configuration and create necessary files.
 
     JSON body:
@@ -2932,6 +2932,168 @@ async def e2e_test_summary(
         logger.exception("Failed to get test summary: %s", e)
         return JSONResponse(
             {"error": "db_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+@control_app.get("/control/e2e/diagnosis/{run_id}")
+async def e2e_run_diagnosis(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get comprehensive diagnosis for an E2E run failure.
+
+    Returns full diagnostic data including logs, stack traces, and suggestions.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        E2ERunDiagnosis as JSON with full log content and test details
+    """
+    from ..infra.e2e_db import E2EDB
+    from ..infra.e2e_run_diagnosis import create_e2e_run_diagnosis
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+        diagnosis = create_e2e_run_diagnosis(run_id, db)
+        if diagnosis is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Run {run_id} not found"},
+                status_code=404,
+            )
+        return JSONResponse(diagnosis.to_dict())
+    except Exception as e:
+        logger.exception("Failed to create E2E diagnosis: %s", e)
+        return JSONResponse(
+            {"error": "diagnosis_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+@control_app.post("/control/e2e/diagnosis/{run_id}/issue")
+async def create_e2e_diagnostic_issue(
+    request: Request,
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Create a GitHub issue for diagnosing E2E test failures.
+
+    1. Creates comprehensive diagnosis
+    2. Writes diagnostic file to .issue-orchestrator/diagnostics/
+    3. Creates GitHub issue with summary and file reference
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+
+    JSON body:
+        agent: str - Agent label to assign (e.g., "agent:developer")
+
+    Returns:
+        {status: "created", issue_number, url, diagnostic_file}
+    """
+    from ..infra.e2e_db import E2EDB
+    from ..infra.e2e_run_diagnosis import (
+        create_e2e_run_diagnosis,
+        generate_diagnostic_issue_body,
+        write_e2e_diagnostic,
+    )
+
+    if not _orchestrator:
+        return JSONResponse(
+            {"error": "Orchestrator not running"},
+            status_code=503,
+        )
+
+    # Parse request body for agent
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    agent = body.get("agent", "").strip()
+    if not agent:
+        return JSONResponse(
+            {"error": "Agent label is required"},
+            status_code=400,
+        )
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        # Create diagnosis
+        db = E2EDB(db_path)
+        diagnosis = create_e2e_run_diagnosis(run_id, db)
+        if diagnosis is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Run {run_id} not found"},
+                status_code=404,
+            )
+
+        # Write diagnostic file
+        diagnostic_ref = write_e2e_diagnostic(validated_root, diagnosis)
+
+        # Generate issue content
+        title = f"E2E Test Failures - Run #{run_id} ({diagnosis.failed_count} failures)"
+        body = generate_diagnostic_issue_body(diagnosis, diagnostic_ref)
+        labels = [agent, "e2e-failure", "bug"]
+
+        # Create issue via repository_host
+        result = _orchestrator.repository_host.create_issue(
+            title=title,
+            body=body,
+            labels=labels,
+        )
+
+        if result is None:
+            return JSONResponse(
+                {"error": "Failed to create issue"},
+                status_code=500,
+            )
+
+        return JSONResponse({
+            "status": "created",
+            "issue_number": result.get("number"),
+            "url": result.get("html_url"),
+            "diagnostic_file": diagnostic_ref.relative_path if diagnostic_ref else None,
+        })
+
+    except Exception as e:
+        logger.exception("Failed to create E2E diagnostic issue: %s", e)
+        return JSONResponse(
+            {"error": "issue_creation_error", "detail": str(e)},
             status_code=500,
         )
 

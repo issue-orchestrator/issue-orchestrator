@@ -154,7 +154,7 @@ class OrchestratorSupport:
         )
 
     def clear_discovered_facts(self) -> None:
-        for attr in ("discovered_reviews", "discovered_reworks", "discovered_escalations", "discovered_failures"):
+        for attr in ("discovered_reviews", "discovered_reworks", "discovered_escalations", "discovered_failures", "immediate_cleanups"):
             getattr(self.state, attr).clear()
 
     def emit_heartbeat_if_needed(self) -> None:

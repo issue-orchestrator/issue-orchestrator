@@ -495,14 +495,15 @@ def e2e_orchestrator(
             # Process died - get logs for diagnostics
             stdout, stderr = proc.stop()
             log_contents = ""
-            if proc._orchestrator_log_file and proc._orchestrator_log_file.exists():
-                log_contents = f"\nLog file ({proc._orchestrator_log_file}):\n{proc._orchestrator_log_file.read_text()[-2000:]}"
+            # noqa: SLF001 - E2E test infrastructure needs log access for diagnostics
+            if proc._orchestrator_log_file and proc._orchestrator_log_file.exists():  # noqa: SLF001
+                log_contents = f"\nLog file ({proc._orchestrator_log_file}):\n{proc._orchestrator_log_file.read_text()[-2000:]}"  # noqa: SLF001
             raise RuntimeError(
                 f"Orchestrator process exited unexpectedly.\n"
                 f"stdout: {stdout}\nstderr: {stderr}{log_contents}"
             )
 
-        if proc._check_api_running():
+        if proc._check_api_running():  # noqa: SLF001
             print(f"\n[E2E] Orchestrator API ready (pid={proc.process.pid}, attempt {attempt + 1})")
             break
 
@@ -513,8 +514,9 @@ def e2e_orchestrator(
         # API never became ready
         stdout, stderr = proc.stop()
         log_contents = ""
-        if proc._orchestrator_log_file and proc._orchestrator_log_file.exists():
-            log_contents = f"\nLog file ({proc._orchestrator_log_file}):\n{proc._orchestrator_log_file.read_text()[-2000:]}"
+        # noqa: SLF001 - E2E test infrastructure needs log access for diagnostics
+        if proc._orchestrator_log_file and proc._orchestrator_log_file.exists():  # noqa: SLF001
+            log_contents = f"\nLog file ({proc._orchestrator_log_file}):\n{proc._orchestrator_log_file.read_text()[-2000:]}"  # noqa: SLF001
         raise RuntimeError(
             f"Orchestrator API did not become ready after {max_retries} attempts.\n"
             f"stdout: {stdout}\nstderr: {stderr}{log_contents}"

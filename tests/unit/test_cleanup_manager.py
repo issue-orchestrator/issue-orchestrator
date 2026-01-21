@@ -8,6 +8,8 @@ Tests focus on behavior:
 """
 
 import logging
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
@@ -15,6 +17,17 @@ import pytest
 from issue_orchestrator.control.cleanup_manager import CleanupManager
 from issue_orchestrator.domain.models import PendingCleanup
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+
+@dataclass
+class CleanupManagerBundle:
+    """Bundle of CleanupManager and its injected mock dependencies."""
+
+    manager: CleanupManager
+    kill_session: MagicMock
+    session_exists: MagicMock
+    get_worktree_path: MagicMock
+    get_session_name: MagicMock
 
 
 # --- Helpers ---
@@ -76,17 +89,36 @@ def mock_worktree_manager():
 
 
 @pytest.fixture
-def cleanup_manager(mock_config, mock_repository_host, mock_worktree_manager):
+def cleanup_manager_bundle(mock_config, mock_repository_host, mock_worktree_manager):
     """Create a CleanupManager with mocked dependencies."""
-    return CleanupManager(
+    kill_session = MagicMock()
+    session_exists = MagicMock(return_value=False)
+    get_worktree_path = MagicMock(return_value=Path("/tmp/worktree"))
+    get_session_name = MagicMock(return_value="issue-123")
+
+    manager = CleanupManager(
         config=mock_config,
         repository_host=mock_repository_host,
         worktree_manager=mock_worktree_manager,
-        kill_session_fn=MagicMock(),
-        session_exists_fn=MagicMock(return_value=False),
-        get_worktree_path_fn=MagicMock(return_value=Path("/tmp/worktree")),
-        get_session_name_fn=MagicMock(return_value="issue-123"),
+        kill_session_fn=kill_session,
+        session_exists_fn=session_exists,
+        get_worktree_path_fn=get_worktree_path,
+        get_session_name_fn=get_session_name,
     )
+
+    return CleanupManagerBundle(
+        manager=manager,
+        kill_session=kill_session,
+        session_exists=session_exists,
+        get_worktree_path=get_worktree_path,
+        get_session_name=get_session_name,
+    )
+
+
+@pytest.fixture
+def cleanup_manager(cleanup_manager_bundle):
+    """Convenience fixture returning just the manager."""
+    return cleanup_manager_bundle.manager
 
 
 # --- Test: Throttling ---
@@ -105,12 +137,15 @@ class TestTriageIssueThrottling:
 
         assert cleanup_manager.should_retry_triage_issue(cooldown_seconds=60) is False
 
-    def test_should_retry_returns_true_after_cooldown(self, cleanup_manager):
+    def test_should_retry_returns_true_after_cooldown(self, cleanup_manager, monkeypatch):
         """Should allow retry after cooldown expires."""
+        import time
+
         cleanup_manager.mark_triage_issue_failure()
 
-        # Simulate cooldown expiration by setting last failure in the past
-        cleanup_manager._triage_issue_last_failure -= 120  # 2 minutes ago
+        # Simulate cooldown expiration by mocking time to be 2 minutes later
+        original_time = time.time
+        monkeypatch.setattr(time, "time", lambda: original_time() + 120)
 
         assert cleanup_manager.should_retry_triage_issue(cooldown_seconds=60) is True
 
@@ -231,7 +266,7 @@ class TestProcessDeferredCleanups:
         assert result[0].pr_number == 456
 
     def test_kills_session_when_configured(
-        self, cleanup_manager, mock_config, mock_repository_host
+        self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host
     ):
         """Session is killed when close_ai_session_tabs is True."""
         mock_config.triage_review_agent = "agent:triage"
@@ -252,7 +287,7 @@ class TestProcessDeferredCleanups:
 
         cleanup_manager.process_deferred_cleanups(pending)
 
-        cleanup_manager._kill_session.assert_called_once_with("issue-123")
+        cleanup_manager_bundle.kill_session.assert_called_once_with("issue-123")
 
     def test_removes_worktree_when_configured(
         self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
@@ -280,11 +315,11 @@ class TestProcessDeferredCleanups:
         mock_worktree_manager.remove.assert_called_once_with(worktree_path)
 
     def test_handles_kill_session_failure(
-        self, cleanup_manager, mock_config, mock_repository_host, caplog
+        self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, caplog
     ):
         """Session kill failure is logged and cleanup remains pending."""
         mock_config.triage_review_agent = "agent:triage"
-        cleanup_manager._kill_session.side_effect = Exception("Session not found")
+        cleanup_manager_bundle.kill_session.side_effect = Exception("Session not found")
 
         pending = [
             make_pending_cleanup(
@@ -427,7 +462,7 @@ class TestRecoverOrphanedCleanups:
         assert result == 0
 
     def test_skips_running_sessions(
-        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
+        self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, mock_worktree_manager
     ):
         """Sessions still running are not cleaned up."""
         mock_config.triage_review_agent = "agent:triage"
@@ -438,7 +473,7 @@ class TestRecoverOrphanedCleanups:
         mock_worktree_manager.extract_issue_number.return_value = 123
 
         # Session is still running
-        cleanup_manager._session_exists = MagicMock(return_value=True)
+        cleanup_manager_bundle.session_exists.return_value = True
 
         result = cleanup_manager.recover_orphaned_cleanups()
 
@@ -446,7 +481,7 @@ class TestRecoverOrphanedCleanups:
         mock_worktree_manager.remove.assert_not_called()
 
     def test_cleans_up_orphaned_worktrees(
-        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager, tmp_path
+        self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, mock_worktree_manager, tmp_path
     ):
         """Orphaned worktrees are cleaned up."""
         mock_config.triage_review_agent = "agent:triage"
@@ -459,12 +494,12 @@ class TestRecoverOrphanedCleanups:
         mock_worktree_manager.extract_issue_number.return_value = 123
 
         # Session is not running
-        cleanup_manager._session_exists = MagicMock(return_value=False)
+        cleanup_manager_bundle.session_exists.return_value = False
 
         # Worktree exists
         worktree = tmp_path / "issue-123"
         worktree.mkdir()
-        cleanup_manager._get_worktree_path = MagicMock(return_value=worktree)
+        cleanup_manager_bundle.get_worktree_path.return_value = worktree
 
         result = cleanup_manager.recover_orphaned_cleanups()
 
@@ -497,7 +532,7 @@ class TestRecoverOrphanedCleanups:
         callback.assert_called_once_with("Checking for orphaned cleanups...")
 
     def test_handles_worktree_removal_failure_during_recovery(
-        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager, tmp_path, caplog
+        self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, mock_worktree_manager, tmp_path, caplog
     ):
         """Worktree removal failure is logged but doesn't stop recovery."""
         mock_config.triage_review_agent = "agent:triage"
@@ -510,11 +545,11 @@ class TestRecoverOrphanedCleanups:
         mock_worktree_manager.extract_issue_number.return_value = 123
         mock_worktree_manager.remove.side_effect = Exception("Cannot remove")
 
-        cleanup_manager._session_exists = MagicMock(return_value=False)
+        cleanup_manager_bundle.session_exists.return_value = False
 
         worktree = tmp_path / "issue-123"
         worktree.mkdir()
-        cleanup_manager._get_worktree_path = MagicMock(return_value=worktree)
+        cleanup_manager_bundle.get_worktree_path.return_value = worktree
 
         with caplog.at_level(logging.WARNING):
             result = cleanup_manager.recover_orphaned_cleanups()

@@ -998,9 +998,9 @@ class TestGitHubCacheEdgeCases:
 
         cache.set_issue(1, {"number": 1})
 
-        # Access internal entry to check TTL
-        with cache._lock:
-            entry = cache._issues.get(1)
+        # noqa: SLF001 - Verifying TTL configuration requires internal cache access
+        with cache._lock:  # noqa: SLF001
+            entry = cache._issues.get(1)  # noqa: SLF001
             assert entry is not None
             assert entry.ttl_seconds == 100.0
 
@@ -1010,8 +1010,8 @@ class TestGitHubCacheEdgeCases:
 
         cache.set_issue(1, {"number": 1}, ttl=200.0)
 
-        # Access internal entry to check TTL
-        with cache._lock:
-            entry = cache._issues.get(1)
+        # noqa: SLF001 - Verifying TTL configuration requires internal cache access
+        with cache._lock:  # noqa: SLF001
+            entry = cache._issues.get(1)  # noqa: SLF001
             assert entry is not None
             assert entry.ttl_seconds == 200.0

@@ -143,10 +143,11 @@ async def wait_for_any_pr_label(
             if any(label in issue_view.pr.labels for label in labels):
                 return
         try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+            # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)  # noqa: SLF001
         except asyncio.TimeoutError:
             pass
-        watcher._notify.clear()
+        watcher._notify.clear()  # noqa: SLF001
     raise TimeoutError(f"Timed out waiting for PR labels {labels} on {issue_key}")
 
 
@@ -161,10 +162,11 @@ async def wait_for_issue_with_label(
             if label in issue_view.labels:
                 return issue_key
         try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+            # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
+            await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)  # noqa: SLF001
         except asyncio.TimeoutError:
             pass
-        watcher._notify.clear()
+        watcher._notify.clear()  # noqa: SLF001
     raise TimeoutError(f"Timed out waiting for issue with label {label}")
 
 
@@ -187,10 +189,11 @@ async def wait_for_rework_progress(
             if seen:
                 return False, seen
         try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=2.0)
+            # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
+            await asyncio.wait_for(watcher._notify.wait(), timeout=2.0)  # noqa: SLF001
         except asyncio.TimeoutError:
             pass
-        watcher._notify.clear()
+        watcher._notify.clear()  # noqa: SLF001
     return False, seen
 
 
@@ -268,7 +271,8 @@ class E2EFlow:
         if self.watcher is None:
             return None
         # Extract port from snapshot provider URL (e.g., http://localhost:19080/api/snapshot)
-        url = self.watcher._snapshot_provider.url
+        # noqa: SLF001 - E2E test infrastructure needs port from provider for control API
+        url = self.watcher._snapshot_provider.url  # noqa: SLF001
         from urllib.parse import urlparse
         parsed = urlparse(url)
         return parsed.port
@@ -393,10 +397,11 @@ class E2EFlow:
             if issue_view and issue_view.pr.number:
                 return issue_view.pr.number
             try:
-                await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)
+                # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
+                await asyncio.wait_for(watcher._notify.wait(), timeout=1.0)  # noqa: SLF001
             except asyncio.TimeoutError:
                 pass
-            watcher._notify.clear()
+            watcher._notify.clear()  # noqa: SLF001
         raise TimeoutError(f"Timed out waiting for PR for issue {issue_key}")
 
     async def pr_has_any_label(

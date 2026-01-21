@@ -26,6 +26,46 @@ curl -s http://localhost:8080/api/status | jq
 curl -s http://localhost:8080/api/state | jq
 ```
 
+## Session Output Directory
+
+All session artifacts are centralized in a run directory per session:
+
+```
+<worktree>/.issue-orchestrator/sessions/
+├── <run_id>__<session_name>/     # e.g., 20260120-143052Z__issue-42
+│   ├── manifest.json             # Session metadata (start time, paths, outcome)
+│   ├── session.log               # Terminal output from the session
+│   ├── validation-record.json    # Validation pass/fail result
+│   ├── validation-stdout.log     # Validation command stdout
+│   ├── validation-stderr.log     # Validation command stderr
+│   ├── validation-errors.txt     # Human-readable validation errors
+│   ├── orchestrator-tail.log     # Filtered orchestrator log for this session
+│   └── claude-session.jsonl      # Symlink to Claude session log
+├── <session_name>                # Symlink to latest run for this session
+├── latest.json                   # Pointer to most recent run
+└── index.json                    # List of all runs
+```
+
+**Quick navigation:**
+```bash
+WORKTREE="/path/to/worktree"
+
+# Find the latest run
+RUN_DIR=$(ls -td $WORKTREE/.issue-orchestrator/sessions/*__* 2>/dev/null | head -1)
+
+# Check manifest for session metadata
+cat $RUN_DIR/manifest.json | jq
+
+# Check session log
+tail -100 $RUN_DIR/session.log
+
+# Check validation errors
+cat $RUN_DIR/validation-errors.txt
+
+# List all runs in a worktree
+cat $WORKTREE/.issue-orchestrator/sessions/index.json | jq '.runs'
+```
+
 ## Common Issues
 
 ### Sessions Failing Without Completion
@@ -113,7 +153,16 @@ Each Claude Code session creates logs useful for debugging:
 
 **Path Escaping:** `/Users/bruce/dev/myproject` -> `-Users-bruce-dev-myproject`
 
-**Find sessions for a worktree:**
+**Quick access via run directory:**
+```bash
+# The run directory has a symlink to the Claude log
+ls -la $RUN_DIR/claude-session.jsonl
+
+# Or get the path from manifest
+cat $RUN_DIR/manifest.json | jq -r '.claude_log_path'
+```
+
+**Legacy method (finding sessions for a worktree):**
 ```bash
 WORKTREE="/path/to/worktree"
 ESCAPED=$(echo "$WORKTREE" | sed 's|^/|-|' | tr '/' '-')

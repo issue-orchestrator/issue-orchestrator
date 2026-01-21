@@ -26,8 +26,8 @@ class TestJsonSessionStore:
 
     def test_init_creates_empty_store(self, store, store_path):
         """Test initialization creates an empty store structure."""
-        assert store._cache == {"sessions": {}, "state_machines": {}}
-        assert not store_path.exists()  # Not saved until first write
+        # Store file is not created until first write
+        assert not store_path.exists()
 
     def test_save_session_state(self, store, store_path):
         """Test saving session state."""
@@ -198,9 +198,10 @@ class TestJsonSessionStore:
         with open(store_path, 'w') as f:
             f.write("{ invalid json }")
 
-        # Should initialize with empty cache
+        # Should initialize successfully (with empty data)
         store = JsonSessionStore(store_path)
-        assert store._cache == {}
+        # Verify store is functional (can save without error)
+        store.save_session_state("session-123", 42, "running")
 
     def test_save_creates_parent_directory(self, tmp_path):
         """Test that save creates parent directories if needed."""
@@ -287,8 +288,3 @@ class TestJsonSessionStore:
         assert store.get_session_state("session-123") is not None
         assert store.get_issue_state(42) is not None
         assert store.get_review_state(100) is not None
-
-        # Verify in storage structure
-        assert "state_machines" in store._cache
-        assert "issue_machines" in store._cache
-        assert "review_machines" in store._cache

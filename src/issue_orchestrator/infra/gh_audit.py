@@ -265,6 +265,31 @@ def enabled() -> bool:
     return _ENABLED
 
 
+def include_events() -> bool:
+    """Query whether event recording is enabled."""
+    return _INCLUDE_EVENTS
+
+
+def get_audit_path() -> str | None:
+    """Query the configured audit file path."""
+    return _AUDIT_PATH
+
+
+def get_stats() -> dict[str, Any]:
+    """Get a copy of current audit statistics."""
+    with _lock:
+        return dict(_stats)
+
+
+def get_rate_limit_config() -> dict[str, Any]:
+    """Query current rate limit configuration."""
+    return {
+        "every_calls": _rate_limit_every_calls,
+        "warn_fraction": _rate_limit_warn_fraction,
+        "warn_remaining": _rate_limit_warn_remaining,
+    }
+
+
 def _command_key(args: list[str]) -> str:
     if not args:
         return "unknown"

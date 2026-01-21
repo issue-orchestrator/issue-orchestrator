@@ -72,7 +72,8 @@ def wait_with_process_check(
                 )
 
             # Check for fatal errors in recent log output
-            recent_logs = "\n".join(orchestrator._output_lines[-20:])
+            # noqa: SLF001 - E2E test infrastructure needs log access for error detection
+            recent_logs = "\n".join(orchestrator._output_lines[-20:])  # noqa: SLF001
             for pattern in FATAL_ERROR_PATTERNS:
                 if pattern in recent_logs:
                     raise RuntimeError(
