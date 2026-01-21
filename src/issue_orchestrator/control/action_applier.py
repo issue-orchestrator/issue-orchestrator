@@ -744,11 +744,11 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
 
     def _cleanup_terminal_session(self, action: "CleanupSessionAction", errors: list[str]) -> None:
         """Close terminal session if configured."""
-        if not (action.close_tabs and action.terminal_session_name):
+        if not (action.close_tabs and action.terminal_id):
             return
 
         try:
-            session_type = self._determine_session_type(action.terminal_session_name)
+            session_type = self._determine_session_type(action.terminal_id)
             ref = SessionRef(session_type=session_type, number=action.issue_number)
             if self.sessions.exists(ref):
                 self.sessions.stop(ref)

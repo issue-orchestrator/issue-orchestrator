@@ -1096,7 +1096,7 @@ class TestPlanCleanups:
         action = cleanup_actions[0]
         assert action.issue_number == 42
         assert action.pr_number == 100
-        assert action.terminal_session_name == "session-42"
+        assert action.terminal_id == "session-42"
         assert action.worktree_path == "/tmp/worktree-42"
         assert action.close_tabs is True
         assert action.remove_worktrees is True

@@ -2637,7 +2637,7 @@ class TestProcessDeferredCleanups:
             pr_number=100,
             pr_url="https://github.com/owner/repo/pull/100",
             branch_name="issue-1-test",
-            terminal_session_name="issue-1",
+            terminal_id="issue-1",
             worktree_path=tmp_path / "worktree-1",
         )
         orchestrator.state.pending_cleanups.append(pending)
@@ -2676,7 +2676,7 @@ class TestProcessDeferredCleanups:
             pr_number=100,
             pr_url="https://github.com/owner/repo/pull/100",
             branch_name="issue-1-test",
-            terminal_session_name="issue-1",
+            terminal_id="issue-1",
             worktree_path=tmp_path / "worktree-1",
         )
         orchestrator.state.pending_cleanups.append(pending)
@@ -2715,7 +2715,7 @@ class TestProcessDeferredCleanups:
             pr_number=100,
             pr_url="https://github.com/owner/repo/pull/100",
             branch_name="issue-1-test",
-            terminal_session_name="issue-1",
+            terminal_id="issue-1",
             worktree_path=Path("/tmp/worktree-1"),
         )
         orchestrator.state.pending_cleanups.append(pending)

@@ -406,7 +406,7 @@ class TestCleanupSessionAction:
         action = CleanupSessionAction(
             issue_number=123,
             pr_number=456,
-            terminal_session_name="issue-123",
+            terminal_id="issue-123",
             worktree_path=str(tmp_path),
             close_tabs=True,
             remove_worktrees=True,
@@ -425,7 +425,7 @@ class TestCleanupSessionAction:
         action = CleanupSessionAction(
             issue_number=123,
             pr_number=456,
-            terminal_session_name="issue-123",
+            terminal_id="issue-123",
             worktree_path=str(tmp_path),
             close_tabs=True,
             remove_worktrees=False,

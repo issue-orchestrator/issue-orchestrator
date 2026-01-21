@@ -619,7 +619,7 @@ def _load_worktrees_section(
     )
 
 
-def _load_execution_section(config: "Config", execution_section: dict, repo_root: Path, config_path: Path) -> None:
+def _load_execution_section(config: "Config", execution_section: dict, config_path: Path) -> None:
     """Load execution and terminal configuration."""
     # Concurrency
     concurrency = _get_section(execution_section, "concurrency", config_path)
@@ -628,20 +628,6 @@ def _load_execution_section(config: "Config", execution_section: dict, repo_root
 
     # Terminal adapter
     config.terminal_adapter = execution_section.get("terminal_adapter")
-    if execution_section.get("tmux_session_mode"):
-        config.tmux_session_mode = str(execution_section["tmux_session_mode"])
-
-    if execution_section.get("tmuxp"):
-        config.tmuxp_config = resolve_relative_path(execution_section["tmuxp"], repo_root)
-
-    if "tmux_bindings" in execution_section:
-        bindings = execution_section["tmux_bindings"]
-        if bindings is None:
-            config.tmux_bindings = []
-        elif isinstance(bindings, list):
-            config.tmux_bindings = bindings
-        else:
-            config.tmux_bindings = [str(bindings)]
 
     # Isolation
     isolation_data = execution_section.get("isolation", {})
@@ -868,11 +854,6 @@ class Config:
     # Can be "subprocess" or a full class path for custom adapters
     terminal_adapter: Optional[str] = None
 
-    # Tmux settings (when using tmux terminal adapter)
-    tmux_session_mode: str = "windows"  # "windows" or "sessions"
-    tmuxp_config: Optional[Path] = None  # Custom tmuxp layout config
-    tmux_bindings: list[str] = field(default_factory=lambda: ["DoubleClick1Pane: resize-pane -Z"])
-
     # Milestone sorting strategy - built-in: "due_date", "number", "pattern", "name"
     # Or provide a custom class path like "mymodule.MyStrategy"
     milestone_sort: str = "due_date"
@@ -1084,9 +1065,6 @@ class Config:
                     "session_timeout_minutes": self.session_timeout_minutes,
                 },
                 "terminal_adapter": self.terminal_adapter,
-                "tmux_session_mode": self.tmux_session_mode,
-                "tmuxp": str(self.tmuxp_config) if self.tmuxp_config else None,
-                "tmux_bindings": self.tmux_bindings,
                 "isolation": {
                     "mode": self.isolation.mode,
                 },
@@ -1259,7 +1237,7 @@ class Config:
         # Load all sections using helper functions
         _load_worktrees_section(config, sections["worktrees"], repo_root, config_path)
         _load_agents_section(config, sections["agents"], repo_root)
-        _load_execution_section(config, sections["execution"], repo_root, config_path)
+        _load_execution_section(config, sections["execution"], config_path)
         _load_labels_section(config, sections["labels"])
         _load_repo_section(config, sections["repo"], sections["github"])
         _load_github_write_verify(config, sections["github"])

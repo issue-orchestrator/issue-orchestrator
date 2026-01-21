@@ -36,7 +36,7 @@ class CleanupManagerBundle:
 def make_pending_cleanup(
     issue_number: int,
     pr_number: int,
-    terminal_session_name: str = None,
+    terminal_id: str = None,
     worktree_path: Path = None,
 ) -> PendingCleanup:
     """Create a PendingCleanup with a mock issue."""
@@ -47,7 +47,7 @@ def make_pending_cleanup(
         pr_number=pr_number,
         pr_url=f"https://github.com/test/repo/pull/{pr_number}",
         branch_name=f"{issue_number}-branch",
-        terminal_session_name=terminal_session_name or f"issue-{issue_number}",
+        terminal_id=terminal_id or f"issue-{issue_number}",
         worktree_path=worktree_path or Path(f"/tmp/worktree-{issue_number}"),
     )
 
@@ -172,7 +172,7 @@ class TestProcessDeferredCleanups:
             make_pending_cleanup(
                 issue_number=123,
                 pr_number=456,
-                terminal_session_name="issue-123",
+                terminal_id="issue-123",
                 worktree_path=Path("/tmp/worktree"),
             )
         ]
@@ -194,7 +194,7 @@ class TestProcessDeferredCleanups:
             make_pending_cleanup(
                 issue_number=123,
                 pr_number=456,
-                terminal_session_name="issue-123",
+                terminal_id="issue-123",
                 worktree_path=Path("/tmp/worktree"),
             )
         ]
@@ -224,7 +224,7 @@ class TestProcessDeferredCleanups:
             make_pending_cleanup(
                 issue_number=123,
                 pr_number=789,
-                terminal_session_name="issue-123",
+                terminal_id="issue-123",
                 worktree_path=Path("/tmp/worktree"),
             )
         ]
@@ -252,7 +252,7 @@ class TestProcessDeferredCleanups:
             make_pending_cleanup(
                 issue_number=123,
                 pr_number=456,
-                terminal_session_name="issue-123",
+                terminal_id="issue-123",
                 worktree_path=Path("/tmp/worktree"),
             )
         ]
@@ -276,7 +276,7 @@ class TestProcessDeferredCleanups:
             make_pending_cleanup(
                 issue_number=123,
                 pr_number=456,
-                terminal_session_name="issue-123",
+                terminal_id="issue-123",
                 worktree_path=Path("/tmp/worktree"),
             )
         ]
@@ -301,7 +301,7 @@ class TestProcessDeferredCleanups:
             make_pending_cleanup(
                 issue_number=123,
                 pr_number=456,
-                terminal_session_name="issue-123",
+                terminal_id="issue-123",
                 worktree_path=worktree_path,
             )
         ]
@@ -325,7 +325,7 @@ class TestProcessDeferredCleanups:
             make_pending_cleanup(
                 issue_number=123,
                 pr_number=456,
-                terminal_session_name="issue-123",
+                terminal_id="issue-123",
                 worktree_path=Path("/tmp/worktree"),
             )
         ]
@@ -352,7 +352,7 @@ class TestProcessDeferredCleanups:
             make_pending_cleanup(
                 issue_number=123,
                 pr_number=456,
-                terminal_session_name="issue-123",
+                terminal_id="issue-123",
                 worktree_path=Path("/tmp/worktree"),
             )
         ]
@@ -379,7 +379,7 @@ class TestProcessDeferredCleanups:
             make_pending_cleanup(
                 issue_number=123,
                 pr_number=456,
-                terminal_session_name="issue-123",
+                terminal_id="issue-123",
                 worktree_path=Path("/tmp/worktree"),
             )
         ]
@@ -399,15 +399,15 @@ class TestProcessDeferredCleanups:
         pending = [
             make_pending_cleanup(
                 issue_number=123, pr_number=456,
-                terminal_session_name="issue-123", worktree_path=Path("/tmp/wt1")
+                terminal_id="issue-123", worktree_path=Path("/tmp/wt1")
             ),
             make_pending_cleanup(
                 issue_number=124, pr_number=457,
-                terminal_session_name="issue-124", worktree_path=Path("/tmp/wt2")
+                terminal_id="issue-124", worktree_path=Path("/tmp/wt2")
             ),
             make_pending_cleanup(
                 issue_number=125, pr_number=458,
-                terminal_session_name="issue-125", worktree_path=Path("/tmp/wt3")
+                terminal_id="issue-125", worktree_path=Path("/tmp/wt3")
             ),
         ]
 

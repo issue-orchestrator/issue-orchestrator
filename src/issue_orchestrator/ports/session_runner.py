@@ -2,7 +2,7 @@
 
 This port defines the interface for managing terminal sessions where AI agents
 run. The orchestrator calls these methods without knowing the implementation
-(tmux, Wezterm, etc.).
+details (currently subprocess-based).
 
 This abstraction keeps terminal backend details out of the core.
 """
@@ -21,7 +21,6 @@ class DiscoveredSession(TypedDict):
 class SessionRunner(Protocol):
     """Port for managing terminal sessions.
 
-    Implementations may use tmux or other terminal multiplexers.
     The orchestrator doesn't know or care about the specific backend.
 
     Note: session_name is required - callers must compute the name explicitly
@@ -159,7 +158,6 @@ class SessionRunner(Protocol):
         """Called when the orchestrator starts up.
 
         Terminal backends should create their session/environment here.
-        For tmux: creates the tmux session.
         """
         ...
 
@@ -167,7 +165,6 @@ class SessionRunner(Protocol):
         """Called when the orchestrator shuts down.
 
         Terminal backends should clean up their session/environment here.
-        For tmux: kills the entire session (atomic cleanup of all windows).
         """
         ...
 

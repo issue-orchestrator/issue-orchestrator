@@ -167,7 +167,7 @@ class CleanupManager:
 
         if close_tabs:
             try:
-                self._kill_session(pending.terminal_session_name)
+                self._kill_session(pending.terminal_id)
                 logger.info(f"[CLEANUP] Closed terminal session for #{pending.issue_number}")
             except Exception as e:
                 logger.warning(f"[CLEANUP] Failed to close session for #{pending.issue_number}: {e}")

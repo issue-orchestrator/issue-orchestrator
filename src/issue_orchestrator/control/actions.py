@@ -260,7 +260,7 @@ class CleanupSessionAction(Action):
 
     issue_number: int = 0
     pr_number: int = 0
-    terminal_session_name: str = ""
+    terminal_id: str = ""
     worktree_path: str = ""
     close_tabs: bool = True
     remove_worktrees: bool = True

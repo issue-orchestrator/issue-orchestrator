@@ -701,13 +701,13 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         # 1. Deferred cleanups - check if PR has been reviewed
         for cleanup in facts.pending_cleanups:
-            # cleanup is a tuple of (issue_number, pr_number, terminal_session_name, worktree_path)
-            issue_number, pr_number, terminal_session_name, worktree_path = cleanup
+            # cleanup is a tuple of (issue_number, pr_number, terminal_id, worktree_path)
+            issue_number, pr_number, terminal_id, worktree_path = cleanup
             if pr_number in facts.reviewed_pr_numbers:
                 actions.append(CleanupSessionAction(
                     issue_number=issue_number,
                     pr_number=pr_number,
-                    terminal_session_name=terminal_session_name,
+                    terminal_id=terminal_id,
                     worktree_path=worktree_path,
                     close_tabs=facts.close_tabs,
                     remove_worktrees=facts.remove_worktrees,
@@ -721,7 +721,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             actions.append(CleanupSessionAction(
                 issue_number=cleanup.issue_number,
                 pr_number=0,  # No PR for immediate cleanups
-                terminal_session_name=cleanup.terminal_id,
+                terminal_id=cleanup.terminal_id,
                 worktree_path=cleanup.worktree_path,
                 close_tabs=facts.close_tabs,
                 remove_worktrees=facts.remove_worktrees,

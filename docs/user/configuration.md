@@ -124,11 +124,7 @@ execution:
   concurrency:
     max_concurrent_sessions: 3
     session_timeout_minutes: 45
-  terminal_adapter: null
-  tmux_session_mode: "shared"
-  tmuxp: null
-  tmux_bindings:
-    - "bind-key -T root DoubleClick1Pane resize-pane -Z -t ="
+  terminal_adapter: null  # "subprocess" or custom adapter path
   isolation:
     mode: "standard"
 ```
