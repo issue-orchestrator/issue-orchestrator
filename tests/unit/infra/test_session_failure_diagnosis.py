@@ -795,3 +795,240 @@ class TestCreateSessionFailureDiagnosis:
             )
 
             assert diagnosis.log_context == "Detailed failure context"
+
+    # =========================================================================
+    # Edge Case Tests (prevent regressions)
+    # =========================================================================
+
+    @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
+    @patch("issue_orchestrator.ports.session_log.detect_ai_system_from_command")
+    def test_prefers_agent_config_over_history_for_ai_detection(
+        self, mock_detect, mock_get_provider
+    ):
+        """When both active session and history exist, uses active session's config."""
+        # Return different values for each call to distinguish sources
+        mock_detect.side_effect = ["from-active-session", "from-history"]
+        mock_get_provider.return_value = None
+
+        # Active session with its own config
+        active_config = Mock(command="active-cmd", permission_mode="active-mode")
+        active_session = Mock(
+            issue=Mock(number=123),
+            worktree_path="/active/path",
+            agent_config=active_config,
+        )
+
+        # History entry with different agent
+        history_entry = Mock(
+            issue_number=123,
+            status="blocked",
+            status_reason="error",
+            agent_type="agent-history",
+        )
+        history_config = Mock(command="history-cmd", permission_mode="history-mode")
+
+        config = Mock()
+        config.repo_root = Path("/repo")
+        config.repo = "org/repo"
+        config.worktree_base = None
+        config.agents = {}
+
+        diagnosis = create_session_failure_diagnosis(
+            issue_number=123,
+            session_history=[history_entry],
+            active_sessions=[active_session],
+            config=config,
+            agents={"agent-history": history_config},
+        )
+
+        # Should use active session's config, not history
+        assert diagnosis.ai_system == "from-active-session"
+        assert diagnosis.permission_mode == "active-mode"
+
+    @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
+    def test_suggestion_mentions_claude_projects_path(self, mock_get_provider):
+        """When log is missing, suggestion mentions .claude/projects path."""
+        mock_provider = Mock()
+        mock_provider.get_log_path.return_value = None
+        mock_get_provider.return_value = mock_provider
+
+        agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+        active_session = Mock(
+            issue=Mock(number=123),
+            worktree_path="/path/to/wt",
+            agent_config=agent_config,
+        )
+        config = Mock()
+        config.repo_root = Path("/repo")
+        config.repo = "org/repo"
+        config.worktree_base = None
+        config.agents = {}
+
+        diagnosis = create_session_failure_diagnosis(
+            issue_number=123,
+            session_history=[],
+            active_sessions=[active_session],
+            config=config,
+            agents={},
+        )
+
+        assert any(".claude/projects" in s for s in diagnosis.suggestions)
+
+    @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
+    def test_ignores_non_matching_history_entries(self, mock_get_provider):
+        """History entries for other issues are ignored."""
+        mock_get_provider.return_value = None
+
+        # History entries for different issues
+        other_entry1 = Mock(issue_number=100, status="completed", status_reason="ok")
+        other_entry2 = Mock(issue_number=200, status="blocked", status_reason="error")
+
+        config = Mock()
+        config.repo_root = Path("/repo")
+        config.repo = "org/repo"
+        config.worktree_base = None
+        config.agents = {}
+
+        diagnosis = create_session_failure_diagnosis(
+            issue_number=123,  # Different from all entries
+            session_history=[other_entry1, other_entry2],
+            active_sessions=[],
+            config=config,
+            agents={},
+        )
+
+        # Should not find any matching history
+        assert diagnosis.history_status is None
+        assert diagnosis.history_reason is None
+
+    @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
+    def test_ignores_non_matching_active_sessions(self, mock_get_provider):
+        """Active sessions for other issues are ignored."""
+        mock_get_provider.return_value = None
+
+        # Active sessions for different issues
+        other_session1 = Mock(
+            issue=Mock(number=100),
+            worktree_path="/path1",
+            agent_config=Mock(permission_mode="mode1", command="cmd1"),
+        )
+        other_session2 = Mock(
+            issue=Mock(number=200),
+            worktree_path="/path2",
+            agent_config=Mock(permission_mode="mode2", command="cmd2"),
+        )
+
+        config = Mock()
+        config.repo_root = Path("/repo")
+        config.repo = "org/repo"
+        config.worktree_base = None
+        config.agents = {}
+
+        diagnosis = create_session_failure_diagnosis(
+            issue_number=123,  # Different from all sessions
+            session_history=[],
+            active_sessions=[other_session1, other_session2],
+            config=config,
+            agents={},
+        )
+
+        # Should not find worktree from active sessions
+        assert diagnosis.worktree_path is None
+        # Should fall back to defaults
+        assert diagnosis.permission_mode == "unknown"
+
+    @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
+    def test_log_exists_false_when_path_returned_but_file_missing(self, mock_get_provider):
+        """log_exists is False when provider returns path but file doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Provider returns a path that doesn't exist
+            nonexistent_log = Path(tmpdir) / "missing.log"
+
+            mock_provider = Mock()
+            mock_provider.get_log_path.return_value = nonexistent_log
+            mock_provider.get_failure_context.return_value = None
+            mock_get_provider.return_value = mock_provider
+
+            agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+            active_session = Mock(
+                issue=Mock(number=123),
+                worktree_path="/path/to/wt",
+                agent_config=agent_config,
+            )
+            config = Mock()
+            config.repo_root = Path("/repo")
+            config.repo = "org/repo"
+            config.worktree_base = None
+            config.agents = {}
+
+            diagnosis = create_session_failure_diagnosis(
+                issue_number=123,
+                session_history=[],
+                active_sessions=[active_session],
+                config=config,
+                agents={},
+            )
+
+            assert diagnosis.log_path == str(nonexistent_log)
+            assert diagnosis.log_exists is False
+
+    @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
+    def test_searches_repo_root_parent_as_worktree_base(self, mock_get_provider):
+        """Always searches repo_root.parent as a fallback worktree base."""
+        mock_get_provider.return_value = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # repo_root.parent contains the worktree
+            parent_dir = Path(tmpdir)
+            repo_root = parent_dir / "main-repo"
+            repo_root.mkdir()
+            worktree = parent_dir / "repo-123"
+            worktree.mkdir()
+
+            config = Mock()
+            config.repo_root = repo_root
+            config.repo = "org/repo"
+            config.worktree_base = None  # No explicit worktree_base
+            config.agents = {}
+
+            diagnosis = create_session_failure_diagnosis(
+                issue_number=123,
+                session_history=[],
+                active_sessions=[],
+                config=config,
+                agents={},
+            )
+
+            # Should find worktree in repo_root.parent
+            assert diagnosis.worktree_path == str(worktree.resolve())
+
+    @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
+    def test_direct_worktree_match_takes_priority(self, mock_get_provider):
+        """Direct repo-{issue} match is found even with other worktrees present."""
+        mock_get_provider.return_value = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+
+            # Create multiple worktrees
+            (base / "repo-100").mkdir()
+            (base / "repo-123").mkdir()  # Direct match
+            (base / "repo-200").mkdir()
+
+            config = Mock()
+            config.repo_root = base / "repo"
+            config.repo_root.mkdir()
+            config.repo = "org/repo"
+            config.worktree_base = str(base)
+            config.agents = {}
+
+            diagnosis = create_session_failure_diagnosis(
+                issue_number=123,
+                session_history=[],
+                active_sessions=[],
+                config=config,
+                agents={},
+            )
+
+            # Should find the exact match
+            assert diagnosis.worktree_path == str((base / "repo-123").resolve())
