@@ -1097,6 +1097,34 @@
             padding: 40px;
             color: #8b949e;
         }
+        .e2e-issue-options {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-right: auto;
+        }
+        .form-label-inline {
+            color: #8b949e;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .form-select-inline {
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            padding: 6px 10px;
+            font-size: 13px;
+            min-width: 180px;
+        }
+        .form-select-inline:focus {
+            border-color: #58a6ff;
+            outline: none;
+        }
+        .modal-footer-buttons {
+            display: flex;
+            gap: 8px;
+        }
 
         /* Toast notifications */
         .toast {
@@ -1788,8 +1816,19 @@
                     <div class="loading-spinner">Loading diagnosis...</div>
                 </div>
                 <div class="modal-footer">
-                    <button class="btn-primary" id="e2eCreateIssueBtn" onclick="createE2EDiagnosticIssue()">Create Issue</button>
-                    <button class="btn-secondary" onclick="closeE2EDiagnosisModal()">Close</button>
+                    <div class="e2e-issue-options">
+                        <label class="form-label-inline">Agent:</label>
+                        <select id="e2eDiagnosisAgent" class="form-select-inline">
+                            <option value="">Select an agent...</option>
+                            {% for agent_name in agents.keys() %}
+                            <option value="{{ agent_name }}">{{ agent_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="modal-footer-buttons">
+                        <button class="btn-primary" id="e2eCreateIssueBtn" onclick="createE2EDiagnosticIssue()">Create Issue</button>
+                        <button class="btn-secondary" onclick="closeE2EDiagnosisModal()">Close</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -4510,6 +4549,14 @@
                 return;
             }
 
+            const agentSelect = document.getElementById('e2eDiagnosisAgent');
+            const agent = agentSelect.value;
+            if (!agent) {
+                showToast('Please select an agent to work on this issue', true);
+                agentSelect.focus();
+                return;
+            }
+
             const btn = document.getElementById('e2eCreateIssueBtn');
             btn.disabled = true;
             btn.textContent = 'Creating...';
@@ -4518,6 +4565,7 @@
                 const res = await fetch(`/control/e2e/diagnosis/${e2eCurrentDiagnosis.run_id}/issue?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agent: agent }),
                 });
                 const data = await res.json();
 

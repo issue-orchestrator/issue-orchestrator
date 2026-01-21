@@ -2990,6 +2990,7 @@ async def e2e_run_diagnosis(
 
 @control_app.post("/control/e2e/diagnosis/{run_id}/issue")
 async def create_e2e_diagnostic_issue(
+    request: Request,
     run_id: int,
     repo_root: str = Query(...),
 ) -> JSONResponse:
@@ -3005,6 +3006,9 @@ async def create_e2e_diagnostic_issue(
     Query params:
         repo_root: str - Repository root path
 
+    JSON body:
+        agent: str - Agent label to assign (e.g., "agent:developer")
+
     Returns:
         {status: "created", issue_number, url, diagnostic_file}
     """
@@ -3019,6 +3023,19 @@ async def create_e2e_diagnostic_issue(
         return JSONResponse(
             {"error": "Orchestrator not running"},
             status_code=503,
+        )
+
+    # Parse request body for agent
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    agent = body.get("agent", "").strip()
+    if not agent:
+        return JSONResponse(
+            {"error": "Agent label is required"},
+            status_code=400,
         )
 
     validated_root = _validate_repo_root(repo_root)
@@ -3051,7 +3068,7 @@ async def create_e2e_diagnostic_issue(
         # Generate issue content
         title = f"E2E Test Failures - Run #{run_id} ({diagnosis.failed_count} failures)"
         body = generate_diagnostic_issue_body(diagnosis, diagnostic_ref)
-        labels = ["e2e-failure", "bug"]
+        labels = [agent, "e2e-failure", "bug"]
 
         # Create issue via repository_host
         result = _orchestrator.repository_host.create_issue(
