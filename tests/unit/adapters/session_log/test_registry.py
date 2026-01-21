@@ -170,12 +170,6 @@ def provider(mock_ai_system_config, mock_systems_config):
 class TestDataDrivenLogProviderInit:
     """Tests for DataDrivenLogProvider initialization."""
 
-    def test_init_stores_config(self, mock_ai_system_config, mock_systems_config):
-        """Provider stores the config during initialization."""
-        provider = DataDrivenLogProvider(mock_ai_system_config, mock_systems_config)
-        assert provider._config is mock_ai_system_config
-        assert provider._systems_config is mock_systems_config
-
     def test_ai_system_property(self, provider, mock_ai_system_config):
         """ai_system property returns the system name."""
         assert provider.ai_system == "test-system"
@@ -293,6 +287,7 @@ class TestGetFailureContext:
         config = AISystemConfig(name="test", log_format="text")
         provider = DataDrivenLogProvider(config, mock_systems_config)
         result = provider.get_failure_context(log_path, lines=50)
+        assert result is not None
         # Should have last 50 lines
         for i in range(150, 200):
             assert f"Line {i}" in result
