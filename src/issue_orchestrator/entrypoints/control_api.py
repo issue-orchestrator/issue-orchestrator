@@ -2936,6 +2936,151 @@ async def e2e_test_summary(
         )
 
 
+@control_app.get("/control/e2e/diagnosis/{run_id}")
+async def e2e_run_diagnosis(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get comprehensive diagnosis for an E2E run failure.
+
+    Returns full diagnostic data including logs, stack traces, and suggestions.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        E2ERunDiagnosis as JSON with full log content and test details
+    """
+    from ..infra.e2e_db import E2EDB
+    from ..infra.e2e_run_diagnosis import create_e2e_run_diagnosis
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+        diagnosis = create_e2e_run_diagnosis(run_id, db)
+        if diagnosis is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Run {run_id} not found"},
+                status_code=404,
+            )
+        return JSONResponse(diagnosis.to_dict())
+    except Exception as e:
+        logger.exception("Failed to create E2E diagnosis: %s", e)
+        return JSONResponse(
+            {"error": "diagnosis_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+@control_app.post("/control/e2e/diagnosis/{run_id}/issue")
+async def create_e2e_diagnostic_issue(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Create a GitHub issue for diagnosing E2E test failures.
+
+    1. Creates comprehensive diagnosis
+    2. Writes diagnostic file to .issue-orchestrator/diagnostics/
+    3. Creates GitHub issue with summary and file reference
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        {status: "created", issue_number, url, diagnostic_file}
+    """
+    from ..infra.e2e_db import E2EDB
+    from ..infra.e2e_run_diagnosis import (
+        create_e2e_run_diagnosis,
+        generate_diagnostic_issue_body,
+        write_e2e_diagnostic,
+    )
+
+    if not _orchestrator:
+        return JSONResponse(
+            {"error": "Orchestrator not running"},
+            status_code=503,
+        )
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        # Create diagnosis
+        db = E2EDB(db_path)
+        diagnosis = create_e2e_run_diagnosis(run_id, db)
+        if diagnosis is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Run {run_id} not found"},
+                status_code=404,
+            )
+
+        # Write diagnostic file
+        diagnostic_ref = write_e2e_diagnostic(validated_root, diagnosis)
+
+        # Generate issue content
+        title = f"E2E Test Failures - Run #{run_id} ({diagnosis.failed_count} failures)"
+        body = generate_diagnostic_issue_body(diagnosis, diagnostic_ref)
+        labels = ["e2e-failure", "bug"]
+
+        # Create issue via repository_host
+        result = _orchestrator.repository_host.create_issue(
+            title=title,
+            body=body,
+            labels=labels,
+        )
+
+        if result is None:
+            return JSONResponse(
+                {"error": "Failed to create issue"},
+                status_code=500,
+            )
+
+        return JSONResponse({
+            "status": "created",
+            "issue_number": result.get("number"),
+            "url": result.get("html_url"),
+            "diagnostic_file": diagnostic_ref.relative_path if diagnostic_ref else None,
+        })
+
+    except Exception as e:
+        logger.exception("Failed to create E2E diagnostic issue: %s", e)
+        return JSONResponse(
+            {"error": "issue_creation_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
 class ControlAPIServer:
     """Manages the control API server lifecycle."""
 
