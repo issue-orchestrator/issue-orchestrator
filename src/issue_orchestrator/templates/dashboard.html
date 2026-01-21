@@ -2156,11 +2156,8 @@
             if (runDir) {
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(runDir)}')">Open Session Dir</button>`;
             }
-            // Session log - watch live or open file
-            html += `<button class="btn-secondary" onclick="watchSessionLog(${issueNumber})">Watch Log</button>`;
-            if (manifest.log_path) {
-                html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.log_path)}')">Open Session Log</button>`;
-            }
+            // Session log - view in sanitized viewer (removes ANSI codes, spinner garbage, etc.)
+            html += `<button class="btn-secondary" onclick="openAgentLog(${issueNumber})">View Session Log</button>`;
             if (manifest.claude_log_path) {
                 html += `<button class="btn-secondary" onclick="viewClaudeLog(${issueNumber})">View Claude Log</button>`;
                 html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_path)}')">Open Claude Log File</button>`;
@@ -3489,20 +3486,12 @@
                 `;
             }
 
-            // Open log button
-            if (data.log_path && data.log_exists) {
-                html += `
-                    <button class="open-log-btn" onclick="openLogFile('${escapeHtml(data.log_path)}')">
-                        Open Log File
-                    </button>
-                `;
-            } else {
-                html += `
-                    <div style="margin-top: 8px; font-size: 11px; color: var(--dim);">
-                        Log file: ${data.log_path ? 'Not found at ' + escapeHtml(data.log_path) : 'No log path available'}
-                    </div>
-                `;
-            }
+            // View log button - uses sanitized viewer
+            html += `
+                <button class="open-log-btn" onclick="openAgentLog(${issueNumber})">
+                    View Session Log
+                </button>
+            `;
 
             html += '</div>';
             panel.innerHTML = html;
@@ -3682,136 +3671,6 @@
                 .replace(/\b(true|false)\b/g, '<span class="json-boolean">$1</span>')
                 .replace(/\bnull\b/g, '<span class="json-null">null</span>')
                 .replace(/\b(-?\d+\.?\d*)\b/g, '<span class="json-number">$1</span>');
-        }
-
-        // Live Session Log Viewer
-        let liveLogPoller = null;
-        let liveLogIssue = null;
-        let liveLogOffset = 0;
-        let liveLogFollow = true;
-
-        async function watchSessionLog(issueNumber) {
-            // Stop any existing poller
-            if (liveLogPoller) {
-                clearInterval(liveLogPoller);
-                liveLogPoller = null;
-            }
-
-            liveLogIssue = issueNumber;
-            liveLogOffset = 0;
-            liveLogFollow = true;
-
-            showToast('Loading session log...');
-
-            try {
-                const res = await fetch(`/api/log/local/${issueNumber}?limit=500`);
-                const data = await res.json();
-                if (data.error) {
-                    showToast(data.error, 'error');
-                    return;
-                }
-                renderLiveLogViewer(data);
-                // Start polling for updates
-                liveLogOffset = data.total_lines;
-                liveLogPoller = setInterval(() => pollLiveLog(issueNumber), 1000);
-            } catch (err) {
-                showToast(`Failed to load log: ${err.message}`, 'error');
-            }
-        }
-
-        function renderLiveLogViewer(data) {
-            const html = `
-                <div class="live-log-header">
-                    <div class="live-log-info">
-                        <span id="liveLogStatus" class="live-log-status">Live</span>
-                        <span id="liveLogLines">${data.total_lines} lines</span>
-                        ${data.truncated ? ' (showing last 500)' : ''}
-                    </div>
-                    <div class="live-log-controls">
-                        <label>
-                            <input type="checkbox" id="liveLogFollow" checked onchange="toggleLiveLogFollow(this.checked)">
-                            Auto-scroll
-                        </label>
-                        <button class="btn-secondary" onclick="toggleLiveLogPause()" id="liveLogPauseBtn">Pause</button>
-                    </div>
-                </div>
-                <div class="live-log-content" id="liveLogContent">${escapeHtml((data.lines || []).join('\n'))}</div>
-            `;
-
-            const modal = document.getElementById('modalOverlay');
-            const modalEl = modal.querySelector('.modal');
-            modalEl.classList.add('live-log-modal');
-            openModal(`Session Log #${data.issue_number}`, html);
-
-            // Scroll to bottom
-            const content = document.getElementById('liveLogContent');
-            if (content) {
-                content.scrollTop = content.scrollHeight;
-            }
-        }
-
-        async function pollLiveLog(issueNumber) {
-            if (issueNumber !== liveLogIssue) return;
-
-            try {
-                const res = await fetch(`/api/log/local/${issueNumber}?offset=${liveLogOffset}&limit=0`);
-                const data = await res.json();
-                if (data.error || !data.lines || data.lines.length === 0) return;
-
-                const content = document.getElementById('liveLogContent');
-                const linesEl = document.getElementById('liveLogLines');
-                if (!content) return;
-
-                // Append new lines
-                const newContent = data.lines.join('\n');
-                if (content.textContent) {
-                    content.textContent += '\n' + newContent;
-                } else {
-                    content.textContent = newContent;
-                }
-                liveLogOffset = data.total_lines;
-
-                // Update line count
-                if (linesEl) {
-                    linesEl.textContent = `${data.total_lines} lines`;
-                }
-
-                // Auto-scroll if enabled
-                if (liveLogFollow) {
-                    content.scrollTop = content.scrollHeight;
-                }
-            } catch (err) {
-                // Silently ignore polling errors
-            }
-        }
-
-        function toggleLiveLogFollow(checked) {
-            liveLogFollow = checked;
-            if (checked) {
-                const content = document.getElementById('liveLogContent');
-                if (content) content.scrollTop = content.scrollHeight;
-            }
-        }
-
-        function toggleLiveLogPause() {
-            const btn = document.getElementById('liveLogPauseBtn');
-            const status = document.getElementById('liveLogStatus');
-            if (liveLogPoller) {
-                clearInterval(liveLogPoller);
-                liveLogPoller = null;
-                if (btn) btn.textContent = 'Resume';
-                if (status) {
-                    status.textContent = 'Paused';
-                    status.classList.add('paused');
-                }
-            } else {
-                liveLogPoller = setInterval(() => pollLiveLog(liveLogIssue), 1000);
-                if (btn) btn.textContent = 'Pause';
-                if (status) {
-                    status.textContent = 'Live';
-                    status.classList.remove('paused');
-                }
-            }
         }
 
         function stopLiveLogPoller() {

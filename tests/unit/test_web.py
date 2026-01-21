@@ -1382,6 +1382,196 @@ class TestGetSessionLogEndpoint:
         assert "error" in response.json()
 
 
+class TestLogCleaning:
+    """Test terminal log cleaning functions.
+
+    These tests verify that raw terminal output (with ANSI codes, spinner
+    animations, cursor movement, etc.) is properly cleaned for display
+    in the web UI.
+
+    IMPORTANT: These tests exist to prevent regression. The log cleaning
+    logic has been lost/broken multiple times. If you change the cleaning
+    functions, ensure these tests still pass.
+    """
+
+    def test_strip_ansi_codes_removes_colors(self):
+        """ANSI color codes should be stripped."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        # SGR color codes
+        assert strip_ansi_codes("\x1b[38;2;215;119;87mHello\x1b[39m") == "Hello"
+        assert strip_ansi_codes("\x1b[1mBold\x1b[22m") == "Bold"
+        assert strip_ansi_codes("\x1b[2mDim\x1b[22m") == "Dim"
+
+    def test_strip_ansi_codes_removes_cursor_movement(self):
+        """ANSI cursor movement sequences should be stripped."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        # Cursor movement
+        assert strip_ansi_codes("\x1b[6AMove up") == "Move up"
+        assert strip_ansi_codes("\x1b[2CMove right") == "Move right"
+        assert strip_ansi_codes("\x1b[K") == ""  # Erase to end of line
+
+    def test_strip_ansi_codes_removes_private_modes(self):
+        """Private mode sequences (cursor hide, etc.) should be stripped."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        # Private modes
+        assert strip_ansi_codes("\x1b[?25lHidden cursor\x1b[?25h") == "Hidden cursor"
+        assert strip_ansi_codes("\x1b[?2026hSync") == "Sync"
+
+    def test_strip_ansi_codes_removes_osc_sequences(self):
+        """OSC sequences (terminal title, etc.) should be stripped."""
+        from issue_orchestrator.entrypoints.web import strip_ansi_codes
+
+        # OSC (terminal title)
+        assert strip_ansi_codes("\x1b]0;My Title\x07Rest") == "Rest"
+
+    def test_clean_terminal_line_handles_carriage_return(self):
+        """Carriage returns (spinner animations) should take last segment."""
+        from issue_orchestrator.entrypoints.web import clean_terminal_line
+
+        # Spinner animation - takes the last meaningful segment
+        assert clean_terminal_line("* spin\r/ spin\r- spin").strip() == "- spin"
+        assert clean_terminal_line("old\rnew").strip() == "new"
+
+    def test_clean_terminal_line_handles_mixed_ansi_and_cr(self):
+        """Mixed ANSI codes and carriage returns should both be handled."""
+        from issue_orchestrator.entrypoints.web import clean_terminal_line
+
+        # Real-world example: spinner with colors
+        line = "\x1b[38;2;215;119;87m*\x1b[39m\r\x1b[38;2;215;119;87m·\x1b[39m Thinking"
+        assert "Thinking" in clean_terminal_line(line)
+
+    def test_is_spinner_fragment_filters_short_garbage(self):
+        """Short garbage fragments from cursor updates should be filtered."""
+        from issue_orchestrator.entrypoints.web import is_spinner_fragment
+
+        # These are real fragments seen in terminal logs
+        assert is_spinner_fragment("ddl") is True
+        assert is_spinner_fragment("-fa") is True
+        assert is_spinner_fragment("ea") is True
+        assert is_spinner_fragment("bn") is True
+        assert is_spinner_fragment("6") is True
+
+    def test_is_spinner_fragment_filters_spinner_chars(self):
+        """Lines of just spinner characters should be filtered."""
+        from issue_orchestrator.entrypoints.web import is_spinner_fragment
+
+        assert is_spinner_fragment("*") is True
+        assert is_spinner_fragment("·") is True
+        assert is_spinner_fragment("✶") is True
+        assert is_spinner_fragment("✻✽") is True
+
+    def test_is_spinner_fragment_filters_thinking_messages(self):
+        """Repetitive thinking/loading status should be filtered."""
+        from issue_orchestrator.entrypoints.web import is_spinner_fragment
+
+        assert is_spinner_fragment("Fiddle-faddling…") is True
+        assert is_spinner_fragment("· Fiddle-faddling… (ctrl+c to interrupt)") is True
+        assert is_spinner_fragment("thinking)") is True
+        # Partial think-time display fragments
+        assert is_spinner_fragment("ought for 2s)") is True
+        assert is_spinner_fragment("thought for 5s)") is True
+
+    def test_is_spinner_fragment_keeps_meaningful_content(self):
+        """Meaningful tool output should NOT be filtered."""
+        from issue_orchestrator.entrypoints.web import is_spinner_fragment
+
+        # Tool calls and results
+        assert is_spinner_fragment("⏺Read(.issue-orchestrator/prompts/simple-fix.md)") is False
+        assert is_spinner_fragment("⎿ Read 221 lines") is False
+        assert is_spinner_fragment("⏺Bash(git status)") is False
+
+        # Actual content
+        assert is_spinner_fragment("Welcome back Bruce!") is False
+        assert is_spinner_fragment("On branch main") is False
+        assert is_spinner_fragment("./src/issue_orchestrator/infra/hooks/hooks.py") is False
+
+    def test_is_spinner_fragment_keeps_separator_lines(self):
+        """Separator lines (───) should be kept."""
+        from issue_orchestrator.entrypoints.web import is_spinner_fragment
+
+        assert is_spinner_fragment("────────────") is False
+        assert is_spinner_fragment("━━━━━━━━━━━━") is False
+
+    def test_is_spinner_fragment_keeps_prompts(self):
+        """Prompt characters should be kept."""
+        from issue_orchestrator.entrypoints.web import is_spinner_fragment
+
+        assert is_spinner_fragment("❯") is False
+
+    def test_dedupe_consecutive_lines_removes_duplicates(self):
+        """Consecutive identical lines should be collapsed."""
+        from issue_orchestrator.entrypoints.web import dedupe_consecutive_lines
+
+        lines = ["line1", "line1", "line1", "line2", "line2", "line3"]
+        result = dedupe_consecutive_lines(lines)
+        assert result == ["line1", "line2", "line3"]
+
+    def test_dedupe_consecutive_lines_collapses_separators(self):
+        """Consecutive separator lines should be collapsed to one."""
+        from issue_orchestrator.entrypoints.web import dedupe_consecutive_lines
+
+        lines = [
+            "Some text",
+            "────────────────",
+            "──────────────────────",
+            "More text",
+        ]
+        result = dedupe_consecutive_lines(lines)
+        assert len([l for l in result if l.startswith("─")]) == 1
+
+    def test_full_cleaning_pipeline_with_real_garbage(self):
+        """End-to-end test with realistic terminal garbage.
+
+        This test uses actual samples from Claude Code terminal logs
+        to verify the full cleaning pipeline works.
+        """
+        from issue_orchestrator.entrypoints.web import (
+            clean_terminal_line,
+            is_spinner_fragment,
+            dedupe_consecutive_lines,
+        )
+
+        # Realistic raw lines from a terminal log
+        raw_lines = [
+            "\x1b[?25l\x1b[?2004h\x1b[?1004h\x1b[>1u",  # Init sequences
+            "\x1b[38;2;215;119;87m· Fiddle-faddling…\x1b[39m",  # Thinking status
+            "*\r/\r-\r\\",  # Spinner animation
+            "\x1b[6A\x1b[2Cddl",  # Cursor movement + fragment
+            "⏺Bash(git status)",  # Actual tool call
+            "On branch main",  # Actual output
+            "  nothing to commit",  # Actual output
+            "\x1b[38;2;215;119;87m✶\x1b[39m Fiddle-faddling…",  # More thinking
+            "────────────────────────",  # Separator
+            "────────────────────────",  # Duplicate separator
+            "❯",  # Prompt
+        ]
+
+        # Clean and filter
+        cleaned = []
+        for line in raw_lines:
+            c = clean_terminal_line(line)
+            if c.strip() and not is_spinner_fragment(c):
+                cleaned.append(c)
+        cleaned = dedupe_consecutive_lines(cleaned)
+
+        # Should keep meaningful content
+        content = "\n".join(cleaned)
+        assert "⏺Bash(git status)" in content or "Bash(git status)" in content
+        assert "On branch main" in content
+        assert "nothing to commit" in content
+
+        # Should filter garbage
+        assert "ddl" not in content
+        assert "Fiddle-faddling" not in content
+
+        # Should have at most one separator line
+        separator_count = sum(1 for l in cleaned if l.strip().startswith("─"))
+        assert separator_count <= 1
+
+
 class TestDependencyProblemsEndpoint:
     """Test the GET /api/dependency-problems endpoint."""
 

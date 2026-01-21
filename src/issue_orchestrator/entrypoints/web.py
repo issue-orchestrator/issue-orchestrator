@@ -24,21 +24,147 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Pattern to match ANSI escape sequences:
+# Pattern to match ANSI escape sequences and control characters:
 # - \x1b[...m (SGR - colors, bold, etc.)
 # - \x1b[...A/B/C/D/etc (cursor movement)
 # - \x1b]...BEL (OSC sequences - terminal titles)
 # - \x1b[?...h/l/s/u (private mode set/reset like ?2026h)
+# - \x1b[>...u/c (extended key sequences)
+# - \x1b[<u (pop key mode)
+# - \x1b7, \x1b8 (cursor save/restore without bracket)
 _ANSI_ESCAPE_PATTERN = re.compile(
-    r"\x1b\[[0-9;]*[a-zA-Z]"  # Standard CSI sequences
-    r"|\x1b\][^\x07]*\x07"  # OSC sequences (title, etc.)
-    r"|\x1b\[\?[0-9;]*[hlsu]"  # Private mode sequences
+    r"\x1b\[[0-9;]*[a-zA-Z]"  # Standard CSI sequences (colors, cursor, etc.)
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC sequences (title, etc.) - BEL or ST terminator
+    r"|\x1b\[\?[0-9;]*[a-zA-Z]"  # Private mode sequences (?2026h, ?25l, etc.)
+    r"|\x1b\[>[0-9;]*[a-zA-Z]"  # Extended sequences (>1u, etc.)
+    r"|\x1b\[<[a-zA-Z]"  # Pop sequences (<u)
+    r"|\x1b[78]"  # Cursor save/restore (ESC 7, ESC 8)
+    r"|\x07"  # Bell character
 )
 
 
 def strip_ansi_codes(text: str) -> str:
     """Strip ANSI escape sequences from text."""
     return _ANSI_ESCAPE_PATTERN.sub("", text)
+
+
+# Spinner characters used by Claude Code (dots, stars, etc.)
+_SPINNER_CHARS = set("·✶✻✽✳✢*/-\\|●○◉◎◯◐◑◒◓⎿")
+
+
+def clean_terminal_line(line: str) -> str:
+    """Clean a terminal log line for display in web UI.
+
+    Handles:
+    - ANSI escape sequences (colors, cursor movement)
+    - Carriage returns (spinner animations that overwrite lines)
+    - Control characters
+    """
+    # Handle carriage returns: terminal overwrites from start of line
+    # Take only the content after the last carriage return
+    if "\r" in line:
+        # Split by \r and take the last non-empty segment
+        segments = line.split("\r")
+        # Find last segment with actual content (not just spaces)
+        for segment in reversed(segments):
+            stripped = strip_ansi_codes(segment).strip()
+            if stripped:
+                line = segment
+                break
+        else:
+            # All segments empty after stripping, use last one
+            line = segments[-1] if segments else ""
+
+    # Strip ANSI escape sequences
+    line = strip_ansi_codes(line)
+
+    # Remove other control characters except tab and newline
+    line = "".join(c for c in line if c >= " " or c in "\t\n")
+
+    return line
+
+
+def _is_ui_noise(lower: str) -> bool:
+    """Check if line content is repetitive UI noise to filter."""
+    # Thinking/loading status lines that repeat during spinner animation
+    if "fiddle-faddling" in lower or "thinking" in lower or "running…" in lower:
+        return True
+    # Partial think-time displays like "ought for 2s)"
+    if lower.endswith("s)") and ("ought for" in lower or "hought for" in lower):
+        return True
+    # Permission bypass hints (UI chrome on every command)
+    if "bypass permissions" in lower or "shift+tab to cycle" in lower:
+        return True
+    return False
+
+
+def _is_meaningful_short_line(stripped: str) -> bool:
+    """Check if a short line (<8 chars) is meaningful content to keep."""
+    # Separator lines (───)
+    if stripped.startswith(("─", "━")):
+        return True
+    # Prompt characters
+    if stripped in ("❯", ">", "$", "%"):
+        return True
+    # Tool call prefixes - always meaningful
+    if stripped.startswith(("⏺", "⎿")):
+        return True
+    # Checkmarks/bullets with substantial content
+    if stripped.startswith(("✓", "✗", "•")) and len(stripped) > 4:
+        return True
+    return False
+
+
+def is_spinner_fragment(line: str) -> bool:
+    """Check if a line is a spinner animation fragment to filter out."""
+    stripped = line.strip()
+    if not stripped:
+        return True
+
+    # Lines that are just spinner characters
+    if all(c in _SPINNER_CHARS for c in stripped):
+        return True
+
+    # Filter repetitive UI noise
+    if _is_ui_noise(stripped.lower()):
+        return True
+
+    # Short lines are fragments unless they're meaningful UI elements
+    if len(stripped) < 8:
+        return not _is_meaningful_short_line(stripped)
+
+    return False
+
+
+def dedupe_consecutive_lines(lines: list[str]) -> list[str]:
+    """Remove consecutive duplicate or near-duplicate lines.
+
+    Terminal logs often have repeated separator lines, prompts, etc.
+    This collapses them to a single occurrence.
+    """
+    if not lines:
+        return lines
+
+    result = [lines[0]]
+    for line in lines[1:]:
+        prev = result[-1].strip()
+        curr = line.strip()
+
+        # Skip exact duplicates
+        if curr == prev:
+            continue
+
+        # Skip if both are separator lines
+        if prev.startswith("─") and curr.startswith("─"):
+            continue
+
+        # Skip if both are just prompts
+        if prev in ("❯", ">") and curr in ("❯", ">"):
+            continue
+
+        result.append(line)
+
+    return result
 
 
 # Create FastAPI app
@@ -1073,8 +1199,17 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
             else:
                 lines = lines[:limit]
 
-        # Strip ANSI escape sequences for clean display in web UI
-        cleaned_lines = [strip_ansi_codes(line) for line in lines]
+        # Clean terminal output: strip ANSI codes, handle carriage returns,
+        # filter empty lines and spinner fragments for readable display
+        cleaned_lines = []
+        for line in lines:
+            cleaned = clean_terminal_line(line)
+            # Filter empty lines and spinner animation fragments
+            if cleaned.strip() and not is_spinner_fragment(cleaned):
+                cleaned_lines.append(cleaned)
+
+        # Remove consecutive duplicate lines (repeated separators, prompts, etc.)
+        cleaned_lines = dedupe_consecutive_lines(cleaned_lines)
 
         return JSONResponse({
             "issue_number": issue_number,
