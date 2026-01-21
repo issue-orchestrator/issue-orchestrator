@@ -319,8 +319,11 @@ e2e:
   allow_retry_once: true
   quarantine_file: "tests/e2e/quarantine.txt"
   survive_restart: true
+  stop_on_first_failure: false
   pr_labels: []
 ```
+
+- `e2e.stop_on_first_failure`: If `true`, stops pytest on first test failure (adds `-x` flag). Default `false` runs all tests.
 
 ### state
 

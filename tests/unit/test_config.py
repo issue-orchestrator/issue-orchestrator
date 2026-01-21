@@ -1434,6 +1434,75 @@ agents:
         assert config.e2e_pr_labels == []
 
 
+class TestE2EStopOnFirstFailureConfig:
+    """Tests for e2e.stop_on_first_failure configuration."""
+
+    def test_stop_on_first_failure_defaults_to_false(self):
+        """stop_on_first_failure should default to False."""
+        config = Config()
+        assert config.e2e.stop_on_first_failure is False
+
+    def test_stop_on_first_failure_true_from_yaml(self, tmp_path):
+        """stop_on_first_failure=true should be loaded correctly."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+e2e:
+  stop_on_first_failure: true
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.e2e.stop_on_first_failure is True
+
+    def test_stop_on_first_failure_false_from_yaml(self, tmp_path):
+        """stop_on_first_failure=false should be loaded correctly."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+e2e:
+  stop_on_first_failure: false
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.e2e.stop_on_first_failure is False
+
+    def test_stop_on_first_failure_not_specified_defaults_false(self, tmp_path):
+        """stop_on_first_failure should default to False when not in YAML."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+e2e:
+  enabled: true
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.e2e.stop_on_first_failure is False
+
+
 class TestTriageConfig:
     """Tests for triage issue configuration."""
 

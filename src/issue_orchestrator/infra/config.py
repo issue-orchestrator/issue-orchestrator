@@ -376,6 +376,7 @@ class E2EConfig:
     allow_retry_once: bool = True  # Retry failing tests once to reduce flakiness
     quarantine_file: str = "tests/e2e/quarantine.txt"  # Path to quarantine list
     survive_restart: bool = True  # Let worker finish if orchestrator restarts
+    stop_on_first_failure: bool = False  # If True, stop on first test failure (-x flag)
 
 
 @dataclass
@@ -422,6 +423,7 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
         allow_retry_once=data.get("allow_retry_once", True),
         quarantine_file=data.get("quarantine_file", "tests/e2e/quarantine.txt"),
         survive_restart=data.get("survive_restart", True),
+        stop_on_first_failure=data.get("stop_on_first_failure", False),
     )
 
 
