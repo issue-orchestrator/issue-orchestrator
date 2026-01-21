@@ -28,6 +28,7 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..ports.issue import Issue
 from ..domain.models import (
+    CompletionOutcome,
     Session,
     PendingReview,
     PendingRework,
@@ -454,7 +455,7 @@ class Planner:
             ))
 
             # Add outcome-specific label immediately
-            if observed.outcome == "completed":
+            if observed.outcome == CompletionOutcome.COMPLETED:
                 # Session completed successfully - will create PR
                 # Add pr-pending immediately (don't wait for publish job)
                 if observed.needs_publish:
@@ -468,7 +469,7 @@ class Planner:
                         "Planner: projecting pr-pending label for issue #%d (publish job pending)",
                         issue_number,
                     )
-            elif observed.outcome == "blocked":
+            elif observed.outcome == CompletionOutcome.BLOCKED:
                 # Session blocked - add blocked label
                 actions.append(AddLabelAction(
                     issue_number=issue_number,
@@ -477,7 +478,7 @@ class Planner:
                     expected=build_expected_for_mutation(),
                 ))
                 logger.debug("Planner: adding blocked label for issue #%d", issue_number)
-            elif observed.outcome == "needs_human":
+            elif observed.outcome == CompletionOutcome.NEEDS_HUMAN:
                 # Session needs human intervention - use BLOCKED_NEEDS_HUMAN
                 actions.append(AddLabelAction(
                     issue_number=issue_number,
@@ -486,7 +487,7 @@ class Planner:
                     expected=build_expected_for_mutation(),
                 ))
                 logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
-            elif observed.outcome in ("review_approved", "review_changes_requested"):
+            elif observed.outcome in (CompletionOutcome.REVIEW_APPROVED, CompletionOutcome.REVIEW_CHANGES_REQUESTED):
                 # Review session completed - labels handled by review workflow
                 logger.debug(
                     "Planner: review session completed for issue #%d, outcome=%s",

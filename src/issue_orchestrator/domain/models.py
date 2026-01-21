@@ -81,6 +81,38 @@ class RequestedAction(Enum):
     PUSH_BRANCH = "push_branch"
 
 
+# ===========================================================================
+# Identity and Location Abstractions
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class SessionIdentity:
+    """Identifies a session within the orchestrator.
+
+    Immutable snapshot of session identity used across:
+    - ObservedCompletion (observed facts)
+    - PublishJob (background work)
+    - Event payloads
+    """
+    issue_number: int
+    issue_title: str
+    session_key: str  # e.g., "code:123" or "review:456"
+    terminal_id: str
+
+
+@dataclass(frozen=True)
+class WorktreeLocation:
+    """Location info for a worktree.
+
+    Immutable snapshot of where work is happening. Distinct from WorktreeInfo
+    (in ports/) which captures creation-time metadata like reuse status.
+    """
+    path: str  # String for immutability (not Path)
+    branch_name: str
+    completion_path: str  # Relative path to completion.json
+
+
 @dataclass
 class CompletionRecord:
     """Structured completion record written by agent-done.
@@ -746,51 +778,104 @@ class ObservedCompletion:
     2. The job queue (to enqueue background publish work)
 
     Immutable to ensure it's a pure fact, not mutated during processing.
+
+    Uses composition for cleaner structure:
+    - identity: Who/what session this is
+    - worktree: Where the work happened
+    - record: What the agent reported (the completion record)
     """
-    # Session identity
-    issue_number: int
-    issue_title: str
-    session_key: str  # e.g., "code:123" or "review:456"
-    terminal_id: str
+    # Composed abstractions
+    identity: SessionIdentity
+    worktree: WorktreeLocation
+    record: CompletionRecord
 
-    # Worktree info
-    worktree_path: str  # String for immutability
-    branch_name: str
-    completion_path: str  # Relative path to completion.json
-
-    # Completion record data
-    outcome: str  # CompletionOutcome.value
-    requested_actions: tuple[str, ...]  # Tuple of RequestedAction.value
-    summary: str
-
-    # For review sessions
-    pr_number: int | None = None
-
-    # Agent info (for per-agent reviewer)
-    agent_label: str | None = None
-
-    # Additional completion record fields
-    implementation: str | None = None
-    problems: str | None = None
-    blocked_reason: str | None = None
-    review_summary: str | None = None
-    review_issues: str | None = None
-    comment_body: str | None = None
-    pr_labels: tuple[str, ...] | None = None
+    # Session-specific fields (not from the completion record)
+    pr_number: int | None = None  # For review sessions
+    agent_label: str | None = None  # For per-agent reviewer
 
     # Validation state (for sessions with validation configured)
     validation_retry_count: int = 0
     original_prompt: str | None = None
 
+    # Convenience accessors for commonly-used fields
+    @property
+    def issue_number(self) -> int:
+        return self.identity.issue_number
+
+    @property
+    def issue_title(self) -> str:
+        return self.identity.issue_title
+
+    @property
+    def session_key(self) -> str:
+        return self.identity.session_key
+
+    @property
+    def terminal_id(self) -> str:
+        return self.identity.terminal_id
+
+    @property
+    def worktree_path(self) -> str:
+        return self.worktree.path
+
+    @property
+    def branch_name(self) -> str:
+        return self.worktree.branch_name
+
+    @property
+    def completion_path(self) -> str:
+        return self.worktree.completion_path
+
+    @property
+    def outcome(self) -> CompletionOutcome:
+        return self.record.outcome
+
+    @property
+    def requested_actions(self) -> list[RequestedAction]:
+        return self.record.requested_actions
+
+    @property
+    def summary(self) -> str:
+        return self.record.summary
+
     @property
     def needs_publish(self) -> bool:
         """Check if this completion requires publishing (git push + PR)."""
-        return "push_branch" in self.requested_actions
+        return RequestedAction.PUSH_BRANCH in self.record.requested_actions
 
     @property
     def is_code_session(self) -> bool:
         """Check if this is a code (issue) session vs review session."""
         return self.pr_number is None
+
+    # Convenience accessors for CompletionRecord fields
+    @property
+    def implementation(self) -> Optional[str]:
+        return self.record.implementation
+
+    @property
+    def problems(self) -> Optional[str]:
+        return self.record.problems
+
+    @property
+    def blocked_reason(self) -> Optional[str]:
+        return self.record.blocked_reason
+
+    @property
+    def review_summary(self) -> Optional[str]:
+        return self.record.review_summary
+
+    @property
+    def review_issues(self) -> Optional[str]:
+        return self.record.review_issues
+
+    @property
+    def comment_body(self) -> Optional[str]:
+        return self.record.comment_body
+
+    @property
+    def pr_labels(self) -> Optional[list[str]]:
+        return self.record.pr_labels
 
 
 @dataclass
@@ -864,12 +949,13 @@ class PublishJob:
             issue_title=observed.issue_title,
             pr_number=observed.pr_number,
             agent_label=observed.agent_label,
-            outcome=observed.outcome,
-            requested_actions=observed.requested_actions,
+            # Convert enums to strings for storage
+            outcome=observed.outcome.value,
+            requested_actions=tuple(a.value for a in observed.requested_actions),
             implementation=observed.implementation,
             problems=observed.problems,
             comment_body=observed.comment_body,
-            pr_labels=observed.pr_labels,
+            pr_labels=tuple(observed.pr_labels) if observed.pr_labels else None,
             run_validation=run_validation,
             validation_retry_count=observed.validation_retry_count,
             original_prompt=observed.original_prompt,

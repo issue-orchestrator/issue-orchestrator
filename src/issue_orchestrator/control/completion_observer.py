@@ -31,7 +31,9 @@ from ..domain.models import (
     CompletionOutcome,
     ObservedCompletion,
     Session,
+    SessionIdentity,
     SessionStatus,
+    WorktreeLocation,
     COMPLETION_RECORD_PATH,
 )
 from ..infra.logging_config import issue_log
@@ -284,32 +286,20 @@ class CompletionObserver:
         pr_number = self._extract_pr_number_from_session_name(session.terminal_id)
 
         return ObservedCompletion(
-            # Session identity
-            issue_number=session.issue.number,
-            issue_title=session.issue.title,
-            session_key=session.key.stable_id(),
-            terminal_id=session.terminal_id,
-            # Worktree info
-            worktree_path=str(session.worktree_path),
-            branch_name=session.branch_name,
-            completion_path=session.completion_path,
-            # Completion record data
-            outcome=record.outcome.value,
-            requested_actions=tuple(a.value for a in record.requested_actions),
-            summary=record.summary,
-            # For review sessions
+            identity=SessionIdentity(
+                issue_number=session.issue.number,
+                issue_title=session.issue.title,
+                session_key=session.key.stable_id(),
+                terminal_id=session.terminal_id,
+            ),
+            worktree=WorktreeLocation(
+                path=str(session.worktree_path),
+                branch_name=session.branch_name,
+                completion_path=session.completion_path,
+            ),
+            record=record,
             pr_number=pr_number,
-            # Agent info
             agent_label=session.agent_label,
-            # Additional fields for PR body, labels, etc.
-            implementation=record.implementation,
-            problems=record.problems,
-            blocked_reason=record.blocked_reason,
-            review_summary=record.review_summary,
-            review_issues=record.review_issues,
-            comment_body=record.comment_body,
-            pr_labels=tuple(record.pr_labels) if record.pr_labels else None,
-            # Validation state
             validation_retry_count=session.validation_retry_count,
             original_prompt=session.original_prompt,
         )
