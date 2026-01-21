@@ -853,7 +853,7 @@ class TestUpdateStateAfterAction:
             pr_number=100,
             pr_url="url",
             branch_name="branch",
-            terminal_session_name="session-42",
+            terminal_id="session-42",
             worktree_path=Path("/tmp/worktree"),
         )
         support_with_state.state.pending_cleanups.append(cleanup)
@@ -861,7 +861,7 @@ class TestUpdateStateAfterAction:
         action = CleanupSessionAction(
             issue_number=42,
             pr_number=100,
-            terminal_session_name="session-42",
+            terminal_id="session-42",
             worktree_path="/tmp/worktree",
             close_tabs=True,
             remove_worktrees=True,

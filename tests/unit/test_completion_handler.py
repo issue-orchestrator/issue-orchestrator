@@ -832,7 +832,7 @@ class TestCleanupStrategy:
         assert cleanup.issue_number == 123
         assert cleanup.pr_number == 456
         assert cleanup.pr_url == pr_url
-        assert cleanup.terminal_session_name == "issue-123"
+        assert cleanup.terminal_id == "issue-123"
         assert cleanup.branch_name == "issue-123"
 
 

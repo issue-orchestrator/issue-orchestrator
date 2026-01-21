@@ -302,7 +302,7 @@ class FactGatherer:
 
         # Build immutable tuples of pending cleanup info
         pending_tuples = tuple(
-            (c.issue_number, c.pr_number, c.terminal_session_name, str(c.worktree_path))
+            (c.issue_number, c.pr_number, c.terminal_id, str(c.worktree_path))
             for c in state.pending_cleanups
         )
 

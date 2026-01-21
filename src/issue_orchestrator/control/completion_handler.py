@@ -583,7 +583,7 @@ class CompletionHandler:
                 pr_number=pr_number,
                 pr_url=pr_url,
                 branch_name=session.branch_name,
-                terminal_session_name=session.terminal_id,
+                terminal_id=session.terminal_id,
                 worktree_path=session.worktree_path,
             )
             logger.info(f"[CLEANUP] Deferred cleanup for #{session.issue.number} until review completes")

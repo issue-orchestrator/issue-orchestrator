@@ -2,7 +2,7 @@
 
 This adapter implements the SessionRunner port by delegating to pluggy hooks.
 It's the bridge between the core's abstract session management and the concrete
-terminal implementations (tmux, etc.).
+terminal implementation.
 
 This is the ONLY place pluggy is used for session management.
 """
@@ -124,7 +124,6 @@ class PluggySessionRunner:
         """Call the orchestrator startup hook.
 
         Terminal plugins should create their session/environment here.
-        For tmux: creates the tmux session.
         """
         logger.info("Calling on_orchestrator_startup hook")
         self._pm.hook.on_orchestrator_startup()
@@ -133,7 +132,6 @@ class PluggySessionRunner:
         """Call the orchestrator shutdown hook.
 
         Terminal plugins should clean up their session/environment here.
-        For tmux: kills the entire session (atomic cleanup of all windows).
         """
         logger.info("Calling on_orchestrator_shutdown hook")
         self._pm.hook.on_orchestrator_shutdown()

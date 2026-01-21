@@ -564,7 +564,7 @@ class PendingCleanup:
     pr_number: int
     pr_url: str
     branch_name: str
-    terminal_session_name: str
+    terminal_id: str
     worktree_path: Path
 
     @property
@@ -686,18 +686,6 @@ class CleanupFacts:
     remove_worktrees: bool = False  # Config: whether to remove worktrees
     # Immediate cleanups (no deferred review) - sessions that completed/timed out
     immediate_cleanups: tuple["ImmediateCleanup", ...] = field(default_factory=tuple)
-
-
-@dataclass(frozen=True)
-class ReadyCleanup:
-    """A cleanup that's ready to execute (PR has been reviewed).
-
-    This is a "fact" discovered during cleanup fact-gathering.
-    """
-    issue_number: int
-    pr_number: int
-    terminal_session_name: str
-    worktree_path: str  # String for immutability
 
 
 @dataclass

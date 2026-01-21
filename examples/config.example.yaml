@@ -76,11 +76,7 @@ execution:
   concurrency:
     max_concurrent_sessions: 3
     session_timeout_minutes: 45
-  terminal_adapter: null          # Optional: overrides ui.mode
-  tmux_session_mode: "shared"     # shared or per_session
-  # tmuxp: ".issue-orchestrator/tmux.yaml"
-  # tmux_bindings:
-  #   - "bind-key -T root DoubleClick1Pane resize-pane -Z -t ="
+  terminal_adapter: null          # Optional: "subprocess" or custom adapter path
   isolation:
     mode: "standard"              # standard or hardened
 

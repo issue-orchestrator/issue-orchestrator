@@ -998,8 +998,7 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
 ) -> JSONResponse:
     """Get the local agent UI log for an issue.
 
-    This reads .issue-orchestrator/sessions/<session>/session.log (subprocess backend) or
-    .issue-orchestrator/sessions/<session>/pane.log (tmux backend) from the worktree.
+    This reads .issue-orchestrator/sessions/<session>/session.log from the worktree.
 
     Args:
         issue_number: Issue number to get log for

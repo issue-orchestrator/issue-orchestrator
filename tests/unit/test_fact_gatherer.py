@@ -341,7 +341,7 @@ class TestFactGathererCleanupFacts:
                 pr_number=10,
                 pr_url="https://github.com/owner/repo/pull/10",
                 branch_name="1-issue-1",
-                terminal_session_name="issue-1",
+                terminal_id="issue-1",
                 worktree_path=Path("/tmp/wt"),
             )
         ]
@@ -371,7 +371,7 @@ class TestFactGathererCleanupFacts:
                 pr_number=10,
                 pr_url="https://github.com/owner/repo/pull/10",
                 branch_name="1-issue-1",
-                terminal_session_name="issue-1",
+                terminal_id="issue-1",
                 worktree_path=Path("/tmp/wt1"),
             )
         ]
@@ -404,7 +404,7 @@ class TestFactGathererCleanupFacts:
                 pr_number=10,
                 pr_url="https://github.com/owner/repo/pull/10",
                 branch_name="1-issue-1",
-                terminal_session_name="issue-1",
+                terminal_id="issue-1",
                 worktree_path=Path("/tmp/wt1"),
             )
         ]
@@ -436,7 +436,7 @@ class TestFactGathererCleanupFacts:
                 pr_number=10,
                 pr_url="https://github.com/owner/repo/pull/10",
                 branch_name="1-issue-1",
-                terminal_session_name="issue-1",
+                terminal_id="issue-1",
                 worktree_path=Path("/tmp/wt1"),
             )
         ]
