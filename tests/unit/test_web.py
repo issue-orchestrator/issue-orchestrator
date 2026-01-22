@@ -685,6 +685,41 @@ class TestConfigEndpoint:
 class TestHistoryEndpoints:
     """Test history management endpoints."""
 
+    def test_get_history_success(self):
+        """Test fetching history entries."""
+        from issue_orchestrator.entrypoints import web
+        mock_orch = create_mock_orchestrator()
+
+        entry1 = SessionHistoryEntry(
+            issue_number=1,
+            title="Issue 1",
+            agent_type="agent:web",
+            status="completed",
+            runtime_minutes=10,
+            status_reason="ok",
+            worktree_path=Path("/tmp/worktree-1"),
+        )
+        entry2 = SessionHistoryEntry(
+            issue_number=2,
+            title="Issue 2",
+            agent_type="agent:web",
+            status="failed",
+            runtime_minutes=5,
+        )
+        mock_orch.state.session_history = [entry1, entry2]
+
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.get("/api/history")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["count"] == 2
+        assert payload["history"][0]["issue_number"] == 2
+        assert payload["history"][1]["issue_number"] == 1
+        assert payload["history"][1]["worktree_path"] == "/tmp/worktree-1"
+
     def test_clear_history_success(self):
         """Test clearing all history."""
         from issue_orchestrator.entrypoints import web
@@ -1831,6 +1866,58 @@ class TestSessionPhasesEndpoint:
             data = response.json()
             assert data["current_phase"] == "review-1"
             assert data["phases"][1]["status"] == "in_progress"
+        finally:
+            set_orchestrator(None)
+
+
+class TestSessionWorktreeEndpoint:
+    """Tests for the GET /api/session/worktree/{issue_number} endpoint."""
+
+    def test_worktree_from_active_session(self):
+        """Returns worktree for active session."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(123, "Test Issue")
+        session = create_session(issue, worktree_path="/tmp/worktree-123")
+        mock_orch.state.active_sessions = [session]
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/worktree/123")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["issue_number"] == 123
+            assert data["worktree_path"] == "/tmp/worktree-123"
+        finally:
+            set_orchestrator(None)
+
+    def test_worktree_from_history(self):
+        """Returns worktree from history when no active session exists."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        entry = SessionHistoryEntry(
+            issue_number=321,
+            title="Issue 321",
+            agent_type="agent:web",
+            status="completed",
+            runtime_minutes=10,
+            worktree_path=Path("/tmp/worktree-321"),
+        )
+        mock_orch.state.active_sessions = []
+        mock_orch.state.session_history = [entry]
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/worktree/321")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["worktree_path"] == "/tmp/worktree-321"
         finally:
             set_orchestrator(None)
 
