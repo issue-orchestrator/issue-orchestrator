@@ -133,7 +133,18 @@ def dual_orchestrators(
     claim_test_label: str,
 ) -> Generator[tuple[OrchestratorProcess, OrchestratorProcess], None, None]:
     """Start two orchestrator instances for claim testing."""
+    import shutil
+    from pathlib import Path
+
     config_a, config_b = dual_orchestrator_configs
+
+    # Clean up the shared state directory to avoid session conflicts from previous runs
+    # Both orchestrators share the same repo_root, so they would share the session registry
+    # We need to clear this to avoid "session already running" errors from stale entries
+    state_dir = e2e_project_root / ".issue-orchestrator" / "state"
+    if state_dir.exists():
+        shutil.rmtree(state_dir, ignore_errors=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
 
     proc_a = OrchestratorProcess(config_a, e2e_project_root)
     proc_b = OrchestratorProcess(config_b, e2e_project_root)
