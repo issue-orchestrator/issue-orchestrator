@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from issue_orchestrator.execution.triage_downloader import TriageDownloader
-from issue_orchestrator.control.triage_manifest import (
+from issue_orchestrator.domain.triage_manifest import (
     TriageManifest,
     PRToReview,
 )

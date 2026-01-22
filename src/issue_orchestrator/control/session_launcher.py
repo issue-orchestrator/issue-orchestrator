@@ -45,7 +45,7 @@ from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
 from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
-from .triage_manifest import TriageManifest
+from ..domain.triage_manifest import TriageManifest
 from .triage_manifest_builder import TriageManifestBuilder
 from ..ports import (
     ManifestDownloader,

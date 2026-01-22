@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from ..control.triage_manifest import TriageManifest
+    from ..domain.triage_manifest import TriageManifest
 
 
 class ManifestDownloader(Protocol):

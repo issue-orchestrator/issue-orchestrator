@@ -32,7 +32,7 @@ from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
 from .completion_processor import ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR
 from .reconciliation import build_expected_for_mutation, ExpectedState
 from ..infra import labels
-from .triage_manifest import TriageManifest
+from ..domain.triage_manifest import TriageManifest
 from pathlib import Path
 
 logger = logging.getLogger(__name__)

@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from issue_orchestrator.control.triage_manifest import (
+from issue_orchestrator.domain.triage_manifest import (
     PRFiles,
     PRToReview,
     TriageManifest,

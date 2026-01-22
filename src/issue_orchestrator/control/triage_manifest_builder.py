@@ -7,7 +7,7 @@ but not triage-reviewed or triage-failed labels).
 import logging
 import time
 
-from .triage_manifest import TriageManifest, PRToReview, PRFiles
+from ..domain.triage_manifest import TriageManifest, PRToReview, PRFiles
 from ..ports import RepositoryHost
 
 logger = logging.getLogger(__name__)
