@@ -59,9 +59,9 @@ class TestIssueDisplay:
         expect(page.locator(".issue-title")).to_contain_text("Test Active Issue")
 
     def test_queue_issue_displays(self, page: Page, web_server):
-        """Dashboard displays queued issues."""
+        """Dashboard displays queued issues on Queue tab."""
         web_server["orchestrator"].add_queue_issue(456, "Queued Issue")
-        page.reload()
+        page.goto(f"{web_server['url']}?tab=queue")
         expect(page.locator(".issue-row")).to_be_visible()
         expect(page.locator(".issue-num")).to_contain_text("#456")
 
@@ -74,17 +74,17 @@ class TestTabSwitching:
         work_tab = page.locator(".tab").first
         expect(work_tab).to_have_class("tab active")
 
-    def test_switch_to_attention_tab(self, page: Page, web_server):
-        """Click Attention tab switches view and updates URL."""
-        # Add a blocked queue item so attention tab has something
+    def test_switch_to_blocked_tab(self, page: Page, web_server):
+        """Click Blocked tab switches view and updates URL."""
+        # Add a blocked queue item so blocked tab has something
         web_server["orchestrator"].add_queue_issue(100, "Blocked Issue", blocked=True)
         page.reload()
 
-        attention_tab = page.locator(".tab:has-text('Attention')")
-        attention_tab.click()
+        blocked_tab = page.locator(".tab:has-text('Blocked')")
+        blocked_tab.click()
 
-        # URL should have tab=attention
-        expect(page).to_have_url(re.compile(r"tab=attention"))
+        # URL should have tab=blocked
+        expect(page).to_have_url(re.compile(r"tab=blocked"))
 
 
 class TestSettingsMenu:
@@ -129,7 +129,7 @@ class TestContextMenus:
     def test_right_click_shows_context_menu(self, page: Page, web_server):
         """Right-click on issue row shows context menu."""
         web_server["orchestrator"].add_queue_issue(123, "Test Issue")
-        page.reload()
+        page.goto(f"{web_server['url']}?tab=queue")
 
         row = page.locator(".issue-row").first
         row.click(button="right")
@@ -140,7 +140,7 @@ class TestContextMenus:
     def test_context_menu_closes_on_click_outside(self, page: Page, web_server):
         """Context menu closes when clicking elsewhere."""
         web_server["orchestrator"].add_queue_issue(123, "Test Issue")
-        page.reload()
+        page.goto(f"{web_server['url']}?tab=queue")
 
         row = page.locator(".issue-row").first
         row.click(button="right")
@@ -155,7 +155,7 @@ class TestContextMenus:
     def test_context_menu_has_github_links(self, page: Page, web_server):
         """Context menu shows Open Issue on GitHub option."""
         web_server["orchestrator"].add_queue_issue(123, "Test Issue")
-        page.reload()
+        page.goto(f"{web_server['url']}?tab=queue")
 
         row = page.locator(".issue-row").first
         row.click(button="right")
@@ -252,7 +252,7 @@ class TestPagination:
         """Pagination not visible when queue fits on one page."""
         for i in range(5):
             web_server["orchestrator"].add_queue_issue(i + 1, f"Issue {i + 1}")
-        page.reload()
+        page.goto(f"{web_server['url']}?tab=queue")
 
         # With only 5 items (less than 20 per page), pagination is not rendered
         pagination = page.locator(".pagination")
@@ -262,7 +262,7 @@ class TestPagination:
         """Pagination visible with more than 20 queue items."""
         for i in range(25):
             web_server["orchestrator"].add_queue_issue(i + 1, f"Issue {i + 1}")
-        page.reload()
+        page.goto(f"{web_server['url']}?tab=queue")
 
         pagination = page.locator(".pagination")
         expect(pagination).to_contain_text("Page 1 of 2")
@@ -271,7 +271,7 @@ class TestPagination:
         """Next button navigates to page 2."""
         for i in range(25):
             web_server["orchestrator"].add_queue_issue(i + 1, f"Issue {i + 1}")
-        page.reload()
+        page.goto(f"{web_server['url']}?tab=queue")
 
         next_btn = page.locator(".pagination button:has-text('Next')")
         next_btn.click()
@@ -282,7 +282,7 @@ class TestPagination:
         """Previous button navigates back."""
         for i in range(25):
             web_server["orchestrator"].add_queue_issue(i + 1, f"Issue {i + 1}")
-        page.goto(f"{web_server['url']}?page=2")
+        page.goto(f"{web_server['url']}?tab=queue&page=2")
 
         prev_btn = page.locator(".pagination button:has-text('Prev')")
         prev_btn.click()
@@ -290,36 +290,36 @@ class TestPagination:
         expect(page).to_have_url(re.compile(r"page=1"))
 
 
-class TestAttentionTab:
-    """Tests for the Attention tab (blocked queue items)."""
+class TestBlockedTab:
+    """Tests for the Blocked tab (issues needing human attention)."""
 
-    def test_attention_badge_shows_count(self, page: Page, web_server):
-        """Attention tab badge shows correct count of blocked queue items."""
+    def test_blocked_badge_shows_count(self, page: Page, web_server):
+        """Blocked tab badge shows correct count of blocked queue items."""
         web_server["orchestrator"].add_queue_issue(100, "Blocked 1", blocked=True)
         web_server["orchestrator"].add_queue_issue(101, "Blocked 2", blocked=True)
         page.reload()
 
-        badge = page.locator(".tab-badge")
+        badge = page.locator(".blocked-badge")
         expect(badge).to_have_text("2")
 
-    def test_attention_badge_empty_class(self, page: Page):
-        """Attention badge has empty class when count is 0."""
-        badge = page.locator(".tab-badge")
+    def test_blocked_badge_empty_class(self, page: Page):
+        """Blocked badge has empty class when count is 0."""
+        badge = page.locator(".blocked-badge")
         expect(badge).to_have_class(re.compile(r"empty"))
 
-    def test_blocked_queue_issue_in_attention_tab(self, page: Page, web_server):
-        """Blocked queue issues appear in attention tab."""
+    def test_blocked_queue_issue_in_blocked_tab(self, page: Page, web_server):
+        """Blocked queue issues appear in blocked tab."""
         web_server["orchestrator"].add_queue_issue(100, "Blocked Issue", blocked=True)
-        page.goto(f"{web_server['url']}?tab=attention")
+        page.goto(f"{web_server['url']}?tab=blocked")
 
         expect(page.locator(".issue-row")).to_be_visible()
         expect(page.locator(".issue-num")).to_contain_text("#100")
 
-    def test_multiple_blocked_issues_in_attention_tab(self, page: Page, web_server):
-        """Multiple blocked queue issues appear in attention tab."""
+    def test_multiple_blocked_issues_in_blocked_tab(self, page: Page, web_server):
+        """Multiple blocked queue issues appear in blocked tab."""
         web_server["orchestrator"].add_queue_issue(100, "Blocked Issue 1", blocked=True)
         web_server["orchestrator"].add_queue_issue(101, "Blocked Issue 2", blocked=True)
-        page.goto(f"{web_server['url']}?tab=attention")
+        page.goto(f"{web_server['url']}?tab=blocked")
 
         expect(page.locator(".issue-row")).to_have_count(2)
 

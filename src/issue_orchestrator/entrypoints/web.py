@@ -418,7 +418,12 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
     queue_page = int(request.query_params.get("page", 1))
     if queue_page < 1:
         queue_page = 1
-    active_tab = request.query_params.get("tab", "work")  # "work" or "problems"
+    active_tab = request.query_params.get("tab", "active")  # "active", "queue", "blocked", "history"
+    # Support legacy tab names for backwards compatibility
+    if active_tab == "work":
+        active_tab = "active"
+    elif active_tab == "attention":
+        active_tab = "blocked"
     logger.info("[dashboard] Request URL: %s, page=%s, tab=%s", request.url, queue_page, active_tab)
 
     templates = get_templates()
@@ -427,9 +432,10 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
     state = orchestrator.state if orchestrator else None
     config = orchestrator.config if orchestrator else None
 
-    work_items = []       # Active + Queue (ready to run)
-    needs_attention = []  # Issues with blocking labels (needs human action)
-    history = []          # Session history (completed, failed, etc.)
+    active_items = []     # Currently running sessions
+    queue_items = []      # Waiting to start (not blocked)
+    blocked_items = []    # Issues needing human attention (from queue or history)
+    history_items = []    # Completed sessions (success or fail, but not blocked)
     seen_issues = set()   # Track issue numbers to avoid duplicates
 
     def make_issue_url(issue_number: int) -> str:
@@ -520,7 +526,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                     "flow_steps": flow_steps,
                     "blocked_summary": blocked_summary,
                 }
-                work_items.append(item)
+                active_items.append(item)
 
         # 2. Queue (use cached issues for instant pagination)
         dependency_info = {}
@@ -608,13 +614,13 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                     "flow_steps": flow_steps,
                     "blocked_summary": blocked_summary,
                 }
-                # Blocked issues go to "Needs Attention", others to "Work"
+                # Blocked issues go to "Blocked" tab, others to "Queue" tab
                 if is_blocked:
-                    needs_attention.append(item)
+                    blocked_items.append(item)
                 else:
-                    work_items.append(item)
+                    queue_items.append(item)
 
-        # 3. Session history - all goes to history tab
+        # 3. Session history - blocked go to Blocked tab, others to History tab
         status_labels = {
             "completed": "Completed",
             "failed": "Failed",
@@ -629,10 +635,15 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
 
             if entry.status == "completed":
                 flow_stage = "done"
+            elif entry.status in ("blocked", "needs_human"):
+                flow_stage = "in_progress"  # Blocked at in_progress phase
             else:
                 flow_stage = "in_progress"
             flow_steps = _flow_steps_for(flow_stage)
             flow_stage_label = _flow_stage_label(flow_steps, flow_stage)
+
+            # Get worktree path from entry if available
+            worktree_path = str(entry.worktree_path) if entry.worktree_path else ""
 
             item = {
                 "issue_number": entry.issue_number,
@@ -651,23 +662,29 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                 "issue_url": make_issue_url(entry.issue_number),
                 "pr_url": entry.pr_url or "",
                 "has_terminal": False,
-                "worktree_path": "",
+                "worktree_path": worktree_path,
                 "flow_stage": flow_stage,
                 "flow_stage_label": flow_stage_label,
                 "flow_steps": flow_steps,
                 "blocked_summary": status_reason if entry.status != "completed" else None,
             }
-            history.append(item)
+            # Blocked/needs_human go to Blocked tab, others to History tab
+            if entry.status in ("blocked", "needs_human"):
+                blocked_items.append(item)
+            else:
+                history_items.append(item)
 
     # Select issues list based on active tab
-    if active_tab == "work":
-        issues = work_items
-    elif active_tab == "attention":
-        issues = needs_attention
+    if active_tab == "active":
+        issues = active_items
+    elif active_tab == "queue":
+        issues = queue_items
+    elif active_tab == "blocked":
+        issues = blocked_items
     elif active_tab == "history":
-        issues = history
+        issues = history_items
     else:
-        issues = work_items
+        issues = active_items
 
     # Calculate pagination info
     queue_total_pages = (queue_total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE if queue_total > 0 else 1
@@ -687,10 +704,14 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
 
     html = template.render(
         issues=issues,
-        work_items=work_items,
-        needs_attention=needs_attention,
-        attention_count=len(needs_attention),
-        history=history,
+        active_items=active_items,
+        queue_items=queue_items,
+        blocked_items=blocked_items,
+        history_items=history_items,
+        active_count=len(active_items),
+        queue_count=len(queue_items),
+        blocked_count=len(blocked_items),
+        history_count=len(history_items),
         active_tab=active_tab,
         paused=state.paused if state else False,
         shutdown_requested=shutdown_requested,
