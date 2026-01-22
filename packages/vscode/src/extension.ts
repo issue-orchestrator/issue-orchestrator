@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import EventSource from "eventsource";
 
-import { McpClient } from "./mcpClient.js";
 import { OrchestratorTreeDataProvider } from "./views.js";
 import type { Snapshot } from "./types.js";
+import type { OrchestratorClient } from "./orchestratorClient.js";
+
+type EventSource = import("eventsource").default;
 
 let eventSource: EventSource | null = null;
 let dashboardPanel: vscode.WebviewPanel | null = null;
@@ -16,38 +17,39 @@ const detailPanels = new Map<number, vscode.WebviewPanel>();
 const consolePanels = new Map<number, vscode.WebviewPanel>();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const isTest = process.env.IO_VSCODE_TEST === "1" || !!process.env.VSCODE_EXTENSION_TESTS;
+  if (isTest) {
+    registerTestCommands(context);
+    return;
+  }
+
   const output = vscode.window.createOutputChannel("Issue Orchestrator");
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBar.command = "issueOrchestrator.quickActions";
   statusBar.show();
   const diagnostics = vscode.languages.createDiagnosticCollection("Issue Orchestrator");
-
-  const isTest = process.env.IO_VSCODE_TEST === "1" || !!process.env.VSCODE_EXTENSION_TESTS;
-  const client = isTest ? new TestMcpClient(context, output) : new McpClient(context, output);
-  if (!isTest) {
-    try {
-      await client.start();
-    } catch (err) {
-      output.appendLine(`Failed to start MCP client: ${String(err)}`);
-      vscode.window.showErrorMessage("Issue Orchestrator MCP client failed to start. Check output for details.");
-    }
+  let client: OrchestratorClient;
+  const { McpClient } = await import("./mcpClient.js");
+  client = new McpClient(context, output);
+  try {
+    await client.start();
+  } catch (err) {
+    output.appendLine(`Failed to start MCP client: ${String(err)}`);
+    vscode.window.showErrorMessage("Issue Orchestrator MCP client failed to start. Check output for details.");
   }
 
   const provider = new OrchestratorTreeDataProvider(client, output, statusBar, (snapshot) => {
     updateDiagnostics(snapshot, diagnostics);
   });
+  context.subscriptions.push(diagnostics);
+  registerCommands(context, client, provider, output);
+
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("issueOrchestrator.explorer", provider)
   );
-  context.subscriptions.push(diagnostics);
-
   await provider.refresh();
-
-  registerCommands(context, client, provider, output);
-  if (!isTest) {
-    await connectEventStream(client, provider, output);
-    await warnIfConfigMissing();
-  }
+  await connectEventStream(client, provider, output);
+  await warnIfConfigMissing();
 
   context.subscriptions.push({
     dispose: () => {
@@ -60,13 +62,41 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
 }
 
+function registerTestCommands(context: vscode.ExtensionContext): void {
+  const noop = async (): Promise<void> => {
+    return;
+  };
+  const commands = [
+    "issueOrchestrator.start",
+    "issueOrchestrator.stop",
+    "issueOrchestrator.pause",
+    "issueOrchestrator.resume",
+    "issueOrchestrator.refresh",
+    "issueOrchestrator.openDashboard",
+    "issueOrchestrator.quickActions",
+    "issueOrchestrator.selectConfig",
+    "issueOrchestrator.runDiagnostics",
+    "issueOrchestrator.openDashboardExternal",
+    "issueOrchestrator.openWorktree",
+    "issueOrchestrator.openDetails",
+    "issueOrchestrator.openSessionConsole",
+    "issueOrchestrator.openPR",
+    "issueOrchestrator.openLog",
+    "issueOrchestrator.focusSession",
+    "issueOrchestrator.killSession",
+  ];
+  for (const command of commands) {
+    context.subscriptions.push(vscode.commands.registerCommand(command, noop));
+  }
+}
+
 export async function deactivate(): Promise<void> {
   closeEventStream();
 }
 
 function registerCommands(
   context: vscode.ExtensionContext,
-  client: McpClient,
+  client: OrchestratorClient,
   provider: OrchestratorTreeDataProvider,
   output: vscode.OutputChannel
 ): void {
@@ -329,12 +359,13 @@ async function resolveIssueNumber(item?: unknown): Promise<number | null> {
 }
 
 async function connectEventStream(
-  client: McpClient,
+  client: OrchestratorClient,
   provider: OrchestratorTreeDataProvider,
   output: vscode.OutputChannel
 ): Promise<void> {
   try {
     const urls = await client.getUrls();
+    const EventSource = (await import("eventsource")).default;
     closeEventStream();
     eventSource = new EventSource(urls.events_url);
     reconnectAttempts = 0;
@@ -449,7 +480,7 @@ async function runCommand(action: () => Promise<void>, output: vscode.OutputChan
 }
 
 function scheduleReconnect(
-  client: McpClient,
+  client: OrchestratorClient,
   provider: OrchestratorTreeDataProvider,
   output: vscode.OutputChannel
 ): void {
@@ -471,7 +502,7 @@ function scheduleReconnect(
 async function openDetailsPanel(
   issueNumber: number,
   provider: OrchestratorTreeDataProvider,
-  client: McpClient
+  client: OrchestratorClient
 ): Promise<void> {
   const existing = detailPanels.get(issueNumber);
   if (existing) {
@@ -500,7 +531,7 @@ async function openDetailsPanel(
 
 async function openSessionConsole(
   issueNumber: number,
-  client: McpClient,
+  client: OrchestratorClient,
   output: vscode.OutputChannel
 ): Promise<void> {
   const existing = consolePanels.get(issueNumber);
@@ -541,7 +572,7 @@ async function openSessionConsole(
   consolePanels.set(issueNumber, panel);
 }
 
-async function getSnapshot(provider: OrchestratorTreeDataProvider, client: McpClient) {
+async function getSnapshot(provider: OrchestratorTreeDataProvider, client: OrchestratorClient) {
   return provider.getSnapshot() ?? (await client.getSnapshot());
 }
 
@@ -700,52 +731,6 @@ function updateDiagnostics(snapshot: any, diagnostics: vscode.DiagnosticCollecti
 function shouldNotify(kind: "sessionCompleted" | "sessionFailed" | "sessionBlocked"): boolean {
   const config = vscode.workspace.getConfiguration("issueOrchestrator");
   return config.get<boolean>(`notifications.${kind}`, true);
-}
-
-class TestMcpClient extends McpClient {
-  async start(): Promise<void> {
-    return;
-  }
-
-  async stop(): Promise<void> {
-    return;
-  }
-
-  async getSnapshot(): Promise<Snapshot> {
-    return {
-      status: {
-        paused: false,
-        shutdown_requested: false,
-        active_sessions: [],
-        max_sessions: 0,
-        completed_today: [],
-        queue: [],
-        pending_reviews: [],
-        tick_id: null,
-        last_tick_time: null,
-        e2e_role: null,
-        publish_jobs: [],
-        publish_job_stats: { running: 0, pending: 0 },
-      },
-      info: {
-        repo: null,
-        repo_root: null,
-        ui_mode: null,
-        terminal_backend: null,
-        commit_sha: null,
-        commit_short: null,
-        max_sessions: 0,
-        active_sessions: 0,
-        completed_today: 0,
-      },
-      blocked: { blocked: [], count: 0 },
-      stale: { stale: [], count: 0 },
-      dependency_problems: { problems: {} },
-      excluded: { excluded: [], count: 0 },
-      publish_jobs: { jobs: [], count: 0 },
-      history: { history: [], count: 0 },
-    };
-  }
 }
 
 function inferRepoRoot(configPath: string): string | null {

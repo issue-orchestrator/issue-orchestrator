@@ -35,15 +35,5 @@ See the extension README for configuration keys.
 
 ## Extension Tests
 
-`make test-vscode` launches the VS Code Extension Development Host with a separate
-user data directory so it can run alongside your normal VS Code instance. If you
-still see single-instance conflicts, you can point the test runner at VS Code
-Insiders or a custom binary:
-
-```bash
-VSCODE_TEST_USE_INSIDERS=1 make test-vscode
-```
-
-```bash
-VSCODE_EXECUTABLE_PATH="/path/to/code" make test-vscode
-```
+`make test-vscode` launches the VS Code Extension Development Host with isolated
+test profiles under the system temp directory.

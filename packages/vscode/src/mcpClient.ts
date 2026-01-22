@@ -2,12 +2,13 @@ import * as vscode from "vscode";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+import type { OrchestratorClient } from "./orchestratorClient.js";
 import type {
   McpStatusPayload,
   Snapshot,
 } from "./types.js";
 
-export class McpClient {
+export class McpClient implements OrchestratorClient {
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
 

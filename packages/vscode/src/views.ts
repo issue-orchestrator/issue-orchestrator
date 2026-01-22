@@ -9,7 +9,7 @@ import type {
   PublishJob,
 } from "./types.js";
 
-import { McpClient } from "./mcpClient.js";
+import type { OrchestratorClient } from "./orchestratorClient.js";
 import { isSnapshot } from "./validators.js";
 
 const SECTION = {
@@ -94,7 +94,7 @@ export class OrchestratorTreeDataProvider implements vscode.TreeDataProvider<vsc
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   constructor(
-    private readonly client: McpClient,
+    private readonly client: OrchestratorClient,
     private readonly output: vscode.OutputChannel,
     private readonly statusBar: vscode.StatusBarItem,
     private readonly onSnapshot?: (snapshot: Snapshot) => void
