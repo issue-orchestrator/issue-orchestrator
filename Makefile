@@ -118,16 +118,16 @@ sync-deps:
 
 test-unit: sync-deps
 ifeq ($(PARALLEL),0)
-	$(PYTEST) tests/unit -x -q --tb=short
+	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short
 else
-	$(PYTEST) tests/unit -x -q --tb=short -n $(PARALLEL)
+	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(PARALLEL)
 endif
 
 test-unit-cov:
-	$(PYTEST) tests/unit --cov=src/issue_orchestrator --cov-report=term-missing -x -q --tb=short
+	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short
 
 test-unit-cov-html:
-	$(PYTEST) tests/unit --cov=src/issue_orchestrator --cov-report=html -x -q --tb=short
+	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=html -x -q --tb=short
 	@echo "Coverage report: open htmlcov/index.html"
 
 test-integration: sync-deps
