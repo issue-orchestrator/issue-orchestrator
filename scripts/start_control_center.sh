@@ -14,8 +14,12 @@ ensure_venv() {
 }
 
 ensure_deps() {
-  if ! "${VENV_PATH}/bin/python" -c "import issue_orchestrator" >/dev/null 2>&1; then
-    echo "Installing dev dependencies..."
+  # Check if installed AND pointing to this repo (not a stale worktree)
+  local installed_path
+  installed_path=$("${VENV_PATH}/bin/python" -c "import issue_orchestrator; print(issue_orchestrator.__file__)" 2>/dev/null || echo "")
+
+  if [[ -z "${installed_path}" || "${installed_path}" != "${ROOT_DIR}"/* ]]; then
+    echo "Installing dev dependencies from ${ROOT_DIR}..."
     "${VENV_PATH}/bin/python" -m pip install -e ".[dev]"
   fi
 }

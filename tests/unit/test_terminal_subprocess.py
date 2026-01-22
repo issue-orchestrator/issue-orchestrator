@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-import time
-from pathlib import Path
-
 import json
+import time
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _SessionRecord, _SubprocessRegistry
 from issue_orchestrator.infra.env import ENV_PREFIX
 
 
 def test_subprocess_session_writes_log(tmp_path, monkeypatch):
+    """Test that subprocess output is captured to the session log file.
+
+    This test verifies that fast-exiting processes (like printf) have their
+    output fully captured. The drain logic must be patient enough to wait
+    for data to arrive in the PTY buffer after the process exits.
+    """
     repo_root = tmp_path / "repo"
     worktree = repo_root / "wt"
     worktree.mkdir(parents=True)
@@ -25,15 +29,19 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     )
     assert created is True
 
-    # Allow the subprocess to exit and flush logs.
-    for _ in range(50):
+    # Wait for session to complete. session_exists() returns False once the
+    # process exits AND the copier thread finishes draining output.
+    for _ in range(100):  # Up to 2 seconds
         if not plugin.session_exists(123, "issue-123"):
             break
         time.sleep(0.02)
+    else:
+        raise AssertionError("Session did not complete within timeout")
 
     log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "session.log"
-    assert log_path.exists()
-    assert "hello from subprocess" in log_path.read_text()
+    assert log_path.exists(), f"Log file not created at {log_path}"
+    content = log_path.read_text()
+    assert "hello from subprocess" in content, f"Expected output not in log. Content: {content!r}"
 
 
 def test_subprocess_registry_migrates_legacy_index(tmp_path):

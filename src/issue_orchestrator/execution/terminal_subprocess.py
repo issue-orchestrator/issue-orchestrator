@@ -243,15 +243,25 @@ class SubprocessPlugin:
         return read_fd
 
     def _drain_remaining_output(self, read_fd: int, log_file) -> None:
-        """Drain any remaining output after process exits."""
-        while True:
+        """Drain any remaining output after process exits.
+
+        Uses multiple short timeouts to handle the race between process exit
+        and data arriving in the PTY buffer. Fast processes (like printf) may
+        exit before their output is ready to read. Under heavy system load
+        (like parallel test execution), this race is more pronounced.
+        """
+        empty_reads = 0
+        max_empty_reads = 20  # Give up after 2s of no data (20 * 0.1s)
+        while empty_reads < max_empty_reads:
             ready, _, _ = select.select([read_fd], [], [], 0.1)
             if not ready:
-                break
+                empty_reads += 1
+                continue
             data = os.read(read_fd, 4096)
             if not data:
-                break
+                break  # EOF - PTY closed
             log_file.write(data)
+            empty_reads = 0  # Reset counter when we get data
 
     def _start_output_copier(
         self, read_fd: int, log_path: Path, proc: subprocess.Popen[bytes], session_name: str
