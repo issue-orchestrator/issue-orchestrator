@@ -1412,6 +1412,36 @@
         .triage-badge.existing { background: #238636; color: #fff; }
         .triage-badge.flaky { background: #d29922; color: #fff; }
         .triage-badge.new { background: #1f6feb; color: #fff; }
+        .triage-item.to-remove { background: rgba(248, 81, 73, 0.15); }
+        .triage-empty { padding: 20px; text-align: center; color: #8b949e; }
+        .triage-checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            cursor: pointer;
+        }
+        .test-nodeid {
+            font-family: ui-monospace, monospace;
+            font-size: 12px;
+            color: #58a6ff;
+            flex: 1;
+            word-break: break-all;
+        }
+        .flake-badge {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #d29922;
+            color: #fff;
+        }
+        .remove-badge {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #f85149;
+            color: #fff;
+        }
         .triage-longrepr {
             margin-top: 8px;
             font-family: ui-monospace, monospace;
@@ -1780,6 +1810,7 @@
                 <button class="e2e-btn" id="e2eLogsBtn" onclick="showE2ELogs()" style="{% if not (e2e_status.last_run and e2e_status.last_run.log_path) %}display: none;{% endif %}">Logs</button>
                 <button class="e2e-btn" id="e2eDiagnoseBtn" onclick="showE2EDiagnosis()" style="{% if not (e2e_status.last_run and e2e_status.last_run.status == 'failed') %}display: none;{% endif %}">Diagnose</button>
                 <button class="e2e-btn primary" id="e2eTriageBtn" onclick="showE2ETriage()" style="{% if not (e2e_status.last_run and e2e_status.last_run.status == 'failed') %}display: none;{% endif %}" title="Review failures and create issues">Triage</button>
+                <button class="e2e-btn" id="e2eQuarantineBtn" onclick="showQuarantineViewer()" title="View and manage quarantine list">Quarantine</button>
             </div>
         </div>
         {% endif %}
@@ -2072,6 +2103,47 @@
                         <button class="btn-secondary" id="e2eSyncBtn" onclick="syncE2EIssues()">Sync Issues</button>
                         <button class="btn-secondary" id="e2eDismissBtn" onclick="dismissE2EFailures()">Dismiss All</button>
                         <button class="btn-secondary" onclick="closeE2ETriageModal()">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- E2E Quarantine Viewer Modal -->
+        <div class="modal-overlay" id="e2eQuarantineModal">
+            <div class="modal-content" style="max-width: 700px;">
+                <div class="modal-header">
+                    <h3>Quarantine Manager</h3>
+                    <button class="modal-close" onclick="closeQuarantineModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="quarantineLoading" class="triage-loading">Loading quarantine data...</div>
+                    <div id="quarantineContent" style="display: none;">
+                        <div class="triage-summary">
+                            <span id="quarantineFile">File: tests/e2e/quarantine.txt</span>
+                            <span id="quarantineCount">0 tests quarantined</span>
+                        </div>
+
+                        <div id="quarantineFlakySection" style="margin-bottom: 16px;">
+                            <h4 style="margin: 0 0 8px 0; color: #ff9800;">Suggested for Quarantine</h4>
+                            <p style="font-size: 12px; color: #666; margin: 0 0 8px 0;">
+                                Tests with high flakiness (failed then passed on retry multiple times)
+                            </p>
+                            <div id="quarantineFlakyList" class="triage-list"></div>
+                        </div>
+
+                        <div id="quarantineCurrentSection">
+                            <h4 style="margin: 0 0 8px 0;">Currently Quarantined</h4>
+                            <p style="font-size: 12px; color: #666; margin: 0 0 8px 0;">
+                                These tests are excluded from E2E failure counts
+                            </p>
+                            <div id="quarantineCurrentList" class="triage-list"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <div class="modal-footer-buttons">
+                        <button class="btn-primary" id="quarantineSaveBtn" onclick="saveQuarantineChanges()" disabled>Save Changes</button>
+                        <button class="btn-secondary" onclick="closeQuarantineModal()">Close</button>
                     </div>
                 </div>
             </div>
@@ -5024,6 +5096,164 @@
                 btn.disabled = false;
                 btn.textContent = 'Sync Issues';
             }
+        }
+
+        // Quarantine viewer state
+        let quarantineData = { current: [], flaky: [], toAdd: new Set(), toRemove: new Set() };
+
+        async function showQuarantineViewer() {
+            const modal = document.getElementById('e2eQuarantineModal');
+            const loading = document.getElementById('quarantineLoading');
+            const content = document.getElementById('quarantineContent');
+
+            modal.classList.add('visible');
+            loading.style.display = 'block';
+            content.style.display = 'none';
+
+            quarantineData = { current: [], flaky: [], toAdd: new Set(), toRemove: new Set() };
+
+            try {
+                // Fetch current quarantine list and flaky tests in parallel
+                const [quarantineRes, flakyRes] = await Promise.all([
+                    fetch(`/control/e2e/quarantine?repo_root=${encodeURIComponent(REPO_ROOT)}`),
+                    fetch(`/control/e2e/flaky-tests?repo_root=${encodeURIComponent(REPO_ROOT)}&threshold=3&window=10`)
+                ]);
+
+                const quarantine = await quarantineRes.json();
+                const flaky = await flakyRes.json();
+
+                if (!quarantineRes.ok) {
+                    showToast(quarantine.error || 'Failed to load quarantine list', true);
+                    closeQuarantineModal();
+                    return;
+                }
+
+                quarantineData.current = quarantine.tests || [];
+                quarantineData.flaky = (flaky.flaky_tests || []).filter(t => !t.is_quarantined);
+
+                document.getElementById('quarantineFile').textContent = `File: ${quarantine.quarantine_file}`;
+                renderQuarantineViewer();
+
+                loading.style.display = 'none';
+                content.style.display = 'block';
+            } catch (err) {
+                showToast('Failed to load quarantine data: ' + err.message, true);
+                closeQuarantineModal();
+            }
+        }
+
+        function renderQuarantineViewer() {
+            const currentList = document.getElementById('quarantineCurrentList');
+            const flakyList = document.getElementById('quarantineFlakyList');
+            const flakySection = document.getElementById('quarantineFlakySection');
+
+            // Render flaky suggestions
+            if (quarantineData.flaky.length > 0) {
+                flakySection.style.display = 'block';
+                flakyList.innerHTML = quarantineData.flaky.map(test => `
+                    <div class="triage-item">
+                        <label class="triage-checkbox-label">
+                            <input type="checkbox" class="quarantine-add-checkbox"
+                                   data-nodeid="${test.nodeid}"
+                                   ${quarantineData.toAdd.has(test.nodeid) ? 'checked' : ''}
+                                   onchange="toggleQuarantineAdd('${test.nodeid}')">
+                            <span class="test-nodeid">${test.nodeid}</span>
+                            <span class="flake-badge">${test.flake_count} flakes</span>
+                        </label>
+                    </div>
+                `).join('');
+            } else {
+                flakySection.style.display = 'none';
+            }
+
+            // Render current quarantine list
+            if (quarantineData.current.length > 0) {
+                currentList.innerHTML = quarantineData.current.map(nodeid => `
+                    <div class="triage-item ${quarantineData.toRemove.has(nodeid) ? 'to-remove' : ''}">
+                        <label class="triage-checkbox-label">
+                            <input type="checkbox" class="quarantine-remove-checkbox"
+                                   data-nodeid="${nodeid}"
+                                   ${quarantineData.toRemove.has(nodeid) ? 'checked' : ''}
+                                   onchange="toggleQuarantineRemove('${nodeid}')">
+                            <span class="test-nodeid">${nodeid}</span>
+                            ${quarantineData.toRemove.has(nodeid) ? '<span class="remove-badge">will remove</span>' : ''}
+                        </label>
+                    </div>
+                `).join('');
+            } else {
+                currentList.innerHTML = '<div class="triage-empty">No tests currently quarantined</div>';
+            }
+
+            // Update count and save button state
+            const effectiveCount = quarantineData.current.length + quarantineData.toAdd.size - quarantineData.toRemove.size;
+            document.getElementById('quarantineCount').textContent = `${effectiveCount} test${effectiveCount !== 1 ? 's' : ''} quarantined`;
+
+            const saveBtn = document.getElementById('quarantineSaveBtn');
+            saveBtn.disabled = quarantineData.toAdd.size === 0 && quarantineData.toRemove.size === 0;
+        }
+
+        function toggleQuarantineAdd(nodeid) {
+            if (quarantineData.toAdd.has(nodeid)) {
+                quarantineData.toAdd.delete(nodeid);
+            } else {
+                quarantineData.toAdd.add(nodeid);
+            }
+            renderQuarantineViewer();
+        }
+
+        function toggleQuarantineRemove(nodeid) {
+            if (quarantineData.toRemove.has(nodeid)) {
+                quarantineData.toRemove.delete(nodeid);
+            } else {
+                quarantineData.toRemove.add(nodeid);
+            }
+            renderQuarantineViewer();
+        }
+
+        async function saveQuarantineChanges() {
+            const btn = document.getElementById('quarantineSaveBtn');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+
+            try {
+                // Process additions
+                if (quarantineData.toAdd.size > 0) {
+                    const addRes = await fetch(`/control/e2e/quarantine?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'add', nodeids: Array.from(quarantineData.toAdd) })
+                    });
+                    if (!addRes.ok) {
+                        const data = await addRes.json();
+                        throw new Error(data.error || 'Failed to add to quarantine');
+                    }
+                }
+
+                // Process removals
+                if (quarantineData.toRemove.size > 0) {
+                    const removeRes = await fetch(`/control/e2e/quarantine?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'remove', nodeids: Array.from(quarantineData.toRemove) })
+                    });
+                    if (!removeRes.ok) {
+                        const data = await removeRes.json();
+                        throw new Error(data.error || 'Failed to remove from quarantine');
+                    }
+                }
+
+                showToast(`Quarantine updated: +${quarantineData.toAdd.size} added, -${quarantineData.toRemove.size} removed`);
+                closeQuarantineModal();
+            } catch (err) {
+                showToast('Failed to save quarantine changes: ' + err.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Save Changes';
+            }
+        }
+
+        function closeQuarantineModal() {
+            document.getElementById('e2eQuarantineModal').classList.remove('visible');
         }
     </script>
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>

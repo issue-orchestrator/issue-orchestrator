@@ -1330,3 +1330,43 @@ def load_quarantine_list(quarantine_path: Path) -> set[str]:
                 quarantined.add(line)
 
     return quarantined
+
+
+def save_quarantine_list(quarantine_path: Path, nodeids: set[str]) -> None:
+    """Save the quarantine list to a file.
+
+    Creates the file and parent directories if they don't exist.
+    Preserves header comment if present.
+
+    Args:
+        quarantine_path: Path to quarantine file
+        nodeids: Set of nodeids to quarantine
+    """
+    # Preserve any header comments if file exists
+    header_lines = []
+    if quarantine_path.exists():
+        with open(quarantine_path) as f:
+            for line in f:
+                if line.startswith("#"):
+                    header_lines.append(line.rstrip())
+                else:
+                    break
+
+    # Ensure parent directory exists
+    quarantine_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(quarantine_path, "w") as f:
+        # Write header if present
+        if header_lines:
+            for line in header_lines:
+                f.write(line + "\n")
+            f.write("\n")
+        else:
+            # Add a default header
+            f.write("# Quarantined E2E tests\n")
+            f.write("# Tests listed here are excluded from E2E failure counts\n")
+            f.write("\n")
+
+        # Write sorted nodeids
+        for nodeid in sorted(nodeids):
+            f.write(nodeid + "\n")

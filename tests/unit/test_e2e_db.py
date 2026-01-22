@@ -5,7 +5,13 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from issue_orchestrator.infra.e2e_db import E2EDB, AlreadyRunning, E2ERun
+from issue_orchestrator.infra.e2e_db import (
+    E2EDB,
+    AlreadyRunning,
+    E2ERun,
+    load_quarantine_list,
+    save_quarantine_list,
+)
 
 
 class TestE2EDB:
@@ -571,3 +577,65 @@ class TestE2EDB:
         # Resolve the other
         db.resolve_failure_issue("test::failure2", "passed")
         assert db.get_unresolved_failure_count(100) == 0
+
+
+class TestQuarantineListFunctions:
+    """Test quarantine list utility functions."""
+
+    def test_load_quarantine_list_empty_file(self, tmp_path):
+        """Load from empty file returns empty set."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        quarantine_file.write_text("")
+
+        result = load_quarantine_list(quarantine_file)
+        assert result == set()
+
+    def test_load_quarantine_list_with_tests(self, tmp_path):
+        """Load from file with tests."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        quarantine_file.write_text("# Comment\ntest::foo\ntest::bar\n\n# Another comment\ntest::baz\n")
+
+        result = load_quarantine_list(quarantine_file)
+        assert result == {"test::foo", "test::bar", "test::baz"}
+
+    def test_load_quarantine_list_missing_file(self, tmp_path):
+        """Load from non-existent file returns empty set."""
+        quarantine_file = tmp_path / "nonexistent.txt"
+
+        result = load_quarantine_list(quarantine_file)
+        assert result == set()
+
+    def test_save_quarantine_list_creates_file(self, tmp_path):
+        """Save creates file with default header."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        nodeids = {"test::foo", "test::bar"}
+
+        save_quarantine_list(quarantine_file, nodeids)
+
+        content = quarantine_file.read_text()
+        assert "# Quarantined E2E tests" in content
+        assert "test::bar" in content
+        assert "test::foo" in content
+
+    def test_save_quarantine_list_preserves_header(self, tmp_path):
+        """Save preserves existing header comments."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        quarantine_file.write_text("# Custom header\n# Another line\nold::test\n")
+
+        save_quarantine_list(quarantine_file, {"test::new"})
+
+        content = quarantine_file.read_text()
+        assert "# Custom header" in content
+        assert "# Another line" in content
+        assert "test::new" in content
+        assert "old::test" not in content
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        """Save then load returns same set."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        original = {"test::alpha", "test::beta", "test::gamma"}
+
+        save_quarantine_list(quarantine_file, original)
+        loaded = load_quarantine_list(quarantine_file)
+
+        assert loaded == original

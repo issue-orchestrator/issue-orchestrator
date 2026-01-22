@@ -3002,6 +3002,135 @@ async def e2e_quarantine_list(repo_root: str = Query(...)) -> JSONResponse:
     })
 
 
+def _apply_quarantine_changes(action: str, nodeids: list, current_tests: set) -> tuple[list, list]:
+    """Apply add or remove actions to the quarantine set."""
+    added, removed = [], []
+    if action == "add":
+        for nodeid in nodeids:
+            if nodeid not in current_tests:
+                current_tests.add(nodeid)
+                added.append(nodeid)
+    else:  # remove
+        for nodeid in nodeids:
+            if nodeid in current_tests:
+                current_tests.remove(nodeid)
+                removed.append(nodeid)
+    return added, removed
+
+
+@control_app.post("/control/e2e/quarantine")
+async def e2e_quarantine_modify(
+    request: Request,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Add or remove tests from the quarantine list.
+
+    Query params:
+        repo_root: str - Repository root path
+
+    JSON body:
+        action: "add" | "remove"
+        nodeids: list[str] - Test node IDs to add/remove
+
+    Returns:
+        {quarantine_file: str, tests: [str], count: int, added: [str], removed: [str]}
+    """
+    from ..infra.e2e_db import load_quarantine_list, save_quarantine_list
+    from ..infra.config import Config
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    action = body.get("action", "").strip()
+    nodeids = body.get("nodeids", [])
+
+    if action not in ("add", "remove"):
+        return JSONResponse({"error": "action must be 'add' or 'remove'"}, status_code=400)
+    if not nodeids:
+        return JSONResponse({"error": "nodeids is required"}, status_code=400)
+
+    try:
+        config = Config.find_and_load(validated_root)
+        quarantine_file = config.e2e.quarantine_file
+    except FileNotFoundError:
+        quarantine_file = "tests/e2e/quarantine.txt"
+
+    quarantine_path = validated_root / quarantine_file
+    current_tests = load_quarantine_list(quarantine_path)
+
+    added, removed = _apply_quarantine_changes(action, nodeids, current_tests)
+    save_quarantine_list(quarantine_path, current_tests)
+
+    logger.info(
+        "[quarantine] Modified quarantine list: added=%d, removed=%d",
+        len(added), len(removed))
+
+    return JSONResponse({
+        "quarantine_file": quarantine_file,
+        "tests": sorted(current_tests),
+        "count": len(current_tests),
+        "added": added,
+        "removed": removed,
+    })
+
+
+@control_app.get("/control/e2e/flaky-tests")
+async def e2e_flaky_tests(
+    repo_root: str = Query(...),
+    threshold: int = Query(default=3),
+    window: int = Query(default=10),
+) -> JSONResponse:
+    """Get tests that exhibit flaky behavior above the threshold.
+
+    Query params:
+        repo_root: str - Repository root path
+        threshold: int - Number of flakes to consider problematic (default: 3)
+        window: int - Number of recent runs to check (default: 10)
+
+    Returns:
+        {flaky_tests: [{nodeid, flake_count}, ...], threshold, window}
+    """
+    from ..infra.e2e_db import E2EDB, load_quarantine_list
+    from ..infra.config import Config
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse({"error": "not_found", "detail": "E2E database not found"}, status_code=404)
+
+    try:
+        config = Config.find_and_load(validated_root)
+        quarantine_file = config.e2e.quarantine_file
+    except FileNotFoundError:
+        quarantine_file = "tests/e2e/quarantine.txt"
+
+    quarantine_path = validated_root / quarantine_file
+    quarantined = load_quarantine_list(quarantine_path)
+
+    db = E2EDB(db_path)
+    flaky_tests = db.get_flaky_tests(threshold=threshold, window_runs=window)
+
+    # Mark which ones are already quarantined
+    for test in flaky_tests:
+        test["is_quarantined"] = test["nodeid"] in quarantined
+
+    return JSONResponse({
+        "flaky_tests": flaky_tests,
+        "threshold": threshold,
+        "window": window,
+        "quarantine_file": quarantine_file,
+    })
+
+
 @control_app.get("/control/e2e/summary/{run_id}")
 async def e2e_test_summary(
     run_id: int,

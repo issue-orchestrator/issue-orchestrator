@@ -2285,6 +2285,168 @@ class TestE2ESyncIssuesEndpoint:
         assert len(data["closed_parent_issues"]) == 0
 
 
+class TestE2EQuarantineModifyEndpoint:
+    """Test the POST /control/e2e/quarantine endpoint."""
+
+    @pytest.fixture
+    def quarantine_client(self):
+        """Create a test client for quarantine endpoint."""
+        return TestClient(control_app)
+
+    def test_quarantine_modify_returns_400_for_invalid_repo_root(self, quarantine_client):
+        """Invalid repo_root should return 400."""
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": "../invalid/path"},
+            json={"action": "add", "nodeids": ["test::foo"]}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_quarantine_modify_requires_action(self, quarantine_client, tmp_path):
+        """Missing action should return 400."""
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": str(tmp_path)},
+            json={"nodeids": ["test::foo"]}
+        )
+        assert response.status_code == 400
+        assert "action" in response.json()["error"]
+
+    def test_quarantine_modify_requires_nodeids(self, quarantine_client, tmp_path):
+        """Empty nodeids should return 400."""
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": str(tmp_path)},
+            json={"action": "add", "nodeids": []}
+        )
+        assert response.status_code == 400
+        assert "nodeids" in response.json()["error"]
+
+    def test_quarantine_add_tests(self, quarantine_client, tmp_path):
+        """Should add tests to quarantine file."""
+        # Create empty quarantine file
+        quarantine_dir = tmp_path / "tests" / "e2e"
+        quarantine_dir.mkdir(parents=True)
+        quarantine_file = quarantine_dir / "quarantine.txt"
+        quarantine_file.write_text("# Header\n")
+
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": str(tmp_path)},
+            json={"action": "add", "nodeids": ["test::foo", "test::bar"]}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert len(data["added"]) == 2
+        assert "test::foo" in data["tests"]
+        assert "test::bar" in data["tests"]
+        assert data["count"] == 2
+
+        # Verify file was updated
+        content = quarantine_file.read_text()
+        assert "test::foo" in content
+        assert "test::bar" in content
+
+    def test_quarantine_remove_tests(self, quarantine_client, tmp_path):
+        """Should remove tests from quarantine file."""
+        # Create quarantine file with tests
+        quarantine_dir = tmp_path / "tests" / "e2e"
+        quarantine_dir.mkdir(parents=True)
+        quarantine_file = quarantine_dir / "quarantine.txt"
+        quarantine_file.write_text("# Header\ntest::foo\ntest::bar\ntest::baz\n")
+
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": str(tmp_path)},
+            json={"action": "remove", "nodeids": ["test::foo", "test::bar"]}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert len(data["removed"]) == 2
+        assert "test::foo" not in data["tests"]
+        assert "test::bar" not in data["tests"]
+        assert "test::baz" in data["tests"]
+        assert data["count"] == 1
+
+
+class TestE2EFlakyTestsEndpoint:
+    """Test the GET /control/e2e/flaky-tests endpoint."""
+
+    @pytest.fixture
+    def flaky_client(self):
+        """Create a test client for flaky tests endpoint."""
+        return TestClient(control_app)
+
+    def test_flaky_returns_400_for_invalid_repo_root(self, flaky_client):
+        """Invalid repo_root should return 400."""
+        response = flaky_client.get(
+            "/control/e2e/flaky-tests",
+            params={"repo_root": "../invalid/path"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_flaky_returns_404_when_db_not_found(self, flaky_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = flaky_client.get(
+            "/control/e2e/flaky-tests",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+
+    def test_flaky_returns_empty_when_no_flaky_tests(self, flaky_client, tmp_path):
+        """Should return empty list when no flaky tests."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        E2EDB(db_dir / "e2e.db")
+
+        response = flaky_client.get(
+            "/control/e2e/flaky-tests",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["flaky_tests"] == []
+        assert data["threshold"] == 3
+        assert data["window"] == 10
+
+    def test_flaky_returns_tests_above_threshold(self, flaky_client, tmp_path):
+        """Should return tests that exceed flakiness threshold."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db = E2EDB(db_dir / "e2e.db")
+
+        # Record flaky occurrences
+        for i in range(5):
+            run_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"])
+            db.record_flake("test::flaky_one", run_id, was_flaky=True)
+            if i < 2:
+                db.record_flake("test::sometimes_flaky", run_id, was_flaky=True)
+            db.finish_run(run_id, "passed")
+
+        response = flaky_client.get(
+            "/control/e2e/flaky-tests",
+            params={"repo_root": str(tmp_path), "threshold": 3}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # test::flaky_one has 5 flakes, exceeds threshold
+        # test::sometimes_flaky has 2 flakes, below threshold
+        nodeids = [t["nodeid"] for t in data["flaky_tests"]]
+        assert "test::flaky_one" in nodeids
+        assert "test::sometimes_flaky" not in nodeids
+
+
 # --- Test: Retry Issue Endpoint ---
 
 
