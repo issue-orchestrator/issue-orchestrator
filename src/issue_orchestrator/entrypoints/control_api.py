@@ -3326,6 +3326,166 @@ async def e2e_triage_data(
         )
 
 
+def _create_e2e_sub_issues(
+    tracker: Any,
+    parent_issue: Any,
+    nodeids: list[str],
+    results_by_nodeid: dict,
+    run: Any,
+    db: Any,
+    run_id: int,
+    agent: str,
+) -> list[dict]:
+    """Create sub-issues for selected test failures. Returns list of created issues."""
+    sub_issues = []
+    sub_labels = ["e2e:test-failure", agent]
+
+    for nodeid in nodeids:
+        test_result = results_by_nodeid.get(nodeid)
+        if not test_result:
+            logger.warning("[e2e-create-issues] Node ID not found: %s", nodeid)
+            continue
+
+        sub_issue = tracker.create_test_failure_issue(
+            parent_issue=parent_issue,
+            test_result=test_result,
+            first_failing_sha=run.commit_sha or "",
+            last_passing_sha=None,
+            labels=sub_labels,
+        )
+
+        if not sub_issue:
+            continue
+
+        db.record_failure_issue(
+            nodeid=nodeid,
+            github_issue_number=sub_issue.issue_number,
+            parent_issue_number=parent_issue.issue_number,
+            first_failing_run_id=run_id,
+            first_failing_sha=run.commit_sha or "",
+        )
+        sub_issues.append({
+            "number": sub_issue.issue_number,
+            "url": sub_issue.html_url,
+            "nodeid": nodeid,
+        })
+
+    return sub_issues
+
+
+def _validate_e2e_create_request(
+    nodeids: list,
+    agent: str,
+    repo_root: str,
+) -> JSONResponse | Path:
+    """Validate request params for e2e issue creation. Returns JSONResponse on error, Path on success."""
+    if not nodeids:
+        return JSONResponse({"error": "No test failures selected"}, status_code=400)
+    if not agent:
+        return JSONResponse({"error": "Agent label is required"}, status_code=400)
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse({"error": "not_found", "detail": "E2E database not found"}, status_code=404)
+
+    return db_path
+
+
+@control_app.post("/control/e2e/create-issues/{run_id}")
+async def e2e_create_issues(
+    request: Request,
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Create GitHub issues from E2E test failures.
+
+    Creates a parent issue for the run and sub-issues for each selected failure.
+    Issues are linked using GitHub's native sub-issues feature.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+
+    JSON body:
+        nodeids: list[str] - Test node IDs to create issues for
+        agent: str - Agent label to assign (e.g., "agent:developer")
+
+    Returns:
+        {
+            status: "created",
+            parent_issue: {number, url},
+            sub_issues: [{number, url, nodeid}, ...]
+        }
+    """
+    from ..infra.e2e_db import E2EDB
+    from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
+
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    nodeids = body.get("nodeids", [])
+    agent = body.get("agent", "").strip()
+
+    validation_result = _validate_e2e_create_request(nodeids, agent, repo_root)
+    if isinstance(validation_result, JSONResponse):
+        return validation_result
+    db_path = validation_result
+
+    try:
+        db = E2EDB(db_path)
+        run = db.get_run(run_id)
+        if run is None:
+            return JSONResponse({"error": "not_found", "detail": f"Run {run_id} not found"}, status_code=404)
+
+        existing_run_issue = db.get_run_issue(run_id)
+        if existing_run_issue:
+            return JSONResponse(
+                {"error": "Issues already created for this run",
+                 "parent_issue_number": existing_run_issue.github_issue_number},
+                status_code=409)
+
+        # Get the GitHub client via the public http_client property
+        github_client = _orchestrator.repository_host.http_client  # type: ignore[union-attr]
+        tracker = GitHubE2EIssueTracker(github_client)
+
+        parent_issue = tracker.create_run_issue(run=run, failed_count=len(nodeids), labels=["e2e:run"])
+        if parent_issue is None:
+            return JSONResponse({"error": "Failed to create parent issue"}, status_code=500)
+
+        db.record_run_issue(run_id, parent_issue.issue_number)
+
+        failed_results = db.get_failed_tests(run_id)
+        results_by_nodeid = {r.nodeid: r for r in failed_results}
+
+        sub_issues = _create_e2e_sub_issues(
+            tracker, parent_issue, nodeids, results_by_nodeid, run, db, run_id, agent)
+
+        logger.info(
+            "[e2e-create-issues] Created parent #%d with %d sub-issues for run #%d",
+            parent_issue.issue_number, len(sub_issues), run_id)
+
+        return JSONResponse({
+            "status": "created",
+            "parent_issue": {"number": parent_issue.issue_number, "url": parent_issue.html_url},
+            "sub_issues": sub_issues,
+        })
+
+    except Exception as e:
+        logger.exception("Failed to create E2E issues: %s", e)
+        return JSONResponse({"error": "issue_creation_error", "detail": str(e)}, status_code=500)
+
+
 class ControlAPIServer:
     """Manages the control API server lifecycle."""
 

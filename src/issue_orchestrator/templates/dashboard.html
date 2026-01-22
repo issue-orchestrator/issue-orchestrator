@@ -4945,9 +4945,36 @@
                 return;
             }
 
-            // Note: The actual issue creation will be implemented in Phase 3
-            // For now, just show a message
-            showToast(`Issue creation coming soon! ${selectedNodeids.length} failure(s) selected.`);
+            const btn = document.getElementById('e2eCreateIssuesBtn');
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+
+            try {
+                const res = await fetch(`/control/e2e/create-issues/${e2eLastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nodeids: selectedNodeids, agent: agent }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showToast(data.error || data.detail || 'Failed to create issues', true);
+                    return;
+                }
+
+                showToast(`Created parent issue #${data.parent_issue.number} with ${data.sub_issues.length} sub-issue(s)`);
+                closeE2ETriageModal();
+
+                // Open parent issue in new tab
+                if (data.parent_issue.url) {
+                    window.open(data.parent_issue.url, '_blank');
+                }
+            } catch (err) {
+                showToast('Failed to create issues: ' + err.message, true);
+            } finally {
+                btn.disabled = false;
+                updateTriageSelection();
+            }
         }
 
         async function dismissE2EFailures() {
