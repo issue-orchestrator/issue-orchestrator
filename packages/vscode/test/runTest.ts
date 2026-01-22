@@ -72,6 +72,7 @@ async function main(): Promise<void> {
     ...(vscodeExecutablePath ? { vscodeExecutablePath } : {}),
     launchArgs: [
       path.resolve(currentDir, "../../../"),
+      "--disable-extensions",
       "--user-data-dir",
       userDataDir,
       "--extensions-dir",

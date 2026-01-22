@@ -5,7 +5,7 @@ import { glob } from "glob";
 import * as vscode from "vscode";
 
 function closeTestWindow(): void {
-  void vscode.commands.executeCommand("workbench.action.closeWindow");
+  void vscode.commands.executeCommand("workbench.action.quit");
 }
 
 export function run(): Promise<void> {
