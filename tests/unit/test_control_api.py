@@ -2136,6 +2136,155 @@ class TestE2ETriageEndpoint:
         assert data["parent_issue_number"] is None
 
 
+class TestE2ESyncIssuesEndpoint:
+    """Test the POST /control/e2e/sync-issues/{run_id} endpoint."""
+
+    @pytest.fixture
+    def mock_orchestrator_with_tracker(self):
+        """Create a mock orchestrator with GitHub client for E2E issue tracking."""
+        mock = create_mock_orchestrator()
+
+        # Mock repository_host with http_client
+        mock.repository_host = MagicMock()
+        mock.repository_host.http_client = MagicMock()
+
+        # Mock close_issue_with_comment behavior
+        mock.repository_host.http_client.add_comment = MagicMock()
+        mock.repository_host.http_client.update_issue_state = MagicMock()
+
+        return mock
+
+    @pytest.fixture
+    def sync_client(self, mock_orchestrator_with_tracker):
+        """Create a test client with orchestrator for sync endpoint."""
+        set_orchestrator(mock_orchestrator_with_tracker)
+        yield TestClient(control_app)
+        set_orchestrator(None)
+
+    def test_sync_returns_503_when_no_orchestrator(self, tmp_path):
+        """Should return 503 when orchestrator is not running."""
+        set_orchestrator(None)
+        client = TestClient(control_app)
+        response = client.post(
+            "/control/e2e/sync-issues/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 503
+        assert response.json()["error"] == "Orchestrator not running"
+
+    def test_sync_returns_400_for_invalid_repo_root(self, sync_client):
+        """Invalid repo_root should return 400."""
+        response = sync_client.post(
+            "/control/e2e/sync-issues/1",
+            params={"repo_root": "../invalid/path"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_sync_returns_404_when_db_not_found(self, sync_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = sync_client.post(
+            "/control/e2e/sync-issues/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+
+    def test_sync_returns_404_for_unknown_run(self, sync_client, tmp_path):
+        """Unknown run_id should return 404."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        E2EDB(db_dir / "e2e.db")
+
+        response = sync_client.post(
+            "/control/e2e/sync-issues/999",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"]
+
+    def test_sync_closes_issues_for_passing_tests(self, sync_client, tmp_path):
+        """Sync should close issues for tests that now pass."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db = E2EDB(db_dir / "e2e.db")
+
+        # Create a run where test_a failed
+        run1_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"], commit_sha="sha1")
+        db.upsert_test_result(run1_id, "test_a.py::test_failing", "failed", longrepr="Error")
+        db.finish_run(run1_id, "failed", exit_code=1)
+
+        # Record a failure issue for test_a
+        db.record_failure_issue(
+            nodeid="test_a.py::test_failing",
+            github_issue_number=101,
+            parent_issue_number=100,
+            first_failing_run_id=run1_id,
+            first_failing_sha="sha1",
+        )
+        db.record_run_issue(run1_id, 100)
+
+        # Create a new run where test_a now passes
+        run2_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"], commit_sha="sha2")
+        db.upsert_test_result(run2_id, "test_a.py::test_failing", "passed")
+        db.finish_run(run2_id, "passed", exit_code=0)
+
+        response = sync_client.post(
+            f"/control/e2e/sync-issues/{run2_id}",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["status"] == "synced"
+        assert len(data["closed_issues"]) == 1
+        assert data["closed_issues"][0]["number"] == 101
+        assert data["closed_issues"][0]["nodeid"] == "test_a.py::test_failing"
+        # Parent should also be closed since all sub-issues are resolved
+        assert 100 in data["closed_parent_issues"]
+
+    def test_sync_does_not_close_still_failing_tests(self, sync_client, tmp_path):
+        """Sync should not close issues for tests that still fail."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db = E2EDB(db_dir / "e2e.db")
+
+        # Create a run where test_a failed
+        run1_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"], commit_sha="sha1")
+        db.upsert_test_result(run1_id, "test_a.py::test_failing", "failed", longrepr="Error")
+        db.finish_run(run1_id, "failed", exit_code=1)
+
+        db.record_failure_issue(
+            nodeid="test_a.py::test_failing",
+            github_issue_number=101,
+            parent_issue_number=100,
+            first_failing_run_id=run1_id,
+            first_failing_sha="sha1",
+        )
+
+        # Create a new run where test_a STILL fails
+        run2_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"], commit_sha="sha2")
+        db.upsert_test_result(run2_id, "test_a.py::test_failing", "failed", longrepr="Error")
+        db.finish_run(run2_id, "failed", exit_code=1)
+
+        response = sync_client.post(
+            f"/control/e2e/sync-issues/{run2_id}",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["status"] == "synced"
+        assert len(data["closed_issues"]) == 0
+        assert len(data["closed_parent_issues"]) == 0
+
+
 # --- Test: Retry Issue Endpoint ---
 
 

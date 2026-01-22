@@ -2069,6 +2069,7 @@
                     </div>
                     <div class="modal-footer-buttons">
                         <button class="btn-primary" id="e2eCreateIssuesBtn" onclick="createE2EIssues()" disabled>Create Issues</button>
+                        <button class="btn-secondary" id="e2eSyncBtn" onclick="syncE2EIssues()">Sync Issues</button>
                         <button class="btn-secondary" id="e2eDismissBtn" onclick="dismissE2EFailures()">Dismiss All</button>
                         <button class="btn-secondary" onclick="closeE2ETriageModal()">Close</button>
                     </div>
@@ -4981,6 +4982,48 @@
             // Note: The actual dismiss functionality will be implemented in Phase 3
             showToast('Dismiss functionality coming soon!');
             closeE2ETriageModal();
+        }
+
+        async function syncE2EIssues() {
+            if (!e2eLastRun) {
+                showToast('No E2E run to sync', true);
+                return;
+            }
+
+            const btn = document.getElementById('e2eSyncBtn');
+            btn.disabled = true;
+            btn.textContent = 'Syncing...';
+
+            try {
+                const res = await fetch(`/control/e2e/sync-issues/${e2eLastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                    method: 'POST',
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showToast(data.error || data.detail || 'Failed to sync issues', true);
+                    return;
+                }
+
+                const closedCount = data.closed_issues.length;
+                const parentCount = data.closed_parent_issues.length;
+
+                if (closedCount === 0 && parentCount === 0) {
+                    showToast('No issues to sync - all tests still failing or no open issues');
+                } else {
+                    showToast(`Synced: closed ${closedCount} sub-issue(s), ${parentCount} parent issue(s)`);
+                }
+
+                // Refresh triage data to show updated state
+                if (e2eLastRun.id) {
+                    triageE2ERun(e2eLastRun.id);
+                }
+            } catch (err) {
+                showToast('Failed to sync issues: ' + err.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Sync Issues';
+            }
         }
     </script>
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>

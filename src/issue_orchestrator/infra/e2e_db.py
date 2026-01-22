@@ -1197,6 +1197,22 @@ class E2EDB:
             )
             return cursor.fetchone()["cnt"]
 
+    def get_all_open_failure_issues(self) -> list[E2EFailureIssue]:
+        """Get all unresolved failure issues across all runs.
+
+        Returns:
+            List of E2EFailureIssue records where resolved_at IS NULL
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM e2e_failure_issues
+                WHERE resolved_at IS NULL
+                ORDER BY nodeid
+                """,
+            )
+            return [E2EFailureIssue.from_row(row) for row in cursor.fetchall()]
+
     # -------------------------------------------------------------------------
     # Flakiness Tracking Methods
     # -------------------------------------------------------------------------

@@ -3486,6 +3486,121 @@ async def e2e_create_issues(
         return JSONResponse({"error": "issue_creation_error", "detail": str(e)}, status_code=500)
 
 
+def _sync_close_passing_issues(tracker, open_issues, passing_nodeids, run_id, commit_sha, db):
+    """Close sub-issues for tests that now pass."""
+    closed_issues = []
+    parent_issues_to_check = set()
+
+    for issue in open_issues:
+        if issue.nodeid in passing_nodeids:
+            comment = (
+                f"Test now passing as of run #{run_id} "
+                f"(commit `{commit_sha[:12]}`)\n\n"
+                f"_Auto-closed by orchestrator._"
+            )
+            if tracker.close_issue_with_comment(issue.github_issue_number, comment):
+                db.resolve_failure_issue(issue.nodeid, "passed")
+                closed_issues.append({
+                    "number": issue.github_issue_number,
+                    "nodeid": issue.nodeid,
+                })
+                parent_issues_to_check.add(issue.parent_issue_number)
+                logger.info(
+                    "[e2e-sync] Closed issue #%d for passing test: %s",
+                    issue.github_issue_number, issue.nodeid)
+
+    return closed_issues, parent_issues_to_check
+
+
+def _sync_close_parent_issues(tracker, parent_issues_to_check, run_id, db):
+    """Close parent issues if all their sub-issues are resolved."""
+    closed_parents = []
+    for parent_number in parent_issues_to_check:
+        unresolved = db.get_unresolved_failure_count(parent_number)
+        if unresolved == 0:
+            comment = (
+                f"All sub-issues resolved as of run #{run_id}\n\n"
+                f"_Auto-closed by orchestrator._"
+            )
+            if tracker.close_issue_with_comment(parent_number, comment):
+                closed_parents.append(parent_number)
+                logger.info("[e2e-sync] Closed parent issue #%d", parent_number)
+    return closed_parents
+
+
+@control_app.post("/control/e2e/sync-issues/{run_id}")
+async def e2e_sync_issues(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Sync E2E issue state based on test results from a run.
+
+    For any test that passed in this run but has an open failure issue,
+    close the GitHub issue and mark it as resolved. If all sub-issues for
+    a parent are resolved, close the parent issue too.
+
+    Path params:
+        run_id: int - Run ID to sync from
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        {
+            status: "synced",
+            closed_issues: [{number, nodeid}, ...],
+            closed_parent_issues: [number, ...],
+        }
+    """
+    from ..infra.e2e_db import E2EDB
+    from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
+
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse({"error": "not_found", "detail": "E2E database not found"}, status_code=404)
+
+    try:
+        db = E2EDB(db_path)
+        run = db.get_run(run_id)
+        if run is None:
+            return JSONResponse({"error": "not_found", "detail": f"Run {run_id} not found"}, status_code=404)
+
+        summary = db.get_test_summary(run_id)
+        passing_nodeids = {t["nodeid"] for t in summary["passed"]}
+        passing_nodeids.update(t["nodeid"] for t in summary["passed_on_retry"])
+
+        open_issues = db.get_all_open_failure_issues()
+        github_client = _orchestrator.repository_host.http_client  # type: ignore[union-attr]
+        tracker = GitHubE2EIssueTracker(github_client)
+
+        commit_sha = run.commit_sha or "unknown"
+        closed_issues, parent_issues_to_check = _sync_close_passing_issues(
+            tracker, open_issues, passing_nodeids, run_id, commit_sha, db)
+
+        closed_parents = _sync_close_parent_issues(tracker, parent_issues_to_check, run_id, db)
+
+        logger.info(
+            "[e2e-sync] Run #%d: closed %d sub-issues, %d parent issues",
+            run_id, len(closed_issues), len(closed_parents))
+
+        return JSONResponse({
+            "status": "synced",
+            "closed_issues": closed_issues,
+            "closed_parent_issues": closed_parents,
+        })
+
+    except Exception as e:
+        logger.exception("Failed to sync E2E issues: %s", e)
+        return JSONResponse({"error": "sync_error", "detail": str(e)}, status_code=500)
+
+
 class ControlAPIServer:
     """Manages the control API server lifecycle."""
 
