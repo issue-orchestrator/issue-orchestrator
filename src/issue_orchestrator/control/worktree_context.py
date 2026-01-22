@@ -32,6 +32,7 @@ from typing import Optional
 from ..events import EventName
 from ..infra.config import Config
 from ..infra.logging_config import get_repo_log_path
+from ..infra.repo_identity import get_repo_head_sha
 from ..ports import EventSink, TraceEvent
 from ..ports.session_output import SessionOutput, SessionRun
 from ..ports.worktree_manager import WorktreeManager, WorktreeInfo, WorktreeReuseOptions
@@ -205,11 +206,13 @@ class WorktreeContext:
     def write_worktree_note(self) -> None:
         """Write a JSON note about worktree reuse/creation for this session."""
         try:
+            commit_sha = get_repo_head_sha(self.worktree_path)
             payload = {
                 "issue_number": self.issue_number,
                 "session_name": self.session_name,
                 "worktree_path": str(self.worktree_path),
                 "branch_name": self.branch_name,
+                "commit_sha": commit_sha,
                 "reuse_status": self.worktree_info.reuse_status,
                 "reuse_reason": self.worktree_info.reuse_reason,
                 "uncommitted_discarded": self.worktree_info.uncommitted_discarded,
@@ -228,11 +231,13 @@ class WorktreeContext:
             extra: Additional session-specific fields (agent, task type, etc.)
         """
         try:
+            commit_sha = get_repo_head_sha(self.worktree_path)
             payload = {
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "session_name": self.session_name,
                 "issue_number": self.issue_number,
                 "branch": self.branch_name,
+                "commit_sha": commit_sha,
                 "worktree": str(self.worktree_path),
                 "claude_project_dir": str(self.claude_project_dir),
                 "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", ""),
