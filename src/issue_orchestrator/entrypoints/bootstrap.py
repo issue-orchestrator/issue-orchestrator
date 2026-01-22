@@ -273,6 +273,7 @@ def _create_completion_components(
         events=events,
         session_output=session_output,
         command_runner=command_runner if config.validation and config.validation.cmd else None,
+        working_copy=working_copy,
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
     ) if completion_processor else None
@@ -763,6 +764,7 @@ def build_orchestrator_for_testing(
         events=events,
         session_output=session_output,
         command_runner=command_runner if config.validation and config.validation.cmd else None,
+        working_copy=working_copy,
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
     )
