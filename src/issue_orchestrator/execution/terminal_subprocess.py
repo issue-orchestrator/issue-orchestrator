@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -242,16 +243,26 @@ class SubprocessPlugin:
             os.close(master_fd)
         return read_fd
 
-    def _drain_remaining_output(self, read_fd: int, log_file) -> None:
+    def _drain_remaining_output(self, read_fd: int, log_file, *, got_any_data: bool = False) -> None:
         """Drain any remaining output after process exits.
 
         Uses multiple short timeouts to handle the race between process exit
         and data arriving in the PTY buffer. Fast processes (like printf) may
         exit before their output is ready to read. Under heavy system load
         (like parallel test execution), this race is more pronounced.
+
+        Args:
+            read_fd: The PTY master file descriptor
+            log_file: Open file handle to write output to
+            got_any_data: Whether the caller already received any data before
+                          calling drain. If False and we get immediate EOF,
+                          we'll retry a few times to handle the race.
         """
         empty_reads = 0
         max_empty_reads = 20  # Give up after 2s of no data (20 * 0.1s)
+        eof_retries = 0
+        max_eof_retries = 5 if not got_any_data else 0  # Retry EOF if no data yet
+
         while empty_reads < max_empty_reads:
             ready, _, _ = select.select([read_fd], [], [], 0.1)
             if not ready:
@@ -259,8 +270,15 @@ class SubprocessPlugin:
                 continue
             data = os.read(read_fd, 4096)
             if not data:
-                break  # EOF - PTY closed
+                # EOF - but if we haven't read any data yet, the kernel might
+                # not have flushed the buffer. Retry a few times.
+                if eof_retries < max_eof_retries:
+                    eof_retries += 1
+                    time.sleep(0.05)  # Brief pause for kernel to flush
+                    continue
+                break  # EOF - PTY truly closed
             log_file.write(data)
+            got_any_data = True
             empty_reads = 0  # Reset counter when we get data
 
     def _start_output_copier(
@@ -270,6 +288,11 @@ class SubprocessPlugin:
 
         def _copy_output():
             try:
+                got_any_data = False
+                # Brief delay to let fast processes write their output before we read.
+                # Under heavy parallel load, the copier thread might start reading
+                # before the child process has written anything, causing premature EOF.
+                time.sleep(0.01)
                 with open(log_path, "ab", buffering=0) as log_file:
                     while True:
                         try:
@@ -277,10 +300,14 @@ class SubprocessPlugin:
                             if ready:
                                 data = os.read(read_fd, 4096)
                                 if not data:
+                                    # EOF - but for fast processes, data might still be
+                                    # buffered in the kernel. Try one final drain.
+                                    self._drain_remaining_output(read_fd, log_file, got_any_data=got_any_data)
                                     break
                                 log_file.write(data)
+                                got_any_data = True
                             if proc.poll() is not None:
-                                self._drain_remaining_output(read_fd, log_file)
+                                self._drain_remaining_output(read_fd, log_file, got_any_data=got_any_data)
                                 break
                         except OSError:
                             break
