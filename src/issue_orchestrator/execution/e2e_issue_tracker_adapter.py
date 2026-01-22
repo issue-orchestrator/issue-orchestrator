@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from ..infra.e2e_db import E2ERun, E2ETestResult
 from ..ports.e2e_issue_tracker import (
+    E2EIssueTracker,
     E2EParentIssueInfo,
     E2ESubIssueInfo,
 )
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class GitHubE2EIssueTracker:
+class GitHubE2EIssueTracker(E2EIssueTracker):
     """Creates and manages E2E test failure issues on GitHub.
 
     Implements the E2EIssueTracker protocol using the GitHub HTTP client.

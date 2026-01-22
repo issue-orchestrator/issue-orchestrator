@@ -2410,7 +2410,6 @@
                     <div class="modal-footer-buttons">
                         <button class="btn-primary" id="e2eCreateIssuesBtn" onclick="createE2EIssues()" disabled>Create Issues</button>
                         <button class="btn-secondary" id="e2eSyncBtn" onclick="syncE2EIssues()">Sync Issues</button>
-                        <button class="btn-secondary" id="e2eDismissBtn" onclick="dismissE2EFailures()">Dismiss All</button>
                         <button class="btn-secondary" onclick="closeE2ETriageModal()">Close</button>
                     </div>
                 </div>
@@ -5428,12 +5427,6 @@
                 btn.disabled = false;
                 updateTriageSelection();
             }
-        }
-
-        async function dismissE2EFailures() {
-            // Note: The actual dismiss functionality will be implemented in Phase 3
-            showToast('Dismiss functionality coming soon!');
-            closeE2ETriageModal();
         }
 
         async function syncE2EIssues() {
