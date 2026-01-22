@@ -236,10 +236,16 @@ playwright-install:
 # Quick validation for agent_gate (~45s)
 validate-quick: typecheck test-unit
 
-# Standard validation - runs jobs in parallel (~40s vs ~90s sequential)
-# Used by CI and pre-push hook. Override with VALIDATE_JOBS.
-VALIDATE_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 5)
+# Standard validation - runs through Python wrapper for output capture
+# Output is saved to ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR or .issue-orchestrator/diagnostics/
+# On failure, prints path to output file so agents can find failure details
 validate:
+	@.venv/bin/python -m issue_orchestrator.entrypoints.cli_tools.validate_runner --command "$(GMAKE) validate-raw"
+
+# Raw validation - direct execution without output capture wrapper
+# Use this as a fallback if the Python wrapper fails
+VALIDATE_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 5)
+validate-raw:
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-impl
 
 # Internal target for parallel execution

@@ -83,17 +83,36 @@ cat $WORKTREE/.issue-orchestrator/sessions/index.json | jq '.runs'
 
 **Symptom:** `git push` fails with validation errors.
 
-**Finding the output:** When pre-push validation fails, the full output is saved to:
+**Finding the output:** When validation fails, the full output is saved to a known location. The exact location depends on how validation was run:
+
+1. **Orchestrator-managed sessions**: Output goes to the session directory
+   ```
+   <worktree>/.issue-orchestrator/sessions/<run_id>__<session>/validation-output.log
+   ```
+
+2. **Direct runs** (human running `make validate`): Falls back to diagnostics
+   ```
+   <worktree>/.issue-orchestrator/diagnostics/validation-output.log
+   ```
+
+The failure message always prints the path to the output file:
 ```
-<worktree>/.issue-orchestrator/diagnostics/prepush-output.log
+============================================================
+Validation FAILED (exit code 1) in 45.2s
+============================================================
+
+Full output saved to:
+  /path/to/worktree/.issue-orchestrator/diagnostics/validation-output.log
+
+To view: cat /path/to/worktree/.issue-orchestrator/diagnostics/validation-output.log
+============================================================
 ```
 
-The failure message will print this path. To view:
-```bash
-cat .issue-orchestrator/diagnostics/prepush-output.log
-```
+**How it works:** The `make validate` target runs validation through a Python wrapper (`validate_runner.py`) that captures all output while also streaming it to the terminal. This ensures agents can find failure details without re-running tests.
 
-This file contains the complete stdout/stderr from the validation run, so agents don't need to re-run tests to see what failed.
+**Fallback:** If the Python wrapper fails, use `make validate-raw` for direct execution (no output capture).
+
+**Environment variable:** The orchestrator sets `ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR` to direct output to the session directory. For direct runs, this is unset and output goes to the diagnostics fallback.
 
 ### Pre-Push Hook Infinite Recursion
 
