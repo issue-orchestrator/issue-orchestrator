@@ -1,0 +1,244 @@
+{
+  "name": "issue-orchestrator",
+  "displayName": "Issue Orchestrator",
+  "description": "Native VS Code integration for issue-orchestrator",
+  "version": "0.1.0",
+  "publisher": "issue-orchestrator",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "type": "module",
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:issueOrchestrator.explorer",
+    "onCommand:issueOrchestrator.start",
+    "onCommand:issueOrchestrator.stop",
+    "onCommand:issueOrchestrator.refresh",
+    "onCommand:issueOrchestrator.openDashboard"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "issueOrchestrator",
+          "title": "Issue Orchestrator",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "issueOrchestrator": [
+        {
+          "id": "issueOrchestrator.explorer",
+          "name": "Orchestrator"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "issueOrchestrator.start",
+        "title": "Issue Orchestrator: Start"
+      },
+      {
+        "command": "issueOrchestrator.stop",
+        "title": "Issue Orchestrator: Stop"
+      },
+      {
+        "command": "issueOrchestrator.pause",
+        "title": "Issue Orchestrator: Pause"
+      },
+      {
+        "command": "issueOrchestrator.resume",
+        "title": "Issue Orchestrator: Resume"
+      },
+      {
+        "command": "issueOrchestrator.refresh",
+        "title": "Issue Orchestrator: Refresh"
+      },
+      {
+        "command": "issueOrchestrator.openDashboard",
+        "title": "Issue Orchestrator: Open Dashboard"
+      },
+      {
+        "command": "issueOrchestrator.quickActions",
+        "title": "Issue Orchestrator: Quick Actions"
+      },
+      {
+        "command": "issueOrchestrator.selectConfig",
+        "title": "Issue Orchestrator: Select Config"
+      },
+      {
+        "command": "issueOrchestrator.runDiagnostics",
+        "title": "Issue Orchestrator: Run Diagnostics"
+      },
+      {
+        "command": "issueOrchestrator.openDashboardExternal",
+        "title": "Issue Orchestrator: Open Dashboard in Browser"
+      },
+      {
+        "command": "issueOrchestrator.openWorktree",
+        "title": "Issue Orchestrator: Open Worktree"
+      },
+      {
+        "command": "issueOrchestrator.openDetails",
+        "title": "Issue Orchestrator: Open Details"
+      },
+      {
+        "command": "issueOrchestrator.openPR",
+        "title": "Issue Orchestrator: Open PR"
+      },
+      {
+        "command": "issueOrchestrator.openSessionConsole",
+        "title": "Issue Orchestrator: Open Session Console"
+      },
+      {
+        "command": "issueOrchestrator.focusSession",
+        "title": "Issue Orchestrator: Focus Session"
+      },
+      {
+        "command": "issueOrchestrator.killSession",
+        "title": "Issue Orchestrator: Kill Session"
+      },
+      {
+        "command": "issueOrchestrator.openIssue",
+        "title": "Issue Orchestrator: Open Issue in Browser"
+      },
+      {
+        "command": "issueOrchestrator.sendMessage",
+        "title": "Issue Orchestrator: Send Message to Session"
+      },
+      {
+        "command": "issueOrchestrator.openClaudeLog",
+        "title": "Issue Orchestrator: Open Claude Log"
+      },
+      {
+        "command": "issueOrchestrator.openOrchestratorLog",
+        "title": "Issue Orchestrator: Open Orchestrator Log"
+      }
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "issueOrchestrator.openWorktree",
+          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "issueOrchestrator.openDetails",
+          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "issueOrchestrator.openSessionConsole",
+          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "issueOrchestrator.openPR",
+          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "group": "navigation"
+        },
+        {
+          "command": "issueOrchestrator.focusSession",
+          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "issueOrchestrator.killSession",
+          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "issueOrchestrator.sendMessage",
+          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "issueOrchestrator.openClaudeLog",
+          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "issueOrchestrator.openOrchestratorLog",
+          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "issueOrchestrator.openIssue",
+          "when": "view == issueOrchestrator.explorer && viewItem == issue",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Issue Orchestrator",
+      "properties": {
+        "issueOrchestrator.repoRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Repo root to target (defaults to first workspace folder)."
+        },
+        "issueOrchestrator.configPath": {
+          "type": "string",
+          "default": "",
+          "description": "Config file path for issue-orchestrator (defaults to .issue-orchestrator/config/default.yaml)."
+        },
+        "issueOrchestrator.instanceId": {
+          "type": "string",
+          "default": "",
+          "description": "Instance ID for multi-instance orchestrators."
+        },
+        "issueOrchestrator.mcpCommand": {
+          "type": "string",
+          "default": "issue-orchestrator-mcp",
+          "description": "Command to start the MCP server."
+        },
+        "issueOrchestrator.pollIntervalSeconds": {
+          "type": "number",
+          "default": 10,
+          "description": "Polling interval for orchestrator snapshot updates."
+        },
+        "issueOrchestrator.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-start orchestrator when connecting via MCP."
+        },
+        "issueOrchestrator.notifications.sessionCompleted": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notification when a session completes."
+        },
+        "issueOrchestrator.notifications.sessionFailed": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notification when a session fails."
+        },
+        "issueOrchestrator.notifications.sessionBlocked": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notification when a session is blocked."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "test": "node ./dist/test/runTest.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "eventsource": "^2.0.2"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^2.3.9",
+    "@types/eventsource": "^3.0.0",
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.85.0",
+    "@types/mocha": "^10.0.6",
+    "glob": "^10.3.12",
+    "mocha": "^10.3.0",
+    "typescript": "^5.4.5",
+    "vscode": "^1.1.37"
+  }
+}

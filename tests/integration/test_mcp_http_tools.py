@@ -1,0 +1,133 @@
+"""Integration tests for MCP HTTP adapter tool coverage."""
+
+from __future__ import annotations
+
+import json
+import socket
+import threading
+import time
+from pathlib import Path
+
+import httpx
+import uvicorn
+
+from issue_orchestrator.entrypoints import web
+from issue_orchestrator.execution.orchestrator_http_api import OrchestratorHttpApi
+from issue_orchestrator.domain.models import Session, Issue, AgentConfig
+from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _start_server(port: int) -> uvicorn.Server:
+    config = uvicorn.Config(web.app, host="127.0.0.1", port=port, log_level="warning", lifespan="off")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 5
+    while time.time() < deadline and not server.started:
+        time.sleep(0.05)
+    if not server.started:
+        raise RuntimeError("Uvicorn server failed to start")
+    server._thread = thread  # type: ignore[attr-defined]
+    return server
+
+
+def _stop_server(server: uvicorn.Server) -> None:
+    server.should_exit = True
+    thread = getattr(server, "_thread", None)
+    if thread:
+        thread.join(timeout=5)
+
+
+def _make_api(base_url: str):
+    client = httpx.Client(base_url=base_url, timeout=5.0)
+    return OrchestratorHttpApi(lambda: base_url, client), client
+
+
+def _write_manifest(worktree: Path, session_name: str, log_path: Path) -> Path:
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / f"20260122-120000Z__{session_name}"
+    run_dir.mkdir(parents=True)
+    manifest_path = run_dir / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "session_name": session_name,
+        "run_id": "20260122-120000Z",
+        "issue_number": 7,
+        "claude_log_path": str(log_path),
+    }))
+    index_path = worktree / ".issue-orchestrator" / "sessions" / "index.json"
+    index_path.write_text(json.dumps({
+        "runs": [{
+            "session_name": session_name,
+            "run_id": "20260122-120000Z",
+            "run_dir": str(run_dir),
+        }]
+    }))
+    return run_dir
+
+
+def _make_session(worktree: Path) -> Session:
+    issue = Issue(number=7, title="Test", labels=["agent:web"])
+    agent_config = AgentConfig(prompt_path=worktree / "prompt.txt", model="sonnet", timeout_minutes=30)
+    issue_key = FakeIssueKey(name="7")
+    session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    return Session(
+        key=session_key,
+        issue=issue,
+        agent_config=agent_config,
+        terminal_id="issue-7",
+        worktree_path=worktree,
+        branch_name="feature/7",
+    )
+
+
+def test_session_logs_and_phases(sample_orchestrator, tmp_path):
+    web.set_orchestrator(sample_orchestrator)
+    try:
+        worktree = tmp_path / "worktree-7"
+        worktree.mkdir()
+        log_path = worktree / "claude.jsonl"
+        log_path.write_text("{\"type\": \"assistant\", \"content\": \"hello\"}\n")
+        _write_manifest(worktree, "coding-1", log_path)
+        session = _make_session(worktree)
+        sample_orchestrator.state.active_sessions = [session]
+
+        port = _find_free_port()
+        server = _start_server(port)
+        api, client = _make_api(f"http://127.0.0.1:{port}")
+        try:
+            phases = api.session_phases(7)
+            assert phases["issue_number"] == 7
+            assert phases["phases"][0]["name"] == "coding-1"
+
+            log = api.session_claude_log(7, 10)
+            assert log["entry_count"] == 1
+        finally:
+            client.close()
+            _stop_server(server)
+    finally:
+        web.set_orchestrator(None)
+
+
+def test_control_tools_pause_resume_refresh(sample_orchestrator):
+    web.set_orchestrator(sample_orchestrator)
+    try:
+        port = _find_free_port()
+        server = _start_server(port)
+        api, client = _make_api(f"http://127.0.0.1:{port}")
+        try:
+            api.pause()
+            assert sample_orchestrator.state.paused is True
+            api.resume()
+            assert sample_orchestrator.state.paused is False
+            api.refresh(["123"])
+        finally:
+            client.close()
+            _stop_server(server)
+    finally:
+        web.set_orchestrator(None)
