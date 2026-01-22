@@ -214,6 +214,7 @@ class SubprocessPlugin:
         repo_root = Path(get_env("REPO_ROOT") or Path.cwd()).resolve()
         self._registry = _SubprocessRegistry(repo_root)
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
+        self._copier_threads: dict[str, threading.Thread] = {}  # Track copier threads
         self._pty_masters: dict[str, int] = {}  # Store PTY master fds for stdin
         self._repo_root = repo_root
         allow_stdin_val = get_env("SUBPROCESS_ALLOW_STDIN") or ""
@@ -253,7 +254,7 @@ class SubprocessPlugin:
             log_file.write(data)
 
     def _start_output_copier(
-        self, read_fd: int, log_path: Path, proc: subprocess.Popen[bytes]
+        self, read_fd: int, log_path: Path, proc: subprocess.Popen[bytes], session_name: str
     ) -> None:
         """Start a thread to copy PTY output to log file."""
 
@@ -280,6 +281,7 @@ class SubprocessPlugin:
                     pass
 
         thread = threading.Thread(target=_copy_output, daemon=True)
+        self._copier_threads[session_name] = thread
         thread.start()
 
     def _start_process(self, command: str, working_dir: Path, session_name: str) -> subprocess.Popen[bytes]:
@@ -301,7 +303,7 @@ class SubprocessPlugin:
         os.close(slave_fd)
 
         read_fd = self._setup_pty_master(session_name, master_fd)
-        self._start_output_copier(read_fd, log_path, proc)
+        self._start_output_copier(read_fd, log_path, proc, session_name)
 
         self._processes[session_name] = proc
         return proc
@@ -368,6 +370,13 @@ class SubprocessPlugin:
         self._registry.upsert(record)
         return True
 
+    def _wait_for_copier_thread(self, session_name: str, timeout: float = 2.0) -> None:
+        """Wait for the copier thread to finish draining output."""
+        thread = self._copier_threads.get(session_name)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=timeout)
+        self._copier_threads.pop(session_name, None)
+
     @hookimpl
     def session_exists(self, session_id: int, session_name: str) -> bool | None:
         records = self._registry.load()
@@ -376,6 +385,8 @@ class SubprocessPlugin:
             return False
         if self._process_alive(record.pid, session_name):
             return True
+        # Process is dead - wait for copier thread to finish draining output
+        self._wait_for_copier_thread(session_name)
         self._registry.remove(session_name)
         self._processes.pop(session_name, None)
         return False
@@ -391,6 +402,7 @@ class SubprocessPlugin:
         if not record:
             return False
         self._kill_process(record.pid)
+        self._wait_for_copier_thread(session_name)
         self._registry.remove(session_name)
         self._processes.pop(session_name, None)
         return True
@@ -407,6 +419,7 @@ class SubprocessPlugin:
                     "is_review": record.is_review,
                 })
             else:
+                self._wait_for_copier_thread(record.session_name)
                 self._registry.remove(record.session_name)
                 self._processes.pop(record.session_name, None)
         return running
@@ -417,6 +430,7 @@ class SubprocessPlugin:
         cleaned = 0
         for record in list(records.values()):
             if not self._process_alive(record.pid, record.session_name):
+                self._wait_for_copier_thread(record.session_name)
                 self._registry.remove(record.session_name)
                 self._processes.pop(record.session_name, None)
                 cleaned += 1
@@ -469,6 +483,9 @@ class SubprocessPlugin:
         for record in records.values():
             if self._process_alive(record.pid):
                 self._kill_process(record.pid)
+        # Wait for all copier threads to finish draining output
+        for session_name in list(self._copier_threads.keys()):
+            self._wait_for_copier_thread(session_name, timeout=1.0)
         # Close any open PTY master fds
         for master_fd in self._pty_masters.values():
             try:

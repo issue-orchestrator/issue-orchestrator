@@ -32,8 +32,60 @@ from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
 from .completion_processor import ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR
 from .reconciliation import build_expected_for_mutation, ExpectedState
 from ..infra import labels
+from ..domain.triage_manifest import TriageManifest
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _read_triage_manifest(session: Session) -> TriageManifest | None:
+    """Read triage manifest from session if it exists.
+
+    The triage_manifest path is stored in the session's run manifest.json
+    during launch via ctx.update_manifest({"triage_manifest": path}).
+
+    Returns None if:
+    - Session has no worktree path
+    - No run directory with triage_manifest path exists
+    - Manifest file doesn't exist or can't be parsed
+    """
+    if not session.worktree_path:
+        return None
+
+    worktree = Path(session.worktree_path)
+    sessions_dir = worktree / ".issue-orchestrator" / "sessions"
+    if not sessions_dir.exists():
+        return None
+
+    # Find the run directory that has a triage_manifest entry in its manifest.json
+    for run_dir in sessions_dir.iterdir():
+        if not run_dir.is_dir():
+            continue
+
+        run_manifest_path = run_dir / "manifest.json"
+        if not run_manifest_path.exists():
+            continue
+
+        try:
+            import json
+            run_manifest = json.loads(run_manifest_path.read_text())
+            triage_manifest_path = run_manifest.get("triage_manifest")
+            if triage_manifest_path:
+                manifest_path = Path(triage_manifest_path)
+                if manifest_path.exists():
+                    return TriageManifest.read(manifest_path)
+                else:
+                    logger.warning(
+                        "[triage] Manifest path in run manifest doesn't exist: %s",
+                        manifest_path
+                    )
+        except Exception as e:
+            logger.warning(
+                "[triage] Failed to read manifest from %s: %s",
+                run_dir, e, exc_info=True
+            )
+
+    return None
 
 
 def _has_critical_errors(processing_errors: Optional[list[str]]) -> bool:
@@ -88,6 +140,57 @@ class CompletionHandler:
         self._get_session_machine = get_session_machine_fn
         self._get_review_machine = get_review_machine_fn
         self._session_output = session_output
+
+    def _is_triage_session(self, session: Session) -> bool:
+        """Check if this session is a triage review session."""
+        if not self.config.triage_review_agent:
+            return False
+        # Check if the session's agent type matches triage agent
+        return session.issue.agent_type == self.config.triage_review_agent
+
+    def _generate_triage_actions(
+        self,
+        session: Session,
+        status: SessionStatus,
+        processing_errors: Optional[list[str]],
+        expected: ExpectedState,
+    ) -> list[Action]:
+        """Generate label actions for triage session completion.
+
+        Adds triage-reviewed or triage-failed labels to all PRs in the manifest.
+        """
+        actions: list[Action] = []
+        session_kind = session.terminal_id.split("-", 1)[0]
+
+        if session_kind != "issue" or not self._is_triage_session(session):
+            return actions
+
+        triage_manifest = _read_triage_manifest(session)
+        if not triage_manifest or not triage_manifest.prs:
+            return actions
+
+        # Determine which label to add based on success/failure
+        if status == SessionStatus.COMPLETED and not _has_critical_errors(processing_errors):
+            triage_label = self.config.triage_reviewed_label or "triage-reviewed"
+            reason = "Triage completed successfully"
+        else:
+            triage_label = self.config.triage_failed_label or "triage-failed"
+            reason = "Triage session failed"
+
+        logger.info(
+            "[triage] Adding '%s' label to %d PRs",
+            triage_label, len(triage_manifest.prs)
+        )
+
+        for pr in triage_manifest.prs:
+            actions.append(AddLabelAction(
+                issue_number=pr.number,
+                label=triage_label,
+                reason=reason,
+                expected=expected,
+            ))
+
+        return actions
 
     def process_completion(
         self,
@@ -856,12 +959,15 @@ class CompletionHandler:
 
         if status == SessionStatus.COMPLETED:
             # POLICY: Completion → release in-progress (claim maintained via pr-pending)
-            return (RemoveLabelAction(
+            actions: list[Action] = [RemoveLabelAction(
                 issue_number=session.issue.number,
                 label=self.config.get_label_in_progress(),
                 reason="Session completed successfully",
                 expected=expected,
-            ),)
+            )]
+            # Triage session completion: add labels to all PRs in the manifest
+            actions.extend(self._generate_triage_actions(session, status, processing_errors, expected))
+            return tuple(actions)
 
         # Note: NEEDS_HUMAN keeps in-progress label to maintain ownership claim
         # This is intentional policy - the issue is still being worked on

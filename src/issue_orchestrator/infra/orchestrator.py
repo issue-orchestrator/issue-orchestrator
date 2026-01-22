@@ -168,6 +168,7 @@ class Orchestrator:
         return SessionLauncher(
             self.config, self.deps.events, self.deps.repository_host, self.deps.action_applier, self.deps.session_manager,
             self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner, self.deps.session_output,
+            self.deps.manifest_downloader,
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
             self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),

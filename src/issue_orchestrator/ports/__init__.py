@@ -56,6 +56,7 @@ from issue_orchestrator.ports.session_output import (
     ValidationRecord,
     ValidationState,
 )
+from issue_orchestrator.ports.manifest_downloader import ManifestDownloader, NullManifestDownloader
 
 __all__ = [
     # Issue Protocol (abstract work item)
@@ -112,4 +113,7 @@ __all__ = [
     "SessionRun",
     "ValidationRecord",
     "ValidationState",
+    # Manifest downloading
+    "ManifestDownloader",
+    "NullManifestDownloader",
 ]
