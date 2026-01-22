@@ -402,6 +402,7 @@ class SubprocessPlugin:
         if not record:
             return False
         self._kill_process(record.pid)
+        self._wait_for_copier_thread(session_name)
         self._registry.remove(session_name)
         self._processes.pop(session_name, None)
         return True
@@ -418,6 +419,7 @@ class SubprocessPlugin:
                     "is_review": record.is_review,
                 })
             else:
+                self._wait_for_copier_thread(record.session_name)
                 self._registry.remove(record.session_name)
                 self._processes.pop(record.session_name, None)
         return running
@@ -428,6 +430,7 @@ class SubprocessPlugin:
         cleaned = 0
         for record in list(records.values()):
             if not self._process_alive(record.pid, record.session_name):
+                self._wait_for_copier_thread(record.session_name)
                 self._registry.remove(record.session_name)
                 self._processes.pop(record.session_name, None)
                 cleaned += 1
@@ -480,6 +483,9 @@ class SubprocessPlugin:
         for record in records.values():
             if self._process_alive(record.pid):
                 self._kill_process(record.pid)
+        # Wait for all copier threads to finish draining output
+        for session_name in list(self._copier_threads.keys()):
+            self._wait_for_copier_thread(session_name, timeout=1.0)
         # Close any open PTY master fds
         for master_fd in self._pty_masters.values():
             try:
