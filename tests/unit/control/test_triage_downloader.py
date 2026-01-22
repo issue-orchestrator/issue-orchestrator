@@ -70,10 +70,10 @@ class TestTriageDownloader:
         """Handles empty manifest gracefully."""
         host = MockRepositoryHost()
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(data_dir="triage-data", prs=[])
-        result = downloader.download(manifest)
+        result = downloader.download(manifest, tmp_path)
 
         assert result.prs == []
         assert len(host.get_pr_calls) == 0
@@ -83,14 +83,14 @@ class TestTriageDownloader:
         """Raises error if data_dir not set."""
         host = MockRepositoryHost()
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(data_dir="", prs=[
             PRToReview(number=1, title="PR", url="u", branch="b"),
         ])
 
         try:
-            downloader.download(manifest)
+            downloader.download(manifest, tmp_path)
             assert False, "Expected ValueError"
         except ValueError as e:
             assert "data_dir" in str(e)
@@ -113,13 +113,13 @@ class TestTriageDownloader:
                 stderr="",
             ),
         })
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(
             data_dir="triage-data",
             prs=[PRToReview(number=42, title="Test PR", url="u", branch="b")],
         )
-        result = downloader.download(manifest)
+        result = downloader.download(manifest, tmp_path)
 
         # Check diff file was created
         diff_path = tmp_path / "triage-data" / "pr-42-diff.txt"
@@ -143,13 +143,13 @@ class TestTriageDownloader:
             ),
         })
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(
             data_dir="triage-data",
             prs=[PRToReview(number=42, title="Test PR", url="u", branch="b")],
         )
-        result = downloader.download(manifest)
+        result = downloader.download(manifest, tmp_path)
 
         # Check metadata file was created
         meta_path = tmp_path / "triage-data" / "pr-42-meta.json"
@@ -178,13 +178,13 @@ class TestTriageDownloader:
                 stderr="gh: PR not found",
             ),
         })
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(
             data_dir="data",
             prs=[PRToReview(number=99, title="PR", url="u", branch="b")],
         )
-        downloader.download(manifest)
+        downloader.download(manifest, tmp_path)
 
         diff_path = tmp_path / "data" / "pr-99-diff.txt"
         assert diff_path.exists()
@@ -196,13 +196,13 @@ class TestTriageDownloader:
         """Writes error metadata when PR not found."""
         host = MockRepositoryHost(prs={})  # No PRs
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(
             data_dir="data",
             prs=[PRToReview(number=999, title="Missing", url="u", branch="b")],
         )
-        downloader.download(manifest)
+        downloader.download(manifest, tmp_path)
 
         meta_path = tmp_path / "data" / "pr-999-meta.json"
         assert meta_path.exists()
@@ -222,7 +222,7 @@ class TestTriageDownloader:
             "2": CommandResult(0, "diff2", ""),
             "3": CommandResult(0, "diff3", ""),
         })
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(
             data_dir="data",
@@ -232,7 +232,7 @@ class TestTriageDownloader:
                 PRToReview(number=3, title="PR 3", url="u3", branch="b3"),
             ],
         )
-        result = downloader.download(manifest)
+        result = downloader.download(manifest, tmp_path)
 
         # Check all files created
         assert (tmp_path / "data" / "pr-1-diff.txt").exists()
@@ -259,7 +259,7 @@ class TestTriageDownloader:
             "2": CommandResult(1, "", "not found"),
             "3": CommandResult(0, "diff3", ""),
         })
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(
             data_dir="data",
@@ -269,7 +269,7 @@ class TestTriageDownloader:
                 PRToReview(number=3, title="PR 3", url="u3", branch="b3"),
             ],
         )
-        downloader.download(manifest)
+        downloader.download(manifest, tmp_path)
 
         # PR 1 and 3 should have proper files
         assert (tmp_path / "data" / "pr-1-diff.txt").exists()
@@ -283,13 +283,13 @@ class TestTriageDownloader:
             1: MockPR(number=1, title="PR", url="u", branch="b", labels=[]),
         })
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(
             data_dir="deep/nested/triage-data",
             prs=[PRToReview(number=1, title="PR", url="u", branch="b")],
         )
-        downloader.download(manifest)
+        downloader.download(manifest, tmp_path)
 
         assert (tmp_path / "deep" / "nested" / "triage-data").exists()
         assert (tmp_path / "deep" / "nested" / "triage-data" / "pr-1-diff.txt").exists()
@@ -300,13 +300,13 @@ class TestTriageDownloader:
             42: MockPR(number=42, title="PR", url="u", branch="b", labels=[]),
         })
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner, tmp_path)
+        downloader = TriageDownloader(host, runner)
 
         manifest = TriageManifest(
             data_dir="data",
             prs=[PRToReview(number=42, title="PR", url="u", branch="b")],
         )
-        downloader.download(manifest)
+        downloader.download(manifest, tmp_path)
 
         assert len(runner.run_calls) == 1
         assert runner.run_calls[0] == ["gh", "pr", "diff", "42"]

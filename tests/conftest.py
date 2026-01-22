@@ -574,6 +574,13 @@ def build_test_orchestrator_deps(
     event_hub = EventHub()
     command_runner = LocalCommandRunner()
 
+    # Create manifest downloader for triage sessions
+    from issue_orchestrator.execution.triage_downloader import TriageDownloader
+    manifest_downloader = TriageDownloader(
+        repository_host=repo_host,
+        command_runner=command_runner,
+    )
+
     # Create claim components (always use NullClaimManager for tests)
     from issue_orchestrator.ports.claim_manager import NullClaimManager
     from issue_orchestrator.domain.lease_config import LeaseConfig
@@ -618,6 +625,7 @@ def build_test_orchestrator_deps(
         working_copy=working_copy,
         hook_verifier=hook_verifier,
         command_runner=command_runner,
+        manifest_downloader=manifest_downloader,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=_session_controller,

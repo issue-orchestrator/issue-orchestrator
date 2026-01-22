@@ -2,6 +2,8 @@
 
 Takes a TriageManifest and fetches the actual data (diffs, metadata)
 from GitHub, writing files to the session directory.
+
+This is an adapter implementing the ManifestDownloader port.
 """
 
 import json
@@ -17,6 +19,7 @@ logger = logging.getLogger(__name__)
 class TriageDownloader:
     """Downloads PR data based on a triage manifest.
 
+    Implements ManifestDownloader port.
     Uses RepositoryHost for PR metadata and CommandRunner for diffs
     (since diff isn't in the protocol yet).
     """
@@ -25,17 +28,16 @@ class TriageDownloader:
         self,
         repository_host: RepositoryHost,
         command_runner: CommandRunner,
-        worktree_path: Path,
     ):
         self._host = repository_host
         self._runner = command_runner
-        self._worktree_path = worktree_path
 
-    def download(self, manifest: TriageManifest) -> TriageManifest:
+    def download(self, manifest: TriageManifest, worktree_path: Path) -> TriageManifest:
         """Fetch all PR data and update manifest with local file paths.
 
         Args:
             manifest: The manifest with PRs to fetch data for
+            worktree_path: Path to the worktree where data should be written
 
         Returns:
             Updated manifest with file paths populated
@@ -43,7 +45,7 @@ class TriageDownloader:
         if not manifest.data_dir:
             raise ValueError("Manifest data_dir must be set before downloading")
 
-        data_path = self._worktree_path / manifest.data_dir
+        data_path = worktree_path / manifest.data_dir
         data_path.mkdir(parents=True, exist_ok=True)
 
         for pr in manifest.prs:

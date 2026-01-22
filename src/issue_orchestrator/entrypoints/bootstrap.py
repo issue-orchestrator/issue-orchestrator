@@ -426,6 +426,7 @@ def build_orchestrator(
     from ..control.state_machine_manager import StateMachineManager
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..execution.hook_verifier import ExecutionHookVerifier
+    from ..execution.triage_downloader import TriageDownloader
 
     install_gh_guard()
 
@@ -471,6 +472,12 @@ def build_orchestrator(
 
     # Create IO adapters
     worktree_manager, working_copy, command_runner, session_output = _create_io_adapters()
+
+    # Create manifest downloader for triage sessions
+    manifest_downloader = TriageDownloader(
+        repository_host=github,
+        command_runner=command_runner,
+    ) if github else None
 
     # Create cache-bypassing reader
     fresh_issue_reader = GitHubFreshIssueReader(repo=config.repo, config=config) if github else None
@@ -541,6 +548,7 @@ def build_orchestrator(
     assert fresh_issue_reader is not None
     assert completion_observer is not None
     assert publish_executor is not None
+    assert manifest_downloader is not None
 
     # Wire up worktree removal callback for async completion job tracking
     # When a worktree is removed, mark associated jobs as WORKTREE_GONE
@@ -565,6 +573,7 @@ def build_orchestrator(
         hook_verifier=hook_verifier,
         command_runner=command_runner,
         session_output=session_output,
+        manifest_downloader=manifest_downloader,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
@@ -658,6 +667,12 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
+
+    from ..execution.triage_downloader import TriageDownloader
+    manifest_downloader = TriageDownloader(
+        repository_host=github,
+        command_runner=command_runner,
+    )
 
     class _TestFreshIssueReader:
         """Fallback FreshIssueReader for tests without network dependencies."""
@@ -796,6 +811,7 @@ def build_orchestrator_for_testing(
         hook_verifier=hook_verifier,
         command_runner=command_runner,
         session_output=session_output,
+        manifest_downloader=manifest_downloader,
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,

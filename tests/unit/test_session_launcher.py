@@ -62,6 +62,7 @@ from issue_orchestrator.ports import (
     NullEventSink,
     TraceEvent,
     CommandResult,
+    NullManifestDownloader,
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
@@ -379,12 +380,13 @@ def launcher_bundle(
         worktree_manager=mock_worktree_manager,
         working_copy=mock_working_copy,
         command_runner=mock_command_runner,
+        session_output=FileSystemSessionOutput(),
+        manifest_downloader=NullManifestDownloader(),
         session_exists_fn=mock_session_exists,
         create_session_fn=mock_create_session,
         get_issue_machine=get_issue_machine,
         get_session_machine=get_session_machine,
         get_review_machine=get_review_machine,
-        session_output=FileSystemSessionOutput(),
     )
 
     bundle = LauncherTestBundle(

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         CommandRunner,
         HookVerifier,
         SessionOutput,
+        ManifestDownloader,
     )
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
@@ -71,6 +72,7 @@ class OrchestratorDeps:
         working_copy: Git working copy operations
         hook_verifier: Verifies agent hooks on startup
         command_runner: Executes shell commands
+        manifest_downloader: Downloads PR data for triage sessions
         state_machine_manager: Manages issue/session/review state machines
         completion_processor: Processes session completion files
         session_controller: Decides session outcomes
@@ -113,6 +115,7 @@ class OrchestratorDeps:
     hook_verifier: "HookVerifier"
     command_runner: "CommandRunner"
     session_output: "SessionOutput"
+    manifest_downloader: "ManifestDownloader"
 
     # Claim/lease management (multi-orchestrator coordination)
     claim_manager: "ClaimManager"

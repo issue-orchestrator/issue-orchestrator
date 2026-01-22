@@ -47,8 +47,8 @@ from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
 from .triage_manifest import TriageManifest
 from .triage_manifest_builder import TriageManifestBuilder
-from ..execution.triage_downloader import TriageDownloader
 from ..ports import (
+    ManifestDownloader,
     EventSink,
     TraceEvent,
     ReviewState,
@@ -180,6 +180,7 @@ class SessionLauncher:
     - repository_host: For GitHub reads during launch
     - action_applier: For applying label/comment mutations
     - session_manager: For terminal session operations
+    - manifest_downloader: For downloading PR data in triage sessions
     - get_issue_machine: Callback to get/create issue state machines
     - get_session_machine: Callback to get/create session state machines
     - get_review_machine: Callback to get/create review state machines
@@ -196,6 +197,7 @@ class SessionLauncher:
         working_copy: WorkingCopy,
         command_runner: CommandRunner,
         session_output: SessionOutput,
+        manifest_downloader: ManifestDownloader,
         session_exists_fn: Callable[[str], bool],
         create_session_fn: Callable[[str, str, Path, str | None], bool],
         get_issue_machine: Callable[["IssueProtocol"], Optional["IssueStateMachine"]],
@@ -214,6 +216,7 @@ class SessionLauncher:
         self._working_copy = working_copy
         self._command_runner = command_runner
         self._session_output = session_output
+        self._manifest_downloader = manifest_downloader
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -434,13 +437,8 @@ class SessionLauncher:
             logger.info("[triage] No PRs need triage review")
             return None
 
-        # Download diffs and metadata
-        downloader = TriageDownloader(
-            repository_host=self.repository_host,
-            command_runner=self._command_runner,
-            worktree_path=worktree_path,
-        )
-        manifest = downloader.download(manifest)
+        # Download diffs and metadata via injected port
+        manifest = self._manifest_downloader.download(manifest, worktree_path)
 
         # Write manifest to session directory
         manifest_path = worktree_path / data_dir / "manifest.json"
