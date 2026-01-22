@@ -79,6 +79,22 @@ cat $WORKTREE/.issue-orchestrator/sessions/index.json | jq '.runs'
 
 **Fix:** Ensure agent prompts include `agent-done` usage in "When Done" section.
 
+### Pre-Push Validation Failed
+
+**Symptom:** `git push` fails with validation errors.
+
+**Finding the output:** When pre-push validation fails, the full output is saved to:
+```
+<worktree>/.issue-orchestrator/diagnostics/prepush-output.log
+```
+
+The failure message will print this path. To view:
+```bash
+cat .issue-orchestrator/diagnostics/prepush-output.log
+```
+
+This file contains the complete stdout/stderr from the validation run, so agents don't need to re-run tests to see what failed.
+
 ### Pre-Push Hook Infinite Recursion
 
 **Symptom:** Push hangs forever, hook log shows repeated "Pre-push hook started".
