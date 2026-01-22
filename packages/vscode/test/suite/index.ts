@@ -2,6 +2,11 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import Mocha from "mocha";
 import { glob } from "glob";
+import * as vscode from "vscode";
+
+function closeTestWindow(): void {
+  void vscode.commands.executeCommand("workbench.action.closeWindow");
+}
 
 export function run(): Promise<void> {
   const mocha = new Mocha({
@@ -18,6 +23,7 @@ export function run(): Promise<void> {
         files.forEach((file) => mocha.addFile(path.resolve(testsRoot, file)));
         try {
           mocha.run((failures) => {
+            closeTestWindow();
             if (failures > 0) {
               reject(new Error(`${failures} tests failed.`));
             } else {
@@ -25,9 +31,13 @@ export function run(): Promise<void> {
             }
           });
         } catch (error) {
+          closeTestWindow();
           reject(error);
         }
       })
-      .catch(reject);
+      .catch((error) => {
+        closeTestWindow();
+        reject(error);
+      });
   });
 }
