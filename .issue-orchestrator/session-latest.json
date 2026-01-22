@@ -1,8 +1,8 @@
 {
-  "issue_number": null,
-  "log_path": "/Users/brucegordon/dev/issue-orchestrator-3896/.issue-orchestrator/sessions/20260121-202717Z__issue-3896/session.log",
-  "run_dir": "/Users/brucegordon/dev/issue-orchestrator-3896/.issue-orchestrator/sessions/20260121-202717Z__issue-3896",
-  "run_id": "20260121-202717Z",
-  "session_name": "issue-3896",
-  "started_at": "2026-01-21T20:27:17.340812+00:00"
+  "issue_number": 3896,
+  "log_path": "/Users/brucegordon/dev/issue-orchestrator-3896/.issue-orchestrator/sessions/20260122-010142Z__coding-1/session.log",
+  "run_dir": "/Users/brucegordon/dev/issue-orchestrator-3896/.issue-orchestrator/sessions/20260122-010142Z__coding-1",
+  "run_id": "20260122-010142Z",
+  "session_name": "coding-1",
+  "started_at": "2026-01-22T01:01:42.591029+00:00"
 }
