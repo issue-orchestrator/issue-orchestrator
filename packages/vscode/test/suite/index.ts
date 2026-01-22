@@ -1,4 +1,5 @@
 import * as path from "path";
+import { fileURLToPath } from "url";
 import Mocha from "mocha";
 import { glob } from "glob";
 
@@ -8,7 +9,8 @@ export function run(): Promise<void> {
     timeout: 60000,
   });
 
-  const testsRoot = path.resolve(__dirname);
+  const currentFile = fileURLToPath(import.meta.url);
+  const testsRoot = path.dirname(currentFile);
 
   return new Promise((resolve, reject) => {
     glob("**/*.test.js", { cwd: testsRoot })

@@ -3,33 +3,30 @@
 from __future__ import annotations
 
 from typing import Any, Callable
-import json
-import urllib.error
-import urllib.request
+
+import httpx
 
 from ..ports.orchestrator_api import OrchestratorApi
 
 
 class OrchestratorHttpApi(OrchestratorApi):
-    def __init__(self, base_url_provider: Callable[[], str], timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        base_url_provider: Callable[[], str],
+        client: httpx.Client | None = None,
+        timeout_seconds: float = 10.0,
+    ) -> None:
         self._base_url_provider = base_url_provider
-        self._timeout_seconds = timeout_seconds
+        self._client = client or httpx.Client(timeout=timeout_seconds)
+
+    def close(self) -> None:
+        self._client.close()
 
     def _request(self, method: str, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{self._base_url_provider()}{path}"
-        data = None
-        headers = {}
-        if json_body is not None:
-            data = json.dumps(json_body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        request = urllib.request.Request(url, data=data, method=method, headers=headers)
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-                payload = response.read().decode("utf-8").strip()
-                return json.loads(payload) if payload else {}
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8") if exc.fp else ""
-            raise RuntimeError(f"HTTP {exc.code} for {url}: {body}") from exc
+        response = self._client.request(method, url, json=json_body)
+        response.raise_for_status()
+        return response.json()
 
     def status(self) -> dict[str, Any]:
         return self._request("GET", "/api/status")

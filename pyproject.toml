@@ -191,6 +191,7 @@ source_modules = [
 forbidden_modules = ["httpx"]
 ignore_imports = [
   "issue_orchestrator.adapters.github.http_client -> httpx",
+  "issue_orchestrator.execution.orchestrator_http_api -> httpx",
   "issue_orchestrator.entrypoints.cli -> httpx",
   "issue_orchestrator.entrypoints.control_api -> httpx",  # Passthrough to orchestrator
 ]

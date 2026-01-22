@@ -4,6 +4,7 @@ import EventSource from "eventsource";
 
 import { McpClient } from "./mcpClient.js";
 import { OrchestratorTreeDataProvider } from "./views.js";
+import type { Snapshot } from "./types.js";
 
 let eventSource: EventSource | null = null;
 let dashboardPanel: vscode.WebviewPanel | null = null;
@@ -21,12 +22,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   statusBar.show();
   const diagnostics = vscode.languages.createDiagnosticCollection("Issue Orchestrator");
 
-  const client = new McpClient(context, output);
-  try {
-    await client.start();
-  } catch (err) {
-    output.appendLine(`Failed to start MCP client: ${String(err)}`);
-    vscode.window.showErrorMessage("Issue Orchestrator MCP client failed to start. Check output for details.");
+  const isTest = process.env.IO_VSCODE_TEST === "1" || !!process.env.VSCODE_EXTENSION_TESTS;
+  const client = isTest ? new TestMcpClient(context, output) : new McpClient(context, output);
+  if (!isTest) {
+    try {
+      await client.start();
+    } catch (err) {
+      output.appendLine(`Failed to start MCP client: ${String(err)}`);
+      vscode.window.showErrorMessage("Issue Orchestrator MCP client failed to start. Check output for details.");
+    }
   }
 
   const provider = new OrchestratorTreeDataProvider(client, output, statusBar, (snapshot) => {
@@ -40,8 +44,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await provider.refresh();
 
   registerCommands(context, client, provider, output);
-  await connectEventStream(client, provider, output);
-  await warnIfConfigMissing();
+  if (!isTest) {
+    await connectEventStream(client, provider, output);
+    await warnIfConfigMissing();
+  }
 
   context.subscriptions.push({
     dispose: () => {
@@ -694,6 +700,52 @@ function updateDiagnostics(snapshot: any, diagnostics: vscode.DiagnosticCollecti
 function shouldNotify(kind: "sessionCompleted" | "sessionFailed" | "sessionBlocked"): boolean {
   const config = vscode.workspace.getConfiguration("issueOrchestrator");
   return config.get<boolean>(`notifications.${kind}`, true);
+}
+
+class TestMcpClient extends McpClient {
+  async start(): Promise<void> {
+    return;
+  }
+
+  async stop(): Promise<void> {
+    return;
+  }
+
+  async getSnapshot(): Promise<Snapshot> {
+    return {
+      status: {
+        paused: false,
+        shutdown_requested: false,
+        active_sessions: [],
+        max_sessions: 0,
+        completed_today: [],
+        queue: [],
+        pending_reviews: [],
+        tick_id: null,
+        last_tick_time: null,
+        e2e_role: null,
+        publish_jobs: [],
+        publish_job_stats: { running: 0, pending: 0 },
+      },
+      info: {
+        repo: null,
+        repo_root: null,
+        ui_mode: null,
+        terminal_backend: null,
+        commit_sha: null,
+        commit_short: null,
+        max_sessions: 0,
+        active_sessions: 0,
+        completed_today: 0,
+      },
+      blocked: { blocked: [], count: 0 },
+      stale: { stale: [], count: 0 },
+      dependency_problems: { problems: {} },
+      excluded: { excluded: [], count: 0 },
+      publish_jobs: { jobs: [], count: 0 },
+      history: { history: [], count: 0 },
+    };
+  }
 }
 
 function inferRepoRoot(configPath: string): string | null {
