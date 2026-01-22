@@ -62,11 +62,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# E2E flakiness detection thresholds
-# A test is considered "likely flaky" if it has failed >= FLAKE_THRESHOLD times
-# within the last FLAKE_WINDOW_RUNS runs. These affect triage UI suggestions.
-FLAKE_THRESHOLD = 3
-FLAKE_WINDOW_RUNS = 10
+# Default E2E flakiness thresholds (used when orchestrator/config not available)
+_DEFAULT_FLAKE_THRESHOLD = 3
+_DEFAULT_FLAKE_WINDOW_RUNS = 10
 
 # Create minimal control API app
 control_app = FastAPI(title="Issue Orchestrator Control API")
@@ -3422,8 +3420,13 @@ async def e2e_triage_data(
         # Check if this run already has a parent issue
         run_issue = db.get_run_issue(run_id)
 
-        flake_threshold = FLAKE_THRESHOLD
-        flake_window = FLAKE_WINDOW_RUNS
+        # Get flake thresholds from config, or use defaults
+        if _orchestrator:
+            flake_threshold = _orchestrator.config.e2e.flake_threshold
+            flake_window = _orchestrator.config.e2e.flake_window_runs
+        else:
+            flake_threshold = _DEFAULT_FLAKE_THRESHOLD
+            flake_window = _DEFAULT_FLAKE_WINDOW_RUNS
 
         # Build triage data for each failure
         failures = []

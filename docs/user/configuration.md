@@ -316,10 +316,14 @@ e2e:
   quarantine_file: "tests/e2e/quarantine.txt"
   survive_restart: true
   stop_on_first_failure: false
+  flake_threshold: 3
+  flake_window_runs: 10
   pr_labels: []
 ```
 
 - `e2e.stop_on_first_failure`: If `true`, stops pytest on first test failure (adds `-x` flag). Default `false` runs all tests.
+- `e2e.flake_threshold`: Number of failures needed to flag a test as "likely flaky" in the triage UI. Default `3`.
+- `e2e.flake_window_runs`: Number of recent E2E runs to check when calculating flakiness. Default `10`.
 
 ### state
 
