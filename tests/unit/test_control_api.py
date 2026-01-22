@@ -2041,6 +2041,101 @@ class TestE2ESummaryEndpoint:
         assert data["failed"][0]["nodeid"] == "test_b.py::test_fail"
 
 
+# --- Test: Triage Endpoint ---
+
+
+class TestE2ETriageEndpoint:
+    """Test the /control/e2e/triage/{run_id} endpoint."""
+
+    @pytest.fixture
+    def e2e_client(self):
+        """Create a test client for E2E endpoints (no orchestrator needed)."""
+        return TestClient(control_app)
+
+    def test_triage_returns_400_for_invalid_repo_root(self, e2e_client):
+        """Invalid repo_root should return 400."""
+        response = e2e_client.get(
+            "/control/e2e/triage/1",
+            params={"repo_root": "../invalid/path"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_triage_returns_404_when_db_not_found(self, e2e_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = e2e_client.get(
+            "/control/e2e/triage/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+
+    def test_triage_returns_failures_with_metadata(self, e2e_client, tmp_path):
+        """Triage should return failures with flake counts and existing issue info."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+
+        # Create DB using E2EDB to get proper schema
+        db = E2EDB(db_path)
+
+        # Start a run
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+            commit_sha="abc123",
+        )
+
+        # Add test results
+        db.upsert_test_result(
+            run_id=run_id,
+            nodeid="test_a.py::test_pass",
+            outcome="passed",
+        )
+        db.upsert_test_result(
+            run_id=run_id,
+            nodeid="test_b.py::test_fail",
+            outcome="failed",
+            longrepr="AssertionError: expected True",
+        )
+
+        # Finish run
+        db.finish_run(run_id, status="failed", exit_code=1)
+
+        response = e2e_client.get(
+            f"/control/e2e/triage/{run_id}",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Check structure
+        assert "run" in data
+        assert "failures" in data
+        assert "has_parent_issue" in data
+        assert "flake_threshold" in data
+
+        # Check run info
+        assert data["run"]["id"] == run_id
+        assert data["run"]["commit_sha"] == "abc123"
+
+        # Check failures
+        failures = data["failures"]
+        assert len(failures) == 1
+        assert failures[0]["nodeid"] == "test_b.py::test_fail"
+        assert failures[0]["longrepr"] == "AssertionError: expected True"
+        assert failures[0]["existing_issue"] is None
+        assert failures[0]["flake_count"] == 0
+        assert failures[0]["is_likely_flaky"] is False
+
+        # No parent issue yet
+        assert data["has_parent_issue"] is False
+        assert data["parent_issue_number"] is None
+
+
 # --- Test: Retry Issue Endpoint ---
 
 

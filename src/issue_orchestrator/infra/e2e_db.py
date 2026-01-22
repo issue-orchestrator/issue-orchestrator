@@ -825,6 +825,22 @@ class E2EDB:
             )
             return [E2ERun.from_row(row) for row in cursor.fetchall()]
 
+    def get_run(self, run_id: int) -> Optional[E2ERun]:
+        """Get a run by ID.
+
+        Args:
+            run_id: Run ID
+
+        Returns:
+            E2ERun or None if not found
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM e2e_runs WHERE id = ?", (run_id,)
+            )
+            row = cursor.fetchone()
+            return E2ERun.from_row(row) if row else None
+
     def run_details(self, run_id: int) -> Optional[dict]:
         """Get a run with its test results.
 

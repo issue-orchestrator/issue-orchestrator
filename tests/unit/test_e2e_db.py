@@ -198,6 +198,22 @@ class TestE2EDB:
         details = db.run_details(9999)
         assert details is None
 
+    def test_get_run(self, db: E2EDB):
+        """Test getting a run by ID."""
+        run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], "abc123", "main")
+
+        run = db.get_run(run_id)
+        assert run is not None
+        assert run.id == run_id
+        assert run.orchestrator_id == "test-orch"
+        assert run.commit_sha == "abc123"
+        assert run.branch == "main"
+
+    def test_get_run_returns_none_for_unknown(self, db: E2EDB):
+        """Test that get_run returns None for unknown run_id."""
+        run = db.get_run(9999)
+        assert run is None
+
     def test_db_path_creates_parent_dirs(self, tmp_path: Path):
         """Test that E2EDB creates parent directories if needed."""
         db_path = tmp_path / "subdir" / "nested" / "e2e.db"

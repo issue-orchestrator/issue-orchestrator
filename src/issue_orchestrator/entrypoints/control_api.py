@@ -3214,6 +3214,118 @@ async def create_e2e_diagnostic_issue(
         )
 
 
+# ---------------------------------------------------------------------------
+# E2E Triage Endpoints (for composite issue management)
+# ---------------------------------------------------------------------------
+
+
+@control_app.get("/control/e2e/triage/{run_id}")
+async def e2e_triage_data(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get triage data for an E2E run - failures with issue/flakiness metadata.
+
+    Returns data needed for the triage view where user can choose to
+    create issues or dismiss failures.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        {
+            run: {...},
+            failures: [
+                {
+                    nodeid: str,
+                    longrepr: str | null,
+                    duration_seconds: float | null,
+                    existing_issue: {issue_number, created_at, resolution} | null,
+                    flake_count: int (recent flakes in window),
+                    is_likely_flaky: bool
+                },
+                ...
+            ],
+            has_parent_issue: bool,
+            parent_issue_number: int | null,
+            flake_threshold: int
+        }
+    """
+    from ..infra.e2e_db import E2EDB
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+
+        # Get run info
+        run = db.get_run(run_id)
+        if run is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Run {run_id} not found"},
+                status_code=404,
+            )
+
+        # Get failed tests
+        failed_results = db.get_failed_tests(run_id)
+
+        # Check if this run already has a parent issue
+        run_issue = db.get_run_issue(run_id)
+
+        # Default flake threshold (could come from config later)
+        flake_threshold = 3
+        flake_window = 10
+
+        # Build triage data for each failure
+        failures = []
+        for result in failed_results:
+            # Check for existing open issue
+            existing = db.find_open_failure_issue(result.nodeid)
+
+            # Get flake history
+            flake_count = db.get_flake_count(result.nodeid, window_runs=flake_window)
+            is_likely_flaky = flake_count >= flake_threshold
+
+            failures.append({
+                "nodeid": result.nodeid,
+                "longrepr": result.longrepr,
+                "duration_seconds": result.duration_seconds,
+                "existing_issue": existing.to_dict() if existing else None,
+                "flake_count": flake_count,
+                "is_likely_flaky": is_likely_flaky,
+            })
+
+        return JSONResponse({
+            "run": run.to_dict(),
+            "failures": failures,
+            "has_parent_issue": run_issue is not None,
+            "parent_issue_number": run_issue.github_issue_number if run_issue else None,
+            "flake_threshold": flake_threshold,
+        })
+
+    except Exception as e:
+        logger.exception("Failed to get triage data: %s", e)
+        return JSONResponse(
+            {"error": "triage_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
 class ControlAPIServer:
     """Manages the control API server lifecycle."""
 
