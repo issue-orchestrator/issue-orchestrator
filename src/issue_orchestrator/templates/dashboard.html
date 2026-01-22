@@ -90,66 +90,76 @@
             outline-offset: -2px;
         }
 
-        /* Tab Bar */
+        /* Tab Bar - Classic raised tab design */
         .tab-bar {
             display: flex;
             gap: 4px;
-            margin-bottom: 16px;
-            border-bottom: 1px solid #21262d;
-            padding-bottom: 0;
+            margin-bottom: 0;
+            padding: 0;
+            border-bottom: 2px solid #30363d;
+            position: relative;
         }
         .tab {
-            padding: 8px 16px;
-            font-size: 13px;
-            font-weight: 500;
+            padding: 12px 24px;
+            font-size: 14px;
+            font-weight: 600;
             color: #8b949e;
             cursor: pointer;
-            border: none;
-            background: transparent;
-            border-bottom: 2px solid transparent;
-            margin-bottom: -1px;
-            transition: color 0.15s, border-color 0.15s;
+            background: #21262d;
+            border: 2px solid #30363d;
+            border-bottom: none;
+            border-radius: 8px 8px 0 0;
+            margin-bottom: -2px;
+            transition: all 0.15s ease;
+            position: relative;
         }
         .tab:hover {
             color: #c9d1d9;
+            background: #30363d;
         }
         .tab.active {
-            color: #c9d1d9;
-            border-bottom-color: #f78166;
+            color: #f0f6fc;
+            background: #0d1117;
+            border-color: #58a6ff;
+            border-bottom-color: #0d1117;
+            z-index: 1;
         }
         .tab-badge {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            min-width: 18px;
-            height: 18px;
-            padding: 0 6px;
-            margin-left: 6px;
-            font-size: 11px;
-            font-weight: 600;
-            background: #f85149;
+            min-width: 22px;
+            height: 22px;
+            padding: 0 8px;
+            margin-left: 10px;
+            font-size: 12px;
+            font-weight: 700;
+            background: #238636;
             color: #fff;
-            border-radius: 10px;
+            border-radius: 11px;
         }
         .tab-badge.empty {
-            background: #30363d;
+            background: #484f58;
             color: #8b949e;
         }
-        /* Blocked tab styling - more prominent when items need attention */
+        /* Blocked tab styling - attention-grabbing when items need attention */
         .tab.blocked-tab {
             color: #f85149;
+            border-color: #f8514966;
         }
         .tab.blocked-tab .blocked-badge {
-            background: #f85149;
+            background: #da3633;
             color: #fff;
             animation: pulse-badge 2s ease-in-out infinite;
         }
         .tab.blocked-tab.active {
-            border-bottom-color: #f85149;
+            color: #f85149;
+            border-color: #f85149;
+            border-bottom-color: #0d1117;
         }
         @keyframes pulse-badge {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.85; transform: scale(1.05); }
         }
         /* Focus styles for accessibility */
         .tab:focus {
@@ -165,10 +175,10 @@
         }
 
         /* Issue List */
-        .issue-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
+        .issue-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; border-top: none; border-radius: 0 0 8px 8px; }
         .issue-header {
             display: grid;
-            grid-template-columns: 70px 200px 1fr 140px 70px 70px;
+            grid-template-columns: 70px 200px 1fr 140px 70px 140px;
             align-items: center;
             padding: 8px 16px;
             background: #161b22;
@@ -181,12 +191,27 @@
         }
         .issue-row {
             display: grid;
-            grid-template-columns: 70px 200px 1fr 140px 70px 70px;
+            grid-template-columns: 70px 200px 1fr 140px 70px 140px;
             align-items: center;
             padding: 12px 16px;
             border-bottom: 1px solid #21262d;
             cursor: pointer;
             transition: background 0.1s;
+        }
+        /* Blocked tab layout - wider action column, hide runtime */
+        .issue-list.blocked-list .issue-header,
+        .issue-list.blocked-list .issue-row {
+            grid-template-columns: 70px 200px 1fr 140px 0px 210px;
+        }
+        .issue-list.blocked-list .issue-time {
+            display: none;
+        }
+        .issue-list.blocked-list .header-runtime {
+            display: none;
+        }
+        /* Hide redundant link indicator in blocked tab */
+        .issue-list.blocked-list .detail-link-indicator {
+            display: none;
         }
         .issue-row:last-child { border-bottom: none; }
         .issue-row:hover { background: #161b22; }
@@ -1244,25 +1269,28 @@
             top: 0;
         }
 
-        /* E2E Panel */
+        /* E2E Panel - Compact secondary status bar */
         .e2e-panel {
             display: flex;
             align-items: center;
-            gap: 16px;
-            padding: 10px 16px;
-            margin-bottom: 16px;
-            background: #161b22;
+            gap: 12px;
+            padding: 6px 12px;
+            margin-bottom: 12px;
+            background: rgba(22, 27, 34, 0.6);
             border: 1px solid #21262d;
-            border-radius: 8px;
-            font-size: 13px;
+            border-radius: 6px;
+            font-size: 12px;
         }
         .e2e-panel.disabled {
             opacity: 0.5;
         }
         .e2e-title {
             font-weight: 600;
-            color: #8b949e;
-            margin-right: 8px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: #6e7681;
+            margin-right: 4px;
         }
         .e2e-badge {
             padding: 2px 8px;
@@ -1738,13 +1766,13 @@
             </button>
         </div>
 
-        <div class="issue-list" id="issueList" role="tabpanel" aria-label="Issue list">
+        <div class="issue-list {% if active_tab == 'blocked' %}blocked-list{% endif %}" id="issueList" role="tabpanel" aria-label="Issue list">
             <div class="issue-header" role="row" aria-hidden="true">
                 <span>Issue</span>
                 <span>Phase</span>
                 <span>Title</span>
                 <span>Detail</span>
-                <span>Runtime</span>
+                <span class="header-runtime">Runtime</span>
                 <span>Action</span>
             </div>
             {% if startup_status != 'complete' %}
@@ -1820,10 +1848,10 @@
                         <span aria-hidden="true">▶</span> Debug
                     </button>
                     {% endif %}
-                    <button class="issue-action-btn retry-btn" onclick="retryIssue({{ issue.issue_number }}, event)" aria-label="Retry issue #{{ issue.issue_number }}" title="Retry">
+                    <button class="issue-action-btn retry-btn" onclick="retryIssue({{ issue.issue_number }}, event)" aria-label="Retry issue #{{ issue.issue_number }}" title="Remove blocked status and re-queue for processing">
                         <span aria-hidden="true">🔄</span> Retry
                     </button>
-                    <button class="issue-action-btn dismiss-btn" onclick="dismissIssue({{ issue.issue_number }}, event)" aria-label="Dismiss issue #{{ issue.issue_number }}" title="Dismiss">
+                    <button class="issue-action-btn dismiss-btn" onclick="dismissIssue({{ issue.issue_number }}, event)" aria-label="Dismiss issue #{{ issue.issue_number }}" title="Remove from queue permanently (won't be retried)">
                         <span aria-hidden="true">✕</span>
                     </button>
                     {% else %}
