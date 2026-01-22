@@ -1462,9 +1462,11 @@
         .issue-link {
             color: #58a6ff;
             text-decoration: none;
+            transition: color 0.15s;
         }
         .issue-link:hover {
             text-decoration: underline;
+            color: #79b8ff;
         }
         .issue-status-badge {
             font-size: 11px;
@@ -1494,9 +1496,11 @@
             color: #58a6ff;
             font-size: 12px;
             user-select: none;
+            transition: color 0.15s;
         }
         .sub-issues-toggle:hover {
             text-decoration: underline;
+            color: #79b8ff;
         }
         .sub-issues-list {
             margin-top: 8px;
@@ -1508,8 +1512,14 @@
             display: flex;
             align-items: center;
             gap: 8px;
-            padding: 4px 0;
+            padding: 4px 6px;
+            margin-left: -6px;
             font-size: 12px;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+        .sub-issue-item:hover {
+            background: #21262d;
         }
         .sub-issue-nodeid {
             font-family: ui-monospace, monospace;
