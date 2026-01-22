@@ -2916,13 +2916,23 @@ class TestReworkEscalation:
         sample_config.max_rework_cycles = 2
         sample_config.code_review_agent = "agent:code-reviewer"
 
+        # Add issue with agent label (agent type now comes from issue, not PR)
+        from tests.builders import IssueBuilder
+        mock_repository_host.issues.append(
+            IssueBuilder()
+            .with_number(123)
+            .with_agent("agent:code-reviewer")
+            .build()
+        )
+
         # Simulate a PR that has gone through 2 rework cycles (labels show rework-cycle-2)
-        mock_repository_host.prs["issue-456-feature"] = [
+        # Branch starts with issue number for reliable extraction
+        mock_repository_host.prs["123-feature"] = [
             create_pr_info(
                 123,
                 "PR 123",
-                labels=["needs-rework", "rework-cycle-2", "agent:code-reviewer"],
-                branch="issue-456-feature",
+                labels=["needs-rework", "rework-cycle-2"],
+                branch="123-feature",
             ),
         ]
 
@@ -2951,14 +2961,23 @@ class TestReworkEscalation:
         sample_config.max_rework_cycles = 3
         sample_config.code_review_agent = "agent:code-reviewer"
 
-        # Simulate a PR on first rework cycle (no rework label)
-        # Need agent label for the code to process it
-        mock_repository_host.prs["issue-456-feature"] = [
+        # Add issue with agent label (agent type now comes from issue, not PR)
+        from tests.builders import IssueBuilder
+        mock_repository_host.issues.append(
+            IssueBuilder()
+            .with_number(123)
+            .with_agent("agent:code-reviewer")
+            .build()
+        )
+
+        # Simulate a PR on first rework cycle (no rework-cycle label)
+        # Branch starts with issue number for reliable extraction
+        mock_repository_host.prs["123-feature"] = [
             create_pr_info(
                 123,
                 "PR 123",
-                labels=["needs-rework", "agent:code-reviewer"],
-                branch="issue-456-feature",
+                labels=["needs-rework"],
+                branch="123-feature",
             ),
         ]
 

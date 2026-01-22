@@ -12,15 +12,19 @@ what to do with the results.
 import logging
 import re
 from dataclasses import dataclass
-from typing import Sequence, Protocol
+from typing import TYPE_CHECKING, Sequence, Protocol
 
 from ..infra.config import Config
 from ..events import EventName
 from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
+from ..domain.branch_naming import extract_issue_number_from_branch
 from ..ports import EventSink, TraceEvent
 from ..ports.pull_request_tracker import PRInfo
 from ..infra import gh_audit
+
+if TYPE_CHECKING:
+    from ..ports.issue import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,7 @@ class RepositoryScanner(Protocol):
 
     def get_prs_with_label(self, label: str) -> list[PRInfo]: ...
     def create_issue_key(self, issue_number: int) -> IssueKey: ...
+    def get_issue(self, issue_number: int) -> "Issue | None": ...
 
 
 @dataclass
@@ -171,7 +176,9 @@ class PRScanner:
         active_issue_numbers = set(active_sessions)
 
         for pr in prs:
-            issue_number = self._extract_issue_number(pr.body, pr.number)
+            # Extract issue number from branch name (reliable, orchestrator-controlled)
+            # Fall back to PR body parsing if branch doesn't match pattern
+            issue_number = self._extract_issue_number_from_pr(pr)
 
             # Skip if already queued
             if issue_number in queued_issue_ids:
@@ -181,7 +188,6 @@ class PRScanner:
             if issue_number in active_issue_numbers:
                 continue
 
-            _branch_name = pr.branch or f"{issue_number}-rework"
             rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
 
             # Check if exceeded max rework cycles
@@ -189,10 +195,21 @@ class PRScanner:
                 escalations.append((pr.number, issue_number, rework_cycle))
                 continue
 
-            # Extract agent type from labels
-            agent_type = self._extract_agent_type(pr.labels)
+            # Look up issue to get agent type (issue is source of truth)
+            issue = self.repository.get_issue(issue_number)
+            if not issue:
+                logger.warning(
+                    "[SCANNER] PR #%d references issue #%d which doesn't exist, skipping",
+                    pr.number, issue_number
+                )
+                continue
+
+            agent_type = issue.agent_type
             if not agent_type:
-                logger.warning("[SCANNER] PR #%d has no agent label, skipping", pr.number)
+                logger.warning(
+                    "[SCANNER] Issue #%d has no agent label, skipping PR #%d",
+                    issue_number, pr.number
+                )
                 continue
 
             # Create IssueKey via adapter
@@ -220,6 +237,28 @@ class PRScanner:
 
         return results, escalations
 
+    def _extract_issue_number_from_pr(self, pr: PRInfo) -> int:
+        """Extract issue number from PR, preferring branch name over body.
+
+        The branch name is more reliable as it's set by the orchestrator
+        and agents can't modify it. Falls back to PR body parsing if
+        branch doesn't match the expected pattern.
+
+        Args:
+            pr: The PR to extract issue number from
+
+        Returns:
+            Issue number, falling back to PR number if not found
+        """
+        # Try branch name first (format: {issue_number}-{slug})
+        if pr.branch:
+            issue_from_branch = extract_issue_number_from_branch(pr.branch)
+            if issue_from_branch is not None:
+                return issue_from_branch
+
+        # Fall back to PR body parsing
+        return self._extract_issue_number(pr.body, pr.number)
+
     def _extract_issue_number(self, pr_body: str, fallback: int) -> int:
         """Extract issue number from PR body (Closes #N pattern)."""
         match = re.search(r'Closes #(\d+)', pr_body, re.IGNORECASE)
@@ -236,9 +275,3 @@ class PRScanner:
                 return int(match.group(1)) + 1  # Next cycle
         return 1  # First rework
 
-    def _extract_agent_type(self, labels: list[str]) -> str | None:
-        """Extract agent type from labels (agent:xxx)."""
-        for label in labels:
-            if label.startswith("agent:"):
-                return label
-        return None
