@@ -1442,6 +1442,83 @@
             background: #f85149;
             color: #fff;
         }
+        .issue-status-section {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 16px;
+        }
+        .issue-status-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .issue-status-title {
+            font-weight: 600;
+            color: #c9d1d9;
+        }
+        .issue-link {
+            color: #58a6ff;
+            text-decoration: none;
+        }
+        .issue-link:hover {
+            text-decoration: underline;
+        }
+        .issue-status-badge {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin-left: 8px;
+        }
+        .issue-status-badge.open {
+            background: #388bfd30;
+            color: #58a6ff;
+        }
+        .issue-status-badge.closed {
+            background: #238636;
+            color: #fff;
+        }
+        .issue-status-badge.resolved {
+            background: #238636;
+            color: #fff;
+        }
+        .sub-issues-summary {
+            font-size: 13px;
+            color: #8b949e;
+            margin-bottom: 8px;
+        }
+        .sub-issues-toggle {
+            cursor: pointer;
+            color: #58a6ff;
+            font-size: 12px;
+            user-select: none;
+        }
+        .sub-issues-toggle:hover {
+            text-decoration: underline;
+        }
+        .sub-issues-list {
+            margin-top: 8px;
+            margin-left: 16px;
+            border-left: 2px solid #30363d;
+            padding-left: 12px;
+        }
+        .sub-issue-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 0;
+            font-size: 12px;
+        }
+        .sub-issue-nodeid {
+            font-family: ui-monospace, monospace;
+            color: #8b949e;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .triage-longrepr {
             margin-top: 8px;
             font-family: ui-monospace, monospace;
@@ -4971,11 +5048,77 @@
             html += '</div>';
 
             if (data.has_parent_issue) {
-                html += `<p style="margin-top: 12px; color: #8b949e;">Parent issue: #${data.parent_issue_number}</p>`;
+                html += renderIssueStatusSection(data);
             }
 
             content.innerHTML = html;
             updateTriageSelection();
+        }
+
+        function renderIssueStatusSection(data) {
+            const parentUrl = data.parent_issue_url || '#';
+            const isClosed = data.parent_issue_closed;
+            const subIssues = data.sub_issues || [];
+            const summary = data.sub_issues_summary || { total: 0, resolved: 0 };
+
+            let html = `
+                <div class="issue-status-section">
+                    <div class="issue-status-header">
+                        <span class="issue-status-title">Issue Status</span>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <a href="${parentUrl}" target="_blank" class="issue-link">
+                            #${data.parent_issue_number}
+                        </a>
+                        <span class="issue-status-badge ${isClosed ? 'closed' : 'open'}">
+                            ${isClosed ? 'CLOSED' : 'OPEN'}
+                        </span>
+                    </div>
+            `;
+
+            if (subIssues.length > 0) {
+                html += `
+                    <div class="sub-issues-summary">
+                        Sub-issues: ${summary.resolved}/${summary.total} resolved
+                    </div>
+                    <div class="sub-issues-toggle" onclick="toggleSubIssuesList()">
+                        <span id="subIssuesArrow">▶</span> Show sub-issues
+                    </div>
+                    <div id="subIssuesList" class="sub-issues-list" style="display: none;">
+                `;
+
+                for (const issue of subIssues) {
+                    const shortNodeid = issue.nodeid.split('::').pop() || issue.nodeid;
+                    const statusClass = issue.resolved ? 'resolved' : 'open';
+                    const statusText = issue.resolved ? (issue.resolution || 'resolved') : 'open';
+                    const issueUrl = issue.url || '#';
+
+                    html += `
+                        <div class="sub-issue-item">
+                            <a href="${issueUrl}" target="_blank" class="issue-link">#${issue.issue_number}</a>
+                            <span class="sub-issue-nodeid" title="${escapeHtml(issue.nodeid)}">${escapeHtml(shortNodeid)}</span>
+                            <span class="issue-status-badge ${statusClass}">${statusText.toUpperCase()}</span>
+                        </div>
+                    `;
+                }
+
+                html += '</div>';
+            }
+
+            html += '</div>';
+            return html;
+        }
+
+        function toggleSubIssuesList() {
+            const list = document.getElementById('subIssuesList');
+            const arrow = document.getElementById('subIssuesArrow');
+            if (list.style.display === 'none') {
+                list.style.display = 'block';
+                arrow.textContent = '▼';
+            } else {
+                list.style.display = 'none';
+                arrow.textContent = '▶';
+            }
         }
 
         function escapeHtml(text) {

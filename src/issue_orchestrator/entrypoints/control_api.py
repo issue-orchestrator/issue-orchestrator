@@ -3439,11 +3439,44 @@ async def e2e_triage_data(
                 "is_likely_flaky": is_likely_flaky,
             })
 
+        # Build issue status info if parent issue exists
+        parent_issue_url = None
+        parent_issue_closed = False
+        sub_issues = []
+        sub_issues_summary = {"total": 0, "resolved": 0}
+
+        if run_issue:
+            # Construct GitHub URL
+            repo = _orchestrator.config.repo if _orchestrator else None
+            if repo:
+                parent_issue_url = f"https://github.com/{repo}/issues/{run_issue.github_issue_number}"
+
+            parent_issue_closed = run_issue.closed_at is not None
+
+            # Get all sub-issues for this parent
+            failure_issues = db.get_failure_issues_for_parent(run_issue.github_issue_number)
+            for fi in failure_issues:
+                is_resolved = fi.resolved_at is not None
+                sub_issues.append({
+                    "issue_number": fi.github_issue_number,
+                    "nodeid": fi.nodeid,
+                    "resolved": is_resolved,
+                    "resolution": fi.resolution,
+                    "url": f"https://github.com/{repo}/issues/{fi.github_issue_number}" if repo else None,
+                })
+                sub_issues_summary["total"] += 1
+                if is_resolved:
+                    sub_issues_summary["resolved"] += 1
+
         return JSONResponse({
             "run": run.to_dict(),
             "failures": failures,
             "has_parent_issue": run_issue is not None,
             "parent_issue_number": run_issue.github_issue_number if run_issue else None,
+            "parent_issue_url": parent_issue_url,
+            "parent_issue_closed": parent_issue_closed,
+            "sub_issues": sub_issues,
+            "sub_issues_summary": sub_issues_summary,
             "flake_threshold": flake_threshold,
         })
 

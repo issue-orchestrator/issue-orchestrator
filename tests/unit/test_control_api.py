@@ -2135,6 +2135,100 @@ class TestE2ETriageEndpoint:
         assert data["has_parent_issue"] is False
         assert data["parent_issue_number"] is None
 
+        # Issue status fields should have defaults
+        assert data["parent_issue_url"] is None
+        assert data["parent_issue_closed"] is False
+        assert data["sub_issues"] == []
+        assert data["sub_issues_summary"] == {"total": 0, "resolved": 0}
+
+    def test_triage_returns_issue_status_when_parent_exists(self, tmp_path):
+        """Triage should return issue URLs and sub-issue details when issues exist."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+
+        # Create DB and add test data
+        db = E2EDB(db_path)
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+            commit_sha="def456",
+        )
+
+        # Add test results
+        db.upsert_test_result(run_id=run_id, nodeid="test_a.py::test_one", outcome="failed")
+        db.upsert_test_result(run_id=run_id, nodeid="test_b.py::test_two", outcome="failed")
+        db.finish_run(run_id, status="failed", exit_code=1)
+
+        # Create parent issue for the run
+        db.record_run_issue(run_id=run_id, github_issue_number=100)
+
+        # Create sub-issues for failures
+        db.record_failure_issue(
+            nodeid="test_a.py::test_one",
+            github_issue_number=101,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="def456",
+        )
+        db.record_failure_issue(
+            nodeid="test_b.py::test_two",
+            github_issue_number=102,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="def456",
+        )
+
+        # Resolve one sub-issue
+        db.resolve_failure_issue(nodeid="test_b.py::test_two", resolution="passed")
+
+        # Create mock orchestrator with config.repo for URL generation
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.repo = "owner/repo"
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(control_app)
+            response = client.get(
+                f"/control/e2e/triage/{run_id}",
+                params={"repo_root": str(tmp_path)}
+            )
+            assert response.status_code == 200
+            data = response.json()
+
+            # Verify parent issue info
+            assert data["has_parent_issue"] is True
+            assert data["parent_issue_number"] == 100
+            assert data["parent_issue_url"] == "https://github.com/owner/repo/issues/100"
+            assert data["parent_issue_closed"] is False
+
+            # Verify sub-issues
+            assert data["sub_issues_summary"] == {"total": 2, "resolved": 1}
+            sub_issues = data["sub_issues"]
+            assert len(sub_issues) == 2
+
+            # Find sub-issues by nodeid
+            sub_by_nodeid = {s["nodeid"]: s for s in sub_issues}
+
+            # Check unresolved sub-issue
+            sub1 = sub_by_nodeid["test_a.py::test_one"]
+            assert sub1["issue_number"] == 101
+            assert sub1["resolved"] is False
+            assert sub1["resolution"] is None
+            assert sub1["url"] == "https://github.com/owner/repo/issues/101"
+
+            # Check resolved sub-issue
+            sub2 = sub_by_nodeid["test_b.py::test_two"]
+            assert sub2["issue_number"] == 102
+            assert sub2["resolved"] is True
+            assert sub2["resolution"] == "passed"
+            assert sub2["url"] == "https://github.com/owner/repo/issues/102"
+        finally:
+            set_orchestrator(None)
+
 
 class TestE2ESyncIssuesEndpoint:
     """Test the POST /control/e2e/sync-issues/{run_id} endpoint."""
