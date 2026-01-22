@@ -30,7 +30,7 @@ help:
 	@echo "  test-web            Run Playwright web UI tests (headless)"
 	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
 	@echo "  test-vscode         Run VS Code extension tests (local only, skipped in CI)"
-	@echo "  install-vscode      Install VS Code extension dev dependencies"
+	@echo "  install-vscode-extensions      Install VS Code extension dev dependencies"
 	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
 	@echo "  validate            Parallel validation (~40s): typecheck + lint-arch + unit + integration + web-ui"
@@ -235,12 +235,12 @@ test-web-headed:
 # VS Code extension tests (local only). Skipped in CI.
 test-vscode:
 	@if [ ! -d "packages/vscode/node_modules" ]; then \
-		echo "Missing packages/vscode/node_modules. Run: make install-vscode"; \
+		echo "Missing packages/vscode/node_modules. Run: make install-vscode-extensions"; \
 		exit 1; \
 	fi
 	cd packages/vscode && npm test
 
-install-vscode:
+install-vscode-extensions:
 	cd packages/vscode && npm install
 
 playwright-install:
