@@ -196,10 +196,7 @@ class TestTriageManifestBuilder:
         assert pr.title == "Test PR"
         assert pr.url == "https://github.com/org/repo/pull/42"
         assert pr.branch == "test-branch"
-        # Not populated until downloader runs
-        assert pr.merged_at == ""
-        assert pr.additions == 0
-        assert pr.deletions == 0
+        # Files not populated until downloader runs
         assert pr.files.diff == ""
         assert pr.files.metadata == ""
 

@@ -59,9 +59,6 @@ class TriageManifestBuilder:
                 title=pr.title,
                 url=pr.url,
                 branch=pr.branch,
-                merged_at="",  # Could fetch if needed
-                additions=0,  # Will be populated by downloader
-                deletions=0,
                 files=PRFiles(),
             ))
 

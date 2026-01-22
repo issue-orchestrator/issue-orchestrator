@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 
-from .triage_manifest import TriageManifest, PRFiles
+from ..control.triage_manifest import TriageManifest, PRFiles
 from ..ports import RepositoryHost, CommandRunner
 
 logger = logging.getLogger(__name__)

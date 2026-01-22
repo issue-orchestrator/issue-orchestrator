@@ -41,29 +41,21 @@ class TestPRToReview:
         assert pr.title == "Test PR"
         assert pr.url == "https://github.com/org/repo/pull/123"
         assert pr.branch == "feature-branch"
-        assert pr.merged_at == ""
-        assert pr.additions == 0
-        assert pr.deletions == 0
         assert isinstance(pr.files, PRFiles)
 
-    def test_full_creation(self):
-        """PRToReview stores all provided values."""
+    def test_with_files(self):
+        """PRToReview stores files reference."""
         files = PRFiles(diff="pr-99-diff.txt", metadata="pr-99-meta.json")
         pr = PRToReview(
             number=99,
             title="Full PR",
             url="https://github.com/org/repo/pull/99",
             branch="full-branch",
-            merged_at="2025-01-21T10:00:00Z",
-            additions=100,
-            deletions=50,
             files=files,
         )
         assert pr.number == 99
-        assert pr.merged_at == "2025-01-21T10:00:00Z"
-        assert pr.additions == 100
-        assert pr.deletions == 50
         assert pr.files.diff == "pr-99-diff.txt"
+        assert pr.files.metadata == "pr-99-meta.json"
 
 
 class TestTriageManifest:
@@ -96,8 +88,6 @@ class TestTriageManifest:
             title="Test",
             url="https://github.com/org/repo/pull/42",
             branch="test-branch",
-            additions=10,
-            deletions=5,
             files=PRFiles(diff="pr-42-diff.txt", metadata="pr-42-meta.json"),
         )
         manifest = TriageManifest(
@@ -111,7 +101,6 @@ class TestTriageManifest:
         pr_dict = result["prs"][0]
         assert pr_dict["number"] == 42
         assert pr_dict["title"] == "Test"
-        assert pr_dict["additions"] == 10
         assert pr_dict["files"]["diff"] == "pr-42-diff.txt"
         assert pr_dict["files"]["metadata"] == "pr-42-meta.json"
 
@@ -142,9 +131,6 @@ class TestTriageManifest:
                     "title": "Big PR",
                     "url": "https://github.com/org/repo/pull/99",
                     "branch": "big-branch",
-                    "merged_at": "2025-01-20T10:00:00Z",
-                    "additions": 200,
-                    "deletions": 100,
                     "files": {
                         "diff": "pr-99-diff.txt",
                         "metadata": "pr-99-meta.json",
@@ -158,8 +144,6 @@ class TestTriageManifest:
         pr = manifest.prs[0]
         assert pr.number == 99
         assert pr.title == "Big PR"
-        assert pr.merged_at == "2025-01-20T10:00:00Z"
-        assert pr.additions == 200
         assert pr.files.diff == "pr-99-diff.txt"
 
     def test_from_dict_handles_missing_optional_fields(self):
@@ -171,16 +155,13 @@ class TestTriageManifest:
                     "title": "Minimal PR",
                     "url": "https://github.com/org/repo/pull/1",
                     "branch": "minimal",
-                    # No merged_at, additions, deletions, or files
+                    # No files
                 }
             ],
         }
         manifest = TriageManifest.from_dict(data)
 
         pr = manifest.prs[0]
-        assert pr.merged_at == ""
-        assert pr.additions == 0
-        assert pr.deletions == 0
         assert pr.files.diff == ""
         assert pr.files.metadata == ""
 
@@ -195,8 +176,6 @@ class TestTriageManifest:
                     title="PR 1",
                     url="https://github.com/org/repo/pull/1",
                     branch="branch-1",
-                    additions=10,
-                    deletions=5,
                     files=PRFiles(diff="pr-1-diff.txt", metadata="pr-1-meta.json"),
                 ),
                 PRToReview(
@@ -204,7 +183,6 @@ class TestTriageManifest:
                     title="PR 2",
                     url="https://github.com/org/repo/pull/2",
                     branch="branch-2",
-                    merged_at="2025-01-20T00:00:00Z",
                 ),
             ],
         )
@@ -221,7 +199,7 @@ class TestTriageManifest:
         for orig_pr, rest_pr in zip(original.prs, restored.prs):
             assert rest_pr.number == orig_pr.number
             assert rest_pr.title == orig_pr.title
-            assert rest_pr.additions == orig_pr.additions
+            assert rest_pr.files.diff == orig_pr.files.diff
 
     def test_write_creates_file(self, tmp_path: Path):
         """write() creates the manifest file."""
@@ -294,7 +272,6 @@ class TestTriageManifest:
                     title="Roundtrip",
                     url="https://github.com/org/repo/pull/123",
                     branch="roundtrip-branch",
-                    additions=50,
                     files=PRFiles(diff="diff.txt", metadata="meta.json"),
                 )
             ],
@@ -308,7 +285,7 @@ class TestTriageManifest:
         assert loaded.data_dir == original.data_dir
         assert len(loaded.prs) == 1
         assert loaded.prs[0].number == 123
-        assert loaded.prs[0].additions == 50
+        assert loaded.prs[0].files.diff == "diff.txt"
 
     def test_get_pr_numbers_empty(self):
         """get_pr_numbers returns empty list for empty manifest."""

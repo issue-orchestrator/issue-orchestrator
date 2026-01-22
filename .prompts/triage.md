@@ -42,21 +42,26 @@ The manifest lists PRs with their local file paths:
 
 ### 1. Read the Manifest
 
-Find the triage data directory and read the manifest:
+Find your session's triage data directory. There should be exactly one session directory
+with triage data in this worktree:
 ```bash
-ls .issue-orchestrator/sessions/*/triage-data/
-cat .issue-orchestrator/sessions/*/triage-data/manifest.json
+# Find your triage-data directory
+TRIAGE_DIR=$(ls -d .issue-orchestrator/sessions/*/triage-data 2>/dev/null | head -1)
+echo "Triage data directory: $TRIAGE_DIR"
+
+# Read the manifest
+cat "$TRIAGE_DIR/manifest.json"
 ```
 
 ### 2. For Each PR, Analyze
 
-Read the pre-fetched diff and metadata:
+Read the pre-fetched diff and metadata from your triage directory:
 ```bash
 # Read metadata (title, body, branch, etc.)
-cat .issue-orchestrator/sessions/*/triage-data/pr-123-meta.json
+cat "$TRIAGE_DIR/pr-123-meta.json"
 
 # Read diff
-cat .issue-orchestrator/sessions/*/triage-data/pr-123-diff.txt
+cat "$TRIAGE_DIR/pr-123-diff.txt"
 ```
 
 Look for:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from issue_orchestrator.control.triage_downloader import TriageDownloader
+from issue_orchestrator.execution.triage_downloader import TriageDownloader
 from issue_orchestrator.control.triage_manifest import (
     TriageManifest,
     PRToReview,

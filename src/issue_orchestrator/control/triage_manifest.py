@@ -35,9 +35,6 @@ class PRToReviewDict(TypedDict):
     title: str
     url: str
     branch: str
-    merged_at: str
-    additions: int
-    deletions: int
     files: PRFilesDict
 
 
@@ -59,14 +56,15 @@ class PRFiles:
 
 @dataclass
 class PRToReview:
-    """A PR that needs triage review."""
+    """A PR that needs triage review.
+
+    Note: Full PR metadata (additions, deletions, merged_at, etc.) is available
+    in the metadata JSON file referenced by files.metadata.
+    """
     number: int
     title: str
     url: str
     branch: str
-    merged_at: str = ""
-    additions: int = 0
-    deletions: int = 0
     files: PRFiles = field(default_factory=PRFiles)
 
 
@@ -93,9 +91,6 @@ class TriageManifest:
                     "title": pr.title,
                     "url": pr.url,
                     "branch": pr.branch,
-                    "merged_at": pr.merged_at,
-                    "additions": pr.additions,
-                    "deletions": pr.deletions,
                     "files": {
                         "diff": pr.files.diff,
                         "metadata": pr.files.metadata,
@@ -116,9 +111,6 @@ class TriageManifest:
                 title=pr_data["title"],
                 url=pr_data["url"],
                 branch=pr_data["branch"],
-                merged_at=pr_data.get("merged_at", ""),
-                additions=pr_data.get("additions", 0),
-                deletions=pr_data.get("deletions", 0),
                 files=PRFiles(
                     diff=files_data.get("diff", ""),
                     metadata=files_data.get("metadata", ""),

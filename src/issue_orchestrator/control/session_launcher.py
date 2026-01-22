@@ -47,7 +47,7 @@ from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
 from .triage_manifest import TriageManifest
 from .triage_manifest_builder import TriageManifestBuilder
-from .triage_downloader import TriageDownloader
+from ..execution.triage_downloader import TriageDownloader
 from ..ports import (
     EventSink,
     TraceEvent,

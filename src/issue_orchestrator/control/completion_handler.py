@@ -41,34 +41,49 @@ logger = logging.getLogger(__name__)
 def _read_triage_manifest(session: Session) -> TriageManifest | None:
     """Read triage manifest from session if it exists.
 
+    The triage_manifest path is stored in the session's run manifest.json
+    during launch via ctx.update_manifest({"triage_manifest": path}).
+
     Returns None if:
     - Session has no worktree path
-    - Session has no manifest path in metadata
+    - No run directory with triage_manifest path exists
     - Manifest file doesn't exist or can't be parsed
     """
     if not session.worktree_path:
         return None
 
-    # The manifest path is stored in the session manifest during launch
-    # Look for it in the expected location based on session structure
     worktree = Path(session.worktree_path)
-
-    # Check for manifest in session run directories
     sessions_dir = worktree / ".issue-orchestrator" / "sessions"
     if not sessions_dir.exists():
         return None
 
-    # Find the triage-data directory (there should be one per triage session)
+    # Find the run directory that has a triage_manifest entry in its manifest.json
     for run_dir in sessions_dir.iterdir():
         if not run_dir.is_dir():
             continue
-        manifest_path = run_dir / "triage-data" / "manifest.json"
-        if manifest_path.exists():
-            try:
-                return TriageManifest.read(manifest_path)
-            except Exception as e:
-                logger.warning("[triage] Failed to read manifest %s: %s", manifest_path, e)
-                return None
+
+        run_manifest_path = run_dir / "manifest.json"
+        if not run_manifest_path.exists():
+            continue
+
+        try:
+            import json
+            run_manifest = json.loads(run_manifest_path.read_text())
+            triage_manifest_path = run_manifest.get("triage_manifest")
+            if triage_manifest_path:
+                manifest_path = Path(triage_manifest_path)
+                if manifest_path.exists():
+                    return TriageManifest.read(manifest_path)
+                else:
+                    logger.warning(
+                        "[triage] Manifest path in run manifest doesn't exist: %s",
+                        manifest_path
+                    )
+        except Exception as e:
+            logger.warning(
+                "[triage] Failed to read manifest from %s: %s",
+                run_dir, e, exc_info=True
+            )
 
     return None
 
