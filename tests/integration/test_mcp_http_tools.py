@@ -8,7 +8,6 @@ import threading
 import time
 from pathlib import Path
 
-import httpx
 import uvicorn
 
 from issue_orchestrator.entrypoints import web
@@ -46,8 +45,7 @@ def _stop_server(server: uvicorn.Server) -> None:
 
 
 def _make_api(base_url: str):
-    client = httpx.Client(base_url=base_url, timeout=5.0)
-    return OrchestratorHttpApi(lambda: base_url, client), client
+    return OrchestratorHttpApi(lambda: base_url), None
 
 
 def _write_manifest(worktree: Path, session_name: str, log_path: Path) -> Path:
@@ -99,7 +97,7 @@ def test_session_logs_and_phases(sample_orchestrator, tmp_path):
 
         port = _find_free_port()
         server = _start_server(port)
-        api, client = _make_api(f"http://127.0.0.1:{port}")
+        api, _ = _make_api(f"http://127.0.0.1:{port}")
         try:
             phases = api.session_phases(7)
             assert phases["issue_number"] == 7
@@ -108,7 +106,6 @@ def test_session_logs_and_phases(sample_orchestrator, tmp_path):
             log = api.session_claude_log(7, 10)
             assert log["entry_count"] == 1
         finally:
-            client.close()
             _stop_server(server)
     finally:
         web.set_orchestrator(None)
@@ -119,7 +116,7 @@ def test_control_tools_pause_resume_refresh(sample_orchestrator):
     try:
         port = _find_free_port()
         server = _start_server(port)
-        api, client = _make_api(f"http://127.0.0.1:{port}")
+        api, _ = _make_api(f"http://127.0.0.1:{port}")
         try:
             api.pause()
             assert sample_orchestrator.state.paused is True
@@ -127,7 +124,6 @@ def test_control_tools_pause_resume_refresh(sample_orchestrator):
             assert sample_orchestrator.state.paused is False
             api.refresh(["123"])
         finally:
-            client.close()
             _stop_server(server)
     finally:
         web.set_orchestrator(None)
