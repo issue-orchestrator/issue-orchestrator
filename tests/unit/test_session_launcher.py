@@ -1733,3 +1733,66 @@ class TestEnvironmentIsolation:
         # Verify command doesn't contain HOME override
         command = launcher_bundle.create_session_calls[0]["cmd"]
         assert "export HOME=" not in command or "HOME=" not in command.split("&&")[0]
+
+
+class TestValidationOutputDir:
+    """Test that sessions export VALIDATION_OUTPUT_DIR for output capture."""
+
+    def test_issue_session_exports_validation_output_dir(self, launcher_bundle, sample_issue):
+        """Test that issue sessions export VALIDATION_OUTPUT_DIR pointing to run_dir."""
+        launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert len(launcher_bundle.create_session_calls) == 1
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+
+        # Verify VALIDATION_OUTPUT_DIR is exported
+        assert "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR=" in command
+
+        # Verify it points to a sessions directory
+        assert ".issue-orchestrator/sessions/" in command
+
+    def test_review_session_exports_validation_output_dir(self, launcher_bundle, mock_repo_host):
+        """Test that review sessions export VALIDATION_OUTPUT_DIR pointing to run_dir."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Test PR", url="url", branch="123-test", body="", state="open", labels=[])
+        ]
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-test",
+            _issue_number=123,
+        )
+
+        launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert len(launcher_bundle.create_session_calls) == 1
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+
+        # Verify VALIDATION_OUTPUT_DIR is exported
+        assert "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR=" in command
+
+        # Verify it points to a sessions directory
+        assert ".issue-orchestrator/sessions/" in command
+
+    def test_rework_session_exports_validation_output_dir(self, launcher_bundle, mock_repo_host):
+        """Test that rework sessions export VALIDATION_OUTPUT_DIR pointing to run_dir."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Test PR", url="url", branch="123-test", body="", state="open", labels=[])
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert len(launcher_bundle.create_session_calls) == 1
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+
+        # Verify VALIDATION_OUTPUT_DIR is exported
+        assert "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR=" in command
+
+        # Verify it points to a sessions directory
+        assert ".issue-orchestrator/sessions/" in command
