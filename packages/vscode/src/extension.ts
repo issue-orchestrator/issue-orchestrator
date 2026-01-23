@@ -48,6 +48,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerTreeDataProvider("issueOrchestrator.explorer", provider)
   );
   await provider.refresh();
+  provider.startPolling();
   await connectEventStream(client, provider, output);
   await warnIfConfigMissing();
 
@@ -370,7 +371,6 @@ async function connectEventStream(
     eventSource = new EventSource(urls.events_url);
     reconnectAttempts = 0;
     if (pollingFallback) {
-      provider.stopPolling();
       pollingFallback = false;
     }
 
