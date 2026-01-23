@@ -8,7 +8,7 @@
     "vscode": "^1.85.0"
   },
   "type": "module",
-  "main": "./dist/extension.js",
+  "main": "./dist/src/extension.js",
   "activationEvents": [
     "onView:issueOrchestrator.explorer",
     "onCommand:issueOrchestrator.start",
