@@ -1503,6 +1503,39 @@ e2e:
         assert config.e2e.stop_on_first_failure is False
 
 
+class TestE2EFlakeConfig:
+    """Tests for e2e flake detection configuration."""
+
+    def test_flake_threshold_defaults_to_3(self):
+        """flake_threshold should default to 3."""
+        config = Config()
+        assert config.e2e.flake_threshold == 3
+
+    def test_flake_window_runs_defaults_to_10(self):
+        """flake_window_runs should default to 10."""
+        config = Config()
+        assert config.e2e.flake_window_runs == 10
+
+    def test_flake_config_from_yaml(self, tmp_path):
+        """Flake settings should be loaded from YAML."""
+        config_content = """
+worktrees:
+  base: /tmp/worktrees
+  repo_root: /tmp/repo
+
+e2e:
+  flake_threshold: 5
+  flake_window_runs: 20
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.e2e.flake_threshold == 5
+        assert config.e2e.flake_window_runs == 20
+
+
 class TestTriageConfig:
     """Tests for triage issue configuration."""
 

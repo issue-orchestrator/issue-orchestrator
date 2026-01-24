@@ -2041,6 +2041,506 @@ class TestE2ESummaryEndpoint:
         assert data["failed"][0]["nodeid"] == "test_b.py::test_fail"
 
 
+# --- Test: Triage Endpoint ---
+
+
+class TestE2ETriageEndpoint:
+    """Test the /control/e2e/triage/{run_id} endpoint."""
+
+    @pytest.fixture
+    def e2e_client(self):
+        """Create a test client for E2E endpoints (no orchestrator needed)."""
+        return TestClient(control_app)
+
+    def test_triage_returns_400_for_invalid_repo_root(self, e2e_client):
+        """Invalid repo_root should return 400."""
+        response = e2e_client.get(
+            "/control/e2e/triage/1",
+            params={"repo_root": "../invalid/path"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_triage_returns_404_when_db_not_found(self, e2e_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = e2e_client.get(
+            "/control/e2e/triage/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+
+    def test_triage_returns_failures_with_metadata(self, e2e_client, tmp_path):
+        """Triage should return failures with flake counts and existing issue info."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+
+        # Create DB using E2EDB to get proper schema
+        db = E2EDB(db_path)
+
+        # Start a run
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+            commit_sha="abc123",
+        )
+
+        # Add test results
+        db.upsert_test_result(
+            run_id=run_id,
+            nodeid="test_a.py::test_pass",
+            outcome="passed",
+        )
+        db.upsert_test_result(
+            run_id=run_id,
+            nodeid="test_b.py::test_fail",
+            outcome="failed",
+            longrepr="AssertionError: expected True",
+        )
+
+        # Finish run
+        db.finish_run(run_id, status="failed", exit_code=1)
+
+        response = e2e_client.get(
+            f"/control/e2e/triage/{run_id}",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Check structure
+        assert "run" in data
+        assert "failures" in data
+        assert "has_parent_issue" in data
+        assert "flake_threshold" in data
+
+        # Check run info
+        assert data["run"]["id"] == run_id
+        assert data["run"]["commit_sha"] == "abc123"
+
+        # Check failures
+        failures = data["failures"]
+        assert len(failures) == 1
+        assert failures[0]["nodeid"] == "test_b.py::test_fail"
+        assert failures[0]["longrepr"] == "AssertionError: expected True"
+        assert failures[0]["existing_issue"] is None
+        assert failures[0]["flake_count"] == 0
+        assert failures[0]["is_likely_flaky"] is False
+
+        # No parent issue yet
+        assert data["has_parent_issue"] is False
+        assert data["parent_issue_number"] is None
+
+        # Issue status fields should have defaults
+        assert data["parent_issue_url"] is None
+        assert data["parent_issue_closed"] is False
+        assert data["sub_issues"] == []
+        assert data["sub_issues_summary"] == {"total": 0, "resolved": 0}
+
+    def test_triage_returns_issue_status_when_parent_exists(self, tmp_path):
+        """Triage should return issue URLs and sub-issue details when issues exist."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+
+        # Create DB and add test data
+        db = E2EDB(db_path)
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+            commit_sha="def456",
+        )
+
+        # Add test results
+        db.upsert_test_result(run_id=run_id, nodeid="test_a.py::test_one", outcome="failed")
+        db.upsert_test_result(run_id=run_id, nodeid="test_b.py::test_two", outcome="failed")
+        db.finish_run(run_id, status="failed", exit_code=1)
+
+        # Create parent issue for the run
+        db.record_run_issue(run_id=run_id, github_issue_number=100)
+
+        # Create sub-issues for failures
+        db.record_failure_issue(
+            nodeid="test_a.py::test_one",
+            github_issue_number=101,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="def456",
+        )
+        db.record_failure_issue(
+            nodeid="test_b.py::test_two",
+            github_issue_number=102,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="def456",
+        )
+
+        # Resolve one sub-issue
+        db.resolve_failure_issue(nodeid="test_b.py::test_two", resolution="passed")
+
+        # Create mock orchestrator with config.repo for URL generation
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.repo = "owner/repo"
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(control_app)
+            response = client.get(
+                f"/control/e2e/triage/{run_id}",
+                params={"repo_root": str(tmp_path)}
+            )
+            assert response.status_code == 200
+            data = response.json()
+
+            # Verify parent issue info
+            assert data["has_parent_issue"] is True
+            assert data["parent_issue_number"] == 100
+            assert data["parent_issue_url"] == "https://github.com/owner/repo/issues/100"
+            assert data["parent_issue_closed"] is False
+
+            # Verify sub-issues
+            assert data["sub_issues_summary"] == {"total": 2, "resolved": 1}
+            sub_issues = data["sub_issues"]
+            assert len(sub_issues) == 2
+
+            # Find sub-issues by nodeid
+            sub_by_nodeid = {s["nodeid"]: s for s in sub_issues}
+
+            # Check unresolved sub-issue
+            sub1 = sub_by_nodeid["test_a.py::test_one"]
+            assert sub1["issue_number"] == 101
+            assert sub1["resolved"] is False
+            assert sub1["resolution"] is None
+            assert sub1["url"] == "https://github.com/owner/repo/issues/101"
+
+            # Check resolved sub-issue
+            sub2 = sub_by_nodeid["test_b.py::test_two"]
+            assert sub2["issue_number"] == 102
+            assert sub2["resolved"] is True
+            assert sub2["resolution"] == "passed"
+            assert sub2["url"] == "https://github.com/owner/repo/issues/102"
+        finally:
+            set_orchestrator(None)
+
+
+class TestE2ESyncIssuesEndpoint:
+    """Test the POST /control/e2e/sync-issues/{run_id} endpoint."""
+
+    @pytest.fixture
+    def mock_orchestrator_with_tracker(self):
+        """Create a mock orchestrator with GitHub client for E2E issue tracking."""
+        mock = create_mock_orchestrator()
+
+        # Mock repository_host with http_client
+        mock.repository_host = MagicMock()
+        mock.repository_host.http_client = MagicMock()
+
+        # Mock close_issue_with_comment behavior
+        mock.repository_host.http_client.add_comment = MagicMock()
+        mock.repository_host.http_client.update_issue_state = MagicMock()
+
+        return mock
+
+    @pytest.fixture
+    def sync_client(self, mock_orchestrator_with_tracker):
+        """Create a test client with orchestrator for sync endpoint."""
+        set_orchestrator(mock_orchestrator_with_tracker)
+        yield TestClient(control_app)
+        set_orchestrator(None)
+
+    def test_sync_returns_503_when_no_orchestrator(self, tmp_path):
+        """Should return 503 when orchestrator is not running."""
+        set_orchestrator(None)
+        client = TestClient(control_app)
+        response = client.post(
+            "/control/e2e/sync-issues/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 503
+        assert response.json()["error"] == "Orchestrator not running"
+
+    def test_sync_returns_400_for_invalid_repo_root(self, sync_client):
+        """Invalid repo_root should return 400."""
+        response = sync_client.post(
+            "/control/e2e/sync-issues/1",
+            params={"repo_root": "../invalid/path"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_sync_returns_404_when_db_not_found(self, sync_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = sync_client.post(
+            "/control/e2e/sync-issues/1",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+
+    def test_sync_returns_404_for_unknown_run(self, sync_client, tmp_path):
+        """Unknown run_id should return 404."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        E2EDB(db_dir / "e2e.db")
+
+        response = sync_client.post(
+            "/control/e2e/sync-issues/999",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert "not found" in response.json()["detail"]
+
+    def test_sync_closes_issues_for_passing_tests(self, sync_client, tmp_path):
+        """Sync should close issues for tests that now pass."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db = E2EDB(db_dir / "e2e.db")
+
+        # Create a run where test_a failed
+        run1_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"], commit_sha="sha1")
+        db.upsert_test_result(run1_id, "test_a.py::test_failing", "failed", longrepr="Error")
+        db.finish_run(run1_id, "failed", exit_code=1)
+
+        # Record a failure issue for test_a
+        db.record_failure_issue(
+            nodeid="test_a.py::test_failing",
+            github_issue_number=101,
+            parent_issue_number=100,
+            first_failing_run_id=run1_id,
+            first_failing_sha="sha1",
+        )
+        db.record_run_issue(run1_id, 100)
+
+        # Create a new run where test_a now passes
+        run2_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"], commit_sha="sha2")
+        db.upsert_test_result(run2_id, "test_a.py::test_failing", "passed")
+        db.finish_run(run2_id, "passed", exit_code=0)
+
+        response = sync_client.post(
+            f"/control/e2e/sync-issues/{run2_id}",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["status"] == "synced"
+        assert len(data["closed_issues"]) == 1
+        assert data["closed_issues"][0]["number"] == 101
+        assert data["closed_issues"][0]["nodeid"] == "test_a.py::test_failing"
+        # Parent should also be closed since all sub-issues are resolved
+        assert 100 in data["closed_parent_issues"]
+
+    def test_sync_does_not_close_still_failing_tests(self, sync_client, tmp_path):
+        """Sync should not close issues for tests that still fail."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db = E2EDB(db_dir / "e2e.db")
+
+        # Create a run where test_a failed
+        run1_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"], commit_sha="sha1")
+        db.upsert_test_result(run1_id, "test_a.py::test_failing", "failed", longrepr="Error")
+        db.finish_run(run1_id, "failed", exit_code=1)
+
+        db.record_failure_issue(
+            nodeid="test_a.py::test_failing",
+            github_issue_number=101,
+            parent_issue_number=100,
+            first_failing_run_id=run1_id,
+            first_failing_sha="sha1",
+        )
+
+        # Create a new run where test_a STILL fails
+        run2_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"], commit_sha="sha2")
+        db.upsert_test_result(run2_id, "test_a.py::test_failing", "failed", longrepr="Error")
+        db.finish_run(run2_id, "failed", exit_code=1)
+
+        response = sync_client.post(
+            f"/control/e2e/sync-issues/{run2_id}",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["status"] == "synced"
+        assert len(data["closed_issues"]) == 0
+        assert len(data["closed_parent_issues"]) == 0
+
+
+class TestE2EQuarantineModifyEndpoint:
+    """Test the POST /control/e2e/quarantine endpoint."""
+
+    @pytest.fixture
+    def quarantine_client(self):
+        """Create a test client for quarantine endpoint."""
+        return TestClient(control_app)
+
+    def test_quarantine_modify_returns_400_for_invalid_repo_root(self, quarantine_client):
+        """Invalid repo_root should return 400."""
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": "../invalid/path"},
+            json={"action": "add", "nodeids": ["test::foo"]}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_quarantine_modify_requires_action(self, quarantine_client, tmp_path):
+        """Missing action should return 400."""
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": str(tmp_path)},
+            json={"nodeids": ["test::foo"]}
+        )
+        assert response.status_code == 400
+        assert "action" in response.json()["error"]
+
+    def test_quarantine_modify_requires_nodeids(self, quarantine_client, tmp_path):
+        """Empty nodeids should return 400."""
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": str(tmp_path)},
+            json={"action": "add", "nodeids": []}
+        )
+        assert response.status_code == 400
+        assert "nodeids" in response.json()["error"]
+
+    def test_quarantine_add_tests(self, quarantine_client, tmp_path):
+        """Should add tests to quarantine file."""
+        # Create empty quarantine file
+        quarantine_dir = tmp_path / "tests" / "e2e"
+        quarantine_dir.mkdir(parents=True)
+        quarantine_file = quarantine_dir / "quarantine.txt"
+        quarantine_file.write_text("# Header\n")
+
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": str(tmp_path)},
+            json={"action": "add", "nodeids": ["test::foo", "test::bar"]}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert len(data["added"]) == 2
+        assert "test::foo" in data["tests"]
+        assert "test::bar" in data["tests"]
+        assert data["count"] == 2
+
+        # Verify file was updated
+        content = quarantine_file.read_text()
+        assert "test::foo" in content
+        assert "test::bar" in content
+
+    def test_quarantine_remove_tests(self, quarantine_client, tmp_path):
+        """Should remove tests from quarantine file."""
+        # Create quarantine file with tests
+        quarantine_dir = tmp_path / "tests" / "e2e"
+        quarantine_dir.mkdir(parents=True)
+        quarantine_file = quarantine_dir / "quarantine.txt"
+        quarantine_file.write_text("# Header\ntest::foo\ntest::bar\ntest::baz\n")
+
+        response = quarantine_client.post(
+            "/control/e2e/quarantine",
+            params={"repo_root": str(tmp_path)},
+            json={"action": "remove", "nodeids": ["test::foo", "test::bar"]}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert len(data["removed"]) == 2
+        assert "test::foo" not in data["tests"]
+        assert "test::bar" not in data["tests"]
+        assert "test::baz" in data["tests"]
+        assert data["count"] == 1
+
+
+class TestE2EFlakyTestsEndpoint:
+    """Test the GET /control/e2e/flaky-tests endpoint."""
+
+    @pytest.fixture
+    def flaky_client(self):
+        """Create a test client for flaky tests endpoint."""
+        return TestClient(control_app)
+
+    def test_flaky_returns_400_for_invalid_repo_root(self, flaky_client):
+        """Invalid repo_root should return 400."""
+        response = flaky_client.get(
+            "/control/e2e/flaky-tests",
+            params={"repo_root": "../invalid/path"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_flaky_returns_404_when_db_not_found(self, flaky_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = flaky_client.get(
+            "/control/e2e/flaky-tests",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+
+    def test_flaky_returns_empty_when_no_flaky_tests(self, flaky_client, tmp_path):
+        """Should return empty list when no flaky tests."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        E2EDB(db_dir / "e2e.db")
+
+        response = flaky_client.get(
+            "/control/e2e/flaky-tests",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["flaky_tests"] == []
+        assert data["threshold"] == 3
+        assert data["window"] == 10
+
+    def test_flaky_returns_tests_above_threshold(self, flaky_client, tmp_path):
+        """Should return tests that exceed flakiness threshold."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db = E2EDB(db_dir / "e2e.db")
+
+        # Record flaky occurrences
+        for i in range(5):
+            run_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"])
+            db.record_flake("test::flaky_one", run_id, was_flaky=True)
+            if i < 2:
+                db.record_flake("test::sometimes_flaky", run_id, was_flaky=True)
+            db.finish_run(run_id, "passed")
+
+        response = flaky_client.get(
+            "/control/e2e/flaky-tests",
+            params={"repo_root": str(tmp_path), "threshold": 3}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # test::flaky_one has 5 flakes, exceeds threshold
+        # test::sometimes_flaky has 2 flakes, below threshold
+        nodeids = [t["nodeid"] for t in data["flaky_tests"]]
+        assert "test::flaky_one" in nodeids
+        assert "test::sometimes_flaky" not in nodeids
+
+
 # --- Test: Retry Issue Endpoint ---
 
 

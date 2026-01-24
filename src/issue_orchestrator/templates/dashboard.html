@@ -15,25 +15,65 @@
         }
         .container { max-width: 900px; margin: 0 auto; padding: 24px; }
 
-        /* Header */
+        /* Header - Calling Card Design */
         header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #21262d;
+            position: relative;
         }
-        .header-left { display: flex; align-items: center; gap: 12px; }
-        h1 { font-size: 18px; font-weight: 600; color: #fff; }
+        header::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            width: 120px;
+            height: 2px;
+            background: linear-gradient(90deg, #58a6ff 0%, transparent 100%);
+        }
+        .header-left { display: flex; align-items: center; gap: 14px; }
+        h1 {
+            font-size: 20px;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: -0.5px;
+        }
         .status-badge {
-            padding: 3px 10px;
-            border-radius: 12px;
-            font-size: 11px;
-            font-weight: 600;
+            padding: 4px 12px;
+            border-radius: 14px;
+            font-size: 10px;
+            font-weight: 700;
             text-transform: uppercase;
+            letter-spacing: 0.5px;
+            transition: all 0.2s ease;
         }
-        .status-running { background: #238636; color: #fff; }
-        .status-paused { background: #9e6a03; color: #fff; }
-        .status-starting { background: #1f6feb; color: #fff; }
+        .status-running {
+            background: rgba(35, 134, 54, 0.2);
+            color: #3fb950;
+            border: 1px solid rgba(35, 134, 54, 0.4);
+            box-shadow: 0 0 12px rgba(35, 134, 54, 0.3);
+            animation: pulse-green 2s ease-in-out infinite;
+        }
+        @keyframes pulse-green {
+            0%, 100% { box-shadow: 0 0 12px rgba(35, 134, 54, 0.3); }
+            50% { box-shadow: 0 0 20px rgba(35, 134, 54, 0.5); }
+        }
+        .status-paused {
+            background: rgba(158, 106, 3, 0.2);
+            color: #d29922;
+            border: 1px solid rgba(158, 106, 3, 0.4);
+            box-shadow: 0 0 12px rgba(158, 106, 3, 0.3);
+        }
+        .status-starting {
+            background: rgba(31, 111, 235, 0.2);
+            color: #58a6ff;
+            border: 1px solid rgba(31, 111, 235, 0.4);
+            box-shadow: 0 0 12px rgba(31, 111, 235, 0.3);
+            animation: pulse-blue 2s ease-in-out infinite;
+        }
         .controls { display: flex; gap: 8px; align-items: center; position: relative; }
         .create-issue-btn {
             padding: 6px 12px;
@@ -174,20 +214,35 @@
             outline-offset: 2px;
         }
 
-        /* Issue List */
-        .issue-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; border-top: none; border-radius: 0 0 8px 8px; }
+        /* Issue List - Calling Card Design */
+        .issue-list {
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+        }
         .issue-header {
             display: grid;
             grid-template-columns: 70px 200px 1fr 140px 70px 140px;
             align-items: center;
-            padding: 8px 16px;
-            background: #161b22;
-            border-bottom: 1px solid #21262d;
-            font-size: 11px;
-            font-weight: 600;
-            color: #8b949e;
+            padding: 10px 16px;
+            background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
+            border-bottom: 1px solid #30363d;
+            font-size: 10px;
+            font-weight: 700;
+            color: #6e7681;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 1px;
+            position: relative;
+        }
+        .issue-header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, #58a6ff 0%, #a371f7 50%, #f778ba 100%);
         }
         .issue-row {
             display: grid;
@@ -196,7 +251,18 @@
             padding: 12px 16px;
             border-bottom: 1px solid #21262d;
             cursor: pointer;
-            transition: background 0.1s;
+            transition: all 0.15s ease;
+            position: relative;
+        }
+        .issue-row::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: transparent;
+            transition: background 0.15s ease;
         }
         /* Blocked tab layout - wider action column, hide runtime */
         .issue-list.blocked-list .issue-header,
@@ -214,11 +280,30 @@
             display: none;
         }
         .issue-row:last-child { border-bottom: none; }
-        .issue-row:hover { background: #161b22; }
-        .issue-row.active-row { background: #0d1117; }
-        .issue-row.active-row:hover { background: #161b22; }
-        .issue-row.slow-row { background: #1c1710; }
-        .issue-row.slow-row:hover { background: #2a2010; }
+        .issue-row:hover {
+            background: linear-gradient(90deg, rgba(88, 166, 255, 0.05) 0%, transparent 100%);
+        }
+        .issue-row:hover::before {
+            background: linear-gradient(180deg, #58a6ff 0%, #a371f7 100%);
+        }
+        .issue-row.active-row {
+            background: rgba(88, 166, 255, 0.08);
+        }
+        .issue-row.active-row::before {
+            background: #58a6ff;
+        }
+        .issue-row.active-row:hover {
+            background: rgba(88, 166, 255, 0.12);
+        }
+        .issue-row.slow-row {
+            background: rgba(210, 153, 34, 0.08);
+        }
+        .issue-row.slow-row::before {
+            background: #d29922;
+        }
+        .issue-row.slow-row:hover {
+            background: rgba(210, 153, 34, 0.12);
+        }
 
         .issue-num { font-weight: 600; color: #58a6ff; font-size: 13px; display: flex; align-items: center; gap: 4px; }
         .issue-num a { color: inherit; text-decoration: none; }
@@ -1269,28 +1354,40 @@
             top: 0;
         }
 
-        /* E2E Panel - Compact secondary status bar */
+        /* E2E Panel - Calling Card Design */
         .e2e-panel {
             display: flex;
             align-items: center;
-            gap: 12px;
-            padding: 6px 12px;
-            margin-bottom: 12px;
-            background: rgba(22, 27, 34, 0.6);
-            border: 1px solid #21262d;
-            border-radius: 6px;
-            font-size: 12px;
+            gap: 16px;
+            padding: 12px 20px;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            font-size: 13px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+        }
+        .e2e-panel::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, #f778ba 0%, #a371f7 50%, #58a6ff 100%);
         }
         .e2e-panel.disabled {
             opacity: 0.5;
         }
         .e2e-title {
-            font-weight: 600;
+            font-weight: 700;
             font-size: 11px;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 1px;
             color: #6e7681;
-            margin-right: 4px;
+            margin-right: 8px;
         }
         .e2e-badge {
             padding: 2px 8px;
@@ -1298,33 +1395,80 @@
             font-size: 11px;
             font-weight: 600;
         }
-        .e2e-badge .running { background: #1f6feb; color: #fff; padding: 2px 8px; border-radius: 10px; }
-        .e2e-badge .passed { background: #238636; color: #fff; padding: 2px 8px; border-radius: 10px; }
-        .e2e-badge .failed { background: #f85149; color: #fff; padding: 2px 8px; border-radius: 10px; }
-        .e2e-badge .idle { background: #30363d; color: #8b949e; padding: 2px 8px; border-radius: 10px; }
-        .e2e-badge .interrupted { background: #d29922; color: #fff; padding: 2px 8px; border-radius: 10px; }
+        .e2e-badge .running {
+            background: rgba(31, 111, 235, 0.2);
+            color: #58a6ff;
+            padding: 3px 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(31, 111, 235, 0.4);
+            box-shadow: 0 0 12px rgba(31, 111, 235, 0.3);
+            animation: pulse-blue 2s ease-in-out infinite;
+        }
+        @keyframes pulse-blue {
+            0%, 100% { box-shadow: 0 0 12px rgba(31, 111, 235, 0.3); }
+            50% { box-shadow: 0 0 20px rgba(31, 111, 235, 0.5); }
+        }
+        .e2e-badge .passed {
+            background: rgba(35, 134, 54, 0.2);
+            color: #3fb950;
+            padding: 3px 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(35, 134, 54, 0.4);
+            box-shadow: 0 0 12px rgba(35, 134, 54, 0.3);
+        }
+        .e2e-badge .failed {
+            background: rgba(248, 81, 73, 0.2);
+            color: #f85149;
+            padding: 3px 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(248, 81, 73, 0.4);
+            box-shadow: 0 0 12px rgba(248, 81, 73, 0.3);
+            animation: pulse-red 1.5s ease-in-out infinite;
+        }
+        @keyframes pulse-red {
+            0%, 100% { box-shadow: 0 0 12px rgba(248, 81, 73, 0.3); }
+            50% { box-shadow: 0 0 20px rgba(248, 81, 73, 0.6); }
+        }
+        .e2e-badge .idle {
+            background: rgba(48, 54, 61, 0.5);
+            color: #8b949e;
+            padding: 3px 10px;
+            border-radius: 12px;
+            border: 1px solid #30363d;
+        }
+        .e2e-badge .interrupted {
+            background: rgba(210, 153, 34, 0.2);
+            color: #d29922;
+            padding: 3px 10px;
+            border-radius: 12px;
+            border: 1px solid rgba(210, 153, 34, 0.4);
+            box-shadow: 0 0 12px rgba(210, 153, 34, 0.3);
+        }
         /* Progress bar */
         .e2e-progress {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
             flex: 1;
-            max-width: 250px;
+            max-width: 280px;
         }
         .e2e-progress-bar {
             flex: 1;
-            height: 6px;
-            background: #30363d;
-            border-radius: 3px;
+            height: 8px;
+            background: rgba(48, 54, 61, 0.6);
+            border-radius: 4px;
             overflow: hidden;
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
         }
         .e2e-progress-fill {
             height: 100%;
-            background: #1f6feb;
+            background: linear-gradient(90deg, #58a6ff 0%, #a371f7 100%);
             transition: width 0.3s ease;
+            box-shadow: 0 0 10px rgba(88, 166, 255, 0.4);
         }
         .e2e-progress-fill.has-failures {
-            background: linear-gradient(90deg, #238636, #f85149);
+            background: linear-gradient(90deg, #3fb950 0%, #f85149 100%);
+            box-shadow: 0 0 10px rgba(248, 81, 73, 0.4);
         }
         .e2e-progress-text {
             font-size: 11px;
@@ -1392,6 +1536,290 @@
             cursor: pointer;
         }
         .e2e-failures:hover { text-decoration: underline; }
+
+        /* E2E Triage View */
+        .triage-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .triage-item {
+            display: flex;
+            align-items: flex-start;
+            padding: 12px;
+            border-bottom: 1px solid #30363d;
+            gap: 12px;
+        }
+        .triage-item:last-child { border-bottom: none; }
+        .triage-item.has-issue { background: rgba(33, 136, 56, 0.1); }
+        .triage-item.is-flaky { background: rgba(210, 153, 34, 0.1); }
+        .triage-checkbox {
+            margin-top: 2px;
+            width: 16px;
+            height: 16px;
+            accent-color: #238636;
+        }
+        .triage-details {
+            flex: 1;
+            min-width: 0;
+        }
+        .triage-nodeid {
+            font-family: ui-monospace, monospace;
+            font-size: 12px;
+            color: #58a6ff;
+            word-break: break-all;
+        }
+        .triage-badges {
+            display: flex;
+            gap: 6px;
+            margin-top: 4px;
+            flex-wrap: wrap;
+        }
+        .triage-badge {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #30363d;
+            color: #8b949e;
+        }
+        .triage-badge.existing { background: #238636; color: #fff; }
+        .triage-badge.flaky { background: #d29922; color: #fff; }
+        .triage-badge.new { background: #1f6feb; color: #fff; }
+        .triage-item.to-remove { background: rgba(248, 81, 73, 0.15); }
+        .triage-empty { padding: 20px; text-align: center; color: #8b949e; }
+        .triage-checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            cursor: pointer;
+        }
+        .test-nodeid {
+            font-family: ui-monospace, monospace;
+            font-size: 12px;
+            color: #58a6ff;
+            flex: 1;
+            word-break: break-all;
+        }
+        .flake-badge {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #d29922;
+            color: #fff;
+        }
+        .remove-badge {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #f85149;
+            color: #fff;
+        }
+        /* Issue Status Section - Calling Card Design */
+        .issue-status-section {
+            background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+        }
+        .issue-status-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #58a6ff 0%, #a371f7 50%, #f778ba 100%);
+        }
+        .issue-status-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .issue-status-title {
+            font-weight: 700;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #8b949e;
+        }
+        .issue-link {
+            color: #58a6ff;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 15px;
+            transition: all 0.2s ease;
+            text-shadow: 0 0 20px transparent;
+        }
+        .issue-link:hover {
+            color: #79b8ff;
+            text-shadow: 0 0 20px rgba(88, 166, 255, 0.5);
+        }
+        .issue-status-badge {
+            font-size: 10px;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 12px;
+            margin-left: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            transition: all 0.2s ease;
+        }
+        .issue-status-badge.open {
+            background: rgba(56, 139, 253, 0.15);
+            color: #58a6ff;
+            border: 1px solid rgba(56, 139, 253, 0.4);
+            box-shadow: 0 0 12px rgba(56, 139, 253, 0.2);
+        }
+        .issue-status-badge.closed {
+            background: rgba(35, 134, 54, 0.2);
+            color: #3fb950;
+            border: 1px solid rgba(35, 134, 54, 0.5);
+            box-shadow: 0 0 12px rgba(35, 134, 54, 0.3);
+        }
+        .issue-status-badge.resolved {
+            background: rgba(35, 134, 54, 0.2);
+            color: #3fb950;
+            border: 1px solid rgba(35, 134, 54, 0.5);
+            box-shadow: 0 0 12px rgba(35, 134, 54, 0.3);
+        }
+        .sub-issues-summary {
+            font-size: 13px;
+            color: #8b949e;
+            margin-bottom: 10px;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 6px;
+            display: inline-block;
+        }
+        .sub-issues-summary strong {
+            color: #c9d1d9;
+            font-weight: 600;
+        }
+        .sub-issues-toggle {
+            cursor: pointer;
+            color: #58a6ff;
+            font-size: 12px;
+            font-weight: 500;
+            user-select: none;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        .sub-issues-toggle:hover {
+            background: rgba(56, 139, 253, 0.1);
+            color: #79b8ff;
+        }
+        .sub-issues-toggle .arrow {
+            display: inline-block;
+            transition: transform 0.3s ease;
+        }
+        .sub-issues-toggle.expanded .arrow {
+            transform: rotate(90deg);
+        }
+        .sub-issues-list {
+            margin-top: 12px;
+            padding-left: 16px;
+            border-left: 2px solid;
+            border-image: linear-gradient(180deg, #58a6ff 0%, #a371f7 100%) 1;
+            overflow: hidden;
+            max-height: 0;
+            opacity: 0;
+            transition: max-height 0.4s ease, opacity 0.3s ease, margin-top 0.3s ease;
+        }
+        .sub-issues-list.expanded {
+            max-height: 500px;
+            opacity: 1;
+        }
+        .sub-issue-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 10px;
+            margin-left: -10px;
+            font-size: 12px;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+            opacity: 0;
+            transform: translateX(-10px);
+        }
+        .sub-issues-list.expanded .sub-issue-item {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        .sub-issues-list.expanded .sub-issue-item:nth-child(1) { transition-delay: 0.05s; }
+        .sub-issues-list.expanded .sub-issue-item:nth-child(2) { transition-delay: 0.1s; }
+        .sub-issues-list.expanded .sub-issue-item:nth-child(3) { transition-delay: 0.15s; }
+        .sub-issues-list.expanded .sub-issue-item:nth-child(4) { transition-delay: 0.2s; }
+        .sub-issues-list.expanded .sub-issue-item:nth-child(5) { transition-delay: 0.25s; }
+        .sub-issues-list.expanded .sub-issue-item:nth-child(n+6) { transition-delay: 0.3s; }
+        .sub-issue-item:hover {
+            background: rgba(56, 139, 253, 0.08);
+            transform: translateX(4px);
+        }
+        .sub-issue-nodeid {
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+            color: #8b949e;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            transition: color 0.2s ease;
+        }
+        .sub-issue-item:hover .sub-issue-nodeid {
+            color: #c9d1d9;
+        }
+        .triage-longrepr {
+            margin-top: 8px;
+            font-family: ui-monospace, monospace;
+            font-size: 11px;
+            color: #f85149;
+            white-space: pre-wrap;
+            background: #161b22;
+            padding: 8px;
+            border-radius: 4px;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+        .triage-summary {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: #161b22;
+            border-radius: 6px;
+            margin-bottom: 12px;
+        }
+        .triage-summary-stat {
+            text-align: center;
+        }
+        .triage-summary-stat .count {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .triage-summary-stat .label {
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .triage-summary-stat.failures .count { color: #f85149; }
+        .triage-summary-stat.flaky .count { color: #d29922; }
+        .triage-summary-stat.existing .count { color: #238636; }
+        .triage-select-all {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #21262d;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
 
         /* Claude Log Viewer */
         .log-viewer-modal {
@@ -1715,6 +2143,8 @@
                 <button class="e2e-btn" id="e2eDetailsBtn" onclick="showE2EFailures()" style="{% if not e2e_status.last_run %}display: none;{% endif %}">Details</button>
                 <button class="e2e-btn" id="e2eLogsBtn" onclick="showE2ELogs()" style="{% if not (e2e_status.last_run and e2e_status.last_run.log_path) %}display: none;{% endif %}">Logs</button>
                 <button class="e2e-btn" id="e2eDiagnoseBtn" onclick="showE2EDiagnosis()" style="{% if not (e2e_status.last_run and e2e_status.last_run.status == 'failed') %}display: none;{% endif %}">Diagnose</button>
+                <button class="e2e-btn primary" id="e2eTriageBtn" onclick="showE2ETriage()" style="{% if not (e2e_status.last_run and e2e_status.last_run.status == 'failed') %}display: none;{% endif %}" title="Review failures and create issues">Triage</button>
+                <button class="e2e-btn" id="e2eQuarantineBtn" onclick="showQuarantineViewer()" title="View and manage quarantine list">Quarantine</button>
             </div>
         </div>
         {% endif %}
@@ -1977,6 +2407,76 @@
                     <div class="modal-footer-buttons">
                         <button class="btn-primary" id="e2eCreateIssueBtn" onclick="createE2EDiagnosticIssue()">Create Issue</button>
                         <button class="btn-secondary" onclick="closeE2EDiagnosisModal()">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- E2E Triage Modal -->
+        <div class="modal-overlay" id="e2eTriageModal">
+            <div class="modal modal-large">
+                <div class="modal-header">
+                    <h2>E2E Failure Triage</h2>
+                    <button class="modal-close" onclick="closeE2ETriageModal()">&times;</button>
+                </div>
+                <div class="modal-body" id="e2eTriageContent">
+                    <div class="loading-spinner">Loading failures...</div>
+                </div>
+                <div class="modal-footer">
+                    <div class="e2e-issue-options">
+                        <label class="form-label-inline">Agent:</label>
+                        <select id="e2eTriageAgent" class="form-select-inline">
+                            <option value="">Select an agent...</option>
+                            {% for agent_name in agents.keys() %}
+                            <option value="{{ agent_name }}">{{ agent_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="modal-footer-buttons">
+                        <button class="btn-primary" id="e2eCreateIssuesBtn" onclick="createE2EIssues()" disabled>Create Issues</button>
+                        <button class="btn-secondary" id="e2eSyncBtn" onclick="syncE2EIssues()">Sync Issues</button>
+                        <button class="btn-secondary" onclick="closeE2ETriageModal()">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- E2E Quarantine Viewer Modal -->
+        <div class="modal-overlay" id="e2eQuarantineModal">
+            <div class="modal-content" style="max-width: 700px;">
+                <div class="modal-header">
+                    <h3>Quarantine Manager</h3>
+                    <button class="modal-close" onclick="closeQuarantineModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="quarantineLoading" class="triage-loading">Loading quarantine data...</div>
+                    <div id="quarantineContent" style="display: none;">
+                        <div class="triage-summary">
+                            <span id="quarantineFile">File: tests/e2e/quarantine.txt</span>
+                            <span id="quarantineCount">0 tests quarantined</span>
+                        </div>
+
+                        <div id="quarantineFlakySection" style="margin-bottom: 16px;">
+                            <h4 style="margin: 0 0 8px 0; color: #ff9800;">Suggested for Quarantine</h4>
+                            <p style="font-size: 12px; color: #666; margin: 0 0 8px 0;">
+                                Tests with high flakiness (failed then passed on retry multiple times)
+                            </p>
+                            <div id="quarantineFlakyList" class="triage-list"></div>
+                        </div>
+
+                        <div id="quarantineCurrentSection">
+                            <h4 style="margin: 0 0 8px 0;">Currently Quarantined</h4>
+                            <p style="font-size: 12px; color: #666; margin: 0 0 8px 0;">
+                                These tests are excluded from E2E failure counts
+                            </p>
+                            <div id="quarantineCurrentList" class="triage-list"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <div class="modal-footer-buttons">
+                        <button class="btn-primary" id="quarantineSaveBtn" onclick="saveQuarantineChanges()" disabled>Save Changes</button>
+                        <button class="btn-secondary" onclick="closeQuarantineModal()">Close</button>
                     </div>
                 </div>
             </div>
@@ -4699,6 +5199,459 @@
                 btn.disabled = false;
                 btn.textContent = 'Create Issue';
             }
+        }
+
+        // E2E Triage Functions
+        let e2eTriageData = null;
+
+        async function showE2ETriage() {
+            if (!e2eLastRun) {
+                showToast('No E2E run data available', true);
+                return;
+            }
+
+            // Show modal with loading state
+            document.getElementById('e2eTriageContent').innerHTML = '<div class="loading-spinner">Loading triage data...</div>';
+            document.getElementById('e2eTriageModal').classList.add('visible');
+
+            try {
+                const res = await fetch(`/control/e2e/triage/${e2eLastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`);
+                const data = await res.json();
+
+                if (!res.ok) {
+                    closeE2ETriageModal();
+                    showToast(data.error || data.detail || 'Failed to load triage data', true);
+                    return;
+                }
+
+                e2eTriageData = data;
+                renderE2ETriage(data);
+            } catch (err) {
+                closeE2ETriageModal();
+                showToast('Failed to load triage data: ' + err.message, true);
+            }
+        }
+
+        function renderE2ETriage(data) {
+            const content = document.getElementById('e2eTriageContent');
+            const failures = data.failures || [];
+
+            if (failures.length === 0) {
+                content.innerHTML = '<p>No failures to triage.</p>';
+                return;
+            }
+
+            // Count categories
+            const newFailures = failures.filter(f => !f.existing_issue && !f.is_likely_flaky);
+            const flakyFailures = failures.filter(f => f.is_likely_flaky);
+            const existingIssues = failures.filter(f => f.existing_issue);
+
+            let html = `
+                <div class="triage-summary">
+                    <div class="triage-summary-stat failures">
+                        <div class="count">${failures.length}</div>
+                        <div class="label">Total Failures</div>
+                    </div>
+                    <div class="triage-summary-stat">
+                        <div class="count">${newFailures.length}</div>
+                        <div class="label">New</div>
+                    </div>
+                    <div class="triage-summary-stat flaky">
+                        <div class="count">${flakyFailures.length}</div>
+                        <div class="label">Likely Flaky</div>
+                    </div>
+                    <div class="triage-summary-stat existing">
+                        <div class="count">${existingIssues.length}</div>
+                        <div class="label">Has Issue</div>
+                    </div>
+                </div>
+
+                <div class="triage-select-all">
+                    <input type="checkbox" id="triageSelectAll" class="triage-checkbox" onchange="toggleAllTriageItems(this.checked)">
+                    <label for="triageSelectAll">Select all new failures for issue creation</label>
+                </div>
+
+                <div class="triage-list">
+            `;
+
+            for (const failure of failures) {
+                const hasIssue = !!failure.existing_issue;
+                const isFlaky = failure.is_likely_flaky;
+                const itemClass = hasIssue ? 'has-issue' : (isFlaky ? 'is-flaky' : '');
+                const shortNodeid = failure.nodeid.split('::').pop() || failure.nodeid;
+
+                html += `
+                    <div class="triage-item ${itemClass}">
+                        <input type="checkbox"
+                               class="triage-checkbox triage-item-checkbox"
+                               data-nodeid="${escapeHtml(failure.nodeid)}"
+                               ${hasIssue ? 'disabled' : ''}
+                               ${!hasIssue && !isFlaky ? 'checked' : ''}
+                               onchange="updateTriageSelection()">
+                        <div class="triage-details">
+                            <div class="triage-nodeid" title="${escapeHtml(failure.nodeid)}">${escapeHtml(shortNodeid)}</div>
+                            <div class="triage-badges">
+                                ${hasIssue ? `<span class="triage-badge existing">Issue #${failure.existing_issue.github_issue_number}</span>` : '<span class="triage-badge new">New</span>'}
+                                ${isFlaky ? `<span class="triage-badge flaky">Flaky (${failure.flake_count}x)</span>` : ''}
+                                ${failure.duration_seconds ? `<span class="triage-badge">${failure.duration_seconds.toFixed(1)}s</span>` : ''}
+                            </div>
+                            ${failure.longrepr ? `<div class="triage-longrepr">${escapeHtml(failure.longrepr.substring(0, 500))}${failure.longrepr.length > 500 ? '...' : ''}</div>` : ''}
+                        </div>
+                    </div>
+                `;
+            }
+
+            html += '</div>';
+
+            if (data.has_parent_issue) {
+                html += renderIssueStatusSection(data);
+            }
+
+            content.innerHTML = html;
+            updateTriageSelection();
+        }
+
+        function renderIssueStatusSection(data) {
+            const parentUrl = data.parent_issue_url || '#';
+            const isClosed = data.parent_issue_closed;
+            const subIssues = data.sub_issues || [];
+            const summary = data.sub_issues_summary || { total: 0, resolved: 0 };
+
+            let html = `
+                <div class="issue-status-section">
+                    <div class="issue-status-header">
+                        <span class="issue-status-title">Issue Status</span>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <a href="${parentUrl}" target="_blank" class="issue-link">
+                            #${data.parent_issue_number}
+                        </a>
+                        <span class="issue-status-badge ${isClosed ? 'closed' : 'open'}">
+                            ${isClosed ? 'CLOSED' : 'OPEN'}
+                        </span>
+                    </div>
+            `;
+
+            if (subIssues.length > 0) {
+                html += `
+                    <div class="sub-issues-summary">
+                        Sub-issues: <strong>${summary.resolved}</strong> of <strong>${summary.total}</strong> resolved
+                    </div>
+                    <div id="subIssuesToggle" class="sub-issues-toggle" onclick="toggleSubIssuesList()">
+                        <span class="arrow">▶</span>
+                        <span class="toggle-text">Show sub-issues</span>
+                    </div>
+                    <div id="subIssuesList" class="sub-issues-list">
+                `;
+
+                for (const issue of subIssues) {
+                    const shortNodeid = issue.nodeid.split('::').pop() || issue.nodeid;
+                    const statusClass = issue.resolved ? 'resolved' : 'open';
+                    const statusText = issue.resolved ? (issue.resolution || 'resolved') : 'open';
+                    const issueUrl = issue.url || '#';
+
+                    html += `
+                        <div class="sub-issue-item">
+                            <a href="${issueUrl}" target="_blank" class="issue-link">#${issue.issue_number}</a>
+                            <span class="sub-issue-nodeid" title="${escapeHtml(issue.nodeid)}">${escapeHtml(shortNodeid)}</span>
+                            <span class="issue-status-badge ${statusClass}">${statusText.toUpperCase()}</span>
+                        </div>
+                    `;
+                }
+
+                html += '</div>';
+            }
+
+            html += '</div>';
+            return html;
+        }
+
+        function toggleSubIssuesList() {
+            const list = document.getElementById('subIssuesList');
+            const toggle = document.getElementById('subIssuesToggle');
+            const isExpanded = list.classList.contains('expanded');
+
+            if (isExpanded) {
+                list.classList.remove('expanded');
+                toggle.classList.remove('expanded');
+                toggle.querySelector('.toggle-text').textContent = 'Show sub-issues';
+            } else {
+                list.classList.add('expanded');
+                toggle.classList.add('expanded');
+                toggle.querySelector('.toggle-text').textContent = 'Hide sub-issues';
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function toggleAllTriageItems(checked) {
+            const checkboxes = document.querySelectorAll('.triage-item-checkbox:not(:disabled)');
+            checkboxes.forEach(cb => cb.checked = checked);
+            updateTriageSelection();
+        }
+
+        function updateTriageSelection() {
+            const checkboxes = document.querySelectorAll('.triage-item-checkbox:checked:not(:disabled)');
+            const createBtn = document.getElementById('e2eCreateIssuesBtn');
+            createBtn.disabled = checkboxes.length === 0;
+            createBtn.textContent = checkboxes.length > 0 ? `Create ${checkboxes.length} Issue${checkboxes.length > 1 ? 's' : ''}` : 'Create Issues';
+        }
+
+        function closeE2ETriageModal() {
+            document.getElementById('e2eTriageModal').classList.remove('visible');
+        }
+
+        async function createE2EIssues() {
+            const agentSelect = document.getElementById('e2eTriageAgent');
+            const agent = agentSelect.value;
+            if (!agent) {
+                showToast('Please select an agent to work on these issues', true);
+                agentSelect.focus();
+                return;
+            }
+
+            const checkboxes = document.querySelectorAll('.triage-item-checkbox:checked:not(:disabled)');
+            const selectedNodeids = Array.from(checkboxes).map(cb => cb.dataset.nodeid);
+
+            if (selectedNodeids.length === 0) {
+                showToast('No failures selected', true);
+                return;
+            }
+
+            const btn = document.getElementById('e2eCreateIssuesBtn');
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+
+            try {
+                const res = await fetch(`/control/e2e/create-issues/${e2eLastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nodeids: selectedNodeids, agent: agent }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showToast(data.error || data.detail || 'Failed to create issues', true);
+                    return;
+                }
+
+                showToast(`Created parent issue #${data.parent_issue.number} with ${data.sub_issues.length} sub-issue(s)`);
+                closeE2ETriageModal();
+
+                // Open parent issue in new tab
+                if (data.parent_issue.url) {
+                    window.open(data.parent_issue.url, '_blank');
+                }
+            } catch (err) {
+                showToast('Failed to create issues: ' + err.message, true);
+            } finally {
+                btn.disabled = false;
+                updateTriageSelection();
+            }
+        }
+
+        async function syncE2EIssues() {
+            if (!e2eLastRun) {
+                showToast('No E2E run to sync', true);
+                return;
+            }
+
+            const btn = document.getElementById('e2eSyncBtn');
+            btn.disabled = true;
+            btn.textContent = 'Syncing...';
+
+            try {
+                const res = await fetch(`/control/e2e/sync-issues/${e2eLastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                    method: 'POST',
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showToast(data.error || data.detail || 'Failed to sync issues', true);
+                    return;
+                }
+
+                const closedCount = data.closed_issues.length;
+                const parentCount = data.closed_parent_issues.length;
+
+                if (closedCount === 0 && parentCount === 0) {
+                    showToast('No issues to sync - all tests still failing or no open issues');
+                } else {
+                    showToast(`Synced: closed ${closedCount} sub-issue(s), ${parentCount} parent issue(s)`);
+                }
+
+                // Refresh triage data to show updated state
+                if (e2eLastRun.id) {
+                    triageE2ERun(e2eLastRun.id);
+                }
+            } catch (err) {
+                showToast('Failed to sync issues: ' + err.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Sync Issues';
+            }
+        }
+
+        // Quarantine viewer state
+        let quarantineData = { current: [], flaky: [], toAdd: new Set(), toRemove: new Set() };
+
+        async function showQuarantineViewer() {
+            const modal = document.getElementById('e2eQuarantineModal');
+            const loading = document.getElementById('quarantineLoading');
+            const content = document.getElementById('quarantineContent');
+
+            modal.classList.add('visible');
+            loading.style.display = 'block';
+            content.style.display = 'none';
+
+            quarantineData = { current: [], flaky: [], toAdd: new Set(), toRemove: new Set() };
+
+            try {
+                // Fetch current quarantine list and flaky tests in parallel
+                const [quarantineRes, flakyRes] = await Promise.all([
+                    fetch(`/control/e2e/quarantine?repo_root=${encodeURIComponent(REPO_ROOT)}`),
+                    fetch(`/control/e2e/flaky-tests?repo_root=${encodeURIComponent(REPO_ROOT)}&threshold=3&window=10`)
+                ]);
+
+                const quarantine = await quarantineRes.json();
+                const flaky = await flakyRes.json();
+
+                if (!quarantineRes.ok) {
+                    showToast(quarantine.error || 'Failed to load quarantine list', true);
+                    closeQuarantineModal();
+                    return;
+                }
+
+                quarantineData.current = quarantine.tests || [];
+                quarantineData.flaky = (flaky.flaky_tests || []).filter(t => !t.is_quarantined);
+
+                document.getElementById('quarantineFile').textContent = `File: ${quarantine.quarantine_file}`;
+                renderQuarantineViewer();
+
+                loading.style.display = 'none';
+                content.style.display = 'block';
+            } catch (err) {
+                showToast('Failed to load quarantine data: ' + err.message, true);
+                closeQuarantineModal();
+            }
+        }
+
+        function renderQuarantineViewer() {
+            const currentList = document.getElementById('quarantineCurrentList');
+            const flakyList = document.getElementById('quarantineFlakyList');
+            const flakySection = document.getElementById('quarantineFlakySection');
+
+            // Render flaky suggestions
+            if (quarantineData.flaky.length > 0) {
+                flakySection.style.display = 'block';
+                flakyList.innerHTML = quarantineData.flaky.map(test => `
+                    <div class="triage-item">
+                        <label class="triage-checkbox-label">
+                            <input type="checkbox" class="quarantine-add-checkbox"
+                                   data-nodeid="${test.nodeid}"
+                                   ${quarantineData.toAdd.has(test.nodeid) ? 'checked' : ''}
+                                   onchange="toggleQuarantineAdd('${test.nodeid}')">
+                            <span class="test-nodeid">${test.nodeid}</span>
+                            <span class="flake-badge">${test.flake_count} flakes</span>
+                        </label>
+                    </div>
+                `).join('');
+            } else {
+                flakySection.style.display = 'none';
+            }
+
+            // Render current quarantine list
+            if (quarantineData.current.length > 0) {
+                currentList.innerHTML = quarantineData.current.map(nodeid => `
+                    <div class="triage-item ${quarantineData.toRemove.has(nodeid) ? 'to-remove' : ''}">
+                        <label class="triage-checkbox-label">
+                            <input type="checkbox" class="quarantine-remove-checkbox"
+                                   data-nodeid="${nodeid}"
+                                   ${quarantineData.toRemove.has(nodeid) ? 'checked' : ''}
+                                   onchange="toggleQuarantineRemove('${nodeid}')">
+                            <span class="test-nodeid">${nodeid}</span>
+                            ${quarantineData.toRemove.has(nodeid) ? '<span class="remove-badge">will remove</span>' : ''}
+                        </label>
+                    </div>
+                `).join('');
+            } else {
+                currentList.innerHTML = '<div class="triage-empty">No tests currently quarantined</div>';
+            }
+
+            // Update count and save button state
+            const effectiveCount = quarantineData.current.length + quarantineData.toAdd.size - quarantineData.toRemove.size;
+            document.getElementById('quarantineCount').textContent = `${effectiveCount} test${effectiveCount !== 1 ? 's' : ''} quarantined`;
+
+            const saveBtn = document.getElementById('quarantineSaveBtn');
+            saveBtn.disabled = quarantineData.toAdd.size === 0 && quarantineData.toRemove.size === 0;
+        }
+
+        function toggleQuarantineAdd(nodeid) {
+            if (quarantineData.toAdd.has(nodeid)) {
+                quarantineData.toAdd.delete(nodeid);
+            } else {
+                quarantineData.toAdd.add(nodeid);
+            }
+            renderQuarantineViewer();
+        }
+
+        function toggleQuarantineRemove(nodeid) {
+            if (quarantineData.toRemove.has(nodeid)) {
+                quarantineData.toRemove.delete(nodeid);
+            } else {
+                quarantineData.toRemove.add(nodeid);
+            }
+            renderQuarantineViewer();
+        }
+
+        async function saveQuarantineChanges() {
+            const btn = document.getElementById('quarantineSaveBtn');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+
+            try {
+                // Process additions
+                if (quarantineData.toAdd.size > 0) {
+                    const addRes = await fetch(`/control/e2e/quarantine?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'add', nodeids: Array.from(quarantineData.toAdd) })
+                    });
+                    if (!addRes.ok) {
+                        const data = await addRes.json();
+                        throw new Error(data.error || 'Failed to add to quarantine');
+                    }
+                }
+
+                // Process removals
+                if (quarantineData.toRemove.size > 0) {
+                    const removeRes = await fetch(`/control/e2e/quarantine?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'remove', nodeids: Array.from(quarantineData.toRemove) })
+                    });
+                    if (!removeRes.ok) {
+                        const data = await removeRes.json();
+                        throw new Error(data.error || 'Failed to remove from quarantine');
+                    }
+                }
+
+                showToast(`Quarantine updated: +${quarantineData.toAdd.size} added, -${quarantineData.toRemove.size} removed`);
+                closeQuarantineModal();
+            } catch (err) {
+                showToast('Failed to save quarantine changes: ' + err.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Save Changes';
+            }
+        }
+
+        function closeQuarantineModal() {
+            document.getElementById('e2eQuarantineModal').classList.remove('visible');
         }
     </script>
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>

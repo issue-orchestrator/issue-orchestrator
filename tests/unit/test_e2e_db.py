@@ -5,7 +5,13 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from issue_orchestrator.infra.e2e_db import E2EDB, AlreadyRunning, E2ERun
+from issue_orchestrator.infra.e2e_db import (
+    E2EDB,
+    AlreadyRunning,
+    E2ERun,
+    load_quarantine_list,
+    save_quarantine_list,
+)
 
 
 class TestE2EDB:
@@ -197,6 +203,22 @@ class TestE2EDB:
         """Test that run_details returns None for unknown run_id."""
         details = db.run_details(9999)
         assert details is None
+
+    def test_get_run(self, db: E2EDB):
+        """Test getting a run by ID."""
+        run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], "abc123", "main")
+
+        run = db.get_run(run_id)
+        assert run is not None
+        assert run.id == run_id
+        assert run.orchestrator_id == "test-orch"
+        assert run.commit_sha == "abc123"
+        assert run.branch == "main"
+
+    def test_get_run_returns_none_for_unknown(self, db: E2EDB):
+        """Test that get_run returns None for unknown run_id."""
+        run = db.get_run(9999)
+        assert run is None
 
     def test_db_path_creates_parent_dirs(self, tmp_path: Path):
         """Test that E2EDB creates parent directories if needed."""
@@ -450,3 +472,170 @@ class TestE2EDB:
         assert score["runs_analyzed"] == 4
         assert score["pass_rate"] == 0.75  # 3/4
         assert score["quarantined_count"] == 2  # From the latest run
+
+    def test_get_all_open_failure_issues_empty(self, db: E2EDB):
+        """Test getting open failure issues when none exist."""
+        issues = db.get_all_open_failure_issues()
+        assert issues == []
+
+    def test_get_all_open_failure_issues(self, db: E2EDB):
+        """Test getting all unresolved failure issues."""
+        run_id = db.start_run("/repo", "test-orch", ["tests/e2e"], commit_sha="abc123")
+        db.finish_run(run_id, "failed")
+
+        # Record some failure issues
+        db.record_failure_issue(
+            nodeid="test::failure1",
+            github_issue_number=101,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="abc123",
+        )
+        db.record_failure_issue(
+            nodeid="test::failure2",
+            github_issue_number=102,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="abc123",
+        )
+        db.record_failure_issue(
+            nodeid="test::failure3",
+            github_issue_number=103,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="abc123",
+        )
+
+        # Resolve one issue
+        db.resolve_failure_issue("test::failure2", "passed")
+
+        # Get open issues
+        issues = db.get_all_open_failure_issues()
+
+        assert len(issues) == 2
+        nodeids = {i.nodeid for i in issues}
+        assert nodeids == {"test::failure1", "test::failure3"}
+
+    def test_resolve_failure_issue(self, db: E2EDB):
+        """Test resolving a failure issue."""
+        run_id = db.start_run("/repo", "test-orch", ["tests/e2e"], commit_sha="abc123")
+        db.finish_run(run_id, "failed")
+
+        db.record_failure_issue(
+            nodeid="test::failure",
+            github_issue_number=101,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="abc123",
+        )
+
+        # Issue should be open initially
+        issue = db.find_open_failure_issue("test::failure")
+        assert issue is not None
+        assert issue.resolution is None
+
+        # Resolve it
+        result = db.resolve_failure_issue("test::failure", "passed")
+        assert result is True
+
+        # Should no longer be open
+        issue = db.find_open_failure_issue("test::failure")
+        assert issue is None
+
+        # Resolving again should return False (no open issue)
+        result = db.resolve_failure_issue("test::failure", "passed")
+        assert result is False
+
+    def test_get_unresolved_failure_count(self, db: E2EDB):
+        """Test counting unresolved failures for a parent issue."""
+        run_id = db.start_run("/repo", "test-orch", ["tests/e2e"], commit_sha="abc123")
+        db.finish_run(run_id, "failed")
+
+        # Record failure issues under parent #100
+        db.record_failure_issue(
+            nodeid="test::failure1",
+            github_issue_number=101,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="abc123",
+        )
+        db.record_failure_issue(
+            nodeid="test::failure2",
+            github_issue_number=102,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="abc123",
+        )
+
+        # Should have 2 unresolved
+        assert db.get_unresolved_failure_count(100) == 2
+
+        # Resolve one
+        db.resolve_failure_issue("test::failure1", "passed")
+        assert db.get_unresolved_failure_count(100) == 1
+
+        # Resolve the other
+        db.resolve_failure_issue("test::failure2", "passed")
+        assert db.get_unresolved_failure_count(100) == 0
+
+
+class TestQuarantineListFunctions:
+    """Test quarantine list utility functions."""
+
+    def test_load_quarantine_list_empty_file(self, tmp_path):
+        """Load from empty file returns empty set."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        quarantine_file.write_text("")
+
+        result = load_quarantine_list(quarantine_file)
+        assert result == set()
+
+    def test_load_quarantine_list_with_tests(self, tmp_path):
+        """Load from file with tests."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        quarantine_file.write_text("# Comment\ntest::foo\ntest::bar\n\n# Another comment\ntest::baz\n")
+
+        result = load_quarantine_list(quarantine_file)
+        assert result == {"test::foo", "test::bar", "test::baz"}
+
+    def test_load_quarantine_list_missing_file(self, tmp_path):
+        """Load from non-existent file returns empty set."""
+        quarantine_file = tmp_path / "nonexistent.txt"
+
+        result = load_quarantine_list(quarantine_file)
+        assert result == set()
+
+    def test_save_quarantine_list_creates_file(self, tmp_path):
+        """Save creates file with default header."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        nodeids = {"test::foo", "test::bar"}
+
+        save_quarantine_list(quarantine_file, nodeids)
+
+        content = quarantine_file.read_text()
+        assert "# Quarantined E2E tests" in content
+        assert "test::bar" in content
+        assert "test::foo" in content
+
+    def test_save_quarantine_list_preserves_header(self, tmp_path):
+        """Save preserves existing header comments."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        quarantine_file.write_text("# Custom header\n# Another line\nold::test\n")
+
+        save_quarantine_list(quarantine_file, {"test::new"})
+
+        content = quarantine_file.read_text()
+        assert "# Custom header" in content
+        assert "# Another line" in content
+        assert "test::new" in content
+        assert "old::test" not in content
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        """Save then load returns same set."""
+        quarantine_file = tmp_path / "quarantine.txt"
+        original = {"test::alpha", "test::beta", "test::gamma"}
+
+        save_quarantine_list(quarantine_file, original)
+        loaded = load_quarantine_list(quarantine_file)
+
+        assert loaded == original

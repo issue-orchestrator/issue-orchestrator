@@ -62,6 +62,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Default E2E config (used when orchestrator not available)
+from ..infra.config import E2EConfig
+_DEFAULT_E2E_CONFIG = E2EConfig()
+
 # Create minimal control API app
 control_app = FastAPI(title="Issue Orchestrator Control API")
 
@@ -3038,6 +3042,135 @@ async def e2e_quarantine_list(repo_root: str = Query(...)) -> JSONResponse:
     })
 
 
+def _apply_quarantine_changes(action: str, nodeids: list, current_tests: set) -> tuple[list, list]:
+    """Apply add or remove actions to the quarantine set."""
+    added, removed = [], []
+    if action == "add":
+        for nodeid in nodeids:
+            if nodeid not in current_tests:
+                current_tests.add(nodeid)
+                added.append(nodeid)
+    else:  # remove
+        for nodeid in nodeids:
+            if nodeid in current_tests:
+                current_tests.remove(nodeid)
+                removed.append(nodeid)
+    return added, removed
+
+
+@control_app.post("/control/e2e/quarantine")
+async def e2e_quarantine_modify(
+    request: Request,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Add or remove tests from the quarantine list.
+
+    Query params:
+        repo_root: str - Repository root path
+
+    JSON body:
+        action: "add" | "remove"
+        nodeids: list[str] - Test node IDs to add/remove
+
+    Returns:
+        {quarantine_file: str, tests: [str], count: int, added: [str], removed: [str]}
+    """
+    from ..infra.e2e_db import load_quarantine_list, save_quarantine_list
+    from ..infra.config import Config
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    action = body.get("action", "").strip()
+    nodeids = body.get("nodeids", [])
+
+    if action not in ("add", "remove"):
+        return JSONResponse({"error": "action must be 'add' or 'remove'"}, status_code=400)
+    if not nodeids:
+        return JSONResponse({"error": "nodeids is required"}, status_code=400)
+
+    try:
+        config = Config.find_and_load(validated_root)
+        quarantine_file = config.e2e.quarantine_file
+    except FileNotFoundError:
+        quarantine_file = "tests/e2e/quarantine.txt"
+
+    quarantine_path = validated_root / quarantine_file
+    current_tests = load_quarantine_list(quarantine_path)
+
+    added, removed = _apply_quarantine_changes(action, nodeids, current_tests)
+    save_quarantine_list(quarantine_path, current_tests)
+
+    logger.info(
+        "[quarantine] Modified quarantine list: added=%d, removed=%d",
+        len(added), len(removed))
+
+    return JSONResponse({
+        "quarantine_file": quarantine_file,
+        "tests": sorted(current_tests),
+        "count": len(current_tests),
+        "added": added,
+        "removed": removed,
+    })
+
+
+@control_app.get("/control/e2e/flaky-tests")
+async def e2e_flaky_tests(
+    repo_root: str = Query(...),
+    threshold: int = Query(default=3),
+    window: int = Query(default=10),
+) -> JSONResponse:
+    """Get tests that exhibit flaky behavior above the threshold.
+
+    Query params:
+        repo_root: str - Repository root path
+        threshold: int - Number of flakes to consider problematic (default: 3)
+        window: int - Number of recent runs to check (default: 10)
+
+    Returns:
+        {flaky_tests: [{nodeid, flake_count}, ...], threshold, window}
+    """
+    from ..infra.e2e_db import E2EDB, load_quarantine_list
+    from ..infra.config import Config
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse({"error": "not_found", "detail": "E2E database not found"}, status_code=404)
+
+    try:
+        config = Config.find_and_load(validated_root)
+        quarantine_file = config.e2e.quarantine_file
+    except FileNotFoundError:
+        quarantine_file = "tests/e2e/quarantine.txt"
+
+    quarantine_path = validated_root / quarantine_file
+    quarantined = load_quarantine_list(quarantine_path)
+
+    db = E2EDB(db_path)
+    flaky_tests = db.get_flaky_tests(threshold=threshold, window_runs=window)
+
+    # Mark which ones are already quarantined
+    for test in flaky_tests:
+        test["is_quarantined"] = test["nodeid"] in quarantined
+
+    return JSONResponse({
+        "flaky_tests": flaky_tests,
+        "threshold": threshold,
+        "window": window,
+        "quarantine_file": quarantine_file,
+    })
+
+
 @control_app.get("/control/e2e/summary/{run_id}")
 async def e2e_test_summary(
     run_id: int,
@@ -3248,6 +3381,437 @@ async def create_e2e_diagnostic_issue(
             {"error": "issue_creation_error", "detail": str(e)},
             status_code=500,
         )
+
+
+# ---------------------------------------------------------------------------
+# E2E Triage Endpoints (for composite issue management)
+# ---------------------------------------------------------------------------
+
+
+def _build_issue_status(run_issue: Any, db: Any) -> dict:
+    """Build issue status dict for triage response. Extracted to reduce complexity."""
+    if not run_issue:
+        return {
+            "parent_issue_url": None,
+            "parent_issue_closed": False,
+            "sub_issues": [],
+            "sub_issues_summary": {"total": 0, "resolved": 0},
+        }
+
+    repo = _orchestrator.config.repo if _orchestrator else None
+    parent_issue_url = f"https://github.com/{repo}/issues/{run_issue.github_issue_number}" if repo else None
+    parent_issue_closed = run_issue.closed_at is not None
+
+    sub_issues = []
+    sub_issues_summary = {"total": 0, "resolved": 0}
+
+    failure_issues = db.get_failure_issues_for_parent(run_issue.github_issue_number)
+    for fi in failure_issues:
+        is_resolved = fi.resolved_at is not None
+        sub_issues.append({
+            "issue_number": fi.github_issue_number,
+            "nodeid": fi.nodeid,
+            "resolved": is_resolved,
+            "resolution": fi.resolution,
+            "url": f"https://github.com/{repo}/issues/{fi.github_issue_number}" if repo else None,
+        })
+        sub_issues_summary["total"] += 1
+        if is_resolved:
+            sub_issues_summary["resolved"] += 1
+
+    return {
+        "parent_issue_url": parent_issue_url,
+        "parent_issue_closed": parent_issue_closed,
+        "sub_issues": sub_issues,
+        "sub_issues_summary": sub_issues_summary,
+    }
+
+
+@control_app.get("/control/e2e/triage/{run_id}")
+async def e2e_triage_data(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get triage data for an E2E run - failures with issue/flakiness metadata.
+
+    Returns data needed for the triage view where user can choose to
+    create issues or dismiss failures.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        {
+            run: {...},
+            failures: [
+                {
+                    nodeid: str,
+                    longrepr: str | null,
+                    duration_seconds: float | null,
+                    existing_issue: {issue_number, created_at, resolution} | null,
+                    flake_count: int (recent flakes in window),
+                    is_likely_flaky: bool
+                },
+                ...
+            ],
+            has_parent_issue: bool,
+            parent_issue_number: int | null,
+            flake_threshold: int
+        }
+    """
+    from ..infra.e2e_db import E2EDB
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+
+        # Get run info
+        run = db.get_run(run_id)
+        if run is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Run {run_id} not found"},
+                status_code=404,
+            )
+
+        # Get failed tests
+        failed_results = db.get_failed_tests(run_id)
+
+        # Check if this run already has a parent issue
+        run_issue = db.get_run_issue(run_id)
+
+        # Get flake thresholds from config, or use defaults
+        e2e_config = _orchestrator.config.e2e if _orchestrator else _DEFAULT_E2E_CONFIG
+        flake_threshold = e2e_config.flake_threshold
+        flake_window = e2e_config.flake_window_runs
+
+        # Build triage data for each failure
+        failures = []
+        for result in failed_results:
+            # Check for existing open issue
+            existing = db.find_open_failure_issue(result.nodeid)
+
+            # Get flake history
+            flake_count = db.get_flake_count(result.nodeid, window_runs=flake_window)
+            is_likely_flaky = flake_count >= flake_threshold
+
+            failures.append({
+                "nodeid": result.nodeid,
+                "longrepr": result.longrepr,
+                "duration_seconds": result.duration_seconds,
+                "existing_issue": existing.to_dict() if existing else None,
+                "flake_count": flake_count,
+                "is_likely_flaky": is_likely_flaky,
+            })
+
+        # Build issue status info if parent issue exists
+        issue_status = _build_issue_status(run_issue, db)
+
+        return JSONResponse({
+            "run": run.to_dict(),
+            "failures": failures,
+            "has_parent_issue": run_issue is not None,
+            "parent_issue_number": run_issue.github_issue_number if run_issue else None,
+            **issue_status,
+            "flake_threshold": flake_threshold,
+        })
+
+    except Exception as e:
+        logger.exception("Failed to get triage data: %s", e)
+        return JSONResponse(
+            {"error": "triage_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+def _create_e2e_sub_issues(
+    tracker: Any,
+    parent_issue: Any,
+    nodeids: list[str],
+    results_by_nodeid: dict,
+    run: Any,
+    db: Any,
+    run_id: int,
+    agent: str,
+) -> list[dict]:
+    """Create sub-issues for selected test failures. Returns list of created issues."""
+    sub_issues = []
+    sub_labels = ["e2e:test-failure", agent]
+
+    for nodeid in nodeids:
+        test_result = results_by_nodeid.get(nodeid)
+        if not test_result:
+            logger.warning("[e2e-create-issues] Node ID not found: %s", nodeid)
+            continue
+
+        sub_issue = tracker.create_test_failure_issue(
+            parent_issue=parent_issue,
+            test_result=test_result,
+            first_failing_sha=run.commit_sha or "",
+            last_passing_sha=None,
+            labels=sub_labels,
+        )
+
+        if not sub_issue:
+            continue
+
+        db.record_failure_issue(
+            nodeid=nodeid,
+            github_issue_number=sub_issue.issue_number,
+            parent_issue_number=parent_issue.issue_number,
+            first_failing_run_id=run_id,
+            first_failing_sha=run.commit_sha or "",
+        )
+        sub_issues.append({
+            "number": sub_issue.issue_number,
+            "url": sub_issue.html_url,
+            "nodeid": nodeid,
+        })
+
+    return sub_issues
+
+
+def _validate_e2e_create_request(
+    nodeids: list,
+    agent: str,
+    repo_root: str,
+) -> JSONResponse | Path:
+    """Validate request params for e2e issue creation. Returns JSONResponse on error, Path on success."""
+    if not nodeids:
+        return JSONResponse({"error": "No test failures selected"}, status_code=400)
+    if not agent:
+        return JSONResponse({"error": "Agent label is required"}, status_code=400)
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse({"error": "not_found", "detail": "E2E database not found"}, status_code=404)
+
+    return db_path
+
+
+@control_app.post("/control/e2e/create-issues/{run_id}")
+async def e2e_create_issues(
+    request: Request,
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Create GitHub issues from E2E test failures.
+
+    Creates a parent issue for the run and sub-issues for each selected failure.
+    Issues are linked using GitHub's native sub-issues feature.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+
+    JSON body:
+        nodeids: list[str] - Test node IDs to create issues for
+        agent: str - Agent label to assign (e.g., "agent:developer")
+
+    Returns:
+        {
+            status: "created",
+            parent_issue: {number, url},
+            sub_issues: [{number, url, nodeid}, ...]
+        }
+    """
+    from ..infra.e2e_db import E2EDB
+    from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
+
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    nodeids = body.get("nodeids", [])
+    agent = body.get("agent", "").strip()
+
+    validation_result = _validate_e2e_create_request(nodeids, agent, repo_root)
+    if isinstance(validation_result, JSONResponse):
+        return validation_result
+    db_path = validation_result
+
+    try:
+        db = E2EDB(db_path)
+        run = db.get_run(run_id)
+        if run is None:
+            return JSONResponse({"error": "not_found", "detail": f"Run {run_id} not found"}, status_code=404)
+
+        existing_run_issue = db.get_run_issue(run_id)
+        if existing_run_issue:
+            return JSONResponse(
+                {"error": "Issues already created for this run",
+                 "parent_issue_number": existing_run_issue.github_issue_number},
+                status_code=409)
+
+        # Get the GitHub client via the public http_client property
+        github_client = _orchestrator.repository_host.http_client  # type: ignore[union-attr]
+        tracker = GitHubE2EIssueTracker(github_client)
+
+        parent_issue = tracker.create_run_issue(run=run, failed_count=len(nodeids), labels=["e2e:run"])
+        if parent_issue is None:
+            return JSONResponse({"error": "Failed to create parent issue"}, status_code=500)
+
+        db.record_run_issue(run_id, parent_issue.issue_number)
+
+        failed_results = db.get_failed_tests(run_id)
+        results_by_nodeid = {r.nodeid: r for r in failed_results}
+
+        sub_issues = _create_e2e_sub_issues(
+            tracker, parent_issue, nodeids, results_by_nodeid, run, db, run_id, agent)
+
+        logger.info(
+            "[e2e-create-issues] Created parent #%d with %d sub-issues for run #%d",
+            parent_issue.issue_number, len(sub_issues), run_id)
+
+        return JSONResponse({
+            "status": "created",
+            "parent_issue": {"number": parent_issue.issue_number, "url": parent_issue.html_url},
+            "sub_issues": sub_issues,
+        })
+
+    except Exception as e:
+        logger.exception("Failed to create E2E issues: %s", e)
+        return JSONResponse({"error": "issue_creation_error", "detail": str(e)}, status_code=500)
+
+
+def _sync_close_passing_issues(tracker, open_issues, passing_nodeids, run_id, commit_sha, db):
+    """Close sub-issues for tests that now pass."""
+    closed_issues = []
+    parent_issues_to_check = set()
+
+    for issue in open_issues:
+        if issue.nodeid in passing_nodeids:
+            comment = (
+                f"Test now passing as of run #{run_id} "
+                f"(commit `{commit_sha[:12]}`)\n\n"
+                f"_Auto-closed by orchestrator._"
+            )
+            if tracker.close_issue_with_comment(issue.github_issue_number, comment):
+                db.resolve_failure_issue(issue.nodeid, "passed")
+                closed_issues.append({
+                    "number": issue.github_issue_number,
+                    "nodeid": issue.nodeid,
+                })
+                parent_issues_to_check.add(issue.parent_issue_number)
+                logger.info(
+                    "[e2e-sync] Closed issue #%d for passing test: %s",
+                    issue.github_issue_number, issue.nodeid)
+
+    return closed_issues, parent_issues_to_check
+
+
+def _sync_close_parent_issues(tracker, parent_issues_to_check, run_id, db):
+    """Close parent issues if all their sub-issues are resolved."""
+    closed_parents = []
+    for parent_number in parent_issues_to_check:
+        unresolved = db.get_unresolved_failure_count(parent_number)
+        if unresolved == 0:
+            comment = (
+                f"All sub-issues resolved as of run #{run_id}\n\n"
+                f"_Auto-closed by orchestrator._"
+            )
+            if tracker.close_issue_with_comment(parent_number, comment):
+                closed_parents.append(parent_number)
+                logger.info("[e2e-sync] Closed parent issue #%d", parent_number)
+    return closed_parents
+
+
+@control_app.post("/control/e2e/sync-issues/{run_id}")
+async def e2e_sync_issues(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Sync E2E issue state based on test results from a run.
+
+    For any test that passed in this run but has an open failure issue,
+    close the GitHub issue and mark it as resolved. If all sub-issues for
+    a parent are resolved, close the parent issue too.
+
+    Path params:
+        run_id: int - Run ID to sync from
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        {
+            status: "synced",
+            closed_issues: [{number, nodeid}, ...],
+            closed_parent_issues: [number, ...],
+        }
+    """
+    from ..infra.e2e_db import E2EDB
+    from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
+
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse({"error": "not_found", "detail": "E2E database not found"}, status_code=404)
+
+    try:
+        db = E2EDB(db_path)
+        run = db.get_run(run_id)
+        if run is None:
+            return JSONResponse({"error": "not_found", "detail": f"Run {run_id} not found"}, status_code=404)
+
+        summary = db.get_test_summary(run_id)
+        passing_nodeids = {t["nodeid"] for t in summary["passed"]}
+        passing_nodeids.update(t["nodeid"] for t in summary["passed_on_retry"])
+
+        open_issues = db.get_all_open_failure_issues()
+        github_client = _orchestrator.repository_host.http_client  # type: ignore[union-attr]
+        tracker = GitHubE2EIssueTracker(github_client)
+
+        commit_sha = run.commit_sha or "unknown"
+        closed_issues, parent_issues_to_check = _sync_close_passing_issues(
+            tracker, open_issues, passing_nodeids, run_id, commit_sha, db)
+
+        closed_parents = _sync_close_parent_issues(tracker, parent_issues_to_check, run_id, db)
+
+        logger.info(
+            "[e2e-sync] Run #%d: closed %d sub-issues, %d parent issues",
+            run_id, len(closed_issues), len(closed_parents))
+
+        return JSONResponse({
+            "status": "synced",
+            "closed_issues": closed_issues,
+            "closed_parent_issues": closed_parents,
+        })
+
+    except Exception as e:
+        logger.exception("Failed to sync E2E issues: %s", e)
+        return JSONResponse({"error": "sync_error", "detail": str(e)}, status_code=500)
 
 
 class ControlAPIServer:

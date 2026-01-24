@@ -862,6 +862,101 @@ class GitHubHttpClient:
         mutation_result = result.get("data", {}).get(mutation_name, {})
         return mutation_result.get("pullRequest")
 
+    # -------------------- Sub-issues (GraphQL) --------------------
+
+    def get_issue_node_id(self, issue_number: int) -> str | None:
+        """Get the GraphQL node ID for an issue.
+
+        Args:
+            issue_number: Issue number
+
+        Returns:
+            Node ID string (e.g., "I_kwDOGK5N...") or None if not found
+        """
+        query = """
+        query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+                issue(number: $number) {
+                    id
+                }
+            }
+        }
+        """
+        owner, repo = self._config.repo.split("/")
+        try:
+            result = self._graphql(
+                query,
+                {"owner": owner, "repo": repo, "number": issue_number},
+                caller="get_issue_node_id",
+            )
+            issue = result.get("data", {}).get("repository", {}).get("issue")
+            if issue:
+                return issue.get("id")
+            return None
+        except GitHubHttpError:
+            return None
+
+    def add_sub_issue(
+        self,
+        parent_node_id: str,
+        child_issue_number: int,
+    ) -> bool:
+        """Link an issue as a sub-issue of a parent.
+
+        Uses GitHub's sub-issues API (addSubIssue mutation).
+
+        Args:
+            parent_node_id: GraphQL node ID of the parent issue
+            child_issue_number: Issue number of the child to link
+
+        Returns:
+            True if linked successfully, False otherwise
+        """
+        # First get the child's node ID
+        child_node_id = self.get_issue_node_id(child_issue_number)
+        if not child_node_id:
+            logger.warning(
+                "[github] Could not get node ID for issue #%d",
+                child_issue_number,
+            )
+            return False
+
+        mutation = """
+        mutation($parentId: ID!, $childId: ID!) {
+            addSubIssue(input: {issueId: $parentId, subIssueId: $childId}) {
+                issue {
+                    id
+                    number
+                }
+                subIssue {
+                    id
+                    number
+                }
+            }
+        }
+        """
+        try:
+            result = self._graphql(
+                mutation,
+                {"parentId": parent_node_id, "childId": child_node_id},
+                caller="add_sub_issue",
+            )
+            add_result = result.get("data", {}).get("addSubIssue")
+            if add_result and add_result.get("subIssue"):
+                logger.info(
+                    "[github] Linked issue #%d as sub-issue of parent",
+                    child_issue_number,
+                )
+                return True
+            return False
+        except GitHubHttpError as e:
+            logger.warning(
+                "[github] Failed to link sub-issue #%d: %s",
+                child_issue_number,
+                e,
+            )
+            return False
+
     # -------------------- Rate limits --------------------
 
     def get_rate_limit_snapshot(self) -> GitHubRateLimitSnapshot | None:

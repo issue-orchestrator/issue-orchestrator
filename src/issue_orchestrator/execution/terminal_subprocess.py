@@ -2,6 +2,11 @@
 
 This provides a tmux-free execution option while still emitting a session log
 per worktree for debugging and session health checks.
+
+Uses pexpect for robust PTY handling. This solves the race condition where
+fast-exiting processes (like printf) would exit before their output was fully
+readable from the PTY buffer. pexpect correctly waits for all output before
+signaling EOF, avoiding data loss under parallel test execution load.
 """
 
 from __future__ import annotations
@@ -9,17 +14,18 @@ from __future__ import annotations
 import json
 import logging
 import os
-import pty
-import select
 import signal
-import subprocess
 import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, BinaryIO
 
 from ..control.isolation import build_isolation_prefix
+
+if TYPE_CHECKING:
+    import pexpect
 from ..infra.env import get_env
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
@@ -208,14 +214,19 @@ class _SubprocessRegistry:
 
 
 class SubprocessPlugin:
-    """Terminal plugin that uses subprocesses instead of tmux."""
+    """Terminal plugin that uses subprocesses instead of tmux.
+
+    Uses pexpect for robust PTY handling. This ensures all output is captured
+    even for fast-exiting processes, avoiding the race condition where processes
+    exit before their output is readable from the PTY buffer.
+    """
 
     def __init__(self) -> None:
         repo_root = Path(get_env("REPO_ROOT") or Path.cwd()).resolve()
         self._registry = _SubprocessRegistry(repo_root)
-        self._processes: dict[str, subprocess.Popen[bytes]] = {}
-        self._copier_threads: dict[str, threading.Thread] = {}  # Track copier threads
-        self._pty_masters: dict[str, int] = {}  # Store PTY master fds for stdin
+        self._children: dict[str, "pexpect.spawn"] = {}  # pexpect child processes
+        self._watcher_threads: dict[str, threading.Thread] = {}  # Process watchers
+        self._log_files: dict[str, BinaryIO] = {}  # Open log file handles
         self._repo_root = repo_root
         allow_stdin_val = get_env("SUBPROCESS_ALLOW_STDIN") or ""
         self._allow_stdin = allow_stdin_val.lower() in {"1", "true", "yes"}
@@ -233,104 +244,81 @@ class SubprocessPlugin:
         isolation_prefix = build_isolation_prefix(working_dir, scrub_env=True, isolate_home=False)
         return f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command}'
 
-    def _setup_pty_master(self, session_name: str, master_fd: int) -> int:
-        """Set up PTY master fd and return read fd."""
-        read_fd = os.dup(master_fd)
-        if self._allow_stdin:
-            self._pty_masters[session_name] = master_fd
-        else:
-            os.close(master_fd)
-        return read_fd
+    def _start_process_watcher(self, child: "pexpect.spawn", session_name: str, log_file: BinaryIO) -> None:
+        """Start a thread that waits for the process to complete and closes resources."""
+        import pexpect as pexp  # Lazy import to avoid circular dependency with agent-done
 
-    def _drain_remaining_output(self, read_fd: int, log_file) -> None:
-        """Drain any remaining output after process exits.
-
-        Uses multiple short timeouts to handle the race between process exit
-        and data arriving in the PTY buffer. Fast processes (like printf) may
-        exit before their output is ready to read. Under heavy system load
-        (like parallel test execution), this race is more pronounced.
-        """
-        empty_reads = 0
-        max_empty_reads = 20  # Give up after 2s of no data (20 * 0.1s)
-        while empty_reads < max_empty_reads:
-            ready, _, _ = select.select([read_fd], [], [], 0.1)
-            if not ready:
-                empty_reads += 1
-                continue
-            data = os.read(read_fd, 4096)
-            if not data:
-                break  # EOF - PTY closed
-            log_file.write(data)
-            empty_reads = 0  # Reset counter when we get data
-
-    def _start_output_copier(
-        self, read_fd: int, log_path: Path, proc: subprocess.Popen[bytes], session_name: str
-    ) -> None:
-        """Start a thread to copy PTY output to log file."""
-
-        def _copy_output():
+        def _watch():
             try:
-                with open(log_path, "ab", buffering=0) as log_file:
-                    while True:
-                        try:
-                            ready, _, _ = select.select([read_fd], [], [], 1.0)
-                            if ready:
-                                data = os.read(read_fd, 4096)
-                                if not data:
-                                    break
-                                log_file.write(data)
-                            if proc.poll() is not None:
-                                self._drain_remaining_output(read_fd, log_file)
-                                break
-                        except OSError:
-                            break
+                # Wait for EOF - pexpect guarantees all output is read before returning
+                child.expect(pexp.EOF, timeout=None)
+            except pexp.TIMEOUT:
+                pass
+            except pexp.ExceptionPexpect:
+                pass
             finally:
+                # Close child and flush log
                 try:
-                    os.close(read_fd)
-                except OSError:
+                    child.close()
+                except Exception:
                     pass
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
+                self._log_files.pop(session_name, None)
 
-        thread = threading.Thread(target=_copy_output, daemon=True)
-        self._copier_threads[session_name] = thread
+        thread = threading.Thread(target=_watch, daemon=True)
+        self._watcher_threads[session_name] = thread
         thread.start()
 
-    def _start_process(self, command: str, working_dir: Path, session_name: str) -> subprocess.Popen[bytes]:
+    def _start_process(self, command: str, working_dir: Path, session_name: str) -> "pexpect.spawn":
+        """Start a subprocess with pexpect, capturing output to log file."""
+        import pexpect  # Lazy import to avoid circular dependency with agent-done
+
         full_cmd = self._build_process_command(command, working_dir)
         log_path = self._session_log_path(working_dir, session_name)
 
-        # Use PTY to force line-buffered output from the child process.
-        master_fd, slave_fd = pty.openpty()
+        # Open log file for binary writing (pexpect writes bytes)
+        log_file = open(log_path, "wb", buffering=0)
+        self._log_files[session_name] = log_file
 
-        proc = subprocess.Popen(
-            ["/bin/bash", "-lc", full_cmd],
+        # Use pexpect.spawn which handles PTY correctly, including EOF timing
+        # The logfile parameter captures all output automatically
+        child = pexpect.spawn(
+            "/bin/bash",
+            ["-lc", full_cmd],
             cwd=str(working_dir),
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            start_new_session=True,
-            close_fds=True,
+            logfile=log_file,
+            timeout=None,  # No timeout - sessions run until completion
         )
-        os.close(slave_fd)
 
-        read_fd = self._setup_pty_master(session_name, master_fd)
-        self._start_output_copier(read_fd, log_path, proc, session_name)
-
-        self._processes[session_name] = proc
-        return proc
+        self._children[session_name] = child
+        self._start_process_watcher(child, session_name, log_file)
+        return child
 
     def _process_alive(self, pid: int, session_name: str | None = None) -> bool:
-        proc = self._processes.get(session_name) if session_name else None
-        if proc is not None:
-            if proc.poll() is not None:
-                return False
-            return True
+        """Check if a process is still running."""
+        child = self._children.get(session_name) if session_name else None
+        if child is not None:
+            return child.isalive()
+        # Fall back to kill(0) check for processes we don't track directly
         try:
             os.kill(pid, 0)
             return True
         except OSError:
             return False
 
-    def _kill_process(self, pid: int) -> None:
+    def _kill_process(self, pid: int, session_name: str | None = None) -> None:
+        """Kill a process, trying process group first."""
+        child = self._children.get(session_name) if session_name else None
+        if child is not None:
+            try:
+                child.terminate(force=True)
+                return
+            except Exception:
+                pass
+        # Fall back to manual kill
         try:
             os.killpg(pid, signal.SIGTERM)
         except Exception:
@@ -357,7 +345,7 @@ class SubprocessPlugin:
         if self.session_exists(session_id, session_name):
             return False
 
-        proc = self._start_process(command, worktree, session_name)
+        child = self._start_process(command, worktree, session_name)
         is_review = session_name.startswith("review-")
         tab_name = title or session_name
         if is_review:
@@ -367,11 +355,14 @@ class SubprocessPlugin:
             except ValueError:
                 tab_name = session_name
 
+        # pexpect.spawn.pid is None only before spawn() completes, which can't
+        # happen here since we just created the child
+        assert child.pid is not None, "pexpect child has no pid"
         record = _SessionRecord(
             session_name=session_name,
             issue_number=session_id,
             worktree_path=str(worktree.resolve()),
-            pid=proc.pid,
+            pid=child.pid,
             started_at=datetime.now().isoformat(),
             log_path=str(self._session_log_path(worktree, session_name)),
             tab_name=tab_name,
@@ -380,12 +371,24 @@ class SubprocessPlugin:
         self._registry.upsert(record)
         return True
 
-    def _wait_for_copier_thread(self, session_name: str, timeout: float = 2.0) -> None:
-        """Wait for the copier thread to finish draining output."""
-        thread = self._copier_threads.get(session_name)
+    def _wait_for_watcher_thread(self, session_name: str, timeout: float = 2.0) -> None:
+        """Wait for the watcher thread to finish and clean up resources."""
+        thread = self._watcher_threads.get(session_name)
         if thread is not None and thread.is_alive():
             thread.join(timeout=timeout)
-        self._copier_threads.pop(session_name, None)
+        self._watcher_threads.pop(session_name, None)
+
+    def _cleanup_session(self, session_name: str) -> None:
+        """Clean up all resources for a session."""
+        self._wait_for_watcher_thread(session_name)
+        self._children.pop(session_name, None)
+        # Close log file if still open
+        log_file = self._log_files.pop(session_name, None)
+        if log_file is not None:
+            try:
+                log_file.close()
+            except Exception:
+                pass
 
     @hookimpl
     def session_exists(self, session_id: int, session_name: str) -> bool | None:
@@ -395,10 +398,9 @@ class SubprocessPlugin:
             return False
         if self._process_alive(record.pid, session_name):
             return True
-        # Process is dead - wait for copier thread to finish draining output
-        self._wait_for_copier_thread(session_name)
+        # Process is dead - wait for watcher thread to finish flushing output
+        self._cleanup_session(session_name)
         self._registry.remove(session_name)
-        self._processes.pop(session_name, None)
         return False
 
     @hookimpl
@@ -411,10 +413,9 @@ class SubprocessPlugin:
         record = records.get(session_name)
         if not record:
             return False
-        self._kill_process(record.pid)
-        self._wait_for_copier_thread(session_name)
+        self._kill_process(record.pid, session_name)
+        self._cleanup_session(session_name)
         self._registry.remove(session_name)
-        self._processes.pop(session_name, None)
         return True
 
     @hookimpl
@@ -429,9 +430,8 @@ class SubprocessPlugin:
                     "is_review": record.is_review,
                 })
             else:
-                self._wait_for_copier_thread(record.session_name)
+                self._cleanup_session(record.session_name)
                 self._registry.remove(record.session_name)
-                self._processes.pop(record.session_name, None)
         return running
 
     @hookimpl
@@ -440,9 +440,8 @@ class SubprocessPlugin:
         cleaned = 0
         for record in list(records.values()):
             if not self._process_alive(record.pid, record.session_name):
-                self._wait_for_copier_thread(record.session_name)
+                self._cleanup_session(record.session_name)
                 self._registry.remove(record.session_name)
-                self._processes.pop(record.session_name, None)
                 cleaned += 1
         return cleaned
 
@@ -465,14 +464,13 @@ class SubprocessPlugin:
     def send_to_session(self, session_id: int, text: str, session_name: str) -> bool | None:
         if not self._allow_stdin:
             return False
-        proc = self._processes.get(session_name)
-        master_fd = self._pty_masters.get(session_name)
-        if not proc or master_fd is None:
+        child = self._children.get(session_name)
+        if not child or not child.isalive():
             return False
         try:
-            os.write(master_fd, (text + "\n").encode())
+            child.sendline(text)
             return True
-        except OSError:
+        except Exception:
             return False
 
     @hookimpl
@@ -485,24 +483,25 @@ class SubprocessPlugin:
 
     @hookimpl
     def on_orchestrator_startup(self) -> None:
-        logger.info("[subprocess] Terminal backend ready.")
+        logger.info("[subprocess] Terminal backend ready (pexpect).")
 
     @hookimpl
     def on_orchestrator_shutdown(self) -> None:
         records = self._registry.load()
         for record in records.values():
-            if self._process_alive(record.pid):
-                self._kill_process(record.pid)
-        # Wait for all copier threads to finish draining output
-        for session_name in list(self._copier_threads.keys()):
-            self._wait_for_copier_thread(session_name, timeout=1.0)
-        # Close any open PTY master fds
-        for master_fd in self._pty_masters.values():
+            if self._process_alive(record.pid, record.session_name):
+                self._kill_process(record.pid, record.session_name)
+        # Wait for all watcher threads to finish
+        for session_name in list(self._watcher_threads.keys()):
+            self._wait_for_watcher_thread(session_name, timeout=1.0)
+        # Close any remaining log files
+        for log_file in list(self._log_files.values()):
             try:
-                os.close(master_fd)
-            except OSError:
+                log_file.close()
+            except Exception:
                 pass
-        self._pty_masters.clear()
+        self._log_files.clear()
+        self._children.clear()
         self._registry.clear()
 
     @hookimpl

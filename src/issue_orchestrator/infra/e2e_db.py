@@ -61,6 +61,53 @@ CREATE INDEX IF NOT EXISTS idx_e2e_test_results_run
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_e2e_test_results_run_nodeid
     ON e2e_test_results(run_id, nodeid);
+
+-- E2E Issue Tracking: Links test failures to GitHub issues
+CREATE TABLE IF NOT EXISTS e2e_failure_issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nodeid TEXT NOT NULL,
+    github_issue_number INTEGER NOT NULL,
+    parent_issue_number INTEGER NOT NULL,
+    first_failing_run_id INTEGER NOT NULL,
+    first_failing_sha TEXT NOT NULL,
+    last_passing_sha TEXT,
+    resolved_at TEXT,
+    resolution TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(first_failing_run_id) REFERENCES e2e_runs(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_e2e_failure_issues_nodeid_sha
+    ON e2e_failure_issues(nodeid, first_failing_sha);
+
+CREATE INDEX IF NOT EXISTS idx_e2e_failure_issues_parent
+    ON e2e_failure_issues(parent_issue_number);
+
+-- E2E Issue Tracking: Tracks E2E run parent issues
+CREATE TABLE IF NOT EXISTS e2e_run_issues (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    github_issue_number INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    FOREIGN KEY(run_id) REFERENCES e2e_runs(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_e2e_run_issues_run
+    ON e2e_run_issues(run_id);
+
+-- E2E Flakiness Tracking: Records flaky test occurrences
+CREATE TABLE IF NOT EXISTS e2e_flake_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nodeid TEXT NOT NULL,
+    run_id INTEGER NOT NULL,
+    was_flaky INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES e2e_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_e2e_flake_history_nodeid
+    ON e2e_flake_history(nodeid, recorded_at DESC);
 """
 
 
@@ -175,6 +222,111 @@ class E2ETestResult:
             "retry_outcome": self.retry_outcome,
             "is_quarantined": self.is_quarantined,
             "updated_at": self.updated_at,
+        }
+
+
+@dataclass
+class E2EFailureIssue:
+    """Links a test failure to a GitHub sub-issue."""
+
+    id: int
+    nodeid: str
+    github_issue_number: int
+    parent_issue_number: int
+    first_failing_run_id: int
+    first_failing_sha: str
+    last_passing_sha: Optional[str]
+    resolved_at: Optional[str]
+    resolution: Optional[str]  # 'passed', 'quarantined', 'manual'
+    created_at: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "E2EFailureIssue":
+        return cls(
+            id=row["id"],
+            nodeid=row["nodeid"],
+            github_issue_number=row["github_issue_number"],
+            parent_issue_number=row["parent_issue_number"],
+            first_failing_run_id=row["first_failing_run_id"],
+            first_failing_sha=row["first_failing_sha"],
+            last_passing_sha=row["last_passing_sha"],
+            resolved_at=row["resolved_at"],
+            resolution=row["resolution"],
+            created_at=row["created_at"],
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "nodeid": self.nodeid,
+            "github_issue_number": self.github_issue_number,
+            "parent_issue_number": self.parent_issue_number,
+            "first_failing_run_id": self.first_failing_run_id,
+            "first_failing_sha": self.first_failing_sha,
+            "last_passing_sha": self.last_passing_sha,
+            "resolved_at": self.resolved_at,
+            "resolution": self.resolution,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass
+class E2ERunIssue:
+    """Links an E2E run to its parent GitHub issue."""
+
+    id: int
+    run_id: int
+    github_issue_number: int
+    created_at: str
+    closed_at: Optional[str]
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "E2ERunIssue":
+        return cls(
+            id=row["id"],
+            run_id=row["run_id"],
+            github_issue_number=row["github_issue_number"],
+            created_at=row["created_at"],
+            closed_at=row["closed_at"],
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "github_issue_number": self.github_issue_number,
+            "created_at": self.created_at,
+            "closed_at": self.closed_at,
+        }
+
+
+@dataclass
+class E2EFlakeRecord:
+    """Records a flaky test occurrence."""
+
+    id: int
+    nodeid: str
+    run_id: int
+    was_flaky: bool
+    recorded_at: str
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "E2EFlakeRecord":
+        return cls(
+            id=row["id"],
+            nodeid=row["nodeid"],
+            run_id=row["run_id"],
+            was_flaky=bool(row["was_flaky"]),
+            recorded_at=row["recorded_at"],
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "nodeid": self.nodeid,
+            "run_id": self.run_id,
+            "was_flaky": self.was_flaky,
+            "recorded_at": self.recorded_at,
         }
 
 
@@ -673,6 +825,22 @@ class E2EDB:
             )
             return [E2ERun.from_row(row) for row in cursor.fetchall()]
 
+    def get_run(self, run_id: int) -> Optional[E2ERun]:
+        """Get a run by ID.
+
+        Args:
+            run_id: Run ID
+
+        Returns:
+            E2ERun or None if not found
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM e2e_runs WHERE id = ?", (run_id,)
+            )
+            row = cursor.fetchone()
+            return E2ERun.from_row(row) if row else None
+
     def run_details(self, run_id: int) -> Optional[dict]:
         """Get a run with its test results.
 
@@ -828,6 +996,312 @@ class E2EDB:
                 "quarantined_count": quarantined_count,
             }
 
+    # -------------------------------------------------------------------------
+    # E2E Issue Tracking Methods
+    # -------------------------------------------------------------------------
+
+    def record_run_issue(
+        self,
+        run_id: int,
+        github_issue_number: int,
+    ) -> int:
+        """Record a GitHub parent issue for an E2E run.
+
+        Args:
+            run_id: E2E run ID
+            github_issue_number: GitHub issue number for the parent issue
+
+        Returns:
+            ID of the created record
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO e2e_run_issues (run_id, github_issue_number, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (run_id, github_issue_number, self._now_iso()),
+            )
+            return cursor.lastrowid or 0
+
+    def get_run_issue(self, run_id: int) -> Optional[E2ERunIssue]:
+        """Get the GitHub issue for an E2E run.
+
+        Args:
+            run_id: E2E run ID
+
+        Returns:
+            E2ERunIssue or None if no issue exists
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM e2e_run_issues WHERE run_id = ?",
+                (run_id,),
+            )
+            row = cursor.fetchone()
+            return E2ERunIssue.from_row(row) if row else None
+
+    def close_run_issue(self, run_id: int) -> bool:
+        """Mark a run's GitHub issue as closed.
+
+        Args:
+            run_id: E2E run ID
+
+        Returns:
+            True if updated, False if no issue existed
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE e2e_run_issues SET closed_at = ?
+                WHERE run_id = ? AND closed_at IS NULL
+                """,
+                (self._now_iso(), run_id),
+            )
+            return cursor.rowcount > 0
+
+    def record_failure_issue(
+        self,
+        nodeid: str,
+        github_issue_number: int,
+        parent_issue_number: int,
+        first_failing_run_id: int,
+        first_failing_sha: str,
+        last_passing_sha: Optional[str] = None,
+    ) -> int:
+        """Record a GitHub sub-issue for a test failure.
+
+        Args:
+            nodeid: Test node ID (e.g., tests/e2e/test_foo.py::test_bar)
+            github_issue_number: GitHub issue number for the sub-issue
+            parent_issue_number: Parent issue number
+            first_failing_run_id: Run ID where failure was first detected
+            first_failing_sha: Commit SHA where failure was first detected
+            last_passing_sha: Last known passing commit SHA
+
+        Returns:
+            ID of the created record
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO e2e_failure_issues
+                (nodeid, github_issue_number, parent_issue_number,
+                 first_failing_run_id, first_failing_sha, last_passing_sha, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    nodeid,
+                    github_issue_number,
+                    parent_issue_number,
+                    first_failing_run_id,
+                    first_failing_sha,
+                    last_passing_sha,
+                    self._now_iso(),
+                ),
+            )
+            return cursor.lastrowid or 0
+
+    def find_open_failure_issue(
+        self,
+        nodeid: str,
+    ) -> Optional[E2EFailureIssue]:
+        """Find an open GitHub issue for a test failure.
+
+        Args:
+            nodeid: Test node ID
+
+        Returns:
+            E2EFailureIssue or None if no open issue exists
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM e2e_failure_issues
+                WHERE nodeid = ? AND resolved_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (nodeid,),
+            )
+            row = cursor.fetchone()
+            return E2EFailureIssue.from_row(row) if row else None
+
+    def resolve_failure_issue(
+        self,
+        nodeid: str,
+        resolution: str,
+    ) -> bool:
+        """Mark a failure issue as resolved.
+
+        Args:
+            nodeid: Test node ID
+            resolution: Resolution type ('passed', 'quarantined', 'manual')
+
+        Returns:
+            True if updated, False if no open issue existed
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE e2e_failure_issues
+                SET resolved_at = ?, resolution = ?
+                WHERE nodeid = ? AND resolved_at IS NULL
+                """,
+                (self._now_iso(), resolution, nodeid),
+            )
+            return cursor.rowcount > 0
+
+    def get_failure_issues_for_parent(
+        self,
+        parent_issue_number: int,
+    ) -> list[E2EFailureIssue]:
+        """Get all failure sub-issues for a parent issue.
+
+        Args:
+            parent_issue_number: Parent GitHub issue number
+
+        Returns:
+            List of E2EFailureIssue records
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM e2e_failure_issues
+                WHERE parent_issue_number = ?
+                ORDER BY nodeid
+                """,
+                (parent_issue_number,),
+            )
+            return [E2EFailureIssue.from_row(row) for row in cursor.fetchall()]
+
+    def get_unresolved_failure_count(
+        self,
+        parent_issue_number: int,
+    ) -> int:
+        """Count unresolved failure issues for a parent.
+
+        Args:
+            parent_issue_number: Parent GitHub issue number
+
+        Returns:
+            Count of unresolved failure issues
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*) as cnt FROM e2e_failure_issues
+                WHERE parent_issue_number = ? AND resolved_at IS NULL
+                """,
+                (parent_issue_number,),
+            )
+            return cursor.fetchone()["cnt"]
+
+    def get_all_open_failure_issues(self) -> list[E2EFailureIssue]:
+        """Get all unresolved failure issues across all runs.
+
+        Returns:
+            List of E2EFailureIssue records where resolved_at IS NULL
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM e2e_failure_issues
+                WHERE resolved_at IS NULL
+                ORDER BY nodeid
+                """,
+            )
+            return [E2EFailureIssue.from_row(row) for row in cursor.fetchall()]
+
+    # -------------------------------------------------------------------------
+    # Flakiness Tracking Methods
+    # -------------------------------------------------------------------------
+
+    def record_flake(
+        self,
+        nodeid: str,
+        run_id: int,
+        was_flaky: bool,
+    ) -> int:
+        """Record a flaky test occurrence.
+
+        Args:
+            nodeid: Test node ID
+            run_id: E2E run ID
+            was_flaky: Whether the test was flaky (failed then passed on retry)
+
+        Returns:
+            ID of the created record
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO e2e_flake_history (nodeid, run_id, was_flaky, recorded_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (nodeid, run_id, int(was_flaky), self._now_iso()),
+            )
+            return cursor.lastrowid or 0
+
+    def get_flake_count(
+        self,
+        nodeid: str,
+        window_runs: int = 10,
+    ) -> int:
+        """Count consecutive flaky occurrences for a test.
+
+        Args:
+            nodeid: Test node ID
+            window_runs: Number of recent runs to check
+
+        Returns:
+            Count of flaky occurrences in the window
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*) as cnt FROM (
+                    SELECT was_flaky FROM e2e_flake_history
+                    WHERE nodeid = ?
+                    ORDER BY recorded_at DESC
+                    LIMIT ?
+                )
+                WHERE was_flaky = 1
+                """,
+                (nodeid, window_runs),
+            )
+            return cursor.fetchone()["cnt"]
+
+    def get_flaky_tests(
+        self,
+        threshold: int = 3,
+        window_runs: int = 10,
+    ) -> list[dict]:
+        """Get tests that exceed the flakiness threshold.
+
+        Args:
+            threshold: Number of flakes to consider a test as problematic
+            window_runs: Number of recent runs to check
+
+        Returns:
+            List of dicts with nodeid and flake_count
+        """
+        with self._connect() as conn:
+            # Get unique nodeids that have flake history
+            cursor = conn.execute(
+                "SELECT DISTINCT nodeid FROM e2e_flake_history"
+            )
+            nodeids = [row["nodeid"] for row in cursor.fetchall()]
+
+        # Check each one (could be optimized with window functions if needed)
+        result = []
+        for nodeid in nodeids:
+            count = self.get_flake_count(nodeid, window_runs)
+            if count >= threshold:
+                result.append({"nodeid": nodeid, "flake_count": count})
+
+        return sorted(result, key=lambda x: x["flake_count"], reverse=True)
+
 
 # -------------------------------------------------------------------------
 # Utility functions
@@ -856,3 +1330,43 @@ def load_quarantine_list(quarantine_path: Path) -> set[str]:
                 quarantined.add(line)
 
     return quarantined
+
+
+def save_quarantine_list(quarantine_path: Path, nodeids: set[str]) -> None:
+    """Save the quarantine list to a file.
+
+    Creates the file and parent directories if they don't exist.
+    Preserves header comment if present.
+
+    Args:
+        quarantine_path: Path to quarantine file
+        nodeids: Set of nodeids to quarantine
+    """
+    # Preserve any header comments if file exists
+    header_lines = []
+    if quarantine_path.exists():
+        with open(quarantine_path) as f:
+            for line in f:
+                if line.startswith("#"):
+                    header_lines.append(line.rstrip())
+                else:
+                    break
+
+    # Ensure parent directory exists
+    quarantine_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(quarantine_path, "w") as f:
+        # Write header if present
+        if header_lines:
+            for line in header_lines:
+                f.write(line + "\n")
+            f.write("\n")
+        else:
+            # Add a default header
+            f.write("# Quarantined E2E tests\n")
+            f.write("# Tests listed here are excluded from E2E failure counts\n")
+            f.write("\n")
+
+        # Write sorted nodeids
+        for nodeid in sorted(nodeids):
+            f.write(nodeid + "\n")
