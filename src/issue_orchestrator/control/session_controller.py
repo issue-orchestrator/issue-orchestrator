@@ -25,6 +25,7 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .completion_processor import CompletionProcessor, ProcessingResult
     from ..ports.command_runner import CommandRunner
+    from ..ports.working_copy import WorkingCopy
     from ..domain.models import CompletionRecord
 
 from ..events import EventName
@@ -37,6 +38,7 @@ from ..infra.validation_state import (
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
 from ..ports.session_output import SessionOutput, ValidationState
+from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,7 @@ class SessionController:
         completion_processor: "CompletionProcessor",
         events: EventSink,
         session_output: SessionOutput,
+        working_copy: "WorkingCopy",
         command_runner: Optional["CommandRunner"] = None,
         validation_cmd: Optional[str] = None,
         validation_timeout_seconds: int = 300,
@@ -99,6 +102,7 @@ class SessionController:
             completion_processor: For reading/processing completion records
             events: For emitting trace events
             session_output: For session artifact storage
+            working_copy: For git operations (required for validation cache)
             command_runner: For running validation commands (optional)
             validation_cmd: Validation command to run after completion (optional)
             validation_timeout_seconds: Timeout for validation command
@@ -107,6 +111,7 @@ class SessionController:
         self.completion_processor = completion_processor
         self.events = events
         self.session_output = session_output
+        self._working_copy = working_copy
         self._command_runner = command_runner
         self._max_validation_retries = max_validation_retries
         self._validation_cmd = validation_cmd
@@ -408,7 +413,12 @@ class SessionController:
         session_name: str,
         issue_number: int,
     ) -> tuple[bool, Optional[str], Optional[Path]]:
-        """Run validation command and return result.
+        """Run validation command (with SHA-based caching) and return result.
+
+        Uses PublishGate for caching. If a previous validation passed for
+        the same SHA and command, the cached result is used. This prevents
+        running validation twice for the same commit (e.g., coding session
+        passes validation, then review session on same SHA).
 
         Args:
             worktree_path: Path to the worktree
@@ -421,61 +431,71 @@ class SessionController:
         if not self._command_runner or not self._validation_cmd:
             return True, None, None
 
+        # Get session output directory for validation artifacts
+        run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
+
+        # Use PublishGate for SHA-based caching
+        gate = PublishGate(
+            worktree=worktree_path,
+            command_runner=self._command_runner,
+            working_copy=self._working_copy,
+            command=self._validation_cmd,
+            timeout_seconds=self._validation_timeout,
+        )
+
+        # Get HEAD SHA for logging
+        head_sha = self._working_copy.get_head_sha(worktree_path)
+        sha_display = head_sha[:8] if head_sha else "unknown"
+
         logger.info(
-            issue_log(issue_number, "Running validation: %s in %s"),
+            issue_log(issue_number, "Running validation: cmd=%s worktree=%s sha=%s"),
             self._validation_cmd,
             worktree_path,
+            sha_display,
         )
 
-        result = self._command_runner.run(
-            self._validation_cmd,
-            cwd=worktree_path,
-            timeout_seconds=self._validation_timeout,
-            shell=True,
-        )
+        result = gate.check(session_output_dir=run_dir)
 
-        if result.timed_out:
-            error_msg = f"Validation timed out after {self._validation_timeout} seconds"
-            error_file = self._write_validation_errors(
-                worktree_path, session_name, error_msg, result.stdout
-            )
-            return False, error_msg, error_file
+        if result.allowed:
+            if result.cache_hit:
+                logger.info(
+                    issue_log(issue_number, "Validation cache hit: SHA=%s (skipped re-run)"),
+                    sha_display,
+                )
+            else:
+                logger.info(
+                    issue_log(issue_number, "Validation passed: SHA=%s"),
+                    sha_display,
+                )
+            return True, None, None
 
-        if result.returncode != 0:
-            error_msg = result.stderr or f"Validation failed with exit code {result.returncode}"
-            error_file = self._write_validation_errors(
-                worktree_path, session_name, error_msg, result.stdout
-            )
-            return False, error_msg, error_file
+        # Validation failed - get error file path from record
+        error_msg = result.reason
+        error_file = self._resolve_error_file_path(worktree_path, result.record)
 
-        return True, None, None
+        return False, error_msg, error_file
 
-    def _write_validation_errors(
+    def _resolve_error_file_path(
         self,
         worktree_path: Path,
-        session_name: str,
-        error: str,
-        output: str,
-    ) -> Path:
-        """Write validation errors to session output directory.
+        record: Optional[Any],
+    ) -> Optional[Path]:
+        """Resolve the error file path from a validation record.
 
         Args:
             worktree_path: Path to the worktree
-            session_name: Session name for output directory
-            error: Error message (stderr)
-            output: Command output (stdout)
+            record: ValidationRecord (or None)
 
         Returns:
-            Path to the error file
+            Absolute path to the error file, or None
         """
-        run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
-        return self.session_output.write_validation_errors(
-            run_dir,
-            validation_cmd=self._validation_cmd or "",
-            stdout=output,
-            stderr=error,
-            exit_code=-1,  # Unknown exit code in this context
-        )
+        if not record or not record.stderr_path:
+            return None
+
+        stderr_path = record.stderr_path
+        if Path(stderr_path).is_absolute():
+            return Path(stderr_path)
+        return worktree_path / stderr_path
 
     def _render_retry_prompt(
         self,

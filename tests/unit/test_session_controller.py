@@ -19,6 +19,20 @@ from issue_orchestrator.ports import NullEventSink
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
+class StubWorkingCopy:
+    """Stub WorkingCopy for SessionController tests.
+
+    SessionController only uses get_head_sha for validation caching.
+    These tests don't exercise validation, so we just return a fixed SHA.
+    """
+
+    def get_head_sha(self, worktree: Path) -> str | None:
+        return "abc1234567890"
+
+    def get_current_branch(self, worktree: Path) -> str | None:
+        return "test-branch"
+
+
 def make_record(outcome: CompletionOutcome, **kwargs) -> CompletionRecord:
     """Helper to create a CompletionRecord with required fields."""
     return CompletionRecord(
@@ -69,7 +83,12 @@ class TestSessionControllerRunning:
     def test_running_session_returns_running_status(self):
         """A running session should stay running."""
         processor = MockCompletionProcessor()
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.running(runtime_minutes=5.0)
 
@@ -92,7 +111,12 @@ class TestSessionControllerTerminated:
         """Session that exits without completion.json = FAILED."""
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
@@ -116,7 +140,12 @@ class TestSessionControllerTerminated:
             summary="Done",
             requested_actions=[RequestedAction.CREATE_PR],
         )
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
@@ -140,7 +169,12 @@ class TestSessionControllerTerminated:
             summary="Blocked by dependency",
             blocked_reason="Waiting for API",
         )
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
@@ -163,7 +197,12 @@ class TestSessionControllerTerminated:
             summary="Need clarification",
             question="What API should I use?",
         )
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
@@ -186,7 +225,12 @@ class TestSessionControllerTimeout:
         """Session that times out without completion.json = TIMED_OUT."""
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.timed_out(
             runtime_minutes=60.0,
@@ -214,7 +258,12 @@ class TestSessionControllerTimeout:
             summary="Done",
             requested_actions=[RequestedAction.CREATE_PR],
         )
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.timed_out(
             runtime_minutes=60.0,
@@ -243,7 +292,12 @@ class TestSessionControllerTimeout:
             summary="Blocked",
             blocked_reason="External dependency",
         )
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.timed_out(
             runtime_minutes=60.0,
@@ -274,7 +328,12 @@ class TestSessionControllerReviewOutcomes:
             CompletionOutcome.REVIEW_APPROVED,
             summary="LGTM",
         )
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.terminated(runtime_minutes=5.0)
 
@@ -295,7 +354,12 @@ class TestSessionControllerReviewOutcomes:
             CompletionOutcome.REVIEW_CHANGES_REQUESTED,
             summary="Needs work",
         )
-        controller = SessionController(processor, NullEventSink(), FileSystemSessionOutput())
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
 
         observation = SessionObservationResult.terminated(runtime_minutes=5.0)
 
@@ -309,3 +373,176 @@ class TestSessionControllerReviewOutcomes:
 
         # Review session completed its job (even if changes requested)
         assert decision.status == SessionStatus.COMPLETED
+
+
+class MockCommandRunner:
+    """Mock command runner for testing validation."""
+
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "", timed_out: bool = False):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+        self.run_calls: list[dict] = []
+
+    def run(self, command, *, cwd=None, env=None, timeout_seconds=None, shell=False):
+        """Record the call and return configured result."""
+        self.run_calls.append({
+            "command": command,
+            "cwd": cwd,
+            "timeout_seconds": timeout_seconds,
+            "shell": shell,
+        })
+        # Return a result-like object
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            returncode=self.returncode,
+            stdout=self.stdout,
+            stderr=self.stderr,
+            timed_out=self.timed_out,
+        )
+
+
+class MockWorkingCopy:
+    """Mock WorkingCopy for testing validation caching."""
+
+    def __init__(self, head_sha: str = "abc1234567890"):
+        self.head_sha = head_sha
+        self.get_head_sha_calls: list[Path] = []
+
+    def get_head_sha(self, worktree: Path) -> str | None:
+        self.get_head_sha_calls.append(worktree)
+        return self.head_sha
+
+    def get_current_branch(self, worktree: Path) -> str | None:
+        return "test-branch"
+
+
+class TestSessionControllerValidationCaching:
+    """Tests for validation caching via PublishGate."""
+
+    def test_validation_runs_with_sha_logged(self, tmp_path):
+        """Validation runs and logs SHA on cache miss."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        command_runner = MockCommandRunner(returncode=0)
+        working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=working_copy,
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+        )
+
+        # Create worktree with git repo so PublishGate can read SHA
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        observation = SessionObservationResult.terminated(runtime_minutes=10.0)
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        # Validation should pass
+        assert decision.status == SessionStatus.COMPLETED
+        assert decision.validation_passed is True
+
+        # Command should have been run
+        assert len(command_runner.run_calls) == 1
+        assert command_runner.run_calls[0]["command"] == "make test"
+
+        # SHA should have been fetched
+        assert len(working_copy.get_head_sha_calls) >= 1
+
+    def test_validation_failure_returns_error(self, tmp_path):
+        """Validation failure returns correct status and error info."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        command_runner = MockCommandRunner(returncode=1, stderr="Tests failed!")
+        working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=working_copy,
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        observation = SessionObservationResult.terminated(runtime_minutes=10.0)
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        # Validation failed
+        assert decision.status == SessionStatus.VALIDATION_FAILED
+        assert decision.validation_passed is False
+        assert decision.validation_error is not None
+
+    def test_no_validation_when_no_command_configured(self):
+        """No validation runs when validation_cmd is not configured."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        command_runner = MockCommandRunner(returncode=0)
+        working_copy = MockWorkingCopy()
+
+        # No validation_cmd
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=working_copy,
+            command_runner=command_runner,
+            # validation_cmd not set
+        )
+
+        observation = SessionObservationResult.terminated(runtime_minutes=10.0)
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=Path("/tmp/test"),
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        # Should complete without validation
+        assert decision.status == SessionStatus.COMPLETED
+        assert decision.validation_passed is None  # Not run
+
+        # Command runner should NOT have been called
+        assert len(command_runner.run_calls) == 0

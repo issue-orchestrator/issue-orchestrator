@@ -536,6 +536,7 @@ def build_test_orchestrator_deps(
         completion_processor=completion_processor,
         events=events,
         session_output=session_output,
+        working_copy=working_copy,
     )
     pr_scanner = PRScanner(
         config=config,

@@ -67,6 +67,16 @@ class StubGitAdapter:
              set_upstream: bool = True, skip_hooks: bool = False):
         raise RuntimeError("push not expected")
 
+
+class StubWorkingCopy:
+    """Stub WorkingCopy for testing."""
+
+    def get_head_sha(self, worktree: Path) -> str | None:
+        return "abc1234567890"
+
+    def get_current_branch(self, worktree: Path) -> str | None:
+        return "test-branch"
+
     def rebase_on_branch(self, worktree: Path, target: str = "origin/main"):
         raise RuntimeError("rebase not expected")
 
@@ -137,6 +147,7 @@ def test_timeout_observation_and_decision(tmp_path):
         completion_processor=completion_processor,
         events=events,
         session_output=session_output,
+        working_copy=StubWorkingCopy(),
     )
 
     decision = controller.decide_outcome(
