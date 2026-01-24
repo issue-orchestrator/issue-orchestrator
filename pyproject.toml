@@ -33,6 +33,7 @@ dependencies = [
     "keyring>=25.0",   # OS keychain for secure token storage
     "tenacity>=8.0",   # Retry with exponential backoff
     "pexpect>=4.8",    # Robust PTY handling for subprocess output capture
+    "mcp>=1.0.0",      # MCP server support
 ]
 
 [project.optional-dependencies]
