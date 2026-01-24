@@ -834,6 +834,11 @@ function inferRepoRoot(configPath: string): string | null {
   return null;
 }
 
+function resolveRepoRoot(): string | null {
+  const config = vscode.workspace.getConfiguration("issueOrchestrator");
+  return config.get<string>("repoRoot") || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
+}
+
 function buildDoctorMarkdown(report: Record<string, unknown>): string {
   const pretty = JSON.stringify(report, null, 2);
   return `# Issue Orchestrator Diagnostics\n\n\`\`\`json\n${pretty}\n\`\`\`\n`;
