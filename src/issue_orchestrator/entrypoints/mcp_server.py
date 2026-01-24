@@ -89,90 +89,81 @@ class McpApp:
             }
 
     def register(self, server: FastMCP) -> None:
-        @server.tool(name="orchestrator.status")
-        def orchestrator_status() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.status", self.status)
+        server.tool(name="orchestrator.status")(self.tool_status)
+        server.tool(name="orchestrator.start")(self.tool_start)
+        server.tool(name="orchestrator.stop")(self.tool_stop)
+        server.tool(name="orchestrator.pause")(self.tool_pause)
+        server.tool(name="orchestrator.resume")(self.tool_resume)
+        server.tool(name="orchestrator.refresh")(self.tool_refresh)
+        server.tool(name="orchestrator.shutdown")(self.tool_shutdown)
+        server.tool(name="orchestrator.snapshot")(self.tool_snapshot)
+        server.tool(name="orchestrator.session.worktree")(self.tool_session_worktree)
+        server.tool(name="orchestrator.session.manifest")(self.tool_session_manifest)
+        server.tool(name="orchestrator.session.phases")(self.tool_session_phases)
+        server.tool(name="orchestrator.session.claude_log")(self.tool_session_claude_log)
+        server.tool(name="orchestrator.session.orchestrator_log")(self.tool_session_orchestrator_log)
+        server.tool(name="orchestrator.session.send")(self.tool_session_send)
+        server.tool(name="orchestrator.session.kill")(self.tool_session_kill)
+        server.tool(name="orchestrator.session.focus")(self.tool_session_focus)
+        server.tool(name="orchestrator.urls")(self.tool_urls)
+        server.tool(name="orchestrator.doctor")(self.tool_doctor)
 
-        @server.tool(name="orchestrator.start")
-        def orchestrator_start() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.start", self.start)
+    def tool_status(self) -> dict[str, Any]:
+        return self._safe("orchestrator.status", self.status)
 
-        @server.tool(name="orchestrator.stop")
-        def orchestrator_stop(force: bool = False) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.stop", lambda: self.stop(force))
+    def tool_start(self) -> dict[str, Any]:
+        return self._safe("orchestrator.start", self.start)
 
-        @server.tool(name="orchestrator.pause")
-        def orchestrator_pause() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.pause", self.pause)
+    def tool_stop(self, force: bool = False) -> dict[str, Any]:
+        return self._safe("orchestrator.stop", lambda: self.stop(force))
 
-        @server.tool(name="orchestrator.resume")
-        def orchestrator_resume() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.resume", self.resume)
+    def tool_pause(self) -> dict[str, Any]:
+        return self._safe("orchestrator.pause", self.pause)
 
-        @server.tool(name="orchestrator.refresh")
-        def orchestrator_refresh(  # pyright: ignore[reportUnusedFunction]
-            inflight_stable_ids: list[str] | None = None,
-        ) -> dict[str, Any]:
-            return self._safe("orchestrator.refresh", lambda: self.refresh(inflight_stable_ids))
+    def tool_resume(self) -> dict[str, Any]:
+        return self._safe("orchestrator.resume", self.resume)
 
-        @server.tool(name="orchestrator.shutdown")
-        def orchestrator_shutdown(force: bool = False) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.shutdown", lambda: self.shutdown(force))
+    def tool_refresh(self, inflight_stable_ids: list[str] | None = None) -> dict[str, Any]:
+        return self._safe("orchestrator.refresh", lambda: self.refresh(inflight_stable_ids))
 
-        @server.tool(name="orchestrator.snapshot")
-        def orchestrator_snapshot() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.snapshot", self.snapshot)
+    def tool_shutdown(self, force: bool = False) -> dict[str, Any]:
+        return self._safe("orchestrator.shutdown", lambda: self.shutdown(force))
 
-        @server.tool(name="orchestrator.session.worktree")
-        def orchestrator_session_worktree(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.session.worktree", lambda: self.session_worktree(issue_number))
+    def tool_snapshot(self) -> dict[str, Any]:
+        return self._safe("orchestrator.snapshot", self.snapshot)
 
-        @server.tool(name="orchestrator.session.manifest")
-        def orchestrator_session_manifest(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.session.manifest", lambda: self.session_manifest(issue_number))
+    def tool_session_worktree(self, issue_number: int) -> dict[str, Any]:
+        return self._safe("orchestrator.session.worktree", lambda: self.session_worktree(issue_number))
 
-        @server.tool(name="orchestrator.session.phases")
-        def orchestrator_session_phases(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.session.phases", lambda: self.session_phases(issue_number))
+    def tool_session_manifest(self, issue_number: int) -> dict[str, Any]:
+        return self._safe("orchestrator.session.manifest", lambda: self.session_manifest(issue_number))
 
-        @server.tool(name="orchestrator.session.claude_log")
-        def orchestrator_session_claude_log(  # pyright: ignore[reportUnusedFunction]
-            issue_number: int,
-            limit: int = 200,
-        ) -> dict[str, Any]:
-            return self._safe("orchestrator.session.claude_log", lambda: self.session_claude_log(issue_number, limit))
+    def tool_session_phases(self, issue_number: int) -> dict[str, Any]:
+        return self._safe("orchestrator.session.phases", lambda: self.session_phases(issue_number))
 
-        @server.tool(name="orchestrator.session.orchestrator_log")
-        def orchestrator_session_orchestrator_log(  # pyright: ignore[reportUnusedFunction]
-            issue_number: int,
-        ) -> dict[str, Any]:
-            return self._safe(
-                "orchestrator.session.orchestrator_log",
-                lambda: self.session_orchestrator_log(issue_number),
-            )
+    def tool_session_claude_log(self, issue_number: int, limit: int = 200) -> dict[str, Any]:
+        return self._safe("orchestrator.session.claude_log", lambda: self.session_claude_log(issue_number, limit))
 
-        @server.tool(name="orchestrator.session.send")
-        def orchestrator_session_send(  # pyright: ignore[reportUnusedFunction]
-            issue_number: int,
-            text: str,
-        ) -> dict[str, Any]:
-            return self._safe("orchestrator.session.send", lambda: self.session_send(issue_number, text))
+    def tool_session_orchestrator_log(self, issue_number: int) -> dict[str, Any]:
+        return self._safe(
+            "orchestrator.session.orchestrator_log",
+            lambda: self.session_orchestrator_log(issue_number),
+        )
 
-        @server.tool(name="orchestrator.session.kill")
-        def orchestrator_session_kill(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.session.kill", lambda: self.session_kill(issue_number))
+    def tool_session_send(self, issue_number: int, text: str) -> dict[str, Any]:
+        return self._safe("orchestrator.session.send", lambda: self.session_send(issue_number, text))
 
-        @server.tool(name="orchestrator.session.focus")
-        def orchestrator_session_focus(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.session.focus", lambda: self.session_focus(issue_number))
+    def tool_session_kill(self, issue_number: int) -> dict[str, Any]:
+        return self._safe("orchestrator.session.kill", lambda: self.session_kill(issue_number))
 
-        @server.tool(name="orchestrator.urls")
-        def orchestrator_urls() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.urls", self.urls)
+    def tool_session_focus(self, issue_number: int) -> dict[str, Any]:
+        return self._safe("orchestrator.session.focus", lambda: self.session_focus(issue_number))
 
-        @server.tool(name="orchestrator.doctor")
-        def orchestrator_doctor() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
-            return self._safe("orchestrator.doctor", self.doctor)
+    def tool_urls(self) -> dict[str, Any]:
+        return self._safe("orchestrator.urls", self.urls)
+
+    def tool_doctor(self) -> dict[str, Any]:
+        return self._safe("orchestrator.doctor", self.doctor)
 
     def status(self) -> dict[str, Any]:
         status = self._client.status()
