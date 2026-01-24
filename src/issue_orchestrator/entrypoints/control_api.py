@@ -62,9 +62,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Default E2E flakiness thresholds (used when orchestrator/config not available)
-_DEFAULT_FLAKE_THRESHOLD = 3
-_DEFAULT_FLAKE_WINDOW_RUNS = 10
+# Default E2E config (used when orchestrator not available)
+from ..infra.config import E2EConfig
+_DEFAULT_E2E_CONFIG = E2EConfig()
 
 # Create minimal control API app
 control_app = FastAPI(title="Issue Orchestrator Control API")
@@ -3460,12 +3460,9 @@ async def e2e_triage_data(
         run_issue = db.get_run_issue(run_id)
 
         # Get flake thresholds from config, or use defaults
-        if _orchestrator:
-            flake_threshold = _orchestrator.config.e2e.flake_threshold
-            flake_window = _orchestrator.config.e2e.flake_window_runs
-        else:
-            flake_threshold = _DEFAULT_FLAKE_THRESHOLD
-            flake_window = _DEFAULT_FLAKE_WINDOW_RUNS
+        e2e_config = _orchestrator.config.e2e if _orchestrator else _DEFAULT_E2E_CONFIG
+        flake_threshold = e2e_config.flake_threshold
+        flake_window = e2e_config.flake_window_runs
 
         # Build triage data for each failure
         failures = []
