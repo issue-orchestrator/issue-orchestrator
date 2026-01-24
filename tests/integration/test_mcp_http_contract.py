@@ -95,15 +95,20 @@ def test_mcp_snapshot_uses_api(sample_orchestrator, sample_issues):
         server = _start_server(port)
         api, _ = _make_api(f"http://127.0.0.1:{port}")
         try:
-            prev_api = getattr(mcp_server, "_API", None)
-            mcp_server._API = api
-            snapshot = mcp_server.orchestrator_snapshot()
+            settings = mcp_server.McpSettings(
+                repo_root=Path.cwd(),
+                config_path=Path("noop.yaml"),
+                instance_id=None,
+                host="127.0.0.1",
+                auto_start=False,
+            )
+            app = mcp_server.McpApp(settings)
+            app._api = api  # test hook to avoid supervisor dependency
+            snapshot = app.snapshot()
             assert "status" in snapshot
             assert "info" in snapshot
             assert len(snapshot["status"]["queue"]) == len(queue_items)
         finally:
-            if prev_api is not None:
-                mcp_server._API = prev_api
             _stop_server(server)
     finally:
         web.set_orchestrator(None)
