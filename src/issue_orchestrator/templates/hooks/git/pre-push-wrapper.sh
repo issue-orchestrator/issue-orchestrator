@@ -7,6 +7,9 @@
 # 2. Runs the orchestrator's pre-push hook (trailer validation)
 # 3. Writes audit trail to prove hooks executed
 #
+# Output capture is handled by the Python validate_runner if the project
+# hook calls 'make validate'. See validate_runner.py for details.
+#
 # Exit codes are passed through - any failure blocks the push
 
 set -euo pipefail

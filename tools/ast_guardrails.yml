@@ -24,6 +24,7 @@ allow_prefixes:
   - src/issue_orchestrator/infra/supervisor.py  # Supervisor manages orchestrator subprocesses
   - src/issue_orchestrator/infra/ai_diagnose.py  # AI diagnosis invokes claude
   - src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py
+  - src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py  # Runs validation commands
   - src/issue_orchestrator/entrypoints/web.py
   - src/issue_orchestrator/control/scheduler.py
   - src/issue_orchestrator/entrypoints/e2e_worker.py  # E2E worker subprocess

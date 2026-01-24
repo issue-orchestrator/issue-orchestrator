@@ -785,6 +785,19 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
                         print('\n'.join(lines))
                         print("--- END STDOUT ---")
 
+            # Print paths to full output files (only if they exist)
+            output_paths = []
+            if validation_result.record and validation_result.record.stderr_path:
+                if Path(validation_result.record.stderr_path).exists():
+                    output_paths.append(f"  stderr: {validation_result.record.stderr_path}")
+            if validation_result.record and validation_result.record.stdout_path:
+                if Path(validation_result.record.stdout_path).exists():
+                    output_paths.append(f"  stdout: {validation_result.record.stdout_path}")
+            if output_paths:
+                print(f"\nFull output saved to:")
+                for path in output_paths:
+                    print(path)
+
             print(f"\n{'='*60}")
             print("TO FIX: Read the errors above, fix them, then run agent-done again.")
             print("If you CANNOT fix after 2-3 attempts, use:")

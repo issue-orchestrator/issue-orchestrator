@@ -54,6 +54,7 @@ Thumbs.db
 .issue-orchestrator/logs/
 .issue-orchestrator/*.db
 .issue-orchestrator/sessions/
+.issue-orchestrator/diagnostics/
 .agent-done-marker
 
 # Keep .issue-orchestrator/config/ tracked - it's project configuration

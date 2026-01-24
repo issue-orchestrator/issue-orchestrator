@@ -685,6 +685,7 @@ class SessionLauncher:
         env_exports += f" {ENV_PREFIX}AGENT_LABEL='{issue.agent_type}'"
         env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue.number}'"
         env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
+        env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -931,6 +932,7 @@ class SessionLauncher:
         env_exports += f" {ENV_PREFIX}AGENT_LABEL='{agent_label}'"
         env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{review.issue_number}'"
         env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
+        env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -1181,6 +1183,7 @@ class SessionLauncher:
         env_exports += f" {ENV_PREFIX}AGENT_LABEL='{rework.agent_type}'"
         env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
         env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
+        env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
