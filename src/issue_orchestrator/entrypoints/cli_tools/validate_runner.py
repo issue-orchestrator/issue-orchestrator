@@ -89,7 +89,8 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     start = time.monotonic()
 
     # Run command, capturing output while also displaying it
-    with open(output_file, "w") as f:
+    # Use line buffering (buffering=1) to ensure output is written immediately
+    with open(output_file, "w", buffering=1) as f:
         process = subprocess.Popen(
             command,
             shell=True,
@@ -106,6 +107,7 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
             sys.stdout.write(line)
             sys.stdout.flush()
             f.write(line)
+            f.flush()  # Ensure output is written even if process crashes
 
         process.wait()
 
