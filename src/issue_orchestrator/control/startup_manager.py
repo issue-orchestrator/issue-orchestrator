@@ -4,7 +4,7 @@ This module extracts the startup logic from orchestrator.py to keep
 the orchestrator as a thin mediator.
 
 The startup sequence:
-1. Verify AI meta-agent hooks
+1. Verify AI agent hooks
 2. Clean up stale claims (in-progress labels without sessions)
 3. Clean up idle terminal sessions
 4. Discover and restore running sessions
@@ -116,7 +116,7 @@ class StartupManager:
         # Emit merged configuration for debugging
         self.events.publish(TraceEvent(EventName.CONFIG_MERGED, self.config.to_event_dict()))
 
-        # Step 1: Verify AI meta-agent hooks
+        # Step 1: Verify AI agent hooks
         state.startup_message = "Verifying hook enforcement..."
         await self._verify_hooks()
 
@@ -197,7 +197,7 @@ class StartupManager:
         }))
 
     async def _verify_hooks(self) -> None:
-        """Verify AI meta-agent hooks are installed and effective."""
+        """Verify AI agent hooks are installed and effective."""
         result = await self.hook_verifier.verify()
         self.hook_verifier.raise_on_failure(result)
 

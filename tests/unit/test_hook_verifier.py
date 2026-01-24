@@ -3,7 +3,7 @@
 These tests verify the hook verification adapter:
 - Cached verification returns success quickly
 - Full verification checks all configured agent types
-- Proper handling of unsupported meta-agents
+- Proper handling of unsupported AI agents
 - Raise on failure behavior
 """
 
@@ -16,8 +16,8 @@ from issue_orchestrator.ports.hook_verifier import HookVerificationResult
 from issue_orchestrator.infra.config import Config, DangerousConfig
 
 
-class MockMetaAgentType:
-    """Mock MetaAgentType enum for testing."""
+class MockAiAgentType:
+    """Mock AiAgentType enum for testing."""
     def __init__(self, value: str):
         self.value = value
 
@@ -83,7 +83,7 @@ class TestExecutionHookVerifier:
         """When no cached verification, verify all hooks successfully."""
         verifier = ExecutionHookVerifier(config)
 
-        agent_type = MockMetaAgentType("claude-code")
+        agent_type = MockAiAgentType("claude-code")
         mock_adapter = MockAdapter(agent_type, installed=True, verify_success=True)
 
         with patch("issue_orchestrator.infra.hooks.hooks.check_verification_status") as mock_check, \
@@ -108,7 +108,7 @@ class TestExecutionHookVerifier:
         """When hooks are not installed, return failure."""
         verifier = ExecutionHookVerifier(config)
 
-        agent_type = MockMetaAgentType("claude-code")
+        agent_type = MockAiAgentType("claude-code")
         mock_adapter = MockAdapter(agent_type, installed=False)
 
         with patch("issue_orchestrator.infra.hooks.hooks.check_verification_status") as mock_check, \
@@ -134,7 +134,7 @@ class TestExecutionHookVerifier:
         """When hook verification fails, return failure with details."""
         verifier = ExecutionHookVerifier(config)
 
-        agent_type = MockMetaAgentType("claude-code")
+        agent_type = MockAiAgentType("claude-code")
         mock_adapter = MockAdapter(
             agent_type,
             installed=True,
@@ -168,11 +168,11 @@ class TestExecutionHookVerifier:
         config.dangerous.allow_unsupported_agents = False
         verifier = ExecutionHookVerifier(config)
 
-        agent_type = MockMetaAgentType("aider")
+        agent_type = MockAiAgentType("aider")
 
         def raise_unsupported(*args):
-            from issue_orchestrator.infra.hooks.hooks import UnsupportedMetaAgentError
-            raise UnsupportedMetaAgentError(agent_type, "Aider hooks are not supported")
+            from issue_orchestrator.infra.hooks.hooks import UnsupportedAiAgentError
+            raise UnsupportedAiAgentError(agent_type, "Aider hooks are not supported")
 
         with patch("issue_orchestrator.infra.hooks.hooks.check_verification_status") as mock_check, \
              patch("issue_orchestrator.infra.hooks.hooks.detect_agents_from_config") as mock_detect, \
@@ -191,7 +191,7 @@ class TestExecutionHookVerifier:
 
         # Verify the print output
         captured = capsys.readouterr()
-        assert "[ERROR] Unsupported meta-agent: aider" in captured.out
+        assert "[ERROR] Unsupported AI agent: aider" in captured.out
         assert "To allow unsupported agents" in captured.out
 
     @pytest.mark.asyncio
@@ -200,11 +200,11 @@ class TestExecutionHookVerifier:
         config.dangerous.allow_unsupported_agents = True
         verifier = ExecutionHookVerifier(config)
 
-        agent_type = MockMetaAgentType("aider")
+        agent_type = MockAiAgentType("aider")
 
         def raise_unsupported(*args):
-            from issue_orchestrator.infra.hooks.hooks import UnsupportedMetaAgentError
-            raise UnsupportedMetaAgentError(agent_type, "Aider hooks are not supported")
+            from issue_orchestrator.infra.hooks.hooks import UnsupportedAiAgentError
+            raise UnsupportedAiAgentError(agent_type, "Aider hooks are not supported")
 
         with patch("issue_orchestrator.infra.hooks.hooks.check_verification_status") as mock_check, \
              patch("issue_orchestrator.infra.hooks.hooks.detect_agents_from_config") as mock_detect, \
@@ -231,8 +231,8 @@ class TestExecutionHookVerifier:
         """Verify multiple agent types correctly."""
         verifier = ExecutionHookVerifier(config)
 
-        agent_type1 = MockMetaAgentType("claude-code")
-        agent_type2 = MockMetaAgentType("cursor")
+        agent_type1 = MockAiAgentType("claude-code")
+        agent_type2 = MockAiAgentType("cursor")
 
         mock_adapter1 = MockAdapter(agent_type1, installed=True, verify_success=True)
         mock_adapter2 = MockAdapter(agent_type2, installed=True, verify_success=True)
@@ -268,7 +268,7 @@ class TestExecutionHookVerifier:
         """When multiple agents use the same type, verify only once."""
         verifier = ExecutionHookVerifier(config)
 
-        agent_type = MockMetaAgentType("claude-code")
+        agent_type = MockAiAgentType("claude-code")
         mock_adapter = MockAdapter(agent_type, installed=True, verify_success=True)
 
         with patch("issue_orchestrator.infra.hooks.hooks.check_verification_status") as mock_check, \
@@ -294,8 +294,8 @@ class TestExecutionHookVerifier:
         """When some agents succeed and some fail, overall verification fails."""
         verifier = ExecutionHookVerifier(config)
 
-        agent_type1 = MockMetaAgentType("claude-code")
-        agent_type2 = MockMetaAgentType("cursor")
+        agent_type1 = MockAiAgentType("claude-code")
+        agent_type2 = MockAiAgentType("cursor")
 
         mock_adapter1 = MockAdapter(agent_type1, installed=True, verify_success=True)
         mock_adapter2 = MockAdapter(agent_type2, installed=False)  # Not installed
@@ -364,8 +364,8 @@ class TestExecutionHookVerifier:
         config.dangerous.allow_unsupported_agents = False
         verifier = ExecutionHookVerifier(config)
 
-        agent_type1 = MockMetaAgentType("claude-code")
-        agent_type2 = MockMetaAgentType("aider")
+        agent_type1 = MockAiAgentType("claude-code")
+        agent_type2 = MockAiAgentType("aider")
 
         mock_adapter1 = MockAdapter(agent_type1, installed=False)  # Not installed
 
@@ -373,8 +373,8 @@ class TestExecutionHookVerifier:
             if agent_type.value == "claude-code":
                 return mock_adapter1
             else:
-                from issue_orchestrator.infra.hooks.hooks import UnsupportedMetaAgentError
-                raise UnsupportedMetaAgentError(agent_type, "Aider not supported")
+                from issue_orchestrator.infra.hooks.hooks import UnsupportedAiAgentError
+                raise UnsupportedAiAgentError(agent_type, "Aider not supported")
 
         with patch("issue_orchestrator.infra.hooks.hooks.check_verification_status") as mock_check, \
              patch("issue_orchestrator.infra.hooks.hooks.detect_agents_from_config") as mock_detect, \
@@ -396,7 +396,7 @@ class TestExecutionHookVerifier:
         # Verify output shows both issues
         captured = capsys.readouterr()
         assert "[ERROR] Hooks not installed for claude-code" in captured.out
-        assert "[ERROR] Unsupported meta-agent: aider" in captured.out
+        assert "[ERROR] Unsupported AI agent: aider" in captured.out
 
     @pytest.mark.asyncio
     async def test_verify_only_unsupported_allowed_all_succeed(self, config, tmp_path, capsys):
@@ -404,11 +404,11 @@ class TestExecutionHookVerifier:
         config.dangerous.allow_unsupported_agents = True
         verifier = ExecutionHookVerifier(config)
 
-        agent_type = MockMetaAgentType("aider")
+        agent_type = MockAiAgentType("aider")
 
         def raise_unsupported(*args):
-            from issue_orchestrator.infra.hooks.hooks import UnsupportedMetaAgentError
-            raise UnsupportedMetaAgentError(agent_type, "Aider not supported")
+            from issue_orchestrator.infra.hooks.hooks import UnsupportedAiAgentError
+            raise UnsupportedAiAgentError(agent_type, "Aider not supported")
 
         with patch("issue_orchestrator.infra.hooks.hooks.check_verification_status") as mock_check, \
              patch("issue_orchestrator.infra.hooks.hooks.detect_agents_from_config") as mock_detect, \

@@ -13,10 +13,10 @@ class HookVerificationResult:
 
 
 class HookVerifier(Protocol):
-    """Protocol for verifying meta-agent hooks."""
+    """Protocol for verifying AI agent hooks."""
 
     async def verify(self) -> HookVerificationResult:
-        """Verify hooks for all configured meta-agents."""
+        """Verify hooks for all configured AI agents."""
         ...
 
     def raise_on_failure(self, result: HookVerificationResult) -> None:

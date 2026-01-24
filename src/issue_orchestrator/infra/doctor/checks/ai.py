@@ -2,13 +2,18 @@
 
 from ..types import Check
 from ...config import Config
+from ...hooks.hooks import AiAgentType
 
 
-CLI_ONLY_PROVIDERS = {
-    "claude-code",
-    "codex",
-    "codex-cli",
-}
+# AI systems that authenticate via their own CLI - no API key needed
+CLI_ONLY_AI_SYSTEMS: frozenset[AiAgentType] = frozenset({
+    AiAgentType.CLAUDE_CODE,
+    AiAgentType.CODEX,
+    AiAgentType.GEMINI,
+    AiAgentType.CURSOR,
+    AiAgentType.COPILOT,
+    AiAgentType.AIDER,
+})
 
 PROVIDER_KEY_MAP = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -20,16 +25,39 @@ PROVIDER_KEY_MAP = {
 }
 
 
-def _infer_provider_from_command(command: str | None) -> str | None:
+def _infer_ai_system_from_command(command: str | None) -> AiAgentType | None:
+    """Infer AI system type from command executable."""
     if not command:
         return None
     executable = command.strip().split()[0] if command.strip() else ""
     executable = executable.rsplit("/", 1)[-1]
     if executable.startswith("claude"):
-        return "claude-code"
+        return AiAgentType.CLAUDE_CODE
     if executable.startswith("codex"):
-        return "codex-cli"
+        return AiAgentType.CODEX
+    if executable.startswith("gemini"):
+        return AiAgentType.GEMINI
+    if executable.startswith("cursor"):
+        return AiAgentType.CURSOR
+    if executable.startswith("aider"):
+        return AiAgentType.AIDER
     return None
+
+
+def _is_cli_only_provider(provider: str | None, command: str | None) -> bool:
+    """Check if provider/command represents a CLI-only AI system (no API key needed)."""
+    # Check explicit provider first
+    if provider:
+        try:
+            ai_system = AiAgentType(provider.strip().lower())
+            return ai_system in CLI_ONLY_AI_SYSTEMS
+        except ValueError:
+            # Not a known AI system (e.g., "anthropic", "openai") - may need API key
+            return False
+
+    # No explicit provider - try to infer from command
+    ai_system = _infer_ai_system_from_command(command)
+    return ai_system is not None and ai_system in CLI_ONLY_AI_SYSTEMS
 
 
 def _collect_required_keys(config: Config) -> tuple[set[str], set[str]]:
@@ -42,15 +70,15 @@ def _collect_required_keys(config: Config) -> tuple[set[str], set[str]]:
 
     for agent in config.agents.values():
         provider = agent.provider or default_provider
-        if provider is None:
-            provider = _infer_provider_from_command(getattr(agent, "command", None))
+        command = getattr(agent, "command", None)
+
+        if _is_cli_only_provider(provider, command):
+            continue
+
         if not provider:
             continue
 
         normalized = provider.strip().lower()
-        if normalized in CLI_ONLY_PROVIDERS:
-            continue
-
         key_name = PROVIDER_KEY_MAP.get(normalized)
         if key_name:
             required_keys.add(key_name)

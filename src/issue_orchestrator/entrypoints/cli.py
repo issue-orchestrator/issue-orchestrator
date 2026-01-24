@@ -1115,18 +1115,18 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
     console.print(f"  [green]✓[/green] Using terminal backend: {backend}")
     console.print(f"  [cyan]ℹ[/cyan] Sessions run as subprocesses with output logged to session.log")
 
-    # 7. Verify AI meta-agent hooks
-    console.print("\n[bold]7. AI Meta-Agent Hooks[/bold]")
+    # 7. Verify AI agent hooks
+    console.print("\n[bold]7. AI Agent Hooks[/bold]")
     from ..infra.hooks.hooks import (
         detect_agents_from_config,
         get_adapter,
-        UnsupportedMetaAgentError,
+        UnsupportedAiAgentError,
     )
 
     agent_types = detect_agents_from_config(config)
     unique_types = set(agent_types.values())
 
-    console.print(f"  [cyan]ℹ[/cyan] Detected meta-agents: {[t.value for t in unique_types]}")
+    console.print(f"  [cyan]ℹ[/cyan] Detected AI agents: {[t.value for t in unique_types]}")
 
     for agent_label, agent_type in agent_types.items():
         console.print(f"    {agent_label} → {agent_type.value}")
@@ -1169,9 +1169,9 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
                 console.print(f"  [yellow]![/yellow] {agent_type.value}: hooks not installed")
                 warnings.append(f"{agent_type.value} hooks not installed - run 'issue-orchestrator setup-hooks'")
 
-        except UnsupportedMetaAgentError as e:
+        except UnsupportedAiAgentError as e:
             console.print(f"  [red]✗[/red] {agent_type.value}: {e.reason}")
-            errors.append(f"Unsupported meta-agent: {e.reason}")
+            errors.append(f"Unsupported AI agent: {e.reason}")
 
     # Summary
     console.print("\n" + "=" * 50)
@@ -1193,14 +1193,14 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
 
 
 def cmd_setup_hooks(args: argparse.Namespace) -> int:
-    """Install AI meta-agent hooks for the target project."""
+    """Install AI agent hooks for the target project."""
     from ..infra.hooks.hooks import (
         detect_agents_from_config,
         get_adapter,
-        UnsupportedMetaAgentError,
+        UnsupportedAiAgentError,
     )
 
-    console.print("[bold cyan]Installing AI Meta-Agent Hooks[/bold cyan]\n")
+    console.print("[bold cyan]Installing AI Agent Hooks[/bold cyan]\n")
 
     # Load config
     try:
@@ -1210,11 +1210,11 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:
         console.print("No config found. Run 'issue-orchestrator setup' to create one.")
         return 1
 
-    # Detect meta-agents from config
+    # Detect AI agents from config
     agent_types = detect_agents_from_config(config)
     unique_types = set(agent_types.values())
 
-    console.print(f"[bold]Detected Meta-Agents:[/bold]")
+    console.print(f"[bold]Detected AI Agents:[/bold]")
     for agent_label, agent_type in agent_types.items():
         console.print(f"  {agent_label} → {agent_type.value}")
 
@@ -1248,7 +1248,7 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:
                 for failure in result.checks_failed:
                     console.print(f"    [red]✗[/red] {failure}")
 
-        except UnsupportedMetaAgentError as e:
+        except UnsupportedAiAgentError as e:
             console.print(f"  [red]✗[/red] {agent_type.value}: {e.reason}")
             errors.append(str(e))
 
@@ -1256,7 +1256,7 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:
 
     if errors:
         console.print(f"[bold red]Setup completed with {len(errors)} error(s)[/bold red]")
-        console.print("\n[yellow]Some meta-agents are not supported. Consider using Claude Code.[/yellow]")
+        console.print("\n[yellow]Some AI agents are not supported. Consider using Claude Code.[/yellow]")
         return 1
 
     console.print(f"[bold green]✓ Hooks installed successfully ({len(installed)} files)[/bold green]")
@@ -2037,7 +2037,7 @@ def main() -> int:
 
     # setup-hooks command
     setup_hooks_parser: argparse.ArgumentParser = subparsers.add_parser(
-        "setup-hooks", help="Install AI meta-agent hooks in target project"
+        "setup-hooks", help="Install AI agent hooks in target project"
     )
     setup_hooks_parser.add_argument(
         "--target",

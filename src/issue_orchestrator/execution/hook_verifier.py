@@ -1,4 +1,4 @@
-"""HookVerifier adapter - verifies AI meta-agent hooks on startup."""
+"""HookVerifier adapter - verifies AI agent hooks on startup."""
 
 import logging
 
@@ -18,7 +18,7 @@ class ExecutionHookVerifier:
         self,
         agent_type,
         get_adapter,
-        UnsupportedMetaAgentError,
+        UnsupportedAiAgentError,
     ) -> tuple[bool, tuple[str, str] | None]:
         """Verify hooks for a single agent type.
 
@@ -58,7 +58,7 @@ class ExecutionHookVerifier:
                 print(f"        - {failure}")
             return False, None
 
-        except UnsupportedMetaAgentError as exc:
+        except UnsupportedAiAgentError as exc:
             return True, (agent_type.value, str(exc))
 
     def _handle_unsupported_agents(
@@ -80,7 +80,7 @@ class ExecutionHookVerifier:
             return True
 
         for agent_type_val, reason in unsupported:
-            print(f"[ERROR] Unsupported meta-agent: {agent_type_val}")
+            print(f"[ERROR] Unsupported AI agent: {agent_type_val}")
             print(f"        {reason}")
         print("\nTo allow unsupported agents, set dangerous.allow_unsupported_agents: true")
         return False
@@ -90,7 +90,7 @@ class ExecutionHookVerifier:
             detect_agents_from_config,
             get_adapter,
             check_verification_status,
-            UnsupportedMetaAgentError,
+            UnsupportedAiAgentError,
         )
 
         is_valid, status_msg = check_verification_status(self.config.repo_root, self.config)
@@ -103,21 +103,21 @@ class ExecutionHookVerifier:
 
         agent_types = detect_agents_from_config(self.config)
         unique_types = set(agent_types.values())
-        logger.info("Verifying hooks for meta-agents: %s", [t.value for t in unique_types])
+        logger.info("Verifying hooks for AI agents: %s", [t.value for t in unique_types])
 
         all_verified = True
         unsupported: list[tuple[str, str]] = []
 
         for agent_type in unique_types:
             success, unsupported_info = self._verify_single_agent(
-                agent_type, get_adapter, UnsupportedMetaAgentError
+                agent_type, get_adapter, UnsupportedAiAgentError
             )
             if not success:
                 all_verified = False
             if unsupported_info:
                 unsupported.append(unsupported_info)
                 if not self.config.dangerous.allow_unsupported_agents:
-                    logger.error("Unsupported meta-agent: %s", unsupported_info[1])
+                    logger.error("Unsupported AI agent: %s", unsupported_info[1])
                     all_verified = False
 
         if not self._handle_unsupported_agents(unsupported):

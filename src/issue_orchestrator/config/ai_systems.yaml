@@ -87,5 +87,19 @@ ai_systems:
       - "failed"
     completion_marker: null
 
+  copilot:
+    description: "GitHub Copilot CLI"
+    log_pattern: null  # Copilot doesn't have local logs
+    log_format: null
+    console_tags:
+      - "copilot"
+      - "Copilot"
+      - "github"
+      - "GitHub"
+    error_patterns:
+      - "error"
+      - "failed"
+    completion_marker: null
+
 # Default AI system to use when detection fails
 default_ai_system: claude-code

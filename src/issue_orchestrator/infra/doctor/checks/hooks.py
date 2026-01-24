@@ -20,7 +20,7 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
 
     if not unique_types:
         return Check(
-            name="Meta-Agent Hooks (Installation)",
+            name="AI Agent Hooks (Installation)",
             status="warning",
             detail="No agents configured",
         ), False
@@ -28,10 +28,10 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
     if unsupported:
         status = "warning" if config.dangerous.allow_unsupported_agents else "error"
         return Check(
-            name="Meta-Agent Hooks (Installation)",
+            name="AI Agent Hooks (Installation)",
             status=status,
             detail=(
-                "Unsupported meta-agents: "
+                "Unsupported AI agents: "
                 f"{', '.join(sorted(unsupported))}. "
                 "Use Claude Code or set dangerous.allow_unsupported_agents: true"
             ),
@@ -39,7 +39,7 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
 
     if missing_hooks:
         return Check(
-            name="Meta-Agent Hooks (Installation)",
+            name="AI Agent Hooks (Installation)",
             status="error",
             detail=(
                 "Hooks not installed for: "
@@ -49,9 +49,9 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
         ), False
 
     return Check(
-        name="Meta-Agent Hooks (Installation)",
+        name="AI Agent Hooks (Installation)",
         status="ok",
-        detail=f"{len(unique_types)} meta-agent type(s) installed",
+        detail=f"{len(unique_types)} AI agent type(s) installed",
     ), True
 
 
@@ -61,7 +61,7 @@ def _check_cached_verification(config: Config, hooks_ok: bool) -> tuple[Check, b
 
     if not hooks_ok:
         return Check(
-            name="Meta-Agent Hooks (Cached)",
+            name="AI Agent Hooks (Cached)",
             status="info",
             detail="Skipped because hooks are not installed or unsupported",
         ), False
@@ -69,13 +69,13 @@ def _check_cached_verification(config: Config, hooks_ok: bool) -> tuple[Check, b
     is_valid, status_msg = check_verification_status(config.repo_root, config)
     if is_valid:
         return Check(
-            name="Meta-Agent Hooks (Cached)",
+            name="AI Agent Hooks (Cached)",
             status="ok",
             detail=status_msg,
         ), True
 
     return Check(
-        name="Meta-Agent Hooks (Cached)",
+        name="AI Agent Hooks (Cached)",
         status="warning",
         detail=(
             f"{status_msg} "
@@ -91,7 +91,7 @@ def _check_full_verification(config: Config, unique_types: set, unsupported_type
 
     if not cached_ok:
         return Check(
-            name="Meta-Agent Hooks (Full)",
+            name="AI Agent Hooks (Full)",
             status="info",
             detail="Skipped because cached verification is not valid",
         )
@@ -109,20 +109,20 @@ def _check_full_verification(config: Config, unique_types: set, unsupported_type
 
     if full_failures:
         return Check(
-            name="Meta-Agent Hooks (Full)",
+            name="AI Agent Hooks (Full)",
             status="error",
             detail="; ".join(full_failures),
         )
 
     return Check(
-        name="Meta-Agent Hooks (Full)",
+        name="AI Agent Hooks (Full)",
         status="ok",
         detail="All checks passed",
     )
 
 
 def check_hook_verification(config: Config) -> list[Check]:
-    from ...hooks.hooks import detect_agents_from_config, MetaAgentType
+    from ...hooks.hooks import detect_agents_from_config, AiAgentType
 
     checks: list[Check] = []
 
@@ -130,12 +130,12 @@ def check_hook_verification(config: Config) -> list[Check]:
     unique_types = set(agent_types.values())
 
     unsupported_types = {
-        MetaAgentType.UNKNOWN,
-        MetaAgentType.CURSOR,
-        MetaAgentType.COPILOT_CLI,
-        MetaAgentType.CODEX_CLI,
-        MetaAgentType.AIDER,
-        MetaAgentType.GEMINI_CLI,
+        AiAgentType.UNKNOWN,
+        AiAgentType.CURSOR,
+        AiAgentType.COPILOT,
+        AiAgentType.CODEX,
+        AiAgentType.AIDER,
+        AiAgentType.GEMINI,
     }
 
     # Check hook installation
