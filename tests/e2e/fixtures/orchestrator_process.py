@@ -166,6 +166,12 @@ class OrchestratorProcess:
         self._config_path = config_path
         return config_path
 
+    def config_path(self) -> Path:
+        """Return the generated e2e config path."""
+        if self._config_path is None:
+            raise RuntimeError("E2E config path not initialized")
+        return self._config_path
+
     def _log_reader(self) -> None:
         """Background thread to read and print orchestrator output."""
         import select

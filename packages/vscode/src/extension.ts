@@ -18,7 +18,8 @@ const consolePanels = new Map<number, vscode.WebviewPanel>();
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const isTest = process.env.IO_VSCODE_TEST === "1" || !!process.env.VSCODE_EXTENSION_TESTS;
-  if (isTest) {
+  const isE2E = process.env.IO_VSCODE_E2E === "1";
+  if (isTest && !isE2E) {
     registerTestCommands(context);
     return;
   }
@@ -43,6 +44,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   });
   context.subscriptions.push(diagnostics);
   registerCommands(context, client, provider, output);
+  if (isE2E) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand("issueOrchestrator._e2eSnapshot", async () => {
+        return client.getSnapshot();
+      })
+    );
+  }
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("issueOrchestrator.explorer", provider)

@@ -15,11 +15,13 @@ async function main(): Promise<void> {
   const extensionsDir = fs.mkdtempSync(
     path.join(os.tmpdir(), "io-vscode-extensions-")
   );
+  const workspacePath = process.env.IO_VSCODE_TEST_WORKSPACE;
 
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath,
     launchArgs: [
+      ...(workspacePath ? [workspacePath] : []),
       "--user-data-dir",
       userDataDir,
       "--extensions-dir",
