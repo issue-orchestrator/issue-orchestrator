@@ -1,39 +1,78 @@
-# VS Code Integration
+# VS Code Integration (From Zero)
 
-Issue Orchestrator includes a native VS Code extension that talks to the MCP server (`issue-orchestrator-mcp`).
+This extension gives you a native VS Code experience for Issue Orchestrator: live status, queues, sessions, and controls, all inside your editor.
 
-## Install
+## Prerequisites
 
-1. Install the Python package so the MCP entrypoint is on PATH.
-2. Build or install the VS Code extension from `packages/vscode`.
+1. **Install Issue Orchestrator (Python package)** so the MCP entrypoint exists on your PATH:
+   - You should be able to run `issue-orchestrator-mcp --help`.
+2. **Create a repo config** in your repo:
+   - `.issue-orchestrator/config/default.yaml`
+   - Start from `examples/config.example.yaml` if you’re new.
 
-## MCP Server
+## Install the Extension
 
-Run directly:
+From the repo root:
+
+```bash
+cd packages/vscode
+npm install
+npm run compile
+```
+
+Then install the extension into VS Code:
+- **Extension Development Host** (recommended for development):
+  - Open the repo in VS Code
+  - Run the `Run Extension` launch config
+- Or package and install the extension locally if you prefer.
+
+## First Run (What You Do in VS Code)
+
+1. Open your repo in VS Code.
+2. Open the **Issue Orchestrator** view from the Activity Bar.
+3. Use the Command Palette:
+   - `Issue Orchestrator: Start`
+   - `Issue Orchestrator: Refresh`
+
+The extension starts the MCP server and (by default) auto-starts the orchestrator if it isn’t running.
+
+## What You Can Do In-Editor
+
+- See **Active**, **Queue**, **Blocked**, and **History** sessions.
+- Open worktrees, PRs, issues, and logs.
+- Open a live **session console** and send messages to running agents.
+- Pause/Resume/Stop the orchestrator without leaving VS Code.
+- Open the web **Dashboard** inside VS Code or in your browser.
+- Run diagnostics and surface issues in the Problems panel.
+
+## Settings You’ll Actually Use
+
+Configure in VS Code Settings:
+
+- `issueOrchestrator.repoRoot`: repo to control (defaults to first workspace)
+- `issueOrchestrator.configPath`: config file path
+- `issueOrchestrator.autoStart`: auto-start orchestrator when connecting
+- `issueOrchestrator.instanceId`: if you run multiple orchestrators
+
+## Control Center From VS Code
+
+Use the Command Palette:
+- `Issue Orchestrator: Start Control Center`
+- `Issue Orchestrator: Stop Control Center`
+
+The Control Center runs in a VS Code terminal and serves the web UI.
+
+## MCP Server (Optional)
+
+You can run the MCP server manually:
 
 ```bash
 issue-orchestrator-mcp --repo-root /path/to/repo --auto-start
 ```
 
-The server exposes MCP tools for status, snapshots, and session controls. The VS Code extension starts it automatically.
-
-## Usage
-
-- Open the **Issue Orchestrator** view from the Activity Bar
-- Use command palette:
-  - `Issue Orchestrator: Start` / `Stop`
-  - `Issue Orchestrator: Pause` / `Resume`
-  - `Issue Orchestrator: Open Dashboard`
-  - `Issue Orchestrator: Quick Actions`
-  - `Issue Orchestrator: Select Config`
-  - `Issue Orchestrator: Run Diagnostics`
-- Right-click a session to open worktree, PR, logs, or session console
-
-## Settings
-
-See the extension README for configuration keys.
+The extension will detect and use it if running.
 
 ## Extension Tests
 
-`make test-vscode` launches the VS Code Extension Development Host with isolated
+`make test-vscode` launches a VS Code Extension Development Host with isolated
 test profiles under the system temp directory.

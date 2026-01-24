@@ -114,6 +114,14 @@
       {
         "command": "issueOrchestrator.openOrchestratorLog",
         "title": "Issue Orchestrator: Open Orchestrator Log"
+      },
+      {
+        "command": "issueOrchestrator.startControlCenter",
+        "title": "Issue Orchestrator: Start Control Center"
+      },
+      {
+        "command": "issueOrchestrator.stopControlCenter",
+        "title": "Issue Orchestrator: Stop Control Center"
       }
     ],
     "menus": {

@@ -45,6 +45,7 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_DELAY_MS = 30000;
 const detailPanels = new Map<number, vscode.WebviewPanel>();
 const consolePanels = new Map<number, vscode.WebviewPanel>();
+let controlCenterTerminal: vscode.Terminal | null = null;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const isTest = process.env.IO_VSCODE_TEST === "1" || !!process.env.VSCODE_EXTENSION_TESTS;
@@ -97,6 +98,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       diagnostics.dispose();
       void client.stop();
       closeEventStream();
+      if (controlCenterTerminal) {
+        controlCenterTerminal.dispose();
+        controlCenterTerminal = null;
+      }
     },
   });
 }
@@ -162,6 +167,43 @@ function registerCommands(
         }, output, "Stop failed");
       }
     }),
+    vscode.commands.registerCommand("issueOrchestrator.startControlCenter", async () => {
+      await runCommand(async () => {
+        const repoRoot = resolveRepoRoot();
+        if (!repoRoot) {
+          vscode.window.showErrorMessage("Repo root not configured. Set issueOrchestrator.repoRoot.");
+          return;
+        }
+        const scriptPath = path.join(repoRoot, "scripts", "start_control_center.sh");
+        try {
+          await (vscode.workspace as typeof vscode.workspace & { fs: { stat(uri: vscode.Uri): Promise<void> } }).fs.stat(
+            vscode.Uri.file(scriptPath)
+          );
+        } catch {
+          vscode.window.showErrorMessage(`Control Center script not found: ${scriptPath}`);
+          return;
+        }
+        if (controlCenterTerminal) {
+          controlCenterTerminal.dispose();
+        }
+        controlCenterTerminal = vscode.window.createTerminal({
+          name: "Issue Orchestrator Control Center",
+          cwd: repoRoot,
+        });
+        controlCenterTerminal.show();
+        controlCenterTerminal.sendText(`"${scriptPath}"`, true);
+      }, output, "Start control center failed");
+    }),
+    vscode.commands.registerCommand("issueOrchestrator.stopControlCenter", async () => {
+      await runCommand(async () => {
+        if (!controlCenterTerminal) {
+          vscode.window.showInformationMessage("Control Center is not running.");
+          return;
+        }
+        controlCenterTerminal.dispose();
+        controlCenterTerminal = null;
+      }, output, "Stop control center failed");
+    }),
     vscode.commands.registerCommand("issueOrchestrator.pause", async () => {
       await runCommand(async () => {
         await client.pause();
@@ -191,6 +233,8 @@ function registerCommands(
         const options = [
           { label: "Start Orchestrator", command: "issueOrchestrator.start" },
           { label: "Stop Orchestrator", command: "issueOrchestrator.stop" },
+          { label: "Start Control Center", command: "issueOrchestrator.startControlCenter" },
+          { label: "Stop Control Center", command: "issueOrchestrator.stopControlCenter" },
           { label: "Pause Orchestrator", command: "issueOrchestrator.pause" },
           { label: "Resume Orchestrator", command: "issueOrchestrator.resume" },
           { label: "Refresh View", command: "issueOrchestrator.refresh" },
