@@ -133,6 +133,16 @@ def completion_processor(mock_label_adapter, mock_pr_adapter, mock_git_adapter):
     )
 
 
+class StubWorkingCopy:
+    """Stub WorkingCopy for testing."""
+
+    def get_head_sha(self, worktree):
+        return "abc1234567890"
+
+    def get_current_branch(self, worktree):
+        return "test-branch"
+
+
 @pytest.fixture
 def session_controller(completion_processor, mock_event_sink):
     """Create a SessionController with mocked dependencies."""
@@ -140,6 +150,7 @@ def session_controller(completion_processor, mock_event_sink):
         completion_processor=completion_processor,
         events=mock_event_sink,
         session_output=FileSystemSessionOutput(),
+        working_copy=StubWorkingCopy(),
     )
 
 
