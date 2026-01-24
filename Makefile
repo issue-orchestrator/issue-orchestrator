@@ -240,7 +240,7 @@ validate-quick: typecheck test-unit
 # Output is saved to ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR or .issue-orchestrator/diagnostics/
 # On failure, prints path to output file so agents can find failure details
 validate:
-	@.venv/bin/python -m issue_orchestrator.entrypoints.cli_tools.validate_runner --command "$(GMAKE) validate-raw"
+	@$(PYTHON) -m issue_orchestrator.entrypoints.cli_tools.validate_runner --command "$(GMAKE) validate-raw"
 
 # Raw validation - direct execution without output capture wrapper
 # Use this as a fallback if the Python wrapper fails
