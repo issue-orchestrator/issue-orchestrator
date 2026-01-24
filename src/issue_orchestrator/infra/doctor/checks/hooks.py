@@ -132,10 +132,10 @@ def check_hook_verification(config: Config) -> list[Check]:
     unsupported_types = {
         MetaAgentType.UNKNOWN,
         MetaAgentType.CURSOR,
-        MetaAgentType.COPILOT_CLI,
-        MetaAgentType.CODEX_CLI,
+        MetaAgentType.COPILOT,
+        MetaAgentType.CODEX,
         MetaAgentType.AIDER,
-        MetaAgentType.GEMINI_CLI,
+        MetaAgentType.GEMINI,
     }
 
     # Check hook installation

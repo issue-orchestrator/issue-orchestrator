@@ -32,13 +32,16 @@ TEMPLATES_DIR = Path(__file__).parent.parent.parent / "templates" / "hooks"
 
 
 class MetaAgentType(Enum):
-    """Supported AI meta-agent types."""
+    """Supported AI agent types.
+
+    Values match ai_systems.yaml for unified configuration.
+    """
     CLAUDE_CODE = "claude-code"
     CURSOR = "cursor"
-    COPILOT_CLI = "copilot-cli"
-    CODEX_CLI = "codex-cli"
+    COPILOT = "copilot"
+    CODEX = "codex"
     AIDER = "aider"
-    GEMINI_CLI = "gemini-cli"
+    GEMINI = "gemini"
     UNKNOWN = "unknown"
 
 
@@ -558,13 +561,13 @@ def detect_meta_agent(command: str) -> MetaAgentType:
     elif re.match(r"^cursor", executable, re.IGNORECASE):
         return MetaAgentType.CURSOR
     elif re.match(r"^(gh\s+)?copilot", executable, re.IGNORECASE):
-        return MetaAgentType.COPILOT_CLI
+        return MetaAgentType.COPILOT
     elif re.match(r"^codex", executable, re.IGNORECASE):
-        return MetaAgentType.CODEX_CLI
+        return MetaAgentType.CODEX
     elif re.match(r"^aider", executable, re.IGNORECASE):
         return MetaAgentType.AIDER
     elif re.match(r"^gemini", executable, re.IGNORECASE):
-        return MetaAgentType.GEMINI_CLI
+        return MetaAgentType.GEMINI
     else:
         return MetaAgentType.UNKNOWN
 
@@ -577,12 +580,12 @@ def get_adapter(agent_type: MetaAgentType) -> MetaAgentAdapter:
         return CursorAdapter()
     elif agent_type == MetaAgentType.AIDER:
         return UnsupportedAdapter(agent_type, "Aider has no command hook mechanism")
-    elif agent_type == MetaAgentType.GEMINI_CLI:
-        return UnsupportedAdapter(agent_type, "Gemini CLI hooks are in development")
-    elif agent_type == MetaAgentType.COPILOT_CLI:
-        return UnsupportedAdapter(agent_type, "Copilot CLI support not yet implemented")
-    elif agent_type == MetaAgentType.CODEX_CLI:
-        return UnsupportedAdapter(agent_type, "Codex CLI support not yet implemented")
+    elif agent_type == MetaAgentType.GEMINI:
+        return UnsupportedAdapter(agent_type, "Gemini hooks are in development")
+    elif agent_type == MetaAgentType.COPILOT:
+        return UnsupportedAdapter(agent_type, "Copilot support not yet implemented")
+    elif agent_type == MetaAgentType.CODEX:
+        return UnsupportedAdapter(agent_type, "Codex support not yet implemented")
     else:
         return UnsupportedAdapter(agent_type, "Unknown meta-agent type")
 

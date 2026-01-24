@@ -7,7 +7,10 @@ from ...config import Config
 CLI_ONLY_PROVIDERS = {
     "claude-code",
     "codex",
-    "codex-cli",
+    "gemini",
+    "cursor",
+    "copilot",
+    "aider",
 }
 
 PROVIDER_KEY_MAP = {
@@ -28,7 +31,13 @@ def _infer_provider_from_command(command: str | None) -> str | None:
     if executable.startswith("claude"):
         return "claude-code"
     if executable.startswith("codex"):
-        return "codex-cli"
+        return "codex"
+    if executable.startswith("gemini"):
+        return "gemini"
+    if executable.startswith("cursor"):
+        return "cursor"
+    if executable.startswith("aider"):
+        return "aider"
     return None
 
 
