@@ -19,9 +19,6 @@ def test_vscode_extension_e2e(
     e2e_project_root: Path,
     e2e_session_config,
 ) -> None:
-    if os.environ.get("E2E_VSCODE") != "1":
-        pytest.skip("Set E2E_VSCODE=1 to run VS Code extension e2e")
-
     node_modules = e2e_project_root / "packages" / "vscode" / "node_modules"
     if not node_modules.exists():
         pytest.fail("Missing packages/vscode/node_modules. Run: make install-vscode-extensions")
