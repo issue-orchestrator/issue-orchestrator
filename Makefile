@@ -232,10 +232,10 @@ test-web:
 test-web-headed:
 	$(PYTEST) tests/e2e_web -v --tb=short --headed
 
-# VS Code extension tests (local only). Skipped in CI.
+# VS Code extension tests (local only). Skipped in GitHub Actions.
 test-vscode:
-ifneq ($(CI),)
-	@echo "Skipping test-vscode in CI"
+ifneq ($(GITHUB_ACTIONS),)
+	@echo "Skipping test-vscode in GitHub Actions"
 else
 	@if [ ! -d "packages/vscode/node_modules" ]; then \
 		echo "Missing packages/vscode/node_modules. Run: make install-vscode-extensions"; \
