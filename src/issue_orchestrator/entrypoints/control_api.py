@@ -590,6 +590,33 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
     })
 
 
+def _update_cached_issue_labels(issue_number: int, labels_to_remove: list[str]) -> None:
+    """Update the cached issue to remove specified labels (avoids full queue refresh).
+
+    Since GitHubIssue is frozen/immutable, we create a new instance with updated labels
+    and replace it in the cached_queue_issues list.
+    """
+    if _orchestrator is None:
+        return
+
+    from dataclasses import is_dataclass, replace
+
+    state = _orchestrator.state
+    for i, issue in enumerate(state.cached_queue_issues):
+        if issue.number == issue_number:
+            # Remove the specified labels from the issue
+            new_labels = tuple(
+                label for label in issue.labels
+                if label not in labels_to_remove
+            )
+            # Create updated issue with new labels (only works for dataclass implementations)
+            if is_dataclass(issue) and not isinstance(issue, type):
+                updated_issue = replace(issue, labels=new_labels)
+                state.cached_queue_issues[i] = updated_issue
+                logger.debug("[cache] Updated issue #%d labels: removed %s", issue_number, labels_to_remove)
+            break
+
+
 @control_app.post("/api/issues/{issue_number}/retry")
 async def retry_issue(issue_number: int) -> JSONResponse:
     """Retry a blocked issue by removing the blocked label and re-queueing.
@@ -628,6 +655,9 @@ async def retry_issue(issue_number: int) -> JSONResponse:
                 removed.append(label)
             except Exception:
                 pass  # Label might not exist, that's fine
+
+        # Update cache locally to avoid full queue refresh
+        _update_cached_issue_labels(issue_number, labels_to_remove)
 
         logger.info("[retry] Issue #%d retried, removed labels: %s", issue_number, removed)
         return JSONResponse({
@@ -689,6 +719,12 @@ async def dismiss_issue(issue_number: int) -> JSONResponse:
         _orchestrator.state.session_history = [
             entry for entry in _orchestrator.state.session_history
             if entry.issue_number != issue_number
+        ]
+
+        # Remove from cached queue (dismissed issues won't be picked up again)
+        _orchestrator.state.cached_queue_issues = [
+            issue for issue in _orchestrator.state.cached_queue_issues
+            if issue.number != issue_number
         ]
 
         logger.info("[dismiss] Issue #%d dismissed, removed labels: %s", issue_number, removed)

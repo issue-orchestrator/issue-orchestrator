@@ -266,6 +266,12 @@ class OrchestratorProcess:
         cmd.extend(["--port", str(web_port)])
         print(f"  [E2E] Web UI available at http://localhost:{web_port}", flush=True)
 
+        # Add control API port
+        api_port = self.config.control_api_port
+        if api_port > 0:
+            cmd.extend(["--api-port", str(api_port)])
+            print(f"  [E2E] Control API available at http://localhost:{api_port}", flush=True)
+
         if extra_args:
             cmd.extend(extra_args)
 

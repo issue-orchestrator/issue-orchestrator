@@ -172,6 +172,7 @@ class Orchestrator:
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
             self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),
+            claim_manager=self.deps.claim_manager,
         )
 
     @cached_property
