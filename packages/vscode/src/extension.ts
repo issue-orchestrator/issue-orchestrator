@@ -2,10 +2,40 @@ import * as vscode from "vscode";
 import * as path from "path";
 
 import { OrchestratorTreeDataProvider } from "./views.js";
-import type { Snapshot } from "./types.js";
+import type {
+  ActiveSession,
+  HistoryEntry,
+  IssueSummary,
+  Snapshot,
+} from "./types.js";
 import type { OrchestratorClient } from "./orchestratorClient.js";
 
 type EventSource = import("eventsource").default;
+type IssueDetail = {
+  active?: ActiveSession;
+  queued?: IssueSummary;
+  blocked?: IssueSummary;
+  history?: HistoryEntry;
+};
+type PhaseEntry = {
+  display_name: string;
+  status: string;
+};
+type PhaseResponse = {
+  phases?: PhaseEntry[];
+};
+type ManifestResponse = {
+  manifest?: { pr_url?: string | null };
+};
+type ClaudeLogEntry = {
+  type?: string;
+  content?: string;
+  _parse_error?: boolean;
+  _raw?: string;
+};
+type ClaudeLogResponse = {
+  entries?: ClaudeLogEntry[];
+};
 
 let eventSource: EventSource | null = null;
 let dashboardPanel: vscode.WebviewPanel | null = null;
@@ -580,41 +610,45 @@ async function openSessionConsole(
   consolePanels.set(issueNumber, panel);
 }
 
-async function getSnapshot(provider: OrchestratorTreeDataProvider, client: OrchestratorClient) {
+async function getSnapshot(provider: OrchestratorTreeDataProvider, client: OrchestratorClient): Promise<Snapshot> {
   return provider.getSnapshot() ?? (await client.getSnapshot());
 }
 
-function findPrUrl(snapshot: any, issueNumber: number): string | null {
-  const pending = snapshot.status?.pending_reviews?.find((r: any) => r.issue_number === issueNumber);
+function findPrUrl(snapshot: Snapshot, issueNumber: number): string | null {
+  const pending = snapshot.status.pending_reviews.find((r) => r.issue_number === issueNumber);
   if (pending?.pr_url) {
     return pending.pr_url;
   }
-  const history = snapshot.history?.history?.find((h: any) => h.issue_number === issueNumber);
+  const history = snapshot.history.history.find((h) => h.issue_number === issueNumber);
   if (history?.pr_url) {
     return history.pr_url;
   }
-  const job = snapshot.publish_jobs?.jobs?.find((j: any) => j.issue_number === issueNumber && j.pr_url);
+  const job = snapshot.publish_jobs.jobs.find((j) => j.issue_number === issueNumber && j.pr_url);
   if (job?.pr_url) {
     return job.pr_url;
   }
   return null;
 }
 
-function buildIssueDetail(snapshot: any, issueNumber: number) {
-  const active = snapshot.status?.active_sessions?.find((s: any) => s.issue_number === issueNumber);
-  const queued = snapshot.status?.queue?.find((q: any) => q.number === issueNumber);
-  const blocked = snapshot.blocked?.blocked?.find((b: any) => b.number === issueNumber);
-  const history = snapshot.history?.history?.find((h: any) => h.issue_number === issueNumber);
+function buildIssueDetail(snapshot: Snapshot, issueNumber: number): IssueDetail {
+  const active = snapshot.status.active_sessions.find((s) => s.issue_number === issueNumber);
+  const queued = snapshot.status.queue.find((q) => q.number === issueNumber);
+  const blocked = snapshot.blocked.blocked.find((b) => b.number === issueNumber);
+  const history = snapshot.history.history.find((h) => h.issue_number === issueNumber);
   return { active, queued, blocked, history };
 }
 
-function renderDetailsHtml(issueNumber: number, detail: any, manifest: any, phases: any): string {
-  const nonce = `${Date.now()}${Math.random()}`;
-  const summary = detail.active ?? detail.queued ?? detail.blocked ?? detail.history ?? {};
-  const title = summary.title ?? "Issue";
-  const agent = summary.agent_type ?? summary.agent_label ?? "unknown";
+function renderDetailsHtml(
+  issueNumber: number,
+  detail: IssueDetail,
+  manifest: ManifestResponse | null,
+  phases: PhaseResponse | null
+): string {
+  const summary = detail.active ?? detail.queued ?? detail.blocked ?? detail.history;
+  const title = summary?.title ?? "Issue";
+  const agent = summary?.agent_type ?? "unknown";
   const status = detail.active ? "active" : detail.blocked ? "blocked" : detail.history ? detail.history.status : "queued";
-  const prUrl = manifest?.manifest?.pr_url || summary.pr_url || "";
+  const prUrl = manifest?.manifest?.pr_url || detail.history?.pr_url || "";
   const phaseList = phases?.phases ?? [];
 
   return `<!DOCTYPE html>
@@ -643,7 +677,7 @@ function renderDetailsHtml(issueNumber: number, detail: any, manifest: any, phas
       <div class="section">
         <h2>Phases</h2>
         <ul>
-          ${phaseList.map((p: any) => `<li>${p.display_name} — ${p.status}</li>`).join("")}
+          ${phaseList.map((p) => `<li>${p.display_name} — ${p.status}</li>`).join("")}
         </ul>
       </div>
       <div class="section">
@@ -654,11 +688,11 @@ function renderDetailsHtml(issueNumber: number, detail: any, manifest: any, phas
   </html>`;
 }
 
-function renderConsoleHtml(issueNumber: number, logData: any): string {
+function renderConsoleHtml(issueNumber: number, logData: ClaudeLogResponse | null): string {
   const nonce = `${Date.now()}${Math.random()}`;
   const entries = Array.isArray(logData?.entries) ? logData.entries : [];
   const formatted = entries
-    .map((entry: any) => {
+    .map((entry) => {
       if (entry?._parse_error) {
         return `[parse error] ${entry._raw}`;
       }
@@ -713,23 +747,29 @@ function escapeHtml(input: string): string {
     .replaceAll(">", "&gt;");
 }
 
-function updateDiagnostics(snapshot: any, diagnostics: vscode.DiagnosticCollection): void {
-  const repoRoot = snapshot.info?.repo_root || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+function updateDiagnostics(snapshot: Snapshot, diagnostics: vscode.DiagnosticCollection): void {
+  const repoRoot = snapshot.info.repo_root || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!repoRoot) {
     return;
   }
   const uri = vscode.Uri.file(`${repoRoot}/.issue-orchestrator/diagnostics.txt`);
   const list: vscode.Diagnostic[] = [];
 
-  const blocked = snapshot.blocked?.blocked ?? [];
+  const blocked = snapshot.blocked.blocked;
   for (const issue of blocked) {
     const message = issue.blocked_summary || issue.flow_stage || "Issue blocked";
     list.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), `#${issue.number}: ${message}`, vscode.DiagnosticSeverity.Warning));
   }
 
-  const dependencyProblems = snapshot.dependency_problems?.problems ?? {};
+  const dependencyProblems = snapshot.dependency_problems.problems;
   for (const [key, value] of Object.entries(dependencyProblems)) {
-    const summary = (value as any).summary || "Dependency problem";
+    let summary = "Dependency problem";
+    if (value && typeof value === "object" && "summary" in value) {
+      const candidate = (value as { summary?: unknown }).summary;
+      if (typeof candidate === "string") {
+        summary = candidate;
+      }
+    }
     list.push(new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), `#${key}: ${summary}`, vscode.DiagnosticSeverity.Warning));
   }
 

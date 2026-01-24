@@ -234,6 +234,10 @@ test-web-headed:
 
 # VS Code extension tests (local only). Skipped in CI.
 test-vscode:
+	@if [ -n "$$CI" ]; then \
+		echo "Skipping test-vscode in CI"; \
+		exit 0; \
+	fi
 	@if [ ! -d "packages/vscode/node_modules" ]; then \
 		echo "Missing packages/vscode/node_modules. Run: make install-vscode-extensions"; \
 		exit 1; \

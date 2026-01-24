@@ -6,7 +6,7 @@ import argparse
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from mcp.server.fastmcp import FastMCP
 
@@ -67,147 +67,197 @@ class OrchestratorHttpClient:
         return None
 
 
+class McpApp:
+    def __init__(self, settings: McpSettings) -> None:
+        self._settings = settings
+        self._client = OrchestratorHttpClient(settings)
+        self._api: OrchestratorApi = OrchestratorHttpApi(self._client.base_url)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _safe(self, tool_name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("MCP tool %s failed", tool_name)
+            return {
+                "error": {
+                    "message": str(exc),
+                    "type": exc.__class__.__name__,
+                }
+            }
+
+    def register(self, server: FastMCP) -> None:
+        @server.tool(name="orchestrator.status")
+        def orchestrator_status() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.status", self.status)
+
+        @server.tool(name="orchestrator.start")
+        def orchestrator_start() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.start", self.start)
+
+        @server.tool(name="orchestrator.stop")
+        def orchestrator_stop(force: bool = False) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.stop", lambda: self.stop(force))
+
+        @server.tool(name="orchestrator.pause")
+        def orchestrator_pause() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.pause", self.pause)
+
+        @server.tool(name="orchestrator.resume")
+        def orchestrator_resume() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.resume", self.resume)
+
+        @server.tool(name="orchestrator.refresh")
+        def orchestrator_refresh(  # pyright: ignore[reportUnusedFunction]
+            inflight_stable_ids: list[str] | None = None,
+        ) -> dict[str, Any]:
+            return self._safe("orchestrator.refresh", lambda: self.refresh(inflight_stable_ids))
+
+        @server.tool(name="orchestrator.shutdown")
+        def orchestrator_shutdown(force: bool = False) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.shutdown", lambda: self.shutdown(force))
+
+        @server.tool(name="orchestrator.snapshot")
+        def orchestrator_snapshot() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.snapshot", self.snapshot)
+
+        @server.tool(name="orchestrator.session.worktree")
+        def orchestrator_session_worktree(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.session.worktree", lambda: self.session_worktree(issue_number))
+
+        @server.tool(name="orchestrator.session.manifest")
+        def orchestrator_session_manifest(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.session.manifest", lambda: self.session_manifest(issue_number))
+
+        @server.tool(name="orchestrator.session.phases")
+        def orchestrator_session_phases(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.session.phases", lambda: self.session_phases(issue_number))
+
+        @server.tool(name="orchestrator.session.claude_log")
+        def orchestrator_session_claude_log(  # pyright: ignore[reportUnusedFunction]
+            issue_number: int,
+            limit: int = 200,
+        ) -> dict[str, Any]:
+            return self._safe("orchestrator.session.claude_log", lambda: self.session_claude_log(issue_number, limit))
+
+        @server.tool(name="orchestrator.session.orchestrator_log")
+        def orchestrator_session_orchestrator_log(  # pyright: ignore[reportUnusedFunction]
+            issue_number: int,
+        ) -> dict[str, Any]:
+            return self._safe(
+                "orchestrator.session.orchestrator_log",
+                lambda: self.session_orchestrator_log(issue_number),
+            )
+
+        @server.tool(name="orchestrator.session.send")
+        def orchestrator_session_send(  # pyright: ignore[reportUnusedFunction]
+            issue_number: int,
+            text: str,
+        ) -> dict[str, Any]:
+            return self._safe("orchestrator.session.send", lambda: self.session_send(issue_number, text))
+
+        @server.tool(name="orchestrator.session.kill")
+        def orchestrator_session_kill(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.session.kill", lambda: self.session_kill(issue_number))
+
+        @server.tool(name="orchestrator.session.focus")
+        def orchestrator_session_focus(issue_number: int) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.session.focus", lambda: self.session_focus(issue_number))
+
+        @server.tool(name="orchestrator.urls")
+        def orchestrator_urls() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.urls", self.urls)
+
+        @server.tool(name="orchestrator.doctor")
+        def orchestrator_doctor() -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+            return self._safe("orchestrator.doctor", self.doctor)
+
+    def status(self) -> dict[str, Any]:
+        status = self._client.status()
+        result: dict[str, Any] = {"supervisor": status.to_dict()}
+        if status.state == "running" and status.port is not None:
+            result["status"] = self._api.status()
+            result["info"] = self._api.info()
+        return result
+
+    def start(self) -> dict[str, Any]:
+        status = self._client.status()
+        if status.state != "running":
+            status = self._client.start()
+        return {"supervisor": status.to_dict()}
+
+    def stop(self, force: bool = False) -> dict[str, Any]:
+        stopped = supervisor.stop(
+            self._settings.repo_root,
+            instance_id=self._settings.instance_id,
+            force=force,
+        )
+        return {"stopped": stopped}
+
+    def pause(self) -> dict[str, Any]:
+        return self._api.pause()
+
+    def resume(self) -> dict[str, Any]:
+        return self._api.resume()
+
+    def refresh(self, inflight_stable_ids: list[str] | None) -> dict[str, Any]:
+        return self._api.refresh(inflight_stable_ids or [])
+
+    def shutdown(self, force: bool = False) -> dict[str, Any]:
+        return self._api.shutdown(force=force)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "status": self._api.status(),
+            "info": self._api.info(),
+            "blocked": self._api.blocked_issues(),
+            "stale": self._api.stale_issues(),
+            "dependency_problems": self._api.dependency_problems(),
+            "excluded": self._api.excluded_issues(),
+            "publish_jobs": self._api.publish_jobs(),
+            "history": self._api.history(),
+        }
+
+    def session_worktree(self, issue_number: int) -> dict[str, Any]:
+        return self._api.session_worktree(issue_number)
+
+    def session_manifest(self, issue_number: int) -> dict[str, Any]:
+        return self._api.session_manifest(issue_number)
+
+    def session_phases(self, issue_number: int) -> dict[str, Any]:
+        return self._api.session_phases(issue_number)
+
+    def session_claude_log(self, issue_number: int, limit: int = 200) -> dict[str, Any]:
+        return self._api.session_claude_log(issue_number, limit)
+
+    def session_orchestrator_log(self, issue_number: int) -> dict[str, Any]:
+        return self._api.session_orchestrator_log(issue_number)
+
+    def session_send(self, issue_number: int, text: str) -> dict[str, Any]:
+        return self._api.send(issue_number, text)
+
+    def session_kill(self, issue_number: int) -> dict[str, Any]:
+        return self._api.kill(issue_number)
+
+    def session_focus(self, issue_number: int) -> dict[str, Any]:
+        return self._api.focus(issue_number)
+
+    def urls(self) -> dict[str, Any]:
+        base = self._client.base_url()
+        return {
+            "base_url": base,
+            "dashboard_url": f"{base}/",
+            "events_url": f"{base}/api/events",
+            "config_url": f"{base}/api/config",
+        }
+
+    def doctor(self) -> dict[str, Any]:
+        return self._api.doctor()
+
+
 mcp = FastMCP("Issue Orchestrator", json_response=True)
-
-
-def _make_client(settings: McpSettings) -> OrchestratorHttpClient:
-    return OrchestratorHttpClient(settings)
-
-
-@mcp.tool(name="orchestrator.status")
-def orchestrator_status() -> dict[str, Any]:
-    """Return supervisor status and live orchestrator status."""
-    status = _CLIENT.status()
-    result: dict[str, Any] = {"supervisor": status.to_dict()}
-    if status.state == "running" and status.port is not None:
-        result["status"] = _API.status()
-        result["info"] = _API.info()
-    return result
-
-
-@mcp.tool(name="orchestrator.start")
-def orchestrator_start() -> dict[str, Any]:
-    """Start the orchestrator process if not running."""
-    status = _CLIENT.status()
-    if status.state != "running":
-        status = _CLIENT.start()
-    return {"supervisor": status.to_dict()}
-
-
-@mcp.tool(name="orchestrator.stop")
-def orchestrator_stop(force: bool = False) -> dict[str, Any]:
-    """Stop the orchestrator process."""
-    stopped = supervisor.stop(
-        _SETTINGS.repo_root,
-        instance_id=_SETTINGS.instance_id,
-        force=force,
-    )
-    return {"stopped": stopped}
-
-
-@mcp.tool(name="orchestrator.pause")
-def orchestrator_pause() -> dict[str, Any]:
-    """Pause the orchestrator."""
-    return _API.pause()
-
-
-@mcp.tool(name="orchestrator.resume")
-def orchestrator_resume() -> dict[str, Any]:
-    """Resume the orchestrator."""
-    return _API.resume()
-
-
-@mcp.tool(name="orchestrator.refresh")
-def orchestrator_refresh(inflight_stable_ids: list[str] | None = None) -> dict[str, Any]:
-    """Request an immediate refresh of issues."""
-    return _API.refresh(inflight_stable_ids or [])
-
-
-@mcp.tool(name="orchestrator.shutdown")
-def orchestrator_shutdown(force: bool = False) -> dict[str, Any]:
-    """Request orchestrator shutdown (graceful by default)."""
-    return _API.shutdown(force=force)
-
-
-@mcp.tool(name="orchestrator.snapshot")
-def orchestrator_snapshot() -> dict[str, Any]:
-    """Return a combined snapshot of orchestrator state for UI consumption."""
-    return {
-        "status": _API.status(),
-        "info": _API.info(),
-        "blocked": _API.blocked_issues(),
-        "stale": _API.stale_issues(),
-        "dependency_problems": _API.dependency_problems(),
-        "excluded": _API.excluded_issues(),
-        "publish_jobs": _API.publish_jobs(),
-        "history": _API.history(),
-    }
-
-
-@mcp.tool(name="orchestrator.session.worktree")
-def orchestrator_session_worktree(issue_number: int) -> dict[str, Any]:
-    """Return worktree path and session name for an issue."""
-    return _API.session_worktree(issue_number)
-
-
-@mcp.tool(name="orchestrator.session.manifest")
-def orchestrator_session_manifest(issue_number: int) -> dict[str, Any]:
-    """Return session manifest for an issue."""
-    return _API.session_manifest(issue_number)
-
-
-@mcp.tool(name="orchestrator.session.phases")
-def orchestrator_session_phases(issue_number: int) -> dict[str, Any]:
-    """Return session phase history for an issue."""
-    return _API.session_phases(issue_number)
-
-
-@mcp.tool(name="orchestrator.session.claude_log")
-def orchestrator_session_claude_log(issue_number: int, limit: int = 200) -> dict[str, Any]:
-    """Return parsed Claude log entries for an issue."""
-    return _API.session_claude_log(issue_number, limit)
-
-
-@mcp.tool(name="orchestrator.session.orchestrator_log")
-def orchestrator_session_orchestrator_log(issue_number: int) -> dict[str, Any]:
-    """Return filtered orchestrator log paths for an issue."""
-    return _API.session_orchestrator_log(issue_number)
-
-
-@mcp.tool(name="orchestrator.session.send")
-def orchestrator_session_send(issue_number: int, text: str) -> dict[str, Any]:
-    """Send input to a running agent session."""
-    return _API.send(issue_number, text)
-
-
-@mcp.tool(name="orchestrator.session.kill")
-def orchestrator_session_kill(issue_number: int) -> dict[str, Any]:
-    """Kill a running session."""
-    return _API.kill(issue_number)
-
-
-@mcp.tool(name="orchestrator.session.focus")
-def orchestrator_session_focus(issue_number: int) -> dict[str, Any]:
-    """Focus a running session in the terminal backend."""
-    return _API.focus(issue_number)
-
-
-@mcp.tool(name="orchestrator.urls")
-def orchestrator_urls() -> dict[str, Any]:
-    """Return base URLs for the web dashboard and event stream."""
-    base = _CLIENT.base_url()
-    return {
-        "base_url": base,
-        "dashboard_url": f"{base}/",
-        "events_url": f"{base}/api/events",
-        "config_url": f"{base}/api/config",
-    }
-
-
-@mcp.tool(name="orchestrator.doctor")
-def orchestrator_doctor() -> dict[str, Any]:
-    """Return orchestrator doctor report."""
-    return _API.doctor()
 
 
 def _resolve_settings(args: argparse.Namespace) -> McpSettings:
@@ -250,27 +300,18 @@ def main() -> None:
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    global _SETTINGS
-    global _CLIENT
-
     if args.config_path and not args.repo_root:
         repo_root = _resolve_repo_root(Path(args.config_path))
         args.repo_root = str(repo_root)
 
-    _SETTINGS = _resolve_settings(args)
-    _CLIENT = _make_client(_SETTINGS)
-    global _API
-    _API = OrchestratorHttpApi(_CLIENT.base_url)
+    settings = _resolve_settings(args)
+    app = McpApp(settings)
+    app.register(mcp)
 
     try:
         mcp.run()
     finally:
-        _CLIENT.close()
-
-
-_SETTINGS: McpSettings
-_CLIENT: OrchestratorHttpClient
-_API: OrchestratorApi
+        app.close()
 
 
 if __name__ == "__main__":
