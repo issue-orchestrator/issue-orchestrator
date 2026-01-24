@@ -1,11 +1,11 @@
-"""Hook management for AI meta-agents.
+"""Hook management for AI agents.
 
 This module handles installation and verification of hooks that prevent
 AI agents from bypassing safety guardrails (like --no-verify).
 
-Uses an adapter pattern to support different AI meta-agents:
+Uses an adapter pattern to support different AI agents:
 - Claude Code: Fully supported with PreToolUse hooks
-- Others: Raise UnsupportedMetaAgentError (not yet implemented)
+- Others: Raise UnsupportedAiAgentError (not yet implemented)
 """
 
 import hashlib
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 TEMPLATES_DIR = Path(__file__).parent.parent.parent / "templates" / "hooks"
 
 
-class MetaAgentType(Enum):
+class AiAgentType(Enum):
     """Supported AI agent types.
 
     Values match ai_systems.yaml for unified configuration.
@@ -45,13 +45,13 @@ class MetaAgentType(Enum):
     UNKNOWN = "unknown"
 
 
-class UnsupportedMetaAgentError(Exception):
-    """Raised when a meta-agent doesn't support required hooks."""
+class UnsupportedAiAgentError(Exception):
+    """Raised when an AI agent doesn't support required hooks."""
 
-    def __init__(self, agent_type: MetaAgentType, reason: str):
+    def __init__(self, agent_type: AiAgentType, reason: str):
         self.agent_type = agent_type
         self.reason = reason
-        super().__init__(f"Unsupported meta-agent '{agent_type.value}': {reason}")
+        super().__init__(f"Unsupported AI agent '{agent_type.value}': {reason}")
 
 
 class HookVerificationError(Exception):
@@ -63,7 +63,7 @@ class HookVerificationError(Exception):
 class VerificationResult:
     """Result of hook verification."""
     success: bool
-    meta_agent: MetaAgentType
+    meta_agent: AiAgentType
     checks_passed: list[str]
     checks_failed: list[str]
     audit_log: Optional[Path] = None
@@ -80,7 +80,7 @@ class VerificationResult:
 class VerificationMarker:
     """Tamper-proof marker proving verification passed."""
     verified_at: datetime
-    meta_agent: MetaAgentType
+    meta_agent: AiAgentType
     hooks_hash: str
     signature: str
 
@@ -89,11 +89,11 @@ class VerificationMarker:
     MARKER_FILE = "verified"
 
     @classmethod
-    def compute_hooks_hash(cls, project_root: Path, meta_agent: MetaAgentType) -> str:
-        """Compute hash of all hook files for a meta-agent."""
+    def compute_hooks_hash(cls, project_root: Path, ai_agent: AiAgentType) -> str:
+        """Compute hash of all hook files for an AI agent."""
         hasher = hashlib.sha256()
 
-        if meta_agent == MetaAgentType.CLAUDE_CODE:
+        if ai_agent == AiAgentType.CLAUDE_CODE:
             files = [
                 project_root / ".claude" / "hooks" / "block-no-verify.sh",
                 project_root / ".claude" / "settings.json",
@@ -137,7 +137,7 @@ class VerificationMarker:
             data = json.loads(marker_path.read_text())
             marker = cls(
                 verified_at=datetime.fromisoformat(data["verified_at"]),
-                meta_agent=MetaAgentType(data["meta_agent"]),
+                meta_agent=AiAgentType(data["meta_agent"]),
                 hooks_hash=data["hooks_hash"],
                 signature=data["signature"],
             )
@@ -163,18 +163,18 @@ class VerificationMarker:
         return True
 
 
-class MetaAgentAdapter(ABC):
-    """Abstract base class for meta-agent hook adapters."""
+class AiAgentAdapter(ABC):
+    """Abstract base class for AI agent hook adapters."""
 
     @property
     @abstractmethod
-    def agent_type(self) -> MetaAgentType:
-        """Return the meta-agent type this adapter handles."""
+    def agent_type(self) -> AiAgentType:
+        """Return the AI agent type this adapter handles."""
         pass
 
     @abstractmethod
     def install_hooks(self, project_root: Path) -> list[Path]:
-        """Install hooks for this meta-agent.
+        """Install hooks for this AI agent.
 
         Returns list of files created/modified.
         """
@@ -194,7 +194,7 @@ class MetaAgentAdapter(ABC):
         pass
 
     def live_verify(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
-        """Perform live verification by spawning the meta-agent.
+        """Perform live verification by spawning the AI agent.
 
         Optional method - subclasses can override for live testing.
         Default implementation returns not supported.
@@ -205,12 +205,12 @@ class MetaAgentAdapter(ABC):
         return False, f"Live verification not supported for {self.agent_type.value}"
 
 
-class ClaudeCodeAdapter(MetaAgentAdapter):
+class ClaudeCodeAdapter(AiAgentAdapter):
     """Adapter for Claude Code (Anthropic's CLI)."""
 
     @property
-    def agent_type(self) -> MetaAgentType:
-        return MetaAgentType.CLAUDE_CODE
+    def agent_type(self) -> AiAgentType:
+        return AiAgentType.CLAUDE_CODE
 
     def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
         """Copy a hook file and make it executable."""
@@ -498,21 +498,21 @@ class ClaudeCodeAdapter(MetaAgentAdapter):
                 return False, f"Live verification error: {e}"
 
 
-class CursorAdapter(MetaAgentAdapter):
+class CursorAdapter(AiAgentAdapter):
     """Adapter for Cursor IDE."""
 
     @property
-    def agent_type(self) -> MetaAgentType:
-        return MetaAgentType.CURSOR
+    def agent_type(self) -> AiAgentType:
+        return AiAgentType.CURSOR
 
     def install_hooks(self, project_root: Path) -> list[Path]:
-        raise UnsupportedMetaAgentError(
+        raise UnsupportedAiAgentError(
             self.agent_type,
             "Cursor support not yet implemented. Use Claude Code for now."
         )
 
     def verify_hooks(self, project_root: Path) -> VerificationResult:
-        raise UnsupportedMetaAgentError(
+        raise UnsupportedAiAgentError(
             self.agent_type,
             "Cursor verification not yet implemented."
         )
@@ -521,35 +521,35 @@ class CursorAdapter(MetaAgentAdapter):
         return False
 
 
-class UnsupportedAdapter(MetaAgentAdapter):
-    """Adapter for unsupported meta-agents."""
+class UnsupportedAdapter(AiAgentAdapter):
+    """Adapter for unsupported AI agents."""
 
-    def __init__(self, agent_type: MetaAgentType, reason: str):
+    def __init__(self, agent_type: AiAgentType, reason: str):
         self._agent_type = agent_type
         self._reason = reason
 
     @property
-    def agent_type(self) -> MetaAgentType:
+    def agent_type(self) -> AiAgentType:
         return self._agent_type
 
     def install_hooks(self, project_root: Path) -> list[Path]:
-        raise UnsupportedMetaAgentError(self._agent_type, self._reason)
+        raise UnsupportedAiAgentError(self._agent_type, self._reason)
 
     def verify_hooks(self, project_root: Path) -> VerificationResult:
-        raise UnsupportedMetaAgentError(self._agent_type, self._reason)
+        raise UnsupportedAiAgentError(self._agent_type, self._reason)
 
     def is_installed(self, project_root: Path) -> bool:
         return False
 
 
-def detect_meta_agent(command: str) -> MetaAgentType:
-    """Detect which meta-agent a command uses.
+def detect_ai_agent(command: str) -> AiAgentType:
+    """Detect which AI agent a command uses.
 
     Args:
         command: The agent command from config (e.g., "claude --dangerously-skip-permissions")
 
     Returns:
-        The detected MetaAgentType
+        The detected AiAgentType
     """
     # Normalize: get first word (the executable)
     executable = command.strip().split()[0] if command else ""
@@ -557,67 +557,67 @@ def detect_meta_agent(command: str) -> MetaAgentType:
 
     # Match patterns
     if re.match(r"^claude", executable, re.IGNORECASE):
-        return MetaAgentType.CLAUDE_CODE
+        return AiAgentType.CLAUDE_CODE
     elif re.match(r"^cursor", executable, re.IGNORECASE):
-        return MetaAgentType.CURSOR
+        return AiAgentType.CURSOR
     elif re.match(r"^(gh\s+)?copilot", executable, re.IGNORECASE):
-        return MetaAgentType.COPILOT
+        return AiAgentType.COPILOT
     elif re.match(r"^codex", executable, re.IGNORECASE):
-        return MetaAgentType.CODEX
+        return AiAgentType.CODEX
     elif re.match(r"^aider", executable, re.IGNORECASE):
-        return MetaAgentType.AIDER
+        return AiAgentType.AIDER
     elif re.match(r"^gemini", executable, re.IGNORECASE):
-        return MetaAgentType.GEMINI
+        return AiAgentType.GEMINI
     else:
-        return MetaAgentType.UNKNOWN
+        return AiAgentType.UNKNOWN
 
 
-def get_adapter(agent_type: MetaAgentType) -> MetaAgentAdapter:
-    """Get the appropriate adapter for a meta-agent type."""
-    if agent_type == MetaAgentType.CLAUDE_CODE:
+def get_adapter(agent_type: AiAgentType) -> AiAgentAdapter:
+    """Get the appropriate adapter for an AI agent type."""
+    if agent_type == AiAgentType.CLAUDE_CODE:
         return ClaudeCodeAdapter()
-    elif agent_type == MetaAgentType.CURSOR:
+    elif agent_type == AiAgentType.CURSOR:
         return CursorAdapter()
-    elif agent_type == MetaAgentType.AIDER:
+    elif agent_type == AiAgentType.AIDER:
         return UnsupportedAdapter(agent_type, "Aider has no command hook mechanism")
-    elif agent_type == MetaAgentType.GEMINI:
+    elif agent_type == AiAgentType.GEMINI:
         return UnsupportedAdapter(agent_type, "Gemini hooks are in development")
-    elif agent_type == MetaAgentType.COPILOT:
+    elif agent_type == AiAgentType.COPILOT:
         return UnsupportedAdapter(agent_type, "Copilot support not yet implemented")
-    elif agent_type == MetaAgentType.CODEX:
+    elif agent_type == AiAgentType.CODEX:
         return UnsupportedAdapter(agent_type, "Codex support not yet implemented")
     else:
-        return UnsupportedAdapter(agent_type, "Unknown meta-agent type")
+        return UnsupportedAdapter(agent_type, "Unknown AI agent type")
 
 
-def detect_agents_from_config(config) -> dict[str, MetaAgentType]:
-    """Detect meta-agent types for all agents in config.
+def detect_agents_from_config(config) -> dict[str, AiAgentType]:
+    """Detect AI agent types for all agent configs.
 
     Returns:
-        Dict mapping agent label to detected MetaAgentType
+        Dict mapping agent label to detected AiAgentType
     """
     result = {}
     for label, agent_config in config.agents.items():
         meta_agent = getattr(agent_config, "meta_agent", None)
         if meta_agent:
             try:
-                result[label] = MetaAgentType(meta_agent)
+                result[label] = AiAgentType(meta_agent)
                 continue
             except ValueError:
-                logger.warning("Unknown meta_agent override for %s: %s", label, meta_agent)
+                logger.warning("Unknown AI agent override for %s: %s", label, meta_agent)
         command = getattr(agent_config, "command", None) or ""
-        result[label] = detect_meta_agent(command)
+        result[label] = detect_ai_agent(command)
     return result
 
 
-def install_hooks_for_config(config, project_root: Path) -> dict[MetaAgentType, list[Path]]:
-    """Install hooks for all meta-agents detected in config.
+def install_hooks_for_config(config, project_root: Path) -> dict[AiAgentType, list[Path]]:
+    """Install hooks for all AI agents detected in config.
 
     Returns:
-        Dict mapping MetaAgentType to list of files created
+        Dict mapping AiAgentType to list of files created
 
     Raises:
-        UnsupportedMetaAgentError: If any agent uses an unsupported meta-agent
+        UnsupportedAiAgentError: If any config uses an unsupported AI agent
     """
     agent_types = detect_agents_from_config(config)
     unique_types = set(agent_types.values())
@@ -631,14 +631,14 @@ def install_hooks_for_config(config, project_root: Path) -> dict[MetaAgentType, 
     return results
 
 
-def verify_hooks_for_config(config, project_root: Path) -> dict[MetaAgentType, VerificationResult]:
-    """Verify hooks for all meta-agents detected in config.
+def verify_hooks_for_config(config, project_root: Path) -> dict[AiAgentType, VerificationResult]:
+    """Verify hooks for all AI agents detected in config.
 
     Returns:
-        Dict mapping MetaAgentType to VerificationResult
+        Dict mapping AiAgentType to VerificationResult
 
     Raises:
-        UnsupportedMetaAgentError: If any agent uses an unsupported meta-agent
+        UnsupportedAiAgentError: If any config uses an unsupported AI agent
     """
     agent_types = detect_agents_from_config(config)
     unique_types = set(agent_types.values())
@@ -681,8 +681,8 @@ def check_verification_status(project_root: Path, config) -> tuple[bool, str]:
     agent_types = detect_agents_from_config(config)
     unique_types = set(agent_types.values())
 
-    # For now we only support single meta-agent type per verification
-    # TODO: Support multiple markers for multiple meta-agent types
+    # For now we only support single AI agent type per verification
+    # TODO: Support multiple markers for multiple AI agent types
     if marker.meta_agent not in unique_types:
         return False, f"Verification is for {marker.meta_agent.value} but config uses {[t.value for t in unique_types]}"
 

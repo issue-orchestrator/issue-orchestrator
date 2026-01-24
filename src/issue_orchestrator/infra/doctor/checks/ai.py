@@ -2,17 +2,17 @@
 
 from ..types import Check
 from ...config import Config
-from ...hooks.hooks import MetaAgentType
+from ...hooks.hooks import AiAgentType
 
 
 # AI systems that authenticate via their own CLI - no API key needed
-CLI_ONLY_AI_SYSTEMS: frozenset[MetaAgentType] = frozenset({
-    MetaAgentType.CLAUDE_CODE,
-    MetaAgentType.CODEX,
-    MetaAgentType.GEMINI,
-    MetaAgentType.CURSOR,
-    MetaAgentType.COPILOT,
-    MetaAgentType.AIDER,
+CLI_ONLY_AI_SYSTEMS: frozenset[AiAgentType] = frozenset({
+    AiAgentType.CLAUDE_CODE,
+    AiAgentType.CODEX,
+    AiAgentType.GEMINI,
+    AiAgentType.CURSOR,
+    AiAgentType.COPILOT,
+    AiAgentType.AIDER,
 })
 
 PROVIDER_KEY_MAP = {
@@ -25,22 +25,22 @@ PROVIDER_KEY_MAP = {
 }
 
 
-def _infer_ai_system_from_command(command: str | None) -> MetaAgentType | None:
+def _infer_ai_system_from_command(command: str | None) -> AiAgentType | None:
     """Infer AI system type from command executable."""
     if not command:
         return None
     executable = command.strip().split()[0] if command.strip() else ""
     executable = executable.rsplit("/", 1)[-1]
     if executable.startswith("claude"):
-        return MetaAgentType.CLAUDE_CODE
+        return AiAgentType.CLAUDE_CODE
     if executable.startswith("codex"):
-        return MetaAgentType.CODEX
+        return AiAgentType.CODEX
     if executable.startswith("gemini"):
-        return MetaAgentType.GEMINI
+        return AiAgentType.GEMINI
     if executable.startswith("cursor"):
-        return MetaAgentType.CURSOR
+        return AiAgentType.CURSOR
     if executable.startswith("aider"):
-        return MetaAgentType.AIDER
+        return AiAgentType.AIDER
     return None
 
 
@@ -49,7 +49,7 @@ def _is_cli_only_provider(provider: str | None, command: str | None) -> bool:
     # Check explicit provider first
     if provider:
         try:
-            ai_system = MetaAgentType(provider.strip().lower())
+            ai_system = AiAgentType(provider.strip().lower())
             return ai_system in CLI_ONLY_AI_SYSTEMS
         except ValueError:
             # Not a known AI system (e.g., "anthropic", "openai") - may need API key

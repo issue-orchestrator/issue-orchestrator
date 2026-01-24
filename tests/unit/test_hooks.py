@@ -46,14 +46,14 @@ def run_hook_test(
         return (True, "") if return_stderr else True
 
 from issue_orchestrator.infra.hooks.hooks import (
-    MetaAgentType,
-    UnsupportedMetaAgentError,
+    AiAgentType,
+    UnsupportedAiAgentError,
     VerificationResult,
     VerificationMarker,
     ClaudeCodeAdapter,
     CursorAdapter,
     UnsupportedAdapter,
-    detect_meta_agent,
+    detect_ai_agent,
     get_adapter,
     detect_agents_from_config,
     check_verification_status,
@@ -61,76 +61,76 @@ from issue_orchestrator.infra.hooks.hooks import (
 )
 
 
-class TestMetaAgentType:
-    """Tests for MetaAgentType enum."""
+class TestAiAgentType:
+    """Tests for AiAgentType enum."""
 
     def test_claude_code_value(self):
-        assert MetaAgentType.CLAUDE_CODE.value == "claude-code"
+        assert AiAgentType.CLAUDE_CODE.value == "claude-code"
 
     def test_cursor_value(self):
-        assert MetaAgentType.CURSOR.value == "cursor"
+        assert AiAgentType.CURSOR.value == "cursor"
 
     def test_all_types_have_values(self):
-        for agent_type in MetaAgentType:
+        for agent_type in AiAgentType:
             assert agent_type.value is not None
 
 
-class TestDetectMetaAgent:
-    """Tests for detect_meta_agent function."""
+class TestDetectAiAgent:
+    """Tests for detect_ai_agent function."""
 
     def test_detect_claude_code(self):
-        assert detect_meta_agent("claude --dangerously-skip-permissions") == MetaAgentType.CLAUDE_CODE
+        assert detect_ai_agent("claude --dangerously-skip-permissions") == AiAgentType.CLAUDE_CODE
 
     def test_detect_claude_uppercase(self):
-        assert detect_meta_agent("Claude -p prompt.md") == MetaAgentType.CLAUDE_CODE
+        assert detect_ai_agent("Claude -p prompt.md") == AiAgentType.CLAUDE_CODE
 
     def test_detect_cursor(self):
-        assert detect_meta_agent("cursor") == MetaAgentType.CURSOR
+        assert detect_ai_agent("cursor") == AiAgentType.CURSOR
 
     def test_detect_aider(self):
-        assert detect_meta_agent("aider --yes") == MetaAgentType.AIDER
+        assert detect_ai_agent("aider --yes") == AiAgentType.AIDER
 
     def test_detect_unknown(self):
-        assert detect_meta_agent("some-custom-tool") == MetaAgentType.UNKNOWN
+        assert detect_ai_agent("some-custom-tool") == AiAgentType.UNKNOWN
 
     def test_detect_empty_command(self):
-        assert detect_meta_agent("") == MetaAgentType.UNKNOWN
+        assert detect_ai_agent("") == AiAgentType.UNKNOWN
 
     def test_detect_full_path(self):
-        assert detect_meta_agent("/usr/local/bin/claude --args") == MetaAgentType.CLAUDE_CODE
+        assert detect_ai_agent("/usr/local/bin/claude --args") == AiAgentType.CLAUDE_CODE
 
 
 class TestGetAdapter:
     """Tests for get_adapter function."""
 
     def test_get_claude_adapter(self):
-        adapter = get_adapter(MetaAgentType.CLAUDE_CODE)
+        adapter = get_adapter(AiAgentType.CLAUDE_CODE)
         assert isinstance(adapter, ClaudeCodeAdapter)
 
     def test_get_cursor_adapter(self):
-        adapter = get_adapter(MetaAgentType.CURSOR)
+        adapter = get_adapter(AiAgentType.CURSOR)
         assert isinstance(adapter, CursorAdapter)
 
     def test_get_aider_adapter(self):
-        adapter = get_adapter(MetaAgentType.AIDER)
+        adapter = get_adapter(AiAgentType.AIDER)
         assert isinstance(adapter, UnsupportedAdapter)
 
     def test_get_unknown_adapter(self):
-        adapter = get_adapter(MetaAgentType.UNKNOWN)
+        adapter = get_adapter(AiAgentType.UNKNOWN)
         assert isinstance(adapter, UnsupportedAdapter)
 
 
-class TestUnsupportedMetaAgentError:
-    """Tests for UnsupportedMetaAgentError exception."""
+class TestUnsupportedAiAgentError:
+    """Tests for UnsupportedAiAgentError exception."""
 
     def test_error_message(self):
-        error = UnsupportedMetaAgentError(MetaAgentType.AIDER, "No hook support")
+        error = UnsupportedAiAgentError(AiAgentType.AIDER, "No hook support")
         assert "aider" in str(error)
         assert "No hook support" in str(error)
 
     def test_error_attributes(self):
-        error = UnsupportedMetaAgentError(MetaAgentType.AIDER, "reason here")
-        assert error.agent_type == MetaAgentType.AIDER
+        error = UnsupportedAiAgentError(AiAgentType.AIDER, "reason here")
+        assert error.agent_type == AiAgentType.AIDER
         assert error.reason == "reason here"
 
 
@@ -140,7 +140,7 @@ class TestVerificationResult:
     def test_success_summary(self):
         result = VerificationResult(
             success=True,
-            meta_agent=MetaAgentType.CLAUDE_CODE,
+            meta_agent=AiAgentType.CLAUDE_CODE,
             checks_passed=["check1", "check2"],
             checks_failed=[],
         )
@@ -150,7 +150,7 @@ class TestVerificationResult:
     def test_failure_summary(self):
         result = VerificationResult(
             success=False,
-            meta_agent=MetaAgentType.CLAUDE_CODE,
+            meta_agent=AiAgentType.CLAUDE_CODE,
             checks_passed=[],
             checks_failed=["fail1", "fail2"],
         )
@@ -172,7 +172,7 @@ class TestClaudeCodeAdapter:
             yield Path(tmpdir)
 
     def test_agent_type(self, adapter):
-        assert adapter.agent_type == MetaAgentType.CLAUDE_CODE
+        assert adapter.agent_type == AiAgentType.CLAUDE_CODE
 
     def test_is_installed_false_when_missing(self, adapter, temp_project):
         assert not adapter.is_installed(temp_project)
@@ -396,16 +396,16 @@ class TestCursorAdapter:
             yield Path(tmpdir)
 
     def test_agent_type(self, adapter):
-        assert adapter.agent_type == MetaAgentType.CURSOR
+        assert adapter.agent_type == AiAgentType.CURSOR
 
     def test_install_hooks_raises_unsupported(self, adapter, temp_project):
-        with pytest.raises(UnsupportedMetaAgentError) as exc_info:
+        with pytest.raises(UnsupportedAiAgentError) as exc_info:
             adapter.install_hooks(temp_project)
 
-        assert exc_info.value.agent_type == MetaAgentType.CURSOR
+        assert exc_info.value.agent_type == AiAgentType.CURSOR
 
     def test_verify_hooks_raises_unsupported(self, adapter, temp_project):
-        with pytest.raises(UnsupportedMetaAgentError):
+        with pytest.raises(UnsupportedAiAgentError):
             adapter.verify_hooks(temp_project)
 
 
@@ -414,7 +414,7 @@ class TestUnsupportedAdapter:
 
     @pytest.fixture
     def adapter(self):
-        return UnsupportedAdapter(MetaAgentType.AIDER, "No hook support")
+        return UnsupportedAdapter(AiAgentType.AIDER, "No hook support")
 
     @pytest.fixture
     def temp_project(self):
@@ -422,14 +422,14 @@ class TestUnsupportedAdapter:
             yield Path(tmpdir)
 
     def test_agent_type(self, adapter):
-        assert adapter.agent_type == MetaAgentType.AIDER
+        assert adapter.agent_type == AiAgentType.AIDER
 
     def test_install_hooks_raises(self, adapter, temp_project):
-        with pytest.raises(UnsupportedMetaAgentError):
+        with pytest.raises(UnsupportedAiAgentError):
             adapter.install_hooks(temp_project)
 
     def test_verify_hooks_raises(self, adapter, temp_project):
-        with pytest.raises(UnsupportedMetaAgentError):
+        with pytest.raises(UnsupportedAiAgentError):
             adapter.verify_hooks(temp_project)
 
     def test_is_installed_always_false(self, adapter, temp_project):
@@ -447,7 +447,7 @@ class TestVerificationMarker:
     def test_save_and_load(self, temp_project):
         marker = VerificationMarker(
             verified_at=datetime(2024, 12, 19, 10, 30, 0),
-            meta_agent=MetaAgentType.CLAUDE_CODE,
+            meta_agent=AiAgentType.CLAUDE_CODE,
             hooks_hash="abc123",
             signature="sig456",
         )
@@ -455,7 +455,7 @@ class TestVerificationMarker:
 
         loaded = VerificationMarker.load(temp_project)
         assert loaded is not None
-        assert loaded.meta_agent == MetaAgentType.CLAUDE_CODE
+        assert loaded.meta_agent == AiAgentType.CLAUDE_CODE
         assert loaded.hooks_hash == "abc123"
 
     def test_load_returns_none_when_missing(self, temp_project):
@@ -470,7 +470,7 @@ class TestVerificationMarker:
     def test_compute_signature(self):
         marker = VerificationMarker(
             verified_at=datetime(2024, 12, 19, 10, 30, 0),
-            meta_agent=MetaAgentType.CLAUDE_CODE,
+            meta_agent=AiAgentType.CLAUDE_CODE,
             hooks_hash="abc123",
             signature="",
         )
@@ -480,7 +480,7 @@ class TestVerificationMarker:
     def test_is_valid_checks_signature(self, temp_project):
         marker = VerificationMarker(
             verified_at=datetime.now(),
-            meta_agent=MetaAgentType.CLAUDE_CODE,
+            meta_agent=AiAgentType.CLAUDE_CODE,
             hooks_hash="abc123",
             signature="wrong_signature",
         )
@@ -488,7 +488,7 @@ class TestVerificationMarker:
 
     def test_compute_hooks_hash_empty_when_no_files(self, temp_project):
         hash_val = VerificationMarker.compute_hooks_hash(
-            temp_project, MetaAgentType.CLAUDE_CODE
+            temp_project, AiAgentType.CLAUDE_CODE
         )
         # Should return something even when files don't exist
         assert len(hash_val) > 0
@@ -505,7 +505,7 @@ class TestDetectAgentsFromConfig:
 
         result = detect_agents_from_config(mock_config)
 
-        assert result["agent:backend"] == MetaAgentType.CLAUDE_CODE
+        assert result["agent:backend"] == AiAgentType.CLAUDE_CODE
 
     def test_detects_multiple_agents(self):
         mock_config = Mock()
@@ -523,8 +523,8 @@ class TestDetectAgentsFromConfig:
 
         result = detect_agents_from_config(mock_config)
 
-        assert result["agent:backend"] == MetaAgentType.CLAUDE_CODE
-        assert result["agent:frontend"] == MetaAgentType.AIDER
+        assert result["agent:backend"] == AiAgentType.CLAUDE_CODE
+        assert result["agent:frontend"] == AiAgentType.AIDER
 
     def test_handles_no_command(self):
         mock_config = Mock()
@@ -534,7 +534,7 @@ class TestDetectAgentsFromConfig:
 
         result = detect_agents_from_config(mock_config)
 
-        assert result["agent:test"] == MetaAgentType.UNKNOWN
+        assert result["agent:test"] == AiAgentType.UNKNOWN
 
 
 class TestCheckVerificationStatus:
@@ -563,7 +563,7 @@ class TestCheckVerificationStatus:
         # Create marker with bad signature
         marker = VerificationMarker(
             verified_at=datetime.now(),
-            meta_agent=MetaAgentType.CLAUDE_CODE,
+            meta_agent=AiAgentType.CLAUDE_CODE,
             hooks_hash="abc123",
             signature="bad_sig",
         )
