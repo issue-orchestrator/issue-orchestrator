@@ -683,7 +683,7 @@ async function openDoctorPanel(
   }
   lastDoctorReport = report;
   const dashboardUrl = await tryGetDashboardUrl(client, output);
-  const actions = buildDoctorActions(dashboardUrl, options.doctorUrl);
+  const actions = buildDoctorActions(dashboardUrl, options.doctorUrl, report);
   const panel = showDoctorPanel(report, { errorMessage: options.errorMessage, actions });
   panel.onDidDispose(() => {
     doctorPanelHandlerAttached = false;
@@ -731,10 +731,29 @@ async function handleDoctorAction(
   }
   if (actionId === "openDoctor" && url) {
     await vscode.env.openExternal(vscode.Uri.parse(url));
+    return;
+  }
+  if (actionId.startsWith("openDoc:")) {
+    const docPath = actionId.replace("openDoc:", "");
+    await openDocPath(docPath);
+    return;
+  }
+  if (actionId.startsWith("openFile:")) {
+    const filePath = actionId.replace("openFile:", "");
+    await openDocPath(filePath);
+    return;
+  }
+  if (actionId.startsWith("openFolder:")) {
+    const folderPath = actionId.replace("openFolder:", "");
+    await revealFolder(folderPath);
   }
 }
 
-function buildDoctorActions(dashboardUrl?: string, doctorUrl?: string): DoctorAction[] {
+function buildDoctorActions(
+  dashboardUrl: string | undefined,
+  doctorUrl: string | undefined,
+  report: DoctorReport
+): DoctorAction[] {
   const actions: DoctorAction[] = [
     { id: "rerun", label: "Re-run diagnostics", primary: true },
     { id: "copy", label: "Copy report" },
@@ -746,6 +765,7 @@ function buildDoctorActions(dashboardUrl?: string, doctorUrl?: string): DoctorAc
   if (doctorUrl) {
     actions.push({ id: "openDoctor", label: "Open Doctor (web)", url: doctorUrl });
   }
+  actions.push(...buildFixActions(report));
   return actions;
 }
 
@@ -760,6 +780,79 @@ async function tryGetDashboardUrl(
     output.appendLine(`Failed to fetch dashboard URL: ${String(err)}`);
     return undefined;
   }
+}
+
+function buildFixActions(report: DoctorReport): DoctorAction[] {
+  const actions = new Map<string, DoctorAction>();
+  const config = vscode.workspace.getConfiguration("issueOrchestrator");
+  const configPath = config.get<string>("configPath") || "";
+
+  const addAction = (id: string, label: string): void => {
+    if (!actions.has(id)) {
+      actions.set(id, { id, label });
+    }
+  };
+
+  for (const check of report.checks || []) {
+    if (check.status !== "error" && check.status !== "warning") {
+      continue;
+    }
+    const name = check.name || "";
+    if (name.includes("GitHub Auth") || name.includes("Token Sources")) {
+      addAction("openDoc:docs/user/tutorial.md", "Fix: GitHub Auth");
+    }
+    if (name.startsWith("Config")) {
+      if (configPath) {
+        addAction(`openFile:${configPath}`, "Fix: Config File");
+      } else {
+        addAction("openFile:.issue-orchestrator/config/default.yaml", "Fix: Config File");
+        addAction("openFile:examples/config.example.yaml", "Open Example Config");
+      }
+    }
+    if (name.includes("AI Provider")) {
+      addAction("openDoc:docs/user/tutorial.md", "Fix: AI Provider Setup");
+    }
+    if (name.includes("Agent Scripts") || name === "Agents") {
+      addAction("openFolder:.issue-orchestrator/prompts", "Fix: Agent Prompts");
+    }
+    if (name.includes("AI Agent Hooks") || name.includes("Guardrails")) {
+      addAction("openDoc:docs/architecture/hooks.md", "Fix: Hooks & Guardrails");
+    }
+    if (name.includes("E2E Runner")) {
+      addAction("openDoc:docs/user/e2e.md", "Fix: E2E Runner");
+    }
+  }
+
+  return Array.from(actions.values());
+}
+
+async function openDocPath(path: string): Promise<void> {
+  const repoRoot = resolveRepoRoot();
+  const isAbsolute = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+  const resolvedPath = isAbsolute ? path : repoRoot ? pathJoin(repoRoot, path) : path;
+  const uri = vscode.Uri.file(resolvedPath);
+  try {
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc, { preview: false });
+  } catch (err) {
+    vscode.window.showErrorMessage(`Unable to open ${path}`);
+  }
+}
+
+async function revealFolder(path: string): Promise<void> {
+  const repoRoot = resolveRepoRoot();
+  const isAbsolute = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+  const resolvedPath = isAbsolute ? path : repoRoot ? pathJoin(repoRoot, path) : path;
+  const uri = vscode.Uri.file(resolvedPath);
+  try {
+    await vscode.commands.executeCommand("revealInExplorer", uri);
+  } catch (err) {
+    vscode.window.showErrorMessage(`Unable to open ${path}`);
+  }
+}
+
+function pathJoin(root: string, subpath: string): string {
+  return root.replace(/[\\/]+$/, "") + path.sep + subpath.replace(/^[\\/]+/, "");
 }
 
 async function fetchDoctorReport(
