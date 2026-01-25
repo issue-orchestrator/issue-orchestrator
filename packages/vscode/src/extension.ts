@@ -10,6 +10,7 @@ import type {
 } from "./types.js";
 import type { OrchestratorClient } from "./orchestratorClient.js";
 import { showDoctorPanel, updateDoctorPanel } from "./doctorView.js";
+import type { DoctorAction } from "./doctorView.js";
 import type { DoctorReport, StartResponse } from "./types.js";
 
 type EventSource = import("eventsource").default;
@@ -733,8 +734,8 @@ async function handleDoctorAction(
   }
 }
 
-function buildDoctorActions(dashboardUrl?: string, doctorUrl?: string): { id: string; label: string; primary?: boolean; url?: string }[] {
-  const actions = [
+function buildDoctorActions(dashboardUrl?: string, doctorUrl?: string): DoctorAction[] {
+  const actions: DoctorAction[] = [
     { id: "rerun", label: "Re-run diagnostics", primary: true },
     { id: "copy", label: "Copy report" },
     { id: "openControlCenter", label: "Open Control Center" },
