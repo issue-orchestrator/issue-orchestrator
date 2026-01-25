@@ -59,6 +59,7 @@ _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
+    from ..infra.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -2155,30 +2156,96 @@ async def discover_repos_endpoint(  # noqa: C901 - recursive directory scanning 
 # These endpoints support the GUI setup wizard for configuring new repositories.
 
 
+def _load_config_for_repo(repo_root: str | None) -> Optional["Config"]:
+    from ..infra.config import Config, get_config_path, list_configs, DEFAULT_CONFIG_NAME
+
+    if not repo_root:
+        return None
+    path = _validate_repo_root(repo_root)
+    if path is None:
+        return None
+    available = list_configs(path)
+    if not available:
+        return None
+    config_name = DEFAULT_CONFIG_NAME if DEFAULT_CONFIG_NAME in available else available[0]
+    config_path = get_config_path(path, config_name)
+    try:
+        return Config.load(config_path)
+    except Exception:
+        return None
+
+
+def _build_agent_checks(config: Optional["Config"]) -> list[dict[str, Any]]:
+    import shutil
+    import subprocess
+
+    if not config:
+        return [{
+            "name": "Agent CLI",
+            "ok": True,
+            "detail": "Config not detected yet",
+        }]
+
+    checks: list[dict[str, Any]] = []
+    seen_executables: set[str] = set()
+    for label, agent_config in config.agents.items():
+        command = getattr(agent_config, "command", None) or ""
+        executable = command.strip().split()[0] if command.strip() else ""
+        if not executable:
+            checks.append({
+                "name": f"{label} CLI",
+                "ok": False,
+                "detail": "No command configured",
+            })
+            continue
+        exec_name = executable.rsplit("/", 1)[-1]
+        if exec_name in seen_executables:
+            continue
+        seen_executables.add(exec_name)
+        path = shutil.which(exec_name)
+        if not path:
+            checks.append({
+                "name": f"{exec_name} CLI",
+                "ok": False,
+                "detail": "Not found on PATH",
+            })
+            continue
+        detail = path
+        try:
+            result = subprocess.run(
+                [exec_name, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                detail = result.stdout.strip()
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        checks.append({
+            "name": f"{exec_name} CLI",
+            "ok": True,
+            "detail": detail,
+        })
+    return checks
+
+
 @control_app.get("/control/setup/prereqs")
 async def setup_prereqs(repo_root: str | None = Query(default=None)) -> JSONResponse:
     """Check prerequisites for setting up a repository.
 
     Returns status of git, GitHub auth, and agent CLIs (based on config if available).
     """
-    import shutil
-    import subprocess
-
     from ..execution.git_tools import run_git
-    from ..infra.config import Config, get_config_path, list_configs, DEFAULT_CONFIG_NAME
-    from ..infra.hooks.hooks import detect_agents_from_config
 
     checks: dict[str, dict[str, Any]] = {}
-    agent_checks: list[dict[str, Any]] = []
 
-    # git
     ok, output = run_git(["--version"], timeout_s=5)
     checks["git"] = {
         "ok": ok,
         "detail": output if ok else "Not found",
     }
 
-    # GitHub auth
     try:
         from ..execution.providers import resolve_github_token
         resolve_github_token(configured_token=None, configured_env=None)
@@ -2186,64 +2253,8 @@ async def setup_prereqs(repo_root: str | None = Query(default=None)) -> JSONResp
     except Exception as e:
         checks["github_auth"] = {"ok": False, "detail": str(e)}
 
-    config = None
-    if repo_root:
-        path = _validate_repo_root(repo_root)
-        if path is not None:
-            available = list_configs(path)
-            if available:
-                config_name = DEFAULT_CONFIG_NAME if DEFAULT_CONFIG_NAME in available else available[0]
-                config_path = get_config_path(path, config_name)
-                try:
-                    config = Config.load(config_path)
-                except Exception:
-                    config = None
-
-    if config:
-        seen_executables: set[str] = set()
-        for label, agent_config in config.agents.items():
-            command = getattr(agent_config, "command", None) or ""
-            executable = command.strip().split()[0] if command.strip() else ""
-            if not executable:
-                agent_checks.append({
-                    "name": f"{label} CLI",
-                    "ok": False,
-                    "detail": "No command configured",
-                })
-                continue
-            exec_name = executable.rsplit("/", 1)[-1]
-            if exec_name in seen_executables:
-                continue
-            seen_executables.add(exec_name)
-            path = shutil.which(exec_name)
-            if not path:
-                agent_checks.append({
-                    "name": f"{exec_name} CLI",
-                    "ok": False,
-                    "detail": "Not found on PATH",
-                })
-                continue
-            try:
-                result = subprocess.run(
-                    [exec_name, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                detail = result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else path
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                detail = path
-            agent_checks.append({
-                "name": f"{exec_name} CLI",
-                "ok": True,
-                "detail": detail,
-            })
-    else:
-        agent_checks.append({
-            "name": "Agent CLI",
-            "ok": True,
-            "detail": "Config not detected yet",
-        })
+    config = _load_config_for_repo(repo_root)
+    agent_checks = _build_agent_checks(config)
 
     all_ok = all(c.get("ok", False) for c in checks.values()) and all(c.get("ok", False) for c in agent_checks)
 
