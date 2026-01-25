@@ -181,7 +181,7 @@
         {
           "command": "issueOrchestrator.runDiagnostics",
           "when": "view == issueOrchestrator.explorer",
-          "group": "navigation"
+          "group": "navigation@100"
         }
       ]
     },
