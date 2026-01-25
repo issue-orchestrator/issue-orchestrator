@@ -15,10 +15,12 @@ This extension gives you a native VS Code experience for Issue Orchestrator: liv
 From the repo root:
 
 ```bash
+make install-vscode-extensions
 cd packages/vscode
-npm install
 npm run compile
 ```
+
+If you prefer manual steps, run `npm install` in `packages/vscode` instead of `make install-vscode-extensions`.
 
 Then install the extension into VS Code:
 - **Extension Development Host** (recommended for development):
