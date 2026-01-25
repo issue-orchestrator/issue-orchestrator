@@ -2236,6 +2236,8 @@ async def setup_prereqs(repo_root: str | None = Query(default=None)) -> JSONResp
 
     Returns status of git, GitHub auth, and agent CLIs (based on config if available).
     """
+    import shutil
+
     from ..execution.git_tools import run_git
 
     checks: dict[str, dict[str, Any]] = {}
@@ -2244,6 +2246,12 @@ async def setup_prereqs(repo_root: str | None = Query(default=None)) -> JSONResp
     checks["git"] = {
         "ok": ok,
         "detail": output if ok else "Not found",
+    }
+
+    claude_path = shutil.which("claude")
+    checks["claude"] = {
+        "ok": bool(claude_path),
+        "detail": claude_path or "Not found on PATH",
     }
 
     try:
