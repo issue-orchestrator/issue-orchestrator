@@ -106,6 +106,38 @@
         .repo-port { font-size: 13px; color: #8b949e; font-family: monospace; }
         .repo-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
         .repo-actions button { padding: 5px 10px; font-size: 11px; }
+        .primary-status {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 0;
+            border-bottom: 1px solid #21262d;
+        }
+        .primary-status:last-child { border-bottom: none; }
+        .primary-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+        .primary-select { margin-top: 8px; }
+        .primary-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+        .primary-meta { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+        .primary-pill {
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid #30363d;
+            font-size: 11px;
+            color: #8b949e;
+        }
+        .primary-pill strong { color: #c9d1d9; font-weight: 600; }
+        .primary-doctor {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px dashed #21262d;
+        }
+        .primary-doctor-header { display: flex; align-items: center; gap: 10px; }
+        .primary-doctor-summary { font-size: 12px; color: #8b949e; }
+        .primary-doctor-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        .primary-doctor-list { margin-top: 10px; font-size: 12px; }
+        .primary-doctor-item { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 6px; }
+        .advanced-section { display: none; }
+        .advanced-section.visible { display: block; }
 
         /* Multi-instance styling */
         .instance-row {
@@ -626,6 +658,8 @@
         let advancedVisible = localStorage.getItem('ioAdvanced') === '1';
         let lastRepos = [];
         let primaryRepoPath = null;
+        let primaryDoctorRequestId = 0;
+        let lastPrimaryDoctor = null;
 
         function toggleAdvanced() {
             setAdvancedVisible(!advancedVisible);
@@ -1325,13 +1359,18 @@
                 : '';
 
             body.innerHTML = `
-                <div>
-                    <div style="font-size:14px;font-weight:600;color:#58a6ff;">${escapeHtml(repo.name)}</div>
-                    <div style="font-size:12px;color:#8b949e;font-family:monospace;">${escapeHtml(repo.path)}</div>
-                    ${selector}
+                <div class="primary-header">
+                    <div>
+                        <div style="font-size:14px;font-weight:600;color:#58a6ff;">${escapeHtml(repo.name)}</div>
+                        <div style="font-size:12px;color:#8b949e;font-family:monospace;">${escapeHtml(repo.path)}</div>
+                        ${selector}
+                        ${renderPrimarySummary(repo)}
+                    </div>
                 </div>
                 ${renderPrimaryStatus(repo)}
+                <div class="primary-doctor" id="primaryDoctor">Loading doctor...</div>
             `;
+            loadPrimaryDoctor(repo.path);
         }
 
         function setPrimaryRepo(path) {
@@ -1416,6 +1455,113 @@
                     </div>
                 </div>
             `;
+        }
+
+        function renderPrimarySummary(repo) {
+            const status = repo.status || { state: 'unknown' };
+            const isRunning = status.state === 'running';
+            const activeSessionCount = status.active_session_count || 0;
+            const isShuttingDown = isRunning && status.shutdown_requested && activeSessionCount > 0;
+            const isShutdownComplete = isRunning && status.shutdown_requested && activeSessionCount === 0;
+            const isPaused = isRunning && status.paused && !status.shutdown_requested;
+            const isOrphaned = status.orphaned === true;
+
+            let statusLabel = 'Unknown';
+            if (isShuttingDown) statusLabel = `Stopping... (${activeSessionCount})`;
+            else if (isShutdownComplete) statusLabel = 'Stopped';
+            else if (isPaused) statusLabel = 'Paused';
+            else if (isOrphaned) statusLabel = 'Running (untracked)';
+            else if (status.state) statusLabel = status.state.charAt(0).toUpperCase() + status.state.slice(1);
+
+            const portLabel = status.port ? status.port : '-';
+            const selectedConfig = repo.selected_config || (repo.configs && repo.configs[0]) || '-';
+
+            return `
+                <div class="primary-meta">
+                    <span class="primary-pill"><strong>Status</strong> ${escapeHtml(statusLabel)}</span>
+                    <span class="primary-pill"><strong>Port</strong> ${escapeHtml(String(portLabel))}</span>
+                    <span class="primary-pill"><strong>Config</strong> ${escapeHtml(String(selectedConfig))}</span>
+                </div>
+            `;
+        }
+
+        async function loadPrimaryDoctor(repoPath) {
+            const container = document.getElementById('primaryDoctor');
+            if (!container) return;
+            const requestId = ++primaryDoctorRequestId;
+            container.innerHTML = 'Loading doctor...';
+            try {
+                const res = await fetch(`/control/orchestrator/doctor?repo_root=${encodeURIComponent(repoPath)}`);
+                const doc = await res.json();
+                if (requestId !== primaryDoctorRequestId) {
+                    return;
+                }
+                lastPrimaryDoctor = doc;
+                container.innerHTML = renderPrimaryDoctor(doc, repoPath);
+            } catch (err) {
+                if (requestId !== primaryDoctorRequestId) {
+                    return;
+                }
+                container.innerHTML = '<div style="color:#8b949e;">Doctor unavailable.</div>';
+            }
+        }
+
+        function renderPrimaryDoctor(doc, repoPath) {
+            const statusIcon = { 'ok': '&#10003;', 'warning': '&#9888;', 'error': '&#10007;' };
+            const statusColor = { 'ok': '#3fb950', 'warning': '#d29922', 'error': '#f85149' };
+            const overall = doc.overall || 'unknown';
+            const checks = Array.isArray(doc.checks) ? doc.checks : [];
+            const encodedPath = encodeURIComponent(repoPath);
+            return `
+                <div class="primary-doctor-header">
+                    <span class="repo-status status-${overall === 'error' ? 'failed' : overall === 'warning' ? 'paused' : 'running'}">
+                        <span class="status-dot"></span>Doctor
+                    </span>
+                    <div class="primary-doctor-summary">Overall: ${escapeHtml(overall.toUpperCase())} (${checks.length} checks)</div>
+                </div>
+                <div class="primary-doctor-actions">
+                    <button class="btn btn-primary" onclick="loadPrimaryDoctor(decodeURIComponent('${encodedPath}'))">Re-run Doctor</button>
+                    <button class="btn" onclick="copyPrimaryDoctor()">Copy Report</button>
+                </div>
+                <div class="primary-doctor-list">
+                    ${checks.map(c => `
+                        <div class="primary-doctor-item">
+                            <span style="color:${statusColor[c.status] || '#8b949e'}">${statusIcon[c.status] || '?'}</span>
+                            <div><strong>${escapeHtml(c.name)}</strong>: ${escapeHtml(c.detail)}</div>
+                        </div>
+                    `).join('') || '<div style="color:#8b949e;">No checks reported.</div>'}
+                </div>
+            `;
+        }
+
+        async function copyPrimaryDoctor() {
+            if (!lastPrimaryDoctor) {
+                showToast('Doctor report not available', true);
+                return;
+            }
+            const payload = JSON.stringify(lastPrimaryDoctor, null, 2);
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(payload);
+                    showToast('Doctor report copied');
+                    return;
+                }
+            } catch (err) {}
+
+            const textarea = document.createElement('textarea');
+            textarea.value = payload;
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                document.execCommand('copy');
+                showToast('Doctor report copied');
+            } catch (err) {
+                showToast('Failed to copy report', true);
+            } finally {
+                textarea.remove();
+            }
         }
 
         async function loadRepos(data = null) {
