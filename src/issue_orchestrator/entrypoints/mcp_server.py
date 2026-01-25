@@ -63,6 +63,14 @@ class OrchestratorHttpClient:
         self._cached_port = status.port
         return f"http://{self._settings.host}:{status.port}"
 
+    def doctor_url(self) -> str | None:
+        if self._cached_port:
+            return f"http://{self._settings.host}:{self._cached_port}/api/doctor"
+        status = self.status()
+        if status.state == "running" and status.port:
+            return f"http://{self._settings.host}:{status.port}/api/doctor"
+        return None
+
     def close(self) -> None:
         return None
 
@@ -112,7 +120,21 @@ class McpApp:
         return self._safe("orchestrator.status", self.status)
 
     def tool_start(self) -> dict[str, Any]:
-        return self._safe("orchestrator.start", self.start)
+        try:
+            return self.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("MCP tool orchestrator.start failed")
+            ui_hint: dict[str, Any] = {"kind": "doctor"}
+            doctor_url = self._client.doctor_url()
+            if doctor_url:
+                ui_hint["url"] = doctor_url
+            return {
+                "error": {
+                    "message": str(exc),
+                    "type": exc.__class__.__name__,
+                },
+                "ui_hint": ui_hint,
+            }
 
     def tool_stop(self, force: bool = False) -> dict[str, Any]:
         return self._safe("orchestrator.stop", lambda: self.stop(force))

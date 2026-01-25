@@ -144,6 +144,12 @@ export interface McpError {
 export interface StartResponse {
   supervisor?: SupervisorStatus;
   error?: McpError;
+  ui_hint?: UiHint;
+}
+
+export interface UiHint {
+  kind: string;
+  url?: string;
 }
 
 export interface DoctorCheck {
