@@ -143,7 +143,7 @@ class TestGitHubIssueResolverBuildIndex:
         assert duplicate_events[0].data["external_id"] == "M1-011"
         assert duplicate_events[0].data["issue_numbers"] == [1, 2]
 
-    def test_build_index_last_duplicate_wins_for_resolution(
+    def test_build_index_first_duplicate_wins_for_resolution(
         self, resolver, mock_tracker
     ):
         """When duplicates exist, the first one is cached."""
@@ -285,36 +285,34 @@ class TestGitHubIssueResolverInvalidate:
         )
 
     def test_invalidate_clears_cache_entry(self, resolver, mock_tracker):
-        """Invalidate removes the cached entry for a key."""
+        """Invalidate removes the cached entry for a key.
+
+        Steps:
+        1. Build index with an issue
+        2. Verify resolve works (key is cached)
+        3. Invalidate the key
+        4. Change the issue list to empty
+        5. Verify resolve triggers rebuild and returns None
+        """
+        # Step 1: Build index
         mock_tracker.list_issues.return_value = [
             Issue(number=1, title="[M1-011] Issue", labels=[]),
         ]
-
         resolver.build_index()
+
         key = GitHubIssueKey(repo="owner/repo", external_id="M1-011")
 
-        # Verify it's in cache
+        # Step 2: Verify key is in cache
         assert resolver.resolve(key) == 1
 
-        # Invalidate it
+        # Step 3: Invalidate the key
         resolver.invalidate(key)
 
-        # Now resolve triggers rebuild (first call to build_index exhausted)
-        mock_tracker.list_issues.return_value = [
-            Issue(number=1, title="[M1-011] Issue", labels=[]),
-        ]
-        mock_tracker.reset_mock()
-        mock_tracker.list_issues.return_value = [
-            Issue(number=1, title="[M1-011] Issue", labels=[]),
-        ]
-
-        # After invalidate, resolve should trigger a rebuild
-        # Reset the mock to track the rebuild call
+        # Step 4: Change mock to return empty list for next resolve
         mock_tracker.list_issues.return_value = []
-        result = resolver.resolve(key)
 
-        # After invalidate, resolve rebuilds and finds nothing (empty list)
-        # so returns None
+        # Step 5: Resolve triggers rebuild, finds nothing, returns None
+        result = resolver.resolve(key)
         assert result is None
 
     def test_invalidate_nonexistent_key_is_safe(self, resolver, mock_tracker):
@@ -502,7 +500,7 @@ class TestGitHubIssueResolverGetAllKeys:
         assert external_ids == {"M1-011", "M1-013"}
 
     def test_get_all_keys_after_invalidate(self, resolver, mock_tracker):
-        """Invalidate removes key from get_all_keys since it clears the cache."""
+        """After invalidating a key, get_all_keys returns only the remaining keys."""
         mock_tracker.list_issues.return_value = [
             Issue(number=1, title="[M1-011] First", labels=[]),
             Issue(number=2, title="[M1-012] Second", labels=[]),
