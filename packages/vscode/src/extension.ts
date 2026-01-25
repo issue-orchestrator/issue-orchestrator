@@ -9,6 +9,8 @@ import type {
   Snapshot,
 } from "./types.js";
 import type { OrchestratorClient } from "./orchestratorClient.js";
+import { showDoctorPanel, updateDoctorPanel } from "./doctorView.js";
+import type { DoctorReport, StartResponse } from "./types.js";
 
 type EventSource = import("eventsource").default;
 type IssueDetail = {
@@ -46,6 +48,7 @@ const MAX_RECONNECT_DELAY_MS = 30000;
 const detailPanels = new Map<number, vscode.WebviewPanel>();
 const consolePanels = new Map<number, vscode.WebviewPanel>();
 let controlCenterTerminal: vscode.Terminal | null = null;
+let doctorPanelHandlerAttached = false;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const isTest = process.env.IO_VSCODE_TEST === "1" || !!process.env.VSCODE_EXTENSION_TESTS;
@@ -150,7 +153,13 @@ function registerCommands(
     }),
     vscode.commands.registerCommand("issueOrchestrator.start", async () => {
       await runCommand(async () => {
-        await client.startOrchestrator();
+        const result = await client.startOrchestrator();
+        if (hasStartError(result)) {
+          const errorMessage = `Orchestrator failed to start: ${result.error.message}`;
+          output.appendLine(errorMessage);
+          await openDoctorPanel(client, output, errorMessage);
+          return;
+        }
         await provider.refresh();
       }, output, "Start failed");
     }),
@@ -184,7 +193,8 @@ function registerCommands(
           return;
         }
         if (controlCenterTerminal) {
-          controlCenterTerminal.dispose();
+          controlCenterTerminal.show();
+          return;
         }
         controlCenterTerminal = vscode.window.createTerminal({
           name: "Issue Orchestrator Control Center",
@@ -233,7 +243,7 @@ function registerCommands(
         const options = [
           { label: "Start Orchestrator", command: "issueOrchestrator.start" },
           { label: "Stop Orchestrator", command: "issueOrchestrator.stop" },
-          { label: "Start Control Center", command: "issueOrchestrator.startControlCenter" },
+          { label: "Open Control Center", command: "issueOrchestrator.startControlCenter" },
           { label: "Stop Control Center", command: "issueOrchestrator.stopControlCenter" },
           { label: "Pause Orchestrator", command: "issueOrchestrator.pause" },
           { label: "Resume Orchestrator", command: "issueOrchestrator.resume" },
@@ -273,10 +283,7 @@ function registerCommands(
     }),
     vscode.commands.registerCommand("issueOrchestrator.runDiagnostics", async () => {
       await runCommand(async () => {
-        const report = await client.getDoctor();
-        const content = buildDoctorMarkdown(report);
-        const doc = await vscode.workspace.openTextDocument({ content, language: "markdown" });
-        await vscode.window.showTextDocument(doc, { preview: false });
+        await openDoctorPanel(client, output);
       }, output, "Diagnostics failed");
     }),
     vscode.commands.registerCommand("issueOrchestrator.openWorktree", async (item?: unknown) => {
@@ -654,6 +661,45 @@ async function openSessionConsole(
   consolePanels.set(issueNumber, panel);
 }
 
+async function openDoctorPanel(
+  client: OrchestratorClient,
+  output: vscode.OutputChannel,
+  errorMessage?: string
+): Promise<void> {
+  const report = await fetchDoctorReport(client, output);
+  if (!report) {
+    vscode.window.showErrorMessage("Failed to load diagnostics.");
+    return;
+  }
+  const panel = showDoctorPanel(report, { errorMessage });
+  panel.onDidDispose(() => {
+    doctorPanelHandlerAttached = false;
+  });
+  if (!doctorPanelHandlerAttached) {
+    doctorPanelHandlerAttached = true;
+    panel.webview.onDidReceiveMessage(async (message) => {
+      if (message?.type === "rerun") {
+        const updated = await fetchDoctorReport(client, output);
+        if (updated) {
+          updateDoctorPanel(updated, { errorMessage });
+        }
+      }
+    });
+  }
+}
+
+async function fetchDoctorReport(
+  client: OrchestratorClient,
+  output: vscode.OutputChannel
+): Promise<DoctorReport | null> {
+  try {
+    return await client.getDoctor();
+  } catch (err) {
+    output.appendLine(`Failed to load doctor report: ${String(err)}`);
+    return null;
+  }
+}
+
 async function getSnapshot(provider: OrchestratorTreeDataProvider, client: OrchestratorClient): Promise<Snapshot> {
   return provider.getSnapshot() ?? (await client.getSnapshot());
 }
@@ -839,9 +885,8 @@ function resolveRepoRoot(): string | null {
   return config.get<string>("repoRoot") || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
 }
 
-function buildDoctorMarkdown(report: Record<string, unknown>): string {
-  const pretty = JSON.stringify(report, null, 2);
-  return `# Issue Orchestrator Diagnostics\n\n\`\`\`json\n${pretty}\n\`\`\`\n`;
+function hasStartError(result: StartResponse | null | undefined): result is StartResponse & { error: { message: string } } {
+  return Boolean(result && result.error && result.error.message);
 }
 
 async function warnIfConfigMissing(): Promise<void> {
@@ -860,8 +905,15 @@ async function warnIfConfigMissing(): Promise<void> {
       vscode.Uri.file(expected)
     );
   } catch {
-    vscode.window.showInformationMessage(
-      "Issue Orchestrator config not found. Use 'Issue Orchestrator: Select Config' to configure."
+    const action = await vscode.window.showInformationMessage(
+      "Issue Orchestrator config not found. Open Control Center to set up?",
+      "Open Control Center",
+      "Select Config"
     );
+    if (action === "Open Control Center") {
+      await vscode.commands.executeCommand("issueOrchestrator.startControlCenter");
+    } else if (action === "Select Config") {
+      await vscode.commands.executeCommand("issueOrchestrator.selectConfig");
+    }
   }
 }

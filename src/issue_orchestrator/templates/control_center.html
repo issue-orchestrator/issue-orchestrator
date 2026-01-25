@@ -882,14 +882,15 @@
         async function renderPrereqsStep() {
             const body = document.getElementById('wizardBody');
             try {
-                const res = await fetch('/control/setup/prereqs');
+                const repoParam = wizardState.repoRoot ? `?repo_root=${encodeURIComponent(wizardState.repoRoot)}` : '';
+                const res = await fetch(`/control/setup/prereqs${repoParam}`);
                 const data = await res.json();
 
                 const checks = [
-                    { key: 'git', name: 'Git', detail: data.checks.git?.version || 'Not found' },
-                    { key: 'github_auth', name: 'GitHub Auth', detail: data.checks.github_auth?.ok ? 'Token found' : 'Not configured' },
-                    { key: 'claude', name: 'Claude CLI', detail: data.checks.claude?.version || 'Not found' },
+                    { key: 'git', name: 'Git', detail: data.checks.git?.detail || 'Not found' },
+                    { key: 'github_auth', name: 'GitHub Auth', detail: data.checks.github_auth?.detail || 'Not configured' },
                 ];
+                const agentChecks = Array.isArray(data.agent_checks) ? data.agent_checks : [];
 
                 let html = '<div class="prereq-list">';
                 for (const check of checks) {
@@ -899,6 +900,16 @@
                             <span class="prereq-icon">${ok ? '&#10003;' : '&#10007;'}</span>
                             <span class="prereq-name">${check.name}</span>
                             <span class="prereq-detail">${escapeHtml(check.detail)}</span>
+                        </div>
+                    `;
+                }
+                for (const check of agentChecks) {
+                    const ok = !!check.ok;
+                    html += `
+                        <div class="prereq-item ${ok ? 'prereq-ok' : 'prereq-fail'}">
+                            <span class="prereq-icon">${ok ? '&#10003;' : '&#10007;'}</span>
+                            <span class="prereq-name">${escapeHtml(check.name || 'Agent CLI')}</span>
+                            <span class="prereq-detail">${escapeHtml(check.detail || '')}</span>
                         </div>
                     `;
                 }

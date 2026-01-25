@@ -6,6 +6,8 @@ import type { OrchestratorClient } from "./orchestratorClient.js";
 import type {
   McpStatusPayload,
   Snapshot,
+  StartResponse,
+  DoctorReport,
 } from "./types.js";
 
 export class McpClient implements OrchestratorClient {
@@ -76,8 +78,8 @@ export class McpClient implements OrchestratorClient {
     return this.callTool<McpStatusPayload>("orchestrator.status");
   }
 
-  async startOrchestrator(): Promise<void> {
-    await this.callTool("orchestrator.start");
+  async startOrchestrator(): Promise<StartResponse> {
+    return this.callTool<StartResponse>("orchestrator.start");
   }
 
   async stopOrchestrator(force = false): Promise<void> {
@@ -100,8 +102,8 @@ export class McpClient implements OrchestratorClient {
     return this.callTool("orchestrator.urls");
   }
 
-  async getDoctor(): Promise<Record<string, unknown>> {
-    return this.callTool("orchestrator.doctor");
+  async getDoctor(): Promise<DoctorReport> {
+    return this.callTool<DoctorReport>("orchestrator.doctor");
   }
 
   async getWorktree(issueNumber: number): Promise<{ worktree_path: string; session_name?: string | null }> {

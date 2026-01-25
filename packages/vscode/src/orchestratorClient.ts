@@ -1,17 +1,17 @@
-import type { McpStatusPayload, Snapshot } from "./types.js";
+import type { McpStatusPayload, Snapshot, StartResponse, DoctorReport } from "./types.js";
 
 export interface OrchestratorClient {
   start(): Promise<void>;
   stop(): Promise<void>;
   getSnapshot(): Promise<Snapshot>;
   getStatus(): Promise<McpStatusPayload>;
-  startOrchestrator(): Promise<void>;
+  startOrchestrator(): Promise<StartResponse>;
   stopOrchestrator(force?: boolean): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   refresh(): Promise<void>;
   getUrls(): Promise<{ base_url: string; dashboard_url: string; events_url: string; config_url: string }>;
-  getDoctor(): Promise<Record<string, unknown>>;
+  getDoctor(): Promise<DoctorReport>;
   getWorktree(issueNumber: number): Promise<{ worktree_path: string; session_name?: string | null }>;
   getManifest(issueNumber: number): Promise<Record<string, unknown>>;
   getPhases(issueNumber: number): Promise<Record<string, unknown>>;

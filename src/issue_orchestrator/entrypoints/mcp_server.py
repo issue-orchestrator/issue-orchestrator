@@ -245,7 +245,16 @@ class McpApp:
         }
 
     def doctor(self) -> dict[str, Any]:
-        return self._api.doctor()
+        from ..infra.doctor import run_doctor
+        from ..execution.command_runner import LocalCommandRunner
+
+        config = None
+        try:
+            config = Config.load(self._settings.config_path)
+        except Exception:
+            config = None
+        result = run_doctor(config=config, config_path=self._settings.config_path, runner=LocalCommandRunner())
+        return result.to_dict()
 
 
 mcp = FastMCP("Issue Orchestrator", json_response=True)

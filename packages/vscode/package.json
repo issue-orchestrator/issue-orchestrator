@@ -117,7 +117,7 @@
       },
       {
         "command": "issueOrchestrator.startControlCenter",
-        "title": "Issue Orchestrator: Start Control Center"
+        "title": "Issue Orchestrator: Open Control Center"
       },
       {
         "command": "issueOrchestrator.stopControlCenter",
