@@ -710,7 +710,7 @@ async function handleDoctorAction(
     if (updated) {
       lastDoctorReport = updated;
       const dashboardUrl = await tryGetDashboardUrl(client, output);
-      const actions = buildDoctorActions(dashboardUrl, options.doctorUrl);
+      const actions = buildDoctorActions(dashboardUrl, options.doctorUrl, updated);
       updateDoctorPanel(updated, { errorMessage: options.errorMessage, actions });
     }
     return;
