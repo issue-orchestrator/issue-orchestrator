@@ -525,10 +525,10 @@
         <header>
             <div>
                 <h1>Issue Orchestrator</h1>
-                <div class="subtitle">Single-orchestrator view with optional advanced controls</div>
+                <div class="subtitle">Primary orchestrator view with optional advanced controls</div>
             </div>
             <div class="header-actions">
-                <button onclick="toggleAdvanced()" class="btn btn-toggle" id="advancedToggle">Advanced</button>
+                <button onclick="toggleAdvanced()" class="btn btn-toggle" id="advancedToggle" title="Show multi-repo and discovery tools">Advanced</button>
                 <button onclick="openSetupWizard()" class="btn btn-primary">+ New Setup</button>
                 <button onclick="showBuildInfo()" class="btn">Build Info</button>
                 <button onclick="shutdownControlCenter()" class="btn btn-danger">Shutdown</button>
@@ -1366,6 +1366,10 @@
                         ${selector}
                         ${renderPrimarySummary(repo)}
                     </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
+                        <button class="btn" onclick="checkRepoHealth('${escapeHtml(repo.path)}', '${escapeHtml(repo.selected_config || (repo.configs && repo.configs[0]) || '')}')">Check</button>
+                    </div>
                 </div>
                 ${renderPrimaryStatus(repo)}
                 <div class="primary-doctor" id="primaryDoctor">Loading doctor...</div>
@@ -1431,7 +1435,6 @@
                                 ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}', null)">Stop All</button>`
                                 : `<button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}', '${escapeHtml(selectedConfig || '')}')">Start All</button>`
                             }
-                            <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
                         </div>
                     </div>
                 `;
@@ -1450,8 +1453,6 @@
                     <span class="repo-status ${statusClass}"><span class="status-dot"></span>${statusLabel}</span>
                     <div class="primary-actions">
                         ${actionControls}
-                        <button class="btn" onclick="checkRepoHealth('${escapeHtml(repo.path)}', '${escapeHtml(selectedConfig || '')}')">Check</button>
-                        <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
                     </div>
                 </div>
             `;

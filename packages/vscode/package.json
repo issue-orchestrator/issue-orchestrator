@@ -176,6 +176,13 @@
           "when": "view == issueOrchestrator.explorer && viewItem == issue",
           "group": "navigation"
         }
+      ],
+      "view/title": [
+        {
+          "command": "issueOrchestrator.runDiagnostics",
+          "when": "view == issueOrchestrator.explorer",
+          "group": "navigation"
+        }
       ]
     },
     "configuration": {
