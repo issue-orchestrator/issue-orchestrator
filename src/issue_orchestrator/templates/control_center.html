@@ -26,6 +26,8 @@
         h1 { font-size: 20px; font-weight: 600; color: #fff; }
         .subtitle { font-size: 12px; color: #8b949e; margin-top: 4px; }
         .header-actions { display: flex; gap: 8px; }
+        .header-actions .btn-toggle { border-color: #58a6ff; color: #58a6ff; }
+        .header-actions .btn-toggle.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 
         .card {
             border: 1px solid #21262d;
@@ -490,10 +492,11 @@
     <div class="container" id="mainContent">
         <header>
             <div>
-                <h1>Issue Orchestrator Control Center</h1>
-                <div class="subtitle">Manage orchestrators across repositories</div>
+                <h1>Issue Orchestrator</h1>
+                <div class="subtitle">Single-orchestrator view with optional advanced controls</div>
             </div>
             <div class="header-actions">
+                <button onclick="toggleAdvanced()" class="btn btn-toggle" id="advancedToggle">Advanced</button>
                 <button onclick="openSetupWizard()" class="btn btn-primary">+ New Setup</button>
                 <button onclick="showBuildInfo()" class="btn">Build Info</button>
                 <button onclick="shutdownControlCenter()" class="btn btn-danger">Shutdown</button>
@@ -511,48 +514,58 @@
 
         <!-- Main content (hidden when welcome screen shown) -->
         <div id="repoContent">
-            <!-- Discovered Repos Card -->
-            <div class="card" id="discoverCard">
+            <div class="card" id="primaryCard" style="display:none;">
                 <div class="card-header">
-                    <span>Discovered Repositories</span>
-                    <button onclick="discoverRepos()" class="btn btn-sm">Scan</button>
-                </div>
-                <div class="card-body">
-                    <div style="font-size:12px;color:#8b949e;margin-bottom:12px;">
-                        Repos with <code>.issue-orchestrator/config/</code> not yet registered:
-                    </div>
-                    <div id="discoveredRepos" class="discovered-list">
-                        <div class="empty-state" style="padding:24px;">Click "Scan" to find repositories</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header">
-                    <span>Registered Repositories</span>
+                    <span>Orchestrator</span>
                     <button onclick="loadRepos()" class="btn btn-sm">Refresh</button>
                 </div>
-                <div class="card-body">
-                    <div class="repo-list">
-                        <div class="repo-header">
-                            <span>Repository</span>
-                            <span>Status</span>
-                            <span>Port</span>
-                            <span>Actions</span>
+                <div class="card-body" id="primaryBody"></div>
+            </div>
+
+            <div class="advanced-section" id="advancedSection">
+                <!-- Discovered Repos Card -->
+                <div class="card" id="discoverCard">
+                    <div class="card-header">
+                        <span>Discovered Repositories</span>
+                        <button onclick="discoverRepos()" class="btn btn-sm">Scan</button>
+                    </div>
+                    <div class="card-body">
+                        <div style="font-size:12px;color:#8b949e;margin-bottom:12px;">
+                            Repos with <code>.issue-orchestrator/config/</code> not yet registered:
                         </div>
-                        <div id="repoRows">
-                            <div class="loading-state" style="padding:16px;color:#8b949e;text-align:center;">Loading repositories...</div>
+                        <div id="discoveredRepos" class="discovered-list">
+                            <div class="empty-state" style="padding:24px;">Click "Scan" to find repositories</div>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="card" id="detailsCard" style="display:none;">
-                <div class="card-header">
-                    <span id="detailsTitle">Repository Details</span>
-                    <button onclick="hideDetails()" class="btn btn-sm">Close</button>
+                <div class="card">
+                    <div class="card-header">
+                        <span>Registered Repositories</span>
+                        <button onclick="loadRepos()" class="btn btn-sm">Refresh</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="repo-list">
+                            <div class="repo-header">
+                                <span>Repository</span>
+                                <span>Status</span>
+                                <span>Port</span>
+                                <span>Actions</span>
+                            </div>
+                            <div id="repoRows">
+                                <div class="loading-state" style="padding:16px;color:#8b949e;text-align:center;">Loading repositories...</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="card-body" id="detailsBody"></div>
+
+                <div class="card" id="detailsCard" style="display:none;">
+                    <div class="card-header">
+                        <span id="detailsTitle">Repository Details</span>
+                        <button onclick="hideDetails()" class="btn btn-sm">Close</button>
+                    </div>
+                    <div class="card-body" id="detailsBody"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -608,6 +621,28 @@
             toast.classList.toggle('error', isError);
             toast.classList.add('visible');
             setTimeout(() => toast.classList.remove('visible'), 3000);
+        }
+
+        let advancedVisible = localStorage.getItem('ioAdvanced') === '1';
+        let lastRepos = [];
+        let primaryRepoPath = null;
+
+        function toggleAdvanced() {
+            setAdvancedVisible(!advancedVisible);
+        }
+
+        function setAdvancedVisible(visible) {
+            advancedVisible = visible;
+            localStorage.setItem('ioAdvanced', visible ? '1' : '0');
+            const section = document.getElementById('advancedSection');
+            const toggle = document.getElementById('advancedToggle');
+            if (section) {
+                section.classList.toggle('visible', visible);
+            }
+            if (toggle) {
+                toggle.classList.toggle('active', visible);
+                toggle.textContent = visible ? 'Advanced (On)' : 'Advanced';
+            }
         }
 
         function showBlockingError(title, message) {
@@ -1264,6 +1299,125 @@
         wizardBodyObserver.observe(document.getElementById('wizardBody'), { childList: true });
 
         // ==================== Main UI Functions ====================
+        function renderPrimarySection(repos) {
+            const card = document.getElementById('primaryCard');
+            const body = document.getElementById('primaryBody');
+            if (!card || !body) return;
+
+            if (!repos || repos.length === 0) {
+                card.style.display = 'none';
+                return;
+            }
+
+            card.style.display = 'block';
+            if (!primaryRepoPath || !repos.find(r => r.path === primaryRepoPath)) {
+                primaryRepoPath = repos[0].path;
+            }
+            const repo = repos.find(r => r.path === primaryRepoPath) || repos[0];
+
+            const selector = repos.length > 1
+                ? `<div class="primary-select">
+                        <label style="font-size:12px;color:#8b949e;">Primary repo</label>
+                        <select class="form-select" onchange="setPrimaryRepo(this.value)">
+                            ${repos.map(r => `<option value="${escapeHtml(r.path)}" ${r.path === repo.path ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
+                        </select>
+                   </div>`
+                : '';
+
+            body.innerHTML = `
+                <div>
+                    <div style="font-size:14px;font-weight:600;color:#58a6ff;">${escapeHtml(repo.name)}</div>
+                    <div style="font-size:12px;color:#8b949e;font-family:monospace;">${escapeHtml(repo.path)}</div>
+                    ${selector}
+                </div>
+                ${renderPrimaryStatus(repo)}
+            `;
+        }
+
+        function setPrimaryRepo(path) {
+            primaryRepoPath = path;
+            renderPrimarySection(lastRepos);
+        }
+
+        function renderPrimaryStatus(repo) {
+            const status = repo.status || { state: 'unknown' };
+            const isRunning = status.state === 'running';
+            const isFailed = status.state === 'failed';
+            const activeSessionCount = status.active_session_count || 0;
+            const isOrphaned = status.orphaned === true;
+            const isShuttingDown = isRunning && status.shutdown_requested && activeSessionCount > 0;
+            const isShutdownComplete = isRunning && status.shutdown_requested && activeSessionCount === 0;
+            const isPaused = isRunning && status.paused && !status.shutdown_requested;
+            const hasConfigs = repo.configs && repo.configs.length > 0;
+
+            let statusClass = 'status-stopped';
+            if (isShuttingDown) statusClass = 'status-paused';
+            else if (isShutdownComplete) statusClass = 'status-stopped';
+            else if (isPaused) statusClass = 'status-paused';
+            else if (isRunning) statusClass = 'status-running';
+            else if (isFailed) statusClass = 'status-failed';
+
+            let statusLabel = 'Unknown';
+            if (isShuttingDown) statusLabel = `Stopping... (${activeSessionCount})`;
+            else if (isShutdownComplete) statusLabel = 'Stopped';
+            else if (isPaused) statusLabel = 'Paused';
+            else if (isOrphaned) statusLabel = 'Running (untracked)';
+            else if (status.state) statusLabel = status.state.charAt(0).toUpperCase() + status.state.slice(1);
+
+            const selectedConfig = repo.selected_config || (repo.configs && repo.configs[0]) || null;
+            const configOptions = (repo.configs || []).map(c =>
+                `<option value="${escapeHtml(c)}" ${c === selectedConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`
+            ).join('');
+
+            if (!hasConfigs) {
+                return `
+                    <div class="primary-status">
+                        <span class="repo-status status-paused"><span class="status-dot"></span>No config</span>
+                        <div class="primary-actions">
+                            <button class="btn btn-primary" onclick="openSetupWizard('${escapeHtml(repo.path)}')">Set Up</button>
+                            <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')">Remove</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (repo.expected_instances > 1 && repo.instances) {
+                const runningInstance = repo.instances.find(inst => inst.state === 'running' && inst.port);
+                return `
+                    <div class="primary-status">
+                        <span class="repo-status ${statusClass}"><span class="status-dot"></span>${statusLabel}</span>
+                        <div class="primary-actions">
+                            ${runningInstance ? `<button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${runningInstance.port})">Open UI</button>` : ''}
+                            ${status.state === 'running' || status.state === 'partial'
+                                ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}', null)">Stop All</button>`
+                                : `<button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}', '${escapeHtml(selectedConfig || '')}')">Start All</button>`
+                            }
+                            <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            const actionControls = isRunning && !isShuttingDown && !isShutdownComplete
+                ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}', ${status.port || 'null'})">Stop</button>
+                   <button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
+                : isShuttingDown
+                    ? `<button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
+                    : `<select class="btn" style="min-width:140px;" onchange="updateSelectedConfig('${escapeHtml(repo.path)}', this.value)">${configOptions}</select>
+                       <button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}', '${escapeHtml(selectedConfig || '')}')">Start</button>`;
+
+            return `
+                <div class="primary-status">
+                    <span class="repo-status ${statusClass}"><span class="status-dot"></span>${statusLabel}</span>
+                    <div class="primary-actions">
+                        ${actionControls}
+                        <button class="btn" onclick="checkRepoHealth('${escapeHtml(repo.path)}', '${escapeHtml(selectedConfig || '')}')">Check</button>
+                        <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
+                    </div>
+                </div>
+            `;
+        }
+
         async function loadRepos(data = null) {
             const repoRows = document.getElementById('repoRows');
 
@@ -1275,11 +1429,15 @@
                 }
 
                 if (!data.repos || data.repos.length === 0) {
+                    lastRepos = [];
+                    renderPrimarySection([]);
                     repoRows.innerHTML = '<div class="empty-state">No repositories registered yet</div>';
                     checkShowWelcome(0);
                     return;
                 }
 
+                lastRepos = data.repos;
+                renderPrimarySection(data.repos);
                 checkShowWelcome(data.repos.length);
 
                 let html = '';
@@ -1486,6 +1644,7 @@
                 repoRows.innerHTML = html;
             } catch (err) {
                 console.error('Failed to load repos:', err);
+                renderPrimarySection([]);
                 repoRows.innerHTML = '<div class="empty-state" style="color:#f85149;">Failed to load repositories</div>';
             }
         }
@@ -1493,6 +1652,7 @@
         function checkShowWelcome(repoCount) {
             const welcomeScreen = document.getElementById('welcomeScreen');
             const repoContent = document.getElementById('repoContent');
+            const primaryCard = document.getElementById('primaryCard');
 
             if (repoCount === 0) {
                 // Check if there are discovered repos
@@ -1502,6 +1662,9 @@
                 if (!hasDiscovered) {
                     welcomeScreen.style.display = 'block';
                     repoContent.style.display = 'none';
+                    if (primaryCard) {
+                        primaryCard.style.display = 'none';
+                    }
                     return;
                 }
             }
@@ -2167,6 +2330,7 @@
         }
 
         // Initial load
+        setAdvancedVisible(advancedVisible);
         loadRepos();
         discoverRepos();
 

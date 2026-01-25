@@ -49,6 +49,7 @@ const detailPanels = new Map<number, vscode.WebviewPanel>();
 const consolePanels = new Map<number, vscode.WebviewPanel>();
 let controlCenterTerminal: vscode.Terminal | null = null;
 let doctorPanelHandlerAttached = false;
+let lastDoctorReport: DoctorReport | null = null;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const isTest = process.env.IO_VSCODE_TEST === "1" || !!process.env.VSCODE_EXTENSION_TESTS;
@@ -157,7 +158,10 @@ function registerCommands(
         if (hasStartError(result)) {
           const errorMessage = `Orchestrator failed to start: ${result.error.message}`;
           output.appendLine(errorMessage);
-          await openDoctorPanel(client, output, errorMessage);
+          await openDoctorPanel(client, output, {
+            errorMessage,
+            doctorUrl: result.ui_hint?.url,
+          });
           return;
         }
         await provider.refresh();
@@ -283,7 +287,7 @@ function registerCommands(
     }),
     vscode.commands.registerCommand("issueOrchestrator.runDiagnostics", async () => {
       await runCommand(async () => {
-        await openDoctorPanel(client, output);
+        await openDoctorPanel(client, output, {});
       }, output, "Diagnostics failed");
     }),
     vscode.commands.registerCommand("issueOrchestrator.openWorktree", async (item?: unknown) => {
@@ -661,30 +665,99 @@ async function openSessionConsole(
   consolePanels.set(issueNumber, panel);
 }
 
+type DoctorPanelOptions = {
+  errorMessage?: string;
+  doctorUrl?: string;
+};
+
 async function openDoctorPanel(
   client: OrchestratorClient,
   output: vscode.OutputChannel,
-  errorMessage?: string
+  options: DoctorPanelOptions
 ): Promise<void> {
   const report = await fetchDoctorReport(client, output);
   if (!report) {
     vscode.window.showErrorMessage("Failed to load diagnostics.");
     return;
   }
-  const panel = showDoctorPanel(report, { errorMessage });
+  lastDoctorReport = report;
+  const dashboardUrl = await tryGetDashboardUrl(client, output);
+  const actions = buildDoctorActions(dashboardUrl, options.doctorUrl);
+  const panel = showDoctorPanel(report, { errorMessage: options.errorMessage, actions });
   panel.onDidDispose(() => {
     doctorPanelHandlerAttached = false;
   });
   if (!doctorPanelHandlerAttached) {
     doctorPanelHandlerAttached = true;
     panel.webview.onDidReceiveMessage(async (message) => {
-      if (message?.type === "rerun") {
-        const updated = await fetchDoctorReport(client, output);
-        if (updated) {
-          updateDoctorPanel(updated, { errorMessage });
-        }
+      if (message?.type === "action" && typeof message.id === "string") {
+        await handleDoctorAction(message.id, message.url, client, output, options);
       }
     });
+  }
+}
+
+async function handleDoctorAction(
+  actionId: string,
+  url: string | undefined,
+  client: OrchestratorClient,
+  output: vscode.OutputChannel,
+  options: DoctorPanelOptions
+): Promise<void> {
+  if (actionId === "rerun") {
+    const updated = await fetchDoctorReport(client, output);
+    if (updated) {
+      lastDoctorReport = updated;
+      const dashboardUrl = await tryGetDashboardUrl(client, output);
+      const actions = buildDoctorActions(dashboardUrl, options.doctorUrl);
+      updateDoctorPanel(updated, { errorMessage: options.errorMessage, actions });
+    }
+    return;
+  }
+  if (actionId === "copy") {
+    const payload = lastDoctorReport ? JSON.stringify(lastDoctorReport, null, 2) : "";
+    await vscode.env.clipboard.writeText(payload);
+    vscode.window.showInformationMessage("Doctor report copied to clipboard.");
+    return;
+  }
+  if (actionId === "openControlCenter") {
+    await vscode.commands.executeCommand("issueOrchestrator.startControlCenter");
+    return;
+  }
+  if (actionId === "openDashboard" && url) {
+    await vscode.env.openExternal(vscode.Uri.parse(url));
+    return;
+  }
+  if (actionId === "openDoctor" && url) {
+    await vscode.env.openExternal(vscode.Uri.parse(url));
+  }
+}
+
+function buildDoctorActions(dashboardUrl?: string, doctorUrl?: string): { id: string; label: string; primary?: boolean; url?: string }[] {
+  const actions = [
+    { id: "rerun", label: "Re-run diagnostics", primary: true },
+    { id: "copy", label: "Copy report" },
+    { id: "openControlCenter", label: "Open Control Center" },
+  ];
+  if (dashboardUrl) {
+    actions.push({ id: "openDashboard", label: "Open Dashboard", url: dashboardUrl });
+  }
+  if (doctorUrl) {
+    actions.push({ id: "openDoctor", label: "Open Doctor (web)", url: doctorUrl });
+  }
+  return actions;
+}
+
+async function tryGetDashboardUrl(
+  client: OrchestratorClient,
+  output: vscode.OutputChannel
+): Promise<string | undefined> {
+  try {
+    const urls = await client.getUrls();
+    return urls.dashboard_url;
+  } catch (err) {
+    output.appendLine(`Failed to fetch dashboard URL: ${String(err)}`);
+    return undefined;
   }
 }
 

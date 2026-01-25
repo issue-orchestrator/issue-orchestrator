@@ -43,7 +43,7 @@ The extension starts the MCP server and (by default) auto-starts the orchestrato
 - Open a live **session console** and send messages to running agents.
 - Pause/Resume/Stop the orchestrator without leaving VS Code.
 - Open the web **Dashboard** inside VS Code or in your browser.
-- Run diagnostics in the **Doctor** panel and surface issues in the Problems panel.
+- Run diagnostics in the **Doctor** panel (re-run, copy report, open Control Center/Dashboard) and surface issues in the Problems panel.
 
 ## Settings You’ll Actually Use
 
